@@ -16,16 +16,13 @@ import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// A MONITORING agent watches and never answers (issue #209). The guarantee is asserted at the two
-// seams that hold it, against the effects an operator can see:
-//
+// A MONITORING agent watches and never answers. The guarantee is asserted at the two seams that
+// hold it, against the effects an operator can see:
 //   - the receiver: a customer message on a conversation the bot holds, and one a human holds, each
-//     arm no turn and post nothing, leave no `handoff` trail line, advance the handled watermark and
-//     settle the delivery — and are folded into memory (an INGEST_MESSAGE job), which is the whole
-//     point of the mode;
+//     arm no turn, post nothing, leave no `handoff` trail line, advance the handled watermark, settle
+//     the delivery and are folded into memory (an INGEST_MESSAGE job), which is the point of the mode;
 //   - the config load: every speaker loads the agent there first, and a monitoring agent loads for
 //     nobody except a caller that says it never speaks.
-//
 // A production agent on the same inbox is the control: the same message arms a flush.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -238,22 +235,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }
 
-  // "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" É UMA PERGUNTA SOBRE UMA LINHA (issue #723).
-  //
-  // Dezessete asserções deste arquivo faziam essa afirmação comparando o TAMANHO da população de
-  // `INGEST_MESSAGE` do tenant, antes e depois. A população não é estável, e não por sujeira de
-  // teste: a linha é apagada ao concluir (`JOB_DELETE_ON_DONE.INGEST_MESSAGE`, cujo comentário em
-  // scheduler/lanes.ts diz que essa é a exceção justamente porque a chave nomeia UMA mensagem), e
-  // `drainPendingIngest` drena as pendentes de uma thread a partir de três lugares do produto.
-  //
-  // O delta custava os dois lados. Vermelho mal atribuído: qualquer remoção por perto fazia a falha
-  // ler como "a marca de posse humana está enfileirando ingestão", que é o defeito para o qual o
-  // teste foi escrito. E verde que não prova nada, que é o caro e só apareceu quando o holdout foi
-  // medido: uma troca 1-por-1 deixa a população igual, e o arquivo passou 38/0 com a linha da
-  // própria mensagem plantada na tabela. Melhorar a mensagem de erro não tocaria nesse segundo.
-  //
-  // A chave é a identidade: thread MAIS mensagem. Só a mensagem não serve — a mesma mensagem em
-  // outra thread é outro fato, e é o que `tests/modules/ingest-armed-for-this-message.test.ts` fixa.
+  // "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" é uma pergunta sobre UMA linha, nunca sobre o
+  // tamanho da população de `INGEST_MESSAGE`: a linha é apagada ao concluir
+  // (`JOB_DELETE_ON_DONE.INGEST_MESSAGE`) e `drainPendingIngest` drena pendentes de três lugares do
+  // produto, então um delta lê remoção alheia como defeito, e uma troca 1-por-1 passa verde com a
+  // linha da própria mensagem plantada. A chave é thread MAIS mensagem: a mesma mensagem em outra
+  // thread é outro fato (`tests/modules/ingest-armed-for-this-message.test.ts`).
   function threadOf(convId: number) {
     return contactInboxThreadId(tenantId, instanceId, 81_000 + convId);
   }
@@ -270,12 +257,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }
 
-  // A FRASE QUE TODA AFIRMAÇÃO POSITIVA SOBRE UMA LINHA DE `scheduler_jobs` DESTE ARQUIVO CARREGA.
-  // Não é exclusiva da pergunta por chave: `ingested.some(endsWith)`, `findFirst(...) != null` e a
-  // leitura da escada de redirect afirmam a mesma coisa (a linha que o teste armou está lá) e têm a
-  // mesma exposição — um terceiro escrevendo no banco de teste compartilhado consegue tirá-la. A
-  // #723 tirou o veredito decidido pelo TAMANHO da população; esta exposição é a que sobra, e o que
-  // se pode fazer por ela é a saída dizer qual linha era e que a interferência é causa possível.
+  // A frase que toda afirmação positiva sobre uma linha de `scheduler_jobs` deste arquivo carrega
+  // (`ingested.some(endsWith)`, `findFirst(...) != null`, a leitura da escada de redirect): um
+  // terceiro escrevendo no banco de teste compartilhado consegue tirar a linha, então a saída diz
+  // qual linha era e que a interferência é causa possível.
   function porInterferencia(oQue: string) {
     return (
       `${oQue} não está na tabela. O teste a arma, então o vermelho é real se o conserto parou de ` +
@@ -301,9 +286,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }
 
-  // A linha da escada é outra que o teste cria e um terceiro consegue apagar. `findUniqueOrThrow`
-  // sobre ela estoura `P2025` cru — uma stack do Prisma que não nomeia nem a linha nem a suspeita —,
-  // e foi a única falha que a injeção de remoção do holdout deixou nesta árvore.
+  // A linha da escada também pode ser apagada por um terceiro. `findUniqueOrThrow` sobre ela
+  // estouraria `P2025` cru, uma stack do Prisma que não nomeia nem a linha nem a suspeita.
   async function escadaDe(id: bigint) {
     const row = await suDb.schedulerJob.findUnique({
       where: { id },
@@ -545,9 +529,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a payload that names no contact-inbox is still remembered, through the mirrored conversation", async () => {
-    // The observer's path marks the message handled before ingestion runs, and ingestion keys
-    // memory by the contact-inbox; a payload without one has to reach the stored row's (review
-    // round 14).
+    // NOTE: The observer's path marks the message handled before ingestion runs, and ingestion keys
+    // memory by the contact-inbox; a payload without one has to reach the stored row's.
     requests.length = 0;
     const { messageId } = await deliver(
       1,
@@ -566,11 +549,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a message with no contact-inbox thread anywhere is left unmarked, and its delivery unsettled", async () => {
-    // The payload names no contact-inbox and neither does the mirrored row, so there is no thread
-    // to remember the message on. Marked handled, it would be absent from every memory for good;
-    // left unmarked (review round 18) it is the burst a flush after a flip back to production
-    // answers, and a sibling delivery of it still being worked stays in the sweep's worklist
-    // instead of being settled as consumed.
+    // NOTE: The payload names no contact-inbox and neither does the mirrored row, so there is no
+    // thread to remember the message on. Marked handled, it would be absent from every memory for
+    // good; left unmarked it is the burst a flush after a flip back to production answers, and a
+    // sibling delivery of it still being worked stays in the sweep's worklist instead of being
+    // settled as consumed.
     requests.length = 0;
     const sibling = await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -613,11 +596,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an observer whose ingestion cannot be armed marks nothing, and leaves the delivery to the sweep", async () => {
-    // The enqueue is the observer's reason to mark (review round 19): a scheduler write that does
-    // not land would otherwise leave the message below the watermark with no ingest job, absent
-    // from memory for good, since a monitoring agent arms no flush and the next observed message
-    // moves the watermark past it. So the delivery fails instead, and its row stays PROCESSING for
-    // the sweep's recovery to re-run.
+    // NOTE: The enqueue is the observer's reason to mark: a scheduler write that does not land would
+    // otherwise leave the message below the watermark with no ingest job, absent from memory for
+    // good, since a monitoring agent arms no flush and the next observed message moves the watermark
+    // past it. So the delivery fails instead, and its row stays PROCESSING for the sweep to re-run.
     requests.length = 0;
     const failing = appDb.$extends({
       query: {
@@ -658,15 +640,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a human-held message under an observer is settled only once its ingestion has it", async () => {
-    // The human-held mark has its own reason (issue #8) and used to close the delivery's row ahead
-    // of the ingestion; with the enqueue then failing, the row was already terminal and the sweep
-    // could not recover it (review round 20). Under an observer it waits for the enqueue too.
-    //
-    // E A PARADA É A DO OBSERVADOR, não a de posse humana (issue #719), que é por que a mensagem do
-    // erro é asserida inteira. As duas existem e ambas deixariam a linha em PROCESSING, então o
-    // `status` sozinho não distingue qual delas segurou a entrega — e quem segura decide o resto: o
-    // bloco do observador tem a regra da marca de um agente desligado, que a parada de posse não
-    // tem. Sem esta asserção, remover o `!observerHolds` da parada de posse passa despercebido.
+    // NOTE: Under an observer the human-held mark waits for the enqueue too: closing the row ahead
+    // of the ingestion would leave it terminal when the enqueue then fails, and the sweep could not
+    // recover it. The error message is asserted whole because the stop must be the OBSERVER's, not
+    // the human-ownership one: both leave the row PROCESSING, but only the observer block carries
+    // the switched-off agent's mark rule, so without it removing `!observerHolds` from the ownership
+    // stop goes unnoticed.
     requests.length = 0;
     const messageId = messageSeq + 1;
     const deliveryId = `mon-${process.pid}-${deliverySeq + 1}`;
@@ -690,15 +669,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(ledger.status).toBe("PROCESSING");
   });
 
-  // A METADE QUE A REVERSÃO COMPROU (issue #688). Um portão de posse do outro lado da espera é
-  // metade do conserto; a outra metade é a mensagem do cliente não sumir por causa dele. A tentativa
-  // anterior (`1ec96449`, revertida em `9dce80e2`) parava antes do invoke e perdia a mensagem: ela
-  // nunca entra no canal, a marca avança mesmo assim, a entrega é liquidada como consumida, e a
-  // ingestão do fim do `processChatwootDelivery` a pula, porque o `act` foi decidido lá atrás,
-  // quando ainda se esperava que um turno a cobrisse.
-  //
-  // O caminho é o mesmo que a #209 abriu para o `agent-unavailable`: quem parou sem ler a mensagem
-  // não liquida aqui, deixa a ingestão pegá-la, e só então a linha fecha.
+  // NOTE: Um portão de posse do outro lado da espera só serve se a mensagem do cliente não sumir por
+  // causa dele. Parar antes do invoke e liquidar a perde: ela nunca entra no canal, a marca avança,
+  // a entrega é liquidada como consumida, e a ingestão do fim de `processChatwootDelivery` a pula,
+  // porque o `act` foi decidido quando se esperava um turno. Como no `agent-unavailable`, quem parou
+  // sem ler a mensagem não liquida aqui: deixa a ingestão pegá-la, e só então a linha fecha.
   test("issue #688: a takeover during the wait leaves the message to the ingestion instead of losing it", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -738,7 +713,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       },
       select: { id: true },
     });
-    // O thread ocupado é o que faz o turno ESPERAR, que é a janela inteira desta issue.
+    // NOTE: O thread ocupado é o que faz o turno ESPERAR, que é a janela deste caso.
     const graphThreadId = contactInboxThreadId(
       tenantId,
       instanceId,
@@ -782,8 +757,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // Nada é dito por cima da pessoa, e o turno parou antes do invoke.
     expect(sent).toEqual([]);
     expect(seen.outcome).toBe("taken-over-unread");
-    // E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA. É aqui que a tentativa revertida falhava: sem isto,
-    // o cliente escreveu e nenhum lugar do sistema guarda o que ele disse.
+    // NOTE: E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA: sem isto, o cliente escreveu e nenhum lugar do
+    // sistema guarda o que ele disse.
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect(
       await ingestArmedFor(graphThreadId, messageId),
@@ -793,23 +768,19 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       ingested.some((k) => k.endsWith(`:${messageId}`)),
       porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
-    // E SÓ ENTÃO A MARCA PASSA, que é a ordem inteira desta parada (review r10). Enquanto nada tinha
-    // lido a mensagem, uma marca acima dela seria a mensagem perdida; com a ingestão tendo
-    // funcionado, ela está na memória e o que falta é dizer isso — como o `agent-unavailable` sob um
-    // observador diz, e como o takeover comum sempre disse. Sem esta escrita a mensagem fica acima
-    // da marca com a memória já contendo-a, e a conversa voltando ao bot o flush seguinte a
-    // seleciona de novo: a mesma pergunta duas vezes no prompt.
+    // NOTE: E SÓ ENTÃO A MARCA PASSA, que é a ordem desta parada. Enquanto nada tinha lido a
+    // mensagem, uma marca acima dela seria a mensagem perdida; com a ingestão feita ela está na
+    // memória e falta dizer isso, como o `agent-unavailable` sob um observador diz. Sem esta escrita
+    // a mensagem fica acima da marca com a memória já contendo-a, e com a conversa de volta ao bot o
+    // flush seguinte a seleciona de novo: a mesma pergunta duas vezes no prompt.
     expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
     // A linha fecha, e fecha DEPOIS da ingestão — nunca no portão, onde a mensagem ainda não era de
     // ninguém.
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
   }, 20_000);
 
-  // E SE O ENFILEIRAMENTO FALHAR, A LINHA NÃO FECHA (issue #688, review r1). A mensagem ir para a
-  // ingestão é metade do conserto; a outra é o que acontece quando essa ingestão não consegue ser
-  // armada. O guarda que existia para isso era só do observador (`observerHolds`), então esta parada
-  // caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED, e a mensagem sumia do mesmo
-  // jeito que sumia antes — o defeito da issue voltando por uma porta que o conserto abriu.
+  // NOTE: E SE O ENFILEIRAMENTO FALHAR, A LINHA NÃO FECHA. Fechada como PROCESSED, a mensagem cuja
+  // ingestão não pôde ser armada sumiria sem que a varredura a revisitasse.
   test("issue #688: a takeover during the wait whose ingestion FAILS leaves the delivery for the sweep", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -903,22 +874,13 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }, 20_000);
 
-  // E SE INGESTÃO NENHUMA CORREU, A LINHA TAMBÉM NÃO FECHA (issue #688, review r12). O teste acima é
-  // sobre o enfileiramento que FALHA; este é sobre a ingestão que nem chega a ser tentada, porque a
-  // rota não resolveu runtime nenhum. `routeIngests` é falso ali, `ingested` fica no valor inicial
-  // `"nothing"` — indistinguível de "correu e não tinha o que lembrar" — e a liquidação da marca
-  // disparava mesmo assim, por cima de uma mensagem que memória nenhuma tem.
-  //
-  // A corrida que produz isso é real e tem nome no repo: `resolveRoute` lê a vinculação do inbox
-  // cedo, `runAgentTurn` carrega a configuração dele sozinho muito depois, e quem decide se o turno
-  // roda é `act`, que pergunta pela POSSE da conversa e não pela rota. Uma vinculação feita entre as
-  // duas leituras deixa `rt` nulo com o turno rodando (é a janela da #540, que a `bindingGeneration`
-  // nomeia). O throw que existe para ela não cobre esta: ele exige `claimFrom === "PENDING"` e uma
-  // geração gravada no recibo, e um replay da varredura não tem nenhum dos dois.
-  //
-  // Encenada pela leitura, não pelo relógio: a PRIMEIRA leitura do inbox — a de `resolveRoute` —
-  // responde sem vinculação, e todas as seguintes respondem a linha real. Qualquer espera de tempo
-  // real aqui seria uma corrida contra o próprio teste.
+  // NOTE: E SE INGESTÃO NENHUMA CORREU, A LINHA TAMBÉM NÃO FECHA. Aqui a rota não resolveu runtime:
+  // `routeIngests` é falso e `ingested` fica em `"nothing"`, indistinguível de "correu e não tinha o
+  // que lembrar". A corrida é real: `resolveRoute` lê a vinculação do inbox cedo, `runAgentTurn`
+  // carrega a configuração muito depois, e `act` pergunta pela POSSE, não pela rota (a janela que
+  // `bindingGeneration` nomeia). O throw dessa janela exige `claimFrom === "PENDING"` e uma geração
+  // no recibo, que um replay da varredura não tem. Encenada pela leitura (só a PRIMEIRA leitura do
+  // inbox responde sem vinculação): uma espera de tempo real correria contra o próprio teste.
   test("issue #688: a takeover during the wait on a route that resolved NO runtime leaves the delivery for the sweep", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1016,26 +978,20 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(leituras.inbox).toBeGreaterThan(0);
     // Ingestão nenhuma correu — é essa a premissa do caso, não o efeito a consertar.
     expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
-    // O QUE ESTE TESTE GUARDA: a marca não passa por cima da mensagem, e a linha continua
-    // recuperável. PROCESSED com a marca avançada era a mensagem perdida.
+    // NOTE: O QUE ESTE TESTE GUARDA: a marca não passa por cima da mensagem, e a linha continua
+    // recuperável. PROCESSED com a marca avançada seria a mensagem perdida.
     expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
       messageId,
     );
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
   }, 20_000);
 
-  // E O `"no-thread"` TAMBÉM DEIXA A LINHA PARA A VARREDURA (issue #688, review r13 e r14). Ele é a
-  // leitura do contact-inbox do receptor voltando vazia, e do lado desta parada só pode significar
-  // DESACORDO entre duas leituras do mesmo fato: o portão mora dentro de `if (loaded.contactInboxId
-  // != null)`, então o runtime resolveu um contact-inbox para poder parar o turno, e o receptor
-  // lendo null ali é a leitura DELE tendo falhado (`storedContactInboxId` engole o erro) ou a linha
-  // do espelho não existir nesta passada. As duas são transitórias.
-  //
-  // A rodada 13 parou no argumento errado, e ele convence: a marca não passa por cima da mensagem,
-  // logo ela estaria guardada. NÃO ESTÁ. Quem lê a marca é o flush do debounce, e este é o caminho
-  // DIRETO, que só existe com o debounce desligado: turno nenhum depois relê a conversa a partir
-  // dela, e a ingestão contínua folha a mensagem DO EVENTO, nunca um atraso acima da marca. Com a
-  // linha liquidada, ninguém revisita — e a mensagem do cliente não está em lugar nenhum.
+  // NOTE: E O `"no-thread"` TAMBÉM DEIXA A LINHA PARA A VARREDURA. É a leitura do contact-inbox do
+  // receptor voltando vazia, e aqui só pode ser DESACORDO entre duas leituras do mesmo fato: o
+  // portão mora dentro de `if (loaded.contactInboxId != null)`, então o runtime resolveu um
+  // contact-inbox, e o receptor lendo null é a leitura DELE falhando (`storedContactInboxId` engole
+  // o erro) ou o espelho ainda sem a linha, ambas transitórias. A marca não guarda a mensagem: quem
+  // a lê é o flush do debounce, e este é o caminho DIRETO; com a linha liquidada ninguém revisita.
   test("issue #688: an ingestion with no thread to put the message in leaves the delivery for the sweep", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1175,13 +1131,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
   }, 20_000);
 
-  // A MENSAGEM SEM CONTEÚDO NEM CHEGA AO PORTÃO (issue #688, review r14), e este teste é a premissa
-  // do estreitamento do lado do receptor. A lista que deixa a entrega fechar é positiva —
-  // `ingested === "queued"`, a ingestão segurando a mensagem — e `"nothing"` ficou de fora dela. O
-  // que sustenta isso é a inalcançabilidade: com `act` entregue FALSO à ingestão, o papel é sempre
-  // `customer`, então só uma renderação vazia produziria `"nothing"`, e uma mensagem sem texto e sem
-  // anexo faz o turno devolver `skipped` antes do portão. É o que se mede aqui; se um dia deixar de
-  // ser verdade, este teste cai junto com o argumento.
+  // NOTE: A MENSAGEM SEM CONTEÚDO NEM CHEGA AO PORTÃO, premissa do lado do receptor: a lista que
+  // deixa a entrega fechar é positiva (`ingested === "queued"`) e `"nothing"` fica de fora. Com
+  // `act` entregue FALSO à ingestão o papel é sempre `customer`, então só uma renderação vazia daria
+  // `"nothing"`, e uma mensagem sem texto e sem anexo faz o turno devolver `skipped` antes do portão.
+  // Se isso deixar de ser verdade, este teste cai junto com o argumento.
   test("issue #688: a message with nothing to render never reaches the gate at all", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1264,18 +1218,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
   }, 20_000);
 
-  // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a
-  // transcrição, ele NÃO atua, e o turno segue exatamente como seguia antes desta PR.
-  //
-  // O caminho até aqui é o argumento. Parar o turno significa mandar a mensagem para a ingestão
-  // contínua, e a ingestão grava o id no dedup do thread (`recentSyncedMessageIds`), o que faz a
-  // transcrição do `message_updated` ser descartada como duplicata. As duas saídas para um áudio são
-  // então perder o que ele já traz, ou perder a transcrição — e a terceira, a ingestão aprender a
-  // ENRIQUECER uma mensagem já folhada, mexe no dedup compartilhado e é issue própria.
-  //
-  // Então aqui o desfecho é `taken-over`, o da re-checagem pós-geração, e não `taken-over-unread`:
-  // o turno rodou. É o comportamento de hoje, preservado de propósito, e o conserto vale para toda a
-  // população que a issue descreve.
+  // NOTE: Sobre uma nota de voz que ainda espera a transcrição, o portão NÃO atua e o turno segue.
+  // Parar o turno manda a mensagem para a ingestão contínua, que grava o id no dedup do thread
+  // (`recentSyncedMessageIds`) e faz a transcrição do `message_updated` ser descartada como
+  // duplicata; ensinar a ingestão a ENRIQUECER uma mensagem já folhada mexeria no dedup
+  // compartilhado. Então o desfecho é `taken-over` (a re-checagem pós-geração), não
+  // `taken-over-unread`: o turno rodou.
   test("issue #688: the gate does not act on an audio still waiting on STT, so the transcription survives", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1369,12 +1317,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
   }, 20_000);
 
-  // E COM UMA LEGENDA OU UM ASSUNTO O PORTÃO CONTINUA NÃO ATUANDO (issue #688, review r8). A
-  // pergunta que ele faz NÃO é se a mensagem já tem palavras — uma legenda de áudio e o assunto de um
-  // e-mail são palavras, e a transcrição ainda vem —, é se ainda vem mais. Perguntando pelas palavras,
-  // o portão atuava sobre um áudio legendado, a ingestão gravava o id no dedup do thread, e a
-  // transcrição chegava depois para ser descartada como duplicata: as palavras do áudio perdidas para
-  // sempre, que é a perda desta issue por mais uma porta.
+  // NOTE: COM UMA LEGENDA OU UM ASSUNTO O PORTÃO CONTINUA NÃO ATUANDO. Ele pergunta se ainda vem
+  // mais, não se a mensagem já tem palavras: uma legenda de áudio e o assunto de um e-mail são
+  // palavras, e a transcrição ainda vem. Perguntando pelas palavras, ele atuaria sobre um áudio
+  // legendado e a transcrição tardia seria descartada como duplicata no dedup do thread.
   test("issue #688: a caption or a subject does not make the gate act on an audio awaiting STT", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1473,11 +1419,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     }
   }, 30_000);
 
-  // E A LINHA DIZ QUE NENHUM TURNO COBRIU A MENSAGEM (issue #688, review r5). Quem escrevia esse
-  // fato era o `settleDelivery`, que esta parada deliberadamente não chama. Sem ele a coluna
-  // `turn_covered` fica NULA, e null é "nenhuma linha sabe": a ingestão da transcrição tardia cai no
-  // fallback de POSSE ATUAL, e se a conversa já voltou para o bot ela lê "um turno vai cobrir isto" e
-  // descarta a transcrição. O fato é escrito separado, sem liquidar a entrega.
+  // NOTE: E A LINHA DIZ QUE NENHUM TURNO COBRIU A MENSAGEM, escrito à parte porque esta parada não
+  // chama `settleDelivery`. Com `turn_covered` NULO ("nenhuma linha sabe"), a ingestão da
+  // transcrição tardia cai no fallback de POSSE ATUAL e, com a conversa de volta ao bot, lê "um
+  // turno vai cobrir isto" e descarta a transcrição.
   test("issue #688: the stand-down records that no turn covered the message", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1558,14 +1503,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(row.turnCovered).toBe(false);
   }, 20_000);
 
-  // E O MODO DO AGENTE NÃO PODE DECIDIR ISTO (issue #688, review r1). `routeIngests` é a porta da
-  // ingestão, e ela pergunta se a ROTA ingere CONTINUAMENTE — o que um agente em `test` não faz. O
-  // portão novo, porém, alcança um agente em teste numa conversa ativada com `/teste`: ali o turno
-  // parava antes do invoke e a mensagem não ia para lugar nenhum, o que é PIOR que a base, onde o
-  // invoke ao menos a colocava no canal antes da re-checagem pós-geração recusar o envio.
-  //
-  // A ingestão desta parada não é a ingestão contínua: é a última chance daquela mensagem, igual à
-  // do observador e à da transcrição tardia.
+  // NOTE: O MODO DO AGENTE NÃO PODE DECIDIR ISTO. `routeIngests` pergunta se a ROTA ingere
+  // CONTINUAMENTE, o que um agente em `test` não faz, mas o portão alcança um agente em teste numa
+  // conversa ativada com `/teste`; parado antes do invoke sem esta ingestão, a mensagem não iria a
+  // lugar nenhum (pior que o invoke, que ao menos a põe no canal). É a última chance da mensagem,
+  // como a ingestão do observador e a da transcrição tardia.
   test("issue #688: a takeover during the wait reaches the ingestion even for a test-mode agent", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1672,14 +1614,14 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       ingested.some((k) => k.endsWith(`:${messageId}`)),
       porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
-    // E a marca passa, como no caminho de produção: a ingestão guardou, então dizer isso é a
-    // última escrita da parada (review r10).
+    // NOTE: E a marca passa, como no caminho de produção: a ingestão guardou, então dizer isso é a
+    // última escrita da parada.
     expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
   }, 20_000);
 
   test("a turn that stood down for the observer settles nothing until the ingestion has the message", async () => {
-    // The stand-down's own settlement closed the row before the observer was asked (review
-    // round 20); an enqueue failing after it left a terminal row the sweep cannot recover.
+    // NOTE: The stand-down's own settlement must not close the row before the observer is asked:
+    // an enqueue failing after it would leave a terminal row the sweep cannot recover.
     const r = await directTurnUnderFlip({
       convId: 20,
       content: "meu pedido sumiu",
@@ -1695,8 +1637,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a turn that stood down, whose observer read fails, leaves the delivery for the sweep", async () => {
-    // Whether the agent observes could not be read after the stand-down. Taken for "no", the
-    // message would be settled as consumed and remembered by nobody (review round 20).
+    // NOTE: Whether the agent observes could not be read after the stand-down. Taken for "no", the
+    // message would be settled as consumed and remembered by nobody.
     const armed = { on: false, reads: 0 };
     const failing = appDb.$extends({
       query: {
@@ -1736,9 +1678,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an observed message whose watermark cannot be advanced is not settled, and waits for the sweep", async () => {
-    // The ingestion has the message; the mark is the hand-over's closing write. Settled with the
-    // watermark still below the message, the row is terminal and a flush after a flip back to
-    // production answers a message that was watched (review round 21).
+    // NOTE: The ingestion has the message; the mark is the hand-over's closing write. Settled with
+    // the watermark still below the message, the row is terminal and a flush after a flip back to
+    // production answers a message that was watched.
     requests.length = 0;
     const failing = appDb.$extends({
       query: {
@@ -1780,10 +1722,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a PRODUCTION agent's gate that consumes the message, flipped inside it, hands the message to the observer", async () => {
-    // The authorization denial consumes the message, and `rt` was read as production before the
-    // gate ran. Flipped to monitoring inside the endpoint's round-trip, the message was marked and
-    // settled ahead of the ingestion, and an enqueue failing after that was swallowed as
-    // production's best-effort ingestion is (review round 21). Under an observer it is a retry.
+    // NOTE: The authorization denial consumes the message, and `rt` was read as production before
+    // the gate ran. Flipped to monitoring inside the endpoint's round-trip, the message must not be
+    // marked and settled ahead of the ingestion, where a failing enqueue would be swallowed as
+    // production's best-effort ingestion is. Under an observer it is a retry.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -1890,10 +1832,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a reply handed to the observer inside its turn retires the redirect ladder, and the dispatch does not re-arm it", async () => {
-    // The observing path retires the ladder (round 13) from a mode read before the gate; a delivery
-    // handed over INSIDE its turn had passed that read as production, and its dispatch re-armed
-    // the ladder on the way out — a template to a lead the observer now remembers, on the first
-    // flip back to production (review round 22).
+    // NOTE: The observing path retires the ladder from a mode read before the gate; a delivery
+    // handed over INSIDE its turn passed that read as production, and its dispatch must not re-arm
+    // the ladder on the way out (a template to a lead the observer now remembers, on the first flip
+    // back to production).
     const widgetThreadId = `${tenantId}:${instanceId}:24`;
     const ladder = await suDb.schedulerJob.create({
       data: {
@@ -1939,9 +1881,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a TEST agent's consumed audio, handed to the observer inside the gate, is remembered with its transcription", async () => {
-    // The eager media pass runs ahead of the gate for an agent that ingests continuously and on
-    // the answer path for a test agent; a consumed message of a test agent ran neither, so the
-    // observer would remember the audio as its attachment marker (review round 22).
+    // NOTE: The eager media pass runs ahead of the gate for an agent that ingests continuously and
+    // on the answer path for a test agent; a consumed message of a test agent ran neither, so the
+    // observer would remember the audio as its attachment marker.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2045,15 +1987,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a colleague's reply the observer cannot remember is retried, reported, and left for the sweep", async () => {
-    // The enqueue of a human reply's append failed, so it is retried inline as the ledger claim is,
-    // and once the retries are spent the loss is an error line on the conversation rather than a
-    // process warning (review round 24).
-    //
-    // AND THE DELIVERY NO LONGER COMPLETES (issue #728). "Nothing recovers an outgoing message's
-    // body" is what stood here, and it was a statement about the DELIVERY recovery: the ledger has
-    // named the reply since issue #469, so the sweep arms a memory-only recovery that reads the
-    // message back by id. The row has to stay non-terminal to reach that sweep, which is what the
-    // throw buys — the line and the recovery are now both, instead of the line instead of it.
+    // NOTE: The enqueue of a human reply's append failed, so it is retried inline as the ledger
+    // claim is, and once the retries are spent the loss is an error line on the conversation rather
+    // than a process warning. The delivery also stays non-terminal: the ledger names the reply, so
+    // the sweep arms a memory-only recovery that reads the message back by id, and the throw is what
+    // keeps the row reachable to it. The line and the recovery both happen.
     requests.length = 0;
     const counter = { attempts: 0 };
     deliverySeq += 1;
@@ -2107,11 +2045,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(lines[0]?.status).toBe("error");
   });
 
-  // The PERMANENT half of the same loss (issue #476 review, round 37). A conversation whose
-  // contact-inbox neither the payload nor the mirror names has nowhere to hold the reply, so
-  // ingestion answers "no-thread" — nothing to retry, and no later attempt that would find one.
-  // Reported like the spent retries above: unreported, the row settles with the reply in nobody's
-  // memory and no line anywhere, because the mark block is inbound-only and never sees this.
+  // NOTE: The PERMANENT half of the same loss. A conversation whose contact-inbox neither the
+  // payload nor the mirror names has nowhere to hold the reply, so ingestion answers "no-thread":
+  // nothing to retry, and no later attempt that would find one. Reported like the spent retries
+  // above: unreported, the row settles with the reply in nobody's memory and no line anywhere,
+  // because the mark block is inbound-only and never sees this.
   test("a colleague's reply with no memory thread is reported, not settled in silence", async () => {
     requests.length = 0;
     deliverySeq += 1;
@@ -2165,11 +2103,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     });
     expect(lines.length).toBe(1);
     expect(lines[0]?.status).toBe("error");
-    // ...AND THE ROW SAYS SO (issue #540, PR review round 16). The claim wrote `routeRemembers` from
-    // the runtime it resolved, which is a promise; this is the delivery that broke it, and it still
-    // settles PROCESSED. Left saying `true`, an observer beside this route would read the reply as
-    // remembered and stay quiet about one nothing folded in — and for a reply nothing else ever
-    // will, since no recovery carries an outgoing body.
+    // NOTE: ...AND THE ROW SAYS SO. The claim wrote `routeRemembers` from the runtime it resolved,
+    // which is a promise; this delivery broke it and still settles PROCESSED. Left saying `true`, an
+    // observer beside this route would read the reply as remembered and stay quiet about one nothing
+    // folded in.
     expect(
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
@@ -2215,12 +2152,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an agent flipped to monitoring while its turn ran posts nothing", async () => {
-    // A production agent, answering directly (no debounce, so the turn runs inside this delivery),
-    // whose operator flips the mode INSIDE the model call. The config the turn loaded still says
-    // production; the send fence has to ask again — and the turn stands down as the agent being
+    // NOTE: A production agent, answering directly (no debounce, so the turn runs inside this
+    // delivery), whose operator flips the mode INSIDE the model call. The config the turn loaded
+    // still says production; the send fence asks again, and the turn stands down as the agent being
     // unavailable, NOT as a run /reset withdrew: the rolled-back turn left the message in nobody's
     // memory, so the receiver reads the agent again and hands it to the observer's ingestion, with
-    // the watermark past it (review round 6).
+    // the watermark past it.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2330,11 +2267,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an agent flipped to monitoring between two balloons sends the first and not the second", async () => {
-    // The flip lands AFTER the model call and after every check that sits next to it: inside the
-    // SEND of the first balloon of a split reply. A re-read placed at "the send boundary" answers
-    // once for the whole reply; the fence has to be asked before each balloon (issue #209 review,
-    // round 4) — and before each balloon's typing indicator, which is customer-facing too (round 9):
-    // the second balloon shows no typing, pauses for nothing, and never goes out.
+    // NOTE: The flip lands AFTER the model call and every check beside it: inside the SEND of the
+    // first balloon of a split reply. A re-read at "the send boundary" answers once for the whole
+    // reply; the fence is asked before each balloon and before each balloon's typing indicator,
+    // which is customer-facing too: the second balloon shows no typing, pauses for nothing, and
+    // never goes out.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2443,10 +2380,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an agent flipped to monitoring during the authorization call posts no denial", async () => {
-    // The receiver's own gate posts to the customer too — the away message, the redirect link, the
-    // authorization denial — and `observing` was read before the gate ran. The authorization
-    // round-trip is the wait an operator's flip can land in; the denial after it has to ask again
-    // (issue #209 review, round 5).
+    // NOTE: The receiver's own gate posts to the customer too (the away message, the redirect link,
+    // the authorization denial), and `observing` was read before the gate ran. The authorization
+    // round-trip is the wait an operator's flip can land in; the denial after it has to ask again.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2547,8 +2483,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an agent flipped to monitoring while the gate builds its client posts no denial either", async () => {
-    // The client build is I/O of its own — the persona read, the construction — and it used to sit
-    // between the gate's asks and the send (review round 7).
+    // NOTE: The client build is I/O of its own (the persona read, the construction), sitting
+    // between the gate's asks and the send.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2649,8 +2585,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a turn that throws after the flip still hands the message to the observer", async () => {
-    // The turn leaves through the receiver's catch, not through an outcome, and the message is the
-    // observer's just the same (review round 8): remembered, and marked handled.
+    // NOTE: The turn leaves through the receiver's catch, not through an outcome, and the message is
+    // the observer's just the same: remembered, and marked handled.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2744,9 +2680,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an agent flipped to monitoring inside the model call runs none of the tools it asked for", async () => {
-    // The turn's fence covers the sends; the graph asks its own copy at the tool boundary, and a
-    // copy derived from the episode alone let `set_labels` write — and the slow-tool ack post —
-    // for an agent that had just been flipped (issue #209 review, round 5).
+    // NOTE: The turn's fence covers the sends; the graph asks its own copy at the tool boundary, and
+    // a copy derived from the episode alone would let `set_labels` write (and the slow-tool ack
+    // post) for an agent that had just been flipped.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2865,9 +2801,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("an agent switched off AND in monitoring takes the switched-off path: nothing marked, nothing remembered, nothing armed", async () => {
-    // The observer's path marks the message handled and ingestion refuses a switched-off agent, so
-    // an agent that is both must not take it (review round 11): off, the message waits for the
-    // switch, unmarked, as it does for any switched-off agent.
+    // NOTE: The observer's path marks the message handled and ingestion refuses a switched-off
+    // agent, so an agent that is both must not take it: off, the message waits for the switch,
+    // unmarked, as it does for any switched-off agent.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { enabled: false, mode: "monitoring" },
@@ -2892,9 +2828,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a TEST agent flipped to monitoring inside its turn still hands the message to the observer", async () => {
-    // A test agent ingests only on its answer path, and the ingestion gate read that from the
-    // runtime the delivery was decided with; the stand-down's hand-over has to carry past it
-    // (review round 12).
+    // NOTE: A test agent ingests only on its answer path, and the ingestion gate read that from the
+    // runtime the delivery was decided with; the stand-down's hand-over has to carry past it.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -2998,11 +2933,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
         porInterferencia(`a ingestão da mensagem ${messageSeq}`),
       ).toBe(true);
       expect((await row(12))?.lastHandledMessageId).toBe(messageSeq);
-      // ...AND THE ROW SAYS SO (issue #540, PR review round 4). The claim recorded `false` — the
-      // runtime it resolved was a test agent, which folds in only what it answers — and this
-      // delivery then ingested anyway. An observer beside this responder reads the RECORDED fact in
-      // preference to the current mode, so a row left at `false` would tell it nobody remembered the
-      // message and it would append the same one to the same thread a second time.
+      // NOTE: ...AND THE ROW SAYS SO. The claim recorded `false` (the runtime it resolved was a test
+      // agent, which folds in only what it answers) and this delivery then ingested anyway. An
+      // observer beside this responder reads the RECORDED fact in preference to the current mode, so
+      // a row left at `false` would make it append the same message to the same thread a second time.
       expect(
         (
           await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
@@ -3022,10 +2956,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     }
   });
 
-  // The edit that flips the mode is usually the edit that adds the label groups, and `rt.settings`
-  // predates it — so arming off that snapshot answered `off` and the message was remembered and
-  // never classified. `boundObserverRuntime` cannot cover it: that agent is the inbox's responder,
-  // so it holds no observer row (issue #477 review, round 12).
+  // NOTE: The edit that flips the mode is usually the edit that adds the label groups, and
+  // `rt.settings` predates it, so arming off that snapshot would answer `off` and the message would
+  // be remembered and never classified. `boundObserverRuntime` cannot cover it: that agent is the
+  // inbox's responder, so it holds no observer row.
   test("a flip that also adds the taxonomy still arms the verdict", async () => {
     await suDb.schedulerJob.deleteMany({
       where: { tenantId, kind: "OBSERVE" },
@@ -3142,9 +3076,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a watched reply on the widget conversation retires the pending redirect ladder", async () => {
-    // The ladder's cancel-on-reply is a re-arm the observing path never reaches; the ladder has to
-    // be retired there instead, or a flip back to production sends a template to a lead who
-    // already answered (review round 13).
+    // NOTE: The ladder's cancel-on-reply is a re-arm the observing path never reaches; the ladder
+    // has to be retired there instead, or a flip back to production sends a template to a lead who
+    // already answered.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {
@@ -3188,8 +3122,8 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
           where: { tenantId, kind: "REDIRECT_FOLLOWUP", status: "PENDING" },
         }),
       ).toBe(0);
-      // And on a SPARSE payload, through the inbox the runtime was recovered from (round 14). The
-      // same row, re-armed: the dedupe key is unique per thread.
+      // NOTE: And on a SPARSE payload, through the inbox the runtime was recovered from. The same
+      // row, re-armed: the dedupe key is unique per thread.
       // `update` sobre a mesma linha estoura o mesmo P2025 cru; `updateMany` devolve a contagem.
       expect(
         (
@@ -3216,9 +3150,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a TEST agent's gate that consumes the delivery, flipped inside it, still hands the message to the observer", async () => {
-    // The gate consumes a message on a conversation never activated with /teste, and `rt` was read
-    // before it ran; flipped to monitoring inside the gate's own client build, the message would be
-    // marked handled and refused by the ingestion gate (review round 17).
+    // NOTE: The gate consumes a message on a conversation never activated with /teste, and `rt` was
+    // read before it ran; flipped to monitoring inside the gate's own client build, the message
+    // would be marked handled and refused by the ingestion gate.
     await suDb.agent.update({
       where: { id: agentDbId },
       data: {

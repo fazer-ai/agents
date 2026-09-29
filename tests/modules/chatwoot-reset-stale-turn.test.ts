@@ -412,16 +412,11 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     ).toBeNull();
   }, 30000);
 
-  // The question the source fence in tests/modules/delivery-sweep.test.ts was holding open: with a
-  // run that CAN be called off, does this path still settle on every outcome, or does it need the
-  // exception the debounce flush has (which keeps "stale" open, because there the withdrawal means
-  // nothing ever answered the burst)?
-  //
-  // It settles, and the reason is what a replay would do. The row is only left open so the sweep can
-  // run the delivery path again — into the conversation the operator just cleared, with the message
-  // from before it. That is the defect this whole change closes, arriving thirty minutes later
-  // through the recovery instead of immediately through the turn. "Consumed" is also the honest
-  // word: a command withdrew the episode, which is the same thing the gate's own consumed rows say.
+  // NOTE: This path settles on every outcome, unlike the debounce flush (which keeps "stale" open,
+  // because there the withdrawal means nothing ever answered the burst). A row left open would let
+  // the sweep replay the delivery into the conversation the operator just cleared, with the message
+  // from before it. "Consumed" is the right word: a command withdrew the episode, as the gate's own
+  // consumed rows say. The source fence in tests/modules/delivery-sweep.test.ts holds the other side.
   test("settles the message it withdrew, instead of leaving it for the sweep to replay", async () => {
     const messageId = 7000 + seq + 1;
     // A sibling row for the SAME message, already reported as a loss — the shape the settle exists
@@ -476,14 +471,12 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     ).toBe("PROCESSED");
   }, 30000);
 
-  // The window the round-1 review named, and the one the turn's OWN read cannot cover: the command
-  // overtakes the delivery before it ever loads a config. The mark then already carries the
-  // operator's write, so a baseline captured there would be compared against itself and every later
-  // ask would pass — the model runs and the tools fire, with only the final reply superseded.
-  //
-  // Parked in the contact-authorization call, which is a real pre-turn gate that reaches the network
-  // (docs/contact-auth.md). What makes it the right seam is not the endpoint but the position: it
-  // runs after the mirror write, which is where the delivery reads the mark it carries.
+  // NOTE: The window the turn's OWN read cannot cover: the command overtakes the delivery before it
+  // loads a config. The mark then already carries the operator's write, so a baseline captured there
+  // would be compared against itself and every later ask would pass (the model runs and the tools
+  // fire, with only the final reply superseded). Parked in the contact-authorization call
+  // (docs/contact-auth.md) for its position: after the mirror write, where the delivery reads the
+  // mark it carries.
   test("stands down even when the command overtook it before the turn loaded anything", async () => {
     await suDb.agent.updateMany({
       where: { tenantId },
@@ -536,13 +529,11 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     }
   }, 30000);
 
-  // THE BOUNDARY OF THIS FENCE, measured rather than asserted. Once the turn holds the durable claim
-  // the model call is in flight, and the asks that guard it have all been answered. What the command
-  // does THERE is refuse its own memory step, on the claim, and say so in the acknowledgement — so
-  // the operator is told the conversation was not fully cleared and /reset is a command they can
-  // type again, which is what makes this window a different defect from the one #428 closed (there
-  // the command completes and says nothing). The tools of that same turn are stopped by the fence
-  // the two tests below measure (issue #449), which is a seam of its own inside the invoke.
+  // NOTE: THE BOUNDARY OF THIS FENCE. Once the turn holds the durable claim the model call is in
+  // flight and its guarding asks are answered. The command then refuses its own memory step, on the
+  // claim, and says so in the acknowledgement, so the operator knows the conversation was not fully
+  // cleared and can type /reset again. The same turn's tools are stopped by a separate fence inside
+  // the invoke, which the two tests below measure.
   test("a command landing mid-invoke is refused, and says so", async () => {
     const inModel = Promise.withResolvers<void>();
     const held = Promise.withResolvers<void>();
@@ -583,12 +574,11 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     expect(ack ?? "").toContain("memória");
   }, 30000);
 
-  // A TOOL-CALL ID OF THIS TEST'S OWN, and it is not hygiene. The stub above hardcodes `call_attr`
-  // and every test in this file writes to the SAME thread, so a second call under that id is
-  // REPLACED IN PLACE by the messages reducer instead of appended: the tool result lands back at the
-  // earlier test's position, the model's next round sees an assistant turn nothing answered, and the
-  // tool never writes. Measured — with the shared id the two tests below pass on the code they exist
-  // to fail against, and the Chatwoot double records no attribute write at all.
+  // NOTE: A TOOL-CALL ID OF THIS TEST'S OWN, and it is not hygiene. The stub above hardcodes
+  // `call_attr` and every test here writes to the SAME thread, so a second call under that id is
+  // REPLACED IN PLACE by the messages reducer: the tool result lands at the earlier test's position,
+  // the model's next round sees an unanswered assistant turn, and the tool never writes, so the two
+  // tests below would pass on the code they exist to fail against.
   const parkedModel = (
     callId: string,
   ): {
@@ -635,12 +625,11 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     };
   };
 
-  // ISSUE #449, the other half of the window the test above measures. The command IS refused on its
-  // memory step and says so — and the turn's tools then act on the very conversation the operator
-  // was just told about: `set_custom_attribute` writes the attribute back. The acknowledgement's
-  // failure list names the memory step alone, so nothing anywhere says it came back.
-  //
-  // Counted from AFTER the command's own calls, so what is asserted is what the STALE TURN did.
+  // NOTE: The other half of the window above. The command IS refused on its memory step and says
+  // so, and the turn's tools must not then act on the conversation the operator was just told
+  // about: `set_custom_attribute` would write the attribute back, and the acknowledgement's failure
+  // list names the memory step alone. Counted from AFTER the command's own calls, so what is
+  // asserted is what the STALE TURN did.
   test("a tool call started before the command lands does not write after it", async () => {
     const cw = fakeChatwoot();
     globalThis.fetch = cw.impl;
@@ -710,17 +699,16 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       .map((mm) => String((mm as ToolMessage).tool_call_id));
     expect(calls.length).toBeGreaterThan(0);
     expect([...answered].sort()).toEqual([...calls].sort());
-    // ONE model call. On the code this closes it is two: the tool runs, its result routes back, and
-    // the model answers over the conversation that was cleared.
+    // NOTE: ONE model call. Were the refusal routed back, it would be two: the tool result returns
+    // and the model answers over the conversation that was cleared.
     expect(m.turnCalls()).toBe(1);
   }, 30000);
 
-  // THE LEDGER AND THE WATERMARK HAVE TO AGREE. A stale turn's delivery is settled as CONSUMED, so
-  // nothing is coming for that message — and if the watermark still sits below it, the first flush
-  // after debounce is enabled re-answers it (issue #8). The command's own advance does not cover it:
-  // /reset writes the boundary in its FIRST step and advances the watermark in its LAST, so this
-  // asserts the state while the command is still parked between the two, which is also what a
-  // process dying in that stretch leaves behind.
+  // NOTE: THE LEDGER AND THE WATERMARK HAVE TO AGREE. A stale turn's delivery is settled as
+  // CONSUMED, so if the watermark still sits below that message, the first flush after debounce is
+  // enabled re-answers it. /reset writes the boundary in its FIRST step and advances the watermark
+  // in its LAST, so this asserts the state while the command is parked between the two, which is
+  // also what a process dying in that stretch leaves behind.
   test("the message it withdrew is under the watermark before the command finishes", async () => {
     const inCommand = Promise.withResolvers<void>();
     const commandHeld = Promise.withResolvers<void>();
@@ -784,13 +772,11 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     await reset;
   }, 30000);
 
-  // THE OTHER DIRECTION, and it is the one a boundary written at the wrong moment breaks. The
-  // command is not instant: it refreshes the conversation live, retires six kinds of scheduled job
-  // and makes a dozen Chatwoot calls. A customer message landing in that stretch arrived AFTER the
-  // operator asked for a clean slate, so it is a message they want ANSWERED — and a mark stamped
-  // when the cleanup finally writes would read it as older than the reset and stand its turn down,
-  // settling it as consumed. That is a swallowed message on the way to fixing swallowed messages,
-  // which is why the boundary is the command's own `receivedAt`.
+  // NOTE: THE OTHER DIRECTION. The command refreshes the conversation live, retires six kinds of
+  // scheduled job and makes a dozen Chatwoot calls. A customer message landing in that stretch
+  // arrived AFTER the operator asked for a clean slate and must be ANSWERED; a mark stamped when the
+  // cleanup finally writes would read it as older than the reset and swallow it, which is why the
+  // boundary is the command's own `receivedAt`.
   test("a message that arrives while the command is still running is answered", async () => {
     const inCommand = Promise.withResolvers<void>();
     const held = Promise.withResolvers<void>();

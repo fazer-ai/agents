@@ -5,12 +5,10 @@ import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// The three guards that make it safe to apply a REST snapshot to the mirror after any write. They
-// existed inline on the proactive-nudge path and nothing exercised them; the console's buttons are
-// now a second caller (issue #77), so each one gets a case here.
-//
-// The window they protect is the same in both callers: a webhook can commit BETWEEN the GET and this
-// write, which makes the snapshot in hand the older truth even though it was read later.
+// The three guards that make it safe to apply a REST snapshot to the mirror after any write, for
+// both callers (the proactive-nudge path and the console's buttons). A webhook can commit BETWEEN
+// the GET and this write, which makes the snapshot in hand the older truth even though it was read
+// later.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -172,11 +170,10 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(row.chatwootAssigneeAt).toBe(T + 1);
   });
 
-  // ── THE LOCAL STATUS CLAIM (issue #436) ──
-  //
-  // A live read is not evidence about a transition still on the wire: Chatwoot may not have committed
-  // it yet, and the snapshot carries no way to say so. The claim is the writer of that transition
-  // announcing it, and this is the second reader of it after the mirror.
+  // NOTE: ── THE LOCAL STATUS CLAIM ── A live read is not evidence about a transition still on the
+  // wire: Chatwoot may not have committed it yet, and the snapshot carries no way to say so. The
+  // claim is the writer of that transition announcing it, and this is its second reader after the
+  // mirror.
   test("a claim somebody else holds fences the status this read carries", async () => {
     const id = await seedRow({
       status: "open",
@@ -352,10 +349,10 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       status: "open",
       statusClaimUntil: until,
       statusClaimFrom: "pending",
-      // The shape issue #468 round 6 found: a pair of `conversation_*` events for a write that
-      // happened BEFORE the claim — a customer message reopening the conversation — refused on the
-      // way in. Nothing about them is news, and letting either one through would put the agent back
-      // into a conversation a colleague is holding.
+      // NOTE: A pair of `conversation_*` events for a write that happened BEFORE the claim (a
+      // customer message reopening the conversation), refused on the way in. Nothing about them is
+      // news, and letting either one through would put the agent back into a conversation a
+      // colleague is holding.
       statusClaimRefusedAt: T + 1,
       chatwootStatusAt: T,
     });

@@ -7,51 +7,32 @@ import {
 import { buildRecoveryPayload } from "@/modules/chatwoot/recover-payload";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 
-// The body a recovery rebuilds has to normalize to the same event the real one did.
-//
-// This is an A/B against ground truth, not a shape assertion: WEBHOOK below is a body captured from
-// the fork itself (Chatwoot 4.16.0, an Agent Bot pointed at a capture endpoint, one real incoming
-// message), reduced to the fields `normalizeChatwootEvent` reads. The rebuild is fed the same facts
-// from the two sources a recovery actually has — the mirror for the conversation, a REST read for
-// the message — and the two normalized events are compared.
-//
-// It matters that the message half arrives the REST way: `Message#webhook_data` renders
-// `message_type: "incoming"` and `Message#push_event_data` renders `message_type: 0`, measured on
-// the same message. The rebuild is the first caller that feeds the second spelling to the
-// normalizer.
+// The body a recovery rebuilds has to normalize to the same event the real one did. WEBHOOK is a
+// body captured from the fork (Chatwoot 4.16.0, one incoming message to an Agent Bot), reduced to
+// the fields `normalizeChatwootEvent` reads; the rebuild gets the same facts from the mirror (the
+// conversation) and a REST read (the message), and the two normalized events are compared.
+// The message half arrives the REST way on purpose: `Message#webhook_data` renders
+// `message_type: "incoming"` and `Message#push_event_data` renders `message_type: 0`.
 
 const CONV_DISPLAY = 1155;
 const INBOX = 143;
 const MESSAGE = 7054;
 const CONTACT_INBOX = 771;
 const OTHER_BOT = 10;
-// Chatwoot's epoch SECONDS, which is what both sources give: the wire's
-// `conversation.last_activity_at` and the REST message's `created_at`.
+// Chatwoot's epoch seconds, which both sources give: the wire's `conversation.last_activity_at`
+// and the REST message's `created_at`.
 const SENT_AT = 1_787_780_064;
-// THE SAME INSTANT, SPELLED THE OTHER WAY. The two sources disagree on the MESSAGE's own timestamp,
-// and it was checked against the fork's source: `Message#webhook_data` puts the `Time` object under
-// `created_at`, which serializes as ISO 8601, while the REST message renders `created_at.to_i`
-// (`app/views/api/v1/models/_message.json.jbuilder`). So the rebuild carries the number it read
-// over REST and the wire carries the string — and both have to land on the same instant, which is
-// why `chatwootTimestamp` reads both (issue #749).
+// The same instant, spelled the other way: `Message#webhook_data` serializes `created_at` as ISO
+// 8601 while the REST message renders `created_at.to_i` (`_message.json.jbuilder`), so the rebuild
+// carries the number and the wire the string, and `chatwootTimestamp` reads both.
 const SENT_AT_ISO = new Date(SENT_AT * 1000).toISOString();
 
-// Captured. Two shapes here are the wire's and not the REST read's, and both were checked against
-// the fork's own source (`Message#webhook_data`, `Contact#webhook_data`):
-//
-//   - `message_type` is the enum STRING on the wire and an INTEGER over REST, which is the whole
-//     reason `messageTypeOf` exists;
-//   - a contact SENDER carries no `type` key at all on the wire, while the REST read stamps
-//     `type: "contact"` on it. MEASURED live against the local fork, not inferred.
-//
-// The conversation's `last_activity_at` is here for the same reason, read at the same source
-// (`Conversations::EventDataPresenter#push_timestamps`): every real body carries it in epoch
-// seconds, equal to `timestamp`. It is what the mirror advances `lastInboundAt` from, so a rebuild
-// that omits it moves the WhatsApp window's anchor to the recovery's own clock. The REST message's
-// `created_at` is the same instant, which is why it is the right source for it.
-//
-// `conversation.meta.assignee.type` is "agent_bot" on the wire; the mirror stores the "AgentBot"
-// spelling that `assignee_type` carries, which is what the rebuild has to reproduce.
+// Captured from the wire. Two shapes differ from the REST read: `message_type` is the enum string
+// here and an integer over REST (why `messageTypeOf` exists), and a contact sender carries no
+// `type` key here while REST stamps `type: "contact"`. `last_activity_at` (from
+// `EventDataPresenter#push_timestamps`) anchors the mirror's `lastInboundAt`, so a rebuild without
+// it would move the WhatsApp window to the recovery's clock. The mirror stores the "AgentBot"
+// spelling of `assignee_type`, which the rebuild reproduces.
 const WEBHOOK = {
   event: "message_created",
   id: MESSAGE,
@@ -70,7 +51,7 @@ const WEBHOOK = {
     last_activity_at: SENT_AT,
     contact_inbox: { id: CONTACT_INBOX },
     // Always on the wire, nil included: the fork ships it from EventDataPresenter for every
-    // conversation, and PRESENCE of the key is what says this instance speaks about pairings.
+    // conversation, and the key's presence is what says this instance speaks about pairings.
     redirect_origin_display_id: null,
     meta: {
       assignee_type: "AgentBot",
@@ -120,7 +101,7 @@ function rebuilt(
     message: {
       id: MESSAGE,
       content: "sonda de duas rotas via HTTP",
-      // The REST spelling by default: that is what a recovery actually reads.
+      // NOTE: the REST spelling by default: that is what a recovery actually reads.
       messageType: over.messageType === undefined ? 0 : over.messageType,
       private: false,
       contentAttributes: {},
@@ -136,11 +117,8 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
     const fromWire = normalizeChatwootEvent(WEBHOOK);
     const fromRecovery = normalizeChatwootEvent(rebuilt());
     expect(fromWire).not.toBeNull();
-    // Every field the gates downstream read, compared as one object rather than one assertion each:
-    // a field added to the event later fails here instead of being silently unrebuilt.
-    //
-    // `sender.type` is held out, and only it — the next test is what holds that difference, so
-    // nothing here is being papered over.
+    // NOTE: compared as one object so a field added to the event later fails here instead of being
+    // silently unrebuilt. Only `sender.type` is held out; a later test pins that difference.
     expect({
       ...fromRecovery,
       message: { ...fromRecovery?.message, sender: null },
@@ -157,57 +135,49 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("the customer's own clock travels, so the 24h window is not moved by the rescue", () => {
-    // The anchor `lastInboundAt` is advanced from, and the mirror falls back to `now` when the body
-    // says nothing. A recovery runs at least a staleness window after the message, so the fallback
-    // would push the WhatsApp window forward by however long the row sat stranded — and in the
-    // unsafe direction: a proactive send made later reads as in-window when it is not.
+    // NOTE: the mirror advances `lastInboundAt` from this and falls back to `now` without it. A
+    // recovery runs at least a staleness window late, so the fallback would push the WhatsApp window
+    // forward, in the unsafe direction: a later proactive send would read as in-window when it is not.
     const e = normalizeChatwootEvent(rebuilt());
     expect(e?.lastActivityAt).toBe(SENT_AT);
-    // The same number the captured body carries, which is the point: the rebuild reproduces the
-    // wire rather than approximating it.
+    // NOTE: the same number the captured body carries: the rebuild reproduces the wire.
     expect(e?.lastActivityAt).toBe(
       normalizeChatwootEvent(WEBHOOK)?.lastActivityAt,
     );
 
-    // Absent restores the old fallback rather than inventing a time, which is the honest answer
-    // when the REST read gave none — the mirror then stamps `now`, as it always did.
+    // NOTE: absent stays null rather than inventing a time when the REST read gave none; the
+    // mirror then stamps `now`.
     expect(
       normalizeChatwootEvent(rebuilt({ createdAt: null }))?.lastActivityAt,
     ).toBeNull();
   });
 
-  // ISSUE #749, rodada 1 da review. O carimbo do próprio corpo, que é de onde as variáveis de idade
-  // leem — a mensagem, não a conversa. A recuperação é o corpo MENOS provável de ter segundos de
-  // vida: ela só existe porque a entrega ficou encalhada, então o intervalo entre a mensagem e este
-  // replay é exatamente a idade que o agente precisa saber. Sem o campo aqui o turno recuperado
-  // rendia a variável vazia, com tudo o mais funcionando.
+  // NOTE: as variáveis de idade leem o carimbo da mensagem, não da conversa. Uma recuperação só
+  // existe porque a entrega encalhou, então o intervalo até o replay é exatamente a idade que o
+  // agente precisa saber; sem o campo, a variável sairia vazia.
   test("o instante da mensagem viaja, e é o que as variáveis de idade leem", () => {
     const e = normalizeChatwootEvent(rebuilt());
     expect(e?.message?.createdAt?.getTime()).toBe(SENT_AT * 1000);
-    // O mesmo instante que o webhook capturado carrega: o replay reproduz o fio, não aproxima.
+    // NOTE: o mesmo instante que o webhook capturado carrega: o replay reproduz o fio.
     expect(e?.message?.createdAt?.getTime()).toBe(
       normalizeChatwootEvent(WEBHOOK)?.message?.createdAt?.getTime(),
     );
-    // Sem leitura, nulo: a idade some em vez de dizer "agora mesmo" sobre uma mensagem encalhada.
+    // NOTE: sem leitura, nulo: a idade some em vez de dizer "agora mesmo" sobre uma mensagem encalhada.
     expect(
       normalizeChatwootEvent(rebuilt({ createdAt: null }))?.message?.createdAt,
     ).toBeNull();
   });
 
   test("the redirect episode travels, because its consumer reads the event", () => {
-    // MEASURED both ways: the fork renders `redirect_origin_display_id` from `EventDataPresenter`
-    // only — the webhook path — and the REST conversation show does not carry it at all. So the
-    // mirror is authoritative for this one field and for nothing else in the conversation half.
-    //
-    // It has to travel because `processChatwootDelivery` arms the REDIRECT_FOLLOWUP ladder from
-    // `n.redirectOriginDisplayId` and not from the row: omitted, the ladder is armed with nothing
-    // and then messages and resolves whichever sibling the mirror last knew.
+    // NOTE: the fork renders `redirect_origin_display_id` only from `EventDataPresenter` (the
+    // webhook path), never on the REST conversation show, so the mirror is its only source here.
+    // `processChatwootDelivery` arms the REDIRECT_FOLLOWUP ladder from the event, not the row:
+    // omitted, the ladder would message and resolve whichever sibling the mirror last knew.
     const e = normalizeChatwootEvent(rebuilt({ redirectOriginDisplayId: 991 }));
     expect(e?.redirectOriginDisplayId).toBe(991);
 
-    // And the KEY is present even when there is no pairing, which is the statement the normalizer
-    // reads: absence means "this instance does not speak about pairings" and would leave a body
-    // unable to say anything at all about the episode.
+    // NOTE: the key is present even with no pairing: its absence means "this instance does not
+    // speak about pairings" to the normalizer.
     const none = normalizeChatwootEvent(
       rebuilt({ redirectOriginDisplayId: null }),
     );
@@ -215,15 +185,10 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("a voice note already transcribed travels with its transcription", () => {
-    // MEASURED live against the fork, and it settles a review round that said otherwise: for
-    // `file_type: audio`, `Attachment#push_event_data` renders `transcribed_text` at the TOP LEVEL
-    // (`audio_metadata`: `meta&.[]('transcribed_text') || ''`), and the REST view calls that same
-    // method — so the field sits exactly where `normalizeChatwootEvent` reads it.
-    //
-    // What that buys is the eager-STT pass reusing it instead of transcribing again: the delivery
-    // path says so in as many words ("never re-transcribe"). A process that died AFTER the
-    // write-back therefore costs the recovery nothing, and the attachment is carried through
-    // untouched rather than remapped — the same bytes a live delivery gets.
+    // NOTE: for `file_type: audio`, `Attachment#push_event_data` renders `transcribed_text` at the
+    // top level and the REST view calls the same method, so the field sits where the normalizer
+    // reads it. The eager-STT pass then reuses it ("never re-transcribe"), and the attachment is
+    // carried through untouched rather than remapped, the same bytes a live delivery gets.
     const e = normalizeChatwootEvent(
       rebuilt({
         attachments: [
@@ -243,16 +208,10 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("the one field the two sources spell differently cannot decide anything", () => {
-    // MEASURED against the local fork, both sides: `Contact#webhook_data` emits no `type` key at
-    // all, so an incoming message off the wire normalizes to null, while the REST read stamps
-    // `type: "contact"` on the same contact. The rebuild carries what REST gave it rather than
-    // erasing it, because the REST spelling is the more informative of the two — on an OUTGOING
-    // message it is what says a human agent typed it.
-    //
-    // Inert on this path, and it is reachability that makes it inert rather than a convention: the
-    // only reader is `isHumanAgentMessage`, which requires an outgoing message, and a recovery only
-    // ever rebuilds an inbound one — `inboundMessageId` is written for nothing else, and it is the
-    // column the recovery reads the message id from.
+    // NOTE: `Contact#webhook_data` emits no `type` key, while REST stamps `type: "contact"`. The
+    // rebuild keeps the REST value rather than erasing it (on an outgoing message it says a human
+    // typed it). Inert here by reachability: the only reader, `isHumanAgentMessage`, needs an
+    // outgoing message, and a recovery only rebuilds the inbound one `inboundMessageId` names.
     const fromWire = normalizeChatwootEvent(WEBHOOK);
     const fromRecovery = normalizeChatwootEvent(rebuilt());
     expect(fromWire?.message?.sender?.type).toBeNull();
@@ -271,20 +230,17 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("a message that is NOT the customer's stays that way", () => {
-    // The rebuild always names the event `message_created`, because that is the only event a
-    // recovery exists for. The message TYPE is a separate fact and has to travel, or the body would
-    // assert that whatever it carries is a customer message — and the bot's own reply, coming back
-    // around, would drive a turn answering itself.
+    // NOTE: the event is always `message_created`, but the message type has to travel, or the bot's
+    // own reply coming back around would read as a customer message and drive a turn answering itself.
     const e = normalizeChatwootEvent(rebuilt({ messageType: 1 }));
     expect(e?.message?.messageType).toBe("outgoing");
     expect(e && isNewIncomingMessage(e)).toBe(false);
   });
 
   test("an unassigned conversation says so, rather than saying nothing", () => {
-    // The distinction the mirror's sentinel rests on: `undefined` means the body did not mention the
-    // assignee and the mirror preserves what it has; `null` means a real unassign. A recovery always
-    // knows, because it read the mirror — so it must always say, or the ownership gate would judge a
-    // conversation by a value this very body came from.
+    // NOTE: to the mirror, `undefined` means "not mentioned, keep what you have" and `null` a real
+    // unassign. A recovery read the mirror, so it always says, or the ownership gate would judge the
+    // conversation by the value this body came from.
     const e = normalizeChatwootEvent(
       rebuilt({ assigneeType: null, assigneeId: null, assigneeName: null }),
     );
@@ -295,13 +251,13 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   test("a conversation the mirror knows no contact inbox for leaves it null", () => {
     const e = normalizeChatwootEvent(rebuilt({ contactInboxId: null }));
     expect(e?.contactInboxId).toBeNull();
-    // And the rest still normalizes: the absence is not fatal to the event.
+    // NOTE: the rest still normalizes: the absence is not fatal to the event.
     expect(e?.conversationId).toBe(CONV_DISPLAY);
   });
 
   test("the status is the mirror's, because the gate asks about NOW", () => {
-    // A conversation that a human opened while the row sat stranded must reach the gate as `open`,
-    // which is what closes it. Rebuilding the status as of the strand would answer over the human.
+    // NOTE: a conversation a human opened while the row sat stranded must reach the gate as `open`,
+    // which closes it; the status as of the strand would answer over the human.
     const e = normalizeChatwootEvent(rebuilt({ status: "open" }));
     expect(e?.status).toBe("open");
   });

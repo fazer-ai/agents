@@ -12,18 +12,14 @@ import { recoverStrandedDelivery } from "@/modules/chatwoot/recover-delivery";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// A PASSADA QUE SÓ DEVIA MEMÓRIA NÃO PODE VIRAR UMA RESPOSTA NO REPLAY (issue #725).
+// A PASSADA QUE SÓ DEVIA MEMÓRIA NÃO PODE VIRAR UMA RESPOSTA NO REPLAY.
 //
-// O receptor adia ao sweep a entrega cuja ingestão não conseguiu armar, e faz isso TAMBÉM no ramo em
-// que nenhum turno ia rodar: a conversa está com uma pessoa (`!act`), então o que aquela passada
-// devia era um append e nada mais. Meia hora depois o sweep declara a linha encalhada e o replay
-// re-executa a entrega inteira, que re-deriva tudo das condições de AGORA. Se a conversa voltou para
-// o bot nesse meio-tempo, `act` agora é verdadeiro e o turno posta — uma resposta que ninguém pediu,
-// para uma mensagem que uma pessoa já tratou.
-//
-// O caminho é o real nas duas metades: o receptor de verdade deixa a linha em `PROCESSING`, e o
-// replay de verdade a retoma. Um teste que semeasse a linha à mão provaria o replay e não o par, e é
-// o par que produz o estado.
+// O receptor adia ao sweep a entrega cuja ingestão não conseguiu armar, TAMBÉM no ramo em que
+// nenhum turno ia rodar (a conversa está com uma pessoa, `!act`), em que a passada devia um append
+// e nada mais. O replay re-executa a entrega inteira com as condições de AGORA: se a conversa voltou
+// para o bot, `act` é verdadeiro e o turno posta para uma mensagem que uma pessoa já tratou. As duas
+// metades são reais (o receptor deixa a linha em `PROCESSING` e o replay a retoma), porque semear a
+// linha à mão provaria o replay e não o par.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -153,9 +149,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         agentId: forazinho.id,
       },
     });
-    // MODO TESTE: a rota que NÃO ingere continuamente (`ingestsContinuously("test")` é falso), e por
-    // isso a única em que o dever gravado na linha não tem como ser honrado se o portão da ingestão
-    // só olhar a rota. É o caso do achado da rodada 5.
+    // NOTE: MODO TESTE: a rota que NÃO ingere continuamente (`ingestsContinuously("test")` é falso),
+    // e por isso a única em que o dever gravado na linha não tem como ser honrado se o portão da
+    // ingestão só olhar a rota.
     const emTeste = await suDb.agent.create({
       data: {
         tenantId,
@@ -373,8 +369,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     };
   }
 
-  // A conversa devolvida ao bot, que é o único passo entre o encalhe e o replay. Nenhuma mensagem
-  // nova: a medição ao vivo da issue mostra que não é preciso nenhuma para o replay postar.
+  // NOTE: A conversa devolvida ao bot, o único passo entre o encalhe e o replay; nenhuma mensagem
+  // nova é precisa para o replay postar.
   async function handBackToBot(convId: number) {
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: convId },
@@ -388,9 +384,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     content: string,
     // Uma mensagem MAIS NOVA do cliente na página não ancorada, que é o que a cerca de frescor lê.
     newer?: { id: number; content: string },
-    // A CAIXA QUE O REPLAY VAI LER. É por aqui que ele resolve a rota, então um stub que responde
-    // sempre a mesma caixa faz todo replay cair no agente dela — medido: um caso escrito para a rota
-    // em modo teste resolvia o agente de produção e passava sem medir nada.
+    // NOTE: A CAIXA QUE O REPLAY VAI LER. É por aqui que ele resolve a rota, então um stub que
+    // responde sempre a mesma caixa faz todo replay cair no agente dela, e um caso escrito para a
+    // rota em modo teste resolveria o agente de produção e passaria sem medir nada.
     inboxId = INBOX_ID,
   ) {
     const sent: Array<[number, string]> = [];
@@ -489,17 +485,12 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(row.owesMemoryOnly).toBe(true);
   });
 
-  // O TERCEIRO SITE DA ISSUE, e o que o resto do arquivo não alcança. Nos casos acima a posse já
-  // era de uma pessoa QUANDO a mensagem chegou, então `act` é falso e a liquidação lá em cima grava
-  // a coluna. Aqui a conversa é do bot na chegada, o turno começa, e a pessoa assume ENQUANTO ele
-  // espera o thread: `act` fica verdadeiro e `consumed` falso, nenhuma das três metades daquela
-  // condição vale, e a linha ia para a varredura com a coluna NULA.
-  //
-  // O que isso custava foi medido pelo verificador, e é a parte que engana: com a coluna nula o
-  // replay re-derivava a posse de agora, achava o bot de volta na conversa e rodava o turno inteiro.
-  // Ele não postava, mas quem o parava era a #703 vendo a resposta do colega na página — e uma
-  // pessoa que assume e AINDA NÃO ESCREVEU não deixa resposta nenhuma para ser vista. É essa parada
-  // que o teste reproduz: takeover sem réplica do colega.
+  // NOTE: O TERCEIRO SITE, que o resto do arquivo não alcança. Nos casos acima a posse já é de uma
+  // pessoa QUANDO a mensagem chega; aqui a conversa é do bot na chegada e a pessoa assume ENQUANTO o
+  // turno espera o thread, então `act` fica verdadeiro, `consumed` falso, e a liquidação lá em cima
+  // não grava a coluna. Com ela nula o replay re-derivaria a posse de agora e rodaria o turno
+  // inteiro, e uma pessoa que assume e AINDA NÃO ESCREVEU não deixa na página resposta que o pare.
+  // O teste reproduz isso: takeover sem réplica do colega.
   test("uma pessoa que assume durante o turno e não escreve nada também deixa a linha devendo só memória", async () => {
     const convId = 9410;
     const texto = "posso trocar o horário de amanhã?";
@@ -536,8 +527,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     );
     markTurnInFlight(graphThreadId);
     const postado: string[] = [];
-    // Num objeto e não num `let`: a atribuição mora numa closure, e o TS mantém o `null` estreitado
-    // no ponto da asserção (medido: `TS2769` dizendo que a string não cabe em `null`).
+    // NOTE: Num objeto e não num `let`: a atribuição mora numa closure, e o TS mantém o `null`
+    // estreitado no ponto da asserção (`TS2769`).
     const visto = { desfecho: null as string | null };
     const run = processChatwootDelivery({
       tenantId,
@@ -546,9 +537,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       agentBotId: BOT_ID,
       normalized: n,
       base: semFila(),
-      // O DESFECHO É AFIRMADO, e não inferido do efeito: `taken-over-unread` é o que diz que a
-      // parada medida foi ESTA. Sem ele, um `SsrfError` a meio turno produz `PROCESSING` igual e o
-      // teste passaria sobre a parada errada, que foi o que aconteceu na primeira escrita dele.
+      // NOTE: O DESFECHO É AFIRMADO, e não inferido do efeito: `taken-over-unread` diz que a parada
+      // medida é ESTA. Sem ele, um `SsrfError` a meio turno produz `PROCESSING` igual e o teste
+      // passaria sobre a parada errada.
       onDirectTurn: (r) => {
         visto.desfecho =
           r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
@@ -608,16 +599,11 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(row.settleScopedToThisDelivery).toBe(false);
   });
 
-  // O ACHADO DA RODADA 5, e ele é sobre a ÚNICA rota em que o dever gravado não tinha como ser
-  // honrado. A parada por posse FORÇA a ingestão (`routeIngests` lê `stoodDownUnread`), e ela existe
-  // exatamente para o modo teste: `ingestsContinuously("test")` é falso, então sem a força a
-  // mensagem do cliente não iria a lugar nenhum. Só que no REPLAY o turno é deliberadamente
-  // suprimido — é o conserto desta issue —, então `stoodDownUnread` nunca vale ali, e
-  // `routeIngests` cai para `routeRemembers`, que é falso nesta rota. Resultado: a linha dizia que
-  // devia memória e o replay não tinha por onde pagar.
-  //
-  // A coluna É o dever, então ela também abre o portão da ingestão. O teste mede as duas pontas na
-  // mesma rota: a passada grava o dever, e o replay paga.
+  // NOTE: A ÚNICA rota em que o dever gravado não teria como ser honrado. A parada por posse FORÇA a
+  // ingestão (`routeIngests` lê `stoodDownUnread`) justamente para o modo teste, onde
+  // `ingestsContinuously("test")` é falso. No REPLAY o turno é suprimido de propósito, então
+  // `stoodDownUnread` nunca vale e `routeIngests` cairia em `routeRemembers`, falso nesta rota. A
+  // coluna É o dever, então ela também abre o portão da ingestão; o teste mede as duas pontas.
   test("no modo teste o dever gravado abre a ingestão do replay, que é a rota onde nada mais abre", async () => {
     const convId = 9411;
     const texto = "esse número é o certo?";
@@ -632,9 +618,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         chatwootInstanceId: instanceId,
         chatwootConversationId: convId,
         contactInboxId: CONTACT_INBOX_BASE + convId,
-        // A CAIXA, e não só o id do Chatwoot: o REPLAY resolve a rota pelo espelho, e sem este
-        // vínculo ele cai no agente do bot (produção) — medido, e com isso o caso deste teste
-        // simplesmente não acontece, porque `routeRemembers` volta a ser verdadeiro.
+        // NOTE: A CAIXA, e não só o id do Chatwoot: o REPLAY resolve a rota pelo espelho, e sem este
+        // vínculo ele cai no agente do bot (produção), `routeRemembers` volta a ser verdadeiro e o
+        // caso deste teste não acontece.
         inboxId: inboxTestDbId,
         status: "pending",
         threadId: `${tenantId}:${instanceId}:${convId}`,
@@ -740,11 +726,10 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     ]);
   });
 
-  // O SITE IRMÃO DO ACHADO DA RODADA 5. Com o dever abrindo o portão da ingestão, o replay de uma
-  // rota que não lembra continuamente passa a enfileirar o append — mas a LIQUIDAÇÃO ainda espera
-  // `routeRemembers`, não o dever. Se o arme falhar TAMBÉM no replay, a linha fecha terminal com a
-  // marca por cima de uma mensagem que memória nenhuma tem, que é exatamente o trio que o corpo da
-  // issue mede, de volta por outra porta.
+  // NOTE: O SITE IRMÃO do caso acima. Com o dever abrindo o portão da ingestão, o replay de uma
+  // rota que não lembra continuamente enfileira o append, e a LIQUIDAÇÃO não pode esperar só
+  // `routeRemembers`: se o arme falhar TAMBÉM no replay, a linha fecharia terminal com a marca por
+  // cima de uma mensagem que memória nenhuma tem.
   test("no modo teste um arme que falha no replay não fecha a linha nem passa a marca", async () => {
     const convId = 9412;
     const texto = "e esse aqui funciona?";
@@ -850,11 +835,11 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(marca.lastHandledMessageId ?? 0).toBeLessThan(messageId);
   });
 
-  // OS DOIS ACHADOS DA RODADA 7, e os dois são consequência de o dever abrir o portão da ingestão.
-  // O primeiro: a preparação de mídia de um agente em modo teste mora DENTRO do bloco do turno, que
-  // o replay suprime de propósito — então o replay enfileirava a ingestão de um áudio sem a
-  // transcrição que a mensagem já carrega, e a memória guardava o marcador "áudio não audível", com
-  // a entrega fechando como recuperada.
+  // NOTE: O dever abrir o portão da ingestão tem duas consequências. A primeira: a preparação de
+  // mídia de um agente em modo teste mora DENTRO do bloco do turno, que o replay suprime de
+  // propósito, então sem ela a ingestão levaria um áudio sem a transcrição que a mensagem já
+  // carrega, e a memória guardaria o marcador "áudio não audível" com a entrega fechando como
+  // recuperada.
   test("no modo teste o replay prepara a mídia antes de enfileirar, senão a memória guarda o marcador", async () => {
     const convId = 9413;
     const transcricao = "queria remarcar para sexta de manhã";
@@ -946,9 +931,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       where: { id: delivery.id },
       data: { status: "DEAD" },
     });
-    // O STUB PRECISA DEVOLVER O ÁUDIO, e não é detalhe: o replay RECONSTRÓI a mensagem lendo a página
-    // do Chatwoot, então uma página sem o anexo devolve uma mensagem vazia e a entrega é pulada antes
-    // de chegar ao ponto que este teste mede (foi o que aconteceu na primeira escrita dele).
+    // NOTE: O STUB PRECISA DEVOLVER O ÁUDIO: o replay RECONSTRÓI a mensagem lendo a página do
+    // Chatwoot, então uma página sem o anexo devolve uma mensagem vazia e a entrega é pulada antes
+    // de chegar ao ponto que este teste mede.
     const enviadas: string[] = [];
     const clienteAudio = {
       getConversation: async (conversationId: number) => ({
@@ -1017,10 +1002,10 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(texto).not.toContain("áudio não audível");
   });
 
-  // O SEGUNDO ACHADO DA RODADA 7: `routeRemembers` carrega DUAS coisas, a chave do agente e o modo
+  // NOTE: A segunda consequência: `routeRemembers` carrega DUAS coisas, a chave do agente e o modo
   // que ingere continuamente, e o dever gravado só dispensa a segunda. Se o operador desliga o
   // agente entre a falha e a varredura, enfileirar assim mesmo é a entrega declarando sucesso contra
-  // a chave que ele acabou de virar — nem o arme nem o worker a leem.
+  // a chave que ele acabou de virar, e nem o arme nem o worker a leem.
   test("o dever não passa por cima do agente desligado: a linha fica recuperável", async () => {
     const convId = 9414;
     const texto = "ainda dá para hoje?";
@@ -1093,9 +1078,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(status).toBe("PROCESSING");
     // ...carregando o que aquela passada devia...
     expect(owesMemoryOnly).toBe(true);
-    // ...e NÃO podendo ser reconhecida por `route_remembers`, que numa linha encalhada é `false`
-    // pela própria razão de ela ter encalhado: a correção para `true` roda depois do arme, e o arme
-    // é o que falhou. Medido contra o contraste acima, onde a mesma rota registra `true`.
+    // NOTE: ...e NÃO podendo ser reconhecida por `route_remembers`, que numa linha encalhada é
+    // `false` pela própria razão de ela ter encalhado: a correção para `true` roda depois do arme, e
+    // o arme é o que falhou. O contraste acima mostra a mesma rota registrando `true`.
     expect(routeRemembers).toBe(false);
 
     // O passo do sweep: a linha encalhada é declarada morta, que é o estado do qual a recuperação
@@ -1108,8 +1093,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     await handBackToBot(convId);
 
     const stub = stubChatwoot(convId, messageId, texto);
-    // Quantas vezes um modelo foi construído, que é quantos turnos de fato rodaram. Sem isso, um
-    // conserto que deixa o turno rodar e só barra o envio no fim passa igual — e aí a conversa
+    // NOTE: Quantas vezes um modelo foi construído, que é quantos turnos de fato rodaram. Sem isso,
+    // uma implementação que deixa o turno rodar e só barra o envio no fim passa igual, e a conversa
     // carrega um turno inteiro (ferramentas, custo, marcas) por uma mensagem que ninguém pediu.
     const turnos = { built: 0 };
     const outcome = await recoverStrandedDelivery({
@@ -1127,9 +1112,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       },
     });
 
-    // O QUE A ISSUE MEDE: aquela passada devia memória e não devia resposta, e o replay não tinha
-    // como saber disso. Ele re-derivava a posse do estado de agora, encontrava o bot de volta na
-    // conversa, e falava por cima de um atendimento humano que já tinha acontecido.
+    // NOTE: O CASO CENTRAL: aquela passada devia memória e não devia resposta. Re-derivada do estado
+    // de agora, a posse encontra o bot de volta na conversa, e o replay falaria por cima de um
+    // atendimento humano que já aconteceu.
     expect(stub.sent).toEqual([]);
     // E A DECISÃO É ANTES DO TURNO, não no envio: nenhum modelo foi construído.
     expect(turnos.built).toBe(0);
@@ -1148,9 +1133,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       },
       select: { dedupeKey: true },
     });
-    // E A MARCA ANDA ATÉ ELA. Sem isto a linha fecharia com a mensagem ainda abaixo do watermark, e
-    // com o debounce ligado a rajada seguinte a coalesceria — o turno então responderia a mensagem
-    // da era humana, que é este mesmo defeito voltando por outra porta.
+    // NOTE: E A MARCA ANDA ATÉ ELA. Sem isto a linha fecharia com a mensagem ainda abaixo do
+    // watermark, e com o debounce ligado a rajada seguinte a coalesceria: o turno responderia a
+    // mensagem da era humana por outra porta.
     const marca = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { lastHandledMessageId: true },
@@ -1161,11 +1146,11 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     ]);
   });
 
-  // A SEGUNDA DIREÇÃO DO MESMO FATO QUE FALTAVA: a cerca de frescor existe para não responder por
-  // cima de uma conversa que andou, e ela raciocina sobre uma RESPOSTA. Numa passada que só deve
-  // memória não há resposta para chegar atrasada, e a recusa custava à mensagem toda memória que ela
-  // ainda podia alcançar — que é a perda certa e silenciosa que este subsistema inteiro existe para
-  // impedir. É o mesmo argumento que o arquivo já faz para a rota do observador.
+  // NOTE: A SEGUNDA DIREÇÃO DO MESMO FATO: a cerca de frescor existe para não responder por cima de
+  // uma conversa que andou, e ela raciocina sobre uma RESPOSTA. Numa passada que só deve memória não
+  // há resposta para chegar atrasada, e a recusa custaria à mensagem toda memória que ela ainda
+  // podia alcançar, uma perda certa e silenciosa. É o mesmo argumento que o arquivo já faz para a
+  // rota do observador.
   test("uma mensagem mais nova do cliente não impede a memória de uma passada que só a devia", async () => {
     const convId = 9403;
     const texto = "esqueci de dizer: é para amanhã";
@@ -1207,10 +1192,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(stub.sent).toEqual([]);
   });
 
-  // E A CERCA CONTINUA DE PÉ ONDE ELA FOI FEITA PARA ESTAR: o encalhe comum, de uma conversa que era
-  // do bot o tempo todo, é respondido. Sem este caso, o conserto acima passaria igual calando o
-  // replay inteiro, que é o defeito oposto e pior: o cliente que ninguém atendeu deixaria de ser
-  // atendido.
+  // NOTE: E A CERCA CONTINUA DE PÉ ONDE ELA FOI FEITA PARA ESTAR: o encalhe comum, de uma conversa
+  // que era do bot o tempo todo, é respondido. Sem este caso, a regra acima passaria igual calando o
+  // replay inteiro, o defeito oposto e pior: o cliente que ninguém atendeu deixaria de ser atendido.
   test("o encalhe comum de uma conversa do bot continua sendo respondido", async () => {
     const convId = 9404;
     const texto = "tem alguém aí?";
@@ -1269,16 +1253,12 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(stub.sent).toEqual([[convId, "Estou aqui!"]]);
   });
 
-  // O OUTRO LADO DE `(act && consumed) || !act`, E O PIOR DOS TRÊS SÍTIOS SEGUNDO A ISSUE. Aqui
-  // ninguém segura a conversa: o bot é o dono e quem calou a mensagem foi um PORTÃO, o horário de
-  // atendimento, que já respondeu ao cliente o aviso de ausência. Uma resposta depois contradiz uma
-  // decisão explícita do operador.
-  //
-  // ERA ESTE RAMO QUE A COLUNA NÃO ALCANÇAVA, e não porque ela não fosse gravada: a entrega
-  // liquidava na própria passada (`settleAwaitsIngest` pedia `!consumed`), e `PROCESSED` é o estado
-  // que nada revisita — a coluna era escrita e nunca lida, com a mensagem do cliente sumindo do mesmo
-  // jeito. Com o adiamento valendo nas duas metades, o arme que falha deixa a linha para a varredura,
-  // e é a varredura que faz a coluna valer alguma coisa.
+  // NOTE: O OUTRO LADO DE `(act && consumed) || !act`. Aqui o bot é o dono e quem calou a mensagem
+  // foi um PORTÃO, o horário de atendimento, que já respondeu o aviso de ausência; uma resposta
+  // depois contradiz uma decisão explícita do operador. A entrega NÃO liquida na própria passada:
+  // `PROCESSED` é o estado que nada revisita, e a coluna seria escrita e nunca lida. Com o
+  // adiamento valendo nas duas metades, o arme que falha deixa a linha para a varredura, e é ela que
+  // faz a coluna valer.
   test("o portão que silenciou deixa a linha para a varredura, devendo só memória", async () => {
     const convId = 9405;
     const texto = "vocês abrem sábado?";
@@ -1293,12 +1273,11 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(status).toBe("PROCESSING");
     // E ela diz o que aquela passada devia.
     expect(owesMemoryOnly).toBe(true);
-    // AS DUAS COISAS, E ELAS SÃO SEPARADAS (review r6 mais o cenário cego s5). Aqui a conversa
-    // continua sendo do BOT: quando o expediente abrir, um flush do debounce coalesce a partir da
-    // marca, e o que tira esta mensagem da RESPOSTA daquela rajada é a dispensa que a nomeia — uma
-    // recusa de responder é uma decisão sobre a resposta, e `selectOpenMessages` a lê por `purpose`,
-    // então ela não fecha a mensagem para a MEMÓRIA. É isso que deixa a dispensa sair no instante do
-    // portão sem que a marca ande.
+    // NOTE: AS DUAS COISAS, E ELAS SÃO SEPARADAS. Aqui a conversa continua sendo do BOT: quando o
+    // expediente abrir, um flush do debounce coalesce a partir da marca, e o que tira esta mensagem
+    // da RESPOSTA daquela rajada é a dispensa que a nomeia. Uma recusa de responder é uma decisão
+    // sobre a resposta, e `selectOpenMessages` a lê por `purpose`, então ela não fecha a mensagem
+    // para a MEMÓRIA: é isso que deixa a dispensa sair no instante do portão sem que a marca ande.
     const marca = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true, lastHandledMessageId: true },
@@ -1316,8 +1295,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     });
     expect(dispensas).toEqual([{ messageId, reason: "DISPENSED" }]);
 
-    // E O REPLAY FECHA A PERDA SEM RESPONDER: é o desfecho inteiro que a issue pede, e o único
-    // caminho em que a coluna é lida.
+    // NOTE: E O REPLAY FECHA A PERDA SEM RESPONDER: é o desfecho inteiro, e o único caminho em que a
+    // coluna é lida.
     await suDb.chatwootWebhookDelivery.update({
       where: { id: rowId },
       data: { status: "DEAD" },
@@ -1352,15 +1331,12 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     ]);
   });
 
-  // O ESCOPO DA LIQUIDAÇÃO É UM FATO DAQUELE INSTANTE, E NÃO SE RE-DERIVA (rodada 2 de review).
-  //
-  // A coluna que a issue acrescentou desarma a RESPOSTA, e sozinha ela não fecha a outra metade do
-  // mesmo problema: a largura da liquidação sai de QUEM segurava a conversa — estreita ao lado de
-  // outro AgentBot, ampla atrás de uma pessoa ou de um portão. Re-derivada meia hora depois, uma
-  // parada que aconteceu ao lado de outro bot liquida a conversa inteira assim que a posse volta
-  // para nós, e a linha que aquele bot tem para ESTA mensagem fecha como consumida sem que nenhuma
-  // das duas recuperações tenha respondido. É perda silenciosa, que é o que este subsistema existe
-  // para impedir.
+  // NOTE: O ESCOPO DA LIQUIDAÇÃO É UM FATO DAQUELE INSTANTE, E NÃO SE RE-DERIVA. A coluna do dever
+  // desarma a RESPOSTA, mas a largura da liquidação sai de QUEM segurava a conversa: estreita ao
+  // lado de outro AgentBot, ampla atrás de uma pessoa ou de um portão. Re-derivada meia hora depois,
+  // uma parada ao lado de outro bot liquidaria a conversa inteira assim que a posse volta para nós,
+  // e a linha daquele bot para ESTA mensagem fecharia como consumida sem que nenhuma das duas
+  // recuperações tivesse respondido: perda silenciosa.
   test("a parada ao lado de outro bot não liquida a linha dele quando a posse volta", async () => {
     const convId = 9407;
     const texto = "ainda preciso do segundo boleto";
@@ -1384,8 +1360,8 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       where: { id: rowId },
       data: { status: "DEAD" },
     });
-    // O passo que produz o defeito: a conversa volta para o bot, então re-derivar a posse responde
-    // "ninguém segura isto" e escolhe o escopo amplo.
+    // NOTE: O passo decisivo: a conversa volta para o bot, então re-derivar a posse responderia
+    // "ninguém segura isto" e escolheria o escopo amplo.
     await handBackToBot(convId);
 
     const stub = stubChatwoot(convId, messageId, texto);
@@ -1401,7 +1377,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       },
     });
     expect(outcome).toBe("recovered");
-    // Nada foi dito, que é o que a issue já garantia.
+    // NOTE: Nada foi dito.
     expect(stub.sent).toEqual([]);
 
     // O QUE ESTE TESTE MEDE: a linha do outro bot continua na lista de trabalho. Com o escopo
@@ -1413,12 +1389,11 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     });
     expect(daOutraRota.status).toBe("PROCESSING");
 
-    // E A LINHA VIVA TEM QUE PODER RESPONDER, que é uma asserção diferente de a linha existir
-    // (rodada 4 de review). A marca é da CONVERSA: andar com ela aqui escreve um dispensal que
-    // nomeia a mensagem, e o turno da outra rota é recusado pelo `claimReplyBurst` depois. A linha
-    // ficaria em `PROCESSING`, parecendo viva, e o cliente não seria respondido por ninguém — a
-    // mesma perda entrando pela porta do lado. As duas leituras abaixo são exatamente as duas
-    // entradas daquela recusa.
+    // NOTE: E A LINHA VIVA TEM QUE PODER RESPONDER, que é uma asserção diferente de a linha existir.
+    // A marca é da CONVERSA: andar com ela aqui escreve uma dispensa que nomeia a mensagem, e o turno
+    // da outra rota seria recusado pelo `claimReplyBurst` depois, com a linha em `PROCESSING`
+    // parecendo viva e o cliente sem resposta. As duas leituras abaixo são as duas entradas daquela
+    // recusa.
     const marca = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true, lastHandledMessageId: true },
@@ -1431,11 +1406,11 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(dispensas).toEqual([]);
   });
 
-  // O CONTROLE, e ele é o que impede o conserto de virar "estreite sempre". Atrás de uma PESSOA o
-  // escopo amplo está certo e é deliberado: ela responde a mensagem por qualquer rota que a tenha
-  // carregado, então toda linha daquela mensagem é moot — e essa largura é também o que resgata um
-  // encalhe que uma tentativa anterior deixou atrás. Estreitar aqui deixaria a linha irmã na lista
-  // de perdas de uma mensagem que uma pessoa atendeu.
+  // NOTE: O CONTROLE, que impede a regra de virar "estreite sempre". Atrás de uma PESSOA o escopo
+  // amplo está certo e é deliberado: ela responde a mensagem por qualquer rota que a tenha
+  // carregado, então toda linha daquela mensagem é moot, e essa largura também resgata um encalhe
+  // que uma tentativa anterior deixou atrás. Estreitar aqui deixaria a linha irmã na lista de perdas
+  // de uma mensagem que uma pessoa atendeu.
   test("atrás de uma pessoa o escopo continua amplo, e a linha irmã fecha com ela", async () => {
     const convId = 9408;
     const texto = "obrigado, era só isso";
@@ -1487,13 +1462,12 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(marca.lastHandledMessageId).toBe(messageId);
   });
 
-  // E O ESCOPO GRAVADO SOBREVIVE A UMA RECUPERAÇÃO QUE FALHOU (rodada 3 de review). O mesmo bloco
-  // que grava a coluna roda no replay, e enquanto a leitura e a escrita eram duas expressões o
-  // replay lia o valor certo e regravava a derivação de agora por baixo: com a posse de volta, `true`
-  // virava `false`. Bastava a ingestão falhar de novo — que é o estado normal de uma linha que já
-  // encalhou uma vez — para a linha voltar para `DEAD` com o escopo corrompido, e aí a retentativa
-  // SEGUINTE liquidava a conversa inteira. O defeito original um nível acima, e mais difícil de ver,
-  // porque a primeira tentativa se comporta certo.
+  // NOTE: E O ESCOPO GRAVADO SOBREVIVE A UMA RECUPERAÇÃO QUE FALHOU. O mesmo bloco que grava a
+  // coluna roda no replay, então leitura e escrita são uma expressão só: se fossem duas, o replay
+  // regravaria a derivação de agora por baixo (com a posse de volta, `true` viraria `false`). Basta
+  // a ingestão falhar de novo, o estado normal de uma linha que já encalhou, para a linha voltar
+  // para `DEAD` com o escopo corrompido e a retentativa SEGUINTE liquidar a conversa inteira; a
+  // primeira tentativa se comporta certo, o que esconde o erro.
   test("o escopo gravado atravessa uma recuperação que falhou, e a retentativa não alarga", async () => {
     const convId = 9409;
     const texto = "e o terceiro boleto?";

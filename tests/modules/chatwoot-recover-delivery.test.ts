@@ -34,18 +34,13 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// Answering the customer whose delivery a process death stranded (issue #295).
+// Answering the customer whose delivery a process death stranded: the sweep leaves the ledger row
+// DEAD and the message unanswered, and this file pins the recovery all the way to a reply reaching
+// Chatwoot.
 //
-// The sweep (issue #228) reports the strand and stops there; the ledger row is terminal on DEAD and
-// the customer's message is unanswered. What this file pins is the recovery going all the way to
-// the effect the issue is about: a reply reaching Chatwoot for a message nothing was ever going to
-// answer.
-//
-// The stub Chatwoot is the seam every other caller uses (`deps.makeClient`), so the REST read the
-// recovery depends on is exercised for real up to the socket: the recovery asks for the page that
-// ENDS at the stranded message id, finds the message in it, and rebuilds the body from there. A
-// mocked module would have proven the call happened; this proves the page is read the way a real
-// one arrives.
+// The stub Chatwoot is the seam every caller uses (`deps.makeClient`), so the recovery's REST read
+// (the page that ENDS at the stranded message id) is exercised up to the socket; a mocked module
+// would only prove the call happened.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -77,7 +72,7 @@ const CHATWOOT_INBOX_ID = 71;
 // An inbox BOUND to an agent that has no `ChatwootAgentBot` row: the persona was never provisioned,
 // or its row was deleted out of band. Deliveries still reach it, through another persona's route.
 const NO_PERSONA_INBOX = 72;
-// An inbox the mirror knows and NOBODY is bound to: #318's `no_agent`, whose operator-facing line
+// An inbox the mirror knows and NOBODY is bound to: the `no_agent` case, whose operator-facing line
 // the delivery path writes.
 const UNBOUND_INBOX = 73;
 const OBSERVED_INBOX = 75;
@@ -119,11 +114,9 @@ interface Stub {
 
 // A Chatwoot that holds one page of history and records what was posted back to it.
 //
-// `conv` is the LIVE conversation the recovery reads before rebuilding anything, in the shape a real
-// `GET /conversations/:id` returns (MEASURED against the fork: `id` is the display id, `status` is a
-// string, the assignee lives under `meta`, and there is no `contact_inbox`). It defaults to an
-// unassigned pending conversation whose last activity is the message's own time, which is what a
-// real account reports for a conversation whose newest event IS that message.
+// `conv` is the LIVE conversation the recovery reads first, in the fork's `GET /conversations/:id`
+// shape: `id` is the display id, `status` a string, the assignee under `meta`, no `contact_inbox`.
+// It defaults to an unassigned pending conversation whose newest event IS the message.
 function stubChatwoot(opts: {
   page?: unknown;
   // What the UNANCHORED read returns — the newest page, which is what says whether the customer has
@@ -139,11 +132,11 @@ function stubChatwoot(opts: {
   // test puts a message into the window between them.
   recentAfterFirst?: unknown;
   // What the catch-up read (`?after=`) returns: the fork's listing by id, which carries the
-  // reactions its paged reads leave out (issue #746).
+  // reactions its paged reads leave out.
   caughtUp?: unknown;
   throwOnRead?: boolean;
-  // The Nth send and every one after it are rejected — a Chatwoot that accepts the first balloon of a
-  // split reply and refuses the rest, which is the shape issue #429 is about.
+  // The Nth send and every one after it are rejected: a Chatwoot that accepts the first balloon of a
+  // split reply and refuses the rest.
   failSendFrom?: number;
   conv?: {
     status?: string;
@@ -238,17 +231,16 @@ function depsWith(
   };
 }
 
-// One incoming message, in the shape the REST read returns it: `message_type` as an INTEGER, which
-// is the divergence from the webhook wire that `messageTypeOf` exists for, and `inbox_id` as a
-// scalar beside it (MEASURED at the fork: `api/v1/models/_message.json.jbuilder` renders
-// `json.inbox_id message.inbox_id` on every message the index serializes).
+// One incoming message, in the shape the REST read returns it: `message_type` as an INTEGER (the
+// divergence from the webhook wire that `messageTypeOf` exists for), and `inbox_id` as a scalar
+// beside it, which the fork's `api/v1/models/_message.json.jbuilder` renders on every message.
 function pageWith(
   msgs: Array<{
     id: number;
     content: string;
     createdAt?: number;
-    // Uma resposta que uma PESSOA escreveu pelo compositor: saída pública com remetente `user`
-    // (issue #703). É o que a fronteira de terceiro enxerga, e nada aqui muda a atribuição.
+    // A reply a PERSON wrote in the composer: public outgoing with a `user` sender. It is what the
+    // third-party boundary sees, and nothing here changes attribution.
     byUser?: boolean;
   }>,
   // `null` drops the key, which is what a Chatwoot that does not render it looks like from here.
@@ -273,14 +265,14 @@ function pageWith(
 
 // The same page, for a message whose whole content is a voice note the STT has since transcribed.
 // `content` is empty, as it is on the wire for an audio: the words live on the attachment, which is
-// what makes the write-back update the only readable form the message ever takes (issue #478).
+// what makes the write-back update the only readable form the message ever takes.
 function audioPageWith(
   msgs: Array<{
     id: number;
     transcript: string;
     createdAt?: number;
     // Text beside the audio. Empty is the ordinary voice note; a command-looking string is the case
-    // where the command fence would fire on a message that was never a command (issue #478).
+    // where the command fence would fire on a message that was never a command.
     content?: string;
   }>,
   inboxId: number = CHATWOOT_INBOX_ID,
@@ -299,10 +291,9 @@ function audioPageWith(
           id: 5000 + m.id,
           file_type: "audio",
           data_url: "https://chat.recover.example/audio.ogg",
-          // UNDER `meta`, which is where the REST message list carries an eager pass's write-back —
-          // the webhook carries it at the top level instead (issue #478 review, round 7). Spelled
-          // the REST way here because that is what the recovery actually reads; spelled the webhook
-          // way, this fixture said the rebuild worked when it could not have.
+          // NOTE: UNDER `meta`, where the REST message list carries an eager pass's write-back (the
+          // webhook carries it at the top level). The recovery reads REST, so the webhook spelling
+          // here would pass a rebuild that cannot work.
           meta: { transcribed_text: m.transcript },
         },
       ],
@@ -310,12 +301,9 @@ function audioPageWith(
   };
 }
 
-// SETTLED and scoped. `emitFlowEvent` is fire-and-forget, so a raw read races the write it is
-// asserting — and the direction that matters is the absence: several cases here assert that NO line
-// was written, and a raw read passes those for the very reason that would make them wrong. The
-// helper waits for the in-flight writes (#419) instead of polling for an arrival, which is the only
-// form that answers both questions. Scoped by conversation, or an unscoped read answers with a
-// neighbour's row.
+// SETTLED and scoped. `emitFlowEvent` is fire-and-forget, and several cases assert that NO line was
+// written, which a raw read passes for the wrong reason; the helper waits for the in-flight writes
+// instead of polling for an arrival. Scoped by conversation, or it answers with a neighbour's row.
 async function deliveryLines(convDbId: bigint) {
   return flowLogRows(suDb, {
     where: { tenantId, stage: "delivery", conversationId: convDbId },
@@ -378,10 +366,10 @@ async function seedDeadDelivery(over: {
   // Whether the receiver recorded that route as an OBSERVER's.
   routeObserved?: boolean | null;
   // The event the delivery carried. `message_created` by default; `message_updated` is the write-back
-  // that finally brought a voice note's transcription (issue #478).
+  // that brought a voice note's transcription.
   event?: string;
-  // The inbox's binding generation when the delivery was received (issue #540). Undefined is a row
-  // an older build wrote, which is the population every reading here already had.
+  // The inbox's binding generation when the delivery was received. Undefined is a row an older build
+  // wrote, which carries none.
   bindingGeneration?: number | null;
 }): Promise<bigint> {
   deliverySeq += 1;
@@ -417,17 +405,10 @@ async function ledger(rowId: bigint) {
 describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   beforeAll(async () => {
     phantomJobId = await burnSchedulerJobId(suDb);
-    // Registration is what src/index.ts does at boot, and it is idempotent. Read back through
-    // `getJobHandler` rather than calling the handler function directly: a handler that is never
-    // registered is a claimed job with nowhere to go, which is the failure the registry exists to
-    // make impossible.
-    //
-    // NOT undone afterwards, and the registry being process-global (tests/utils/job-registry.ts) is
-    // why that needs saying. What poisons another file is a STUB left behind — this installs the
-    // PRODUCTION handler, the same one boot installs, so a neighbour that claims a DELIVERY_RECOVERY
-    // finds what it would find in production. Unregistering would be the worse trap: the registrar
-    // latches on a module flag, like every other one in this repo, so a later caller would get a
-    // silent no-op and its claimed job would have nowhere to go.
+    // NOTE: registered as src/index.ts does at boot, and read back through `getJobHandler` so an
+    // unregistered handler fails here. Not undone: the registry is process-global
+    // (tests/utils/job-registry.ts), but this is the PRODUCTION handler, and unregistering would
+    // leave the registrar's module latch set, so a later caller would silently register nothing.
     registerDeliveryRecoveryHandler();
     const t = await suDb.tenant.create({
       data: { name: "REC", slug: `rec-${process.pid}` },
@@ -446,14 +427,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         name: "Atendente",
         systemPrompt: "Você é prestativa.",
         modelConfig: { provider: "openai", model: "gpt-4o-mini" },
-        // Debounce OFF, so the delivery path answers inline and the reply is assertable here. It is
-        // ON by default in production, and the recovery goes through it exactly like a live
-        // delivery — pinned by its own test below rather than assumed.
-        //
-        // channelRedirect ON, because one case needs the SECOND reader of the redirect pairing: the
-        // follow-up ladder arms off the event rather than off the mirror, so it is the only place a
-        // rebuilt body carrying a stale pairing becomes observable. The entry inbox is a number no
-        // fixture uses, since nothing here posts to it.
+        // NOTE: debounce OFF so the reply is inline and assertable; the debounced path has its own
+        // test below. channelRedirect ON because the follow-up ladder arms off the event, not the
+        // mirror, so it is where a rebuilt body with a stale pairing shows. The entry inbox is a
+        // number no fixture uses.
         settings: {
           debounce: { enabled: false },
           channelRedirect: {
@@ -628,13 +605,13 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
 
     expect(outcome).toBe("recovered");
-    // The whole point of the issue, and the only assertion that is about the customer: a reply
-    // reached the conversation nothing was going to answer.
+    // NOTE: the assertion about the customer: a reply reached the conversation nothing was going to
+    // answer.
     expect(stub.sent).toEqual([[convId, REPLY]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
   });
 
-  // A STRANDED REACTION NO PAGED READ CARRIES (issue #746). The fork keeps a reaction on a
+  // A STRANDED REACTION NO PAGED READ CARRIES. The fork keeps a reaction on a
   // `before` page only when the message it reacts to is in that page of the same conversation, so a
   // reaction to an older message reads as deleted there. The catch-up read finds it, and the
   // customer's turn happens instead of the row being settled as unrecoverable.
@@ -672,7 +649,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([[convId, REPLY]]);
   });
 
-  // PR #821, review round 3: what the catch-up read found is part of the freshness answer. Two
+  // What the catch-up read found is part of the freshness answer. Two
   // stranded reactions the default page leaves out: recovering the older one would answer it after
   // the customer reacted again, so it is refused like any older message.
   test("a newer reaction only the catch-up read carries still counts as the customer writing again", async () => {
@@ -710,7 +687,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
-  // PR #821, review round 4: a FULL catch-up read stops short of the newest page, so it is no
+  // A FULL catch-up read stops short of the newest page, so it is no
   // coverage. Merged, it would place the stranded reaction inside what was seen while a newer
   // message sat in the gap; left out, the newest page says the reaction is more than a page behind.
   test("a full catch-up read is not coverage for the freshness check", async () => {
@@ -721,7 +698,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       conversationId: convId,
       inboundMessageId: messageId,
     });
-    // The newest page holds only our own reply: the customer's newer message sits in the gap.
+    // NOTE: the newest page holds only our own reply; the customer's newer message sits in the gap.
     const newest = {
       payload: pageWith([{ id: messageId + 500, content: "ok" }]).payload.map(
         (m) => ({ ...m, message_type: 1 }),
@@ -756,7 +733,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
-  // PR #821, review round 5: the other half. A full read of newer REACTIONS the default page leaves
+  // The other half: a full read of newer REACTIONS the default page leaves
   // out, over a newest page that reaches below the stranded one: the page alone would look covered
   // and fresh, and the reactions the read carried are what says the customer went on.
   test("a full catch-up read of newer reactions refuses the replay", async () => {
@@ -796,18 +773,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
-  // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW (issue #429).
-  //
-  // The row's whole purpose is "is this customer still owed a reply?", and after the first balloon
-  // lands the answer is no longer a clean yes — but putting it back on the worklist is measurably
-  // worse than settling it. Measured against a real Chatwoot: the second pass runs the whole turn,
-  // `shouldPost` finds the handled watermark already past this message (the first pass claimed it
-  // with a monotonic CAS immediately before the first balloon), and the turn comes back
-  // "superseded" having posted nothing. Left out of TURN_SETTLED the sweep spends all three
-  // attempts — three model calls — to reach that same silence, and gives up on the row anyway.
-  //
-  // So the customer's missing half is reported where an operator can act on it, and the row is
-  // closed. The assertion that matters is the pair: PROCESSED, and a badge on the conversation.
+  // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW. A second pass cannot post the
+  // rest: the first pass claimed the handled watermark (monotonic CAS) before the first balloon, so
+  // `shouldPost` supersedes it, and keeping the row would spend every attempt, one model call each,
+  // on that silence. So the missing half is a badge on the conversation, and the row is PROCESSED.
   test("a reply that arrived in half settles the row and leaves a badge", async () => {
     const convId = 8996;
     const messageId = 9496;
@@ -818,7 +787,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
     const stub = stubChatwoot({
       page: pageWith([{ id: messageId, content: "oi, alguém aí?" }]),
-      // The second balloon AND the consolidated retry of the remainder.
+      // NOTE: fails the second balloon AND the consolidated retry of the remainder.
       failSendFrom: 2,
     });
 
@@ -838,10 +807,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
 
     expect(outcome).toBe("recovered");
-    // What actually reached the customer: the first balloon, once.
+    // NOTE: what reached the customer: the first balloon, once.
     expect(stub.sent).toEqual([[convId, "Olá!"]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
-    // And the half that did not, said where an operator sees it.
+    // NOTE: and the half that did not, said where an operator sees it.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { lastError: true },
@@ -849,15 +818,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(conv.lastError).toContain("incompleta");
   });
 
-  // E UMA RESPOSTA QUE UMA PESSOA JÁ ESCREVEU FECHA A LINHA (issue #703). Este é o desfecho novo
-  // chegando aqui: o turno recuperado relê a página, acha a resposta da atendente acima da mensagem
-  // presa, e para. `answered-elsewhere` é o mesmo fato do `taken-over` por outra porta — a diferença
-  // é só que a atribuição não mudou — e é o caso mais forte do conjunto: os outros se apoiam em algo
-  // que ESTA rota fez, e este se apoia numa resposta que já existe e está na página.
-  //
-  // Fora do `TURN_SETTLED`, a recuperação devolveria a linha para DEAD e a conversa que uma pessoa
-  // acabou de atender voltaria para a lista de perdas — o defeito da #703 reaparecendo uma camada
-  // acima do conserto dele.
+  // A REPLY A PERSON ALREADY WROTE SETTLES THE ROW. The recovered turn rereads the page, finds the
+  // agent's reply above the stranded message, and stops: `answered-elsewhere` is `taken-over` without
+  // the attribution change. Outside `TURN_SETTLED`, the row would go back to DEAD and a conversation a
+  // person just answered would be listed as lost.
   test("a message a person already answered settles the row", async () => {
     const convId = 8997;
     const messageId = 9497;
@@ -869,8 +833,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     const stub = stubChatwoot({
       page: pageWith([
         { id: messageId, content: "tem alguém?" },
-        // A atendente respondeu enquanto a entrega estava presa. A atribuição NÃO muda: com ela
-        // mudando, o recheck de posse fecharia antes, com `taken-over`, que é outro caminho.
+        // NOTE: the human agent answered while the delivery was stranded. The attribution does NOT
+        // change: if it did, the ownership recheck would close first with `taken-over`.
         {
           id: messageId + 1,
           content: "oi, sou a Ana do suporte",
@@ -892,24 +856,17 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
 
     expect(outcome).toBe("recovered");
-    // Nada é dito por cima da pessoa...
+    // NOTE: nothing is said over the person...
     expect(stub.sent).toEqual([]);
-    // ...e a linha fica fechada, em vez de voltar para a lista de perdas.
+    // NOTE: ...and the row is closed instead of going back to the lost list.
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
   });
 
-  // E O TURNO QUE PAROU ANTES DO INVOKE FECHA A LINHA, PORQUE A INGESTÃO PEGOU A MENSAGEM
-  // (issue #688, review r11). `taken-over-unread` é o irmão do `taken-over` acima: lá o invoke rodou
-  // e a mensagem está no canal; aqui nada a leu, e o que a põe na memória é a ingestão que o
-  // receptor arma na MESMA passada. Ela roda antes de a recuperação ler o desfecho, e quando não
-  // consegue armar o receptor LANÇA — o que chega como `turnThrew` e devolve a linha para DEAD. Então
-  // este desfecho, sozinho, já quer dizer que a mensagem está guardada.
-  //
-  // A primeira versão desta rodada o deixava de fora do `TURN_SETTLED`, com o argumento de que o
-  // replay não consulta a ingestão. O argumento caiu na rodada 1 de review, quando a parada passou a
-  // entrar por `routeIngests`. Mantido fora, a marca que a parada avança e a linha que a recuperação
-  // devolve para DEAD se contradiziam: a mensagem voltava à lista de perdas com a dispensa de
-  // resposta já escrita, e nenhuma tentativa seguinte conseguia postar.
+  // A TURN STOPPED BEFORE THE INVOKE SETTLES THE ROW, BECAUSE THE INGESTION HAS THE MESSAGE.
+  // `taken-over-unread`: nothing read the message, and the ingestion the receiver arms in the SAME
+  // pass stores it (if it cannot arm, the receiver throws, which reaches here as `turnThrew`). Kept
+  // out of `TURN_SETTLED`, the row would go back to DEAD with the watermark already advanced, and no
+  // later attempt could post.
   test("a takeover that stops the turn before the invoke settles the row, because the ingestion has the message", async () => {
     const convId = 8998;
     const messageId = 9498;
@@ -936,24 +893,21 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       },
     });
 
-    // A leitura aconteceu de verdade: sem isto o teste passaria com o portão inteiro removido.
+    // NOTE: the read really happened; without this the test passes with the whole gate removed.
     expect(leituras).toBeGreaterThan(0);
-    // Nada é dito por cima da pessoa que assumiu...
+    // NOTE: nothing is said over the person who took over...
     expect(stub.sent).toEqual([]);
-    // ...e a linha FECHA, porque a mensagem está guardada. Deixá-la DEAD com a marca já avançada era
-    // a contradição da rodada 11: a conversa voltaria para a lista de perdas sem que nenhuma
-    // tentativa seguinte pudesse responder.
+    // NOTE: ...and the row CLOSES, because the message is stored. DEAD with the watermark already
+    // advanced would list the conversation as lost with no later attempt able to answer.
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
     expect(outcome).toBe("recovered");
   });
 
   test("a conversation the mirror still calls resolved is answered anyway", async () => {
-    // The case that refuted this file's first design. An incoming message on a resolved conversation
-    // REOPENS it (MEASURED at the fork: `Message#reopen_resolved_conversation` — `pending` on a bot
-    // inbox, `open` otherwise), and the delivery that would have mirrored that is the one that died.
-    // Built from the mirror alone, the body says `resolved`, `shouldBotHandle` refuses, the row is
-    // marked PROCESSED and this reports a recovery that answered nobody. A customer writing again
-    // after a conversation was resolved is the ordinary way a new episode starts.
+    // NOTE: an incoming message on a resolved conversation REOPENS it in the fork
+    // (`Message#reopen_resolved_conversation`: `pending` on a bot inbox, `open` otherwise), and the
+    // delivery that would have mirrored that is the one that died. Built from the mirror alone, the
+    // body says `resolved`, `shouldBotHandle` refuses, and a recovery is reported that answered nobody.
     const convId = 8926;
     const messageId = 9429;
     const conv = await seedConversation(convId, {
@@ -966,7 +920,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
     const stub = stubChatwoot({
       page: pageWith([{ id: messageId, content: "voltei" }]),
-      // What Chatwoot actually holds: the reopen already happened there.
+      // NOTE: what Chatwoot holds: the reopen already happened there.
       conv: { status: "pending" },
     });
 
@@ -980,7 +934,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBe("recovered");
     expect(stub.sent).toEqual([[convId, REPLY]]);
 
-    // And the mirror is REPAIRED, not merely bypassed: every gate downstream reads this row, so
+    // NOTE: the mirror is REPAIRED, not merely bypassed: every gate downstream reads this row, so
     // leaving it on `resolved` would hand the next delivery the same wrong answer.
     const row = await suDb.conversation.findUniqueOrThrow({
       where: { id: conv.id },
@@ -990,15 +944,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a route whose agent has no persona bot is refused, not answered loosely", async () => {
-    // `agentBotChatwootId` answers null for an inbox bound to an agent that was never provisioned a
-    // `ChatwootAgentBot` (or whose row was deleted out of band), and handing that null on is worse
-    // than refusing: `heldByAnotherParty` compares ids, so with no identity it cannot, the gate goes
-    // LOOSE, and a conversation another AgentBot holds reads as ours. A live delivery never reaches
-    // that state — its `agentBotId` is the route token's bot, and the route exists because the bot
-    // does. MEASURED before the fence existed: the turn ran and this stub accepted the post over the
-    // other bot's conversation. Against a real client it would not have sent — the persona's token
-    // is what posts, and a client built without one refuses by name (issue #79) — so the true cost
-    // of passing the null on is a model call spent to post nothing and a recovery reported anyway.
+    // NOTE: `agentBotChatwootId` is null for an inbox bound to an agent with no `ChatwootAgentBot`.
+    // Passing the null on is worse than refusing: `heldByAnotherParty` cannot compare ids, the gate
+    // goes LOOSE, and another AgentBot's conversation reads as ours; a real client without the
+    // persona's token refuses by name, so the cost is a model call and a recovery reported anyway.
+    // A live delivery never reaches this state: its `agentBotId` is the route token's bot.
     const convId = 8950;
     const messageId = 9450;
     await seedConversation(convId, {
@@ -1031,10 +981,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the same refusal holds when nobody else owns the conversation", async () => {
-    // Not narrowed to "another bot holds it": what is missing is the identity, not the comparison.
-    // The reply is posted with the persona's token, and a client built without one refuses the call
-    // by name rather than sending (issue #79) — so an unassigned conversation on this inbox would
-    // spend a model call to post nothing and then report a recovery.
+    // NOTE: not narrowed to "another bot holds it": what is missing is the identity. A client built
+    // without the persona's token refuses by name, so an unassigned conversation here would spend a
+    // model call to post nothing and then report a recovery.
     const convId = 8951;
     const messageId = 9451;
     await seedConversation(convId, {
@@ -1062,15 +1011,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("an inbox bound to NOBODY still runs the path, and stays on the worklist", async () => {
-    // The neighbouring state, and it must not be swept into the refusal above: an inbox with no
-    // agent at all is #318's `no_agent`, and the operator's line for it is written by the delivery
-    // path. Refusing here would take that line away from the one customer message it is about.
-    //
-    // It runs the path AND KEEPS THE ROW. `no-agent` is a turn outcome that answered nobody, so it
-    // is not a close (see `TURN_ANSWERED`): the customer is still waiting and stays waiting until an
-    // operator binds an agent. The two records are about different things and both are wanted — the
-    // `no_agent` line names the inbox that cannot answer, and the `DEAD` row names the one customer
-    // message that went unanswered because of it.
+    // NOTE: not the refusal above: an inbox with no agent at all is `no_agent`, whose operator line
+    // the delivery path writes. It runs the path AND KEEPS THE ROW: `no-agent` answered nobody, so it
+    // is not a close (see `TURN_ANSWERED`). The line names the inbox, the DEAD row names the message.
     const convId = 8952;
     const messageId = 9452;
     const conv = await seedConversation(convId, {
@@ -1095,8 +1038,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBe("superseded");
     expect(stub.sent).toEqual([]);
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
-    // The path really did run: #318's line is here, which is the whole reason this state is not
-    // refused earlier. And no `recovered` line beside it, because nothing was.
+    // NOTE: the path really ran (the `no_agent` line is here), and no `recovered` line beside it.
     expect(await deliveryLines(conv.id)).toEqual([]);
     const noAgent = await flowLogRows(suDb, {
       where: { tenantId, stage: "route", conversationId: conv.id },
@@ -1107,14 +1049,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ]);
   });
 
-  // The recovery the observer's path deliberately relies on (issue #476 review, round 6): a delivery
-  // that died before its watermark and its verdict leaves the row for the sweep. An observed inbox
-  // names no responder, so a recovery that derived the identity from the inbox would resolve NOTHING
-  // here and consume the very message it was called to save. The route the delivery arrived on is on
-  // the row.
-  //
-  // CLOSED, NOT PUT BACK (issue #620): with no responder the route remembers nothing, and it says so.
-  // Read as "no route asked", the replay would go back to DEAD and retry until its attempts ran out.
+  // The observer's path relies on this recovery for a delivery that died before its watermark. An
+  // observed inbox names no responder, so the identity comes from the route on the row, not the inbox.
+  // CLOSED, NOT PUT BACK: with no responder the route remembers nothing and says so; read as "no route
+  // asked", the replay would go back to DEAD and retry until its attempts ran out.
   test("a delivery stranded on an OBSERVER's route is re-run on that route", async () => {
     const convId = 8974;
     const messageId = 9474;
@@ -1150,8 +1088,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       deps: depsWith(stub),
     });
 
-    // Nothing is said to the customer on an observer's route, nothing is remembered for a responder
-    // the inbox does not have, and the row is closed with the watermark moved past the message.
+    // NOTE: nothing is said on an observer's route, nothing is remembered for a responder the inbox
+    // does not have, and the row is closed with the watermark past the message.
     expect(stub.sent).toEqual([]);
     const armed = await suDb.schedulerJob.findMany({
       where: { tenantId, kind: "INGEST_MESSAGE" },
@@ -1173,8 +1111,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBe(messageId);
   });
 
-  // THE FRESHNESS CHECK IS THE RESPONDER'S, and asking it of an observer loses the message for good
-  // (issue #476 review, round 54). It refuses because the newer message's own delivery carries the
+  // THE FRESHNESS CHECK IS THE RESPONDER'S, and asking it of an observer loses the message for good.
+  // It refuses because the newer message's own delivery carries the
   // REPLY — a premise about answering. An observer's replay answers nobody: what it owes is the
   // watermark and the verdict its delivery died before reaching.
   test("a newer customer message does not refuse an OBSERVER's replay", async () => {
@@ -1227,16 +1165,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect((await ledger(rowId)).status).toBe("PROCESSED");
   });
 
-  // ISSUE #478 review, round 2. The transcription replay, on the RESPONDER's own route: the update
-  // that carried a voice note's words, stranded before its ingestion was armed. It posts nothing —
-  // a `message_updated` drives no turn anywhere — so every read and refusal that exists to protect a
-  // reply has to stand aside, exactly as it does for an observer.
-  //
-  // Three of them in one case, because they are one premise: the unanchored page is not fetched, a
-  // newer customer message does not refuse it, and the audio being older than the six-hour ceiling
-  // does not either — the words arrive on the write-back of a message CREATED before them, so that
-  // cutoff refuses precisely the class it cannot help. What still bounds the replay is the row's own
-  // receipt, which is recent here.
+  // The transcription replay on the RESPONDER's route: a `message_updated` drives no turn, so every
+  // read and refusal that protects a reply stands aside. One premise, three checks: no unanchored
+  // read, no refusal on a newer customer message, and none for audio older than the age ceiling (the
+  // words arrive on a write-back of an older message). The row's own receipt still bounds it.
   test("a stranded transcription is replayed without the reads a reply would need", async () => {
     const convId = 8899;
     const messageId = 9499;
@@ -1246,8 +1178,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         chatwootInstanceId: instanceId,
         chatwootConversationId: convId,
         status: "open",
-        // A colleague owns the conversation, which is the route where no turn was ever coming and
-        // the append is the only memory the message gets.
+        // NOTE: a colleague owns the conversation: no turn was coming, and the append is the only
+        // memory the message gets.
         assigneeType: "User",
         assigneeId: 9,
         inboxId: inboxDbId,
@@ -1268,10 +1200,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // Older than MAX_RECOVERY_AGE_MS, on the message's own clock.
     const audioCreatedAt = Math.floor(Date.now() / 1000) - 7 * 60 * 60;
     const stub = stubChatwoot({
-      // The LIVE conversation says the same thing the mirror does: a colleague holds it. The rebuild
-      // takes its ownership from here, so a stub left on the default (`pending`, unassigned) would
-      // hand the replay a conversation the bot owns — and the ingest gate would correctly refuse it,
-      // for the wrong conversation.
+      // NOTE: the LIVE conversation agrees with the mirror. The rebuild takes ownership from here,
+      // so the default (unassigned) would hand the replay a conversation the bot owns, and the ingest
+      // gate would refuse it for the wrong reason.
       conv: { status: "open", assigneeType: "User", assigneeId: 9 },
       page: audioPageWith([
         {
@@ -1309,10 +1240,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect((await ledger(rowId)).status).toBe("PROCESSED");
   });
 
-  // ISSUE #620, PR review round 2. The sweep still arms this replay for an observer's transcription
-  // on an inbox with no responder of ours, because a stranded row cannot tell "owed nothing" from a
-  // failed arm a previous build wrote down. So the replay is what has to settle the harmless kind:
-  // the route reports that it has no reader, and the row closes instead of retrying.
+  // The sweep arms this replay for an observer's transcription on an inbox with no responder of
+  // ours, because a stranded row cannot tell "owed nothing" from a failed arm. So the replay settles
+  // it: the route reports it has no reader, and the row closes instead of retrying.
   test("an observer's transcription replay on an inbox with no responder closes without remembering", async () => {
     const convId = 8990;
     const messageId = 9490;
@@ -1440,11 +1370,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     }
   });
 
-  // ISSUE #478 review, round 8. The observer's replay beside a responder that ALREADY has the
-  // message: the receiver stands its ingestion down on purpose, so nothing is enqueued and nothing
-  // is lost. Read as "no route looked", the round-7 check would put a settled row back on the
-  // worklist and retry it until its attempts ran out, over a message the responder handled — a
-  // stranded-delivery record for a loss that never happened.
+  // The observer's replay beside a responder that ALREADY has the message: the receiver stands its
+  // ingestion down on purpose, so nothing is enqueued and nothing is lost. Read as "no route looked",
+  // the row would go back on the worklist and retry until its attempts ran out, for no loss.
   test("an observer's replay that stood down for the responder is still closed", async () => {
     const convId = 8894;
     const messageId = 9494;
@@ -1516,7 +1444,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       routeAgentBotId: OBSERVER_BOT_ID,
       routeObserved: true,
     });
-    // The binding is gone and the agent answers now: everything the old inference read is different.
+    // NOTE: the binding is gone and the agent answers now: everything a role inference would read
+    // has changed.
     const rows = await suDb.inboxObserver.findMany({
       where: { tenantId, agentId: watcherAgentDbId },
       select: { id: true, inboxId: true, agentId: true, createdAt: true },
@@ -1691,13 +1620,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     }
   });
 
-  // ...AND THE SAME ROW, WITH THE GENERATION SAYING NO BINDING ACTUALLY MOVED, IS REPLAYED (issue
-  // #540, window 4). The stamp above is one fact and it refuses too much on its own: it is written
-  // by a bind and read against a receipt, so an inbox bound while its own traffic was in flight
-  // produces exactly this pair, and the customer is then left unanswered on an inbox somebody had
-  // just finished setting up. The generation is the second, independent fact — it moves on every
-  // binding write and on nothing else — and where it says nothing moved since receipt, the stamp's
-  // story is an artifact rather than a rebind.
+  // ...AND THE SAME ROW, WITH THE GENERATION SAYING NO BINDING MOVED, IS REPLAYED. The stamp alone
+  // refuses too much: an inbox bound while its own traffic was in flight produces this pair. The
+  // generation moves on every binding write and nothing else, so when it has not moved since
+  // receipt, the stamp is an artifact rather than a rebind.
   test("a stranded delivery with no role, against a binding stamp the generation contradicts, is replayed", async () => {
     const convId = 8987;
     const messageId = 9487;
@@ -1743,7 +1669,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   // ...and where BOTH facts say so, the refusal stands: the generation moved since receipt AND the
-  // responder binding is younger than the delivery. This is the row window 4 is actually about.
+  // responder binding is younger than the delivery.
   test("a stranded delivery with no role, against a binding both facts call younger than it, is not replayed", async () => {
     const convId = 8989;
     const messageId = 9489;
@@ -1903,18 +1829,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a customer who wrote again is not answered about the older message", async () => {
-    // The delivery path CANNOT answer a message a newer one has passed: `shouldPost` re-fetches,
-    // sees the newer incoming id and withholds the reply, and the turn comes back "superseded". The
-    // path still settles the row, so without this check the recovery spends a model call, posts
-    // nothing, marks the row PROCESSED and writes a closing line saying the loss ended — with the
-    // customer never answered about the message that was stranded.
-    //
-    // And nothing else covers it: the direct turn feeds the graph its OWN trigger text, so the
-    // newer message's turn answered the newer message. The stranded one was never ingested, because
-    // ingestion is the turn its delivery died before reaching.
-    //
-    // `unrecoverable`, asked before the claim: a newer message never un-arrives, so no attempt can
-    // change the answer, and the row stays DEAD in the worklist where an operator can still read it.
+    // NOTE: `shouldPost` withholds a reply to a message a newer one passed, yet the path settles the
+    // row, so without this check the recovery would spend a model call and close the loss unanswered
+    // (the newer turn only read its own trigger text). `unrecoverable`, asked before the claim: a
+    // newer message never un-arrives, and the row stays DEAD where an operator can read it.
     const convId = 8940;
     const messageId = 9443;
     const conv = await seedConversation(convId, {
@@ -1943,11 +1861,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("unrecoverable");
     expect(stub.sent).toEqual([]);
-    // No turn is even built: the refusal is asked before the claim, so it spends neither an attempt
+    // NOTE: no turn is built: the refusal is asked before the claim, so it spends neither an attempt
     // nor a model call.
     expect(turns.built).toBe(0);
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
-    // And no closing line: the loss is still open, which is the honest state.
+    // NOTE: and no closing line: the loss is still open.
     const lines = await deliveryLines(conv.id);
     expect(
       lines.filter(
@@ -2003,16 +1921,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the recovered message advances the inbound watermark, even past the conversation's own state", async () => {
-    // The reply is not the whole repair. `lastInboundAt` anchors BOTH the follow-up "new episode"
-    // gate and the WhatsApp 24h service window, and the recovered message is the customer's, so it
-    // has to move it.
-    //
-    // The case where it did not: an away message posted after the strand. The live conversation's
-    // activity is then AHEAD of the stranded message, the recovery reconciles the mirror to that
-    // later time — correctly, since the conversation really did move — and the rebuilt body, stamped
-    // with the message's own `created_at`, lands in the mirror's stale branch. MEASURED before the
-    // fix: the customer got their reply and `lastInboundAt` came out NULL, so a proactive send made
-    // later would read as in-window when it is not.
+    // NOTE: `lastInboundAt` anchors the follow-up "new episode" gate and the WhatsApp 24h window, so
+    // the recovered customer message must move it. The hard case: an away message after the strand
+    // puts live activity AHEAD of the message, and the rebuilt body (stamped with its `created_at`)
+    // lands in the mirror's stale branch, where the watermark would otherwise stay NULL.
     const convId = 8956;
     const messageId = 9456;
     await seedConversation(convId, {
@@ -2067,14 +1979,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the fence reads the contact inbox the conversation is on NOW, not the one it loaded", async () => {
-    // `contactInboxId` is not frozen for the length of a recovery: ./mirror.ts writes it on an
-    // unversioned event, so a webhook arriving during the two REST reads can move the conversation
-    // to a different graph thread. The fence is asked a second time precisely because of those
-    // awaits, and asking it about the OLD thread answers about a thread nobody is on.
-    //
-    // The move is made from inside the anchored read, which is that window, and the claim is taken
-    // on the NEW thread with this process's registry emptied — a live turn on another replica,
-    // holding the thread the conversation is on by the time the fence runs.
+    // NOTE: src/modules/chatwoot/mirror.ts writes `contactInboxId` on an unversioned event, so a
+    // webhook during the REST reads can move the conversation to another graph thread; the fence must
+    // ask about the NEW one. The move happens inside the anchored read, and the claim sits on the new
+    // thread with this process's registry emptied: a live turn on another replica.
     const convId = 8957;
     const messageId = 9457;
     const conv = await seedConversation(convId);
@@ -2124,15 +2032,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a turn that THREW does not close the loss, and the row goes back to DEAD", async () => {
-    // The failure this whole subsystem is built against, reached from inside the recovery itself.
-    // `processChatwootDelivery` catches its own turn failure and still settles the row: for a live
-    // delivery that is honest — the failure is recorded on the conversation and announced in
-    // Chatwoot, and there is no retry to arm — but a recovery exists to ANSWER. MEASURED before the
-    // fix: the model threw, nothing was sent, and the recovery still returned `recovered` with the
-    // row on `PROCESSED`, so the customer was dropped from the worklist unanswered.
-    //
-    // The attempt stays SPENT, because the claim stamped it: the budget is what bounds the retrying,
-    // and a failure that cost nothing would retry until the age ceiling instead.
+    // NOTE: `processChatwootDelivery` catches its own turn failure and settles the row, which is right
+    // for a live delivery but not for a recovery, which exists to ANSWER. The attempt stays SPENT
+    // (the claim stamped it): the budget bounds the retrying, or it would run to the age ceiling.
     const convId = 8958;
     const messageId = 9458;
     const conv = await seedConversation(convId);
@@ -2161,24 +2063,16 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
     // Back in the worklist, with the attempt counted.
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
-    // And no closing line: the page an operator already received stays open, which is the whole
-    // point of putting the row back. Keyed by the mirror's ROW id, which is what the writer files
-    // against — the Chatwoot number would match nothing and pass without reading anything.
+    // NOTE: no closing line: the operator's page stays open. Keyed by the mirror's ROW id, which the
+    // writer files against; the Chatwoot number would match nothing and pass vacuously.
     expect(await deliveryLines(conv.id)).toEqual([]);
   });
 
   test("a BURST stranded together is answered once, and the older row stays on the page", async () => {
-    // One process death can strand two customer messages on one conversation, which is two DEAD
-    // rows. What this pins is the whole outcome, because the reviewer's question was whether the
-    // older row is closed on a premise about a delivery that also died.
-    //
-    // It is not. The newest row's recovery answers the conversation — ONE reply, not two — and the
-    // older row stays DEAD with no attempt spent and no closing line, so the page the operator
-    // already received about it stays open. What is lost is the older message's TEXT: a direct turn
-    // carries its own trigger text and nothing back-fills the channel from Chatwoot, so the model
-    // answers the second question and never reads the first. That bound is the delivery path's, not
-    // this module's, and gathering a burst is the flush's job — re-implementing it here is what the
-    // head of this file refuses to do.
+    // NOTE: one process death can strand two messages, two DEAD rows. The newest row's recovery sends
+    // ONE reply; the older row stays DEAD with no attempt spent and its page open. The older TEXT is
+    // not read (a direct turn carries only its own trigger), a bound of the delivery path: gathering a
+    // burst is the flush's job, not reimplemented here.
     const convId = 8959;
     const older = 9459;
     const newer = 9460;
@@ -2228,19 +2122,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a reply WITHHELD to a message that landed mid-turn does not close the loss", async () => {
-    // The sliver the freshness check before the claim leaves open. That check reads the newest page
-    // once; a delivery for a message the customer sends AFTER it can start and finish while this
-    // recovery is still building its turn. `shouldPost` then sees the newer message and stands down,
-    // which is right for a live delivery — the newer message's own delivery carries the reply — and
-    // is not something a recovery can lean on, because that delivery can have finished before this
-    // turn ingested the stranded text.
-    //
-    // MEASURED before the fix: nothing was sent, and the recovery still returned `recovered` with
-    // the row on `PROCESSED` and a closing line written.
-    //
-    // The newer message is made to appear only on the SECOND unanchored read, which is
-    // `shouldPost`'s: the first is the recovery's own freshness read, and it has to still see the
-    // stranded message as the newest or the refusal would come from the earlier check instead.
+    // NOTE: a message sent after the freshness read can be delivered while this turn builds;
+    // `shouldPost` then stands down, which a recovery cannot lean on because that delivery may have
+    // finished before the stranded text was ingested. The newer message appears only on the SECOND
+    // unanchored read (`shouldPost`'s), or the earlier freshness check would refuse instead.
     const convId = 8960;
     const messageId = 9461;
     const conv = await seedConversation(convId);
@@ -2265,8 +2150,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("superseded");
 
-    // The turn really did reach `shouldPost` — two unanchored reads, not one — otherwise the refusal
-    // would prove nothing about what happened inside the turn.
+    // NOTE: the turn really reached `shouldPost` (two unanchored reads), or the refusal proves nothing
+    // about the turn.
     expect(stub.asked.filter(([, before]) => before === undefined).length).toBe(
       2,
     );
@@ -2276,18 +2161,13 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the rebuilt BODY carries the moved contact inbox, not the one loaded", async () => {
-    // The fence and the body are built from the same reading on purpose. The fence is the reason the
-    // re-read exists, but the body is not inert: the mirror write it drives assigns `contactInboxId`
-    // on an unversioned event, so a body still carrying the pairing from before the REST reads can
-    // put it BACK — and the turn would then run on a graph thread nothing fenced.
-    //
-    // Same move as the fence's test, with nobody holding the new thread, so the recovery goes all
-    // the way through and the mirror write is what answers.
+    // NOTE: the fence and the body come from the same reading: the body's mirror write assigns
+    // `contactInboxId` on an unversioned event, so a body with the pre-read pairing would put it BACK
+    // and the turn would run on an unfenced thread. Nobody holds the new thread, so it runs through.
     const convId = 8961;
     const messageId = 9462;
-    // Behind the message, so the rebuilt body wins the ordering and reaches the branch that ASSIGNS
-    // the pairing. Landing in the mirror's stale branch instead would prove nothing: that branch
-    // writes no `contactInboxId` at all, and the assertion would hold whichever value the body had.
+    // NOTE: behind the message, so the rebuilt body reaches the branch that ASSIGNS the pairing; the
+    // stale branch writes no `contactInboxId`, and the assertion would hold vacuously.
     const conv = await seedConversation(convId, {
       lastEventAt: new Date((SENT_AT - 600) * 1000),
     });
@@ -2326,14 +2206,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("an inbox REBOUND mid-recovery answers as the persona it is bound to now", async () => {
-    // The route id does not move here — the same inbox, the same number — so a recovery that reused
-    // the binding loaded with the conversation would see nothing to re-read. What moved is which
-    // AGENT that inbox points at, and with it which persona's bot answers. Handing the delivery path
-    // the old persona's bot while it resolves the new one is what makes the ownership gate read the
-    // new bot as another party and consume the message without replying.
-    //
-    // Asserted on the closing line's agent, which is the recovery's own record of who it decided
-    // answered, and on the reply actually going out.
+    // NOTE: the route id stays the same; what moves is the AGENT the inbox points at, and with it the
+    // persona's bot. Handing the path the old bot while it resolves the new one makes the ownership
+    // gate read the new bot as another party and consume the message. Asserted on the closing line's
+    // agent and on the reply going out.
     const convId = 8963;
     const messageId = 9464;
     const conv = await seedConversation(convId);
@@ -2373,15 +2249,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the conversation key is HELD across the handoff, not just probed before it", async () => {
-    // The fence answers about the moment it runs. A follow-up NUDGE needs no new customer message,
-    // so nothing earlier in this recovery says anything about one starting in the window between
-    // that answer and `runAgentTurn` taking its own claim — and it posts into this very
-    // conversation. `followUpHandler` reads the CONVERSATION key before it fires, so holding that
-    // key from the fence to the handoff is what makes it reschedule instead of running beside us.
-    //
-    // Observed at `deps.makeClient`, which the delivery path calls for its own client BEFORE the
-    // turn: the recovery's own build happens earlier, outside the hold, so the two readings
-    // distinguish the mark from the one `runAgentTurn` takes later on its own.
+    // NOTE: a follow-up NUDGE needs no customer message and can start between the fence and
+    // `runAgentTurn`'s own claim; `followUpHandler` reads the CONVERSATION key, so holding it from the
+    // fence to the handoff makes it reschedule. Observed at `deps.makeClient`, which the path calls
+    // BEFORE the turn.
     const convId = 8966;
     const messageId = 9467;
     await seedConversation(convId);
@@ -2410,26 +2281,18 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("recovered");
 
-    // Three builds, and the middle one is the whole test. [0] is the recovery's own, before the
-    // hold. [1] is the delivery path's, inside the hold and BEFORE the turn — this is the reading
-    // that flips: measured, it is `false` without the mark. [2] is inside the turn, where
-    // `runAgentTurn` has marked the key itself and the answer is `true` either way, which is why
-    // asserting "some of them" would have proved nothing.
+    // NOTE: [0] is the recovery's own build, before the hold. [1] is the path's, inside the hold and
+    // before the turn: the one that is `false` without the mark. [2] is inside the turn, `true` either
+    // way, so asserting "some of them" would prove nothing.
     expect(held).toEqual([false, true, true]);
     // Balanced: a mark left behind would make every reader defer on this conversation forever.
     expect(isTurnInFlight(threadOf(convId))).toBe(false);
   });
 
   test("a message with NO created_at is a degraded read, not a message to replay", async () => {
-    // The body's `last_activity_at` is the customer's own clock, taken from the REST message's
-    // `created_at`, and it is what keeps a recovery from moving `lastInboundAt` forward by however
-    // long the row sat stranded. Without it the mirror falls back to the moment the rebuilt event
-    // arrives, and that column anchors BOTH the follow-up episode gate and the WhatsApp 24h service
-    // window — so a proactive send made later reads as in-window when it is not.
-    //
-    // MEASURED at the mirror before this: an undated event does not reach the stale branch at all,
-    // because there is nothing to order it by, so it APPLIES and refreshes the watermark to now. The
-    // guard belongs here, where the undated body comes from.
+    // NOTE: the body's `last_activity_at` is the REST `created_at`, which keeps `lastInboundAt` (the
+    // follow-up gate and 24h window anchor) on the customer's clock. The mirror APPLIES an undated
+    // event (nothing to order it by) and moves the watermark to now, so the guard sits here.
     const convId = 8967;
     const messageId = 9468;
     const conv = await seedConversation(convId, {
@@ -2458,8 +2321,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("unreachable");
     expect(stub.sent).toEqual([]);
-    // The attempt is not spent: a degraded read is the account's problem, and the next one may
-    // answer properly.
+    // NOTE: the attempt is not spent: a degraded read is the account's, and the next may answer.
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     // And the anchor did not move.
     expect(
@@ -2473,25 +2335,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a conversation RESOLVED mid-rescue is seen, though the live snapshot never was", async () => {
-    // The live snapshot is read FIRST, before the two message reads and the reconcile, so an
-    // operator acting inside that window is invisible to it. What the body states is therefore the
-    // MIRROR ROW — the live snapshot where it won the ordering and whatever outranked it where it
-    // lost. This pins that choice, because the delivery path gates on what the BODY says:
-    // `shouldBotHandle` reads the status straight off it with no fallback at all.
-    //
-    // WHICH READING of that row is not what this measures, and no test can be: the body takes the
-    // later of the two (`mirrorNow`, beside the pairing) rather than `reconciled.state`, and the only
-    // difference between them is a write landing while the route queries run — a stretch with no
-    // seam to hook. What IS measured is that neither of them is the snapshot.
-    //
-    // STATUS is the field that isolates the rule, and picking it was measured rather than guessed:
-    // the ASSIGNEE has a fallback — a body that says nothing about it sends `shouldBotHandle` to the
-    // mirror's own reading — so a takeover closes the gate whichever source the body used, and a
-    // test built on one would pass without reading anything.
-    //
-    // The resolve is stamped with a version AHEAD of the snapshot, exactly as the webhook carrying
-    // it would be — otherwise the reconcile rejects it as stale and the test measures the reconcile
-    // rather than the body.
+    // NOTE: the live snapshot is read FIRST, so the body states the MIRROR ROW, not the snapshot;
+    // `shouldBotHandle` reads status off the body with no fallback. Status isolates this (the assignee
+    // falls back to the mirror, so it would pass either way). The resolve's version is AHEAD of the
+    // snapshot, as its webhook's would be, or the reconcile drops it as stale. Which reading of the
+    // row (`mirrorNow` or `reconciled.state`) has no seam to test; only "not the snapshot" is pinned.
     const convId = 8968;
     const messageId = 9469;
     const conv = await seedConversation(convId);
@@ -2523,27 +2371,16 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("recovered");
     expect(stub.sent).toEqual([]);
-    // No turn was even built: the operator closed the conversation, and a reply landing after that
-    // reopens it in Chatwoot on top of a customer message they had already dealt with.
+    // NOTE: no turn was built: a reply after the operator's resolve would reopen the conversation in
+    // Chatwoot over a message they already dealt with.
     expect(turns.built).toBe(0);
   });
 
   test("a route the mirror never learned reaches the GATES, not just the turn", async () => {
-    // The worst outcome this module could produce, and it was reachable. Rebuilding the body from
-    // the live message answers `runAgentTurn`, which resolves the agent from the inbox the EVENT
-    // carries. Nothing else in the delivery path reads it from there: `maybeConsumeCommandOrGate`
-    // resolves it from `Conversation.inboxId`, and with that column null it finds no agent and
-    // returns having run NOTHING — not the test-mode gate, not availability, not contact
-    // authorization — while the turn runs anyway on the route this module supplied.
-    //
-    // MEASURED before the repair: agent in TEST mode, conversation never activated, and the recovery
-    // posted "Desculpe a demora, estou aqui!" to a real customer. That is the one thing test mode
-    // exists to prevent.
-    //
-    // The event is made STALE on purpose (the mirror's activity is ahead of the message, as it is
-    // whenever the conversation moved on after the strand), because the mirror writes that column
-    // only when the event WINS the ordering. Leaving the repair to the handoff's own mirror write is
-    // exactly what does not happen here.
+    // NOTE: `runAgentTurn` resolves the agent from the EVENT's inbox, but `maybeConsumeCommandOrGate`
+    // reads `Conversation.inboxId`; with it null, no gate runs (test mode, availability, contact auth)
+    // while the turn does, so an unactivated TEST agent would answer a customer. The event is STALE
+    // on purpose: the mirror writes that column only when an event wins the ordering.
     const convId = 8969;
     const messageId = 9470;
     const conv = await seedConversation(convId, {
@@ -2572,7 +2409,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // The customer heard nothing from a test-mode agent they never activated.
     expect(stub.sent).toEqual([]);
     expect(turns.built).toBe(0);
-    // And the mirror learned its route, which is what let the gate find the agent at all — repaired
+    // NOTE: and the mirror learned its route, which is what let the gate find the agent: repaired
     // rather than bypassed, the same way the conversation's state is.
     expect(
       (
@@ -2585,22 +2422,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the contact's identity is left where the mirror holds it, not restated at the message's clock", async () => {
-    // A review round asked for the opposite: carry `meta.sender` from the live conversation, since
-    // the stranded message may be the very event that would have refreshed the contact, and
-    // `authorizeContact` reads the STORED identity on a gate that fails closed. The live read does
-    // render it (measured at the fork: `conversations#show` renders the full contact partial).
-    //
-    // Carrying it was implemented and MEASURED, and it does not merely fail to help. The mirror
-    // positions identity per field by the payload's `last_activity_at`, and this body's is the
-    // stranded message's own clock. With the contact positioned at that same second — a sibling
-    // message of the same burst wrote it — and the live phone now different, the tie rule fires:
-    // a disagreement it cannot order by arrival drops BOTH readings and the field is emptied. The
-    // contact then reads as `no_identity` at exactly the gate that round wanted to protect, and the
-    // stored phone is gone. That is the fixture below, and what it asserts is that the phone is
-    // still there.
-    //
-    // The exposure that remains is real and bounded: the next event on this conversation carries
-    // the identity at its own clock and settles it.
+    // NOTE: carrying the live `meta.sender` looks right (`authorizeContact` fails closed on the STORED
+    // identity), but the body's clock is the stranded message's; with the contact positioned at that
+    // same second and the live phone different, the mirror's tie rule drops BOTH readings and the
+    // contact reads `no_identity`. Why: src/modules/chatwoot/recover-payload.ts, `RecoveryConversation`.
     const convId = 8981;
     const messageId = 9481;
     const CONTACT_CW = 77;
@@ -2627,8 +2452,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     const stub = stubChatwoot({
       page: pageWith([{ id: messageId, content: "oi" }]),
     });
-    // The customer changed number AFTER that burst, so the live read disagrees with the stored value
-    // at the same position — the one shape that empties the field.
+    // NOTE: the customer changed number AFTER that burst, so the live read disagrees with the stored
+    // value at the same position: the one shape that empties the field.
     const inner = stub.makeClient;
     const deps: RuntimeDeps = {
       ...depsWith(stub),
@@ -2670,18 +2495,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a human who takes over DURING the turn is a legitimate close", async () => {
-    // The other half of the positive list, and the one case in it that is not `posted`. The gate let
-    // this through — nobody held the conversation when it ran — and the human arrived while the model
-    // was working, which is what the runtime's own ownership re-check exists to catch. It withholds
-    // the reply and comes back `taken-over`.
-    //
-    // That is a CLOSE, not a loss: a human holding the conversation will answer this message,
-    // whichever route carried it here, which is the `consumed_late` half of the settlement
-    // vocabulary. Leaving the row DEAD would page an operator about a message somebody is already
-    // typing an answer to.
-    //
-    // The takeover is written from `makeModel`, which the turn calls after every gate has run and
-    // before the re-check reads the row — the one seam inside the turn a test can reach.
+    // NOTE: the gate let this through and the human arrived while the model worked; the runtime's
+    // ownership re-check withholds the reply as `taken-over`. That is a CLOSE (`consumed_late`): the
+    // human will answer, and a DEAD row would page an operator about it.
     const convId = 8992;
     const messageId = 9492;
     const conv = await seedConversation(convId);
@@ -2692,15 +2508,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     const stub = stubChatwoot({
       page: pageWith([{ id: messageId, content: "oi" }]),
     });
-    // AWAITED, from the model's own `invoke`. Two other seams were tried and neither works here:
-    // `makeModel` is synchronous, so a write fired there races the re-check it is meant to precede
-    // and lands after it about half the time (the trap a previous round of this PR fell into), and
-    // the turn's context reads (`listLabels` and its siblings) are CACHED per instance — the seam
-    // fires when this file runs alone and never fires in a full-suite run, which is a test that
-    // passes while measuring nothing.
-    //
-    // Proxied through `bindTools` because the graph binds before it invokes, and a patch applied to
-    // the bare model would be dropped by the object binding returns.
+    // NOTE: AWAITED from the model's own `invoke`. `makeModel` is synchronous, so a write there races
+    // the re-check; the context reads (`listLabels`...) are CACHED per instance and never fire in a
+    // full-suite run. Proxied through `bindTools`, whose returned object would drop a bare patch.
     let taken = false;
     const takeOver = async () => {
       if (taken) return;
@@ -2754,20 +2564,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a guardrail that deliberately silences the message DOES close the loss", async () => {
-    // `blocked` is the runtime's outcome for a guardrail that tripped with `action: "silent"` — no
-    // template, no generated reply, nothing sent. It sits on the other side of the line from `empty`
-    // and the difference is WHO decided: `empty` is the model having nothing to say, which a second
-    // attempt could legitimately answer differently, while `blocked` is the operator's own policy
-    // saying this message must not be answered. Re-running the recovery reproduces the same refusal,
-    // and leaving the row on the worklist asks an operator to investigate a decision their own
-    // configuration made.
-    //
-    // The runtime says as much where it returns it: "a word that says the burst was consumed, so the
-    // watermark advances".
-    //
-    // Driven through the real guardrail, not by injecting the outcome: the guardrail model is built
-    // from the same `deps.makeModel`, and `deepseek` asks for its verdict in PROSE, so a fake model
-    // answering `{"violated": true}` is a real trip.
+    // NOTE: `blocked` (a guardrail with `action: "silent"`) differs from `empty` by WHO decided: the
+    // operator's policy, which a rerun reproduces, so it closes the loss. Driven through the real
+    // guardrail: its model comes from `deps.makeModel`, and `deepseek` asks for a PROSE verdict, so
+    // a fake answering `{"violated": true}` is a real trip.
     const convId = 8994;
     const messageId = 9494;
     await seedConversation(convId);
@@ -2782,9 +2582,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       where: { id: agentDbId },
       select: { settings: true },
     });
-    // A resolvable credential, because a guardrail whose key does not resolve FAILS OPEN by design
-    // (gate.ts writes `credential_not_found` and lets the turn through). Without this the test would
-    // measure the fail-open path and pass for the wrong reason.
+    // NOTE: a resolvable credential, because a guardrail whose key does not resolve FAILS OPEN by
+    // design (`credential_not_found`); without it this measures the fail-open path.
     const cred = await suDb.vaultEntry.create({
       data: {
         tenantId,
@@ -2853,19 +2652,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a /reset landing mid-recovery is told the thread is being written", async () => {
-    // `/reset` deletes the memory and the checkpoint, and it REFUSES while anyone is mid-write —
-    // "either would restore what this clears". It asks `threadBusyForResetOn`, which reads the GRAPH
-    // key and the durable claim; the recovery's own hold is on the CONVERSATION key, which that
-    // question never looks at.
-    //
-    // So between the mark and `runAgentTurn` taking its own claim, a reset saw an idle thread and
-    // cleared it, while the recovery went on to run the turn — restoring the memory the operator
-    // had just erased and running whatever tools the turn chose. The window is not narrow: the mirror
-    // write, the ownership gates, the contact-authorization call and the spend ceiling all sit in it,
-    // and the last two reach the network.
-    //
-    // Asked from the delivery path's own client build, which is inside the hold and before the turn
-    // — the same seam the conversation-key test above uses, for the same reason.
+    // NOTE: `/reset` refuses while anyone is mid-write, asking `threadBusyForResetOn` about the GRAPH
+    // key and the durable claim, not the CONVERSATION key. The recovery must hold the graph key too,
+    // or a reset between the mark and `runAgentTurn`'s claim clears memory the turn then restores; the
+    // window spans network calls. Asked from the path's client build, as in the test above.
     const convId = 8995;
     const messageId = 9495;
     await seedConversation(convId);
@@ -2908,10 +2698,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("recovered");
 
-    // Three client builds, as elsewhere in this file. [0] is the recovery's own, BEFORE the hold, so
-    // a reset there is legitimately free to run. [1] is the delivery path's, inside the hold and
-    // before the turn — the reading that flips, and measured `false` without the graph key held.
-    // [2] is inside the turn, where the turn's own claim answers either way.
+    // NOTE: [0] is the recovery's own build, BEFORE the hold, where a reset may run. [1] is inside
+    // the hold and before the turn: `false` without the graph key held. [2] is inside the turn.
     expect(busy).toEqual([false, true, true]);
     // Balanced, or every reset on this thread would refuse for the life of the process.
     expect(
@@ -2931,20 +2719,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a turn that said NOTHING has not answered anybody either", async () => {
-    // `empty` is the runtime's outcome for a turn that ran every gate, reached the end, and
-    // delivered neither text nor an attachment — `sent || handedOff ? "posted" : "empty"`. For a
-    // LIVE delivery that is a complete outcome: the agent chose not to speak, and the row is settled
-    // because the event was handled.
-    //
-    // A RECOVERY cannot read it that way. This row exists because the customer was left unanswered,
-    // and an empty second attempt leaves them unanswered with nothing else coming — unlike a
-    // coalesced burst, where the flush carries the reply minutes later. Closing the loss here marks
-    // the row PROCESSED, writes `recovered`, and takes the message off the `WHERE status = 'DEAD'`
-    // worklist, which was the operator's only remaining record of it.
-    //
-    // Same family as the turn that threw and the reply that was withheld, and the reason the three
-    // are answered by ONE positive list: an outcome nobody has thought about yet must not close a
-    // loss by default.
+    // NOTE: `empty` (every gate ran, nothing delivered) settles a LIVE delivery, but a recovery row
+    // exists because the customer went unanswered, and closing it would drop the operator's only
+    // record. Like a thrown turn and a withheld reply, this is why closes are ONE positive list: an
+    // unknown outcome must not close a loss by default.
     const convId = 8991;
     const messageId = 9491;
     const conv = await seedConversation(convId);
@@ -2978,23 +2756,14 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a handoff landing during the message reads is not undone by the reconcile", async () => {
-    // The live snapshot is read FIRST and applied to the mirror; between those two moments sit the
-    // two message reads. A handoff or a resolve committed inside that stretch writes the mirror and
-    // is then overwritten by the older snapshot, because the reconcile's fallback ordering compares
-    // `last_activity_at` — which a status or assignee change never advances. The rebuilt delivery
-    // then passes the gate on a mirror it just walked back, and answers over the human.
-    //
-    // The other two callers of `reconcileMirrorFromLive` (the proactive nudge, the console's own
-    // buttons) apply the snapshot immediately after the GET. This one held it across two network
-    // round trips, which is the whole of the difference.
-    //
-    // `onAnchoredRead` is the hook that runs INSIDE that stretch, which is what makes this the
-    // window and not a guess.
+    // NOTE: the snapshot is read FIRST and applied after the two message reads; a handoff committed
+    // between them must not be overwritten by it, since the reconcile's fallback compares
+    // `last_activity_at`, which an assignee change never advances. Other `reconcileMirrorFromLive`
+    // callers apply right after the GET. `onAnchoredRead` runs INSIDE that stretch.
     const convId = 8993;
     const messageId = 9493;
-    // `lastEventAt` BEHIND the live snapshot, which is the ordinary shape here: the stranded message
-    // is the newest thing on the conversation and the mirror never saw it. With the mirror ahead the
-    // reconcile refuses on activity alone and the window is invisible.
+    // NOTE: `lastEventAt` BEHIND the live snapshot, the ordinary shape (the mirror never saw the
+    // stranded message); with the mirror ahead the reconcile refuses on activity alone.
     const conv = await seedConversation(convId, {
       lastEventAt: new Date((SENT_AT - 600) * 1000),
     });
@@ -3032,21 +2801,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a human who TAKES the conversation in that same window is not answered over either", async () => {
-    // The status half of this pair was closed by reading the outcome instead of the proposal. The
-    // assignee half is not the same rule and could not borrow it: a message payload may never write
-    // the assignee AT ALL (../../src/modules/chatwoot/state-order.ts — `assigneeOrdered` requires
-    // `fromConversationEvent`), so the mirror correctly stays human-owned while the rebuilt payload
-    // goes on STATING the pre-handoff trio it read a moment earlier. The gate preferred the
-    // statement, so the recovery answered over the human.
-    //
-    // And the damage is not only the reply. The runtime's own ownership re-check runs AFTER the
-    // model call (../../src/graph/runtime.ts), so a turn let through here has already invoked the
-    // model and run every tool it chose — a booking, a write-back — before anything withholds the
-    // text. `turns.built` is what this asserts for exactly that reason.
-    //
-    // Same seam and the same reason as the resolve above: fired from inside the fence's own query,
-    // which lands after the last mirror read and before the gate. Status left `pending` so the
-    // refusal measured here can only be the assignee's.
+    // NOTE: a message payload never writes the assignee (`assigneeOrdered` requires
+    // `fromConversationEvent`, src/modules/chatwoot/state-order.ts), so the mirror stays human-owned
+    // while the rebuilt payload STATES the pre-handoff trio; the gate must not prefer that statement.
+    // The runtime's re-check runs AFTER the model and its tools (src/graph/runtime.ts), hence
+    // `turns.built`. Fired inside the fence's query; status stays `pending` so only the assignee refuses.
     const convId = 8971;
     const messageId = 9472;
     const conv = await seedConversation(convId, {
@@ -3084,7 +2843,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
                     assigneeType: "User",
                     assigneeId: 4242,
                     assigneeName: "Ana",
-                    // Stamped ahead of the message, as the handoff webhook carrying it would be.
+                    // NOTE: stamped ahead of the message, as the handoff webhook would be.
                     chatwootAssigneeAt: SENT_AT + 3600,
                   },
                 });
@@ -3105,8 +2864,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
 
     expect(fired).toBe(true);
     expect(stub.sent).toEqual([]);
-    // The gate closed BEFORE the model was built. Asserting only `sent` would pass on a turn that
-    // ran, called tools, and was silenced on the way out.
+    // NOTE: the gate closed BEFORE the model was built; `sent` alone would pass on a turn that ran,
+    // called tools, and was silenced on the way out.
     expect(turns.built).toBe(0);
     // And the human still holds it.
     expect(
@@ -3120,20 +2879,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("an operator who RESOLVES between the last read and the gate is not answered over", async () => {
-    // Every payload the delivery path gates on is a snapshot of some earlier instant: Chatwoot
-    // freezes its own at enqueue, and this module rebuilds one from reads it made a moment before.
-    // The window that stays open is between the last of those reads and the gate — five scoped
-    // queries, measured — and an operator resolving the conversation inside it used to get a reply
-    // posted on top of the conversation they had just closed.
-    //
-    // The rule is the gate's, not this module's: the status now follows whoever WON the ordering.
-    // `mirror.applied` is false exactly when the mirror refused the payload's write, and a status the
-    // mirror refused is one the gate must not act on either — the same shape as the assignee's own
-    // fallback beside it, stated for the other half of the pair.
-    //
-    // The resolve is fired from inside the FENCE's own query, which is the one seam in that stretch:
-    // it lands after the last mirror read and before the mirror write the handoff performs. Stamped
-    // ahead of the message, as the webhook carrying it would be, so the mirror really does refuse.
+    // NOTE: every payload the path gates on is a snapshot of an earlier instant, so a resolve between
+    // the last read and the gate must win. The rule is the gate's: status follows whoever WON the
+    // ordering (`mirror.applied` is false when the mirror refused the payload's write). Fired from
+    // the FENCE's query, stamped ahead of the message so the mirror really refuses.
     const convId = 8970;
     const messageId = 9471;
     const conv = await seedConversation(convId, {
@@ -3147,14 +2896,12 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       page: pageWith([{ id: messageId, content: "oi" }]),
     });
     const turns = { built: 0 };
-    // The fence's durable read is the eighth scoped transaction of the pass. Counted rather than
-    // guessed: a probe printed the call stack of each one.
+    // NOTE: the fence's durable read is the eighth scoped transaction of the pass.
     const FENCE_QUERY = 8;
     let n = 0;
     let fired = false;
-    // The resolve is AWAITED before the fence's transaction opens, not fired beside it: a write left
-    // racing the read it is meant to precede lands after it about half the time, and the test would
-    // then be measuring nothing while still passing.
+    // NOTE: the resolve is AWAITED before the fence's transaction opens: a write racing the read it
+    // must precede lands after it about half the time, and the test would pass measuring nothing.
     const proxied = new Proxy(appDb, {
       get(t, k, r) {
         if (k !== "$extends") return Reflect.get(t, k, r);
@@ -3208,16 +2955,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
-    // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
-    // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`
-    // returns null and the create stores it), so a conversation whose first mirrored event was
-    // sparse holds no route at all — and the delivery that would have taught it is the one that
-    // died. Built from that row, the body carries no `inbox_id`, `runAgentTurn` returns "skipped" on
-    // its first line, and the row is still marked PROCESSED with a closing line saying the loss
-    // ended.
-    //
-    // Chatwoot knows the answer and we already hold it: every message the index serializes carries
-    // `inbox_id` (MEASURED at the fork's `_message.json.jbuilder`).
+    // NOTE: the mirror writes `Conversation.inboxId` null for any event that named no inbox, and the
+    // delivery that would have taught it is the one that died. Built from that row, the body has no
+    // `inbox_id`, `runAgentTurn` skips, and the row would close unanswered. Every REST message carries
+    // `inbox_id` (the fork's `_message.json.jbuilder`), so the rebuild takes it from there.
     const convId = 8936;
     const messageId = 9439;
     const conv = await seedConversation(convId, {
@@ -3251,11 +2992,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the route the message names is what decides which bot we are", async () => {
-    // The other half of the same read, and the one that costs a wrong ANSWER rather than a missing
-    // one. `agentBotChatwootId` is asked about the agent bound to the route, so a route resolved
-    // from a mirror that holds none leaves `agentBotId` null — and with no bot identity
-    // `heldByAnotherParty` cannot compare ids, so the ownership gate goes LOOSE and the recovery
-    // answers over a bot that owns the conversation.
+    // NOTE: the other half of the same read, costing a wrong ANSWER. A route resolved from a mirror
+    // that holds none leaves `agentBotId` null, `heldByAnotherParty` cannot compare ids, and the
+    // ownership gate goes LOOSE over a bot that owns the conversation.
     const convId = 8939;
     const messageId = 9442;
     await seedConversation(convId, {
@@ -3287,10 +3026,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the mirror answers the route when the account renders no inbox scalar", async () => {
-    // The second reading, and it is the one the code had before: an account whose message JSON
-    // carries no `inbox_id` is still recoverable while the mirror knows the conversation's route.
-    // Demoted rather than dropped — the live message wins where the two disagree, because it is the
-    // field `Message#webhook_data` builds the wire's `inbox` from.
+    // NOTE: the fallback reading: a message JSON with no `inbox_id` is still recoverable while the
+    // mirror knows the route. The live message wins where they disagree, because it is the field
+    // `Message#webhook_data` builds the wire's `inbox` from.
     const convId = 8938;
     const messageId = 9441;
     await seedConversation(convId, {
@@ -3415,9 +3153,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // `warn`, matching the correction it stands in for: it must not page the channel the loss paged.
     expect(closing[0]?.level).toBe("warn");
     expect(closing[0]?.source).toBe("inbox");
-    // And it names the agent whose route the message arrived on. A line attributed to nobody is the
-    // defect #317 was about: the operator filters the Logs page BY agent, so an unattributed row is
-    // one they never see.
+    // NOTE: it names the agent whose route the message arrived on: the operator filters the Logs page
+    // BY agent, so an unattributed row is one they never see.
     expect(closing[0]?.agentId).toBe(agentDbId);
   });
 
@@ -3532,10 +3269,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the gates run: a conversation another bot holds is not answered", async () => {
-    // This is the design's whole justification. The recovery does not re-implement the gates, it
-    // re-runs the delivery path so they run where they already run — and a recovery that reached
-    // the customer here would be one answering on behalf of a bot that no longer owns the
-    // conversation. "recovered" says the path ran, never that it spoke.
+    // NOTE: the recovery does not re-implement the gates, it re-runs the delivery path so they run
+    // where they already run. "recovered" says the path ran, never that it spoke.
     const convId = 8903;
     const messageId = 9403;
     await seedConversation(convId, {
@@ -3560,10 +3295,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
 
     expect(outcome).toBe("recovered");
     expect(stub.sent).toEqual([]);
-    // No turn was even built. The turn's own re-check would also have caught this one, but only
-    // after spending the model and writing a checkpoint it then rolls back — and that fallback is
-    // what a recovery that resolved no bot identity silently falls back ON, because the ownership
-    // gate goes LOOSE when it does not know which bot it is.
+    // NOTE: no turn was built. The turn's re-check would catch it only after spending the model, and
+    // it is all that is left when the recovery resolves no bot identity (the gate goes LOOSE).
     expect(turns.built).toBe(0);
     expect((await ledger(rowId)).status).toBe("PROCESSED");
   });
@@ -3661,15 +3394,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a turn holding the thread on ANOTHER replica defers: the claim is in the row", async () => {
-    // The conversation key is a Map lookup and always will be, because it has no row to be in
-    // (src/graph/inflight.ts). The GRAPH key has one since issue #203, and it is the key a follow-up
-    // NUDGE claims while posting into this very conversation — so asking only the conversation key
-    // would build a turn beside a reply already on its way and answer the customer twice.
-    //
-    // ANOTHER replica, built the only way one process can build it: take the claim with the real
-    // writer, then empty THIS process's Map. What is left holding the thread is the row alone, which
-    // is exactly what a second replica sees. The Map is put back before the release so the count the
-    // release decrements is the one the claim took.
+    // NOTE: the conversation key is a Map lookup with no row (src/graph/inflight.ts); the GRAPH key
+    // has a durable row, and a follow-up NUDGE claims it while posting here. ANOTHER replica is built
+    // by taking the real claim and emptying THIS process's Map; the Map is put back before release so
+    // the count it decrements is the one the claim took.
     const convId = 8955;
     const messageId = 9455;
     await seedConversation(convId);
@@ -3736,10 +3464,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the redirect episode survives the rescue instead of being cleared by it", async () => {
-    // `redirect_origin_display_id` is rendered by the fork's EventDataPresenter only — the REST
-    // conversation show does not carry it (MEASURED) — so the mirror is the one source for it, and a
-    // rebuild that leaves it out does not merely fail to arm the ladder: a body that STATES no
-    // pairing is a body that CLEARS one, on a row that already knew it.
+    // NOTE: `redirect_origin_display_id` is rendered by the fork's EventDataPresenter only, not the
+    // REST conversation show, so the mirror is its one source; a body that STATES no pairing CLEARS
+    // one on a row that already knew it.
     const convId = 8932;
     const messageId = 9435;
     const conv = await seedConversation(convId, {
@@ -3771,11 +3498,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a re-entry that lands mid-rescue keeps its pairing", async () => {
-    // The window the round-5 fix opened and this closes: the pairing is read BEFORE two REST reads
-    // and a reconcile, and the mirror write happens after them. A widget re-entered from a second
-    // WhatsApp thread in that window writes a NEW pairing with a proper version; replaying the old
-    // one restores the previous episode, retires the current ladder, and later messages or resolves
-    // the wrong sibling.
+    // NOTE: the pairing is read BEFORE two REST reads and a reconcile, and the mirror write happens
+    // after. A widget re-entry in that window writes a NEW versioned pairing; replaying the old one
+    // restores the previous episode, retires the current ladder, and messages the wrong sibling.
     const convId = 8933;
     const messageId = 9436;
     const conv = await seedConversation(convId, {
@@ -3788,11 +3513,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     const stub = stubChatwoot({
       page: pageWith([{ id: messageId, content: "oi" }]),
     });
-    // The re-entry lands exactly where a real one would: after the pairing was read, before the
-    // rebuilt body reaches the mirror. Stamped with a version, as the webhook that carries it is.
-    // ONCE, on the first client build: the delivery path builds a client of its own later, and a
-    // hook that fired again would re-apply the re-entry AFTER the mirror write and hide the very
-    // regression this is looking for.
+    // NOTE: the re-entry lands after the pairing was read and before the rebuilt body reaches the
+    // mirror, versioned as its webhook is. ONCE: the path builds its own client later, and firing
+    // again would re-apply it AFTER the mirror write and hide the regression.
     let reentered = false;
     const racing: RuntimeDeps = {
       ...depsWith(stub),
@@ -3828,13 +3551,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
     expect(row.redirectOriginDisplayId).toBe(992);
 
-    // THE MIRROR IS NOT THE ONLY READER, and on its own the line above proves nothing about the
-    // rebuilt body: the body states the pairing WITH its version, so the mirror rejects the old one
-    // whichever value the body carried. `armRedirectChatFollowUp` has no version to compare — it
-    // takes the pairing straight off the event and UPSERTS the ladder's payload — so this is where a
-    // body still carrying 991 shows up, re-arming a follow-up for the episode the customer left.
-    // Keyed by THIS conversation's widget thread. Every recovery in this file arms a ladder now that
-    // the fixture agent has channelRedirect on, so an unscoped read answers with a neighbour's row.
+    // NOTE: the mirror rejects the old versioned pairing whatever the body carried, so the line above
+    // proves nothing alone. `armRedirectChatFollowUp` UPSERTS off the event with no version, so a body
+    // still carrying 991 shows here. Keyed by THIS widget thread: every recovery here arms a ladder.
     const armed = await suDb.schedulerJob.findFirst({
       where: {
         tenantId,
@@ -3849,11 +3568,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a message older than the ceiling is refused on ITS clock, not on the row's", async () => {
-    // `receivedAt` is when THIS application inserted the ledger row, not when the customer wrote. A
-    // webhook delayed by a Chatwoot retry or an outage inserts late, so a message hours past the
-    // ceiling can pass a check made on the row alone — and then the free-form reply crosses the
-    // WhatsApp window, is rejected, is caught by the delivery path, and the row is still closed as
-    // recovered.
+    // NOTE: `receivedAt` is when THIS application inserted the row, not when the customer wrote; a
+    // webhook delayed by a retry or outage inserts late, so a check on the row alone would pass a
+    // message past the ceiling, whose free-form reply then crosses the WhatsApp window.
     const convId = 8934;
     const messageId = 9437;
     await seedConversation(convId);
@@ -3888,11 +3605,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a rebuilt event that is no longer an inbound message fails closed", async () => {
-    // The ledger row is the proof it ever was one: `inboundMessageId` is written for nothing else.
-    // So a rebuild that comes out as anything else describes a degraded REST read — a missing
-    // `message_type` normalizes to "other" — and handing that to the delivery path is the exact
-    // quiet failure this issue is about: no turn runs, the row is marked PROCESSED, a closing line
-    // says the loss ended, and the customer is still waiting.
+    // NOTE: `inboundMessageId` is written for inbound messages only, so a rebuild that is anything
+    // else (a missing `message_type` normalizes to "other") is a degraded REST read. Handed to the
+    // path, no turn runs and the row would close with the customer still waiting.
     const convId = 8935;
     const messageId = 9438;
     const conv = await seedConversation(convId);
@@ -3931,17 +3646,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a delivery path that throws puts the row back where it found it", async () => {
-    // The claim has already happened by then: a throw escaping `processChatwootDelivery` leaves the
-    // row on PROCESSING with nothing holding it, the next attempt reads that as somebody else's and
-    // completes the job over it, and the row waits for the sweep to declare it stranded all over
-    // again — thirty minutes it may not have against the age ceiling.
-    //
-    // NOT reachable behaviourally, and that was MEASURED rather than assumed: the path catches its
-    // turn, its media pass, its mirror write and its client build — a stub that throws on each was
-    // tried and every one came back `processed`. What escapes is a scoped query that cannot reach
-    // the database (a pool timeout, a deadlock), and forcing that means faking the client out from
-    // under `runScopedOn`, which proves nothing about the shipped code. Asserted where it is
-    // written, the same way tests/modules/delivery-sweep.test.ts asserts its own unreachable branch.
+    // NOTE: a throw escaping `processChatwootDelivery` after the claim would leave the row on
+    // PROCESSING, waiting for the sweep again, time it may not have against the age ceiling. Not
+    // reachable behaviourally: the path catches its turn, media pass, mirror write and client build;
+    // only a scoped query failing (pool timeout, deadlock) escapes. Asserted on the source, as
+    // tests/modules/delivery-sweep.test.ts does for its unreachable branch.
     const src = await Bun.file(
       new URL(
         "../../src/modules/chatwoot/recover-delivery.ts",
@@ -3961,13 +3670,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("nothing awaits between the fence answering free and the mark that holds it", async () => {
-    // The fence answers about the moment it runs, and the mark is what makes that answer keep
-    // meaning something. Any await BETWEEN them is a window neither covers: a follow-up nudge
-    // starting inside it reads no fence, and the recovery never asks again. MEASURED as a real gap
-    // — `agentBotChatwootId` used to be resolved in exactly that spot, one scoped query wide.
-    //
-    // Structural, because the thing being asserted IS the absence of a suspension point, and a
-    // behavioural test would have to inject the very await it is meant to forbid.
+    // NOTE: the mark keeps the fence's answer true; any await BETWEEN them is a window neither covers,
+    // where a follow-up nudge can start unseen. Structural, because what is asserted IS the absence
+    // of a suspension point, and a behavioural test would have to inject the await it forbids.
     const src = await Bun.file(
       new URL(
         "../../src/modules/chatwoot/recover-delivery.ts",
@@ -3989,11 +3694,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       .join("\n");
     expect(code).not.toContain("await ");
 
-    // And the local keys are asked AFTER the durable read, not only before it. `turnOwnsThread`
-    // reads a row; a turn that starts while that read is in flight marks the Map and the row-read
-    // still describes the instant before it did. It answers for the GRAPH key itself (it asks the
-    // Map first), so the one that would be missed is the CONVERSATION key — the same key the mark
-    // below takes and the one `followUpHandler` reads.
+    // NOTE: the local keys are asked AFTER the durable read too: a turn starting during
+    // `turnOwnsThread`'s row read marks the Map unseen. The GRAPH key is covered by that call itself,
+    // so the one at risk is the CONVERSATION key, the one the mark takes and `followUpHandler` reads.
     const durable = src.indexOf("await turnOwnsThread(");
     expect(durable).toBeGreaterThan(-1);
     expect(durable).toBeLessThan(mark);
@@ -4001,15 +3704,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the pairing the body carries and the pairing the fence asks about are one reading", async () => {
-    // The mirror is re-read once, and TWO things are built from that reading: the body handed to the
-    // delivery path, and the graph key the fence asks about. ONE reading is what makes them the same
-    // pairing, and it is only one reading while nothing between it and the fence can move it.
-    // MEASURED as a real gap: `agentBotChatwootId` used to sit between the two, one scoped query
-    // wide, and a webhook landing inside it (./mirror.ts writes `contactInboxId` on an unversioned
-    // event) left the body and the fence naming the thread the contact HAD.
-    //
-    // Structural for the same reason as the test above: what is asserted IS the absence of a
-    // suspension point, and reproducing it behaviourally means injecting the await it forbids.
+    // NOTE: the body and the fence's graph key come from ONE mirror reading, which stays one only
+    // while no await sits between it and the fence: src/modules/chatwoot/mirror.ts writes
+    // `contactInboxId` on an unversioned event, so a webhook there splits them. Structural, as above.
     const src = await Bun.file(
       new URL(
         "../../src/modules/chatwoot/recover-delivery.ts",
@@ -4036,19 +3733,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the turn's failure is reported by the turn, never by the block around it", async () => {
-    // `onDirectTurn` is how this module learns whether anybody was answered, and `{ kind: "error" }`
-    // is the one reading that costs a SECOND TURN: the row goes back to DEAD, the scheduler runs the
-    // whole delivery path again, the customer is answered twice and every side-effecting tool the
-    // first turn called runs a second time.
-    //
-    // The delivery path's direct-turn block also wraps the bookkeeping that follows the turn —
-    // settling the ledger, the unrouted line, clearing a surfaced error. Reported from the enclosing
-    // catch, "the turn failed" and "the turn ANSWERED and a write after it failed" arrive here as
-    // the same event. Today none of those three can throw, each swallowing its own failure; the
-    // contract must not rest on that staying true at three unrelated call sites.
-    //
-    // Structural, because what is being asserted is that a PATH does not exist. A behavioural test
-    // would have to add the throw it forbids.
+    // NOTE: `{ kind: "error" }` from `onDirectTurn` costs a SECOND TURN (answered twice, tools rerun).
+    // The direct-turn block also wraps the bookkeeping after the turn, so reported from the enclosing
+    // catch, "the turn ANSWERED and a later write failed" would read as a failure. Those writes
+    // swallow their own errors, which is not a contract. Structural: the PATH must not exist.
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
     ).text();
@@ -4070,9 +3758,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   describe("putting the row back", () => {
-    // The compensating write both failure roads take, tested where it can be: against the real
-    // table. Three answers, and the caller acts differently on each — the source assertion above is
-    // only for the branch that cannot be reached behaviourally.
+    // The compensating write both failure roads take, against the real table. Three answers, and
+    // the caller acts differently on each.
     test("a row still in the state it was left in comes back to DEAD", async () => {
       const rowId = await seedDeadDelivery({
         conversationId: 8964,
@@ -4159,17 +3846,15 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     }
   }
 
-  // ISSUE #478 review, round 5. The identity fence refuses a route whose agent has no Chatwoot bot,
-  // because the reply is posted with the persona's token and the ownership comparison needs an id to
-  // compare. Both of those are about a REPLY, and a transcription replay posts none: what it owes is
-  // an enqueue. Refused there, the words stay out of the only memory a human-owned conversation has,
-  // permanently, over a persona that was never going to be used.
+  // The identity fence (no Chatwoot bot for the route's agent) protects a REPLY: the persona's token
+  // and the ownership comparison. A transcription replay posts none and owes only an enqueue, so
+  // refusing it would keep the words out of a human-owned conversation's only memory.
   test("a transcription replay needs no bot identity", async () => {
     const convId = 8898;
     const messageId = 9498;
     const ORPHAN_INBOX = 76;
-    // An inbox that NAMES an agent while that agent has no bot row — the state the console shows as
-    // "missing", and the one the fence exists for.
+    // NOTE: an inbox that NAMES an agent with no bot row: the console's "missing" state, the one the
+    // fence exists for.
     const orphanAgent = await suDb.agent.create({
       data: {
         tenantId,
@@ -4240,12 +3925,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBeGreaterThan(0);
   });
 
-  // ISSUE #478 review, round 7. A memory-only replay reports no turn, so every settlement test in
-  // `runRecovery` passes it by construction — right for a replay that answered nobody, wrong for one
-  // that also REMEMBERED nobody. An inbox unbound, switched off or flipped to test mode in the half
-  // hour a recovery waits reaches no ingestion branch at all, and the delivery still comes back
-  // `"processed"` because nothing failed. Read as success, the row closes with the words in nobody's
-  // memory and the worklist loses the only record of it.
+  // A memory-only replay reports no turn, so the settlement checks in `runRecovery` pass it by
+  // construction, which is wrong when nothing REMEMBERED it either. An inbox unbound, switched off or
+  // put in test mode before the recovery reaches no ingestion branch and still comes back
+  // `"processed"`; closed, the words would be in nobody's memory and off the worklist.
   test("a transcription replay that nothing ingested is not closed", async () => {
     const convId = 8895;
     const messageId = 9495;
@@ -4301,15 +3984,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
-  // ISSUE #478 review, round 6, and the other half of the case above. Letting the replay past the
-  // identity fence is right where a PERSON holds the conversation, and wrong where an AGENT BOT
-  // does: the id is not only a token to post with, it is the left-hand side of the ownership
-  // comparison, so with it null that comparison goes loose, another bot's conversation reads as
-  // ours, `act` comes back true, and the delivery path skips the very ingestion this replay exists
-  // for while the row settles PROCESSED and reports a recovery.
-  //
-  // Named from the LEDGER where it can be — the route the delivery arrived on, replayed rather than
-  // re-derived — and refused where it cannot.
+  // The other half: past the identity fence is right where a PERSON holds the conversation, wrong
+  // where an AGENT BOT does. The id is the left side of the ownership comparison; null, another bot's
+  // conversation reads as ours and the path skips the ingestion while the row settles. Named from the
+  // LEDGER's route where it can be, refused where it cannot.
   test("a transcription replay is refused when a bot it cannot name holds the conversation", async () => {
     const convId = 8896;
     const messageId = 9496;
@@ -4367,8 +4045,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       ),
     });
 
-    // Refused, and the row stays DEAD on the worklist — which is the honest record, rather than a
-    // recovery that remembered nothing.
+    // NOTE: refused, and the row stays DEAD on the worklist rather than closing on a recovery that
+    // remembered nothing.
     expect(
       await recoverStrandedDelivery({
         tenantId,
@@ -4381,11 +4059,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
-  // ISSUE #478 review, round 5. The fence below is about a command the ORIGINAL delivery already
-  // executed, and the live path reads a command off a message's creation alone — an update of that
-  // same message consumes nothing there. Asked of a transcription replay, it fires on a voice note
-  // whose text happens to read as `/reset` and drops the append it was recovering: a divergence from
-  // the delivery path in the direction that loses the message.
+  // The command fence is about a command the ORIGINAL delivery already executed, and the live path
+  // reads a command off a message's creation alone. Asked of a transcription replay, it would fire on
+  // a voice note reading as `/reset` and drop the append it was recovering.
   test("a transcription replay is not refused for looking like a command", async () => {
     const convId = 8897;
     const messageId = 9497;
@@ -4427,21 +4103,17 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     );
 
-    // The OUTCOME is the assertion, not an append: a command is only ACTIVE for a test-mode agent,
-    // and a test agent's route does not ingest continuously — so this fixture cannot also show the
-    // words landing. What it shows is the replay reaching the delivery path at all, which is where
-    // the gates that decide the append live. Refused here it never gets there, whatever the route
-    // would have done.
+    // NOTE: the OUTCOME is the assertion, not an append: a command is ACTIVE only for a test-mode
+    // agent, whose route does not ingest continuously. It shows the replay reaching the delivery path,
+    // where the gates that decide the append live.
     expect(outcome).not.toBe("unrecoverable");
     expect(stub.sent).toEqual([]);
   });
 
   test("a control command is never replayed, where one is ACTIVE", async () => {
-    // The premise of re-running the delivery path is that the path did not complete — not that it
-    // did nothing. `/reset` performs its deletion BEFORE the tail settles the row, so a process that
-    // died in that window leaves a DEAD row whose replay deletes the memory the conversation has
-    // accumulated since. Destructive, and unlike a customer's message its author is an operator who
-    // is present and can retype it.
+    // NOTE: a DEAD row means the path did not complete, not that it did nothing: `/reset` deletes
+    // BEFORE the row settles, so a replay would delete memory accumulated since. Its author is an
+    // operator who can retype it.
     const convId = 8930;
     const messageId = 9433;
     await seedConversation(convId);
@@ -4471,15 +4143,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the same text at a PRODUCTION agent is a customer message, and is answered", async () => {
-    // Whether a control command exists at all is the agent's MODE, decided in ./webhook.ts with
-    // `commandMode === "test"`. At a production agent `/reset` is not a command: the delivery path
-    // hands it to the turn like any other text and the customer gets a reply. A recovery that
-    // refused it would be answering a question the delivery path does not ask, and the cost would
-    // fall on the customer rather than on a destructive effect — the one divergence from "run the
-    // delivery path again" that LOSES a reply instead of saving one.
-    //
-    // The fixture agent is production, so this case needs no setup; its neighbour above is the one
-    // that has to arrange for a command to exist.
+    // NOTE: whether a command exists is the agent's MODE (`commandMode === "test"` in
+    // src/modules/chatwoot/webhook.ts). At a production agent `/reset` is customer text the path
+    // answers, so refusing it here would LOSE a reply the delivery path would give.
     const convId = 8962;
     const messageId = 9463;
     await seedConversation(convId);
@@ -4889,8 +4555,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
   });
 
-  // Issue #746: the delivery path tells the arm the message is a reaction, so the flush knows to ask
-  // the catch-up read for what the page leaves out.
+  // The delivery path tells the arm the message is a reaction, so the flush knows to ask the catch-up
+  // read for what the page leaves out.
   test("with debounce on, a reaction arms the burst with the reaction mark", async () => {
     const convId = 8747;
     const messageId = 9747;

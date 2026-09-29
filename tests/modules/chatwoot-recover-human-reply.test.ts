@@ -13,22 +13,14 @@ import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// RECOVERING THE COLLEAGUE'S REPLY AN INGESTION LOST (issue #728).
+// RECOVERING THE COLLEAGUE'S REPLY AN INGESTION LOST.
 //
-// What the delivery loses is one effect: the words reaching the contact's memory. The ledger has
-// named the reply since issue #469 (`human_reply_message_id`, written at INSERT for the takeover's
-// own fence), so the message can be read back by id and the append armed again — which three places
-// in the tree said was impossible, on a premise that was true when each was written.
-//
-// WHAT IS ASSERTED HERE is the job the recovery arms and the payload it carries, not the append
-// itself: the append is the ingest job's, and it is the SAME job the live path would have armed,
-// dedup included. Asserting it here would be asserting `../../src/graph/ingest.ts`'s behaviour
-// through two layers.
-//
-// The Chatwoot side serves the message page in the REST spelling, which is the one thing this
-// recovery depends on and the one the issue says nobody had measured: `message_type` as an INTEGER
-// (`message_type_before_type_cast`) and the sender rendered by `push_event_data`. Serving the
-// webhook spelling instead would make every one of these pass by construction.
+// The delivery loses one effect: the words reaching the contact's memory. The ledger names the reply
+// (`human_reply_message_id`, written at INSERT for the takeover's own fence), so the message is read
+// back by id and the append armed again. What is asserted is the job the recovery arms and its
+// payload, not the append itself, which is the ingest job's (src/graph/ingest.ts), dedup included.
+// The Chatwoot side serves the page in the REST spelling this recovery depends on: `message_type`
+// as an INTEGER and the sender by `push_event_data`; the webhook spelling would pass by construction.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -56,12 +48,12 @@ const suDb = su as PrismaClient;
 const INBOX_ID = 91;
 const ZAPI_INBOX_ID = 92;
 const TEST_MODE_INBOX_ID = 93;
-// An inbox NOBODY of ours answers, with a watcher on it: the route issue #620 measured as folding
-// nothing in, because there is no responder's memory for the watcher to share.
+// An inbox NOBODY of ours answers, with a watcher on it: a route that folds nothing in, because
+// there is no responder's memory for the watcher to share.
 const UNANSWERED_INBOX_ID = 94;
 // A responder of ours, with a watcher whose own agent is in `test` mode. The receiver asks a
-// row-backed watcher's SWITCH and not its mode (issue #476 review, round 19), so this route folds
-// the reply in — and it is the only shape that tells the two readings of the gate apart.
+// row-backed watcher's SWITCH and not its mode, so this route folds the reply in, and it is the
+// only shape that tells the two readings of the gate apart.
 const WATCHED_INBOX_ID = 95;
 const OUR_BOT = 31;
 // A watcher's own bot: Chatwoot fans a message to the inbox's bot AND to any observer attached to
@@ -85,7 +77,7 @@ const pages = new Map<number, Record<string, unknown>[]>();
 // Conversations whose message read fails outright.
 const failingReads = new Set<number>();
 // Conversations whose read answers 200 with a body that is not a message page, which is what a
-// degraded account looks like from here (review r10).
+// degraded account looks like from here.
 const unusableReads = new Set<number>();
 // Conversations an operator resets WHILE the page is being served, which is the window the second
 // reading of the boundary exists for and the only one it can see.
@@ -118,12 +110,11 @@ const makeClient = async (config: Parameters<typeof createChatwootClient>[0]) =>
     fetchImpl: stubFetch,
   });
 
-// THE REST SPELLING, which is what the fork actually serves on this endpoint and is not the webhook
-// one. `message_type` renders through `message_type_before_type_cast` (an integer), and the sender
-// through `User#push_event_data` — which carries `available_name`, `avatar_url`,
+// THE REST SPELLING, which is what the fork serves on this endpoint and is not the webhook one.
+// `message_type` renders through `message_type_before_type_cast` (an integer), and the sender
+// through `User#push_event_data`, which carries `available_name`, `avatar_url`,
 // `availability_status` and `thumbnail` beside the four fields the webhook's `webhook_data` gives.
-// MEASURED against the local fork (4.16.0) before this test was written; the discriminator everything
-// depends on, `sender.type === "user"`, is present in both.
+// The discriminator everything depends on, `sender.type === "user"`, is present in both.
 function restComposerReply(id: number, content: string) {
   return {
     id,
@@ -216,9 +207,9 @@ describe.skipIf(!dbUp)(
           name: "Atendente",
         },
       });
-      // The watcher: `monitoring` and switched on, with a bot of its own, on an inbox a `test`-mode
-      // agent answers. The live receiver folds a colleague's reply in through THIS agent, and it
-      // asks the watcher's switch without asking its mode (issue #476 review, round 19).
+      // NOTE: The watcher: `monitoring` and switched on, with a bot of its own, on an inbox a
+      // `test`-mode agent answers. The live receiver folds a colleague's reply in through THIS agent,
+      // and it asks the watcher's switch without asking its mode.
       const watcher = await suDb.agent.create({
         data: {
           tenantId,
@@ -297,10 +288,9 @@ describe.skipIf(!dbUp)(
           },
         });
       }
-      // A LIGAÇÃO QUE FAZ DE UMA ROTA A DO OBSERVADOR, e sem ela não existe observador nenhum: é a
-      // linha de `inbox_observers` que `observerRuntimeForRoute` exige antes de chamar uma rota de
-      // observada, e é por ela que uma entrega encalhada ANTES da reivindicação — que não declarou
-      // papel — recupera o papel que teve (review r4).
+      // NOTE: A LIGAÇÃO QUE FAZ DE UMA ROTA A DO OBSERVADOR: é a linha de `inbox_observers` que
+      // `observerRuntimeForRoute` exige antes de chamar uma rota de observada, e é por ela que uma
+      // entrega encalhada ANTES da reivindicação (que não declarou papel) recupera o papel que teve.
       for (const [chatwootInboxId, observerAgentId] of [
         [TEST_MODE_INBOX_ID, watcher.id],
         [WATCHED_INBOX_ID, watcher.id],
@@ -362,22 +352,22 @@ describe.skipIf(!dbUp)(
         shape?: string | null;
         messageId?: number | null;
         contactInboxId?: number | null;
-        // Quem DETÉM a conversa no espelho. O default é o bot da inbox; um encalhe numa conversa que
-        // o bot da ROTA ainda segura é o caso em que a ligação de observação não faz dela uma rota
-        // de observador (review r9).
+        // NOTE: Quem DETÉM a conversa no espelho. O default é o bot da inbox; um encalhe numa
+        // conversa que o bot da ROTA ainda segura é o caso em que a ligação de observação não faz
+        // dela uma rota de observador.
         assigneeId?: number;
         // Omitted = the mirror knows the conversation. `false` = it does not, which is what a delivery
         // that died before the mirror write leaves.
         mirrored?: boolean;
-        // The bot the delivery arrived on, as the claim recorded it, and whether that route was a
-        // watcher's (issue #476). Omitted = the inbox persona's, answering.
+        // NOTE: The bot the delivery arrived on, as the claim recorded it, and whether that route
+        // was a watcher's. Omitted = the inbox persona's, answering.
         routeAgentBotId?: number | null;
         // `null` é o que a coluna carrega numa entrega que morreu ANTES da reivindicação: papel não
         // declarado, que é um dos três vereditos pelos quais a varredura arma a recuperação.
         routeObserved?: boolean | null;
-        // The episode boundary a `/reset` left on the conversation (issue #447), written as a
-        // SUCCESSFUL clear leaves it: the command's own stamp plus the one the clearing transaction
-        // writes, which is the one the fences read (review r7/r8).
+        // NOTE: The episode boundary a `/reset` left on the conversation, written as a SUCCESSFUL
+        // clear leaves it: the command's own stamp plus the one the clearing transaction writes,
+        // which is the one the fences read.
         resetAtMessageId?: number;
       } = {},
     ) {
@@ -460,16 +450,13 @@ describe.skipIf(!dbUp)(
         .filter((r) => r.payload.conversationId === convId);
     }
 
-    // PELA IDENTIDADE DO APPEND, e não pelo tamanho de uma população. `ingest:<thread>:<messageId>`
-    // nomeia exatamente um append (../../src/graph/ingest-job.ts), e a chave é pedida ao construtor
-    // que o produto usa, em vez de remontada à mão: o formato passa a viver num lugar só (#723,
-    // #731). Uma negativa contada — "a leitura desta conversa voltou vazia" — afirma sobre um número
-    // que este módulo move de propósito, porque a linha é apagada ao concluir e `drainPendingIngest`
-    // drena as pendentes da thread.
-    //
-    // A THREAD É A DO CONTACT-INBOX, que é por onde a memória é chaveada, e a convenção deste
-    // arquivo é `91_000 + convId` (o `seedStranded` acima). Montada com a thread da CONVERSA, a
-    // pergunta responde "não armada" para tudo e faz as treze negativas passarem por construção.
+    // NOTE: PELA IDENTIDADE DO APPEND, e não pelo tamanho de uma população.
+    // `ingest:<thread>:<messageId>` nomeia exatamente um append (src/graph/ingest-job.ts), e a chave
+    // vem do construtor que o produto usa, em vez de remontada à mão. Uma negativa contada afirmaria
+    // sobre um número que este módulo move de propósito (a linha é apagada ao concluir e
+    // `drainPendingIngest` drena as pendentes da thread). A THREAD É A DO CONTACT-INBOX
+    // (`91_000 + convId`, o `seedStranded` acima): montada com a da CONVERSA, a pergunta responderia
+    // "não armada" para tudo e as negativas passariam por construção.
     function threadOf(convId: number) {
       return contactInboxThreadId(tenantId, instanceId, 91_000 + convId);
     }
@@ -517,12 +504,11 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 799)).toBe(true);
     });
 
-    // O QUE A ISSUE CONSERTA. A resposta se perdeu porque o enfileiramento estava fora do ar, e a
-    // varredura arma a releitura: a mensagem é lida de volta pelo id que a linha guarda desde a #469, e
-    // o append é armado com o PAPEL certo — `human_agent`, que é o que põe a resposta em
-    // `recent_agent_message_ids` em vez de fingir que o cliente a escreveu (#187).
-    // Issue #755: the reply is dated with the instant Chatwoot recorded for it, which travels with
-    // the append so the model later reads when the attendant said it.
+    // NOTE: A resposta se perdeu porque o enfileiramento estava fora do ar, e a varredura arma a
+    // releitura: a mensagem é lida de volta pelo id que a linha guarda, e o append é armado com o
+    // PAPEL certo, `human_agent`, que põe a resposta em `recent_agent_message_ids` em vez de fingir
+    // que o cliente a escreveu. A resposta é datada com o instante que o Chatwoot registrou, que
+    // viaja com o append para o modelo saber quando o atendente a disse.
     test("the recovered reply carries the instant Chatwoot recorded for it", async () => {
       const convId = 9755;
       pages.set(convId, [
@@ -581,18 +567,17 @@ describe.skipIf(!dbUp)(
       expect(jobs[0]?.payload.graphThreadId).toBe(
         `${tenantId}:${instanceId}:ci:${91_000 + convId}`,
       );
-      // AND NOTHING WAS WRITTEN TO THE CONVERSATION. The recovery of the memory is not the recovery of
+      // NOTE: AND NOTHING WAS WRITTEN TO THE CONVERSATION. Recovering the memory is not recovering
       // the handover: a conversation an operator handed back to the bot in the meantime must not be
-      // taken away from it again to close a memory gap (issue #469). The takeover has a recovery of its
-      // own, armed beside this one.
+      // taken away again to close a memory gap. The takeover has a recovery of its own.
       expect(calls.filter((c) => c.url.includes("toggle_status"))).toEqual([]);
     });
 
-    // A ARMADILHA MAIS CARA DESTE CONSERTO. Num provedor que não reserva os ids do eco, a nossa própria
-    // resposta volta como um `message_created` sem sender e com `external_sender_name` — byte a byte a
-    // forma `device` que um colega digitando no telefone pareado produz. A linha guarda a FORMA, então
-    // ancorar nela sem re-perguntar ao provedor arquivaria a fala do próprio agente na memória do
-    // contato como se um atendente humano a tivesse escrito.
+    // NOTE: A ARMADILHA MAIS CARA. Num provedor que não reserva os ids do eco, a nossa própria
+    // resposta volta como um `message_created` sem sender e com `external_sender_name`, byte a byte
+    // a forma `device` que um colega digitando no telefone pareado produz. A linha guarda a FORMA,
+    // então ancorar nela sem re-perguntar ao provedor arquivaria a fala do próprio agente na memória
+    // do contato como se um atendente humano a tivesse escrito.
     test("our own echo on an unreserved provider is never folded into memory", async () => {
       const convId = 9102;
       pages.set(convId, [restDeviceReply(701, "Posso ajudar em algo mais?")]);
@@ -749,11 +734,10 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 707)).toBe(false);
     });
 
-    // E A CONTA QUE RESPONDE 200 COM ALGO QUE NÃO É UMA PÁGINA também é adiamento (review r10). As
-    // duas formas que o Chatwoot responde são um array e `{ payload: [...] }`; um corpo vazio, um
-    // `{}` ou um objeto de erro renderizado com 200 é resposta que esta leitura não sabe ler, e lê-la
-    // como página VAZIA transformava uma conta degradada em veredito: a recuperação concluía que a
-    // mensagem tinha sido apagada e liquidava a linha para sempre.
+    // NOTE: E A CONTA QUE RESPONDE 200 COM ALGO QUE NÃO É UMA PÁGINA também é adiamento. As duas
+    // formas que o Chatwoot responde são um array e `{ payload: [...] }`; um corpo vazio, um `{}` ou
+    // um objeto de erro com 200 é resposta que esta leitura não sabe ler, e lê-la como página VAZIA
+    // faria de uma conta degradada um veredito: a mensagem "apagada" e a linha liquidada para sempre.
     test("an account answering with something that is not a page is a deferral", async () => {
       const convId = 9137;
       unusableReads.add(convId);
@@ -791,10 +775,10 @@ describe.skipIf(!dbUp)(
       ).toBe("unresolved");
     });
 
-    // E A LINHA QUE NÃO NOMEIA RESPOSTA NENHUMA não ganha recuperação por estar encalhada. É a leitura
-    // tentadora deste conserto — "linha de `message_created` parada, vamos reler a mensagem" — e ela
-    // varreria para dentro a saída do nosso próprio bot, a nota privada e a reação, que são as três
-    // coisas que `human_reply_message_id` fica NULO para manter fora por construção.
+    // NOTE: E A LINHA QUE NÃO NOMEIA RESPOSTA NENHUMA não ganha recuperação por estar encalhada.
+    // Reler toda linha de `message_created` parada varreria para dentro a saída do nosso próprio
+    // bot, a nota privada e a reação, as três coisas que `human_reply_message_id` fica NULO para
+    // manter fora por construção.
     test("a row that names no reply gets no recovery", async () => {
       const convId = 9110;
       pages.set(convId, [restComposerReply(709, "não deveria ser lido")]);
@@ -814,11 +798,11 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 709)).toBe(false);
     });
 
-    // A ROTA DA ENTREGA DECIDE DE QUEM É A MEMÓRIA, não a inbox (review r1). O Chatwoot entrega a
-    // mesma mensagem ao bot da inbox E ao observador ligado nela, então um encalhe pode ser de
-    // qualquer uma das duas rotas, e só a linha diz qual. Lida como a do respondedor, a perda do
-    // observador era descartada toda vez que o respondedor estivesse em `test` ou desligado — em
-    // silêncio, e para sempre, porque nada revisita a linha.
+    // NOTE: A ROTA DA ENTREGA DECIDE DE QUEM É A MEMÓRIA, não a inbox. O Chatwoot entrega a mesma
+    // mensagem ao bot da inbox E ao observador ligado nela, então um encalhe pode ser de qualquer uma
+    // das duas rotas, e só a linha diz qual. Lida como a do respondedor, a perda do observador seria
+    // descartada sempre que o respondedor estivesse em `test` ou desligado, em silêncio e para
+    // sempre, porque nada revisita a linha.
     test("a watcher's lost append is recovered under the watcher, not the inbox's responder", async () => {
       const convId = 9114;
       pages.set(convId, [restComposerReply(713, "Já separei o seu pedido.")]);
@@ -846,13 +830,11 @@ describe.skipIf(!dbUp)(
       expect(jobs[0]?.payload.messageId).toBe(713);
     });
 
-    // O PAPEL QUE A LINHA NÃO DECLAROU SE RECUPERA DA LIGAÇÃO (review r4). `route_observed` é escrito
-    // pela reivindicação, então uma entrega que encalhou ANTES dela carrega NULO — e `role-unstated`
-    // é um dos três vereditos pelos quais a varredura arma esta recuperação, ou seja, o nulo não é
-    // caso de borda aqui, é um terço do trabalho de entrada. Lido como `false`, o append perdido de
-    // um observador ao lado de um respondedor em `test` é descartado no portão do respondedor, para
-    // sempre, porque nada revisita a linha terminal: o defeito da r1 entrando pela porta que a r1
-    // deixou aberta.
+    // NOTE: O PAPEL QUE A LINHA NÃO DECLAROU SE RECUPERA DA LIGAÇÃO. `route_observed` é escrito pela
+    // reivindicação, então uma entrega que encalhou ANTES dela carrega NULO, e `role-unstated` é um
+    // dos três vereditos pelos quais a varredura arma esta recuperação: um terço do trabalho de
+    // entrada, não caso de borda. Lido como `false`, o append perdido de um observador ao lado de um
+    // respondedor em `test` seria descartado no portão do respondedor, para sempre.
     test("an unstated role is recovered from the observer binding, not read as the responder's", async () => {
       const convId = 9131;
       pages.set(convId, [restComposerReply(728, "Anotado, já encaminhei.")]);
@@ -877,13 +859,12 @@ describe.skipIf(!dbUp)(
       expect(jobs[0]?.payload.messageId).toBe(728);
     });
 
-    // E SEGURAR A CONVERSA ENCERRA A PERGUNTA, com linha de observação ou sem ela (review r9, que
-    // traz para cá a exceção das rodadas 8 e 11 da #476). O fork entrega também ao bot ASSINADO da
-    // conversa, e um agente que respondia esta inbox continua segurando o que lhe foi atribuído,
-    // inclusive depois de virar observador. `observerRuntimeForRoute` recusa chamar essa rota de
-    // observadora sempre que a inbox tem respondedor próprio; recuperada como do observador, ela
-    // folhearia memória numa rota que o caminho ao vivo resolve para o respondedor da inbox — em
-    // `test`, que não lembra nada.
+    // NOTE: E SEGURAR A CONVERSA ENCERRA A PERGUNTA, com linha de observação ou sem ela. O fork
+    // entrega também ao bot ATRIBUÍDO da conversa, e um agente que respondia esta inbox continua
+    // segurando o que lhe foi atribuído, inclusive depois de virar observador.
+    // `observerRuntimeForRoute` recusa chamar essa rota de observadora sempre que a inbox tem
+    // respondedor próprio; recuperada como do observador, ela folhearia memória numa rota que o
+    // caminho ao vivo resolve para o respondedor da inbox, em `test`, que não lembra nada.
     test("a conversation the route's own bot holds is not an observer's route", async () => {
       const convId = 9136;
       pages.set(convId, [
@@ -909,11 +890,11 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 734)).toBe(false);
     });
 
-    // E A LIGAÇÃO MAIS NOVA QUE A ENTREGA NÃO É EVIDÊNCIA (review r6), que é a regra que o próprio
-    // subsistema já escreve para a outra evidência a posteriori: "bot equality is evidence about the
-    // role only while the binding is OLDER than the delivery". Um agente anexado como observador
-    // DEPOIS de a mensagem chegar não diz nada sobre a rota em que ela chegou, e a varredura roda
-    // meia hora depois, então essa janela é real.
+    // NOTE: E A LIGAÇÃO MAIS NOVA QUE A ENTREGA NÃO É EVIDÊNCIA, a mesma regra que o subsistema já
+    // escreve para a outra evidência a posteriori: "bot equality is evidence about the role only
+    // while the binding is OLDER than the delivery". Um agente anexado como observador DEPOIS de a
+    // mensagem chegar não diz nada sobre a rota em que ela chegou, e a varredura roda meia hora
+    // depois, então essa janela é real.
     test("an observer binding younger than the delivery is not evidence of the role", async () => {
       const convId = 9133;
       const LATE_INBOX_ID = 96;
@@ -951,10 +932,10 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 731)).toBe(false);
     });
 
-    // E O ESPELHO QUE CONHECE A CONVERSA E NÃO A INBOX É UM TERCEIRO ESTADO (review r6). Um evento
-    // cujo payload não nomeia inbox cria a linha com `inbox_id` nulo, e um evento posterior a
-    // preenche. Dobrado no "sem rota" do vizinho, isso virava `not-owed` — terminal, com a resposta
-    // nunca relida, num espelho que o Chatwoot completaria um minuto depois.
+    // NOTE: E O ESPELHO QUE CONHECE A CONVERSA E NÃO A INBOX É UM TERCEIRO ESTADO. Um evento cujo
+    // payload não nomeia inbox cria a linha com `inbox_id` nulo, e um evento posterior a preenche.
+    // Dobrado no "sem rota" do vizinho, isso viraria `not-owed`: terminal, com a resposta nunca
+    // relida, num espelho que o Chatwoot completaria um minuto depois.
     test("a mirrored conversation with no inbox yet is retried, not discarded", async () => {
       const convId = 9134;
       pages.set(convId, [restComposerReply(732, "O espelho ainda não sabe.")]);
@@ -975,10 +956,10 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 732)).toBe(false);
     });
 
-    // E O CONTROLE DA MESMA PERGUNTA: o mesmo nulo, o mesmo respondedor em `test`, e um bot que NÃO
-    // observa esta inbox. Aí não há observador a quem a perda pertença, a rota é a do respondedor, e
-    // o veredito volta a ser `not-owed`. Sem este par, a correção acima passaria também se ela
-    // simplesmente tivesse parado de perguntar o modo.
+    // NOTE: E O CONTROLE DA MESMA PERGUNTA: o mesmo nulo, o mesmo respondedor em `test`, e um bot
+    // que NÃO observa esta inbox. Aí não há observador a quem a perda pertença, a rota é a do
+    // respondedor, e o veredito volta a ser `not-owed`. Sem este par, a regra acima passaria também
+    // se simplesmente não perguntasse o modo.
     test("an unstated role with no observer binding stays the responder's", async () => {
       const convId = 9132;
       pages.set(convId, [restComposerReply(729, "Ninguém devia isto.")]);
@@ -1001,11 +982,10 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 729)).toBe(false);
     });
 
-    // E O MODO DO OBSERVADOR NÃO É PERGUNTADO, que é o que separa a leitura certa da errada. O
-    // receptor decide a rota do observador pela LINHA dele e pergunta só o interruptor — "a
-    // row-backed observer decides this whatever its mode says" (#476 review, round 19) —, então um
+    // NOTE: E O MODO DO OBSERVADOR NÃO É PERGUNTADO, que é o que separa a leitura certa da errada. O
+    // receptor decide a rota do observador pela LINHA dele e pergunta só o interruptor, então um
     // observador cujo agente está em `test` folheia a resposta na entrega. Lido pelo modo, o append
-    // dele nunca seria recuperado, e é exatamente nessa linha que o defeito de r1 morava.
+    // dele nunca seria recuperado.
     test("a watcher whose own agent is in test mode still had its append owed", async () => {
       const convId = 9118;
       pages.set(convId, [restComposerReply(716, "Anotei o pedido dela.")]);
@@ -1024,17 +1004,17 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("remembered");
-      // SOB O RESPONDEDOR DA INBOX, e não sob o observador (issue #742): a thread é a dele, ele
-      // recebeu a mensagem e guarda continuamente. O que este teste protege é o append ser devido
-      // apesar do modo do observador; de quem é o resumo é a outra pergunta, e a resposta é o dono.
+      // NOTE: SOB O RESPONDEDOR DA INBOX, e não sob o observador: a thread é a dele, ele recebeu a
+      // mensagem e guarda continuamente. O que este teste protege é o append ser devido apesar do
+      // modo do observador; de quem é o resumo é a outra pergunta, e a resposta é o dono.
       expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
         String(agentDbId),
       );
     });
 
-    // E O OBSERVADOR SEM RESPONDEDOR NÃO PERDEU NADA (issue #620), que é a outra metade da mesma
-    // condição: numa inbox que ninguém nosso atende não há memória de respondedor para o observador
-    // dividir, então a entrega nunca ingeriu e não há o que recuperar.
+    // NOTE: E O OBSERVADOR SEM RESPONDEDOR NÃO PERDEU NADA, a outra metade da mesma condição: numa
+    // inbox que ninguém nosso atende não há memória de respondedor para o observador dividir, então
+    // a entrega nunca ingeriu e não há o que recuperar.
     test("a watcher with no responder beside it has nothing to recover", async () => {
       const convId = 9115;
       pages.set(convId, [restComposerReply(714, "Ninguém lembra disto.")]);
@@ -1056,10 +1036,10 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 714)).toBe(false);
     });
 
-    // E O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO RECUSA NADA (review r7/r8): o carimbo do comando é
-    // commitado por um statement anterior e independente, e o passo da memória recusa por desenho
-    // quando um turno já escreve a thread. A cerca lê a coluna que a transação da limpeza escreve,
-    // então a resposta encalhada volta para uma memória que ninguém esvaziou.
+    // NOTE: E O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO RECUSA NADA: o carimbo do comando é commitado
+    // por um statement anterior e independente, e o passo da memória recusa por desenho quando um
+    // turno já escreve a thread. A cerca lê a coluna que a transação da limpeza escreve, então a
+    // resposta encalhada volta para uma memória que ninguém esvaziou.
     test("a /reset whose memory step failed does not discard the stranded reply", async () => {
       const convId = 9135;
       pages.set(convId, [restComposerReply(733, "Ninguém apagou isto.")]);
@@ -1081,12 +1061,11 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 733)).toBe(true);
     });
 
-    // A ÚNICA RECUSA AQUI QUE PROTEGE CONTRA DANO ATIVO, e não contra trabalho perdido (review r1).
-    // O `/reset` limpa a memória e, dentro da mesma seção crítica, revoga todo `INGEST_MESSAGE` da
-    // thread — justamente porque um append com texto de antes reconstruiria o que o operador acabou
-    // de mandar apagar. Ele não tem como revogar ESTE job: a recuperação é de um kind próprio,
-    // armada antes do comando e rodando depois dele, e apagar a thread leva junto a dedup do append,
-    // então nada rio abaixo pegaria a duplicata.
+    // NOTE: A ÚNICA RECUSA AQUI QUE PROTEGE CONTRA DANO ATIVO, e não contra trabalho perdido. O
+    // `/reset` limpa a memória e, na mesma seção crítica, revoga todo `INGEST_MESSAGE` da thread,
+    // porque um append com texto de antes reconstruiria o que o operador mandou apagar. Ele não
+    // revoga ESTE job (um kind próprio, armado antes do comando e rodando depois), e apagar a thread
+    // leva junto a dedup do append, então nada rio abaixo pegaria a duplicata.
     test("a reply cleared by a /reset is not restored into the cleared memory", async () => {
       const convId = 9116;
       pages.set(convId, [restComposerReply(715, "Texto de antes do reset.")]);
@@ -1165,13 +1144,12 @@ describe.skipIf(!dbUp)(
       expect((await ingestJobs(convId))[0]?.payload.messageId).toBe(730);
     });
 
-    // O RESET É DA THREAD, NÃO DA CONVERSA (review r2). O `/reset` limpa a memória por
-    // CONTACT-INBOX — apaga a linha de `agent_threads` e os resumos chaveados por ela — e carimba
-    // `reset_at_message_id` na única conversa em que o comando foi digitado. Um contato que escreveu
-    // duas vezes no mesmo canal tem duas conversas dividindo uma thread, então um reset na mais NOVA
-    // apaga a memória a que a resposta encalhada da antiga pertence e deixa a linha antiga sem
-    // carimbo. Perguntando só à conversa da resposta, a cerca não vê nada e restaura texto de antes
-    // da limpeza — numa thread cuja dedup foi apagada junto, então nada rio abaixo pega a duplicata.
+    // NOTE: O RESET É DA THREAD, NÃO DA CONVERSA. O `/reset` limpa a memória por CONTACT-INBOX
+    // (`agent_threads` e os resumos chaveados por ela) e carimba `reset_at_message_id` só na
+    // conversa em que o comando foi digitado. Duas conversas do mesmo contato no mesmo canal
+    // dividem uma thread, então um reset na mais NOVA apaga a memória da resposta encalhada da
+    // antiga sem carimbá-la; perguntando só à conversa da resposta, a cerca restauraria texto de
+    // antes da limpeza numa thread cuja dedup foi apagada junto.
     test("a /reset in a sibling conversation of the same thread still stops the append", async () => {
       const convId = 9121;
       const siblingId = 9122;
@@ -1211,18 +1189,13 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 724)).toBe(false);
     });
 
-    // O APPEND QUE JÁ NÃO PODE POUSAR DIZ ISSO, em vez de terminar dizendo que deu certo (review
-    // r2). A thread lembra os últimos `INGEST_ID_WINDOW` ids por direção e, com a janela SATURADA,
-    // um id abaixo do piso é `ancient`: `ingestMessageIntoThread` recusa em vez de apendar, e recusa
-    // com SUCESSO — o job completa, a linha some no DONE, e as palavras ficam permanentemente
-    // ausentes com tudo no sistema dizendo que a recuperação funcionou.
-    //
-    // E O QUE SE RELATA É INCERTEZA, não perda (review r5), pelo motivo que este teste não consegue
-    // montar de outro jeito: o estado que ele monta é EXATAMENTE o mesmo que uma entrega que armou a
-    // ingestão e morreu antes de liquidar deixa depois de 64 mensagens de atendente — o id fora da
-    // janela, a resposta na memória. Não há teste que separe os dois porque não há banco que os
-    // separe, e é daí que sai o nome do desfecho: relatado como perda, esta linha manda um operador
-    // redigitar palavras que podem já estar lá.
+    // NOTE: O APPEND QUE JÁ NÃO PODE POUSAR DIZ ISSO. A thread lembra os últimos `INGEST_ID_WINDOW`
+    // ids por direção e, com a janela SATURADA, um id abaixo do piso é `ancient`:
+    // `ingestMessageIntoThread` recusa com SUCESSO, o job completa e as palavras ficam ausentes com
+    // tudo dizendo que a recuperação funcionou. O desfecho relata INCERTEZA, não perda: o mesmo
+    // estado sai de uma entrega que armou a ingestão e morreu antes de liquidar, depois de 64
+    // mensagens de atendente, e nenhum banco separa os dois; relatado como perda, mandaria um
+    // operador redigitar palavras que podem já estar lá.
     test("a reply older than the thread's whole memory is reported as undecidable, not as lost", async () => {
       const convId = 9123;
       pages.set(convId, [restComposerReply(700, "Velha demais para voltar.")]);
@@ -1249,10 +1222,10 @@ describe.skipIf(!dbUp)(
         }),
       ).toBe("undecided");
       expect(await ingestArmedFor(convId, 700)).toBe(false);
-      // E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo (verificador,
-      // rodada 2). Sem isto, a única linha nomeando esta mensagem continua sendo
-      // `human_reply_not_remembered`, escrita pelo receptor no instante da perda — e aquela razão diz
-      // o OPOSTO do que é verdade agora: que a perda é transitória e que uma retentativa vem aí.
+      // NOTE: E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo. Sem isto,
+      // a única linha nomeando esta mensagem seria `human_reply_not_remembered`, escrita pelo
+      // receptor no instante da perda, cuja razão diz o OPOSTO do que é verdade agora: que a perda é
+      // transitória e que uma retentativa vem aí.
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: convId },
         select: { id: true },
@@ -1305,15 +1278,11 @@ describe.skipIf(!dbUp)(
       expect(calls.slice(before)).toEqual([]);
     });
 
-    // UMA RAJADA, E AS TRÊS VOLTAM. Este teste não veio do holdout: os onze cenários selados são
-    // todos de mensagem única, e a lacuna foi apontada pelo verificador DEPOIS do selo, então ele não
-    // é cego ao conserto e está declarado como tal no corpo da PR.
-    //
-    // O risco que ele cobre é concreto: uma pessoa manda três mensagens seguidas e o scheduler está
+    // NOTE: UMA RAJADA, E AS TRÊS VOLTAM. Uma pessoa manda três mensagens seguidas com o scheduler
     // fora do ar para as três. Uma recuperação chaveada pela CONVERSA, ou pela thread, recuperaria
-    // uma e liquidaria as outras duas em silêncio — e silêncio é a coisa exata que esta issue existe
-    // para tirar. O que impede isso é a linha do ledger ser por ENTREGA e nomear UMA mensagem, e o
-    // append ser chaveado por `ingest:<thread>:<messageId>`, que nomeia um append e não uma conversa.
+    // uma e liquidaria as outras duas em silêncio. O que impede isso é a linha do ledger ser por
+    // ENTREGA e nomear UMA mensagem, e o append ser chaveado por `ingest:<thread>:<messageId>`, que
+    // nomeia um append e não uma conversa.
     test("a burst of three lost replies comes back as three appends", async () => {
       const convId = 9120;
       const ids = [721, 722, 723];
@@ -1354,13 +1323,13 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // E A ROTA DO RESPONDEDOR RESOLVE PELA INBOX, NÃO PELO BOT (review r3). As duas rotas do receptor
-    // não são simétricas: `responder` sai de `inboxAgentRuntime(…, n.inboxId, …)` e `watcher` de
+    // NOTE: E A ROTA DO RESPONDEDOR RESOLVE PELA INBOX, NÃO PELO BOT. As duas rotas do receptor não
+    // são simétricas: `responder` sai de `inboxAgentRuntime(…, n.inboxId, …)` e `watcher` de
     // `observerRuntimeForRoute(…, params.agentBotId, …)`. O Chatwoot entrega a mensagem ao bot
-    // ATRIBUÍDO à conversa e ao da inbox, então numa conversa que o bot de outra persona mantém o
+    // ATRIBUÍDO à conversa e ao da inbox, então numa conversa mantida pelo bot de outra persona o
     // `route_agent_bot_id` nomeia aquela persona enquanto a ingestão correu sob o respondedor da
-    // inbox. Perguntando pelo bot nas duas rotas, um agente atribuído em `test` descarta um append
-    // que o respondedor em produção devia.
+    // inbox. Perguntando pelo bot, um agente atribuído em `test` descartaria um append que o
+    // respondedor em produção devia.
     test("a responder route resolves through the inbox, not the assigned bot", async () => {
       const convId = 9126;
       pages.set(convId, [
@@ -1387,21 +1356,14 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // DUAS ROTAS, UMA MENSAGEM, UM APPEND. O Chatwoot entrega a mesma mensagem ao bot da inbox e ao
-    // observador ligado nela, então uma resposta perdida numa inbox observada deixa DUAS linhas de
-    // ledger nomeando o mesmo id — e a varredura arma uma recuperação para cada. O que impede o
-    // dobro é a chave do append: `ingest:<thread>:<messageId>` nomeia UM append, o thread é o do
-    // contact-inbox (não o da conversa) e `rearm: "same-work"` mantém uma linha viva por chave.
-    //
-    // O QUE ISSO NÃO RESOLVE, e está medido aqui em vez de afirmado: o re-arme SUBSTITUI o payload,
-    // então `agentId` e `compactionEnabled` acabam sendo os da última recuperação a escrever. Medido
-    // no job de ingestão, o `agentId` tem um consumidor só — `armCompaction`, no `onAttendanceClosed`
-    // — e o job de compactação lê do agente apenas `settings`, nunca `enabled` nem `mode`. Então o
-    // pior caso é um resumo não armado naquele fechamento, não uma palavra perdida nem uma memória
-    // sob o agente errado. O mecanismo é herdado do receptor (as duas entregas ao vivo fazem o
-    // mesmo, desde a #194) e a varredura o torna comum em vez de raro, o que é issue própria: o
-    // conserto — o append pertencer ao dono da memória — vale nos dois caminhos, e aplicá-lo só aqui
-    // divergiria do receptor no caso da conversa mantida pelo bot de outra persona.
+    // NOTE: DUAS ROTAS, UMA MENSAGEM, UM APPEND. Uma resposta perdida numa inbox observada deixa
+    // DUAS linhas de ledger com o mesmo id, e a varredura arma uma recuperação para cada; o que
+    // impede o dobro é a chave `ingest:<thread>:<messageId>` (thread do contact-inbox) com
+    // `rearm: "same-work"`, uma linha viva por chave. O re-arme SUBSTITUI o payload, então
+    // `agentId` e `compactionEnabled` são os da última recuperação a escrever: o pior caso é um
+    // resumo não armado naquele fechamento (`armCompaction` é o único consumidor do `agentId`), não
+    // uma palavra perdida. O mecanismo é o mesmo do receptor ao vivo, e mudá-lo só aqui divergiria
+    // dele.
     test("two ledger rows for one message produce one append", async () => {
       const convId = 9125;
       pages.set(convId, [restComposerReply(726, "Uma resposta, duas rotas.")]);
@@ -1442,13 +1404,13 @@ describe.skipIf(!dbUp)(
       // E o texto é o mesmo pelas duas rotas, que é o que faz a substituição ser inofensiva para o
       // conteúdo: cada recuperação relê a mesma mensagem e renderiza com o mesmo renderizador.
       expect(jobs[0]?.text).toContain("Uma resposta, duas rotas.");
-      // E O AGENTE TAMBÉM (issue #742): a thread é a do respondedor, que recebeu a mensagem e guarda
+      // NOTE: E O AGENTE TAMBÉM: a thread é a do respondedor, que recebeu a mensagem e guarda
       // continuamente, então as duas linhas armam sob ele, e a última a armar não decide nada.
       expect(jobs[0]?.payload.agentId).toBe(String(agentDbId));
     });
 
-    // A ORDEM INVERSA (issue #742): a linha do observador é recuperada primeiro. O payload já nasce
-    // sob o respondedor, e o arme do respondedor que vem depois o repete em vez de trocá-lo.
+    // NOTE: A ORDEM INVERSA: a linha do observador é recuperada primeiro. O payload já nasce sob o
+    // respondedor, e o arme do respondedor que vem depois o repete em vez de trocá-lo.
     test("two ledger rows armed observer first are still filed under the responder", async () => {
       const convId = 9171;
       pages.set(convId, [restComposerReply(771, "A outra ordem.")]);
@@ -1509,10 +1471,10 @@ describe.skipIf(!dbUp)(
       expect(jobs[0]?.payload.agentId).toBe(String(agentDbId));
     });
 
-    // DATADO PELA EMISSÃO, NÃO PELO RECEBIMENTO (issue #742, review r1). O Chatwoot escolhe os
-    // destinatários quando emite: uma resposta emitida antes de o respondedor ser ligado nunca chegou
-    // a ele, mesmo que a entrega do observador tenha sido recebida depois do vínculo. A página relida
-    // traz o `created_at` da mensagem, e é ele que responde, como o payload responde ao vivo.
+    // NOTE: DATADO PELA EMISSÃO, NÃO PELO RECEBIMENTO. O Chatwoot escolhe os destinatários quando
+    // emite: uma resposta emitida antes de o respondedor ser ligado nunca chegou a ele, mesmo que a
+    // entrega do observador tenha sido recebida depois do vínculo. A página relida traz o
+    // `created_at` da mensagem, e é ele que responde, como o payload responde ao vivo.
     test("a reply emitted before the responder was bound stays the watcher's, whenever it was received", async () => {
       const convId = 9174;
       pages.set(convId, [
@@ -1592,9 +1554,8 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // O RESPONDEDOR DESLIGADO NÃO GUARDA NADA, então não é dono (issue #742): a rota do observador
-    // continua devendo o append (ao lado de um respondedor, desligado ou não) e o arma sob o próprio
-    // agente.
+    // NOTE: O RESPONDEDOR DESLIGADO NÃO GUARDA NADA, então não é dono: a rota do observador continua
+    // devendo o append (ao lado de um respondedor, desligado ou não) e o arma sob o próprio agente.
     test("a switched-off responder does not own the watcher's append", async () => {
       const convId = 9173;
       pages.set(convId, [
@@ -1630,9 +1591,9 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // O RESPONDEDOR QUE NÃO RECEBEU A MENSAGEM NÃO É DONO DELA (issue #742). Ligado depois de ela
-    // chegar, o Chatwoot não lhe entregou nada, então só a rota do observador a guardou, e ela a arma
-    // sob o próprio agente, como o caminho ao vivo faz quando `responderCoversMessage` diz que não.
+    // NOTE: O RESPONDEDOR QUE NÃO RECEBEU A MENSAGEM NÃO É DONO DELA. Ligado depois de ela chegar, o
+    // Chatwoot não lhe entregou nada, então só a rota do observador a guardou, e ela a arma sob o
+    // próprio agente, como o caminho ao vivo faz quando `responderCoversMessage` diz que não.
     test("a responder bound after the message does not own the watcher's append", async () => {
       const convId = 9172;
       pages.set(convId, [

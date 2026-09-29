@@ -210,8 +210,8 @@ describe("effectiveAssignee picks the witness that says the conversation is HELD
     want: { assigneeType: string | null; assigneeId: number | null };
   }> = [
     {
-      // The defect this exists for: a human took over after the payload was frozen, and a message
-      // may never write the assignee, so the mirror is RIGHT and the payload is merely louder.
+      // NOTE: A human took over after the payload was frozen, and a message may never write the
+      // assignee, so the mirror is RIGHT and the payload is merely louder.
       name: "a human in the mirror outranks a payload that says our own bot",
       payload: payload(true, "AgentBot", 9),
       mirror: { assigneeType: "User", assigneeId: 4242 },
@@ -245,7 +245,7 @@ describe("effectiveAssignee picks the witness that says the conversation is HELD
       want: { assigneeType: null, assigneeId: null },
     },
     {
-      // Issue #27's degraded payload: it said NOTHING, which is not "unassigned".
+      // NOTE: A degraded payload with no `meta` said NOTHING, which is not "unassigned".
       name: "a payload that said nothing falls back to the mirror",
       payload: payload(false),
       mirror: { assigneeType: "User", assigneeId: 4242 },
@@ -271,9 +271,9 @@ describe("effectiveAssignee picks the witness that says the conversation is HELD
     expect(effectiveAssignee(c.payload, c.mirror, OURS)).toEqual(c.want);
   });
 
-  // The trio travels together or it does not travel: a type from one witness beside an id from the
-  // other is a reading neither of them made, and it is precisely what makes the strict gate degrade
-  // (issue #210, the sweep below).
+  // NOTE: The trio travels together or it does not travel: a type from one witness beside an id
+  // from the other is a reading neither of them made, and it is what makes the strict gate degrade
+  // (the sweep below).
   test("the id always comes from the same witness as the type", () => {
     for (const c of CASES) {
       const got = effectiveAssignee(c.payload, c.mirror, OURS);
@@ -288,16 +288,12 @@ describe("effectiveAssignee picks the witness that says the conversation is HELD
   });
 });
 
-// The table above proves the FUNCTION. It cannot prove that the callers ask it the question they
-// think they are asking, and that is where this defect lived: `ourAgentBotId` alone does not buy the
-// strict gate, because the exclusion branch also needs `assigneeId` to compare against. Hand it only
-// half the pair and it degrades, silently, into the loose attribution-only gate — every AgentBot
-// reads as ours. Three call sites shipped that way (issue #210).
-//
-// So the rule is per call site, and it is read off the source rather than restated here: any call
-// that asks "is it OURS" must also supply the id that answers it. The other half — that the scoped
-// SELECT feeding the literal actually carries the column — needs no assertion, because a missing
-// `assigneeId` on a Prisma select makes the property access a type error.
+// The table above proves the FUNCTION, not that the callers ask it the question they think they
+// are asking: `ourAgentBotId` without an `assigneeId` to compare against degrades, silently, into
+// the loose attribution-only gate where every AgentBot reads as ours (docs/chatwoot.md, attribution
+// gate). So any call that asks "is it OURS" must also supply the id that answers it, read off the
+// source here; that the SELECT carries the column needs no assertion, since omitting it is a type
+// error.
 describe("every strict ownership check is given the id it compares", () => {
   const FILES = [
     "src/graph/nudge.ts",
@@ -577,7 +573,7 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     ).toBe("skipped");
   });
 
-  // ── the ack's own budget (issue #225) ──
+  // NOTE: ── the ack's own budget ──
 
   test("the ack asks Postgres nothing once the route token is resolved", async () => {
     const body = JSON.stringify({
@@ -920,8 +916,8 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
         base,
       });
 
-    // The first is served stale and starts the one refresh; it is already acked when the refresh
-    // fails, and that residual event is what issue #228 tracks.
+    // NOTE: The first is served stale and starts the one refresh; it is already acked when the
+    // refresh fails, so that one event is a known residual loss.
     expect((await send("uuid-fail-1", failing)).outcome).toBe("queued");
     const second = send("uuid-fail-2", failing);
     release();
@@ -1216,10 +1212,10 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     expect(conv.lastHandledMessageId).toBe(2001);
   });
 
-  // NOTE: End-to-end pin of the degraded-payload fallback (issue #27's second bug): a signed
-  // message_created whose conversation snapshot carries NO meta must neither wipe the mirrored
-  // human assignee nor read as bot-owned — the gate falls back to the mirror's effective state,
-  // so the message takes the handled-skip path (watermark advances, no turn).
+  // NOTE: End-to-end pin of the degraded-payload fallback: a signed message_created whose
+  // conversation snapshot carries NO meta must neither wipe the mirrored human assignee nor read as
+  // bot-owned; the gate falls back to the mirror's effective state, so the message takes the
+  // handled-skip path (watermark advances, no turn).
   test("a signed event without meta keeps the human owner and the gate stays closed", async () => {
     const deliver = async (body: string, uuid: string) => {
       const r = await receiveChatwootWebhook({
@@ -1830,7 +1826,7 @@ describe.skipIf(!dbUp)("chatwoot mirror sync", () => {
   // NOTE: Same sentinel convention as the attribute bags right above: `undefined` = "this payload
   // said nothing about the assignee" (no meta) and must preserve the stored trio; an explicit null
   // = a real unassign carried by meta. Without the guard, any degraded event silently wipes an
-  // 'AgentBot'/'User' — which is what made issue #27 intermittent.
+  // 'AgentBot'/'User' assignee.
   test("an event without meta preserves the stored assignee; meta with null assignee clears it", async () => {
     await mirrorChatwootEvent(
       tenantId,

@@ -50,6 +50,9 @@ function fakeChatwoot(
     contacts?: Record<number, { email?: string | null; phone?: string | null }>;
     convs?: Conv[];
     incoming?: string[];
+    // The origin's whole history, oldest first, served the way Chatwoot pages it: the newest page of
+    // 20 by default, and the 20 before a message id with `before`. Replaces `incoming` when given.
+    history?: Array<{ type: "in" | "out"; content: string }>;
     failOn?: Set<string>;
     continueOpen?: boolean;
     // Chatwoot's lock_to_single_conversation: the contact's LAST conversation in the inbox comes back
@@ -248,8 +251,18 @@ function fakeChatwoot(
       record("sendPrivateNote", [id, content]);
       return {};
     },
-    getMessages: async (id: number) => {
-      record("getMessages", [id]);
+    getMessages: async (id: number, o?: { before?: number }) => {
+      record("getMessages", [id, o]);
+      if (opts.history) {
+        const rows = opts.history
+          .map((m, i) => ({
+            id: i + 1,
+            message_type: m.type === "in" ? 0 : 1,
+            content: m.content,
+          }))
+          .filter((m) => o?.before == null || m.id < o.before);
+        return { payload: rows.slice(-20) };
+      }
       return {
         payload: [
           ...(opts.incoming ?? []).map((content) => ({
@@ -1028,6 +1041,177 @@ describe("openCaseInInbox", () => {
           (c.args[2] as { private: boolean }).private === false,
       ),
     ).toHaveLength(1);
+  });
+
+  describe("an address typed before the newest page of the conversation", () => {
+    const noEmail = { 5: { email: null, phone: "+5511999" } };
+    const chatter = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        type: (i % 2 === 0 ? "out" : "in") as "in" | "out",
+        content: i % 2 === 0 ? `resposta ${i}` : `mensagem ${i}`,
+      }));
+    const pagesAsked = (calls: Array<{ fn: string; args: unknown[] }>) =>
+      calls.filter((c) => c.fn === "getMessages");
+
+    test("typed only in the first message of a long conversation, the case opens", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [
+          { type: "in", content: "Olá, meu e-mail é ana@exemplo.com" },
+          ...chatter(44),
+        ],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toMatchObject({ kind: "opened", identity: "written" });
+      expect(f.contacts.get(5)?.email).toBe("ana@exemplo.com");
+      expect(pagesAsked(f.calls).length).toBeGreaterThan(1);
+    });
+
+    test("the message 21st from the end is read", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [
+          { type: "in", content: "meu e-mail: ana@exemplo.com" },
+          ...chatter(20),
+        ],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toMatchObject({ kind: "opened" });
+    });
+
+    test("an address never typed is still refused after reading the whole conversation", async () => {
+      const f = fakeChatwoot({ contacts: noEmail, history: chatter(65) });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toEqual({
+        kind: "rejected_email",
+        why: "not_in_conversation",
+      });
+      expect(writesOf(f.calls)).toEqual([]);
+      // The walk reached the first message and stopped there.
+      expect(pagesAsked(f.calls).length).toBe(4);
+    });
+
+    test("an old address written only by the agent does not count", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [
+          { type: "out", content: "É ana@exemplo.com?" },
+          ...chatter(44),
+        ],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toEqual({
+        kind: "rejected_email",
+        why: "not_in_conversation",
+      });
+    });
+
+    test("an old address that only contains the one asked is refused", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [
+          { type: "in", content: "joanna@exemplo.com.br" },
+          ...chatter(44),
+        ],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "anna@exemplo.com" }),
+      );
+      expect(r).toEqual({
+        kind: "rejected_email",
+        why: "not_in_conversation",
+      });
+    });
+
+    test("a short conversation is read in one page, as before", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [{ type: "in", content: "ana@exemplo.com" }, ...chatter(5)],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toMatchObject({ kind: "opened" });
+      expect(pagesAsked(f.calls)).toHaveLength(1);
+    });
+
+    test("found on the newest page, no older page is asked", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [...chatter(44), { type: "in", content: "ana@exemplo.com" }],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toMatchObject({ kind: "opened" });
+      expect(pagesAsked(f.calls)).toHaveLength(1);
+    });
+
+    test("the walk is bounded: an address older than a thousand messages is refused", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        history: [{ type: "in", content: "ana@exemplo.com" }, ...chatter(1100)],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toEqual({
+        kind: "rejected_email",
+        why: "not_in_conversation",
+      });
+      expect(pagesAsked(f.calls)).toHaveLength(50);
+    });
+
+    test("a server that ignores `before` does not keep the walk going", async () => {
+      const f = fakeChatwoot({ contacts: noEmail, history: chatter(45) });
+      const newest = await f.client.getMessages(7);
+      let asked = 0;
+      const client: CaseClient = {
+        ...f.client,
+        getMessages: async () => {
+          asked += 1;
+          return newest;
+        },
+      };
+      const r = await openCaseInInbox(
+        client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toEqual({
+        kind: "rejected_email",
+        why: "not_in_conversation",
+      });
+      expect(asked).toBe(2);
+    });
+
+    test("a conversation with no customer message ends the walk and refuses", async () => {
+      const f = fakeChatwoot({ contacts: noEmail, history: [] });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "ana@exemplo.com" }),
+      );
+      expect(r).toEqual({
+        kind: "rejected_email",
+        why: "not_in_conversation",
+      });
+      expect(pagesAsked(f.calls)).toHaveLength(1);
+    });
   });
 
   describe("the email an email inbox needs", () => {

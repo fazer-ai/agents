@@ -24,7 +24,6 @@ export const COMMENT_LEDGER: Record<string, FileCounts> = {
   "src/modules/chatwoot/stranded-delivery.ts": [11, 8],
   "src/modules/chatwoot/types.ts": [9, 3],
   "src/modules/chatwoot/vocab.ts": [3, 0],
-  "src/modules/chatwoot/webhook.ts": [187, 129],
   "tests/client/cross-inbox-case-editor.test.ts": [3, 0],
   "tests/client/observer-tool-editor.test.tsx": [3, 0],
   "tests/client/pages/HandoffTargetMultiAccount.test.tsx": [0, 1],

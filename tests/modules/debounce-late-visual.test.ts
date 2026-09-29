@@ -22,15 +22,9 @@ import { debounceDedupeKey } from "@/modules/debounce/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #952. Some transports attach the image AFTER creating the message (the fork's UAZAPI inbox
-// fetches the media in a job a few seconds later), so the arrival pass sees no attachment and never
-// runs vision. By the flush, the attachment is on the page the flush re-reads, and the flush is the
-// last place that can open it before the turn renders the "could not read" marker.
-//
-// What the flush must NOT do is pay again for what the arrival pass already tried: that pass leaves
-// its reading, or its count of unread files, in the in-process stash, and the flush overlays it.
-// Vision is on and has no credential, as in reengage-vision.test.ts: `extractInboundFile` takes the
-// `no_credential` exit and still writes the `vision` stage line, so counting lines counts attempts.
+// A file attached after its message was created reaches the flush unread, and the flush opens it
+// unless the arrival pass already tried it. Vision is on with no credential, so each attempt writes
+// one `vision` stage line through the `no_credential` exit, and counting lines counts attempts.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -108,7 +102,11 @@ async function seedConversation(convId: number): Promise<bigint> {
   return c.id;
 }
 
-async function flush(convId: number, pg: unknown) {
+async function flush(
+  convId: number,
+  pg: unknown,
+  opts: { abortOnRead?: AbortController } = {},
+) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
   const row = await suDb.schedulerJob.create({
     data: {
@@ -122,6 +120,18 @@ async function flush(convId: number, pg: unknown) {
     select: { id: true, claimSeq: true, payload: true },
   });
   const sent: Array<[number, string]> = [];
+  const stub = makeStub({ page: pg, sent });
+  const makeClient = opts.abortOnRead
+    ? async () => {
+        const client = await stub();
+        const read = client.getMessages.bind(client);
+        client.getMessages = (async (...args: Parameters<typeof read>) => {
+          opts.abortOnRead?.abort();
+          return read(...args);
+        }) as typeof client.getMessages;
+        return client;
+      }
+    : stub;
   const out = await flushDebounceJob({
     job: {
       id: row.id,
@@ -132,9 +142,10 @@ async function flush(convId: number, pg: unknown) {
       claimSeq: row.claimSeq,
     },
     base: appDb,
+    ...(opts.abortOnRead ? { signal: opts.abortOnRead.signal } : {}),
     deps: {
       makeModel: fakeModel,
-      makeClient: makeStub({ page: pg, sent }),
+      makeClient,
       checkpointer: new MemorySaver(),
     },
   });
@@ -280,6 +291,18 @@ describe.skipIf(!dbUp)(
       );
 
       expect(out).toEqual({ outcome: "done" });
+      expect((await visionLines(id)).length).toBe(0);
+    });
+
+    test("the flush starts no extraction once the job's deadline has passed", async () => {
+      const id = await seedConversation(9525);
+      // Aborted on the thread read, which is the last step before the fill.
+      const deadline = new AbortController();
+      await flush(9525, page([{ id: 1, content: "", anexos: [11] }]), {
+        abortOnRead: deadline,
+      });
+
+      expect(deadline.signal.aborted).toBe(true);
       expect((await visionLines(id)).length).toBe(0);
     });
 

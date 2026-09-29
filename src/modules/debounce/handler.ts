@@ -183,7 +183,7 @@ export interface CoalesceTurnContext {
   // file that failed once and is worth one more attempt a person asked for). "untried" skips what the
   // arrival pass already tried, which it leaves as a count of unread files in the stash: the flush
   // runs seconds after that pass, and the attachments it still finds unread are the ones attached
-  // AFTER the message was created (issue #952), which the arrival pass never saw.
+  // AFTER the message was created, which the arrival pass never saw.
   fillMissingMedia?: "all" | "untried";
   // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
   // everybody else's. Null when the caller has no bot to name, and then every outgoing message on the
@@ -311,6 +311,8 @@ export async function selectAnswerableBurst(
     // (/logs?conversationId=) não mostra o anexo que falhou.
     fillMedia?: {
       mode: "all" | "untried";
+      // The flush job's deadline: past it, no further paid extraction starts.
+      signal?: AbortSignal;
       turnId: string;
       convDbId: bigint;
       agentId: bigint;
@@ -449,6 +451,7 @@ async function fillMissingVisuals(args: {
   pending: ChatwootMessageRow[];
   fill: {
     mode: "all" | "untried";
+    signal?: AbortSignal;
     turnId: string;
     convDbId: bigint;
     agentId: bigint;
@@ -491,6 +494,9 @@ async function fillMissingVisuals(args: {
   // onde o cliente anexa o comprovante, o documento e o print de uma vez; disparar as mensagens
   // todas juntas multiplicaria o teto por mensagem sem nenhum ganho de latência que o cliente veja.
   for (const [i, m] of abriveis.entries()) {
+    // NOTE: Each message can take a document's whole budget, so the job's deadline is asked before
+    // every one; what is left renders as unread and the reply still goes out.
+    if (args.fill.signal?.aborted) break;
     // NOTE: A refusal can land while an earlier message is being read.
     if (i > 0) {
       const agora = await refusalMarkOrClosed(args);
@@ -611,6 +617,7 @@ export async function coalesceAndRunTurn(
         ? {
             fillMedia: {
               mode: ctx.fillMissingMedia,
+              signal: ctx.signal,
               turnId,
               convDbId,
               agentId: loaded.agentId,
@@ -2218,8 +2225,8 @@ export async function flushDebounceJob(
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
-        // Some transports attach the file after creating the message (issue #952): the arrival pass
-        // saw nothing to read, and this is the last read before the turn renders the file as unread.
+        // NOTE: Some transports attach the file after creating the message: the arrival pass saw
+        // nothing to read, and this is the last read before the turn renders the file as unread.
         fillMissingMedia: "untried",
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,

@@ -9,6 +9,7 @@ import {
 import { resolveCaseHoldFor } from "@/graph/resolve-labels";
 import { ownTransfer } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { composeForChatwoot, markValue } from "@/modules/chatwoot/liquid";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
 import {
   CROSS_INBOX_CASE_DEFAULTS,
@@ -225,7 +226,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     await buildToolset(
       {
         ...config(picked),
-        promptVars: { primeiro_nome: "Ana" },
+        promptVars: { primeiro_nome: "Ana {{contact.email}}" },
       } as AgentConfig,
       {
         tenantId: 1n,
@@ -245,8 +246,14 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     const cic = seen?.crossInboxCase as {
       interpolate?: (t: string) => string;
     };
-    expect(cic.interpolate?.("Olá, {{primeiro_nome}} {{mensagem}}")).toBe(
-      "Olá, Ana {{mensagem}}",
+    // The contact's name is a value, not the operator's Liquid: it goes out escaped.
+    const filled =
+      cic.interpolate?.("Olá, {{primeiro_nome}} {{mensagem}}") ?? "";
+    expect(filled).toBe(
+      `Olá, ${markValue("Ana {{contact.email}}")} {{mensagem}}`,
+    );
+    expect(composeForChatwoot(filled)).toBe(
+      "Olá, Ana {{ '{{' }}contact.email}} {{mensagem}}",
     );
   });
 

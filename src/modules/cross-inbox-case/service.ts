@@ -78,7 +78,8 @@ export interface OpenCaseInput {
   // and the signature as the operator wrote it. Absent ⇒ the model's text, escaped. Not applied over
   // the operator's `openingTemplate`, which carries its own sign-off.
   signCustomerMessage?: (text: string) => string;
-  // The prompt's context variables, for the operator's opening and note templates. Absent ⇒ none.
+  // The prompt's context variables, for the operator's opening and note templates, each value fenced
+  // with `markValue` so it goes out escaped for Chatwoot's Liquid. Absent ⇒ none.
   interpolate?: (template: string) => string;
   // The label writers' shared queue is keyed by tenant (see modules/chatwoot/labels.ts).
   tenantId?: bigint | null;

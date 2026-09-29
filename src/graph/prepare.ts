@@ -54,7 +54,7 @@ import {
   type KanbanContext,
   loadKanbanContext,
 } from "@/modules/chatwoot/kanban";
-import { literalForChatwoot } from "@/modules/chatwoot/liquid";
+import { literalForChatwoot, markValue } from "@/modules/chatwoot/liquid";
 import {
   type ChatwootVocab,
   loadChatwootVocab,
@@ -1568,9 +1568,13 @@ export async function buildToolset(
                   (t) =>
                     interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
                 ),
-              // The operator's opening and note templates take the same context variables.
+              // The operator's opening and note templates take the same context variables, fenced
+              // as values: a contact's name is theirs, not the operator's, and must not run as Liquid.
               interpolate: (t: string) =>
-                interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
+                interpolatePromptVars(t, cfg.promptVars, {
+                  ...cfg.promptOpts,
+                  wrap: markValue,
+                }),
               // The opening reaches the customer, so it carries the agent's signature like every reply
               // (docs/signature.md); one message, one chunk. The model's text is escaped for Chatwoot's
               // Liquid and the signature is not.

@@ -1,5 +1,5 @@
 import { clipText } from "@/lib/text";
-import { literalForChatwoot } from "@/modules/chatwoot/liquid";
+import { composeForChatwoot, markValue } from "@/modules/chatwoot/liquid";
 
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
 // WHERE the case goes lives here, never in a tool argument, which the customer's words could steer
@@ -101,49 +101,49 @@ export function openingAsksMessage(template: string | null): boolean {
 }
 
 // Context variables first, then the case number and the model's message in ONE pass, so text the
-// model wrote is never interpolated. The model's message goes in escaped for Chatwoot's Liquid and the
-// operator's text keeps its own, so the result is what goes on the wire. Empty ⇒ null, nothing sent.
+// model wrote is never interpolated. `interpolate` fences the values it fills in (`markValue`), the
+// model's message is fenced here, and `composeForChatwoot` escapes every fenced value for Chatwoot's
+// Liquid while the operator's own keeps rendering: the result is the wire. Empty ⇒ null, nothing sent.
 export function renderCaseOpening(
   template: string,
   message: string | null,
   caseNumber: number,
   interpolate: (template: string) => string,
 ): string | null {
-  const text = interpolate(template)
-    .replace(OPENING_PLACEHOLDERS, (_, key: string) =>
+  const text = composeForChatwoot(
+    interpolate(template).replace(OPENING_PLACEHOLDERS, (_, key: string) =>
       key === "mensagem" || key === "message"
-        ? literalForChatwoot(message ?? "")
+        ? markValue(message ?? "")
         : String(caseNumber),
-    )
-    .trim();
+    ),
+  ).trim();
   return text || null;
 }
 
 // The one private note on the case, in markdown: the subject as its title, a link back to the
 // conversation the case came from, and the model's reason. PT-BR, like the other system notes. The
-// operator's template replaces the layout, filled the same way as the opening. The subject and the
-// reason carry the model's words, so both go in escaped for Chatwoot's Liquid, like the opening's part.
+// operator's template replaces the layout, filled the same way as the opening: the subject and the
+// reason carry the model's words and are fenced values, the link is ours.
 export function renderCaseNote(
   template: string | null,
-  raw: { subject: string | null; reason: string; originUrl: string },
+  parts: { subject: string | null; reason: string; originUrl: string },
   interpolate: (template: string) => string,
 ): string {
-  const parts = {
-    subject: raw.subject && literalForChatwoot(raw.subject),
-    reason: literalForChatwoot(raw.reason),
-    originUrl: raw.originUrl,
-  };
+  const subject = parts.subject ? markValue(parts.subject) : "";
+  const reason = markValue(parts.reason);
   if (!template) {
-    const title = parts.subject ? `### ${parts.subject}\n\n` : "";
-    return `${title}**Caso aberto a partir de outra conversa:** [ver conversa de origem](${parts.originUrl})\n\n**Motivo:**\n${parts.reason}`;
+    const title = subject ? `### ${subject}\n\n` : "";
+    return composeForChatwoot(
+      `${title}**Caso aberto a partir de outra conversa:** [ver conversa de origem](${parts.originUrl})\n\n**Motivo:**\n${reason}`,
+    );
   }
-  return interpolate(template)
-    .replace(NOTE_PLACEHOLDERS, (_, key: string) => {
-      if (key === "assunto" || key === "subject") return parts.subject ?? "";
-      if (key === "motivo" || key === "reason") return parts.reason;
+  return composeForChatwoot(
+    interpolate(template).replace(NOTE_PLACEHOLDERS, (_, key: string) => {
+      if (key === "assunto" || key === "subject") return subject;
+      if (key === "motivo" || key === "reason") return reason;
       return parts.originUrl;
-    })
-    .trim();
+    }),
+  ).trim();
 }
 
 // Chatwoot attribute keys are lowercase snake case; anything else would be written under a key the

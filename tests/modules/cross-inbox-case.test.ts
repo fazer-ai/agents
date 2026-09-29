@@ -6,6 +6,7 @@ import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
 import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
+import { markValue } from "@/modules/chatwoot/liquid";
 import {
   type CaseClient,
   customerTyped,
@@ -2967,6 +2968,33 @@ describe("the operator's opening and the case note (issue #923)", () => {
           ),
         ),
       ).toBe(true);
+    });
+
+    // A context variable is the contact's data, and a code span of the operator's around a value
+    // would show its escape: both come out as the customer and the team should read them.
+    test("a contact's name and a value inside the operator's code span come out as written", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(
+          "Olá, {{primeiro_nome}}! {{mensagem}}",
+          "Motivo: `{{motivo}}`",
+          {
+            customerMessage: "Ok.",
+            reason: "pediu {{foo}}",
+            interpolate: (t) =>
+              interpolatePromptVars(
+                t,
+                { primeiro_nome: "{{contact.email}}" },
+                { wrap: markValue },
+              ),
+          },
+        ),
+      );
+      expect(sends(f, false)).toEqual(["Olá, {{ '{{' }}contact.email}}! Ok."]);
+      expect(sends(f, true)).toContain(
+        "Motivo: {{ '%60' | url_decode }}pediu {{ '{{' }}foo}}{{ '%60' | url_decode }}",
+      );
     });
 
     test("without a template the opening is the model's text, signed, as before", async () => {

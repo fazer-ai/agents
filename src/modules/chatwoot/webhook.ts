@@ -1029,9 +1029,10 @@ export async function recordAndProcessChatwootDelivery(
 const LEDGER_CLAIM_ATTEMPTS = 4;
 const LEDGER_CLAIM_BACKOFF_MS = 300;
 
-// The observer's memory append, retried like the ledger claim for the same full-pool blip: for a
-// COLLEAGUE's reply it is the last chance, since the sweep cannot rebuild an outgoing body
-// (./recover-takeover.ts). Production's continuous ingestion keeps one attempt, with a turn behind it.
+// The memory append's enqueue, retried like the ledger claim for the same full-pool blip, wherever no
+// turn will cover the message: `retryArm`'s cases and a colleague's reply. A colleague's reply whose
+// attempts are spent leaves the row to the sweep, which re-arms it by id (./recover-human-reply.ts).
+// Every other ingestion keeps one attempt, with a turn behind it.
 const INGEST_ARM_ATTEMPTS = 4;
 const INGEST_ARM_BACKOFF_MS = 300;
 
@@ -1273,9 +1274,10 @@ export interface ProcessChatwootParams {
   routeObserved?: boolean;
   // What the stranded pass owed, from the ledger's `owesMemoryOnly`; only a recovery passes it. The
   // pass ran while a person held the conversation or a gate had silenced the message, facts about a
-  // moment that is gone: re-derived, it reflects the conversation NOW. It disarms the TURN only: the
-  // append, settlement, watermark and takeover still read `act`, like the observer's `observing`, so a
-  // fact that silences the reply never hides in the word meaning "the bot holds this conversation".
+  // moment that is gone: re-derived, it reflects the conversation NOW. It skips the command/gate pass
+  // and the turn, clears the ingestion's `act`, joins `settlesHere` and makes the settlement wait for
+  // the append. `act` itself stays as derived, so a fact that silences the reply never hides in the
+  // word meaning "the bot holds this conversation".
   owesMemoryOnly?: boolean;
   // How wide that pass would have settled, from the ledger's `settleScopedToThisDelivery`. The scope
   // derives from who held the conversation (this delivery beside another AgentBot, the whole
@@ -1767,8 +1769,9 @@ type IngestOutcome = "queued" | "nothing" | "no-thread" | "failed";
 
 // Continuous ingestion: fold into the per-contact-inbox thread what no turn handled, so the bot has
 // full context when it resumes. The CALLER gates it (enabled production or monitoring), so a
-// `consumed` incoming here was silenced by a gate. Best-effort: a failure never strands the delivery.
-// See docs/graph.md, "Continuous ingestion".
+// `consumed` incoming here was silenced by a gate. It never throws: a failed enqueue comes back as
+// "failed", and the caller throws on it where the message has no other chance, leaving the row
+// PROCESSING for the sweep. See docs/graph.md, "Continuous ingestion".
 async function ingestUnhandledMessage(args: {
   tenantId: bigint;
   instanceId: bigint;
@@ -1869,9 +1872,9 @@ async function ingestUnhandledMessage(args: {
   if (!text.trim()) return "nothing";
   // NOTE: QUEUED, not appended: a turn owning the channel erases anything written beside it, and the
   // append can say "not now" (../../graph/ingest-job.ts). The webhook keeps the RENDERING, which reads
-  // eager media the job cannot re-derive. A colleague's reply is always the last chance (no turn reads
-  // it), so it retries like `retryArm`'s cases, asked by ROLE rather than re-spelled at the caller.
-  // Spent attempts lose the message, and the report below is what is left.
+  // eager media the job cannot re-derive. No turn reads a colleague's reply, so it retries like
+  // `retryArm`'s cases, asked by ROLE rather than re-spelled at the caller. Spent attempts return
+  // "failed", reported below.
   const attempts =
     args.retryArm || role === "human_agent" ? INGEST_ARM_ATTEMPTS : 1;
   const sleep =
@@ -1894,8 +1897,8 @@ async function ingestUnhandledMessage(args: {
       });
       return "queued";
     } catch (err) {
-      // NOTE: A failed enqueue does not fail the delivery: the retry would re-run eager media (a second
-      // provider round trip) for one append. Reported, so the observer's path can decide otherwise.
+      // NOTE: Reported rather than thrown: a delivery retry would re-run eager media (a second provider
+      // round trip) for one append, so the caller decides which outcomes leave the row for the sweep.
       logger.warn(
         "ingest arm (%s) attempt %d/%d failed (conv=%s): %s",
         role,
@@ -2624,18 +2627,14 @@ async function maybeConsumeCommandOrGate(params: {
       }
     };
 
-    // NOTE: Every step is scoped to the conversation the command was typed on, as memory is. A redirect
-    // episode keeps its anchors and ladder one per side, so a /reset on one side leaves the other's
-    // standing and the operator resets that side too. Reaching across is implementable, but widening
-    // what /reset erases is the operator's call. See docs/chatwoot.md, "`/reset` fences".
-
-    // NOTE: FIRST among the mutations, and that position is the fence: retired late, a message arriving
-    // during the cleanup arms next-episode work that gets killed (and age cannot tell it apart: the
-    // upsert re-arm keeps `created_at`, while writing `status: PENDING` revives any row armed after
-    // this); retired after the anchors clear, a claimed ladder re-sets `redirectClosedAt`. These are the
-    // kinds that can still post AT the customer; MEMORY_COMPACT goes with the memory step. A cancel
+    // NOTE: Every step is scoped to this conversation, as memory is: a redirect episode keeps its anchors
+    // and ladder per side, and widening /reset across sides is the operator's call. The retirements go
+    // FIRST: retired late, a message arriving mid-cleanup arms next-episode work that gets killed (the
+    // upsert re-arm keeps `created_at`, and `status: PENDING` revives any row armed after this); after
+    // the anchors clear, a claimed ladder re-sets `redirectClosedAt`. Retired, not cancelled: a cancel
     // reaches PENDING rows only, and a claimed follow-up's second probe passes once the hand-back
-    // returns the conversation, hence a retirement. See docs/chatwoot.md, "`/reset` fences".
+    // returns the conversation. MEMORY_COMPACT goes with the memory step. See docs/chatwoot.md, "`/reset`
+    // fences".
     await step("cancel follow-up", "follow-up pendente", () =>
       retireJobsByDedupeKey(
         tenantId,
@@ -2654,7 +2653,7 @@ async function maybeConsumeCommandOrGate(params: {
           base,
         ),
     );
-    // NOTE: This conversation only, like every step (see the scoping NOTE above).
+    // NOTE: This conversation only, like every step (see the NOTE above).
     for (const convId of [conversationId]) {
       await step(
         "cancel appointment reminders",
@@ -2668,7 +2667,8 @@ async function maybeConsumeCommandOrGate(params: {
       );
       // NOTE: A debounce flush is a queued TURN whose invoke recreates the thread this reset clears, reply
       // or not. Retired here, and the handler asks again before it invokes, since a CLAIMED flush is past
-      // every cancel. With it, every per-conversation scheduler kind is covered.
+      // every cancel. NOTHING_TO_ANSWER is not retired here: the receiver retires it (best-effort) on the
+      // command's own incoming message, and its handler stands down when `resetLandedAfter` its trigger.
       await step("cancel pending debounce", "mensagens em espera", () =>
         retireJobsByDedupeKey(
           tenantId,
@@ -3210,11 +3210,12 @@ async function maybeConsumeCommandOrGate(params: {
     return true;
   }
 
-  // NOTE: Spend ceiling, the tenant's monthly token budget. BEFORE the authorization gate: past it no
-  // turn runs, so asking another's endpoint about the contact would be a wasted call, and this is the
-  // cheapest gate (one indexed local read, `tokensUsedSince`). Over the ceiling: the operator's
-  // sentence, a handoff and a private note, in an order the spend-ceiling module owns because the
-  // debounce flush owes the same three; this caller supplies the fenced primitives above.
+  // NOTE: Spend ceiling, the tenant's monthly USD budget for the inbox. BEFORE the authorization gate:
+  // past it no turn runs, so asking another's endpoint about the contact would be a wasted call, and
+  // this is the cheapest gate (local reads only: the ceiling config and the polled spend snapshot,
+  // `readSpendSnapshot`). Over the ceiling: the operator's sentence, a handoff and a private note, in
+  // an order the spend-ceiling module owns because the debounce flush owes the same three; this caller
+  // supplies the fenced primitives above.
   if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
     const ceiling = await spendCeilingVerdict({
       tenantId,

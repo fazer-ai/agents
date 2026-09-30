@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { evaluatePrecondition } from "@/modules/agents/tool-preconditions";
+import { mirroredContactIdentifier } from "@/modules/chatwoot/contact-identifier";
 import type { FlowEvent } from "@/modules/flowlog/service";
 import {
   type InjectableCredential,
@@ -172,12 +173,7 @@ export async function authorizeContact(
       );
       const phone = trimmed(contact?.phone);
       const email = trimmed(contact?.email);
-      const attrs = contact?.attributes;
-      const identifier = trimmed(
-        attrs && typeof attrs === "object" && !Array.isArray(attrs)
-          ? (attrs as Record<string, unknown>).identifier
-          : null,
-      );
+      const identifier = mirroredContactIdentifier(contact?.attributes);
       // NOTE: a local rule answers here and the endpoint is never asked. An ATTRIBUTE rule runs before
       // the identity check, since a widget visitor with no phone or email on a marked conversation is
       // its whole use case. No grant is read, written or dropped: a rule reads our own rows every

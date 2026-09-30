@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import {
   formFromTool,
   insertEachBlock,
+  nativeVarItems,
   outputSchemaForm,
   parseExpectedStatuses,
   payloadOf,
@@ -13,6 +14,10 @@ import {
   testFieldsFrom,
 } from "@/client/pages/resources/ToolEditModal";
 import { buildHttpTool } from "@/graph/tools/http";
+import {
+  CONTEXT_VAR_NAMES,
+  HTTP_TOOL_ONLY_VAR_NAMES,
+} from "@/modules/tool-definitions/normalize";
 import { MAX_TEMPLATE_CHARS } from "@/modules/tool-definitions/response-template";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
@@ -732,4 +737,15 @@ describe("insertEachBlock", () => {
     });
     expect(value).toBe("a\n{{#each xs}}\n\n{{/each}}\nb");
   });
+});
+
+test("the value picker offers every name the runtime renders into a template, and no other", () => {
+  const offered = nativeVarItems(
+    ((_k: string, fallback: string) => fallback) as unknown as Parameters<
+      typeof nativeVarItems
+    >[0],
+  ).map((v) => v.name);
+  expect(offered.sort()).toEqual(
+    [...CONTEXT_VAR_NAMES, ...HTTP_TOOL_ONLY_VAR_NAMES].sort(),
+  );
 });

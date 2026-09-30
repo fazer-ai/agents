@@ -29,6 +29,7 @@ export const CONTEXT_VAR_NAMES = [
   "contact_name",
   "contact_email",
   "contact_phone",
+  "contact_identifier",
   "inbox_id",
   "inbox_name",
   "company_name",

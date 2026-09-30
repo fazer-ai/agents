@@ -253,6 +253,7 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
       email: "fleet@example.com",
       role: "SUPER_ADMIN",
       tenantId: null,
+      pwd: (await import("@/api/lib/auth")).passwordFingerprint(passwordHash),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setExpirationTime("1h")

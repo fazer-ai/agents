@@ -312,13 +312,24 @@ export async function getUserHasPassword(userId: bigint): Promise<boolean> {
   return Boolean(u?.passwordHash);
 }
 
-// Change a user's own password: verify the current one, then store the new hash. Throws
-// NoPasswordSetError (Google-only account) or IncorrectPasswordError (wrong current password).
+// Another write changed the password between the verification and the update, so this change did not
+// land and must not be reported as done.
+export class PasswordChangedConcurrentlyError extends Error {
+  constructor() {
+    super("The password was changed by another request");
+    this.name = "PasswordChangedConcurrentlyError";
+  }
+}
+
+// Change a user's own password: verify the current one, then store the new hash, and return it so the
+// caller can re-sign its own session. The new hash revokes every session signed under the old one
+// (`passwordFingerprint` in lib/auth). Throws NoPasswordSetError (Google-only account),
+// IncorrectPasswordError (wrong current password) or PasswordChangedConcurrentlyError.
 export async function changeUserPassword(
   userId: bigint,
   currentPassword: string,
   newPassword: string,
-): Promise<void> {
+): Promise<string> {
   const u = await prisma.user.findUnique({
     where: { id: userId },
     select: { passwordHash: true },
@@ -327,7 +338,23 @@ export async function changeUserPassword(
   const ok = await verifyPassword(currentPassword, u.passwordHash);
   if (!ok) throw new IncorrectPasswordError();
   const passwordHash = await hashPassword(newPassword);
-  await prisma.user.update({ where: { id: userId }, data: { passwordHash } });
+  // Compare-and-swap on the verified hash, so two changes racing on the same current password cannot
+  // both succeed.
+  const { count } = await prisma.user.updateMany({
+    where: { id: userId, passwordHash: u.passwordHash },
+    data: { passwordHash },
+  });
+  if (count !== 1) throw new PasswordChangedConcurrentlyError();
+  return passwordHash;
+}
+
+// The hash a session is signed under when its proof was not a password (Google), read from the row.
+export async function getPasswordHash(userId: bigint): Promise<string | null> {
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { passwordHash: true },
+  });
+  return row?.passwordHash ?? null;
 }
 
 export async function hashPassword(password: string): Promise<string> {

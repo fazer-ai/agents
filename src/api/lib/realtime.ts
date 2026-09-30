@@ -9,6 +9,9 @@ export const WS_CLOSE = {
   INTERNAL_ERROR: 1011,
   UNAUTHORIZED: 4401,
   SESSION_EXPIRED: 4402,
+  // NOTE: the account's password changed. Not an auth-lost code: the client reconnects, which
+  // succeeds for the tab holding the re-issued cookie and fails the upgrade for a revoked session.
+  CREDENTIALS_CHANGED: 4409,
 } as const;
 
 export type WsCloseCode = (typeof WS_CLOSE)[keyof typeof WS_CLOSE];

@@ -371,6 +371,7 @@ const BARE_SLICES: Record<
   [number, NotACap | `${NotACap} + ${NotACap}`]
 > = {
   "src/api/features/auth/auth.service.ts": [1, "ascii"],
+  "src/api/lib/auth.ts": [1, "ascii"],
   "src/api/middlewares/rateLimit.ts": [1, "index"],
   "src/client/components/Modal.tsx": [1, "array"],
   "src/client/contexts/ThemeContext.tsx": [1, "index"],

@@ -62,6 +62,7 @@ async function cookieFor(userId: bigint): Promise<string> {
     email: `${tag}@x.test`,
     role: "AGENT",
     tenantId: null,
+    pwd: (await import("@/api/lib/auth")).passwordFingerprint(passwordHash),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("1h")
@@ -380,6 +381,29 @@ describe.skipIf(!dbUp)("a person with several tenants", () => {
         }),
       );
       expect(res.status).toBe(401);
+      expect(
+        await suDb.tenantUser.count({
+          where: { userId: personId, tenantId: outside },
+        }),
+      ).toBe(0);
+    });
+
+    // The session read before the account row: a password change between the two leaves a proof
+    // made under the old password, which must not sign the account back in.
+    test("a session verified under a password the account no longer holds proves nothing", async () => {
+      const token = await invite();
+      const { acceptInvite, InviteAccountProofError } = await import(
+        "@/api/features/invitations/invitation.service"
+      );
+      await expect(
+        acceptInvite(
+          {
+            token,
+            session: { userId: personId, passwordHash: "$2b$04$stale" },
+          },
+          suDb,
+        ),
+      ).rejects.toBeInstanceOf(InviteAccountProofError);
       expect(
         await suDb.tenantUser.count({
           where: { userId: personId, tenantId: outside },

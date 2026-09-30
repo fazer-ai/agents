@@ -7,6 +7,9 @@ import type { ApiErrorPayload } from "@/client/lib/types";
 
 interface UseGoogleSignInOptions {
   onError: (message: string) => void;
+  // Where a successful sign-in goes. Without it the hook lands on "/", which is what Signup wants;
+  // LoginPage passes its own, since its destination can be a server route react-router cannot reach.
+  onSignedIn?: () => void;
 }
 
 interface UseGoogleSignInResult {
@@ -16,6 +19,7 @@ interface UseGoogleSignInResult {
 
 export function useGoogleSignIn({
   onError,
+  onSignedIn,
 }: UseGoogleSignInOptions): UseGoogleSignInResult {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -42,7 +46,8 @@ export function useGoogleSignIn({
       }
       if (data?.user) {
         login(data.user);
-        navigate("/");
+        if (onSignedIn) onSignedIn();
+        else navigate("/");
       }
     } catch {
       onError(t("auth.googleSignInFailed", "Google sign-in failed"));

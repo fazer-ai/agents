@@ -29,7 +29,7 @@ export function ProtectedRoute({
   }
 
   if (!user) {
-    const redirectTo = location.pathname + location.search;
+    const redirectTo = location.pathname + location.search + location.hash;
     const loginUrl =
       redirectTo !== "/"
         ? `/login?redirect=${encodeURIComponent(redirectTo)}`

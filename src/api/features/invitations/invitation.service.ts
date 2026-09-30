@@ -6,7 +6,7 @@ import {
   sessionUserOf,
   verifyPassword,
 } from "@/api/features/auth/auth.service";
-import type { AuthUser } from "@/api/lib/auth";
+import type { AuthUser, SessionIdentity } from "@/api/lib/auth";
 import basePrisma from "@/api/lib/prisma";
 import { emailEquals } from "@/lib/email-match";
 import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
@@ -314,8 +314,8 @@ export interface AcceptInviteParams {
   password?: string;
   name?: string | null;
   // The person signed in on this browser, when there is one. An existing account accepts by being
-  // signed in as itself, or by its current password.
-  sessionUserId?: bigint | null;
+  // signed in as itself under its current password, or by that password.
+  session?: SessionIdentity | null;
 }
 
 const AUTH_USER_SELECT = {
@@ -336,7 +336,9 @@ const AUTH_USER_SELECT = {
 export async function acceptInvite(
   params: AcceptInviteParams,
   base: PrismaClient = basePrisma,
-): Promise<AuthUser & { joinedTenantId: bigint }> {
+): Promise<
+  AuthUser & { joinedTenantId: bigint; sessionPasswordHash: string | null }
+> {
   const tokenHash = hashToken(params.token);
   const invite = await base.invitation.findUnique({
     where: { tokenHash },
@@ -361,7 +363,11 @@ export async function acceptInvite(
     select: { id: true, passwordHash: true },
   });
   if (account) {
-    const signedInAsIt = params.sessionUserId === account.id;
+    // A session verified under a password the account no longer holds is no proof: a change
+    // landing between that check and this read would otherwise sign a revoked session back in.
+    const signedInAsIt =
+      params.session?.userId === account.id &&
+      params.session.passwordHash === account.passwordHash;
     const knowsPassword =
       !signedInAsIt &&
       account.passwordHash !== null &&
@@ -413,16 +419,19 @@ export async function acceptInvite(
   });
   const session = sessionUserOf(row);
   if (!session) throw new InviteInvalidError();
+  // The hash the new session is signed under: the one this request proved or created.
+  const sessionPasswordHash = account ? account.passwordHash : passwordHash;
   // NOTE: `joinedTenantId` is where the invitation LEADS, apart from the session's own scope: a fleet
   // administrator's session has no tenant (null), and the console still has to open on the one they
   // just joined.
   if (session.role === "SUPER_ADMIN") {
-    return { ...session, joinedTenantId: invite.tenantId };
+    return { ...session, joinedTenantId: invite.tenantId, sessionPasswordHash };
   }
   return {
     ...session,
     tenantId: invite.tenantId,
     role: invite.role,
     joinedTenantId: invite.tenantId,
+    sessionPasswordHash,
   };
 }

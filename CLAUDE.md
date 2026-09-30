@@ -68,6 +68,8 @@ The three operational **skills** (`.claude/skills/agents-{onboarding,operation,d
 | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | `bun dev`                          | Start dev server with hot reload (port 3000)                                             |
 | `bun build`                        | Build frontend assets to `dist/`                                                         |
+| `bun dev:smoke`                    | Boot the dev server and probe the SPA, asset and API routing (docs/routing.md)           |
+| `bun smoke:prod`                   | Boot the production build and probe the document, missing assets and the cache policy (after `bun build`) |
 | `bun test`                         | Run tests                                                                                |
 | `bun test:coverage`                | Run tests with coverage report                                                           |
 | `bun lint`                         | Lint with Biome                                                                          |
@@ -103,6 +105,7 @@ The three operational **skills** (`.claude/skills/agents-{onboarding,operation,d
 
 - All colors are CSS custom properties defined in the `@theme` block in `public/index.css` (dark mode defaults). Light mode overrides live in the `html[data-theme="light"]` block in the same file
 - When adding a new color, always define both the dark value (in `@theme`) and the light value (in `html[data-theme="light"]`)
+- The `@theme` block is `@theme static` on purpose: plain `@theme` emits a variable only when a class or a scanned `var(--…)` uses it, so the dark palette would lose every unused token while the always-emitted light block keeps it, and a token read by a computed name (`var(--color-${name})`, `getPropertyValue`) would work in one theme only. `tests/client/theme-emission.test.ts` compiles the real stylesheet with zero classes and fails naming any token that was not emitted
 - Never use hardcoded Tailwind color classes (e.g. `bg-red-500`, `text-blue-100`) or hex values in components. Always use the CSS variable-based classes (`bg-error`, `text-accent`, `border-border`, etc.)
 - For text on accent-colored backgrounds (e.g. primary buttons), use `text-accent-foreground` which flips between dark/light text per theme
 - For theme-aware static assets (e.g. logos), use the `useThemedAsset` hook from `ThemeContext`. It appends `-light` before the file extension in light mode (e.g. `logo.png` becomes `logo-light.png`)

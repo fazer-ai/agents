@@ -8,14 +8,17 @@ import {
   resolveEventsTenant,
   sendToUser,
   TOPICS,
+  trackSocket,
   tryAttachEvents,
   tryAttachUser,
+  untrackSocket,
 } from "@/api/features/realtime/realtime.service";
 import { authPlugin } from "@/api/lib/auth";
 import logger from "@/api/lib/logger";
 import { doc, errors } from "@/api/lib/openapi";
 import { originPlugin } from "@/api/lib/origin";
 import { realtimeConfig, WS_CLOSE } from "@/api/lib/realtime";
+import { ServiceUnavailableError } from "@/lib/errors";
 import { roleAtLeast } from "@/lib/tenancy";
 
 // `ws.id` strings (not `ws` wrappers) that reserved a slot via `tryAttachUser`: Elysia 1.4.x rewraps
@@ -26,6 +29,48 @@ const attached = new Set<string>();
 // cap, separate from `attached` above). Same rewrap caveat: key by id, not the
 // wrapper.
 const eventsAttached = new Set<string>();
+
+// `ws.id` strings of /events sockets whose `open` has started and whose `close` has not run. `open`
+// awaits the session re-check, and a socket closed during it must not reserve a slot afterwards,
+// since no later close would release it.
+const eventsLive = new Set<string>();
+
+// Per /echo socket, whether its session survived the re-check `open` runs after registering it for
+// revocation. A message arriving meanwhile waits on it instead of being dropped, since the client
+// already sees the socket as open; all messages await the same promise, so they keep their order.
+const readiness = new Map<string, Promise<boolean>>();
+
+// Registers a just-upgraded socket for revocation FIRST, then re-reads its session. The upgrade
+// authenticated earlier, and a password change landing in between would sweep before this socket
+// existed; in this order either the sweep closes it or the re-check refuses it. True when the
+// session still holds; otherwise the socket is already closed (1011 on a transient DB failure, so
+// the client retries).
+async function registerAndRecheck(
+  ws: {
+    id: unknown;
+    raw: { close(code?: number, reason?: string): void };
+    close(code?: number, reason?: string): void;
+    data: { getAuthUser(): Promise<unknown> };
+  },
+  userId: bigint,
+): Promise<boolean> {
+  trackSocket(userId, String(ws.id), ws.raw);
+  let current: unknown;
+  try {
+    current = await ws.data.getAuthUser();
+  } catch (error) {
+    if (error instanceof ServiceUnavailableError) {
+      ws.close(WS_CLOSE.INTERNAL_ERROR, "retry");
+      return false;
+    }
+    current = null;
+  }
+  if (!current) {
+    ws.close(WS_CLOSE.CREDENTIALS_CHANGED, "session revoked");
+    return false;
+  }
+  return true;
+}
 
 const ClientMessage = t.Object({
   type: t.Union([
@@ -86,7 +131,7 @@ export const realtimeController = new Elysia({
     idleTimeout: realtimeConfig.idleTimeoutSec,
     maxPayloadLength: realtimeConfig.maxPayloadBytes,
     body: ClientMessage,
-    open(ws) {
+    async open(ws) {
       const { user } = ws.data;
       if (!user) {
         ws.close(WS_CLOSE.UNAUTHORIZED, "unauthorized");
@@ -98,6 +143,17 @@ export const realtimeController = new Elysia({
       }
       const id = String(ws.id);
       attached.add(id);
+      let settle: (ok: boolean) => void = () => {};
+      readiness.set(
+        id,
+        new Promise<boolean>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      if (!(await registerAndRecheck(ws, user.id)) || !attached.has(id)) {
+        settle(false);
+        return;
+      }
       // NOTE: Bun's native pub/sub. `ws.subscribe(topic)` registers this
       // socket as a listener; `server.publish(topic, data)` (called by
       // the service) fans out without us iterating subscribers manually.
@@ -113,13 +169,15 @@ export const realtimeController = new Elysia({
       // CHAT_GLOBAL, so this socket will start receiving them via the
       // subscription it just registered).
       ws.send(presenceSnapshot());
+      settle(true);
     },
-    message(ws, msg) {
+    async message(ws, msg) {
       if (msg.type === "ping") {
         return { type: "pong" as const };
       }
       const { user } = ws.data;
-      if (!user) return;
+      const gate = readiness.get(String(ws.id));
+      if (!user || !gate || !(await gate)) return;
       if (msg.type === "ping-self") {
         // NOTE: targeted push to every open connection of this user (other tabs and devices), not
         // to peers.
@@ -193,6 +251,8 @@ export const realtimeController = new Elysia({
       // stops itself when the last user detaches, so there is no
       // per-socket timer to cancel either.
       const { user } = ws.data;
+      readiness.delete(id);
+      if (user) untrackSocket(user.id, id);
       if (user && attached.has(id)) {
         detachUser(user.id);
         attached.delete(id);
@@ -230,10 +290,15 @@ export const realtimeController = new Elysia({
         }),
       ),
     }),
-    open(ws) {
+    async open(ws) {
       const { user } = ws.data;
       if (!user) {
         ws.close(WS_CLOSE.UNAUTHORIZED, "unauthorized");
+        return;
+      }
+      const id = String(ws.id);
+      eventsLive.add(id);
+      if (!(await registerAndRecheck(ws, user.id)) || !eventsLive.has(id)) {
         return;
       }
       const resolution = resolveEventsTenant(user, ws.data.query.tenantId);
@@ -257,7 +322,7 @@ export const realtimeController = new Elysia({
         ws.close(WS_CLOSE.POLICY_VIOLATION, "too many connections");
         return;
       }
-      eventsAttached.add(String(ws.id));
+      eventsAttached.add(id);
       ws.subscribe(TOPICS.tenant(resolution.tenantId));
       ws.send({
         type: "subscribed" as const,
@@ -267,6 +332,8 @@ export const realtimeController = new Elysia({
     close(ws) {
       const id = String(ws.id);
       const { user } = ws.data;
+      eventsLive.delete(id);
+      if (user) untrackSocket(user.id, id);
       if (user && eventsAttached.has(id)) {
         detachEvents(user.id);
         eventsAttached.delete(id);

@@ -685,7 +685,7 @@
           "Auth"
         ],
         "summary": "Change own password",
-        "description": "Verifies the current password and stores a new one for the authenticated user. Returns 400 for Google-only accounts (no local password) or an incorrect current password.",
+        "description": "Verifies the current password and stores a new one for the authenticated user, signing out every other session of the account. Returns 400 for Google-only accounts (no local password) or an incorrect current password, and 409 when another request changed the password first.",
         "requestBody": {
           "required": true,
           "content": {
@@ -793,6 +793,32 @@
               "application/json": {
                 "schema": {
                   "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
                   "type": "object",
                   "required": [
                     "error"

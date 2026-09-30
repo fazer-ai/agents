@@ -14,9 +14,6 @@ const DIST_HTML = join(process.cwd(), "dist", "index.html");
 const PUBLIC_HTML = join(process.cwd(), "public", "index.html");
 const INLINE_SCRIPT_RE = /<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
 const GSI_ORIGIN = "https://accounts.google.com";
-// Inter + JetBrains Mono load as woff2 from Google's font CDN via @font-face in public/index.css.
-// Allow that origin in font-src so the browser can fetch them instead of falling back to system fonts.
-const GOOGLE_FONTS_ORIGIN = "https://fonts.gstatic.com";
 
 export function extractInlineScriptHashes(html: string): string[] {
   const hashes: string[] = [];
@@ -102,7 +99,8 @@ export function buildCspDirectives(
     // `blob:` covers object URLs: media (voice notes/images proxied through our origin and the
     // playground replay) is fetched as bytes and rendered via URL.createObjectURL — a blob: src.
     imgSrc: ["'self'", "data:", "blob:", ...cdn],
-    fontSrc: ["'self'", "data:", GOOGLE_FONTS_ORIGIN, ...cdn],
+    // Inter and JetBrains Mono are self-hosted under /assets/fonts/ (public/index.html).
+    fontSrc: ["'self'", "data:", ...cdn],
     mediaSrc: ["'self'", "blob:", ...cdn],
     // NOTE: Same-origin WebSocket upgrades (`ws:` in dev, `wss:` in prod)
     // are covered by `'self'` per CSP3 in all evergreen browsers.

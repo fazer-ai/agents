@@ -1,3 +1,4 @@
+import { readdir } from "node:fs/promises";
 import cors from "@elysiajs/cors";
 import { staticPlugin } from "@elysiajs/static";
 import Elysia, { NotFoundError, ValidationError } from "elysia";
@@ -8,6 +9,10 @@ import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { schemaRefusal } from "@/api/lib/schema-refusal";
+import {
+  applyStaticCacheControl,
+  productionIndexHandler,
+} from "@/api/lib/static-cache";
 import { errorDetail, isFrameworkRefusal } from "@/api/lib/unhandled-error";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
@@ -24,17 +29,42 @@ import {
   protectedResourceMetadata,
 } from "@/modules/mcp/oauth/metadata";
 
-const HASHED_ASSET_PATTERN = /-[a-z0-9]{8,}\.[\w]+$/i;
-
 // SPA catch-all for BrowserRouter. Dev hands Elysia the HTMLBundle
 // from public/index.html so Bun's bundler resolves the <script> reference
 // and HMR keeps working on deep routes; prod serves the pre-built
 // dist/index.html via Bun.file. Without this, refreshes on /settings,
 // /admin, etc. would 404 because only `/` is registered by staticPlugin.
+// The production handler also sets the document's cache policy and answers
+// 404 for a missing file (see api/lib/static-cache.ts).
 const indexHandler =
   config.env === "production"
-    ? () => Bun.file("dist/index.html")
+    ? productionIndexHandler("dist/index.html")
     : (await import("@/public/index.html")).default;
+
+// Since Elysia 1.4.30 an HTMLBundle reaches Bun's native router only on a route with no hook
+// (createNativeStaticHandler checks the pipeline before isHTMLBundle), and every route here inherits
+// helmet and the locale hooks, so `.get("/*", indexHandler)` in dev answers "{}" for every SPA
+// path. Dev registers the bundle straight on Bun's routes table instead, GET only, with a
+// carve-out for each entry of public/ (favicons, /assets/*), for /api and for the OAuth discovery
+// documents, so those still reach Elysia. Served natively, the dev document carries no helmet
+// headers; API responses do, and so does the production document, whose handler is a plain function.
+const devSpaRoutes: Record<string, false | unknown> =
+  config.env === "production"
+    ? {}
+    : {
+        ...Object.fromEntries(
+          (await readdir("public", { withFileTypes: true }))
+            .filter(
+              (entry) => !["index.html", "index.css"].includes(entry.name),
+            )
+            .map((entry) => [
+              entry.isDirectory() ? `/${entry.name}/*` : `/${entry.name}`,
+              false,
+            ]),
+        ),
+        "/.well-known/*": false,
+        "/*": { GET: indexHandler },
+      };
 
 // A factory so a test that needs its own route gets its own real app: Elysia compiles its router on
 // the first request, so a route added to the shared default export afterwards never takes effect and
@@ -51,6 +81,7 @@ export async function buildApp() {
       routes: {
         "/api": false,
         "/api/*": false,
+        ...devSpaRoutes,
       },
     },
   })
@@ -75,18 +106,7 @@ export async function buildApp() {
     .onAfterResponse(({ request, set }) => {
       logger.info("%s %s [%s]", request.method, request.url, set.status);
     })
-    .onAfterHandle(({ request, set }) => {
-      const url = new URL(request.url);
-      const path = url.pathname;
-
-      if (path === "/" || path.endsWith(".html")) {
-        set.headers["cache-control"] = "no-cache";
-      } else if (HASHED_ASSET_PATTERN.test(path)) {
-        set.headers["cache-control"] = "public, max-age=31536000, immutable";
-      } else if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?)$/i.test(path)) {
-        set.headers["cache-control"] = "public, max-age=86400";
-      }
-    })
+    .onAfterHandle(applyStaticCacheControl)
     // NOTE: AppErrors carry their HTTP status and log at warn (expected control flow). The message is
     // localized from Accept-Language because the request ALS may not be in scope here.
     // Registered BEFORE the limiters: an AppError comes from a matched route that was already charged,

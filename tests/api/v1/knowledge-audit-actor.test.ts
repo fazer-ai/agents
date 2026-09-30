@@ -199,6 +199,7 @@ describe.skipIf(!dbUp)("the Knowledge page names who wrote", () => {
       email: "admin@example.com",
       role: "TENANT_ADMIN",
       tenantId: tenantId.toString(),
+      pwd: (await import("@/api/lib/auth")).passwordFingerprint("x"),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setExpirationTime("1h")

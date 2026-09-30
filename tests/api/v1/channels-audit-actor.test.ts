@@ -198,6 +198,7 @@ describe.skipIf(!dbUp)("the Channels page names who wrote", () => {
       email: "admin@example.com",
       role: "SUPER_ADMIN",
       tenantId: tenantId.toString(),
+      pwd: (await import("@/api/lib/auth")).passwordFingerprint(PASSWORD_HASH),
     })
       .setProtectedHeader({ alg: "HS256" })
       .setExpirationTime("1h")

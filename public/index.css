@@ -1,8 +1,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@theme {
+/* `static` makes Tailwind emit every variable below even when no class uses it. Without it the dark
+   palette (here) drops every unused token while the light block, plain CSS, keeps them all, so a
+   token read by a computed name resolves in one theme only. tests/client/theme-emission.test.ts. */
+@theme static {
   /* Typography */
+  /* The @font-face rules for these two families are declared in public/index.html, not here. */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
@@ -81,22 +85,6 @@
   --z-toast: 90;
   --z-tooltip: 100;
   --z-skip-link: 110;
-}
-
-@font-face {
-  font-family: "Inter";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("https://fonts.gstatic.com/s/inter/v18/UcCo3FwrK3iLTcviYwY.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "JetBrains Mono";
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url("https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxDcwg.woff2") format("woff2");
 }
 
 body {

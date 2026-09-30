@@ -4,6 +4,7 @@ import {
   changeUserPassword,
   createInitialAdmin,
   createUser,
+  getPasswordHash,
   getTenantName,
   getUserByEmail,
   getUserHasPassword,
@@ -13,6 +14,7 @@ import {
   listMembershipTenants,
   NoMembershipError,
   NoPasswordSetError,
+  PasswordChangedConcurrentlyError,
   resolveDefaultTenantId,
   SetupAlreadyCompleteError,
   sessionUserOf,
@@ -43,10 +45,12 @@ import {
   InviteInvalidError,
   InvitePasswordRequiredError,
 } from "@/api/features/invitations/invitation.service";
+import { closeUserSockets } from "@/api/features/realtime/realtime.service";
 import { authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import { doc, errors, jsonResponse } from "@/api/lib/openapi";
+import { WS_CLOSE } from "@/api/lib/realtime";
 import config from "@/config";
 
 const baseAuthController = new Elysia({
@@ -109,7 +113,7 @@ const baseAuthController = new Elysia({
       }
 
       completeSetup();
-      await setAuthCookie(user);
+      await setAuthCookie(user, passwordHash);
       // NOTE: Log non-PII identifiers only. `userId` is stable and audit-
       // useful, `role` confirms this was the bootstrap-ADMIN path. The email
       // is recoverable from the DB by joining on userId if needed.
@@ -230,7 +234,7 @@ const baseAuthController = new Elysia({
       const passwordHash = await hashPassword(password);
       const user = await createUser(email, passwordHash, tenantId);
 
-      await setAuthCookie(user);
+      await setAuthCookie(user, passwordHash);
 
       return {
         user: {
@@ -293,7 +297,7 @@ const baseAuthController = new Elysia({
         };
       }
 
-      await setAuthCookie(user);
+      await setAuthCookie(user, row.passwordHash);
       void updateLastLogin(user.id).catch((error) => {
         logger.warn(
           { error, userId: user.id.toString() },
@@ -422,19 +426,29 @@ const baseAuthController = new Elysia({
   // the client's session-expired handling.
   .patch(
     "/password",
-    async ({ body, set, getAuthUser }) => {
+    async ({ body, set, getAuthUser, setAuthCookie }) => {
       const user = await getAuthUser();
       if (!user) {
         set.status = 401;
         return { error: translate("errors.unauthorized", "Unauthorized") };
       }
+      let passwordHash: string;
       try {
-        await changeUserPassword(
+        passwordHash = await changeUserPassword(
           user.id,
           body.currentPassword,
           body.newPassword,
         );
       } catch (error) {
+        if (error instanceof PasswordChangedConcurrentlyError) {
+          set.status = 409;
+          return {
+            error: translate(
+              "errors.passwordChangedConcurrently",
+              "The password was changed in another session. Sign in again and retry.",
+            ),
+          };
+        }
         if (error instanceof NoPasswordSetError) {
           set.status = 400;
           return {
@@ -458,6 +472,10 @@ const baseAuthController = new Elysia({
         }
         throw error;
       }
+      // NOTE: the new hash revoked every session of this account, this one included. The caller's own
+      // cookie is re-signed so whoever made the change stays in; an API key has no cookie to re-sign.
+      if (!user.isApiKey) await setAuthCookie(user, passwordHash);
+      closeUserSockets(user.id, WS_CLOSE.CREDENTIALS_CHANGED);
       return { success: true };
     },
     {
@@ -476,9 +494,9 @@ const baseAuthController = new Elysia({
       }),
       detail: doc(
         "Change own password",
-        "Verifies the current password and stores a new one for the authenticated user. Returns 400 for Google-only accounts (no local password) or an incorrect current password.",
+        "Verifies the current password and stores a new one for the authenticated user, signing out every other session of the account. Returns 400 for Google-only accounts (no local password) or an incorrect current password, and 409 when another request changed the password first.",
       ),
-      response: errors(400, 401, 422),
+      response: errors(400, 401, 409, 422),
     },
   )
   // ── invitation acceptance (public: the invitee has no account yet) ──
@@ -530,7 +548,7 @@ const baseAuthController = new Elysia({
   // invite is explicit authorization by an admin, like the /setup operator bypass.
   .post(
     "/accept-invite",
-    async ({ body, set, setAuthCookie, getSessionUserId }) => {
+    async ({ body, set, setAuthCookie, getSessionIdentity }) => {
       let user: Awaited<ReturnType<typeof acceptInvite>>;
       try {
         // NOTE: a signed-in session only proves WHICH person it is, so it is read without the tenant
@@ -539,7 +557,7 @@ const baseAuthController = new Elysia({
           token: body.token,
           password: body.password,
           name: body.name?.trim() || null,
-          sessionUserId: await getSessionUserId(),
+          session: await getSessionIdentity(),
         });
       } catch (error) {
         if (error instanceof InviteAccountProofError) {
@@ -580,7 +598,7 @@ const baseAuthController = new Elysia({
         }
         throw error;
       }
-      await setAuthCookie(user);
+      await setAuthCookie(user, user.sessionPasswordHash);
       logger.info(
         { userId: user.id.toString(), role: user.role },
         "User account created via invitation",
@@ -659,7 +677,9 @@ const googleAuthController = baseAuthController.post(
     try {
       const profile = await verifyGoogleIdToken(body.credential);
       const user = await upsertGoogleUser(profile);
-      await setAuthCookie(user);
+      // NOTE: the proof here is the Google credential, so the session is signed under whatever
+      // password the account holds now.
+      await setAuthCookie(user, await getPasswordHash(user.id));
       void updateLastLogin(user.id).catch((error) => {
         logger.warn(
           { error, userId: user.id.toString() },

@@ -182,6 +182,7 @@
     "observeRacedAnother": "Outra observação desta caixa de entrada estava em andamento e não se completou. Tente de novo.",
     "observerNotMonitoring": "Só um agente em modo de monitoramento pode observar uma caixa de entrada.",
     "observeTakenBack": "Esta observação foi desfeita enquanto o vínculo ainda estava em andamento. Tente de novo.",
+    "passwordChangedConcurrently": "A senha foi trocada em outra sessão. Entre de novo e tente outra vez.",
     "passwordChangeUnavailable": "A troca de senha não está disponível para esta conta",
     "passwordRequired": "Sua senha é obrigatória para confirmar esta ação",
     "playgroundTurnFailed": "O turno falhou no servidor. A causa está no log do servidor, sob o id deste turno.",

@@ -4,6 +4,12 @@
 
 const HASHED_ASSET_PATTERN = /-[a-z0-9]{8,}\.\w+$/i;
 
+// build.ts copies public/assets/ verbatim, so nothing under assets/ is a build output, whatever its
+// name looks like: `inter-variable.woff2` passes the hash shape. Keys are dist/-relative, with no
+// leading slash. Same rule as the app's cacheControlFor (src/api/lib/static-cache.ts), and
+// tests/workers/cdn.test.ts holds the two together.
+const VERBATIM_PREFIX = "assets/";
+
 const MIME_TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
 	".css": "text/css; charset=utf-8",
@@ -31,7 +37,7 @@ function getMimeType(path: string): string {
 }
 
 function getCacheControl(path: string): string {
-	if (HASHED_ASSET_PATTERN.test(path)) {
+	if (HASHED_ASSET_PATTERN.test(path) && !path.startsWith(VERBATIM_PREFIX)) {
 		return "public, max-age=31536000, immutable";
 	}
 	return "public, max-age=86400";

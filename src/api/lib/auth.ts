@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { jwt } from "@elysiajs/jwt";
 import { Elysia } from "elysia";
 import type { UserRole } from "@/../generated/prisma/client";
@@ -28,6 +29,38 @@ export interface JWTPayload {
   role: UserRole;
   // NOTE: string for JWT transport; null only for SUPER_ADMIN.
   tenantId: string | null;
+  // NOTE: `passwordFingerprint` of the hash the session was issued under; absent without a password.
+  pwd?: string;
+}
+
+// Binds a session to the password it was issued under, as Django's session auth hash does: the token
+// carries an HMAC of the stored hash, so any write that changes the hash (Settings, `bun set-admin`)
+// revokes every session signed before it, with no column to remember to stamp. Keyed with the JWT
+// secret because the payload is readable and the raw hash must not leave the server.
+export function passwordFingerprint(
+  passwordHash: string | null,
+): string | undefined {
+  if (!passwordHash) return undefined;
+  return createHmac("sha256", config.jwtSecret)
+    .update(passwordHash)
+    .digest("base64url")
+    .slice(0, 22);
+}
+
+// A token signed under another password is a revoked session: a password is usually changed because
+// a session leaked.
+function sessionMatchesPassword(
+  payload: JWTPayload,
+  passwordHash: string | null,
+): boolean {
+  return payload.pwd === passwordFingerprint(passwordHash);
+}
+
+// A session read only as proof of identity: whose it is, and the password hash it was checked
+// against, which is the hash a session re-issued from this proof must be signed under.
+export interface SessionIdentity {
+  userId: bigint;
+  passwordHash: string | null;
 }
 
 export interface AuthUser {
@@ -100,12 +133,17 @@ export const authPlugin = new Elysia({ name: "auth" })
     }),
   )
   .derive({ as: "global" }, ({ jwt, cookie, headers }) => ({
-    async setAuthCookie(user: AuthUser) {
+    // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
+    // the time the cookie is signed: a login that verified the OLD password while a change landed
+    // must come out already revoked, not valid under the new one. Required so no call site omits it.
+    async setAuthCookie(user: AuthUser, passwordHash: string | null) {
+      const pwd = passwordFingerprint(passwordHash);
       const token = await jwt.sign({
         userId: user.id.toString(),
         email: user.email,
         role: user.role,
         tenantId: user.tenantId === null ? null : user.tenantId.toString(),
+        ...(pwd ? { pwd } : {}),
       });
 
       cookie[COOKIE_NAME]?.set({ value: token, ...sessionCookieOptions() });
@@ -118,22 +156,42 @@ export const authPlugin = new Elysia({ name: "auth" })
       cookie[COOKIE_NAME]?.remove();
       cookie[LEGACY_COOKIE_NAME]?.remove();
     },
-    // NOTE: WHICH PERSON the session cookie names, and nothing else: no tenant selector, no
-    // membership, no API key. For the one operation where the session is only proof of identity
-    // (accepting an invitation into the account it names), a stale selector must not turn that proof
-    // into "signed out".
-    async getSessionUserId(): Promise<bigint | null> {
+    // NOTE: WHICH PERSON the session cookie names, and the password hash it was verified against,
+    // and nothing else: no tenant selector, no membership, no API key. For the one operation where
+    // the session is only proof of identity (accepting an invitation into the account it names), a
+    // stale selector must not turn that proof into "signed out".
+    async getSessionIdentity(): Promise<SessionIdentity | null> {
       const token =
         cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
       if (!token || typeof token !== "string") return null;
+      let payload: JWTPayload | false;
       try {
-        const payload = (await jwt.verify(token)) as JWTPayload | false;
-        return payload && typeof payload.userId === "string"
-          ? parseDbId(payload.userId)
-          : null;
+        payload = (await jwt.verify(token)) as JWTPayload | false;
       } catch {
         return null;
       }
+      if (!payload || typeof payload.userId !== "string") return null;
+      const userId = parseDbId(payload.userId);
+      if (userId === null) return null;
+      // A revoked session proves nothing, so the password fingerprint is checked here too. A DB
+      // failure is transient, as in getAuthUser below, and never reads as signed out.
+      let row: { passwordHash: string | null } | null;
+      try {
+        row = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { passwordHash: true },
+        });
+      } catch (error) {
+        logger.warn(
+          { error },
+          "Session user lookup failed; treating as transient",
+        );
+        throw new ServiceUnavailableError();
+      }
+      if (!row || !sessionMatchesPassword(payload, row.passwordHash)) {
+        return null;
+      }
+      return { userId, passwordHash: row.passwordHash };
     },
     async getAuthUser(): Promise<AuthUser | null> {
       let token = cookie[COOKIE_NAME]?.value;
@@ -187,6 +245,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         name: string | null;
         googleId: string | null;
         isSuperAdmin: boolean;
+        passwordHash: string | null;
         memberships: Membership[];
       } | null;
       try {
@@ -198,6 +257,7 @@ export const authPlugin = new Elysia({ name: "auth" })
             name: true,
             googleId: true,
             isSuperAdmin: true,
+            passwordHash: true,
             memberships: {
               select: { tenantId: true, role: true, createdAt: true },
             },
@@ -212,7 +272,8 @@ export const authPlugin = new Elysia({ name: "auth" })
       }
 
       if (!row) return null;
-      const { isSuperAdmin, memberships, ...person } = row;
+      const { isSuperAdmin, memberships, passwordHash, ...person } = row;
+      if (!sessionMatchesPassword(payload, passwordHash)) return null;
 
       if (isSuperAdmin) {
         return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };

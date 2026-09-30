@@ -53,7 +53,7 @@ mockFindUnique.mockImplementation(() => Promise.resolve(fleetUser));
 const tokenApp = new Elysia()
   .use(authPlugin)
   .post("/mint", async ({ setAuthCookie }) => ({
-    token: await setAuthCookie(fleetUser),
+    token: await setAuthCookie(fleetUser, fleetUser.passwordHash),
   }));
 const { token } = (await (
   await tokenApp.handle(

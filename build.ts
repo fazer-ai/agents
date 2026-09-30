@@ -4,6 +4,10 @@ import { existsSync } from "fs";
 import { cp, rename, rm } from "fs/promises";
 import path from "path";
 import pkg from "./package.json" with { type: "json" };
+import {
+  findNonAbsoluteUrls,
+  rewriteAssetUrlsForCdn,
+} from "./scripts/lib/cdn-assets";
 
 // App version shown in the sidebar footer (item 2). An explicit BUN_PUBLIC_VERSION (e.g. a CI build
 // tag / git sha) wins; otherwise fall back to package.json's version.
@@ -196,6 +200,30 @@ for (const output of result.outputs) {
       await rename(output.path, dest);
       console.log(`📝 Renamed ${path.basename(output.path)} → ${originalName}`);
     }
+  }
+}
+
+const cdnUrl = process.env.BUN_PUBLIC_CDN_URL?.replace(/\/$/, "");
+if (cdnUrl) {
+  const htmlPath = path.join(outdir, "index.html");
+  const html = await Bun.file(htmlPath).text();
+  const { html: rewrittenHtml, rewritten } = rewriteAssetUrlsForCdn(
+    html,
+    cdnUrl,
+  );
+  if (rewritten > 0) {
+    await Bun.write(htmlPath, rewrittenHtml);
+    console.log(
+      `🌐 Pointed ${rewritten} url() reference(s) in index.html at the CDN\n`,
+    );
+  }
+  // NOTE: anything still relative is an asset the CDN rewrite did not reach, which would be served
+  // from the application origin while everything else moves. Failing by name beats shipping that.
+  const missed = findNonAbsoluteUrls(rewrittenHtml);
+  if (missed.length > 0) {
+    throw new Error(
+      `index.html still points at the application origin for: ${missed.join(", ")}`,
+    );
   }
 }
 

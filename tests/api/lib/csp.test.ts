@@ -59,7 +59,7 @@ describe("buildCspDirectives", () => {
     // blob: lets media (proxied voice notes/images + playground replay) render via object URLs.
     expect(d.imgSrc).toEqual(["'self'", "data:", "blob:"]);
     // Inter + JetBrains Mono load as woff2 from Google's font CDN (public/index.css @font-face).
-    expect(d.fontSrc).toEqual(["'self'", "data:", "https://fonts.gstatic.com"]);
+    expect(d.fontSrc).toEqual(["'self'", "data:"]);
     expect(d.mediaSrc).toEqual(["'self'", "blob:"]);
     expect(d.connectSrc).toEqual(["'self'"]);
     // blob: lets the console embed a PDF it rendered itself (the document-template preview) in an
@@ -146,5 +146,54 @@ describe("buildCspDirectives", () => {
     const d = buildCspDirectives({ ...baseOpts, googleOAuthEnabled: false });
     expect(d.frameSrc).toEqual(["'self'", "blob:"]);
     expect(d.frameSrc).not.toContain("https://accounts.google.com");
+  });
+});
+
+// States the invariant rather than one URL: every font a first-party file asks for must be reachable
+// under the production font-src, since a refused font falls back to system fonts with nothing in a
+// log but the browser console of a deployed instance.
+describe("declared fonts against the production font-src", () => {
+  const FONT_FACE_RE = /@font-face\s*\{([\s\S]*?)\}/g;
+  const URL_RE = /url\(\s*["']?([^"')]+)["']?\s*\)/g;
+
+  const declaredFontUrls = async () => {
+    const urls: Array<{ file: string; url: string }> = [];
+    for (const file of ["public/index.html", "public/index.css"]) {
+      const source = await Bun.file(file).text();
+      for (const block of source.matchAll(FONT_FACE_RE)) {
+        for (const found of (block[1] ?? "").matchAll(URL_RE)) {
+          const url = found[1];
+          if (url) urls.push({ file, url });
+        }
+      }
+    }
+    return urls;
+  };
+
+  // A first-party path ("/assets/…", "./x.woff2") is covered by 'self'; an absolute URL needs its
+  // own origin listed; a data: URI needs "data:".
+  const requirementFor = (url: string) => {
+    if (url.startsWith("data:")) return "data:";
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return new URL(url).origin;
+    return "'self'";
+  };
+
+  test("every declared @font-face URL is allowed by font-src", async () => {
+    const urls = await declaredFontUrls();
+    // NOTE: guards against the extraction silently matching nothing and passing.
+    expect(urls.length).toBeGreaterThan(0);
+
+    const fontSrc = buildCspDirectives({
+      ...baseOpts,
+      isDev: false,
+      cdnOrigin: "https://cdn.example.com",
+    }).fontSrc;
+
+    for (const { file, url } of urls) {
+      const needed = requirementFor(url);
+      expect(
+        `${file} → ${url} needs ${needed}: ${fontSrc?.includes(needed)}`,
+      ).toBe(`${file} → ${url} needs ${needed}: true`);
+    }
   });
 });

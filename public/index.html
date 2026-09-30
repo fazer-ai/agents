@@ -6,6 +6,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" href="./favicon-light.png" media="(prefers-color-scheme: light)" />
   <link rel="icon" href="./favicon-dark.png" media="(prefers-color-scheme: dark)" />
+  <!-- The @font-face rules live here, not in index.css: Bun's CSS bundler inlines every font it can
+       resolve as a base64 data: URI (the render-blocking stylesheet grows by the size of both fonts),
+       while a <style> in the document passes through untouched. The files are served from
+       public/assets/fonts/ under font-src 'self'. build.ts points these references at
+       BUN_PUBLIC_CDN_URL when one is set and fails on any it cannot reach, so keep them
+       root-relative under /assets/. -->
+  <style>
+    @font-face {
+      font-family: "Inter";
+      font-style: normal;
+      font-weight: 100 900;
+      font-display: swap;
+      src: url("/assets/fonts/inter-variable.woff2") format("woff2");
+    }
+
+    @font-face {
+      font-family: "JetBrains Mono";
+      font-style: normal;
+      font-weight: 400 700;
+      font-display: swap;
+      src: url("/assets/fonts/jetbrains-mono-variable.woff2") format("woff2");
+    }
+  </style>
   <title>fazer.ai agents</title>
   <!-- Stamp the operator's brand name onto the tab before the first paint: BrandingProvider only
        reaches document.title after the bundle mounts, and until then the <title> above is what the

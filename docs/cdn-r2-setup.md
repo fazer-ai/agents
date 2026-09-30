@@ -198,6 +198,8 @@ When `BUN_PUBLIC_CDN_URL` is set, the build process (`build.ts`) rewrites all as
 
 The `getAssetUrl()` utility in `src/client/lib/utils.ts` handles runtime asset URL resolution for static assets like logos.
 
+The `@font-face` rules in `public/index.html` are the one place `publicPath` does not reach: they sit in a `<style>` so the CSS bundler does not inline the fonts (see `docs/csp.md`), and a URL the bundler passes through is one it never rewrites. `build.ts` covers them in a post-build pass (`scripts/lib/cdn-assets.ts`) that points every root-relative `/assets/` reference in `dist/index.html` at the CDN, and fails the build naming any reference in the document still relative. The font files reach the CDN with the rest of `dist/`.
+
 ### Runtime — R2 Custom Domain (Option A)
 
 R2 serves files directly with its built-in HTTP handling. CORS is controlled by the bucket's CORS policy. Cache behavior uses Cloudflare defaults (customizable via Cache Rules or Transform Rules in the dashboard).
@@ -208,8 +210,8 @@ The CDN worker (`workers/cdn/src/index.ts`):
 
 - Serves files from the R2 bucket
 - Sets proper `Content-Type` headers based on file extension
-- Applies **immutable caching** (1 year) for hashed assets (e.g. `index-a1b2c3d4.css`)
-- Applies **24-hour caching** for non-hashed assets (e.g. `assets/logo.png`)
+- Applies **immutable caching** (1 year) for hashed build outputs (e.g. `index-a1b2c3d4.css`)
+- Applies **24-hour caching** to everything else, including anything under `assets/` whatever its name looks like: `build.ts` copies `public/assets/` verbatim, and `inter-variable.woff2` has the shape of a hashed name without being one. Same policy as the app's own static serving (`src/api/lib/static-cache.ts`); `tests/workers/cdn.test.ts` runs the worker's real `fetch` and fails if the two disagree
 - Handles CORS with configurable allowed origins
 - Supports `ETag` / `If-None-Match` for conditional requests
 - Handles `HEAD` and `OPTIONS` requests

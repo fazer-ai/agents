@@ -25,6 +25,7 @@ const mockPersonRow = {
   email: mockUser.email,
   name: mockUser.name,
   googleId: mockUser.googleId,
+  passwordHash: mockUser.passwordHash as string | null,
   isSuperAdmin: false,
   memberships: [
     { tenantId: BigInt(1), role: "AGENT" as const, createdAt: new Date(0) },
@@ -62,7 +63,7 @@ describe("authPlugin", () => {
       const app = new Elysia()
         .use(authPlugin)
         .post("/test-set-cookie", async ({ setAuthCookie }) => {
-          const token = await setAuthCookie(mockUser);
+          const token = await setAuthCookie(mockUser, mockUser.passwordHash);
           return { token };
         });
 
@@ -92,7 +93,7 @@ describe("authPlugin", () => {
       const app = new Elysia()
         .use(authPlugin)
         .post("/test-set-cookie", async ({ setAuthCookie }) => {
-          const token = await setAuthCookie(mockUser);
+          const token = await setAuthCookie(mockUser, mockUser.passwordHash);
           return { token };
         });
 
@@ -195,7 +196,7 @@ describe("authPlugin", () => {
         const app = new Elysia()
           .use(authPlugin)
           .post("/mint", async ({ setAuthCookie }) => ({
-            token: await setAuthCookie(mockUser),
+            token: await setAuthCookie(mockUser, mockUser.passwordHash),
           }));
         const res = await app.handle(
           new Request("http://localhost/mint", { method: "POST" }),
@@ -232,6 +233,59 @@ describe("authPlugin", () => {
           }),
         );
         expect((await res.json()).id).toBe(mockUser.id.toString());
+      });
+
+      test("refuses a session signed under another password", async () => {
+        const token = await mintToken();
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+          ...mockPersonRow,
+          passwordHash: "$2b$10$anotherhash",
+        });
+        const res = await readerApp().handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: { Cookie: `fazerai_auth_token=${token}` },
+          }),
+        );
+        expect((await res.json()).id).toBeNull();
+      });
+
+      test("refuses a session that carries no password fingerprint for an account that has one", async () => {
+        const app = new Elysia()
+          .use(authPlugin)
+          .post("/mint", async ({ setAuthCookie }) => ({
+            token: await setAuthCookie(mockUser, null),
+          }));
+        const { token } = (await (
+          await app.handle(
+            new Request("http://localhost/mint", { method: "POST" }),
+          )
+        ).json()) as { token: string };
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
+        const res = await readerApp().handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: { Cookie: `fazerai_auth_token=${token}` },
+          }),
+        );
+        expect((await res.json()).id).toBeNull();
+      });
+
+      test("the proof of identity refuses a revoked session too", async () => {
+        const token = await mintToken();
+        mockPrisma.user.findUnique.mockResolvedValueOnce({
+          ...mockPersonRow,
+          passwordHash: "$2b$10$anotherhash",
+        });
+        const app = new Elysia()
+          .use(authPlugin)
+          .get("/who", async ({ getSessionIdentity }) => ({
+            id: (await getSessionIdentity())?.userId.toString() ?? null,
+          }));
+        const res = await app.handle(
+          new BunRequest("http://localhost/who", {
+            headers: { Cookie: `fazerai_auth_token=${token}` },
+          }),
+        );
+        expect((await res.json()).id).toBeNull();
       });
 
       test("prefers the current name when both cookies are present", async () => {

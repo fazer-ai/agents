@@ -46,7 +46,7 @@ mockFindUnique.mockImplementation(() => Promise.resolve(admin));
 const tokenApp = new Elysia()
   .use(authPlugin)
   .post("/mint", async ({ setAuthCookie }) => ({
-    token: await setAuthCookie(admin),
+    token: await setAuthCookie(admin, admin.passwordHash),
   }));
 const { token } = (await (
   await tokenApp.handle(

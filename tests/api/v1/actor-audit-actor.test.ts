@@ -127,6 +127,7 @@ async function signIn(as: typeof signedIn): Promise<string> {
     email: `p${as.id}@aud400.test`,
     role: as.role,
     tenantId: as.tenantId === null ? null : as.tenantId.toString(),
+    pwd: (await import("@/api/lib/auth")).passwordFingerprint(passwordHash),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("1h")

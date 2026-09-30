@@ -90,6 +90,14 @@ async function signIn(as: typeof signedIn): Promise<string> {
     email: `p${as.id}@seam497.test`,
     role: as.role,
     tenantId: as.tenantId === null ? null : as.tenantId.toString(),
+    pwd: (await import("@/api/lib/auth")).passwordFingerprint(
+      (
+        await suDb.user.findUnique({
+          where: { id: as.id },
+          select: { passwordHash: true },
+        })
+      )?.passwordHash ?? null,
+    ),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("1h")

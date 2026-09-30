@@ -86,6 +86,23 @@ jobs:
       - name: Check openapi.json is up-to-date
         run: bun run openapi:check
 
+      # Dev routes the document differently from production (the HTMLBundle goes straight onto Bun's
+      # routes table, docs/routing.md), and an Elysia release can break that path while every other
+      # gate stays green: each SPA route then answers `{}` as JSON. Boots `bun src/index.ts` in
+      # development and probes the document, a deep route, a favicon, an /assets/ file, the OAuth
+      # discovery documents and the API's JSON answers.
+      - name: Dev server smoke (SPA, assets and API routing)
+        run: bun run dev:smoke
+        env:
+          DATABASE_URL: 'postgresql://dummy:dummy@localhost:5432/dummy'
+
+      # The production document and asset cache policy (src/api/lib/static-cache.ts): no-cache on the
+      # shell, immutable on hashed bundles only, 404 no-store for a missing asset.
+      - name: Production server smoke (document, missing assets and cache policy)
+        run: bun run build && bun run smoke:prod
+        env:
+          DATABASE_URL: 'postgresql://dummy:dummy@localhost:5432/dummy'
+
   # WHY A SEPARATE JOB HOLDS THE REQUIRED NAME. A job skipped by its own `if` reports the conclusion
   # `skipped`, and whether a required context accepts that is a GitHub behaviour this repo has never
   # measured. This job always RUNS, so the gate never rests on that question, and a docs-only PR ends

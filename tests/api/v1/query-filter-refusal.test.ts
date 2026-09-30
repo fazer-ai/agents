@@ -85,7 +85,7 @@ mockFindUnique.mockImplementation(() => Promise.resolve(admin));
 const tokenApp = new Elysia()
   .use(authPlugin)
   .post("/mint", async ({ setAuthCookie }) => ({
-    token: await setAuthCookie(admin),
+    token: await setAuthCookie(admin, admin.passwordHash),
   }));
 const { token } = (await (
   await tokenApp.handle(
@@ -228,7 +228,7 @@ describe("the admin tenant filter, which only a SUPER_ADMIN can send", () => {
       await new Elysia()
         .use(authPlugin)
         .post("/mint", async ({ setAuthCookie }) => ({
-          token: await setAuthCookie(su),
+          token: await setAuthCookie(su, su.passwordHash),
         }))
         .handle(new Request("http://localhost/mint", { method: "POST" }))
     ).json()) as { token: string };

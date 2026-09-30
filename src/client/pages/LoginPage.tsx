@@ -12,14 +12,8 @@ import { useAuth } from "@/client/contexts/AuthContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useGoogleSignIn } from "@/client/hooks/useGoogleSignIn";
 import { api } from "@/client/lib/api";
+import { resolveSafeRedirect } from "@/client/lib/safeRedirect";
 import { cn } from "@/client/lib/utils";
-
-// Only honor an in-app destination (a single leading slash); reject absolute or protocol-relative
-// URLs so ?redirect= can never become an off-site open redirect.
-function safeLocalPath(raw: string | null): string {
-  if (!raw?.startsWith("/") || raw.startsWith("//")) return "/";
-  return raw;
-}
 
 // The MCP OAuth authorization endpoint sends anonymous visitors here with itself as the return
 // destination. It is a SERVER route, not a SPA route, so react-router's navigate() would render a
@@ -44,15 +38,22 @@ export function LoginPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const redirectTo = safeLocalPath(searchParams.get("redirect"));
+  const redirectTo =
+    resolveSafeRedirect(searchParams.get("redirect"), window.location.origin) ??
+    "/";
   const { user, login, providers, signupEnabled } = useAuth();
   const refusal = useFieldRefusal(LOGIN_FIELDS);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const goToRedirect = () => {
+    if (isServerNavigation(redirectTo)) window.location.assign(redirectTo);
+    else navigate(redirectTo, { replace: true });
+  };
   const { pending: googlePending, signIn: signInWithGoogle } = useGoogleSignIn({
     onError: setError,
+    onSignedIn: goToRedirect,
   });
   const authPending = loading || googlePending;
   // Synchronous cross-method lock so a Google credential callback and a
@@ -63,8 +64,7 @@ export function LoginPage() {
   // early returns below, because a hook after a conditional return is not called on every render.
   const sentRef = useRef({ email, password });
   sentRef.current = { email, password };
-  // Covers the already-logged-in visit and the Google callback (which only flips `user`); the
-  // password path navigates from its own handler.
+  // Covers the already-logged-in visit; both sign-in paths navigate from their own handlers.
   const resumeServerFlow = user && isServerNavigation(redirectTo);
   useEffect(() => {
     if (resumeServerFlow) window.location.assign(redirectTo);
@@ -108,8 +108,7 @@ export function LoginPage() {
       refusal.clear();
       if (data?.user) {
         login(data.user);
-        if (isServerNavigation(redirectTo)) window.location.assign(redirectTo);
-        else navigate(redirectTo);
+        goToRedirect();
       }
     } catch {
       setError(

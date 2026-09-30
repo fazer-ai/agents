@@ -9,6 +9,42 @@ import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 // wrapper, which Elysia 1.4.x re-creates for every lifecycle hook.
 const userConnections = new Map<string, number>();
 
+// The open sockets of both channels, by user and then by `ws.id`, so a server event (a password
+// change) can close them. Holds Bun's raw socket, which is stable across hooks, not Elysia's wrapper.
+interface ClosableSocket {
+  close(code?: number, reason?: string): void;
+}
+const userSockets = new Map<string, Map<string, ClosableSocket>>();
+
+export function trackSocket(
+  userId: bigint,
+  socketId: string,
+  socket: ClosableSocket,
+): void {
+  const key = userId.toString();
+  const sockets = userSockets.get(key) ?? new Map<string, ClosableSocket>();
+  sockets.set(socketId, socket);
+  userSockets.set(key, sockets);
+}
+
+export function untrackSocket(userId: bigint, socketId: string): void {
+  const key = userId.toString();
+  const sockets = userSockets.get(key);
+  if (!sockets) return;
+  sockets.delete(socketId);
+  if (sockets.size === 0) userSockets.delete(key);
+}
+
+// Returns how many were closed. Each close runs the socket's own close hook, which untracks it and
+// releases its connection slot.
+export function closeUserSockets(userId: bigint, code: number): number {
+  const sockets = userSockets.get(userId.toString());
+  if (!sockets) return 0;
+  const open = [...sockets.values()];
+  for (const socket of open) socket.close(code);
+  return open.length;
+}
+
 // Every presence/chat connection subscribes to CHAT_GLOBAL and to its own `user(id)` channel, which
 // reaches all of that user's tabs without a global broadcast.
 export const TOPICS = {

@@ -7,7 +7,7 @@ import {
   mockFindFirst,
   mockFindUnique,
   mockTenantCreate,
-  mockUpdate,
+  mockUpdateMany,
   mockUser,
   resetPrismaMocks,
   setupPrismaMock,
@@ -29,6 +29,7 @@ const {
   changeUserPassword,
   NoPasswordSetError,
   IncorrectPasswordError,
+  PasswordChangedConcurrentlyError,
 } = await import("@/api/features/auth/auth.service");
 
 describe("auth.service", () => {
@@ -290,7 +291,7 @@ describe("auth.service", () => {
       await expect(
         changeUserPassword(1n, "whatever", "new-password-123"),
       ).rejects.toBeInstanceOf(NoPasswordSetError);
-      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockUpdateMany).not.toHaveBeenCalled();
     });
 
     test("changeUserPassword rejects a wrong current password", async () => {
@@ -299,14 +300,34 @@ describe("auth.service", () => {
       await expect(
         changeUserPassword(1n, "wrong-guess", "new-password-123"),
       ).rejects.toBeInstanceOf(IncorrectPasswordError);
-      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockUpdateMany).not.toHaveBeenCalled();
     });
 
     test("changeUserPassword stores a new hash when the current matches", async () => {
       const hash = await hashPassword("correct-horse");
       mockFindUnique.mockResolvedValueOnce({ ...mockUser, passwordHash: hash });
-      await changeUserPassword(1n, "correct-horse", "new-password-123");
-      expect(mockUpdate).toHaveBeenCalledTimes(1);
+      const stored = await changeUserPassword(
+        1n,
+        "correct-horse",
+        "new-password-123",
+      );
+      expect(mockUpdateMany).toHaveBeenCalledTimes(1);
+      expect(mockUpdateMany.mock.calls[0]).toEqual([
+        {
+          where: { id: 1n, passwordHash: hash },
+          data: { passwordHash: stored },
+        },
+      ] as never);
+      expect(await verifyPassword("new-password-123", stored)).toBe(true);
+    });
+
+    test("changeUserPassword refuses when another write changed the hash after it was verified", async () => {
+      const hash = await hashPassword("correct-horse");
+      mockFindUnique.mockResolvedValueOnce({ ...mockUser, passwordHash: hash });
+      mockUpdateMany.mockResolvedValueOnce({ count: 0 });
+      await expect(
+        changeUserPassword(1n, "correct-horse", "new-password-123"),
+      ).rejects.toBeInstanceOf(PasswordChangedConcurrentlyError);
     });
   });
 

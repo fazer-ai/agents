@@ -2220,7 +2220,7 @@
     "emptyDesc": "Connect a server, discover its tools, then grant a subset per agent.",
     "emptyTitle": "No MCP servers yet",
     "headers": "Headers",
-    "headersHelp": "Request headers sent on every tool call to this server, as name -> value. A value may use the conversation variables an HTTP tool header accepts: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} and the rest.\n\nEach variable is filled from the conversation when the tool is called, never by the model; one the conversation has no value for is sent empty.\n\nTool discovery (tools/list) carries none of these headers, since it runs outside any conversation. Network transports only, and the credential's own header always wins.",
+    "headersHelp": "Request headers sent on every tool call to this server, as name -> value. A value may use the conversation variables an HTTP tool header accepts: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} and the rest.\n\nEach variable is filled from the conversation when the tool is called, never by the model; one the conversation has no value for is sent empty, and a character outside printable ASCII is sent UTF-8 percent-encoded.\n\nTool discovery (tools/list) carries none of these headers, since it runs outside any conversation. Network transports only, and the credential's own header always wins.",
     "launcher": "Launcher",
     "launcherHint": "bunx runs npm-published servers (use it wherever docs say npx). uvx runs Python servers.",
     "loadError": "Could not load this server.",

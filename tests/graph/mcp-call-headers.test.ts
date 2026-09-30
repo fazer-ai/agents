@@ -228,4 +228,15 @@ describe("an MCP connection's declared headers", () => {
     }
     expect(sent.map((h) => h.get("x-contact"))).toEqual(["a", null]);
   });
+  test("a contact name no header can carry as-is still reaches the server, encoded", async () => {
+    const out = await whoami(
+      await toolFor(
+        sel(507n, { headers: { "X-Contact": "{{contact_name}}" } }),
+        {
+          contact_name: "李明",
+        },
+      ),
+    );
+    expect(out.contact).toBe("%E6%9D%8E%E6%98%8E");
+  });
 });

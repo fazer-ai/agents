@@ -45,7 +45,9 @@ describe("mcpHeadersProblem", () => {
   test("refuses what the request could not carry, or should not", () => {
     expect(ok({ "x bad": "v" })).toContain("not a valid header name");
     expect(ok({ "x-a:b": "v" })).toContain("not a valid header name");
-    expect(ok({ "X-A": "a\r\nInjected: 1" })).toContain("line break");
+    expect(ok({ "X-A": "a\r\nInjected: 1" })).toContain("cannot carry");
+    expect(ok({ "X-A": "José {{contact_id}}" })).toContain("cannot carry");
+    expect(ok({ "X-A": "a\tb {{contact_id}}" })).toBeNull();
     expect(ok({ "X-A": "{{secret}}" })).toContain("{{secret}}");
     expect(ok({ "X-A": "{{conversation_ref}}" })).toContain(
       "{{conversation_ref}}",
@@ -117,7 +119,27 @@ describe("renderMcpHeaders", () => {
     ).toEqual({
       "X-Contact": "+55",
       "X-Both": "7/",
-      "X-Name": "Ana  X-Evil: 1",
+      "X-Name": "Ana%0D%0AX-Evil: 1",
+    });
+  });
+
+  test("a value outside printable ASCII goes out percent-encoded, and decodes back", () => {
+    const out = renderMcpHeaders(
+      { "X-Name": "{{contact_name}}" },
+      { contact_name: "José 李明 100% 😀" },
+    );
+    expect(out["X-Name"]).toBe(
+      "Jos%C3%A9 %E6%9D%8E%E6%98%8E 100%25 %F0%9F%98%80",
+    );
+    expect(decodeURIComponent(out["X-Name"] ?? "")).toBe("José 李明 100% 😀");
+    expect(() => new Headers(out)).not.toThrow();
+    expect(
+      renderMcpHeaders(
+        { "X-A": "{{contact_name}}" },
+        { contact_name: "a\uD800b" },
+      ),
+    ).toEqual({
+      "X-A": "a%EF%BF%BDb",
     });
   });
 

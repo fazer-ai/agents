@@ -2015,7 +2015,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              "Sent on tools/call only, not on discovery. Name -> text with HTTP tool context placeholders ({{contact_id}}, {{contact_identifier}}, ...), empty when unknown. Refused on stdio and for the credential's header.",
+              "Sent on tools/call only, not on discovery. Name -> text with HTTP tool context placeholders ({{contact_id}}, ...), empty when unknown, non-ASCII %-encoded. Refused on stdio and for the credential's header.",
             ),
           enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),

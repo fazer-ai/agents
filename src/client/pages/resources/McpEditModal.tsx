@@ -444,7 +444,7 @@ export function McpEditModal({
               group
               help={t(
                 "mcp.headersHelp",
-                "Request headers sent on every tool call to this server, as name -> value. A value may use the conversation variables an HTTP tool header accepts: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} and the rest.\n\nEach variable is filled from the conversation when the tool is called, never by the model; one the conversation has no value for is sent empty.\n\nTool discovery (tools/list) carries none of these headers, since it runs outside any conversation. Network transports only, and the credential's own header always wins.",
+                "Request headers sent on every tool call to this server, as name -> value. A value may use the conversation variables an HTTP tool header accepts: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} and the rest.\n\nEach variable is filled from the conversation when the tool is called, never by the model; one the conversation has no value for is sent empty, and a character outside printable ASCII is sent UTF-8 percent-encoded.\n\nTool discovery (tools/list) carries none of these headers, since it runs outside any conversation. Network transports only, and the credential's own header always wins.",
               )}
               error={refusal.at("headers", current.headers)}
             >

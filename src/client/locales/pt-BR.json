@@ -2286,7 +2286,7 @@
     "emptyDesc": "Conecte um servidor, descubra suas ferramentas e depois conceda um subconjunto por agente.",
     "emptyTitle": "Nenhum servidor MCP ainda",
     "headers": "Cabeçalhos",
-    "headersHelp": "Cabeçalhos enviados em toda chamada de ferramenta a este servidor, como nome -> valor. O valor pode usar as variáveis da conversa que um cabeçalho de ferramenta HTTP aceita: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} e as demais.\n\nCada variável é preenchida a partir da conversa no momento da chamada, nunca pelo modelo; uma que a conversa não tem vai vazia.\n\nA descoberta de ferramentas (tools/list) não leva nenhum desses cabeçalhos, porque roda fora de qualquer conversa. Só para transportes de rede, e o cabeçalho da própria credencial sempre prevalece.",
+    "headersHelp": "Cabeçalhos enviados em toda chamada de ferramenta a este servidor, como nome -> valor. O valor pode usar as variáveis da conversa que um cabeçalho de ferramenta HTTP aceita: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} e as demais.\n\nCada variável é preenchida a partir da conversa no momento da chamada, nunca pelo modelo; uma que a conversa não tem vai vazia, e um caractere fora do ASCII imprimível vai codificado em UTF-8 com percent-encoding.\n\nA descoberta de ferramentas (tools/list) não leva nenhum desses cabeçalhos, porque roda fora de qualquer conversa. Só para transportes de rede, e o cabeçalho da própria credencial sempre prevalece.",
     "launcher": "Launcher",
     "launcherHint": "bunx roda servidores publicados no npm (use onde a doc diz npx). uvx roda servidores em Python.",
     "loadError": "Não foi possível carregar este servidor.",

@@ -8,7 +8,7 @@ import { resolveSecretInjection } from "@/modules/vault/secret-types";
 
 export const MCP_HEADERS_DESCRIPTION = [
   "Request headers sent on every tool call to this server, as name -> value. A value may use the conversation variables an HTTP tool header accepts: {{contact_id}}, {{contact_phone}}, {{contact_identifier}}, {{conversation_id}}, {{inbox_id}} and the rest.",
-  "Each variable is filled from the conversation when the tool is called, never by the model; one the conversation has no value for is sent empty.",
+  "Each variable is filled from the conversation when the tool is called, never by the model; one the conversation has no value for is sent empty, and a character outside printable ASCII is sent UTF-8 percent-encoded.",
   "Tool discovery (tools/list) carries none of these headers, since it runs outside any conversation. Network transports only, and the credential's own header always wins.",
 ].join("\n\n");
 
@@ -19,6 +19,9 @@ const MAX_NAME_CHARS = 128;
 // RFC 9110 field-name: a token.
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+// What a header value can carry as typed: printable ASCII and tab. A byte past it is Latin-1 to
+// `Headers` and garbage to a server reading UTF-8, and a character past U+00FF throws.
+const LITERAL_TEXT = /^[\t\x20-\x7e]*$/;
 
 // Set by the MCP transport itself on every request; a declared one would be overwritten or break
 // the session.
@@ -88,7 +91,8 @@ export function mcpHeadersProblem(
       return `header "${name}" carries the connection's credential`;
     if (value.length > MAX_VALUE_CHARS)
       return `header "${name}" is longer than ${MAX_VALUE_CHARS} characters`;
-    if (/[\r\n\0]/.test(value)) return `header "${name}" contains a line break`;
+    if (!LITERAL_TEXT.test(value.replace(PLACEHOLDER, "")))
+      return `header "${name}" has a character a header cannot carry (printable ASCII only; a conversation value is encoded for you)`;
     const unknown = [...value.matchAll(PLACEHOLDER)]
       .map((m) => m[1] as string)
       .filter((n) => !CONTEXT_NAMES.has(n));
@@ -109,18 +113,29 @@ export function readMcpHeaders(raw: unknown): McpHeaders {
   return out;
 }
 
-function withoutControlChars(v: string): string {
+// A conversation value as header text: every character outside printable ASCII, and `%` itself, as
+// its UTF-8 percent-encoding, so the value survives whole and decodes back (`José` is `Jos%C3%A9`).
+// A lone surrogate, which has no UTF-8 form, becomes U+FFFD.
+export function headerSafe(v: string): string {
   let out = "";
   for (const ch of v) {
-    const c = ch.charCodeAt(0);
-    out += c < 0x20 || c === 0x7f ? " " : ch;
+    const c = ch.codePointAt(0) ?? 0;
+    if (c >= 0x20 && c <= 0x7e && ch !== "%") {
+      out += ch;
+      continue;
+    }
+    try {
+      out += encodeURIComponent(ch);
+    } catch {
+      out += "%EF%BF%BD";
+    }
   }
   return out;
 }
 
 // The headers for one call: each placeholder replaced by its value in `context`, or by "" when the
 // conversation has none, the way an HTTP tool header renders. A substituted value comes from the
-// customer's side (a contact name), so its control characters become spaces: a line break would
+// customer's side (a contact name), so it goes through headerSafe: a line break or a `李` would
 // otherwise make the whole request throw.
 export function renderMcpHeaders(
   headers: McpHeaders,
@@ -129,7 +144,7 @@ export function renderMcpHeaders(
   const out: McpHeaders = {};
   for (const [name, template] of Object.entries(headers)) {
     out[name] = template.replace(PLACEHOLDER, (_, n: string) =>
-      withoutControlChars(Object.hasOwn(context, n) ? (context[n] ?? "") : ""),
+      headerSafe(Object.hasOwn(context, n) ? (context[n] ?? "") : ""),
     );
   }
   return out;

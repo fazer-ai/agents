@@ -239,4 +239,11 @@ describe("an MCP connection's declared headers", () => {
     );
     expect(out.contact).toBe("%E6%9D%8E%E6%98%8E");
   });
+  test("the call-header storage is the one on globalThis, which a hot reload keeps", () => {
+    expect(__callHeadersForTest.callHeaders as unknown).toBe(
+      (globalThis as unknown as Record<symbol, unknown>)[
+        Symbol.for("fazerai.mcp.callHeaders")
+      ],
+    );
+  });
 });

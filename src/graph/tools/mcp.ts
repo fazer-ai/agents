@@ -328,7 +328,18 @@ interface CallHeaders {
   key: string;
   headers: McpHeaders;
 }
-const callHeaders = new AsyncLocalStorage<CallHeaders>();
+const CALL_HEADERS_KEY = Symbol.for("fazerai.mcp.callHeaders");
+
+// Lives on globalThis beside the client cache: a cached transport keeps the storage it was built
+// with, so under `bun --hot` a module-local instance would leave it reading one nobody sets.
+const callHeaders: AsyncLocalStorage<CallHeaders> = (() => {
+  const g = globalThis as unknown as Record<
+    symbol,
+    AsyncLocalStorage<CallHeaders>
+  >;
+  g[CALL_HEADERS_KEY] ??= new AsyncLocalStorage<CallHeaders>();
+  return g[CALL_HEADERS_KEY];
+})();
 
 // A header the transport already set (the credential, the session id, the content type) is kept:
 // a declared header never replaces it.

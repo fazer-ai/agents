@@ -75,7 +75,10 @@ const writeBody = t.Object({
     }),
   ),
   headers: t.Optional(
-    t.Record(t.String(), t.String(), {
+    // NOTE: t.Record drops a `__proto__` key before the service could refuse it, so the map is
+    // passed through unparsed and validated by the service.
+    t.Unknown({
+      patternProperties: { "^(.*)$": { type: "string" } },
       description: MCP_HEADERS_DESCRIPTION,
     }),
   ),

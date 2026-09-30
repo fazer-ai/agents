@@ -46,6 +46,12 @@ export const mcpHeadersInput = z.custom<Record<string, unknown>>(
   { message: "expected an object of header name -> value" },
 );
 
+// The MCP tool argument for the same map. `z.record` would drop `__proto__` before mcpHeadersInput
+// ever sees it, so the argument stays unparsed and only its JSON Schema says it is an object.
+export const mcpHeadersArg = z
+  .unknown()
+  .meta({ type: "object", additionalProperties: { type: "string" } });
+
 // The header the connection's credential is sent in, lowercased, or null when it goes in the query
 // or there is none. Mirrors buildConnConfig: a credential whose kind names no injection is a Bearer.
 export function credentialHeaderName(

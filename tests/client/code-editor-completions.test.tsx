@@ -585,6 +585,15 @@ describe("the popup speaks the console's language", () => {
     }
   });
 
+  test("in pt-BR every context entry reads its own translated sentence", async () => {
+    await i18n.changeLanguage("pt-BR");
+    const got = completionsFor("context", [], i18n.t);
+    await i18n.changeLanguage("en");
+    for (const c of got) {
+      expect([c.label, c.info]).toEqual([c.label, ptContext[c.label]]);
+    }
+  });
+
   // The switch has to reach a popup that is already mounted: the completion source closes over `t`,
   // so nothing would change language until the modal was reopened.
   test("switching the language changes what the source would offer", async () => {

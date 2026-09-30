@@ -122,7 +122,7 @@ function loneTokenName(value: string): string | null {
 const TOOL_TOKEN_SOURCE = "\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}";
 
 // Context variable names the runtime interpolates (shared with the normalization module so
-// the lists cannot drift; keep nativeVarItems in sync). A {{token}} is "known" (highlighted as a
+// the lists cannot drift; nativeVarItems is held to the same names by test). A {{token}} is "known" (highlighted as a
 // valid var, not a typo) when it names a declared AI field, one of these, or {{secret}} (only when
 // a credential is selected).
 const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
@@ -1017,7 +1017,7 @@ function appointmentPayload(form: {
 
 // The native context variables the runtime interpolates into values, headers, the URL and a raw body
 // (NEVER the secret). Offered by every value picker, alongside the declared AI fields and {{secret}}.
-function nativeVarItems(
+export function nativeVarItems(
   t: ReturnType<typeof useTranslation>["t"],
 ): { name: string; label: string; description: string }[] {
   return [
@@ -1064,6 +1064,14 @@ function nativeVarItems(
       description: t(
         "tools.vars.contactPhoneDesc",
         "The contact's phone, if known.",
+      ),
+    },
+    {
+      name: "contact_identifier",
+      label: t("tools.vars.contactIdentifier", "Contact identifier"),
+      description: t(
+        "tools.vars.contactIdentifierDesc",
+        "The Chatwoot contact identifier (the id your own system gave this customer), if known.",
       ),
     },
     {

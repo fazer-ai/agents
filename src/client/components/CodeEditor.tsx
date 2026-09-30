@@ -60,6 +60,10 @@ function contextDescriptions(t: TFunction): Record<string, string> {
       "codeTools.completion.context.contact_phone",
       "The contact's phone. Absent when the contact has none.",
     ),
+    contact_identifier: t(
+      "codeTools.completion.context.contact_identifier",
+      "The Chatwoot contact's identifier: the id your own system gave this customer. Absent when the contact has none.",
+    ),
     inbox_id: t(
       "codeTools.completion.context.inbox_id",
       "Chatwoot inbox id. Absent outside a conversation.",

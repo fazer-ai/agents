@@ -50,6 +50,7 @@ import {
   readAttributeContextConfig,
 } from "@/modules/chatwoot/attributes";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { mirroredContactIdentifier } from "@/modules/chatwoot/contact-identifier";
 import {
   type KanbanContext,
   loadKanbanContext,
@@ -630,6 +631,7 @@ export async function loadAgentConfig(
           name: true,
           email: true,
           phone: true,
+          attributes: true,
           voiceReply: true,
           customAttributes: wantsAttributeContext,
         },
@@ -731,6 +733,9 @@ export async function loadAgentConfig(
     {
       grounded,
     },
+  );
+  const contactIdentifier = mirroredContactIdentifier(
+    conv?.contact?.attributes,
   );
   const promptVars = buildPromptVars({
     contactName: pickPromptVar(
@@ -940,6 +945,7 @@ export async function loadAgentConfig(
       ...(conv?.contact?.name ? { contact_name: conv.contact.name } : {}),
       ...(conv?.contact?.email ? { contact_email: conv.contact.email } : {}),
       ...(conv?.contact?.phone ? { contact_phone: conv.contact.phone } : {}),
+      ...(contactIdentifier ? { contact_identifier: contactIdentifier } : {}),
       ...(conv?.inbox?.chatwootInboxId != null
         ? { inbox_id: String(conv.inbox.chatwootInboxId) }
         : {}),

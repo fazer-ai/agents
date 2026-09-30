@@ -21,7 +21,7 @@ export interface CodeToolContextVar {
   description: string;
 }
 
-// The ten interpolated names, in the order `CONTEXT_VAR_NAMES` declares them, plus the two attribute
+// The eleven interpolated names, in the order `CONTEXT_VAR_NAMES` declares them, plus the two attribute
 // bags the precondition loader reads at CALL time. The list is asserted against `CONTEXT_VAR_NAMES`
 // by test, so a name added to the runtime's allowlist and not described here fails rather than
 // quietly going undiscoverable.
@@ -63,6 +63,13 @@ export const CODE_TOOL_CONTEXT_VARS: readonly CodeToolContextVar[] = [
     type: "string",
     always: false,
     description: "The contact's phone. Absent when the contact has none.",
+  },
+  {
+    name: "contact_identifier",
+    type: "string",
+    always: false,
+    description:
+      "The Chatwoot contact's identifier: the id your own system gave this customer. Absent when the contact has none.",
   },
   {
     name: "inbox_id",

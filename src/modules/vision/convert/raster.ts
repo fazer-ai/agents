@@ -87,8 +87,8 @@ function boxEnd(
 export class FitAccumulator {
   readonly width: number;
   readonly height: number;
-  private readonly colOf: Int32Array;
-  private readonly rowOf: Int32Array;
+  private readonly sourceWidth: number;
+  private readonly sourceHeight: number;
   private readonly sums: Uint32Array;
   private readonly counts: Uint32Array;
 
@@ -98,8 +98,8 @@ export class FitAccumulator {
       scale < 1 ? Math.max(1, Math.round(sourceWidth * scale)) : sourceWidth;
     this.height =
       scale < 1 ? Math.max(1, Math.round(sourceHeight * scale)) : sourceHeight;
-    this.colOf = boxIndex(sourceWidth, this.width);
-    this.rowOf = boxIndex(sourceHeight, this.height);
+    this.sourceWidth = sourceWidth;
+    this.sourceHeight = sourceHeight;
     this.sums = new Uint32Array(this.width * this.height * 4);
     this.counts = new Uint32Array(this.width * this.height);
   }
@@ -107,23 +107,26 @@ export class FitAccumulator {
   // `piece` is opaque and sits at (left, top) of the source. The caller clips it to the source: a
   // grid's edge tiles are padded past the image, and that padding is not part of it.
   add(piece: Rgba, left: number, top: number): void {
-    // Out of range, the box lookup is `undefined` and every write lands on a NaN index, which a
+    // Out of range, a box lookup would land past the output and every write on a NaN index, which a
     // typed array silently drops: a misplaced piece would vanish instead of failing.
     if (
       left < 0 ||
       top < 0 ||
-      left + piece.width > this.colOf.length ||
-      top + piece.height > this.rowOf.length
+      left + piece.width > this.sourceWidth ||
+      top + piece.height > this.sourceHeight
     )
       throw new Error(
-        `piece ${piece.width}x${piece.height} at ${left},${top} is outside the ${this.colOf.length}x${this.rowOf.length} source`,
+        `piece ${piece.width}x${piece.height} at ${left},${top} is outside the ${this.sourceWidth}x${this.sourceHeight} source`,
       );
+    // Sized by the piece, never by the source: the source's size is what the FILE declares.
+    const colOf = boxesOf(left, piece.width, this.sourceWidth, this.width);
+    const rowOf = boxesOf(top, piece.height, this.sourceHeight, this.height);
     const s = piece.data;
     for (let y = 0; y < piece.height; y++) {
-      const row = (this.rowOf[top + y] as number) * this.width;
+      const row = (rowOf[y] as number) * this.width;
       let i = y * piece.width * 4;
       for (let x = 0; x < piece.width; x++, i += 4) {
-        const o = row + (this.colOf[left + x] as number);
+        const o = row + (colOf[x] as number);
         const k = o * 4;
         this.sums[k] = (this.sums[k] as number) + (s[i] as number);
         this.sums[k + 1] = (this.sums[k + 1] as number) + (s[i + 1] as number);
@@ -148,15 +151,21 @@ export class FitAccumulator {
   }
 }
 
-// For each source coordinate, the output box it averages into, by the same bounds `fitRgba` iterates.
-function boxIndex(sourceLength: number, outLength: number): Int32Array {
-  const map = new Int32Array(sourceLength);
+// For source coordinates `start` .. `start + length - 1`, the output box each averages into, by the
+// same bounds `fitRgba` iterates: box d holds floor(d * f) <= s < boxEnd(d).
+function boxesOf(
+  start: number,
+  length: number,
+  sourceLength: number,
+  outLength: number,
+): Int32Array {
   const f = sourceLength / outLength;
-  // Each box starts where the previous ended, which for d > 0 is floor(d * f), as in `fitRgba`.
-  let s = 0;
-  for (let d = 0; d < outLength; d++) {
-    const end = boxEnd(d, outLength, f, sourceLength);
-    for (; s < end; s++) map[s] = d;
+  const map = new Int32Array(length);
+  let d = Math.min(outLength - 1, Math.floor(start / f));
+  for (let i = 0; i < length; i++) {
+    // The last box is never walked past, so its end, the one `boxEnd` special-cases, is not needed.
+    while (d < outLength - 1 && Math.floor((d + 1) * f) <= start + i) d++;
+    map[i] = d;
   }
   return map;
 }

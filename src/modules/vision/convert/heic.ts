@@ -289,6 +289,14 @@ export async function decodeGridFitted(
       return { kind: "unsupported", reason: "a grid with alpha" };
     const width = c._heif_image_handle_get_width(handle);
     const height = c._heif_image_handle_get_height(handle);
+    // Tiles are decoded whole, padding included, so the work is what they cover and not the image:
+    // a thin grid (150,000,000x1 in 512x512 tiles) decodes 512 times its pixels, time the cap on the
+    // image's pixels does not see. A photo's grid covers it plus at most one tile per axis.
+    if (columns * rows * tileWidth * tileHeight > 2 * width * height)
+      return {
+        kind: "unsupported",
+        reason: "a grid whose tiles cover more than twice the image",
+      };
     const tileId = (transformed: number, x: number, y: number) => {
       c._heif_image_handle_get_grid_image_tile_id(
         err,

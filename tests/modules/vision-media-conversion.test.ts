@@ -1230,6 +1230,49 @@ describe("a grid HEIC over the pixel cap", () => {
     expect(Buffer.from(pieces.data).equals(Buffer.from(whole.data))).toBe(true);
   });
 
+  // A file declares its own size, and a grid of 150,000,000x1 passes both caps: nothing may be
+  // allocated per SOURCE coordinate, only per output pixel and per tile in hand.
+  test("the accumulator allocates by the output and the piece, never by the source's size", () => {
+    const sw = 3_000_000_000;
+    const fit = new FitAccumulator(sw, 1, 1568);
+    fit.add(
+      { data: new Uint8Array(4 * 4).fill(255), width: 4, height: 1 },
+      sw - 4,
+      0,
+    );
+    fit.add(
+      { data: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1 },
+      0,
+      0,
+    );
+    const out = fit.result();
+    expect(out.width).toBe(1568);
+    expect(Array.from(out.data.slice(0, 4))).toEqual([0, 0, 0, 255]);
+    expect(Array.from(out.data.slice((1568 - 1) * 4))).toEqual([
+      255, 255, 255, 255,
+    ]);
+  });
+
+  test("a piece's boxes match fitRgba's at every offset, not just from the origin", () => {
+    const sw = 7101;
+    const row = new Uint8Array(sw * 4);
+    for (let x = 0; x < sw; x++)
+      row.set([x % 251, (x * 7) % 253, (x * 13) % 255, 255], x * 4);
+    const whole = fitRgba({ data: row, width: sw, height: 1 }, 1000);
+    const fit = new FitAccumulator(sw, 1, 1000);
+    for (let left = 0; left < sw; left += 333) {
+      const w = Math.min(333, sw - left);
+      fit.add(
+        { data: row.slice(left * 4, (left + w) * 4), width: w, height: 1 },
+        left,
+        0,
+      );
+    }
+    expect(Buffer.from(fit.result().data).equals(Buffer.from(whole.data))).toBe(
+      true,
+    );
+  });
+
   test("a piece placed outside the source fails instead of vanishing", () => {
     const fit = new FitAccumulator(10, 10, 5);
     const piece = { data: new Uint8Array(4 * 4 * 4), width: 4, height: 4 };
@@ -1355,6 +1398,31 @@ describe("a grid HEIC over the pixel cap", () => {
         maxSourcePixels: 1100 * 700 - 1,
       }),
     ).rejects.toBeInstanceOf(MediaTooLargeError);
+  });
+
+  // Tiles are decoded whole, padding included, so a grid whose tiles cover far more than the image
+  // (a thin one: 150,000,000x1 in 512x512 tiles decodes 512 times its pixels) is time the pixel cap
+  // does not see.
+  test("a grid whose tiles cover more than twice the image is refused", async () => {
+    const lib = (await loadLibheif()) as unknown as Record<string, unknown>;
+    const shrunk = new Proxy(lib, {
+      get(target, key) {
+        if (key === "_heif_image_handle_get_width") return () => 400;
+        if (key === "_heif_image_handle_get_height") return () => 400;
+        const v = target[key as string];
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    expect(
+      await decodeGridFitted(
+        buf(HEIC),
+        { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS },
+        shrunk as never,
+      ),
+    ).toEqual({
+      kind: "unsupported",
+      reason: "a grid whose tiles cover more than twice the image",
+    });
   });
 
   test("everything the grid decode takes is released after a success", async () => {

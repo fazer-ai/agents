@@ -60,6 +60,14 @@ const GRID_ROTATED_180 = readFileSync(
 const GRID_ROTATED_270 = readFileSync(
   `${import.meta.dir}/../fixtures/media/grade-rotacionada-270.heic`,
 );
+// A SQUARE grid, 2000x2000 in 4x4 tiles, turned 180 and 90 degrees: the size alone cannot say
+// whether the axes were swapped, so only the tile mapping can.
+const GRID_SQUARE_180 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-quadrada-180.heic`,
+);
+const GRID_SQUARE_90 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-quadrada-90.heic`,
+);
 // A grid with alpha: 1100x700 in 3x2 tiles, left half opaque red, a band of blue at alpha 128, the
 // rest transparent. A tile decode leaves the alpha out, so this one is not read tile by tile.
 // Tiles 250 px wide, whose rows libheif pads to a 1008-byte stride instead of the 1000 bytes of
@@ -1181,6 +1189,8 @@ describe("a grid HEIC over the pixel cap", () => {
     ["a grid turned 270 degrees, at full size", GRID_ROTATED_270, 4000],
     ["a grid turned 180 degrees, downscaled", GRID_ROTATED_180, 700],
     ["a grid whose rows are padded past the tile", GRID_TILE_250, 4000],
+    ["a square grid turned 180 degrees", GRID_SQUARE_180, 4000],
+    ["a square grid turned 90 degrees", GRID_SQUARE_90, 4000],
     ["a grid scaled to a fractional width", GRID_ROTATED, 1001],
     ["a grid scaled to a box that does not divide its tiles", HEIC, 333],
   ];
@@ -1201,6 +1211,24 @@ describe("a grid HEIC over the pixel cap", () => {
       );
     });
   }
+
+  // 7101 / 1568 * 1568 is 7100.999..., which floors to 7100: the last box has to end at the source's
+  // edge anyway, or the last column is dropped (fitRgba) or averaged into the FIRST box (a map
+  // whose last entry keeps its default 0).
+  test("the last source column lands in the last box, whatever the float rounding", () => {
+    const sw = 7101;
+    const row = new Uint8Array(sw * 4).fill(255);
+    row.set([0, 0, 0, 255], (sw - 1) * 4);
+    const src = { data: row, width: sw, height: 1 };
+    const whole = fitRgba(src, 1568);
+    const fit = new FitAccumulator(sw, 1, 1568);
+    fit.add(src, 0, 0);
+    const pieces = fit.result();
+    expect(whole.width).toBe(1568);
+    expect(whole.data[0]).toBe(255);
+    expect(whole.data[(1568 - 1) * 4]).toBeLessThan(255);
+    expect(Buffer.from(pieces.data).equals(Buffer.from(whole.data))).toBe(true);
+  });
 
   test("a piece placed outside the source fails instead of vanishing", () => {
     const fit = new FitAccumulator(10, 10, 5);

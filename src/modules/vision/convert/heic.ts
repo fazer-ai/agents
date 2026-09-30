@@ -351,9 +351,6 @@ function placement(
   height: number,
   tileId: (transformed: number, x: number, y: number) => number,
 ): { leftOffset: number; topOffset: number } | string {
-  const swapped = width === stored.height && height === stored.width;
-  if (!(width === stored.width && height === stored.height) && !swapped)
-    return "a cropped grid";
   const where = new Map<number, [number, number]>();
   for (let y = 0; y < stored.rows; y++)
     for (let x = 0; x < stored.columns; x++) where.set(tileId(0, x, y), [x, y]);
@@ -364,6 +361,16 @@ function placement(
     return p;
   };
   const origin = at(0, 0);
+  // Whether the shown axes run along the stored ones or across them, read off a second tile: the
+  // sizes cannot say it for a square grid, where a 180-degree turn and a 90-degree one agree on them.
+  const swapped =
+    shown.columns > 1
+      ? (at(1, 0)[0] as number) === (origin[0] as number)
+      : (at(0, 1)[1] as number) === (origin[1] as number);
+  const [storedWidth, storedHeight] = swapped
+    ? [stored.height, stored.width]
+    : [stored.width, stored.height];
+  if (width !== storedWidth || height !== storedHeight) return "a cropped grid";
   // Padding at the END of each stored axis, in pixels.
   const pad = [
     stored.columns * stored.tileWidth - stored.width,

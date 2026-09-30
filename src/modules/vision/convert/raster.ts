@@ -34,15 +34,15 @@ export function fitRgba(src: Rgba, maxEdge: number): Rgba {
   const fx = sw / dw;
   const fy = sh / dh;
   const s = src.data;
-  // NOTE: no guard on the boxes: this only downscales, so `fx = sw / dw >= 1`, every box holds at
-  // least one pixel (floor((x + 1) * fx) > floor(x * fx)), and the last ends at floor(dw * fx) = sw
-  // (float error ~1e-12, far short of a pixel).
+  // NOTE: no guard on the boxes: this only downscales, so `fx = sw / dw >= 1` and every box holds at
+  // least one pixel. The last box ends at the edge by construction and not at floor(dw * fx), which
+  // float error can land one short of it (7101 / 1568 * 1568 = 7100.999...), dropping the last column.
   for (let y = 0; y < dh; y++) {
     const y0 = Math.floor(y * fy);
-    const y1 = Math.floor((y + 1) * fy);
+    const y1 = boxEnd(y, dh, fy, sh);
     for (let x = 0; x < dw; x++) {
       const x0 = Math.floor(x * fx);
-      const x1 = Math.floor((x + 1) * fx);
+      const x1 = boxEnd(x, dw, fx, sw);
       let r = 0;
       let g = 0;
       let b = 0;
@@ -66,6 +66,17 @@ export function fitRgba(src: Rgba, maxEdge: number): Rgba {
     }
   }
   return { data: out, width: dw, height: dh };
+}
+
+// Where box `d` of `outLength` ends in a source of `sourceLength`, shared by `fitRgba` and
+// `FitAccumulator` so the two cut the same boxes.
+function boxEnd(
+  d: number,
+  outLength: number,
+  f: number,
+  sourceLength: number,
+): number {
+  return d === outLength - 1 ? sourceLength : Math.floor((d + 1) * f);
 }
 
 // THE SAME AREA AVERAGE AS `fitRgba`, fed a piece at a time. A tiled source is decoded one tile after
@@ -137,15 +148,14 @@ export class FitAccumulator {
   }
 }
 
-// For each source coordinate, the output box it averages into, by the same floor bounds `fitRgba`
-// iterates.
+// For each source coordinate, the output box it averages into, by the same bounds `fitRgba` iterates.
 function boxIndex(sourceLength: number, outLength: number): Int32Array {
   const map = new Int32Array(sourceLength);
   const f = sourceLength / outLength;
   // Each box starts where the previous ended, which for d > 0 is floor(d * f), as in `fitRgba`.
   let s = 0;
   for (let d = 0; d < outLength; d++) {
-    const end = Math.floor((d + 1) * f);
+    const end = boxEnd(d, outLength, f, sourceLength);
     for (; s < end; s++) map[s] = d;
   }
   return map;

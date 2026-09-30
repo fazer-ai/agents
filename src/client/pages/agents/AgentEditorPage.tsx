@@ -163,6 +163,11 @@ import {
   type SendImageState,
   serializeSendImage,
 } from "./SendImageFields";
+import {
+  StaleNoticeCard,
+  StaleNoticeContext,
+  staleNoticeOf,
+} from "./StaleNotice";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import {
   parseToolPreconditionRows,
@@ -3410,7 +3415,18 @@ function AgentEditor() {
     ? tabs.filter((item) => MONITORING_TABS.has(item.key))
     : tabs;
 
-  return (
+  // One value for the card at the top and the compact line in every tab's save bar, so the two can
+  // only show together and offer the same actions.
+  const stale = staleNoticeOf(staleNotice, conflictRetry, {
+    reload: () => void load(),
+    clear: () => {
+      setStaleNotice(false);
+      setConflictRetry(null);
+    },
+    dismiss: () => setStaleNotice(false),
+  });
+
+  const page = (
     <PageContainer className="flex min-h-full flex-col gap-4">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <Link
@@ -3525,56 +3541,7 @@ function AgentEditor() {
               </p>
             )}
 
-            {staleNotice && (
-              <div
-                role="alert"
-                className="flex flex-col gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="flex items-start gap-2">
-                  <TriangleAlert
-                    className="mt-0.5 h-4 w-4 shrink-0 text-warning"
-                    aria-hidden="true"
-                  />
-                  <p className="text-sm text-text-primary">
-                    {t(
-                      "editor.staleNotice",
-                      "This agent was changed elsewhere (another tab, the API, or the MCP server). Reload to get the latest version before saving.",
-                    )}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => void load()}
-                  >
-                    {t("editor.reload", "Reload")}
-                  </Button>
-                  {conflictRetry && (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      onClick={() => {
-                        const retry = conflictRetry;
-                        setStaleNotice(false);
-                        setConflictRetry(null);
-                        retry();
-                      }}
-                    >
-                      {t("editor.overwriteAnyway", "Save anyway")}
-                    </Button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setStaleNotice(false)}
-                    aria-label={t("common.dismiss", "Dismiss")}
-                    className="flex h-7 w-7 items-center justify-center rounded text-text-muted hover:text-text-primary"
-                  >
-                    <X className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-            )}
+            <StaleNoticeCard notice={stale} />
 
             {/* Import warnings: the exact messages from the import, threaded from AgentsPage.
                 Dismissible once — they describe a past action, not the current config state. */}
@@ -4223,5 +4190,11 @@ function AgentEditor() {
       <StrongConfirmModal modal={strongDelete} />
       <ConfirmDialog modal={confirm} />
     </PageContainer>
+  );
+
+  return (
+    <StaleNoticeContext.Provider value={stale}>
+      {page}
+    </StaleNoticeContext.Provider>
   );
 }

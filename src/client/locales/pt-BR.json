@@ -1590,6 +1590,7 @@
     "splitWpm": "Velocidade de digitação (ppm)",
     "splitWpmHint": "Quanto maior, mais curtas as pausas.",
     "staleNotice": "Este agente foi alterado em outro lugar (outra aba, a API ou o servidor MCP). Recarregue para obter a versão mais recente antes de salvar.",
+    "staleShort": "Alterado em outro lugar",
     "stt": "Transcrição de voz (áudio)",
     "sttBaseURL": "Base URL",
     "sttBaseURLHint": "Obrigatório para endpoints de transcrição compatíveis com OpenAI.",

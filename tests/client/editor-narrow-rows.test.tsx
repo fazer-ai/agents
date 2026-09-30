@@ -66,3 +66,23 @@ describe("the editor header", () => {
     expect(actions).toContain("flex-wrap");
   });
 });
+
+describe("the General tab", () => {
+  test("the mode selector wraps inside the card instead of running past it", async () => {
+    const src = await Bun.file("src/client/pages/agents/GeneralTab.tsx").text();
+    const at = src.indexOf("{AGENT_MODES.map(");
+    const open = src.lastIndexOf("<div className=", at);
+    const cls = src.slice(open, src.indexOf(">", open));
+    expect(cls).toContain("flex-wrap");
+    expect(cls).toContain("max-w-full");
+  });
+
+  test("the capability map's title row wraps View graph under the title", async () => {
+    const src = await Bun.file(
+      "src/client/pages/agents/CapabilityMap.tsx",
+    ).text();
+    const at = src.indexOf('<Card id="general-capabilities"');
+    const open = src.indexOf("<div className=", at);
+    expect(src.slice(open, src.indexOf(">", open))).toContain("flex-wrap");
+  });
+});

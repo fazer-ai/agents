@@ -422,7 +422,7 @@ export function CapabilityMap({
 
   return (
     <Card id="general-capabilities" className="flex scroll-mt-4 flex-col gap-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}

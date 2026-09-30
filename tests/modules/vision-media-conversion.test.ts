@@ -13,19 +13,24 @@ import {
   __frameDimensionsForTest,
   __serializedForTest,
   MAX_SOURCE_PIXELS,
+  MAX_TILED_SOURCE_PIXELS,
   MediaConversionError,
   MediaSourceMismatchError,
+  MediaTooLargeError,
   runMediaConverter,
   storedPixels,
 } from "@/modules/vision/convert";
 import {
+  __placementForTest,
   __resetLibheifForTest,
+  decodeGridFitted,
   LIBHEIF_WASM_PATH_ENV,
   libheifWasmPath,
   loadLibheif,
   withHeicFrames,
 } from "@/modules/vision/convert/heic";
 import {
+  FitAccumulator,
   fitRgba,
   flattenOntoWhite,
   rasterToJpeg,
@@ -38,7 +43,41 @@ import {
 } from "@/modules/vision/media-conversion";
 import { visionKindForMime } from "@/modules/vision/providers";
 
+// Stored as a GRID: 2400x1600 in 5x4 tiles of 512x512, as phones store their photos.
 const HEIC = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
+// A grid with an `irot`: 2000x1300 stored in 4x3 tiles, shown rotated to 1300x2000, so the tiles are
+// laid out in the TRANSFORMED image as 3x4 and its edge tiles are padded past it. Colour quadrants,
+// a black block and two diagonals, so a misplaced or unrotated tile changes the pixels. Built with
+// `heif-enc --cut-tiles 512 --rotate-cw 90`.
+const GRID_ROTATED = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-rotacionada.heic`,
+);
+// The same source turned 180 and 270 degrees: 180 runs BOTH shown axes backwards along the stored
+// ones, so both paddings move to the start; 270 swaps the axes the other way from 90.
+const GRID_ROTATED_180 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-rotacionada-180.heic`,
+);
+const GRID_ROTATED_270 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-rotacionada-270.heic`,
+);
+// A SQUARE grid, 2000x2000 in 4x4 tiles, turned 180 and 90 degrees: the size alone cannot say
+// whether the axes were swapped, so only the tile mapping can.
+const GRID_SQUARE_180 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-quadrada-180.heic`,
+);
+const GRID_SQUARE_90 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-quadrada-90.heic`,
+);
+// A grid with alpha: 1100x700 in 3x2 tiles, left half opaque red, a band of blue at alpha 128, the
+// rest transparent. A tile decode leaves the alpha out, so this one is not read tile by tile.
+// Tiles 250 px wide, whose rows libheif pads to a 1008-byte stride instead of the 1000 bytes of
+// pixels, so reading a row has to follow the stride.
+const GRID_TILE_250 = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-tile-250.heic`,
+);
+const GRID_ALPHA = readFileSync(
+  `${import.meta.dir}/../fixtures/media/grade-alfa.heic`,
+);
 // A cutout: left half opaque red, right half fully transparent. Made the way iOS's "remove
 // background" makes one, `sips -s format heic` from an RGBA PNG; the alpha survives the decode (the
 // transparent half comes back with a = 0).
@@ -794,16 +833,20 @@ describe("heic-to-jpeg", () => {
     expect(jpeg.decode(new Uint8Array(out)).width).toBe(1568);
   });
 
-  test("refuses a source over the pixel cap instead of allocating it", async () => {
-    // The fixture is 3.84 Mpx, so a cap just under it exercises the guard without the 200 MB the
-    // real cap is there to prevent.
-    await expect(
-      runMediaConverter("heic-to-jpeg", heicBytes(), {
-        maxSourcePixels: 2400 * 1600 - 1,
-      }),
-    ).rejects.toThrow(/over the 3839999 px cap/);
+  test("refuses an image stored in one piece over the pixel cap instead of allocating it", async () => {
+    // The cutout is 400x400 and not a grid, so a cap just under it exercises the guard without the
+    // 200 MB the real cap is there to prevent.
+    const bytes = ALPHA.buffer.slice(
+      ALPHA.byteOffset,
+      ALPHA.byteOffset + ALPHA.byteLength,
+    ) as ArrayBuffer;
+    const refused = runMediaConverter("heic-to-jpeg", bytes, {
+      maxSourcePixels: 400 * 400 - 1,
+    });
+    await expect(refused).rejects.toThrow(/over the 159999 px cap/);
+    await expect(refused).rejects.toBeInstanceOf(MediaTooLargeError);
     // And the real cap admits it, so the guard is not simply always on.
-    expect(2400 * 1600).toBeLessThan(MAX_SOURCE_PIXELS);
+    expect(400 * 400).toBeLessThan(MAX_SOURCE_PIXELS);
   });
 
   test("a crop cannot shrink the file past the pixel cap", async () => {
@@ -1118,5 +1161,392 @@ describe("heic-to-jpeg", () => {
     ).rejects.toBeInstanceOf(MediaConversionError);
     const out = await runMediaConverter("heic-to-jpeg", heicBytes());
     expect(out.byteLength).toBeGreaterThan(0);
+  });
+});
+
+const buf = (b: Buffer) =>
+  b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+
+// What the whole-image path produces for the same file: decode it all, flatten, fit.
+async function wholeFitted(bytes: ArrayBuffer, maxEdge: number) {
+  return await withHeicFrames(bytes, async (frames) => {
+    const frame = frames.find((f) => f.primary) ?? frames[0];
+    if (!frame) throw new Error("no frame");
+    return fitRgba(flattenOntoWhite(await frame.decode()), maxEdge);
+  });
+}
+
+describe("a grid HEIC over the pixel cap", () => {
+  const cases: [string, Buffer, number][] = [
+    ["a grid, downscaled", HEIC, 1568],
+    ["a rotated grid, downscaled", GRID_ROTATED, 1568],
+    [
+      "a rotated grid at full size, where only the padding is cut",
+      GRID_ROTATED,
+      4000,
+    ],
+    ["a grid turned 180 degrees, at full size", GRID_ROTATED_180, 4000],
+    ["a grid turned 270 degrees, at full size", GRID_ROTATED_270, 4000],
+    ["a grid turned 180 degrees, downscaled", GRID_ROTATED_180, 700],
+    ["a grid whose rows are padded past the tile", GRID_TILE_250, 4000],
+    ["a square grid turned 180 degrees", GRID_SQUARE_180, 4000],
+    ["a square grid turned 90 degrees", GRID_SQUARE_90, 4000],
+    ["a grid scaled to a fractional width", GRID_ROTATED, 1001],
+    ["a grid scaled to a box that does not divide its tiles", HEIC, 333],
+  ];
+  for (const [name, file, maxEdge] of cases) {
+    test(`${name}: tile by tile gives the same pixels as the whole decode`, async () => {
+      const whole = await wholeFitted(buf(file), maxEdge);
+      const grid = await decodeGridFitted(buf(file), {
+        maxEdge,
+        maxTilePixels: MAX_SOURCE_PIXELS,
+      });
+      if (grid.kind !== "decoded") throw new Error(grid.kind);
+      expect([grid.image.width, grid.image.height]).toEqual([
+        whole.width,
+        whole.height,
+      ]);
+      expect(Buffer.from(grid.image.data).equals(Buffer.from(whole.data))).toBe(
+        true,
+      );
+    });
+  }
+
+  // 7101 / 1568 * 1568 is 7100.999..., which floors to 7100: the last box has to end at the source's
+  // edge anyway, or the last column is dropped (fitRgba) or averaged into the FIRST box (a map
+  // whose last entry keeps its default 0).
+  test("the last source column lands in the last box, whatever the float rounding", () => {
+    const sw = 7101;
+    const row = new Uint8Array(sw * 4).fill(255);
+    row.set([0, 0, 0, 255], (sw - 1) * 4);
+    const src = { data: row, width: sw, height: 1 };
+    const whole = fitRgba(src, 1568);
+    const fit = new FitAccumulator(sw, 1, 1568);
+    fit.add(src, 0, 0);
+    const pieces = fit.result();
+    expect(whole.width).toBe(1568);
+    expect(whole.data[0]).toBe(255);
+    expect(whole.data[(1568 - 1) * 4]).toBeLessThan(255);
+    expect(Buffer.from(pieces.data).equals(Buffer.from(whole.data))).toBe(true);
+  });
+
+  // A file declares its own size, and a grid of 150,000,000x1 passes both caps: nothing may be
+  // allocated per SOURCE coordinate, only per output pixel and per tile in hand.
+  test("the accumulator allocates by the output and the piece, never by the source's size", () => {
+    const sw = 3_000_000_000;
+    const fit = new FitAccumulator(sw, 1, 1568);
+    fit.add(
+      { data: new Uint8Array(4 * 4).fill(255), width: 4, height: 1 },
+      sw - 4,
+      0,
+    );
+    fit.add(
+      { data: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1 },
+      0,
+      0,
+    );
+    const out = fit.result();
+    expect(out.width).toBe(1568);
+    expect(Array.from(out.data.slice(0, 4))).toEqual([0, 0, 0, 255]);
+    expect(Array.from(out.data.slice((1568 - 1) * 4))).toEqual([
+      255, 255, 255, 255,
+    ]);
+  });
+
+  test("a piece's boxes match fitRgba's at every offset, not just from the origin", () => {
+    const sw = 7101;
+    const row = new Uint8Array(sw * 4);
+    for (let x = 0; x < sw; x++)
+      row.set([x % 251, (x * 7) % 253, (x * 13) % 255, 255], x * 4);
+    const whole = fitRgba({ data: row, width: sw, height: 1 }, 1000);
+    const fit = new FitAccumulator(sw, 1, 1000);
+    for (let left = 0; left < sw; left += 333) {
+      const w = Math.min(333, sw - left);
+      fit.add(
+        { data: row.slice(left * 4, (left + w) * 4), width: w, height: 1 },
+        left,
+        0,
+      );
+    }
+    expect(Buffer.from(fit.result().data).equals(Buffer.from(whole.data))).toBe(
+      true,
+    );
+  });
+
+  test("a piece placed outside the source fails instead of vanishing", () => {
+    const fit = new FitAccumulator(10, 10, 5);
+    const piece = { data: new Uint8Array(4 * 4 * 4), width: 4, height: 4 };
+    for (const [left, top] of [
+      [-1, 0],
+      [0, -1],
+      [7, 0],
+      [0, 7],
+    ] as const)
+      expect(() => fit.add(piece, left, top)).toThrow(
+        /outside the 10x10 source/,
+      );
+    expect(() => fit.add(piece, 6, 6)).not.toThrow();
+  });
+
+  test("the rotated grid comes out in the orientation it is shown in", async () => {
+    const grid = await decodeGridFitted(buf(GRID_ROTATED), {
+      maxEdge: 4000,
+      maxTilePixels: MAX_SOURCE_PIXELS,
+    });
+    if (grid.kind !== "decoded") throw new Error(grid.kind);
+    expect([grid.image.width, grid.image.height]).toEqual([1300, 2000]);
+  });
+
+  test("an image stored in one piece is not a grid, whatever its size", async () => {
+    expect(
+      await decodeGridFitted(buf(ALPHA), {
+        maxEdge: 1568,
+        maxTilePixels: MAX_SOURCE_PIXELS,
+      }),
+    ).toEqual({ kind: "not-a-grid" });
+  });
+
+  test("the converter reads a grid over the cap instead of refusing it", async () => {
+    const out = await runMediaConverter("heic-to-jpeg", heicBytes(), {
+      maxSourcePixels: 2400 * 1600 - 1,
+    });
+    const img = jpeg.decode(new Uint8Array(out));
+    expect([img.width, img.height]).toEqual([1568, 1045]);
+  });
+
+  test("a grid cut short fails as a conversion, not as a size refusal, and takes nothing down", async () => {
+    const cut = heicBytes().slice(0, Math.floor(HEIC.byteLength * 0.7));
+    const failed = runMediaConverter("heic-to-jpeg", cut, {
+      maxSourcePixels: 2400 * 1600 - 1,
+    });
+    await expect(failed).rejects.toThrow(/libheif tile \d+,\d+ failed/);
+    await expect(failed).rejects.not.toBeInstanceOf(MediaTooLargeError);
+    // And the next conversion still works.
+    const out = await runMediaConverter("heic-to-jpeg", heicBytes());
+    expect(jpeg.decode(new Uint8Array(out)).width).toBe(1568);
+  });
+
+  test("a grid whose tile is itself over the cap is refused, since a tile is decoded whole", async () => {
+    await expect(
+      runMediaConverter("heic-to-jpeg", heicBytes(), {
+        maxSourcePixels: 512 * 512 - 1,
+      }),
+    ).rejects.toBeInstanceOf(MediaTooLargeError);
+  });
+
+  test("a grid over the tiled cap is refused: every tile is still decoded, so size is time", async () => {
+    const refused = runMediaConverter("heic-to-jpeg", heicBytes(), {
+      maxSourcePixels: 1_000_000,
+      maxTiledSourcePixels: 2400 * 1600 - 1,
+    });
+    await expect(refused).rejects.toBeInstanceOf(MediaTooLargeError);
+    await expect(refused).rejects.toThrow(/over the 1000000 px cap/);
+    // And the real tiled cap covers the largest phone mode, 200 MP.
+    expect(MAX_TILED_SOURCE_PIXELS).toBeGreaterThanOrEqual(16320 * 12240);
+  });
+
+  // Every allocation, handle, image and context the grid decode takes is given back, on success and
+  // when a tile fails halfway: the heap never returns memory to the process, so a leak per photo is
+  // a leak for the life of the process.
+  async function counted(failTile?: [number, number]) {
+    const lib = (await loadLibheif()) as unknown as Record<string, unknown>;
+    const live = { malloc: 0, context: 0, handle: 0, image: 0 };
+    const wrap = new Proxy(lib, {
+      get(target, key) {
+        const v = target[key as string];
+        if (typeof v !== "function") return v;
+        const fn = v as (...a: number[]) => number;
+        return (...a: number[]) => {
+          if (key === "_heif_image_handle_decode_image_tile" && failTile) {
+            const [x, y] = failTile;
+            if (a[6] === x && a[7] === y) {
+              (target.HEAP32 as Int32Array)[(a[0] as number) >> 2] = 1;
+              return;
+            }
+          }
+          const r = fn.apply(target, a);
+          if (key === "_malloc") live.malloc++;
+          if (key === "_free") live.malloc--;
+          if (key === "_heif_context_alloc") live.context++;
+          if (key === "_heif_context_free") live.context--;
+          if (key === "_heif_context_get_primary_image_handle") live.handle++;
+          if (key === "_heif_context_get_image_handle") live.handle++;
+          if (key === "_heif_image_handle_release") live.handle--;
+          if (key === "_heif_image_handle_decode_image_tile") live.image++;
+          if (key === "_heif_image_release") live.image--;
+          return r;
+        };
+      },
+    });
+    const run = decodeGridFitted(
+      buf(HEIC),
+      { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS },
+      wrap as never,
+    );
+    return { run, live };
+  }
+
+  test("a grid with alpha is not read tile by tile, since a tile decode drops the alpha", async () => {
+    expect(
+      await decodeGridFitted(buf(GRID_ALPHA), {
+        maxEdge: 1568,
+        maxTilePixels: MAX_SOURCE_PIXELS,
+      }),
+    ).toEqual({ kind: "unsupported", reason: "a grid with alpha" });
+    // So over the cap it is refused as before, not handed to the model on black.
+    await expect(
+      runMediaConverter("heic-to-jpeg", buf(GRID_ALPHA), {
+        maxSourcePixels: 1100 * 700 - 1,
+      }),
+    ).rejects.toBeInstanceOf(MediaTooLargeError);
+  });
+
+  // Tiles are decoded whole, padding included, so a grid whose tiles cover far more than the image
+  // (a thin one: 150,000,000x1 in 512x512 tiles decodes 512 times its pixels) is time the pixel cap
+  // does not see.
+  test("a grid whose tiles cover more than twice the image is refused", async () => {
+    const lib = (await loadLibheif()) as unknown as Record<string, unknown>;
+    const shrunk = new Proxy(lib, {
+      get(target, key) {
+        if (key === "_heif_image_handle_get_width") return () => 400;
+        if (key === "_heif_image_handle_get_height") return () => 400;
+        const v = target[key as string];
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    expect(
+      await decodeGridFitted(
+        buf(HEIC),
+        { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS },
+        shrunk as never,
+      ),
+    ).toEqual({
+      kind: "unsupported",
+      reason: "a grid whose tiles cover more than twice the image",
+    });
+  });
+
+  // The tiling reports the first tile's size; a malformed grid can carry a bigger tile further on,
+  // which libheif allocates before rejecting. Here one tile of the real receipt grid is made to
+  // declare 2000x2000: nothing may be decoded, and every handle opened to measure is given back.
+  for (const lie of [
+    "_heif_image_handle_get_ispe_width",
+    "_heif_image_handle_get_ispe_height",
+  ])
+    test(`a grid with a tile larger than it declares (${lie.slice(-5)}) is refused before any tile is decoded`, async () => {
+      const lib = (await loadLibheif()) as unknown as Record<string, unknown>;
+      let decoded = 0;
+      let measured = 0;
+      let liar = -1;
+      const open = new Set<number>();
+      const tampered = new Proxy(lib, {
+        get(target, key) {
+          const v = target[key as string];
+          if (typeof v !== "function") return v;
+          const fn = v as (...a: number[]) => number;
+          return (...a: number[]) => {
+            if (key === "_heif_image_handle_decode_image_tile") decoded++;
+            const r = fn.apply(target, a);
+            if (key === "_heif_context_get_image_handle") {
+              const h = (target.HEAPU32 as Uint32Array)[
+                (a[3] as number) >> 2
+              ] as number;
+              open.add(h);
+              // The seventh tile measured is the one that lies.
+              if (++measured === 7) liar = h;
+            }
+            if (key === "_heif_image_handle_release")
+              open.delete(a[0] as number);
+            if (key === lie && a[0] === liar) return 2000;
+            return r;
+          };
+        },
+      });
+      expect(
+        await decodeGridFitted(
+          buf(HEIC),
+          { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS },
+          tampered as never,
+        ),
+      ).toEqual({
+        kind: "unsupported",
+        reason: "a grid with a tile larger than it declares",
+      });
+      expect(decoded).toBe(0);
+      expect(measured).toBe(7);
+      expect(open.size).toBe(0);
+    });
+
+  test("everything the grid decode takes is released after a success", async () => {
+    const { run, live } = await counted();
+    expect((await run).kind).toBe("decoded");
+    expect(live).toEqual({ malloc: 0, context: 0, handle: 0, image: 0 });
+  });
+
+  test("and after a tile fails halfway through", async () => {
+    const { run, live } = await counted([2, 1]);
+    await expect(run).rejects.toThrow(/tile 2,1/);
+    expect(live).toEqual({ malloc: 0, context: 0, handle: 0, image: 0 });
+  });
+
+  test("the heap does not grow from one grid to the next", async () => {
+    const lib = await loadLibheif();
+    const opts = { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS };
+    await decodeGridFitted(buf(HEIC), opts);
+    const after = (lib as unknown as { HEAPU8: Uint8Array }).HEAPU8.length;
+    for (let i = 0; i < 4; i++) await decodeGridFitted(buf(HEIC), opts);
+    expect((lib as unknown as { HEAPU8: Uint8Array }).HEAPU8.length).toBe(
+      after,
+    );
+  });
+
+  const tiling = (
+    columns: number,
+    rows: number,
+    width: number,
+    height: number,
+  ) => ({
+    columns,
+    rows,
+    tileWidth: 512,
+    tileHeight: 512,
+    width,
+    height,
+  });
+
+  test("a crop inside the grid is refused rather than placed", () => {
+    expect(
+      __placementForTest(
+        tiling(4, 3, 2000, 1300),
+        tiling(4, 3, 1990, 1300),
+        1990,
+        1300,
+        (_t, x, y) => y * 4 + x,
+      ),
+    ).toBe("a cropped grid");
+  });
+
+  test("a padded axis one tile long cannot say which way it runs, so it is refused", () => {
+    expect(
+      __placementForTest(
+        tiling(4, 1, 2000, 500),
+        tiling(4, 1, 2000, 500),
+        2000,
+        500,
+        (_t, x, y) => y * 4 + x,
+      ),
+    ).toBe("a padded grid axis one tile long");
+  });
+
+  test("an unpadded axis one tile long needs no direction", () => {
+    expect(
+      __placementForTest(
+        tiling(4, 1, 2000, 512),
+        tiling(4, 1, 2000, 512),
+        2000,
+        512,
+        (_t, x, y) => y * 4 + x,
+      ),
+    ).toEqual({ leftOffset: 0, topOffset: 0 });
   });
 });

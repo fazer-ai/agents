@@ -1691,6 +1691,10 @@ model McpServerConnection {
   url           String?
   command       String?
   credentialRef String?  @map("credential_ref")
+  // Request headers sent on every tools/call to this server, name -> value. A value may hold the
+  // {{placeholders}} an HTTP tool header accepts, resolved per call from the conversation (never from
+  // the model); discovery carries none. Network transports only. See docs/mcp.md.
+  headers       Json     @default("{}")
   enabled       Boolean  @default(true)
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")

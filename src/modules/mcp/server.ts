@@ -2011,6 +2011,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url: z.string().nullable().optional(),
           command: z.string().nullable().optional(),
           credential_ref: z.string().nullable().optional(),
+          headers: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              "Sent on tools/call only, not on discovery. Name -> text with HTTP tool context placeholders ({{contact_id}}, {{contact_identifier}}, ...), empty when unknown. Refused on stdio and for the credential's header.",
+            ),
           enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
@@ -2022,6 +2028,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url?: string | null;
           command?: string | null;
           credential_ref?: string | null;
+          headers?: Record<string, unknown>;
           enabled?: boolean;
           dry_run?: boolean;
         },
@@ -2043,6 +2050,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url: z.string().nullable().optional(),
           command: z.string().nullable().optional(),
           credential_ref: z.string().nullable().optional(),
+          headers: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              "Replaces the whole map; rules as in mcp_connection_create.",
+            ),
           enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
@@ -2055,6 +2068,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           url?: string | null;
           command?: string | null;
           credential_ref?: string | null;
+          headers?: Record<string, unknown>;
           enabled?: boolean;
           dry_run?: boolean;
         },

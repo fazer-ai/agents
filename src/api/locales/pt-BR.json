@@ -158,6 +158,7 @@
     "mcpCommandInvalid": "O comando stdio contém caracteres não suportados.",
     "mcpCommandRequired": "O transporte stdio exige um comando.",
     "mcpConnectionNotFound": "Conexão MCP não encontrada.",
+    "mcpHeadersInvalid": "Cabeçalhos inválidos: {{reason}}.",
     "mcpLauncherInvalid": "O comando stdio precisa começar com um launcher suportado ({{launchers}}).",
     "mcpNameTaken": "Este nome de conexão MCP já está em uso.",
     "mcpOAuthCredentialNotFound": "Esta credencial MCP não existe mais",

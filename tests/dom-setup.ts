@@ -9,13 +9,23 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // `Bun.serve` needs the native Response, WebSocket tests need the Bun-only `{ headers }` option, and
 // happy-dom's Request silently DROPS forbidden headers such as `Cookie`, so a cookie-authenticated
 // route driven through `app.handle()` needs `globalThis.BunRequest` (also `BunWebSocket`, `BunResponse`).
+// A client that has to reach a real socket (an MCP SDK transport) needs the native fetch, Headers and
+// abort pair together: Bun's fetch refuses happy-dom's AbortSignal.
 const __nativeBunGlobals = globalThis as {
   BunWebSocket?: typeof WebSocket;
   BunResponse?: typeof Response;
   BunRequest?: typeof Request;
+  BunFetch?: typeof fetch;
+  BunHeaders?: typeof Headers;
+  BunAbortController?: typeof AbortController;
+  BunAbortSignal?: typeof AbortSignal;
 };
 __nativeBunGlobals.BunWebSocket = WebSocket;
 __nativeBunGlobals.BunResponse = Response;
 __nativeBunGlobals.BunRequest = Request;
+__nativeBunGlobals.BunFetch = fetch;
+__nativeBunGlobals.BunHeaders = Headers;
+__nativeBunGlobals.BunAbortController = AbortController;
+__nativeBunGlobals.BunAbortSignal = AbortSignal;
 
 GlobalRegistrator.register();

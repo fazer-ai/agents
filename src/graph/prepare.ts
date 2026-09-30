@@ -1279,7 +1279,20 @@ export async function buildToolset(
           return true;
         }
       : undefined;
+  // The conversation variables an HTTP tool's {{context}} placeholders read and a code tool's
+  // `context` argument and an MCP connection's headers carry: one object, so the three cannot disagree
+  // about a name.
+  const turnContext = {
+    ...(ctx.conversationId > 0
+      ? { conversation_id: String(ctx.conversationId) }
+      : {}),
+    ...(ctx.messageId && ctx.messageId > 0
+      ? { message_id: String(ctx.messageId) }
+      : {}),
+    ...cfg.httpToolContext,
+  };
   const mcpTools = await loadMcpToolsForAgent(ctx.tenantId, cfg.mcpSelections, {
+    context: turnContext,
     // NOTE: Default google_oauth refresh (overridable by tests via deps.mcp). Resolves the entry id from
     // the `vault:<id>` ref and returns a fresh access token, refreshing via Google when stale.
     refreshCredential: (tenantId, ref) =>
@@ -1571,17 +1584,6 @@ export async function buildToolset(
   // the ones it did are already first in the list and win by order. See unique-names.ts for why the
   // reservation cannot be left to ordering alone.
   const builtNativeNames = new Set(nativeTools.map((t) => t.name));
-  // The conversation variables an HTTP tool's {{context}} placeholders read and a code tool's
-  // `context` argument carries: one object, so the two kinds cannot disagree about a name.
-  const turnContext = {
-    ...(ctx.conversationId > 0
-      ? { conversation_id: String(ctx.conversationId) }
-      : {}),
-    ...(ctx.messageId && ctx.messageId > 0
-      ? { message_id: String(ctx.messageId) }
-      : {}),
-    ...cfg.httpToolContext,
-  };
   // `reply_as_text`, on every turn of an agent that turned it on, text and audio alike.
   // Only a caller that delivers a reply which can be spoken hands over the holder (the reactive turn
   // and the playground), so the observer and the nudge, which never synthesize, are not offered it.

@@ -54,6 +54,10 @@
         ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
         : pref;
       document.documentElement.dataset.theme = resolved;
+      var density;
+      try { density = localStorage.getItem("@app:density"); } catch (_) { }
+      density = density === "compact" || density === "comfortable" ? density : "compact";
+      document.documentElement.dataset.density = density;
     })();
   </script>
 

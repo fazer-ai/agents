@@ -460,7 +460,7 @@ export function Modal({
             <DialogPrimitive.Overlay
               style={overlayStyle}
               className={cn(
-                "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in",
+                "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 bg-overlay data-[state=closed]:animate-out data-[state=open]:animate-in",
                 stackLevel === 0 && "z-(--z-modal-overlay)",
               )}
             />

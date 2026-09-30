@@ -1,211 +1,184 @@
-import { type FormEvent, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Badge,
-  Button,
-  Card,
-  FormField,
-  Input,
-  useToast,
-  useUnsavedChanges,
-} from "@/client/components";
+import { Avatar, Badge, Button, Input, useToast } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { isAdminRole } from "@/client/lib/roles";
+import { SettingsRow, SettingsSection } from "./SettingsSection";
 
-// t('common.email', 'Email')
-// t('common.role', 'Role')
-// t('common.notAvailable', 'N/A')
+const NAME_MAX_LENGTH = 100;
+const NAME_FIELDS = ["name"] as const;
 
-// The two keys this form patches. A wrong current password is refused by name, which is the whole
-// difference between "could not change the password" and a mark on the box that is wrong.
-const PASSWORD_FIELDS = ["currentPassword", "newPassword"] as const;
+// What the name field should hold once a save of `submitted` comes back as `saved`. It is only
+// normalized if it still holds what was submitted; an edit typed while the request was in flight is
+// kept, and stays dirty.
+export function nameAfterSave(
+  current: string,
+  submitted: string,
+  saved: string,
+): string {
+  return current.trim() === submitted ? saved : current;
+}
 
 export function SettingsProfilePage() {
-  const { t } = useTranslation();
-  const { user } = useAuth();
+  const { t, i18n } = useTranslation();
+  const { user, updateUser } = useAuth();
   const { showToast } = useToast();
-  const fallback = t("common.notAvailable", "N/A");
-  const roleLabel = (role: string | undefined) => {
-    switch (role) {
+  const nameId = useId();
+
+  const savedName = user?.name ?? "";
+  const [name, setName] = useState(savedName);
+  const [saving, setSaving] = useState(false);
+  const refusal = useFieldRefusal(NAME_FIELDS);
+  const sentRef = useRef({ name });
+  sentRef.current = { name: name.trim() };
+
+  // Follow the stored value when it changes underneath (the /me refresh after a login, or a
+  // save), but only while the field is untouched.
+  const [lastSynced, setLastSynced] = useState(savedName);
+  useEffect(() => {
+    if (name === lastSynced && savedName !== lastSynced) {
+      setName(savedName);
+      setLastSynced(savedName);
+    }
+  }, [savedName, name, lastSynced]);
+
+  const isDirty = name.trim() !== savedName;
+  // Armed through a save too: the field stays editable, and an edit typed while the request is in
+  // flight is not in it.
+  useNavGuard(isDirty);
+
+  if (!user) return null;
+
+  const roleLabel = (() => {
+    switch (user.role) {
       case "SUPER_ADMIN":
         return t("role.superAdmin", "Super admin");
       case "TENANT_ADMIN":
         return t("role.tenantAdmin", "Tenant admin");
-      case "AGENT":
-        return t("role.agent", "Agent");
       default:
-        return fallback;
+        return t("role.agent", "Agent");
+    }
+  })();
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!isDirty || saving) return;
+    setSaving(true);
+    const submitted = name.trim();
+    const sent = { name: submitted };
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("settings.profileSaveError", "Could not save your profile."),
+        sent,
+        sentRef.current,
+      );
+    try {
+      const { data, error } = await api.api.auth.me.patch(sent);
+      if (error || !data?.user) throw error;
+      refusal.clear();
+      // The saved value comes from the PATCH response itself, not from a refresh that can
+      // fail after the save already succeeded.
+      const saved = data.user.name ?? "";
+      updateUser(data.user.id, { name: data.user.name });
+      setLastSynced(saved);
+      setName((current) => nameAfterSave(current, submitted, saved));
+      showToast(t("settings.profileSaved", "Profile saved"), "success");
+    } catch (e) {
+      const toast = held(e);
+      if (toast) showToast(toast, "error");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  // Optional on the User type (login/signup omit it); only false after a /me refresh means the
-  // account truly has no local password. Treat undefined as "has password" so the form stays usable;
-  // the endpoint still guards Google-only accounts with a clear error.
-  const googleOnly = user?.hasPassword === false;
-
-  const refusal = useFieldRefusal(PASSWORD_FIELDS);
-  const sentRef = useRef({ currentPassword, newPassword });
-  sentRef.current = { currentPassword, newPassword };
-
-  // Page form (no modal): arms the native beforeunload prompt while any password
-  // field is filled, so a refresh/tab-close does not silently drop the entry.
-  useUnsavedChanges(
-    !googleOnly &&
-      (!!currentPassword || !!newPassword || !!confirmPassword) &&
-      !busy,
-  );
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    if (newPassword !== confirmPassword) {
-      setError(t("auth.passwordsNoMatch", "Passwords do not match"));
-      return;
-    }
-    setBusy(true);
-    const sent = { currentPassword, newPassword };
-    const held = (e2: unknown) =>
-      refusal.capture(
-        e2,
-        t("settings.passwordChangeError", "Could not change the password."),
-        sent,
-        sentRef.current,
-      ) ?? "";
-    try {
-      const { error: apiError } = await api.api.auth.password.patch(sent);
-      if (apiError) {
-        setError(held(apiError));
-        return;
-      }
-      refusal.clear();
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      showToast(t("settings.passwordChanged", "Password changed."), "success");
-    } catch (e2) {
-      setError(held(e2));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div className="flex flex-col gap-6">
-      <Card>
-        <h2 className="mb-4 font-semibold text-text-primary">
-          {t("settings.profile", "Profile")}
-        </h2>
-        <dl className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <dt className="text-text-muted text-xs uppercase tracking-wide">
-              {t("common.email", "Email")}
-            </dt>
-            <dd className="text-sm text-text-primary">
-              {user?.email ?? fallback}
-            </dd>
-          </div>
-          <div className="flex flex-col gap-1">
-            <dt className="text-text-muted text-xs uppercase tracking-wide">
-              {t("common.role", "Role")}
-            </dt>
-            <dd>
-              <Badge
-                variant={isAdminRole(user?.role) ? "warning" : "secondary"}
-              >
-                {roleLabel(user?.role)}
-              </Badge>
-            </dd>
-          </div>
-        </dl>
-      </Card>
-
-      <Card>
-        <h2 className="mb-1 font-semibold text-text-primary">
-          {t("settings.changePassword", "Change password")}
-        </h2>
-        {googleOnly ? (
-          <p className="text-sm text-text-muted">
-            {t(
-              "settings.googleOnlyNote",
-              "You sign in with Google, so there's no password to change here.",
-            )}
+    <>
+      <div className="flex items-center gap-4">
+        <Avatar name={user.name} email={user.email} size="lg" />
+        <div className="min-w-0">
+          <p className="truncate font-semibold text-lg text-text-primary">
+            {user.name || user.email}
           </p>
-        ) : (
-          <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
-            {error && (
-              <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
-                {error}
-              </div>
-            )}
-            <FormField
-              label={t("settings.currentPassword", "Current password")}
-              error={refusal.at("currentPassword", currentPassword)}
-            >
-              <Input
-                type="password"
-                showPasswordToggle
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                required
-                disabled={busy}
-                autoComplete="current-password"
-              />
-            </FormField>
-            <FormField
-              label={t("settings.newPassword", "New password")}
-              error={refusal.at("newPassword", newPassword)}
-            >
-              <Input
-                type="password"
-                showPasswordToggle
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                required
-                minLength={8}
-                disabled={busy}
-                autoComplete="new-password"
-                helperText={t(
-                  "auth.passwordMinLength",
-                  "Must be at least 8 characters",
-                )}
-              />
-            </FormField>
-            <FormField
-              label={t("settings.confirmNewPassword", "Confirm new password")}
-            >
-              <Input
-                type="password"
-                showPasswordToggle
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                minLength={8}
-                disabled={busy}
-                autoComplete="new-password"
-              />
-            </FormField>
-            <div className="flex justify-end">
-              <Button
-                type="submit"
-                loading={busy}
-                disabled={
-                  !currentPassword || !newPassword || !confirmPassword || busy
-                }
-              >
-                {t("settings.updatePassword", "Update password")}
+          {user.name && (
+            <p className="truncate text-sm text-text-muted">{user.email}</p>
+          )}
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit}>
+        <SettingsSection
+          title={t("settings.profile", "Profile")}
+          description={t(
+            "settings.profileDescription",
+            "How you appear to other people in this app.",
+          )}
+          footer={
+            <>
+              {isDirty && (
+                <Button
+                  variant="ghost"
+                  onClick={() => setName(savedName)}
+                  disabled={saving}
+                >
+                  {t("common.discard", "Discard")}
+                </Button>
+              )}
+              <Button type="submit" loading={saving} disabled={!isDirty}>
+                {t("common.save", "Save")}
               </Button>
+            </>
+          }
+        >
+          <SettingsRow
+            label={<label htmlFor={nameId}>{t("common.name", "Name")}</label>}
+            description={t(
+              "settings.nameHint",
+              "Leave it empty to show your email instead.",
+            )}
+          >
+            <div className="@lg:w-64">
+              <Input
+                id={nameId}
+                value={name}
+                maxLength={NAME_MAX_LENGTH}
+                autoComplete="name"
+                onChange={(e) => setName(e.target.value)}
+                errorMessage={refusal.at("name", name.trim()) ?? undefined}
+              />
             </div>
-          </form>
-        )}
-      </Card>
-    </div>
+          </SettingsRow>
+          <SettingsRow
+            label={t("common.email", "Email")}
+            description={t(
+              "settings.emailHint",
+              "Your email identifies the account and cannot be changed here.",
+            )}
+          >
+            <span className="text-sm text-text-secondary">{user.email}</span>
+          </SettingsRow>
+          <SettingsRow
+            label={t("common.role", "Role")}
+            description={t("settings.roleHint", "Set by an administrator.")}
+          >
+            <Badge variant={isAdminRole(user.role) ? "primary" : "secondary"}>
+              {roleLabel}
+            </Badge>
+          </SettingsRow>
+          {user.createdAt && (
+            <SettingsRow label={t("settings.memberSince", "Member since")}>
+              <span className="text-sm text-text-secondary">
+                {new Date(user.createdAt).toLocaleDateString(i18n.language, {
+                  dateStyle: "long",
+                })}
+              </span>
+            </SettingsRow>
+          )}
+        </SettingsSection>
+      </form>
+    </>
   );
 }

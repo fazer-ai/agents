@@ -338,7 +338,7 @@ describe("the send_image card", () => {
     // One title: the tool left the simple-toggle grid for its own card.
     const dots = () =>
       document.querySelectorAll(
-        'span.rounded-full.bg-accent[aria-hidden="true"]',
+        'span.rounded-full.bg-accent-solid[aria-hidden="true"]',
       ).length;
     renderCard({ granted: true, hosts: "cdn.loja.com.br" });
     await ready();

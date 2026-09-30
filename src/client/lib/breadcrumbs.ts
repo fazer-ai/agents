@@ -46,7 +46,9 @@ interface DynamicRoute {
 // t('admin.tabBranding', 'Branding')
 // t('settings.title', 'Settings')
 // t('settings.profile', 'Profile')
-// t('settings.appearance', 'Appearance')
+// t('settings.security', 'Security')
+// t('settings.preferences', 'Preferences')
+// t('settings.mcp', 'MCP')
 const STATIC_ROUTES: StaticRoute[] = [
   { path: "/agents", labelKey: "nav.agents", defaultLabel: "Agents" },
   { path: "/resources", labelKey: "nav.resources", defaultLabel: "Components" },
@@ -110,9 +112,19 @@ const STATIC_ROUTES: StaticRoute[] = [
     defaultLabel: "Profile",
   },
   {
-    path: "/settings/appearance",
-    labelKey: "settings.appearance",
-    defaultLabel: "Appearance",
+    path: "/settings/security",
+    labelKey: "settings.security",
+    defaultLabel: "Security",
+  },
+  {
+    path: "/settings/preferences",
+    labelKey: "settings.preferences",
+    defaultLabel: "Preferences",
+  },
+  {
+    path: "/settings/mcp",
+    labelKey: "settings.mcp",
+    defaultLabel: "MCP",
   },
 ];
 

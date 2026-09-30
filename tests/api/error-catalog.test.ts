@@ -122,7 +122,6 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "vault.secretType.resend",
 
   // Acronyms, units and format strings: no letters to translate, or none outside a placeholder.
-  "common.notAvailable",
   "dashboard.absolute",
   "dashboard.percent",
   "dashboard.range.30d",
@@ -930,7 +929,7 @@ describe("both languages answer, and answer differently", () => {
     expectWaiverLedger(
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
-      hasProOnlyKeys ? 105 : 103,
+      hasProOnlyKeys ? 104 : 102,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

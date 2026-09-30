@@ -100,7 +100,7 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
               aria-live="polite"
             >
               <span
-                className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent"
+                className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent-solid"
                 aria-hidden="true"
               />
               {t("conversations.working", "Working…")}
@@ -364,7 +364,7 @@ export function ConversationsPage() {
 
       <div className="relative min-w-0">
         <Search
-          className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-muted"
+          className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
           aria-hidden="true"
         />
         <input
@@ -379,7 +379,7 @@ export function ConversationsPage() {
             "conversations.search",
             "Search by contact or conversation #…",
           )}
-          className="w-full rounded-lg border border-border bg-bg-tertiary py-2 pr-4 pl-9 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none"
+          className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
         />
       </div>
 

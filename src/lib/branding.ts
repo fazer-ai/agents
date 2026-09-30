@@ -3,25 +3,53 @@
 // sanitizes on write (never trust the client); the client maps these keys to CSS vars on apply.
 // Pure module (no DOM, no node deps) so it is safe to import from both sides.
 
+import { readableForeground } from "@/lib/palette";
+
 export const BRANDABLE_KEYS = [
   "accent",
   "accentHover",
-  "accentForeground",
-  "accentMuted",
   "accentSoft",
-  "primary",
+  "accentSolid",
+  "accentSolidHover",
+  "accentForeground",
 ] as const;
 export type BrandableKey = (typeof BRANDABLE_KEYS)[number];
 
 // Brand-accent colors only — never structural bg/text (overriding those could destroy contrast).
+// `accent` is the TEXT color (links, active labels) and `accentSolid` the FILL (primary buttons,
+// switches, count pills), with `accentForeground` the text on that fill.
 export const BRANDABLE_KEY_TO_VAR: Record<BrandableKey, string> = {
   accent: "--color-accent",
   accentHover: "--color-accent-hover",
-  accentForeground: "--color-accent-foreground",
-  accentMuted: "--color-accent-muted",
   accentSoft: "--color-accent-soft",
-  primary: "--color-primary",
+  accentSolid: "--color-accent-solid",
+  accentSolidHover: "--color-accent-solid-hover",
+  accentForeground: "--color-accent-foreground",
 };
+
+// The ADVANCED tokens an install saved before the accent was split into text and fill set one
+// `accent` for both. Without a fill of its own such a brand would keep the default fill under its
+// own foreground color, so the fill falls back to the accent it was painted with then. The text on
+// it came from the theme back then, and the new default (white) is not that, so a brand that set no
+// foreground gets the one that reads on its fill. `toHex` lets a caller with a DOM resolve the forms
+// this pure module cannot (oklch, rgb(), hsl).
+export function resolveBrandTokens(
+  tokens: Partial<Record<BrandableKey, string>>,
+  toHex?: (color: string) => string | null,
+): Partial<Record<BrandableKey, string>> {
+  const out = { ...tokens };
+  if (!out.accentSolid && out.accent) {
+    out.accentSolid = out.accent;
+    out.accentSolidHover ??= out.accentHover ?? out.accent;
+    if (!out.accentForeground) {
+      const foreground =
+        readableForeground(out.accent) ??
+        readableForeground(toHex?.(out.accent) ?? "");
+      if (foreground) out.accentForeground = foreground;
+    }
+  }
+  return out;
+}
 
 // A single color token: hex, or rgb(a)/hsl(a)/oklch/oklab/lab/lch functional forms. No url(), no
 // semicolons/braces/comments, no expressions — the inner chars are a restricted safe set.

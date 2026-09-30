@@ -80,7 +80,7 @@ export function Tabs({
             {Icon && <Icon className="h-4 w-4" aria-hidden="true" />}
             {item.label}
             {item.badge != null && item.badge > 0 && (
-              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
+              <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent-solid px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
                 {item.badge}
               </span>
             )}

@@ -40,7 +40,7 @@ type AdminStats = NonNullable<StatsResponse>["stats"];
 // t('admin.promoteTooltip', 'Promote to Admin')
 const SEARCH_DEBOUNCE_MS = 300;
 const selectCls =
-  "rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none";
+  "rounded-md border border-border-hover bg-bg-tertiary h-8 px-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
 // Static keys so the skeleton rows don't key off the array index.
 const USER_SKELETON_KEYS = [
   "user-0",
@@ -360,7 +360,7 @@ export function AdminUsersPage() {
         <div className="mb-4 flex items-center gap-3">
           <div className="relative flex-1">
             <Search
-              className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-muted"
+              className="absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
               aria-hidden="true"
             />
             <input
@@ -370,7 +370,7 @@ export function AdminUsersPage() {
               onKeyDown={(e) => e.key === "Enter" && handleSearchSubmit()}
               placeholder={t("admin.searchUsers", "Search users by email...")}
               aria-label={t("admin.searchUsers", "Search users by email...")}
-              className="w-full rounded-lg border border-border bg-bg-tertiary py-2 pr-4 pl-10 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none"
+              className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
             />
           </div>
           <Button size="sm" onClick={handleSearchSubmit} disabled={loading}>

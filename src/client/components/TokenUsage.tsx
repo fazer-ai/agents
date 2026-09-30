@@ -252,7 +252,7 @@ function Share({ pct, label }: { pct: number; label: string }) {
         aria-label={label}
       >
         <div
-          className="h-full rounded-full bg-accent"
+          className="h-full rounded-full bg-accent-solid"
           style={{ width: `${pct}%` }}
         />
       </div>

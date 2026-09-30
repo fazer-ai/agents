@@ -377,7 +377,7 @@ function ToolMockRow({
           {t(`playground.toolsim.cat.${tool.category}`, tool.category)}
         </span>
         {tool.simulated && (
-          <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">
+          <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent">
             {t("playground.toolsim.auto", "auto-simulated")}
           </span>
         )}
@@ -440,7 +440,7 @@ function ToolSimPanel({ chat }: { chat: Chat }) {
         <FlaskConical className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         {t("playground.toolsim.title", "Tool simulation")}
         {count > 0 && (
-          <span className="rounded-full bg-accent/20 px-1.5 text-[10px] text-accent">
+          <span className="rounded-full bg-accent-soft px-1.5 text-[10px] text-accent">
             {count}
           </span>
         )}
@@ -548,7 +548,7 @@ function PromptVarsPanel({ chat }: { chat: Chat }) {
         <Braces className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         {t("playground.promptvars.title", "Prompt variables")}
         {count > 0 && (
-          <span className="rounded-full bg-accent/20 px-1.5 text-[10px] text-accent">
+          <span className="rounded-full bg-accent-soft px-1.5 text-[10px] text-accent">
             {count}
           </span>
         )}
@@ -712,7 +712,7 @@ function TurnBubble({
       ) : (
         <div
           className={cn("rounded-lg px-3 py-2 text-sm", {
-            "bg-accent text-accent-foreground": turn.role === "user",
+            "bg-accent-solid text-accent-foreground": turn.role === "user",
             "bg-bg-tertiary text-text-primary": turn.role === "assistant",
             "border border-error/40 bg-error/10 text-error":
               turn.role === "error",
@@ -1477,7 +1477,7 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
         )}
         {`→ ${entry.name || t("playground.trace.result", "result")}`}
         {entry.mocked && (
-          <span className="rounded bg-accent/20 px-1 text-[10px] text-accent uppercase">
+          <span className="rounded bg-accent-soft px-1 text-[10px] text-accent uppercase">
             {t("playground.trace.mocked", "mocked")}
           </span>
         )}

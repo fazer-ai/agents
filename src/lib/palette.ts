@@ -2,8 +2,8 @@ import type { BrandableKey } from "@/lib/branding";
 
 // Pure color math (no DOM): derive the full accent palette (the BRANDABLE_KEYS) from a single
 // brand color, per theme. This is what makes the SIMPLE branding mode theme-safe — the contrast
-// foreground flips by luminance, and the muted/soft tints move the right direction for each
-// theme, instead of forcing one value across both (which breaks contrast in one of them).
+// foreground flips by luminance, and the text shade and soft tint move the right direction for
+// each theme, instead of forcing one value across both (which breaks contrast in one of them).
 
 type Rgb = { r: number; g: number; b: number };
 
@@ -41,21 +41,20 @@ function relativeLuminance({ r, g, b }: Rgb): number {
 }
 
 // The two candidate text colors on an accent fill (matching the theme tokens), precomputed once.
-const FG_DARK = "#0f0f0f";
-const FG_LIGHT = "#f1f1f1";
-const L_FG_DARK = relativeLuminance({ r: 15, g: 15, b: 15 });
-const L_FG_LIGHT = relativeLuminance({ r: 241, g: 241, b: 241 });
+const FG_DARK = "#1c1c1a";
+const FG_LIGHT = "#ffffff";
+const L_FG_DARK = relativeLuminance({ r: 28, g: 28, b: 26 });
+const L_FG_LIGHT = relativeLuminance({ r: 255, g: 255, b: 255 });
 
-// The theme backgrounds (--color-bg-primary): the accent must read as TEXT over these.
-const L_BG_DARK = relativeLuminance({ r: 15, g: 15, b: 15 }); // #0f0f0f
-const L_BG_LIGHT = relativeLuminance({ r: 241, g: 241, b: 241 }); // #f1f1f1
+// The lightest surface accent text sits on in each theme (--color-bg-tertiary): on the dark theme
+// the text must clear it, and on the light theme it is the one closest to a light brand color.
+const L_SURFACE_DARK = relativeLuminance({ r: 28, g: 28, b: 27 }); // #1c1c1b
+const L_SURFACE_LIGHT = relativeLuminance({ r: 239, g: 239, b: 237 }); // #efefed
 
-// Minimum contrast for the accent used as TEXT/icon on the theme background (links, soft-button
-// labels). Above the 3:1 WCAG floor for UI/large text, with a little margin for the accent-soft
-// tint (which sits slightly off the pure background). Kept below ~3.7 so a standard brand blue
-// (#2563eb) is preserved on the dark theme; only colors that genuinely fail (white on a light
-// theme, black on a dark one) get nudged.
-const MIN_ACCENT_CONTRAST = 3.5;
+// The accent is a TEXT color (links, active labels), so it is held to WCAG AA for body text. The
+// brand's own color is still what fills buttons (`accentSolid`), so nudging the text shade costs
+// no fidelity where the brand is most visible.
+const MIN_ACCENT_CONTRAST = 4.5;
 
 // WCAG contrast ratio between two relative luminances.
 function contrastRatio(a: number, b: number): number {
@@ -64,9 +63,9 @@ function contrastRatio(a: number, b: number): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// Pick black or white text for the HIGHER contrast against the accent fill (proper WCAG decision,
-// not a single luminance threshold — a single threshold mis-picks mid-bright colors like #3ea6ff,
-// where white text fails AA but black text passes AAA).
+// Pick dark or white text for the HIGHER contrast against the accent fill (proper WCAG decision,
+// not a single luminance threshold, which mis-picks mid-bright colors like #3ea6ff, where white
+// text fails AA but dark text passes AAA).
 function pickForeground(c: Rgb): string {
   const l = relativeLuminance(c);
   return contrastRatio(l, L_FG_DARK) >= contrastRatio(l, L_FG_LIGHT)
@@ -74,12 +73,9 @@ function pickForeground(c: Rgb): string {
     : FG_LIGHT;
 }
 
-// Keep the accent legible as TEXT on the theme background: darken on a light theme / lighten on a
-// dark one until it clears MIN_ACCENT_CONTRAST. Colors that already clear the bar are returned
-// unchanged (brand fidelity). Without this, a brand color near the background luminance (white on a
-// light theme) vanishes the moment it is used as text — e.g. an accent-colored label on an
-// accent-soft tint. This mirrors the hand-tuned default palette (bright accent on dark, darkened
-// accent on light). The hue is preserved (mixing toward pure black/white scales channels linearly).
+// Keep the accent legible as TEXT on the theme's surfaces: lighten on a dark theme / darken on a
+// light one until it clears MIN_ACCENT_CONTRAST. Colors that already clear the bar are returned
+// unchanged. The hue is preserved (mixing toward pure black/white scales channels linearly).
 function ensureReadable(c: Rgb, bgL: number, target: 0 | 255): Rgb {
   if (contrastRatio(relativeLuminance(c), bgL) >= MIN_ACCENT_CONTRAST) return c;
   let out = c;
@@ -89,6 +85,18 @@ function ensureReadable(c: Rgb, bgL: number, target: 0 | 255): Rgb {
       break;
   }
   return out;
+}
+
+// The text color that reads on `fill`, for a fill that is a hex color (#rgb, #rrggbb, #rrggbbaa; the
+// alpha is ignored). Null for any other form, whose channels this module does not resolve.
+export function readableForeground(fill: string): string | null {
+  const m = /^#(?:([0-9a-fA-F]{3})|([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?)$/.exec(
+    fill.trim(),
+  );
+  const hex = m?.[1] ? [...m[1]].map((c) => c + c).join("") : m?.[2];
+  if (!hex) return null;
+  const rgb = parseHex(hex);
+  return rgb ? pickForeground(rgb) : null;
 }
 
 export type Theme = "light" | "dark";
@@ -102,29 +110,29 @@ export function derivePalette(
   const raw = parseHex(brandHex);
   if (!raw) return null;
   const dark = theme === "dark";
-  // The accent doubles as a TEXT color (links, soft-button labels), so keep it readable on the
-  // theme background — adjusted toward the legible direction only when the brand color is too
-  // close to the background. Everything else derives from this (already-legible) accent.
-  const rgb = ensureReadable(
+  // The fill is the brand color itself. Its hover moves AWAY from the foreground (darker under white
+  // text, lighter under dark text), so the label never loses contrast on hover.
+  const accentSolid = toHex(raw);
+  const accentForeground = pickForeground(raw);
+  const accentSolidHover = toHex(
+    mix(raw, accentForeground === FG_LIGHT ? 0 : 255, 0.1),
+  );
+  const text = ensureReadable(
     raw,
-    dark ? L_BG_DARK : L_BG_LIGHT,
+    dark ? L_SURFACE_DARK : L_SURFACE_LIGHT,
     dark ? 255 : 0,
   );
-  const accent = toHex(rgb);
-  // Hover nudges toward the readable direction (lighter on a dark bg, darker on a light one).
-  const accentHover = toHex(mix(rgb, dark ? 255 : 0, 0.14));
-  // Foreground must contrast the accent fill: chosen by max WCAG contrast (black vs white).
-  const accentForeground = pickForeground(rgb);
-  // Muted moves opposite to hover (a recessive variant that still reads on the theme bg).
-  const accentMuted = toHex(mix(rgb, dark ? 0 : 255, 0.2));
-  // Soft is a translucent wash — alpha keeps it legible over either theme background.
-  const accentSoft = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`;
+  const accent = toHex(text);
+  // Hover nudges the text further toward the readable direction.
+  const accentHover = toHex(mix(text, dark ? 255 : 0, 0.14));
+  // A translucent wash of the fill; alpha keeps it legible over every surface of the theme.
+  const accentSoft = `rgba(${raw.r}, ${raw.g}, ${raw.b}, ${dark ? 0.2 : 0.12})`;
   return {
     accent,
     accentHover,
-    accentForeground,
-    accentMuted,
     accentSoft,
-    primary: accent,
+    accentSolid,
+    accentSolidHover,
+    accentForeground,
   };
 }

@@ -85,7 +85,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
               hasDescription ? descriptionId : undefined,
             )}
             className={cn(
-              "w-full rounded-lg border border-border bg-bg-tertiary px-4 py-2 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none disabled:opacity-60",
+              "h-8 w-full rounded-md border border-border-hover bg-bg-tertiary px-2.5 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
               { "border-error": hasError, "pr-10": !!showPasswordToggle },
               className,
             )}

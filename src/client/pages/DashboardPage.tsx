@@ -142,7 +142,7 @@ function FunnelBar({
       </div>
       <div className="h-2.5 w-full overflow-hidden rounded-full bg-bg-tertiary">
         <div
-          className="h-full rounded-full bg-accent transition-all"
+          className="h-full rounded-full bg-accent-solid transition-all"
           style={{ width: `${Math.max(pct, count > 0 ? 2 : 0)}%` }}
         />
       </div>

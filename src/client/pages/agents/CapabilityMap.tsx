@@ -471,7 +471,7 @@ export function CapabilityMap({
           </p>
         ) : (
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
-            <div className="flex shrink-0 items-center gap-2 self-center rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 font-medium text-sm text-text-primary">
+            <div className="flex shrink-0 items-center gap-2 self-center rounded-xl border border-accent/40 bg-accent-soft px-3 py-2 font-medium text-sm text-text-primary">
               <Bot className="h-4 w-4 text-accent" aria-hidden="true" />
               {t("editor.capabilities.agent", "Agent")}
             </div>

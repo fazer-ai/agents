@@ -63,7 +63,7 @@ export function FilterPills({
             className={cn(
               "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-medium text-sm transition-colors",
               active
-                ? "border-accent bg-accent text-accent-foreground"
+                ? "border-accent-solid bg-accent-solid text-accent-foreground"
                 : "border-border bg-bg-tertiary text-text-secondary hover:bg-bg-hover",
             )}
           >

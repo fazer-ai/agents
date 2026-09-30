@@ -39,7 +39,7 @@ export function SelectableCard({
       className={cn(
         "group flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors disabled:opacity-50",
         selected
-          ? "border-accent bg-accent/10"
+          ? "border-accent bg-accent-soft"
           : "border-border bg-bg-secondary hover:bg-bg-hover",
         className,
       )}
@@ -69,7 +69,7 @@ export function SelectableCard({
         className={cn(
           "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
           selected
-            ? "border-accent bg-accent text-accent-foreground"
+            ? "border-accent-solid bg-accent-solid text-accent-foreground"
             : "border-border text-transparent group-hover:border-text-muted",
         )}
         aria-hidden="true"

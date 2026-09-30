@@ -8,13 +8,16 @@ type BadgeVariant =
   | "info"
   | "error";
 
+// Each tone is its status color over its own soft tint, the pair
+// tests/client/theme-contrast.test.ts measures, so a badge is readable by
+// construction instead of by a separate set of badge-only colors.
 const VARIANT_COLORS: Record<BadgeVariant, string> = {
-  primary: "bg-badge-primary text-text-primary",
-  secondary: "bg-badge-secondary text-text-primary",
-  success: "bg-badge-success text-text-primary",
-  warning: "bg-badge-warning text-text-primary",
-  info: "bg-badge-info text-text-primary",
-  error: "bg-badge-error text-text-primary",
+  primary: "bg-accent-soft text-accent",
+  secondary: "bg-bg-hover text-text-secondary",
+  success: "bg-success-soft text-success",
+  warning: "bg-warning-soft text-warning",
+  info: "bg-info-soft text-info",
+  error: "bg-error-soft text-error",
 };
 
 export function Badge({
@@ -29,7 +32,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "rounded px-2 py-0.5 font-medium text-xs",
+        "inline-flex items-center rounded-sm px-1.5 py-0.5 font-medium text-xs leading-none",
         VARIANT_COLORS[variant],
         className,
       )}

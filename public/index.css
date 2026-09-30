@@ -1,73 +1,100 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* `static` makes Tailwind emit every variable below even when no class uses it. Without it the dark
-   palette (here) drops every unused token while the light block, plain CSS, keeps them all, so a
-   token read by a computed name resolves in one theme only. tests/client/theme-emission.test.ts. */
+/* `static` makes Tailwind emit every variable below even when no class
+   uses it. Without it the dark palette (here) lost every unused token while the
+   light block, plain CSS, kept them all, so a token read by a computed name
+   resolved in one theme only. tests/client/theme-emission.test.ts pins it. */
 @theme static {
   /* Typography */
-  /* The @font-face rules for these two families are declared in public/index.html, not here. */
+  /* NOTE: The @font-face rules for these two families are declared in
+     public/index.html, not here. See the comment there. */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
+  /* NOTE: the palette follows Linear's 2026 refresh: warm, low-chroma neutrals,
+     a recessed app frame (bg-primary) around a raised content panel
+     (bg-secondary), hairline borders instead of shadows. */
+
   /* Background colors */
-  --color-bg-primary: #0f0f0f;
-  --color-bg-secondary: #161616;
-  --color-bg-tertiary: #1d1d1d;
-  --color-bg-hover: #262626;
+  --color-bg-primary: #0f0f0e;
+  --color-bg-secondary: #151514;
+  --color-bg-tertiary: #1c1c1b;
+  --color-bg-hover: #252524;
 
-  /* Text colors */
-  --color-text-primary: #f1f1f1;
-  --color-text-secondary: #c4c4c4;
-  --color-text-muted: #8a8a8a;
-  --color-text-placeholder: #444444;
+  /* Text colors. Every value here must clear WCAG AA (4.5:1) against the
+     background tokens above; tests/client/theme-contrast.test.ts enforces it. */
+  --color-text-primary: #f7f7f5;
+  --color-text-secondary: #c9c8c4;
+  --color-text-muted: #979690;
+  --color-text-placeholder: #8a8984;
 
-  /* Accent colors */
-  --color-accent: #3ea6ff;
-  --color-accent-hover: #6bbdff;
-  --color-accent-muted: #065fd4;
-  --color-accent-soft: #3ea6ff/15;
+  /* Accent. `accent` is the TEXT color (links, active labels); `accent-solid`
+     is the FILL (primary button, switch, count pills) and
+     `accent-foreground` is the text on that fill. They are separate because a
+     fill dark enough to carry white text is too dark to read as text on the
+     dark surfaces, and vice versa. */
+  --color-accent: #828fff;
+  --color-accent-hover: #9ea8ff;
+  --color-accent-soft: #5e6ad233;
+  --color-accent-solid: #5e6ad2;
+  --color-accent-solid-hover: #505cc4;
+  --color-accent-foreground: #ffffff;
 
   /* Purple alternative */
-  --color-purple: #9a4dff;
-  --color-purple-soft: #9a4dff/15;
+  --color-purple: #b18cff;
+  --color-purple-soft: #b18cff26;
 
-  /* Border colors */
-  --color-border: #262626;
-  --color-border-hover: #333333;
-  --color-border-focus: #3ea6ff;
+  /* Border colors. Alpha on purpose: a hairline that tints whatever surface it
+     sits on reads the same on bg-primary and on bg-secondary. */
+  --color-border: #ffffff12;
+  --color-border-hover: #ffffff1f;
+  --color-border-focus: #7170ff;
 
   /* Status colors */
-  --color-error: #e05252;
-  --color-error-soft: #e05252/15;
-  --color-success: #22c55e;
-  --color-success-soft: #22c55e/15;
-  --color-warning: #e0bd4a;
-  --color-warning-soft: #e0bd4a/15;
-  --color-info: #3ea6ff;
-  --color-info-soft: #3ea6ff/15;
+  --color-error: #f27a7a;
+  --color-error-soft: #eb575724;
+  --color-success: #4cb782;
+  --color-success-soft: #4cb78224;
+  --color-warning: #f2c94c;
+  --color-warning-soft: #f2c94c24;
+  --color-info: #828fff;
+  --color-info-soft: #5e6ad233;
 
-  /* Primary alias for accent */
-  --color-primary: #3ea6ff;
+  /* Backdrop behind modals and the mobile drawer */
+  --color-overlay: #00000099;
 
-  /* Accent foreground (text on accent bg) */
-  --color-accent-foreground: #0f0f0f;
+  /* Radius scale (overrides Tailwind's, so rounded-* follows it) */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
 
-  /* Badge backgrounds (Notion-style solid) */
-  --color-badge-primary: #263850;
-  --color-badge-secondary: #363636;
-  --color-badge-success: #1e3a2f;
-  --color-badge-warning: #3d3520;
-  --color-badge-info: #1e3044;
-  --color-badge-error: #4a2424;
+  /* Density. Every spacing utility (p-*, gap-*, h-*) is `--spacing` times a
+     step, and every text-* utility reads its own variable, so the two sets
+     below are the whole compact/comfortable switch: the comfortable values
+     live in html[data-density="comfortable"] further down. Compact is the
+     default: 32px controls and 13px body text. */
+  --spacing: 0.25rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.125rem;
+  --text-2xl: 1.375rem;
 
-  /* Header height — shared so fixed overlays (e.g. the toast viewport) can sit
-     just below the app header. Keep in sync with <Header>'s min-h. */
-  --header-height: 4rem;
+  /* Header height, shared so fixed overlays (the toast viewport, the playground panel) can sit just
+     below the app header. Keep in sync with <Header>'s min-h. */
+  --header-height: 3rem;
 
   /* Z-index scale (stacking order, from lowest to highest). Use via Tailwind
      arbitrary values: z-[var(--z-modal)] or style={{ zIndex: "var(--z-modal)" }}.
-     Rule of thumb: overlays sit just below the content they obscure. */
+     Rule of thumb: an overlay sits just below the content it obscures, with one
+     deliberate exception. Modals put their overlay AND their content on --z-modal
+     and let DOM order stack them, because several modals can be open at once and
+     a lower overlay layer cannot dim a sibling modal's content. See docs/modals.md.
+     The drawer keeps the two-token form: only one drawer is ever open. */
   --z-sidebar: 10;
   --z-sidebar-toggle: 20;
   --z-drawer-overlay: 40;
@@ -99,50 +126,60 @@ body {
 
 /* Light mode overrides */
 html[data-theme="light"] {
-  --color-bg-primary: #f1f1f1;
-  --color-bg-secondary: #e8e8e8;
-  --color-bg-tertiary: #dedede;
-  --color-bg-hover: #d2d2d2;
+  --color-bg-primary: #f5f5f4;
+  --color-bg-secondary: #ffffff;
+  /* NOTE: distinct from BOTH surfaces it is drawn on: skeletons and wells sit
+     on the white panel (`bg-secondary`), hover fills on the sidebar
+     (`bg-primary`). White here made every skeleton inside a card vanish. */
+  --color-bg-tertiary: #efefed;
+  --color-bg-hover: #e8e8e6;
 
-  --color-text-primary: #0f0f0f;
-  --color-text-secondary: #3a3a3a;
-  --color-text-muted: #6e6e6e;
-  --color-text-placeholder: #aaaaaa;
+  --color-text-primary: #1c1c1a;
+  --color-text-secondary: #45443f;
+  --color-text-muted: #66655f;
+  --color-text-placeholder: #6b6a64;
 
-  --color-accent: #065fd4;
-  --color-accent-hover: #0550b5;
-  --color-accent-muted: #3ea6ff;
-  --color-accent-soft: #065fd4/15;
-  --color-accent-foreground: #f1f1f1;
+  --color-accent: #4b55c8;
+  --color-accent-hover: #3d46b0;
+  --color-accent-soft: #5e6ad21f;
+  --color-accent-solid: #5e6ad2;
+  --color-accent-solid-hover: #505cc4;
+  --color-accent-foreground: #ffffff;
 
-  --color-purple: #9a4dff;
-  --color-purple-soft: #9a4dff/15;
+  --color-purple: #7c4ddb;
+  --color-purple-soft: #7c4ddb1f;
 
-  --color-border: #d2d2d2;
-  --color-border-hover: #bbbbbb;
-  --color-border-focus: #065fd4;
+  --color-border: #e8e8e6;
+  --color-border-hover: #d6d6d3;
+  --color-border-focus: #5e6ad2;
 
-  --color-error: #d33a3a;
-  --color-error-soft: #d33a3a/15;
-  --color-success: #16a34a;
-  --color-success-soft: #16a34a/15;
-  --color-warning: #bf8b17;
-  --color-warning-soft: #bf8b17/15;
-  --color-info: #065fd4;
-  --color-info-soft: #065fd4/15;
+  --color-error: #b52424;
+  --color-error-soft: #c42b2b1a;
+  --color-success: #176a3b;
+  --color-success-soft: #1f7a451a;
+  --color-warning: #7a5200;
+  --color-warning-soft: #9a67001a;
+  --color-info: #4b55c8;
+  --color-info-soft: #5e6ad21f;
 
-  --color-primary: #065fd4;
-
-  --color-badge-primary: #dbeafe;
-  --color-badge-secondary: #e5e5e5;
-  --color-badge-success: #dcfce7;
-  --color-badge-warning: #fef3c7;
-  --color-badge-info: #dbeafe;
-  --color-badge-error: #fee2e2;
+  --color-overlay: #1c1c1a40;
 
   & body {
     color-scheme: light;
   }
+}
+
+/* Comfortable density: bigger controls, text and gaps for audiences that are
+   not used to dense tools. Set on <html> by the inline script in
+   public/index.html (before paint) and by DensityProvider afterwards. */
+html[data-density="comfortable"] {
+  --spacing: 0.3rem;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.625rem;
 }
 
 /* Scrollbar styling */
@@ -198,9 +235,27 @@ body[data-resizing-sidebar] * {
 }
 
 /* While dragging the resizer, the sidebar width is driven by rAF; a CSS
-   transition on width would fight the drag and feel laggy. */
-body[data-resizing-sidebar] #app-sidebar {
+   transition on width would fight the drag and feel laggy. The exception is
+   the snap into or out of the collapsed state, which the pointer cannot follow:
+   SidebarResizer sets data-sidebar-snapping for the length of the transition
+   so that jump animates instead of cutting. */
+body[data-resizing-sidebar]:not([data-sidebar-snapping]) #app-sidebar {
   transition: none !important;
+}
+
+/* NOTE: iOS Safari zooms the page when a field whose text is under 16px takes
+   focus, and the density scale puts form text at 13-15px. This keeps fields at
+   16px on iOS WebKit only (the only engine that matches this @supports), so
+   every other browser keeps the density sizing. Deliberately unlayered: an
+   unlayered rule outranks Tailwind's `@layer utilities`, so the `text-sm` on
+   the controls cannot win it back. */
+@supports (-webkit-touch-callout: none) {
+  input,
+  select,
+  textarea,
+  [data-field-backdrop] {
+    font-size: 16px;
+  }
 }
 
 /* Respect OS-level reduced-motion preference. */
@@ -267,6 +322,8 @@ body[data-resizing-sidebar] #app-sidebar {
 button,
 select,
 [role="button"],
+/* NOTE: a <label htmlFor> that actually toggles a control (see <SwitchField>).
+   Opt in with data-clickable so a plain field label does not get a pointer. */
 label[data-clickable="true"] {
   cursor: pointer;
 }

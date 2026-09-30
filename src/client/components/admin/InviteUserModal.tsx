@@ -15,7 +15,7 @@ import { api } from "@/client/lib/api";
 // filter selection); a TENANT_ADMIN invites into its own tenant (no tenant field). There is no
 // mailer, so on success the modal shows the one-time accept link to copy and send.
 const selectCls =
-  "w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-text-primary focus:border-border-focus focus:outline-none";
+  "w-full rounded-md border border-border-hover bg-bg-tertiary h-8 px-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
 const labelCls = "mb-1 block font-medium text-sm text-text-primary";
 
 // The keys of the body this modal writes. `email` is the one that matters in practice: inviting an

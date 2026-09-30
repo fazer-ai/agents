@@ -16,8 +16,8 @@ import { HighlightedTemplateField } from "@/client/components/HighlightedTemplat
 // string on purpose, and this list is that intent written where a regression trips over it.
 const WRAPPING = [
   "w-full",
-  "px-3",
-  "py-2",
+  "px-2.5",
+  "py-1.5",
   "text-sm",
   "whitespace-pre-wrap",
   "break-words",

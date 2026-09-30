@@ -1367,7 +1367,7 @@ export function useKnowledgeManager(opts: {
                   className={cn(
                     "flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-8 text-center transition-colors",
                     {
-                      "border-accent bg-accent/10": dragOver,
+                      "border-accent bg-accent-soft": dragOver,
                       "border-border bg-bg-secondary hover:bg-bg-tertiary":
                         !dragOver,
                     },

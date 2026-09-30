@@ -4,10 +4,10 @@ import {
   changeUserPassword,
   createInitialAdmin,
   createUser,
+  getAccountDetails,
   getPasswordHash,
   getTenantName,
   getUserByEmail,
-  getUserHasPassword,
   hashPassword,
   IncorrectPasswordError,
   isEmailDomainAllowed,
@@ -19,6 +19,7 @@ import {
   SetupAlreadyCompleteError,
   sessionUserOf,
   updateLastLogin,
+  updateUserName,
   verifyPassword,
 } from "@/api/features/auth/auth.service";
 import {
@@ -51,6 +52,7 @@ import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import { doc, errors, jsonResponse } from "@/api/lib/openapi";
 import { WS_CLOSE } from "@/api/lib/realtime";
+import { requireSession } from "@/api/lib/step-up";
 import config from "@/config";
 
 const baseAuthController = new Elysia({
@@ -360,7 +362,8 @@ const baseAuthController = new Elysia({
 
       // Whether the account can change its password locally (false for Google-only users) — drives the
       // settings form vs the "you sign in with Google" note.
-      const hasPassword = user ? await getUserHasPassword(user.id) : false;
+      const account = user ? await getAccountDetails(user.id) : null;
+      const hasPassword = account?.hasPassword ?? false;
 
       // Every tenant the person belongs to, with the role held there. The console shows
       // its tenant selector when there is more than one; `tenantId` above is the one this request ran
@@ -381,6 +384,8 @@ const baseAuthController = new Elysia({
                 user.tenantId === null ? null : user.tenantId.toString(),
               tenantName,
               hasPassword,
+              googleLinked: account?.googleLinked ?? false,
+              createdAt: account?.createdAt.toISOString() ?? null,
               tenants: tenants.map((m) => ({
                 id: m.tenantId.toString(),
                 name: m.name,
@@ -421,6 +426,42 @@ const baseAuthController = new Elysia({
       },
     },
   )
+  .patch(
+    "/me",
+    async ({ body, set, getAuthUser }) => {
+      const current = await getAuthUser();
+      if (!current) {
+        set.status = 401;
+        return { error: translate("errors.unauthorized", "Unauthorized") };
+      }
+      // An API key's principal carries its creator's id for audit, not the creator's authority over
+      // their own account: renaming a person is done by that person, from a session.
+      requireSession(current);
+      const user = await updateUserName(current.id, body.name.trim() || null);
+      return {
+        user: {
+          id: user.id.toString(),
+          email: user.email,
+          name: user.name,
+          role: current.role,
+        },
+      };
+    },
+    {
+      body: t.Object({
+        name: t.String({
+          maxLength: 100,
+          description:
+            "The display name. Blank clears it, and the console shows the email instead.",
+        }),
+      }),
+      detail: doc(
+        "Update own profile",
+        "Only the display name is editable. The email is the account's identity and the role is an admin decision. Refused (403) with an API key: the key's principal names its creator for audit and does not act as them on their own account.",
+      ),
+      response: errors(401, 403, 422),
+    },
+  )
   // Change the authenticated user's own password (verify current, store new). Google-only accounts
   // get a 400 (no local password); a wrong current password is a 400 (not 401) so it doesn't trip
   // the client's session-expired handling.
@@ -432,6 +473,9 @@ const baseAuthController = new Elysia({
         set.status = 401;
         return { error: translate("errors.unauthorized", "Unauthorized") };
       }
+      // Same boundary as the profile: a key names its creator for audit and does not act as them on
+      // their own account.
+      requireSession(user);
       let passwordHash: string;
       try {
         passwordHash = await changeUserPassword(
@@ -473,8 +517,8 @@ const baseAuthController = new Elysia({
         throw error;
       }
       // NOTE: the new hash revoked every session of this account, this one included. The caller's own
-      // cookie is re-signed so whoever made the change stays in; an API key has no cookie to re-sign.
-      if (!user.isApiKey) await setAuthCookie(user, passwordHash);
+      // cookie is re-signed so whoever made the change stays in.
+      await setAuthCookie(user, passwordHash);
       closeUserSockets(user.id, WS_CLOSE.CREDENTIALS_CHANGED);
       return { success: true };
     },
@@ -494,9 +538,9 @@ const baseAuthController = new Elysia({
       }),
       detail: doc(
         "Change own password",
-        "Verifies the current password and stores a new one for the authenticated user, signing out every other session of the account. Returns 400 for Google-only accounts (no local password) or an incorrect current password, and 409 when another request changed the password first.",
+        "Verifies the current password and stores a new one for the authenticated user, signing out every other session of the account. Returns 400 for Google-only accounts (no local password) or an incorrect current password, 403 with an API key (a session-only action), and 409 when another request changed the password first.",
       ),
-      response: errors(400, 401, 409, 422),
+      response: errors(400, 401, 403, 409, 422),
     },
   )
   // ── invitation acceptance (public: the invitee has no account yet) ──

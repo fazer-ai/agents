@@ -1242,6 +1242,17 @@ describe("the two seams that have to clear it", () => {
     expect(sites).toEqual(["src/client/contexts/AuthContext.tsx"]);
   });
 
+  // `updateUser` merges a late save into the user the ref holds. A ref refreshed per render lags a
+  // sign-out queued in the same batch, and the save then brings the signed-out user back, so the
+  // ref is written where the state is and nowhere else.
+  it("keeps the merged-into user in step with the one setter", async () => {
+    const src = strip(
+      await Bun.file("src/client/contexts/AuthContext.tsx").text(),
+    );
+    expect(src.match(/userRef\.current\s*=(?!=)/g)?.length ?? 0).toBe(1);
+    expect(src).toMatch(/userRef\.current\s*=\s*next;\s*setUser\(next\)/);
+  });
+
   // The positive control for the fence above, over every spelling a setter call takes.
   it("counts a setter call whatever is passed to it", () => {
     const spellings = [

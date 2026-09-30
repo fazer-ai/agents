@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { Logo } from "@/client/components/Logo";
@@ -13,6 +14,7 @@ import {
   getActiveTenantId,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
+import { applyUserUpdate } from "@/client/lib/applyUserUpdate";
 import { performLogout } from "@/client/lib/logout";
 import { noteOperator } from "@/client/lib/toolSample";
 import type { TtsCheckMode } from "@/modules/tts/settings-shared";
@@ -34,6 +36,10 @@ export interface User {
   // it; drives the settings change-password form vs the "you sign in with Google" note. Optional
   // because login/signup/accept responses omit it (backfilled by the /me refresh).
   hasPassword?: boolean;
+  // Whether the account is linked to a Google identity, and when it was created. Only /auth/me
+  // returns them (the Settings pages read them), backfilled by the /me refresh after a login.
+  googleLinked?: boolean;
+  createdAt?: string | null;
   // Every tenant the person belongs to, with the role held there. Only /auth/me returns it; more than
   // one puts the membership switcher in the header. Empty for the SUPER_ADMIN.
   tenants?: { id: string; name: string; role: string }[];
@@ -60,6 +66,10 @@ interface AuthContextType {
   login: (user: User) => void;
   logout: () => Promise<boolean>;
   refresh: () => Promise<void>;
+  // Applies fields a mutation already returned (PATCH /auth/me), so a save does not depend on a
+  // follow-up refresh. Keyed by the account that made the change: a response landing after a
+  // sign-out and a sign-in as someone else must not rename the new account.
+  updateUser: (userId: string, fields: Partial<User>) => void;
 }
 
 // Exported so a test can hand a component what /me would have said without the whole provider.
@@ -77,6 +87,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     mode: TtsCheckMode;
   }>({ configured: false, mode: "off" });
   const [loading, setLoading] = useState(true);
+  // Bumped on every sign-in and sign-out. A /me response that left under an earlier session must not
+  // touch the current one: a refresh resolving after a sign-out would otherwise bring the
+  // signed-out user back.
+  const sessionGen = useRef(0);
+  // The user as last applied, for `updateUser`, which merges into it without a second setter. Written
+  // only in `applyUser`, not per render: a sign-out and a late save landing in one batch must see the
+  // sign-out, and the render in between is exactly what has not happened yet.
+  const userRef = useRef<User | null>(null);
 
   // THE ONLY CALLER OF `setUser`, so what has to happen on every transition to unauthenticated
   // is written once, where the transition IS. The tool editor keeps the last sample response in memory
@@ -84,7 +102,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // offered. The paths that end a session are the explicit logout below, a 401 on any request and the
   // socket's auth-loss close (both via `auth:unauthorized`), and a `/me` answering a null user, which
   // is how a refresh observes a session the server already ended.
+
   const applyUser = useCallback((next: User | null) => {
+    userRef.current = next;
     setUser(next);
     // UNCONDITIONAL, and the comparison is the module's: what it owns is whose captured responses it
     // is holding, and every transition this console makes is one it has to hear about. That includes
@@ -95,7 +115,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     noteOperator(next?.id ?? null);
   }, []);
 
-  const clearUser = useCallback(() => applyUser(null), [applyUser]);
+  const clearUser = useCallback(() => {
+    sessionGen.current += 1;
+    applyUser(null);
+  }, [applyUser]);
 
   // Shared /me fetch used at boot and for explicit refreshes (e.g. after
   // a /setup 409, where the server flipped to "setup complete" but this client
@@ -104,8 +127,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // with body, or a 4xx) and `false` on a transient failure (network error or
   // 5xx) so the boot path can retry instead of treating it as "logged out".
   const fetchAuthState = useCallback(async () => {
+    const genAtStart = sessionGen.current;
     try {
       const { data, error } = await api.api.auth.me.get();
+      if (sessionGen.current !== genAtStart) return true;
       if (data && !error) {
         // NOTE: applied even when null, so a refresh() that observes a logged-out server clears any stale
         // signed-in client state. The boot path is unaffected (user defaults to null).
@@ -154,6 +179,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await fetchAuthState();
   }, [fetchAuthState]);
 
+  const updateUser = useCallback(
+    (userId: string, fields: Partial<User>) =>
+      applyUser(applyUserUpdate(userRef.current, userId, fields)),
+    [applyUser],
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -192,6 +223,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // tenant). Non-super users, and browsers that already hold a stored selection, skip the wait.
     const awaitsTenantSeed =
       loggedInUser.role === "SUPER_ADMIN" && getActiveTenantId() === null;
+    sessionGen.current += 1;
     applyUser(loggedInUser);
     // NOTE: A successful auth means at least one account exists, so first-run
     // setup is necessarily done. Clear the (boot-time) flag so SetupGate stops
@@ -234,6 +266,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         refresh,
+        updateUser,
       }}
     >
       {children}

@@ -50,7 +50,7 @@ export function TimezonePicker({
           type="button"
           disabled={disabled}
           aria-label={ariaLabel ?? t("hours.timezone", "Timezone")}
-          className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg-tertiary py-2 pr-3 pl-3 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-60"
+          className="flex min-h-8 w-full items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary py-1 pr-2.5 pl-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
         >
           <span className="flex-1 truncate text-left">
             {value

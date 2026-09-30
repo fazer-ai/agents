@@ -626,7 +626,7 @@ export function GoogleOAuthSection({
               onChange={(e) => setExtraScopes(e.target.value)}
               rows={2}
               placeholder="https://www.googleapis.com/auth/..."
-              className="w-full resize-none rounded-lg border border-border bg-bg-secondary px-3 py-2 font-mono text-sm text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none"
+              className="w-full resize-none rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1.5 font-mono text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
               aria-label={t(
                 "vault.googleOAuth.extraScopes",
                 "Additional scopes",

@@ -60,7 +60,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           className={cn(
             // overflow-x-hidden: the textarea always wraps (pre-wrap + break-word), so it never needs a
             // horizontal scrollbar — pinning it off kills the spurious x-scrollbar track/flash.
-            "w-full resize-y overflow-x-hidden rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none disabled:opacity-60",
+            "w-full resize-y overflow-x-hidden rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1.5 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
             { "border-error": hasError },
             className,
           )}

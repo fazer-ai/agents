@@ -887,7 +887,7 @@ export function PathPicker({
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("tools.pathPickerFilter", "Filter paths…")}
               aria-label={t("tools.pathPickerFilter", "Filter paths…")}
-              className="w-full rounded-md border border-border bg-bg-tertiary px-2 py-1 text-sm text-text-primary focus:border-border-focus focus:outline-none"
+              className="w-full rounded-md border border-border-hover bg-bg-tertiary px-2 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
             />
           </div>
           <ul className="max-h-48 overflow-y-auto">

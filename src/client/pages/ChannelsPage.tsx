@@ -333,7 +333,7 @@ function InboxAgentPicker({
           type="button"
           disabled={pending}
           aria-label={label}
-          className="flex w-56 shrink-0 items-center justify-between gap-2 rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-60"
+          className="flex min-h-8 w-56 shrink-0 items-center justify-between gap-2 rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
         >
           <span className={cn("truncate", { "text-text-muted": !current })}>
             {current ? current.name : t("channels.noAgent", "No agent")}
@@ -1789,7 +1789,7 @@ export function ChannelsPage() {
                       className={cn(
                         "flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed",
                         checked
-                          ? "border-accent bg-accent/5"
+                          ? "border-accent bg-accent-soft"
                           : "border-border bg-bg-tertiary hover:bg-bg-hover",
                         { "opacity-60": disabled },
                       )}
@@ -1798,7 +1798,7 @@ export function ChannelsPage() {
                         className={cn(
                           "flex h-5 w-5 shrink-0 items-center justify-center rounded border",
                           checked
-                            ? "border-accent bg-accent text-accent-foreground"
+                            ? "border-accent-solid bg-accent-solid text-accent-foreground"
                             : "border-border",
                         )}
                       >

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isValidColorToken } from "@/lib/branding";
+import { isValidColorToken, resolveBrandTokens } from "@/lib/branding";
 import { derivePalette } from "@/lib/palette";
 
 // Local WCAG helpers (mirror palette.ts) so assertions can check contrast directly.
@@ -51,64 +51,141 @@ describe("isValidColorToken", () => {
 });
 
 describe("derivePalette (SIMPLE mode color math)", () => {
+  // The lightest surface accent text is drawn on, per theme (--color-bg-tertiary).
+  const SURFACE = { dark: "#1c1c1b", light: "#efefed" } as const;
+
   test("returns null for a non-#rrggbb brand color", () => {
     expect(derivePalette("not-a-color", "dark")).toBeNull();
     expect(derivePalette("#fff", "dark")).toBeNull(); // only 6-digit hex is derivable
     expect(derivePalette("rgb(1,2,3)", "light")).toBeNull();
   });
 
-  test("accent + primary are the (normalized) brand color itself", () => {
-    const p = derivePalette("#ABCDEF", "dark");
-    expect(p?.accent).toBe("#abcdef");
-    expect(p?.primary).toBe("#abcdef");
+  test("the fill is the (normalized) brand color itself, in both themes", () => {
+    expect(derivePalette("#ABCDEF", "dark")?.accentSolid).toBe("#abcdef");
+    expect(derivePalette("#ABCDEF", "light")?.accentSolid).toBe("#abcdef");
   });
 
-  test("foreground flips by luminance so text always contrasts the accent", () => {
-    // A light brand color → dark foreground; a dark brand color → light foreground.
-    expect(derivePalette("#ffffff", "dark")?.accentForeground).toBe("#0f0f0f");
-    expect(derivePalette("#ffffff", "light")?.accentForeground).toBe("#0f0f0f");
-    expect(derivePalette("#000000", "dark")?.accentForeground).toBe("#f1f1f1");
-    // A saturated blue needs white text in both themes.
-    expect(derivePalette("#2563eb", "light")?.accentForeground).toBe("#f1f1f1");
-    // A mid-bright accent (the default #3ea6ff) must pick BLACK text: white fails WCAG AA here,
-    // black passes AAA. A single luminance threshold gets this wrong; the contrast ratio does not.
-    expect(derivePalette("#3ea6ff", "dark")?.accentForeground).toBe("#0f0f0f");
-    expect(derivePalette("#3ea6ff", "light")?.accentForeground).toBe("#0f0f0f");
+  test("the fill's hover moves away from its label, so the label never loses contrast", () => {
+    // NOTE: the mid grey carries the dark label and the indigo the white one: both directions.
+    for (const brand of ["#5e6ad2", "#888888", "#facc15", "#1e3a8a"]) {
+      for (const theme of ["dark", "light"] as const) {
+        const p = derivePalette(brand, theme);
+        const fg = p?.accentForeground ?? "";
+        expect(contrast(fg, p?.accentSolidHover ?? "")).toBeGreaterThanOrEqual(
+          contrast(fg, p?.accentSolid ?? ""),
+        );
+      }
+    }
   });
 
-  test("soft is a translucent wash of the brand color", () => {
+  test("the foreground is whichever of the two text colors reads better on the fill", () => {
+    expect(derivePalette("#ffffff", "dark")?.accentForeground).toBe("#1c1c1a");
+    expect(derivePalette("#000000", "light")?.accentForeground).toBe("#ffffff");
+    expect(derivePalette("#2563eb", "light")?.accentForeground).toBe("#ffffff");
+    // A mid-bright fill must pick the DARK text: white fails AA on it. A single luminance threshold
+    // gets this wrong; the contrast ratio does not.
+    expect(derivePalette("#3ea6ff", "dark")?.accentForeground).toBe("#1c1c1a");
+    for (const brand of [
+      "#5e6ad2",
+      "#3ea6ff",
+      "#e11d48",
+      "#16a34a",
+      "#facc15",
+    ]) {
+      const p = derivePalette(brand, "light");
+      expect(
+        contrast(p?.accentForeground ?? "", p?.accentSolid ?? ""),
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  test("the accent text clears AA on the theme's lightest surface", () => {
+    for (const brand of [
+      "#ffffff",
+      "#000000",
+      "#5e6ad2",
+      "#facc15",
+      "#1e3a8a",
+    ]) {
+      for (const theme of ["dark", "light"] as const) {
+        const p = derivePalette(brand, theme);
+        expect(
+          contrast(p?.accent ?? "", SURFACE[theme]),
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  test("an already-legible brand color is kept as the text color", () => {
+    expect(derivePalette("#1d4ed8", "light")?.accent).toBe("#1d4ed8");
+  });
+
+  test("the soft tint is a translucent wash of the fill", () => {
     expect(derivePalette("#2563eb", "dark")?.accentSoft).toBe(
-      "rgba(37, 99, 235, 0.15)",
+      "rgba(37, 99, 235, 0.2)",
+    );
+    expect(derivePalette("#2563eb", "light")?.accentSoft).toBe(
+      "rgba(37, 99, 235, 0.12)",
     );
   });
+});
 
-  test("accent stays legible as text on the theme background", () => {
-    // A brand color that matches the background (white on the light theme) would vanish when used
-    // as text (e.g. an accent-colored label on an accent-soft tint). It must be nudged to a legible
-    // shade instead — and the same for black on the dark theme.
-    const whiteLight = derivePalette("#ffffff", "light");
-    expect(whiteLight?.accent).not.toBe("#ffffff");
+describe("resolveBrandTokens (ADVANCED tokens saved before the split)", () => {
+  test("a single accent also becomes the fill", () => {
     expect(
-      contrast(whiteLight?.accent ?? "", "#f1f1f1"),
-    ).toBeGreaterThanOrEqual(3.4);
-    const blackDark = derivePalette("#000000", "dark");
-    expect(blackDark?.accent).not.toBe("#000000");
-    expect(contrast(blackDark?.accent ?? "", "#0f0f0f")).toBeGreaterThanOrEqual(
-      3.4,
+      resolveBrandTokens({ accent: "#e11d48", accentHover: "#be123c" }),
+    ).toEqual({
+      accent: "#e11d48",
+      accentHover: "#be123c",
+      accentSolid: "#e11d48",
+      accentSolidHover: "#be123c",
+      accentForeground: "#ffffff",
+    });
+  });
+
+  test("a light accent gets dark text on its fill, not the white default", () => {
+    expect(resolveBrandTokens({ accent: "#ffffff" }).accentForeground).toBe(
+      "#1c1c1a",
+    );
+    expect(resolveBrandTokens({ accent: "#fde047" }).accentForeground).toBe(
+      "#1c1c1a",
+    );
+    expect(resolveBrandTokens({ accent: "#fff" }).accentForeground).toBe(
+      "#1c1c1a",
     );
   });
 
-  test("an already-legible brand color is preserved (no needless shift)", () => {
-    // A standard brand blue reads fine on both themes, so it is kept exactly.
-    expect(derivePalette("#2563eb", "dark")?.accent).toBe("#2563eb");
-    expect(derivePalette("#2563eb", "light")?.accent).toBe("#2563eb");
+  test("a foreground the brand set is kept", () => {
+    expect(
+      resolveBrandTokens({ accent: "#ffffff", accentForeground: "#111111" })
+        .accentForeground,
+    ).toBe("#111111");
   });
 
-  test("hover/muted move opposite directions per theme (theme-aware)", () => {
-    const dark = derivePalette("#2563eb", "dark");
-    const light = derivePalette("#2563eb", "light");
-    // The brand stays put, but the derived tints differ between themes.
-    expect(dark?.accentHover).not.toBe(light?.accentHover);
-    expect(dark?.accentMuted).not.toBe(light?.accentMuted);
+  test("a functional color is read through the caller's resolver", () => {
+    const toHex = (c: string) =>
+      c === "oklch(0.97 0.02 90)" ? "#fbf6e8" : null;
+    expect(
+      resolveBrandTokens({ accent: "oklch(0.97 0.02 90)" }, toHex)
+        .accentForeground,
+    ).toBe("#1c1c1a");
+  });
+
+  test("a color nothing can resolve keeps the default foreground", () => {
+    expect(
+      resolveBrandTokens({ accent: "oklch(0.9 0.1 90)" }).accentForeground,
+    ).toBeUndefined();
+  });
+
+  test("an explicit fill is kept as set", () => {
+    expect(
+      resolveBrandTokens({ accent: "#fda4af", accentSolid: "#e11d48" }),
+    ).toEqual({ accent: "#fda4af", accentSolid: "#e11d48" });
+  });
+
+  test("no accent, nothing to carry over", () => {
+    expect(resolveBrandTokens({ accentSoft: "#e11d4833" })).toEqual({
+      accentSoft: "#e11d4833",
+    });
   });
 });

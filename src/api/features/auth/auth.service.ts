@@ -312,6 +312,31 @@ export async function getUserHasPassword(userId: bigint): Promise<boolean> {
   return Boolean(u?.passwordHash);
 }
 
+// The account facts the Settings pages show: when it was created and which sign-in methods it has.
+export async function getAccountDetails(userId: bigint) {
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { createdAt: true, passwordHash: true, googleId: true },
+  });
+  if (!row) return null;
+  return {
+    createdAt: row.createdAt,
+    hasPassword: Boolean(row.passwordHash),
+    googleLinked: row.googleId !== null,
+  };
+}
+
+// The display name is the one profile field a person edits about themselves; null clears it, and
+// the UI shows the email instead. The role is not on the person row (it lives in the memberships),
+// so the caller answers with the one it already resolved.
+export async function updateUserName(userId: bigint, name: string | null) {
+  return prisma.user.update({
+    where: { id: userId },
+    data: { name },
+    select: { id: true, email: true, name: true },
+  });
+}
+
 // Another write changed the password between the verification and the update, so this change did not
 // land and must not be reported as done.
 export class PasswordChangedConcurrentlyError extends Error {

@@ -399,7 +399,7 @@ function CalendarMultiPicker({
                 <span
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
                     checked
-                      ? "border-accent bg-accent text-accent-foreground"
+                      ? "border-accent-solid bg-accent-solid text-accent-foreground"
                       : "border-border"
                   }`}
                 >
@@ -1696,7 +1696,7 @@ export function IntegrationEditModal({
                               }`}
                             >
                               {folderId === "" && (
-                                <span className="h-2 w-2 rounded-full bg-accent" />
+                                <span className="h-2 w-2 rounded-full bg-accent-solid" />
                               )}
                             </span>
                             <span className="font-medium text-sm text-text-primary">
@@ -1731,7 +1731,7 @@ export function IntegrationEditModal({
                                   }`}
                                 >
                                   {selected && (
-                                    <span className="h-2 w-2 rounded-full bg-accent" />
+                                    <span className="h-2 w-2 rounded-full bg-accent-solid" />
                                   )}
                                 </span>
                                 <span className="min-w-0 flex-1">

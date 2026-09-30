@@ -200,7 +200,7 @@ export function PromptPanel({
               className={cn(
                 "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
                 pane === p
-                  ? "bg-accent text-accent-foreground"
+                  ? "bg-accent-solid text-accent-foreground"
                   : "text-text-secondary hover:text-text-primary",
               )}
             >

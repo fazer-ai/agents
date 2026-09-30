@@ -19,7 +19,7 @@ describe("Button", () => {
     render(<Button>Primary</Button>);
 
     const button = screen.getByRole("button");
-    expect(button).toHaveClass("bg-accent");
+    expect(button).toHaveClass("bg-accent-solid");
     expect(button).toHaveClass("border");
     expect(button).toHaveClass("border-transparent");
   });
@@ -29,6 +29,13 @@ describe("Button", () => {
 
     const button = screen.getByRole("button");
     expect(button).toHaveClass("bg-bg-tertiary");
+  });
+
+  test("applies ghost variant styles", () => {
+    render(<Button variant="ghost">Ghost</Button>);
+
+    const button = screen.getByRole("button");
+    expect(button).toHaveClass("bg-transparent");
   });
 
   test("applies danger variant styles", () => {

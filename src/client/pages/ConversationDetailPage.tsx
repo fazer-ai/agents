@@ -237,7 +237,7 @@ function MessageBubble({
         className={cn(
           "max-w-[80%] rounded-2xl px-3 py-2",
           outgoing
-            ? "bg-accent text-accent-foreground"
+            ? "bg-accent-solid text-accent-foreground"
             : "bg-bg-tertiary text-text-primary",
         )}
       >
@@ -809,7 +809,7 @@ function FollowUpLine({
                   className={cn(
                     "flex h-4 w-4 shrink-0 items-center justify-center rounded-full font-semibold text-[10px]",
                     isNext
-                      ? "bg-accent text-accent-foreground"
+                      ? "bg-accent-solid text-accent-foreground"
                       : "bg-bg-tertiary text-text-secondary",
                   )}
                 >
@@ -1976,7 +1976,7 @@ export function ConversationDetailPage() {
                     </div>
                   </div>
                   <div className="flex justify-end">
-                    <div className="max-w-[80%] rounded-2xl bg-accent/10 px-3 py-2">
+                    <div className="max-w-[80%] rounded-2xl bg-accent-soft px-3 py-2">
                       <Skeleton className="h-3.5 w-32" />
                     </div>
                   </div>
@@ -1987,7 +1987,7 @@ export function ConversationDetailPage() {
                     </div>
                   </div>
                   <div className="flex justify-end">
-                    <div className="max-w-[80%] rounded-2xl bg-accent/10 px-3 py-2">
+                    <div className="max-w-[80%] rounded-2xl bg-accent-soft px-3 py-2">
                       <Skeleton className="h-3.5 w-44" />
                     </div>
                   </div>

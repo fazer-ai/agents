@@ -8,6 +8,11 @@ import {
 } from "@/client/contexts/SidebarContext";
 
 const KEYBOARD_STEP = 16;
+// Matches the aside's `duration-200` in Sidebar.tsx. While dragging, the
+// width transition is off so the edge tracks the pointer; crossing the collapse
+// snap is the one jump the drag cannot follow, so the transition is switched
+// back on for exactly this long around it.
+const SNAP_TRANSITION_MS = 200;
 
 export function SidebarResizer() {
   const { t } = useTranslation();
@@ -23,6 +28,9 @@ export function SidebarResizer() {
   // after it leaves the 2px grip. This ref holds the detach function until
   // the drag ends.
   const documentListenersCleanupRef = useRef<(() => void) | null>(null);
+  const collapsedRef = useRef(collapsed);
+  collapsedRef.current = collapsed;
+  const snapTimeoutRef = useRef<number | null>(null);
 
   const cancelRaf = useCallback(() => {
     if (rafId.current != null) {
@@ -39,22 +47,39 @@ export function SidebarResizer() {
   // document listeners from the Safari fallback path.
   useEffect(
     () => () => {
+      if (snapTimeoutRef.current != null) {
+        window.clearTimeout(snapTimeoutRef.current);
+      }
+      delete document.body.dataset.sidebarSnapping;
       delete document.body.dataset.resizingSidebar;
       documentListenersCleanupRef.current?.();
     },
     [],
   );
 
+  const markSnapping = useCallback(() => {
+    document.body.dataset.sidebarSnapping = "true";
+    if (snapTimeoutRef.current != null) {
+      window.clearTimeout(snapTimeoutRef.current);
+    }
+    snapTimeoutRef.current = window.setTimeout(() => {
+      snapTimeoutRef.current = null;
+      delete document.body.dataset.sidebarSnapping;
+    }, SNAP_TRANSITION_MS);
+  }, []);
+
   const applyX = useCallback(
     (x: number) => {
-      if (x < SIDEBAR_COLLAPSE_SNAP) {
+      const nextCollapsed = x < SIDEBAR_COLLAPSE_SNAP;
+      if (nextCollapsed !== collapsedRef.current) markSnapping();
+      if (nextCollapsed) {
         setCollapsed(true);
       } else {
         setCollapsed(false);
         setWidth(x);
       }
     },
-    [setCollapsed, setWidth],
+    [markSnapping, setCollapsed, setWidth],
   );
 
   const endDrag = useCallback(
@@ -232,7 +257,10 @@ export function SidebarResizer() {
       onKeyDown={handleKeyDown}
       className="group absolute top-0 -right-1 z-(--z-sidebar) flex h-full w-2 cursor-col-resize touch-none items-stretch justify-center outline-none"
     >
-      <span className="h-full w-px bg-border transition-colors group-hover:bg-accent group-focus-visible:bg-accent" />
+      {/* The highlight is inset by the content panel's corner radius plus
+          its vertical margin, so it traces the panel's straight left edge
+          instead of running past the rounded corners. */}
+      <span className="my-[calc(var(--radius-xl)+var(--spacing)*2)] w-0.5 rounded-full bg-transparent transition-colors group-hover:bg-accent group-focus-visible:bg-accent" />
     </div>
   );
 }

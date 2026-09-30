@@ -98,7 +98,7 @@ afterAll(() => {
 // `requireSession` answers 403, and the `response:` map is the contract the spec
 // and the Eden client are generated from (`openapi:check` holds the committed spec to it). A status
 // a route returns and does not declare is a refusal no generated client knows how to handle. The
-// list is held to the source: a sixth `requireSession(` site has to be named here.
+// list is held to the source: a new `requireSession(` site has to be named here.
 describe("the routes that refuse an API-key principal declare the 403", () => {
   test("every requireSession route carries 403 in its response map", async () => {
     type Route = {
@@ -114,6 +114,8 @@ describe("the routes that refuse an API-key principal declare the 403", () => {
       "GET /api/v1/mcp/oauth/authorize",
       "GET /api/v1/mcp/oauth/consent/:req",
       "POST /api/v1/mcp/oauth/consent/:req",
+      "PATCH /api/auth/me",
+      "PATCH /api/auth/password",
     ];
     const sites = Object.entries(await countInSrc(/\brequireSession\(/g))
       .filter(([file]) => file !== "src/api/lib/step-up.ts")
@@ -453,6 +455,30 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
       { decision: "approve", csrfToken: "x" },
     );
     expect(decide.status).toBe(403);
+  });
+
+  // The creator id a key carries is for audit: a key that could set its creator's password would
+  // mint the one credential its revocation does not end, and one that renames the creator acts as a
+  // person on their own account.
+  test("a key cannot change its creator's password or profile", async () => {
+    for (const token of [tenantToken, fleetToken]) {
+      const password = await send(
+        "PATCH",
+        "/api/auth/password",
+        bearer(token),
+        {
+          currentPassword: PASSWORD,
+          newPassword: "another-password",
+        },
+      );
+      expect(password.status).toBe(403);
+      const profile = await send("PATCH", "/api/auth/me", bearer(token), {
+        name: "Renamed by a key",
+      });
+      expect(profile.status).toBe(403);
+    }
+    const row = await su?.user.findUnique({ where: { id: SUPER_ID } });
+    expect(row?.name).not.toBe("Renamed by a key");
   });
 
   test("the tenant key cannot reach the fleet routes", async () => {

@@ -218,7 +218,7 @@ export function VaultPanel() {
         {entries.length > 0 && (
           <div className="relative w-64 max-w-xs">
             <Search
-              className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-muted"
+              className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
               aria-hidden="true"
             />
             <input
@@ -233,7 +233,7 @@ export function VaultPanel() {
                 "Search by name or type…",
               )}
               className={cn(
-                "w-full rounded-lg border border-border bg-bg-tertiary py-1.5 pl-9 text-sm text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none",
+                "h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft",
                 { "pr-8": !!query, "pr-4": !query },
               )}
             />

@@ -62,7 +62,7 @@ type AuditResponse = Awaited<ReturnType<typeof api.api.v1.audit.get>>["data"];
 type AuditItem = NonNullable<AuditResponse>["entries"][number];
 
 const selectCls =
-  "h-9 rounded-lg border border-border bg-bg-tertiary px-3 text-sm text-text-primary focus:border-border-focus focus:outline-none";
+  "h-8 rounded-md border border-border-hover bg-bg-tertiary px-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
 const ROW_SKELETON_KEYS = ["au-0", "au-1", "au-2", "au-3", "au-4"];
 
 // Long enough to read a name, an id or a short sentence whole; short enough that a system prompt

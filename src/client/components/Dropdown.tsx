@@ -44,7 +44,7 @@ export function Dropdown({
           disabled={disabled}
           aria-label={ariaLabel}
           className={cn(
-            "flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-60",
+            "flex min-h-8 w-full items-center justify-between gap-2 rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60",
             triggerClassName,
           )}
         >

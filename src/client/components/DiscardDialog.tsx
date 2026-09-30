@@ -35,7 +35,7 @@ export function DiscardDialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
           style={{ zIndex: `calc(var(--z-modal) + ${depth * STEP - 1})` }}
-          className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in"
+          className="data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 bg-overlay data-[state=closed]:animate-out data-[state=open]:animate-in"
         />
         <DialogPrimitive.Content
           style={{ zIndex: z }}

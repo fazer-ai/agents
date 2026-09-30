@@ -612,7 +612,7 @@ const ALWAYS_ON_SCREEN: Record<string, string> = {
     "Two boxes, both always drawn. The page unmounts on a successful login, which the mounted check already answers.",
   "pages/SignupPage.tsx :: refusal": "Same two boxes, same reason.",
   "pages/settings/SettingsProfilePage.tsx :: refusal":
-    "The password form is a section of the page, drawn whenever the page is.",
+    "The name field is the form's only control, drawn whenever the page is.",
   "pages/resources/documents/CompanyProfileCard.tsx :: refusal":
     "The profile fields are the card's body; the card is either mounted or it is not.",
   "pages/resources/AdvancedPanel.tsx :: embRefusal":

@@ -53,7 +53,7 @@ const COUNTER_FROM = 0.8;
 // control adds a baseline descender gap, so the wrapper grows taller than the control and the
 // absolute backdrop shows below the border as a thin band.
 const FIELD_BASE =
-  "block w-full rounded-lg border bg-bg-tertiary py-2 focus:border-border-focus focus:outline-none";
+  "block w-full rounded-md border bg-bg-tertiary py-1.5 transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
 
 export const HighlightedTemplateField = forwardRef<
   HTMLInputElement | HTMLTextAreaElement,
@@ -107,7 +107,7 @@ export const HighlightedTemplateField = forwardRef<
   ) => {
     const { t } = useTranslation();
     const backdropRef = useRef<HTMLDivElement>(null);
-    const pad = multiline ? "px-3" : "px-4";
+    const pad = "px-2.5";
     // The backdrop wraps like the textarea (multiline) or stays a single non-wrapping line that
     // scrolls horizontally with the input (single-line).
     const wrapCls = multiline
@@ -150,6 +150,9 @@ export const HighlightedTemplateField = forwardRef<
           <div
             ref={backdropRef}
             aria-hidden="true"
+            // Named for the iOS font override in index.css, which has to size this layer like the
+            // field above it or the two wrap apart.
+            data-field-backdrop=""
             className={cn(
               sharedText,
               "pointer-events-none absolute inset-0 overflow-hidden border-transparent text-text-primary",
@@ -173,7 +176,7 @@ export const HighlightedTemplateField = forwardRef<
                 sharedText,
                 "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
                 fill ? "h-full resize-none" : "resize-y",
-                invalid ? "border-error" : "border-border",
+                invalid ? "border-error" : "border-border-hover",
               )}
             />
           ) : (
@@ -190,7 +193,7 @@ export const HighlightedTemplateField = forwardRef<
               className={cn(
                 sharedText,
                 "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
-                invalid ? "border-error" : "border-border",
+                invalid ? "border-error" : "border-border-hover",
               )}
             />
           )}

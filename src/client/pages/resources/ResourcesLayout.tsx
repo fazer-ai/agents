@@ -110,7 +110,7 @@ export function ResourcesLayout() {
                 {/* biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments above TABS */}
                 {t(tab.labelKey)}
                 {tab.badge && approvalsCount > 0 && (
-                  <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
+                  <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent-solid px-1.5 py-0.5 font-medium text-[0.6875rem] text-accent-foreground leading-none">
                     {approvalsCount}
                   </span>
                 )}

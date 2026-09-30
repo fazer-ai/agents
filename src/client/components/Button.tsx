@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/client/lib/utils";
 
-type ButtonVariant = "primary" | "secondary" | "danger";
+type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "sm" | "md" | "lg";
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -13,16 +13,21 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantStyles: Record<ButtonVariant, string> = {
   primary:
-    "bg-accent text-accent-foreground hover:bg-accent-hover disabled:bg-accent/50 border border-transparent",
+    "bg-accent-solid text-accent-foreground hover:bg-accent-solid-hover border border-transparent",
   secondary:
-    "bg-bg-tertiary text-text-primary hover:bg-bg-secondary border border-border",
-  danger: "bg-bg-tertiary text-error hover:bg-error-soft border border-error",
+    "bg-bg-tertiary text-text-primary hover:bg-bg-hover border border-border-hover",
+  ghost:
+    "bg-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-transparent",
+  danger:
+    "bg-error-soft text-error hover:bg-error hover:text-bg-primary border border-transparent",
 };
 
+// Heights come from the spacing scale, so they follow the density
+// setting (32px compact, larger when comfortable) without a per-size override.
 const sizeStyles: Record<ButtonSize, string> = {
-  sm: "px-4 py-2 text-sm",
-  md: "px-6 py-3 text-[15px]",
-  lg: "px-8 py-3.5 text-base",
+  sm: "h-7 px-2.5 text-xs",
+  md: "h-8 px-3 text-sm",
+  lg: "h-10 px-4 text-sm",
 };
 
 export function Button({
@@ -39,7 +44,7 @@ export function Button({
       type="button"
       disabled={disabled || loading}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium transition-colors disabled:cursor-default disabled:opacity-50",
+        "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md font-medium transition-colors disabled:cursor-default disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0",
         variantStyles[variant],
         sizeStyles[size],
         className,

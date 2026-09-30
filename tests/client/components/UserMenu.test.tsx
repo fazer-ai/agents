@@ -98,13 +98,14 @@ describe("UserMenu", () => {
     ).toBeInTheDocument();
   });
 
-  test("opens dropdown with theme and language groups", () => {
+  test("opens with the signed-in identity, the theme row and the language submenu", () => {
     renderMenu();
     openDropdown();
-    expect(screen.getByText(/^theme$/i)).toBeInTheDocument();
-    expect(screen.getByText(/^language$/i)).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitemradio").length).toBeGreaterThanOrEqual(
-      4,
+    expect(screen.getAllByText("admin@fazer.ai").length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(3);
+    expect(screen.getByRole("menuitem", { name: /language/i })).toHaveAttribute(
+      "aria-haspopup",
+      "menu",
     );
   });
 
@@ -119,6 +120,8 @@ describe("UserMenu", () => {
   test("selecting a language radio calls i18n.changeLanguage", () => {
     renderMenu();
     openDropdown();
+    const languageTrigger = screen.getByRole("menuitem", { name: /language/i });
+    fireEvent.keyDown(languageTrigger, { key: "ArrowRight" });
     const ptRadio = screen.getByRole("menuitemradio", { name: /português/i });
     fireEvent.click(ptRadio);
     expect(changeLanguage).toHaveBeenCalledWith("pt-BR");

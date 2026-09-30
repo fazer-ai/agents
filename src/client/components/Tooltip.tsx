@@ -1,5 +1,5 @@
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import type { ReactElement, ReactNode } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { cn } from "@/client/lib/utils";
 
 interface TooltipBaseProps {
@@ -12,6 +12,10 @@ interface TooltipBaseProps {
   // Override/extend the content container's classes (e.g. a wider max-w for rich tooltips). When
   // omitted, the default max-w-xs applies.
   contentClassName?: string;
+  // Keeps the tooltip mounted but closed. For a control whose label is only hidden in some states
+  // (the collapsed sidebar): wrapping it conditionally swaps the element tree, which unmounts the
+  // control and drops keyboard focus the moment the state flips.
+  disabled?: boolean;
 }
 
 // With `asChild` (the default) children is the trigger through Radix Slot, which needs a single
@@ -38,9 +42,11 @@ export function Tooltip({
   sideOffset = 6,
   asChild = true,
   contentClassName,
+  disabled = false,
 }: TooltipProps) {
+  const [open, setOpen] = useState(false);
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root open={open && !disabled} onOpenChange={setOpen}>
       <TooltipPrimitive.Trigger asChild={asChild}>
         {children}
       </TooltipPrimitive.Trigger>

@@ -160,7 +160,7 @@ export function GeneralTab({
                 className={cn(
                   "rounded-md px-4 py-1.5 font-medium text-sm transition-colors",
                   mode === m
-                    ? "bg-accent text-accent-foreground"
+                    ? "bg-accent-solid text-accent-foreground"
                     : "text-text-secondary hover:text-text-primary",
                 )}
               >

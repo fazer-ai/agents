@@ -14,13 +14,15 @@ export function Header() {
   const isHome = location.pathname === "/";
 
   return (
-    <header className="flex min-h-(--header-height) shrink-0 items-center gap-4 border-border border-b bg-bg-secondary px-4 py-3 md:px-6">
-      <div className="flex shrink-0 items-center gap-2">
+    <header className="flex min-h-(--header-height) shrink-0 items-center gap-4 border-border border-b px-4 py-2 md:px-6">
+      {/* The brand lives in the desktop sidebar; on mobile the sidebar is a drawer, so the header
+          keeps the menu button and the logo. */}
+      <div className="flex shrink-0 items-center gap-2 md:hidden">
         <button
           type="button"
           onClick={() => setMobileOpen(true)}
           aria-label={t("nav.openMenu", "Open menu")}
-          className="inline-flex items-center justify-center rounded-lg border border-border bg-bg-tertiary p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary md:hidden"
+          className="inline-flex items-center justify-center rounded-md border border-border bg-bg-tertiary p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary md:hidden"
         >
           <Menu className="h-4 w-4" />
         </button>
@@ -30,7 +32,7 @@ export function Header() {
           aria-label={t("nav.home", "Home")}
           className="flex items-center gap-3"
         >
-          <Logo className="h-8 w-auto" />
+          <Logo className="h-7 w-auto" />
         </Link>
       </div>
 

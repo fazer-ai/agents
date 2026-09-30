@@ -89,7 +89,7 @@ export function ProGate({
               href={UPGRADE_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 font-medium text-accent-foreground text-sm transition-colors hover:bg-accent-hover"
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-accent-solid px-4 py-2 font-medium text-accent-foreground text-sm transition-colors hover:bg-accent-solid-hover"
             >
               <Sparkles className="h-4 w-4" aria-hidden="true" />
               {t("upgrade.cta", "Upgrade to Pro")}

@@ -91,7 +91,7 @@ export function SchedulePicker({
             type="button"
             disabled={disabled}
             aria-label={ariaLabel}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-bg-tertiary py-2 pr-3 pl-3 text-left focus:border-border-focus focus:outline-none disabled:opacity-60"
+            className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-border-hover bg-bg-tertiary py-1 pr-2.5 pl-2.5 text-left transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
           >
             <div className="flex min-w-0 flex-1 flex-col">
               <span className="truncate text-sm text-text-primary">

@@ -68,7 +68,7 @@ function TenantPicker({
           <button
             type="button"
             aria-label={t("tenant.switcher", "Switch tenant")}
-            className="group inline-flex max-w-50 items-center gap-2 rounded-lg border border-border bg-bg-tertiary px-2 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover data-[state=open]:text-text-primary"
+            className="group inline-flex max-w-50 items-center gap-2 rounded-md border border-border bg-bg-tertiary px-2 py-1 text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary data-[state=open]:bg-bg-hover data-[state=open]:text-text-primary"
           >
             <Building2 className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span className="hidden truncate sm:inline">{activeName}</span>

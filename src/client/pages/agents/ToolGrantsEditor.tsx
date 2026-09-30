@@ -413,7 +413,7 @@ function ConfigurableToolCard({
       <div
         className={cn(
           "flex items-stretch transition-colors",
-          selected ? "bg-accent/10" : "bg-bg-secondary",
+          selected ? "bg-accent-soft" : "bg-bg-secondary",
         )}
       >
         {/* biome-ignore lint/a11y/useSemanticElements: a styled selection card needs a button with the checkbox role, not a bare <input>. */}
@@ -445,7 +445,7 @@ function ConfigurableToolCard({
               {badge}
               {configured && !expanded && (
                 <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent-solid"
                   aria-hidden="true"
                 />
               )}
@@ -458,7 +458,7 @@ function ConfigurableToolCard({
             className={cn(
               "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
               selected
-                ? "border-accent bg-accent text-accent-foreground"
+                ? "border-accent-solid bg-accent-solid text-accent-foreground"
                 : "border-border text-transparent group-hover:border-text-muted",
             )}
             aria-hidden="true"
@@ -1536,7 +1536,7 @@ export function ToolGrantsEditor({
             })}
             {nativeConfigured && (
               <span
-                className="h-1.5 w-1.5 rounded-full bg-accent"
+                className="h-1.5 w-1.5 rounded-full bg-accent-solid"
                 aria-hidden="true"
               />
             )}

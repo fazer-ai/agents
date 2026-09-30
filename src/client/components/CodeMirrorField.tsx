@@ -89,7 +89,7 @@ const theme = EditorView.theme({
   ".cm-cursor": { borderLeftColor: "var(--color-text-primary)" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
     {
-      backgroundColor: "var(--color-accent-muted)",
+      backgroundColor: "var(--color-accent-soft)",
     },
   ".cm-placeholder": { color: "var(--color-text-placeholder)" },
   ".cm-tooltip": {

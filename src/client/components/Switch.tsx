@@ -30,13 +30,15 @@ export function Switch({
       onClick={() => onCheckedChange(!checked)}
       className={cn(
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-border-focus disabled:opacity-50",
-        checked ? "bg-accent" : "bg-bg-hover",
+        checked ? "bg-accent-solid" : "bg-bg-hover",
       )}
     >
       <span
         className={cn(
-          "inline-block h-4 w-4 transform rounded-full bg-text-primary shadow transition-transform",
-          checked ? "translate-x-4" : "translate-x-0.5",
+          "inline-block h-4 w-4 transform rounded-full shadow transition-transform",
+          checked
+            ? "translate-x-4 bg-accent-foreground"
+            : "translate-x-0.5 bg-text-muted",
         )}
       />
     </button>

@@ -1,3 +1,4 @@
+export { Avatar } from "./Avatar";
 export { Badge } from "./Badge";
 export { BrandFooter } from "./BrandFooter";
 export { Breadcrumbs } from "./Breadcrumbs";
@@ -59,6 +60,10 @@ export {
   type ScheduleOption,
   SchedulePicker,
 } from "./SchedulePicker";
+export {
+  SegmentedControl,
+  type SegmentedOption,
+} from "./SegmentedControl";
 export { Select } from "./Select";
 export { SelectableCard } from "./SelectableCard";
 export { Sidebar } from "./Sidebar";

@@ -69,6 +69,38 @@ describe("Sidebar", () => {
     ).toBeInTheDocument();
   });
 
+  test("puts the brand at the top of the desktop sidebar, linking home", () => {
+    renderSidebar();
+    const aside = document.getElementById("app-sidebar") as HTMLElement;
+    const firstLink = aside.querySelector("a[href]");
+    expect(firstLink).toHaveAttribute("href", "/");
+    expect(firstLink?.querySelector("img")).not.toBeNull();
+  });
+
+  // A keyboard user who collapses the sidebar keeps focus on the control: it is the same element in
+  // both states, never swapped for a tooltip-wrapped copy.
+  test("collapsing and expanding keep the toggle mounted under focus", () => {
+    renderSidebar();
+    const toggle = screen.getByRole("button", { name: /collapse/i });
+    toggle.focus();
+    act(() => {
+      fireEvent.click(toggle);
+    });
+    expect(screen.getByRole("button", { name: /expand/i })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+    act(() => {
+      fireEvent.click(toggle);
+    });
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  test("shows the collapse shortcut next to the toggle", () => {
+    renderSidebar();
+    const toggle = screen.getByRole("button", { name: /collapse/i });
+    expect(toggle).toHaveAttribute("aria-keyshortcuts", "Meta+B Control+B");
+    expect(toggle.querySelector("kbd")?.textContent).toMatch(/B$/);
+  });
+
   test("hides Admin link for non-admin users", () => {
     renderSidebar();
     expect(screen.queryByRole("link", { name: /admin/i })).toBeNull();

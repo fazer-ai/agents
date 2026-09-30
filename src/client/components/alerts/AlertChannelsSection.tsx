@@ -39,7 +39,7 @@ type AlertChannel = NonNullable<ChannelsResponse>["channels"][number];
 
 const labelCls = "mb-1 block font-medium text-sm text-text-primary";
 const selectCls =
-  "w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none";
+  "w-full rounded-md border border-border-hover bg-bg-tertiary h-8 px-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
 
 type AgentOption = { id: string; name: string };
 

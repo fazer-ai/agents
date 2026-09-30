@@ -64,7 +64,7 @@ export function SpendBar({
       >
         <div
           className={cn("h-full rounded-full transition-all", {
-            "bg-accent": state === "allowed",
+            "bg-accent-solid": state === "allowed",
             "bg-warning": state === "warning",
             "bg-error": state === "over",
           })}

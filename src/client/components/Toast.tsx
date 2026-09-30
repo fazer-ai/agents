@@ -39,17 +39,10 @@ export function useToast() {
 const TOAST_DURATION = 5000;
 
 const icons: Record<ToastType, ReactNode> = {
-  success: <CheckCircle className="h-5 w-5" aria-hidden="true" />,
-  error: <XCircle className="h-5 w-5" aria-hidden="true" />,
-  warning: <AlertCircle className="h-5 w-5" aria-hidden="true" />,
-  info: <Info className="h-5 w-5" aria-hidden="true" />,
-};
-
-const styles: Record<ToastType, string> = {
-  success: "border-success",
-  error: "border-error",
-  warning: "border-warning",
-  info: "border-accent",
+  success: <CheckCircle className="h-4 w-4" aria-hidden="true" />,
+  error: <XCircle className="h-4 w-4" aria-hidden="true" />,
+  warning: <AlertCircle className="h-4 w-4" aria-hidden="true" />,
+  info: <Info className="h-4 w-4" aria-hidden="true" />,
 };
 
 const iconStyles: Record<ToastType, string> = {
@@ -86,24 +79,38 @@ function ToastItemView({
       onOpenChange={onOpenChange}
       type={assertive ? "foreground" : "background"}
       className={cn(
-        "flex items-center gap-3 rounded-lg border bg-bg-tertiary/95 px-4 py-3 shadow-lg backdrop-blur-sm",
+        // NOTE: items-start so the icon stays on the first line of a multi-line message, and
+        // whitespace-pre-line on the title so a "\n" in the message survives. The type is carried by
+        // the icon alone: a colored border around the whole card read as an error even for a success.
+        "flex items-start gap-2.5 rounded-lg border border-border-hover bg-bg-secondary py-2.5 pr-2 pl-3 shadow-lg",
         "data-[state=open]:slide-in-from-right-full data-[state=open]:animate-in",
         "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-full data-[state=closed]:animate-out",
         "data-[swipe=end]:slide-out-to-right-full data-[swipe=cancel]:translate-x-0 data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=end]:animate-out data-[swipe=cancel]:transition-transform",
-        styles[toast.type],
       )}
     >
-      <span className={iconStyles[toast.type]}>{icons[toast.type]}</span>
-      <ToastPrimitive.Title className="flex-1 text-sm text-text-primary">
+      {/* The icon and the close button each sit in a box exactly one line of the title tall (h-lh,
+          with the title's own text size and leading), so they center on the first line whatever the
+          density and however many lines the message wraps to. */}
+      <span
+        className={cn(
+          iconStyles[toast.type],
+          "flex h-lh shrink-0 items-center text-sm leading-snug",
+        )}
+      >
+        {icons[toast.type]}
+      </span>
+      <ToastPrimitive.Title className="flex-1 whitespace-pre-line text-sm text-text-primary leading-snug">
         {toast.message}
       </ToastPrimitive.Title>
-      <ToastPrimitive.Close
-        // t('common.dismiss', 'Dismiss')
-        aria-label={t("common.dismiss", "Dismiss")}
-        className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-      >
-        <X className="h-4 w-4" aria-hidden="true" />
-      </ToastPrimitive.Close>
+      <span className="flex h-lh shrink-0 items-center text-sm leading-snug">
+        <ToastPrimitive.Close
+          // t('common.dismiss', 'Dismiss')
+          aria-label={t("common.dismiss", "Dismiss")}
+          className="shrink-0 rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+        </ToastPrimitive.Close>
+      </span>
     </ToastPrimitive.Root>
   );
 }
@@ -189,7 +196,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             onOpenChange={(open) => handleOpenChange(toast.internalId, open)}
           />
         ))}
-        <ToastPrimitive.Viewport className="fixed top-(--header-height) right-0 z-(--z-toast) flex w-full max-w-sm flex-col gap-2 p-4 outline-none" />
+        <ToastPrimitive.Viewport className="fixed top-(--header-height) right-0 z-(--z-toast) flex w-full max-w-sm flex-col gap-2 p-4 outline-none md:max-w-[22rem]" />
       </ToastPrimitive.Provider>
     </ToastContext.Provider>
   );

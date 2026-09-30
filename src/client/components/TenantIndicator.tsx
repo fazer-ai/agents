@@ -16,7 +16,7 @@ export function TenantIndicator() {
     );
   }
   return user?.tenantName ? (
-    <span className="hidden items-center gap-2 rounded-lg border border-border bg-bg-tertiary px-2 py-1.5 text-sm text-text-secondary sm:inline-flex">
+    <span className="hidden items-center gap-2 rounded-md border border-border bg-bg-tertiary px-2 py-1 text-sm text-text-secondary sm:inline-flex">
       <Building2 className="h-4 w-4 shrink-0" aria-hidden="true" />
       <span className="max-w-50 truncate">{user.tenantName}</span>
     </span>

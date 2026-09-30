@@ -41,7 +41,7 @@ const SEARCH_DEBOUNCE_MS = 300;
 // Shared by the search <input> and the filter <select>s. A fixed height keeps them aligned: native
 // <input> and <select> render at slightly different heights from identical padding alone.
 const selectCls =
-  "h-9 rounded-lg border border-border bg-bg-tertiary px-3 text-sm text-text-primary focus:border-border-focus focus:outline-none";
+  "h-8 rounded-md border border-border-hover bg-bg-tertiary px-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
 const LOG_SKELETON_KEYS = ["lg-0", "lg-1", "lg-2", "lg-3", "lg-4"];
 
 const LEVEL_RANK: Record<string, number> = { info: 0, warn: 1, error: 2 };

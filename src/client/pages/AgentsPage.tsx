@@ -247,7 +247,7 @@ export function AgentsPage() {
         <div className="flex flex-col gap-3">
           <div className="relative min-w-0 flex-1">
             <Search
-              className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-muted"
+              className="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-text-muted"
               aria-hidden="true"
             />
             <input
@@ -256,7 +256,7 @@ export function AgentsPage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t("agents.search", "Search by name…")}
               aria-label={t("agents.search", "Search by name…")}
-              className="w-full rounded-lg border border-border bg-bg-tertiary py-2 pr-4 pl-9 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none"
+              className="h-8 w-full rounded-md border border-border-hover bg-bg-tertiary pr-2.5 pl-8 text-sm text-text-primary placeholder-text-placeholder transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft"
             />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">

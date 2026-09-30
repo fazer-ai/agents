@@ -1370,6 +1370,7 @@ describe("a grid HEIC over the pixel cap", () => {
           if (key === "_heif_context_alloc") live.context++;
           if (key === "_heif_context_free") live.context--;
           if (key === "_heif_context_get_primary_image_handle") live.handle++;
+          if (key === "_heif_context_get_image_handle") live.handle++;
           if (key === "_heif_image_handle_release") live.handle--;
           if (key === "_heif_image_handle_decode_image_tile") live.image++;
           if (key === "_heif_image_release") live.image--;
@@ -1424,6 +1425,57 @@ describe("a grid HEIC over the pixel cap", () => {
       reason: "a grid whose tiles cover more than twice the image",
     });
   });
+
+  // The tiling reports the first tile's size; a malformed grid can carry a bigger tile further on,
+  // which libheif allocates before rejecting. Here one tile of the real receipt grid is made to
+  // declare 2000x2000: nothing may be decoded, and every handle opened to measure is given back.
+  for (const lie of [
+    "_heif_image_handle_get_ispe_width",
+    "_heif_image_handle_get_ispe_height",
+  ])
+    test(`a grid with a tile larger than it declares (${lie.slice(-5)}) is refused before any tile is decoded`, async () => {
+      const lib = (await loadLibheif()) as unknown as Record<string, unknown>;
+      let decoded = 0;
+      let measured = 0;
+      let liar = -1;
+      const open = new Set<number>();
+      const tampered = new Proxy(lib, {
+        get(target, key) {
+          const v = target[key as string];
+          if (typeof v !== "function") return v;
+          const fn = v as (...a: number[]) => number;
+          return (...a: number[]) => {
+            if (key === "_heif_image_handle_decode_image_tile") decoded++;
+            const r = fn.apply(target, a);
+            if (key === "_heif_context_get_image_handle") {
+              const h = (target.HEAPU32 as Uint32Array)[
+                (a[3] as number) >> 2
+              ] as number;
+              open.add(h);
+              // The seventh tile measured is the one that lies.
+              if (++measured === 7) liar = h;
+            }
+            if (key === "_heif_image_handle_release")
+              open.delete(a[0] as number);
+            if (key === lie && a[0] === liar) return 2000;
+            return r;
+          };
+        },
+      });
+      expect(
+        await decodeGridFitted(
+          buf(HEIC),
+          { maxEdge: 1568, maxTilePixels: MAX_SOURCE_PIXELS },
+          tampered as never,
+        ),
+      ).toEqual({
+        kind: "unsupported",
+        reason: "a grid with a tile larger than it declares",
+      });
+      expect(decoded).toBe(0);
+      expect(measured).toBe(7);
+      expect(open.size).toBe(0);
+    });
 
   test("everything the grid decode takes is released after a success", async () => {
     const { run, live } = await counted();

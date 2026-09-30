@@ -61,6 +61,14 @@ type LibHeifC = {
     ctx: number,
     out: number,
   ): void;
+  _heif_context_get_image_handle(
+    err: number,
+    ctx: number,
+    id: number,
+    out: number,
+  ): void;
+  _heif_image_handle_get_ispe_width(handle: number): number;
+  _heif_image_handle_get_ispe_height(handle: number): number;
   _heif_image_handle_release(handle: number): void;
   _heif_image_handle_get_width(handle: number): number;
   _heif_image_handle_get_height(handle: number): number;
@@ -309,6 +317,29 @@ export async function decodeGridFitted(
       check(`tile id ${x},${y}`);
       return c.HEAPU32[out >> 2] as number;
     };
+    // The tiling reports ONE tile size, the first tile's, and libheif allocates each tile at the size
+    // that tile declares before it notices a mismatch. So every stored tile is opened and measured
+    // before any is decoded: one larger than declared would walk past the per-tile cap.
+    for (let y = 0; y < stored.rows; y++)
+      for (let x = 0; x < stored.columns; x++) {
+        c._heif_context_get_image_handle(err, ctx, tileId(0, x, y), out);
+        check(`tile handle ${x},${y}`);
+        const tile = c.HEAPU32[out >> 2] as number;
+        const w = Math.max(
+          c._heif_image_handle_get_width(tile),
+          c._heif_image_handle_get_ispe_width(tile),
+        );
+        const h = Math.max(
+          c._heif_image_handle_get_height(tile),
+          c._heif_image_handle_get_ispe_height(tile),
+        );
+        c._heif_image_handle_release(tile);
+        if (w > stored.tileWidth || h > stored.tileHeight)
+          return {
+            kind: "unsupported",
+            reason: "a grid with a tile larger than it declares",
+          };
+      }
     const place = placement(stored, shown, width, height, tileId);
     if (typeof place === "string")
       return { kind: "unsupported", reason: place };

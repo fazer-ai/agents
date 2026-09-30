@@ -1545,6 +1545,7 @@
     "splitWpm": "Typing speed (wpm)",
     "splitWpmHint": "Higher = shorter pauses.",
     "staleNotice": "This agent was changed elsewhere (another tab, the API, or the MCP server). Reload to get the latest version before saving.",
+    "staleShort": "Changed elsewhere",
     "stt": "Voice transcription (audio)",
     "sttBaseURL": "Base URL",
     "sttBaseURLHint": "Required for OpenAI-compatible transcription endpoints.",

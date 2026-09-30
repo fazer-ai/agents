@@ -150,7 +150,7 @@ export function GeneralTab({
           )}
           group
         >
-          <div className="inline-flex self-start rounded-lg border border-border bg-bg-tertiary p-0.5">
+          <div className="inline-flex max-w-full flex-wrap self-start rounded-lg border border-border bg-bg-tertiary p-0.5">
             {AGENT_MODES.map((m) => (
               <button
                 key={m}

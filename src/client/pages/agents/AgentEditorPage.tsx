@@ -3457,7 +3457,7 @@ function AgentEditor() {
         {catalog && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Settings2 className="h-6 w-6 text-accent" aria-hidden="true" />
                 <h1 className="truncate font-semibold text-text-primary text-xl">
                   {name || t("editor.untitled", "Untitled agent")}
@@ -3482,7 +3482,7 @@ function AgentEditor() {
                   </Badge>
                 )}
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {anyDirty && (
                   <Button variant="secondary" size="sm" onClick={askDiscardAll}>
                     {t("editor.discardAll", "Discard all")}

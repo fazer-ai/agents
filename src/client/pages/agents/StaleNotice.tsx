@@ -55,7 +55,7 @@ export function StaleNoticeCard({ notice }: { notice: StaleNotice | null }) {
           )}
         </p>
       </div>
-      <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-end sm:self-auto">
         <Button size="sm" variant="secondary" onClick={notice.reload}>
           {t("editor.reload", "Reload")}
         </Button>

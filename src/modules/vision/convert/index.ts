@@ -3,8 +3,8 @@
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
 import type { MediaConverterId } from "../media-conversion";
-import { type HeicFrame, withHeicFrames } from "./heic";
-import { rasterToJpeg } from "./raster";
+import { decodeGridFitted, type HeicFrame, withHeicFrames } from "./heic";
+import { encodeJpeg, rasterToJpeg } from "./raster";
 
 // Thrown for every refusal a conversion can make, so the caller has one thing to catch and one
 // message to put on the operator's line. A conversion that fails is NOT the same as an extraction
@@ -47,12 +47,19 @@ export class MediaTooLargeError extends MediaConversionError {
 // the milliseconds (~450ms at 12 MP, measured).
 export const MAX_SOURCE_PIXELS = 50_000_000;
 
+// Over the cap, a GRID image is still read: it is decoded tile by tile into the output, so memory is
+// bounded by one tile plus the output, not by the image. What this second cap bounds is TIME, since
+// every tile is still decoded: 200 MP is the largest mode phones shoot, and ~150 MP took ~4s here.
+// A tile is decoded whole, so a tile over `MAX_SOURCE_PIXELS` is refused like an image would be.
+export const MAX_TILED_SOURCE_PIXELS = 200_000_000;
+
 // Overridable, and for the same reason `extractWithRetry` lets a battery move the clock: what these
 // bound is MEMORY, and a test that cannot lower the cap can only exercise it by allocating the 200 MB
 // the cap exists to prevent, while one that cannot stand in for the decoder cannot watch the native
 // handles being released. Production passes neither.
 export type ConvertOptions = {
   readonly maxSourcePixels?: number;
+  readonly maxTiledSourcePixels?: number;
   // Stands in for `./heic`'s frame opener, so the battery can drive the refusal paths without a
   // fixture for each and can watch the decoder being released.
   readonly withFrames?: typeof withHeicFrames;
@@ -221,7 +228,8 @@ async function heicToJpeg(
       `declared as heic but ${headerReason(header)}`,
     );
   const open = opts.withFrames ?? withHeicFrames;
-  return await open(bytes, async (frames: readonly HeicFrame[]) => {
+  const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+  const whole = await open(bytes, async (frames: readonly HeicFrame[]) => {
     // The PRIMARY image (`pitm`), not the first: libheif returns a collection in storage
     // order, and unlike a GIF's frames these are separate pictures with one designated. The fallback
     // to the first is unreachable with this libheif (a file without `pitm` yields zero images); it
@@ -233,7 +241,6 @@ async function heicToJpeg(
     // The larger of what the decoder reports and what the file says it stores, because a crop makes
     // the first smaller than the work the decode actually does.
     const stored = storedPixels(bytes);
-    const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
     // FAIL CLOSED when the file will not say. `ispe` is mandatory in HEIF and every file libheif
     // accepts carries one, so finding none means the container is malformed or beyond this walker —
     // and falling back to the decoder's numbers there is precisely the hole, because the attacker
@@ -246,16 +253,27 @@ async function heicToJpeg(
     // refuses coded dimensions that disagree with the signalled ones BEFORE decoding; that is the
     // dependency's property, pinned by a test.
     const pixels = Math.max(width * height, stored);
-    if (pixels > cap)
-      throw new MediaTooLargeError(
-        `heic is ${width}x${height} and stores ${pixels} px, over the ${cap} px cap`,
-      );
+    const tooLarge = new MediaTooLargeError(
+      `heic is ${width}x${height} and stores ${pixels} px, over the ${cap} px cap`,
+    );
+    if (pixels > cap) return { tooLarge, pixels };
     const raw = await frame.decode();
     return rasterToJpeg(raw, {
       maxEdge: MAX_OUTPUT_EDGE,
       quality: JPEG_QUALITY,
     });
   });
+  if (whole instanceof ArrayBuffer) return whole;
+  // Decided inside, decoded outside: the whole-image decoder is released before the grid decode opens
+  // its own context, so the two never hold the file at once.
+  if (whole.pixels > (opts.maxTiledSourcePixels ?? MAX_TILED_SOURCE_PIXELS))
+    throw whole.tooLarge;
+  const grid = await decodeGridFitted(bytes, {
+    maxEdge: MAX_OUTPUT_EDGE,
+    maxTilePixels: cap,
+  });
+  if (grid.kind !== "decoded") throw whole.tooLarge;
+  return encodeJpeg(grid.image, JPEG_QUALITY);
 }
 
 // A `Record` over the id union and not a lookup that can miss: adding an entry to MEDIA_CONVERTERS

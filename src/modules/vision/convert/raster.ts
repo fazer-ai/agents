@@ -68,6 +68,89 @@ export function fitRgba(src: Rgba, maxEdge: number): Rgba {
   return { data: out, width: dw, height: dh };
 }
 
+// THE SAME AREA AVERAGE AS `fitRgba`, fed a piece at a time. A tiled source is decoded one tile after
+// another and never exists whole, so the average is accumulated straight into the output: the memory
+// is the output's sums plus the tile in hand, whatever the source size. The boxes are `fitRgba`'s own
+// (source column `sx` falls in the box `x` with floor(x * fx) <= sx < floor((x + 1) * fx)) and the
+// division truncates the same way, so the result is byte for byte what fitting the whole image gives.
+export class FitAccumulator {
+  readonly width: number;
+  readonly height: number;
+  private readonly colOf: Int32Array;
+  private readonly rowOf: Int32Array;
+  private readonly sums: Uint32Array;
+  private readonly counts: Uint32Array;
+
+  constructor(sourceWidth: number, sourceHeight: number, maxEdge: number) {
+    const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+    this.width =
+      scale < 1 ? Math.max(1, Math.round(sourceWidth * scale)) : sourceWidth;
+    this.height =
+      scale < 1 ? Math.max(1, Math.round(sourceHeight * scale)) : sourceHeight;
+    this.colOf = boxIndex(sourceWidth, this.width);
+    this.rowOf = boxIndex(sourceHeight, this.height);
+    this.sums = new Uint32Array(this.width * this.height * 4);
+    this.counts = new Uint32Array(this.width * this.height);
+  }
+
+  // `piece` is opaque and sits at (left, top) of the source. The caller clips it to the source: a
+  // grid's edge tiles are padded past the image, and that padding is not part of it.
+  add(piece: Rgba, left: number, top: number): void {
+    // Out of range, the box lookup is `undefined` and every write lands on a NaN index, which a
+    // typed array silently drops: a misplaced piece would vanish instead of failing.
+    if (
+      left < 0 ||
+      top < 0 ||
+      left + piece.width > this.colOf.length ||
+      top + piece.height > this.rowOf.length
+    )
+      throw new Error(
+        `piece ${piece.width}x${piece.height} at ${left},${top} is outside the ${this.colOf.length}x${this.rowOf.length} source`,
+      );
+    const s = piece.data;
+    for (let y = 0; y < piece.height; y++) {
+      const row = (this.rowOf[top + y] as number) * this.width;
+      let i = y * piece.width * 4;
+      for (let x = 0; x < piece.width; x++, i += 4) {
+        const o = row + (this.colOf[left + x] as number);
+        const k = o * 4;
+        this.sums[k] = (this.sums[k] as number) + (s[i] as number);
+        this.sums[k + 1] = (this.sums[k + 1] as number) + (s[i + 1] as number);
+        this.sums[k + 2] = (this.sums[k + 2] as number) + (s[i + 2] as number);
+        this.sums[k + 3] = (this.sums[k + 3] as number) + (s[i + 3] as number);
+        this.counts[o] = (this.counts[o] as number) + 1;
+      }
+    }
+  }
+
+  result(): Rgba {
+    const out = new Uint8Array(this.width * this.height * 4);
+    for (let o = 0; o < this.counts.length; o++) {
+      const n = this.counts[o] as number;
+      const k = o * 4;
+      out[k] = (this.sums[k] as number) / n;
+      out[k + 1] = (this.sums[k + 1] as number) / n;
+      out[k + 2] = (this.sums[k + 2] as number) / n;
+      out[k + 3] = (this.sums[k + 3] as number) / n;
+    }
+    return { data: out, width: this.width, height: this.height };
+  }
+}
+
+// For each source coordinate, the output box it averages into, by the same floor bounds `fitRgba`
+// iterates.
+function boxIndex(sourceLength: number, outLength: number): Int32Array {
+  const map = new Int32Array(sourceLength);
+  const f = sourceLength / outLength;
+  // Each box starts where the previous ended, which for d > 0 is floor(d * f), as in `fitRgba`.
+  let s = 0;
+  for (let d = 0; d < outLength; d++) {
+    const end = Math.floor((d + 1) * f);
+    for (; s < end; s++) map[s] = d;
+  }
+  return map;
+}
+
 // JPEG has no alpha, and decoders hand some back (an iOS background-removed HEIC): jpeg-js writes the
 // RGB under a = 0 verbatim, so a cutout would reach the model as a black rectangle. White, as every
 // viewer composites a cutout. BEFORE the resize, since the area average ignores alpha and would leave

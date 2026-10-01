@@ -771,7 +771,7 @@ export interface BrandingSetArgs {
 // branding_set: update the GLOBAL app identity colors. This is FLEET-level (NOT tenant-scoped), so
 // unlike the other write tools it does not require/accept a tenant target — it requires the
 // mcp:admin scope, the privileged tier only SUPER_ADMIN tokens hold (the role check below is
-// defense-in-depth, in case mcp:admin is ever granted more broadly). Logo/favicon are uploaded via
+// defense-in-depth, in case mcp:admin is ever granted more broadly). Logo/favicon/mark are uploaded via
 // branding_asset_set (below). The apply is audited at the fleet level (tenant_id NULL). Dry-run by default.
 export async function brandingSet(
   principal: VerifiedToken,
@@ -902,7 +902,7 @@ export interface BrandingAssetSetArgs {
   dry_run?: boolean;
 }
 
-// branding_asset_set: upload a GLOBAL branding asset (logo/favicon) over MCP. Same fleet-level gate as
+// branding_asset_set: upload a GLOBAL branding asset (logo/favicon/mark) over MCP. Same fleet-level gate as
 // branding_set (mcp:admin + SUPER_ADMIN). The image arrives base64-encoded; we rebuild a Blob — which
 // satisfies setBrandingAsset's structural { type, size, arrayBuffer() } — so the SAME service validation
 // (MIME allowlist + per-kind size cap) and disk+DB write run, no multipart needed. All the cheap
@@ -919,8 +919,8 @@ export async function brandingAssetSet(
   if (principal.role !== "SUPER_ADMIN") {
     return err("forbidden: global branding requires a SUPER_ADMIN token");
   }
-  if (args.kind !== "logo" && args.kind !== "favicon") {
-    return err('invalid kind: expected "logo" or "favicon"');
+  if (args.kind !== "logo" && args.kind !== "favicon" && args.kind !== "mark") {
+    return err('invalid kind: expected "logo", "favicon" or "mark"');
   }
   if (args.variant !== "dark" && args.variant !== "light") {
     return err('invalid variant: expected "dark" or "light"');

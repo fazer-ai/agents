@@ -16,6 +16,7 @@ import {
   BRANDING_CACHE_KEY,
   type BrandableKey,
   brandingAssetUrl,
+  pickMarkAsset,
   pickVariant,
   resolveBrandName,
   resolveBrandTokens,
@@ -173,9 +174,9 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
 
   const markUrl = useMemo(() => {
     if (!config) return null;
-    const variant = pickVariant(config.favicon, resolvedTheme);
-    return variant
-      ? brandingAssetUrl("favicon", variant, config.version)
+    const asset = pickMarkAsset(config, resolvedTheme);
+    return asset
+      ? brandingAssetUrl(asset.kind, asset.variant, config.version)
       : null;
   }, [config, resolvedTheme]);
 

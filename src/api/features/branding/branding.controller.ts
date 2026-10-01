@@ -15,8 +15,9 @@ import { getGlobalBranding, readBrandingAsset } from "./branding.service";
 // must load before any auth/tenant context (login/setup pages, the favicon). Writes are gated to
 // SUPER_ADMIN (identity is fleet-level, not tenant-level). Mounted under the /api group.
 const variantParams = t.Object({
-  kind: t.Union([t.Literal("logo"), t.Literal("favicon")], {
-    description: 'Asset kind: accepts "logo" or "favicon".',
+  kind: t.Union([t.Literal("logo"), t.Literal("favicon"), t.Literal("mark")], {
+    description:
+      'Asset kind: accepts "logo", "favicon" or "mark" (the square symbol the collapsed sidebar shows).',
   }),
   variant: t.Union([t.Literal("dark"), t.Literal("light")], {
     description: 'Theme variant: accepts "dark" or "light".',
@@ -70,13 +71,13 @@ export const brandingController = new Elysia({
         security: [],
         responses: {
           200: jsonResponse(
-            "The resolved global branding: brand name, color mode and tokens, which logo/favicon variants exist, and the cache-busting version.",
+            "The resolved global branding: brand name, color mode and tokens, which logo/favicon/mark variants exist, and the cache-busting version.",
           ),
         },
       },
     },
   )
-  // Public: serve a logo/favicon binary. Hardened headers neutralize a directly-opened SVG and
+  // Public: serve a logo/favicon/mark binary. Hardened headers neutralize a directly-opened SVG and
   // the version query (?v=) makes the long-lived cache safe to bust on change.
   .get(
     "/asset/:kind/:variant",
@@ -104,7 +105,7 @@ export const brandingController = new Elysia({
       detail: {
         ...doc(
           "Get branding asset",
-          "Serves a logo or favicon binary for the given kind and theme variant, long-cached and busted via the ?v= query. Public so assets load before any auth context.",
+          "Serves a logo, favicon or mark binary for the given kind and theme variant, long-cached and busted via the ?v= query. Public so assets load before any auth context.",
         ),
         security: [],
       },
@@ -172,7 +173,7 @@ export const brandingController = new Elysia({
       response: errors(400, 401, 403, 422),
     },
   )
-  // SUPER_ADMIN: upload a logo/favicon variant (multipart). The service re-checks type + size.
+  // SUPER_ADMIN: upload a logo/favicon/mark variant (multipart). The service re-checks type + size.
   .put(
     "/asset/:kind/:variant",
     async ({ getAuthUser, params, body }) =>
@@ -193,17 +194,17 @@ export const brandingController = new Elysia({
         file: t.File({
           maxSize: "2m",
           description:
-            "Logo or favicon file (multipart). MIME and per-kind size are re-validated server-side.",
+            "Logo, favicon or mark file (multipart). MIME and per-kind size are re-validated server-side.",
         }),
       }),
       detail: doc(
         "Upload branding asset",
-        "Uploads a logo or favicon binary for the given kind and theme variant (multipart). SUPER_ADMIN only.",
+        "Uploads a logo, favicon or mark binary for the given kind and theme variant (multipart). SUPER_ADMIN only.",
       ),
       response: errors(400, 401, 403, 422),
     },
   )
-  // SUPER_ADMIN: remove a logo/favicon variant.
+  // SUPER_ADMIN: remove a logo/favicon/mark variant.
   .delete(
     "/asset/:kind/:variant",
     async ({ getAuthUser, params }) =>
@@ -217,7 +218,7 @@ export const brandingController = new Elysia({
       params: variantParams,
       detail: doc(
         "Delete branding asset",
-        "Removes the stored logo or favicon binary for the given kind and theme variant. SUPER_ADMIN only.",
+        "Removes the stored logo, favicon or mark binary for the given kind and theme variant. SUPER_ADMIN only.",
       ),
       response: errors(400, 401, 403, 422),
     },

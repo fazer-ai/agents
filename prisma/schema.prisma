@@ -177,7 +177,7 @@ model Tenant {
 // so RLS would fail-closed. Writes are gated to SUPER_ADMIN at the service layer. Colors:
 // colorMode SIMPLE = one brandColor (the per-theme palette is derived on the client);
 // ADVANCED = explicit token maps per theme (tokensLight/tokensDark, keyed by BRANDABLE_KEYS).
-// Logo/favicon binaries live on disk (BRANDING_STORAGE_DIR); the *_key columns hold the stored
+// Logo/favicon/mark binaries live on disk (BRANDING_STORAGE_DIR); the *_key columns hold the stored
 // filename so the asset endpoint resolves the file + infers its content-type. updatedAt drives
 // cache-busting of the served asset URLs.
 model AppBranding {
@@ -191,6 +191,8 @@ model AppBranding {
   logoLightKey    String?  @map("logo_light_key")
   faviconDarkKey  String?  @map("favicon_dark_key")
   faviconLightKey String?  @map("favicon_light_key")
+  markDarkKey     String?  @map("mark_dark_key")
+  markLightKey    String?  @map("mark_light_key")
   siteUrl         String?  @map("site_url")
   supportEmail    String?  @map("support_email")
   hideGithubLink  Boolean  @default(false) @map("hide_github_link")

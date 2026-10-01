@@ -3235,7 +3235,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "branding_set",
       {
         description:
-          "Set the GLOBAL app identity (SUPER_ADMIN token only). Previews a diff and applies NOTHING unless dry_run is false. brand_name is the white-label display name (title + auth footer; null = default). color_mode SIMPLE uses brand_color (a #rrggbb hex); ADVANCED uses the tokens_light/tokens_dark maps. site_url (absolute http(s) URL) and support_email replace the sidebar-footer defaults (null/empty = back to the default); hide_github_link is a boolean — true removes the footer GitHub entry, false restores it. Logo and favicon are uploaded via branding_asset_set (or cropped in the UI at /admin/branding).",
+          "Set the GLOBAL app identity (SUPER_ADMIN token only). Previews a diff and applies NOTHING unless dry_run is false. brand_name is the white-label display name (title + auth footer; null = default). color_mode SIMPLE uses brand_color (a #rrggbb hex); ADVANCED uses the tokens_light/tokens_dark maps. site_url (absolute http(s) URL) and support_email replace the sidebar-footer defaults (null/empty = back to the default); hide_github_link is a boolean — true removes the footer GitHub entry, false restores it. Assets are uploaded via branding_asset_set (or cropped in the UI at /admin/branding).",
         inputSchema: {
           brand_name: z.string().nullable().optional(),
           color_mode: z.enum(["SIMPLE", "ADVANCED"]).optional(),
@@ -3265,9 +3265,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "branding_asset_set",
       {
         description:
-          'Upload a GLOBAL branding asset — a logo or favicon image (SUPER_ADMIN token only). kind is "logo" or "favicon"; variant is "dark" or "light" (one variant is enough — the app falls back to the other per theme). content_base64 is the raw image bytes, base64-encoded (a data: URL prefix is tolerated); mime is one of image/png, image/jpeg, image/webp, image/svg+xml, image/x-icon. Per-kind size caps apply (logo 1 MB, favicon 512 KB). Previews metadata and writes NOTHING unless dry_run is false. Cropping/preview is in the UI at /admin/branding.',
+          'Upload a GLOBAL branding asset — a logo, favicon or mark image (SUPER_ADMIN token only). kind is "logo", "favicon" or "mark" (collapsed-sidebar icon); variant is "dark" or "light" (one variant is enough — the app falls back to the other per theme). content_base64 is the raw image bytes, base64-encoded (a data: URL prefix is tolerated); mime is one of image/png, image/jpeg, image/webp, image/svg+xml, image/x-icon. Per-kind size caps apply (logo 1 MB, favicon and mark 512 KB). Previews metadata and writes NOTHING unless dry_run is false. Cropping/preview is in the UI at /admin/branding.',
         inputSchema: {
-          kind: z.enum(["logo", "favicon"]),
+          kind: z.enum(["logo", "favicon", "mark"]),
           variant: z.enum(["dark", "light"]),
           content_base64: z.string(),
           mime: z.string(),
@@ -3275,7 +3275,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
       },
       async (args: {
-        kind: "logo" | "favicon";
+        kind: "logo" | "favicon" | "mark";
         variant: "dark" | "light";
         content_base64: string;
         mime: string;

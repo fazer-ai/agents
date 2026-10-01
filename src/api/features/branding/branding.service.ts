@@ -27,7 +27,7 @@ import { clipText } from "@/lib/text";
 
 export const SINGLETON_ID = 1;
 
-export type AssetKind = "logo" | "favicon";
+export type AssetKind = "logo" | "favicon" | "mark";
 export type AssetVariant = "dark" | "light";
 export type ColorMode = "SIMPLE" | "ADVANCED";
 
@@ -36,6 +36,7 @@ export type ColorMode = "SIMPLE" | "ADVANCED";
 export const ASSET_MAX_BYTES: Record<AssetKind, number> = {
   logo: 1_048_576, // 1 MB
   favicon: 524_288, // 512 KB
+  mark: 524_288, // 512 KB
 };
 export const EXT_BY_TYPE: Record<string, string> = {
   "image/png": "png",
@@ -73,6 +74,8 @@ export interface GlobalBrandingDto {
   tokensDark: Record<string, string>;
   logo: { dark: boolean; light: boolean };
   favicon: { dark: boolean; light: boolean };
+  // The square symbol the collapsed sidebar shows in place of the logo.
+  mark: { dark: boolean; light: boolean };
   // Sidebar-footer links (white-label): the operator's own site and support inbox, plus the
   // option to drop the GitHub entry. null = use the built-in defaults.
   siteUrl: string | null;
@@ -93,6 +96,8 @@ export interface BrandingRow {
   logoLightKey: string | null;
   faviconDarkKey: string | null;
   faviconLightKey: string | null;
+  markDarkKey: string | null;
+  markLightKey: string | null;
   siteUrl: string | null;
   supportEmail: string | null;
   hideGithubLink: boolean;
@@ -107,6 +112,7 @@ export const DEFAULT_DTO: GlobalBrandingDto = {
   tokensDark: {},
   logo: { dark: false, light: false },
   favicon: { dark: false, light: false },
+  mark: { dark: false, light: false },
   siteUrl: null,
   supportEmail: null,
   hideGithubLink: false,
@@ -167,6 +173,7 @@ export function toDto(row: BrandingRow): GlobalBrandingDto {
       dark: row.faviconDarkKey !== null,
       light: row.faviconLightKey !== null,
     },
+    mark: { dark: row.markDarkKey !== null, light: row.markLightKey !== null },
     siteUrl: sanitizeSiteUrl(row.siteUrl),
     supportEmail: sanitizeSupportEmail(row.supportEmail),
     hideGithubLink: row.hideGithubLink === true,
@@ -278,9 +285,17 @@ export interface ColorUpdate {
 export function keyColumn(
   kind: AssetKind,
   variant: AssetVariant,
-): "logoDarkKey" | "logoLightKey" | "faviconDarkKey" | "faviconLightKey" {
+):
+  | "logoDarkKey"
+  | "logoLightKey"
+  | "faviconDarkKey"
+  | "faviconLightKey"
+  | "markDarkKey"
+  | "markLightKey" {
   if (kind === "logo")
     return variant === "dark" ? "logoDarkKey" : "logoLightKey";
+  if (kind === "mark")
+    return variant === "dark" ? "markDarkKey" : "markLightKey";
   return variant === "dark" ? "faviconDarkKey" : "faviconLightKey";
 }
 

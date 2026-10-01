@@ -60,11 +60,9 @@ export function groupNavItems(items: NavItem[]): NavGroup[] {
   return groups;
 }
 
-// t('nav.section.build', 'Build')
 // t('nav.section.integrations', 'Integrations')
 // t('nav.section.monitoring', 'Monitoring')
 // t('nav.section.system', 'System')
-const BUILD = { labelKey: "nav.section.build", defaultLabel: "Build" };
 const INTEGRATIONS = {
   labelKey: "nav.section.integrations",
   defaultLabel: "Integrations",
@@ -106,7 +104,6 @@ export const NAV_ITEMS: NavItem[] = [
     defaultLabel: "Agents",
     icon: Bot,
     requireAdmin: true,
-    section: BUILD,
   },
   {
     to: "/resources",
@@ -115,7 +112,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: LibraryBig,
     requireAdmin: true,
     badge: "approvals",
-    section: BUILD,
   },
   {
     to: "/channels",
@@ -123,7 +119,6 @@ export const NAV_ITEMS: NavItem[] = [
     defaultLabel: "Channels",
     icon: RadioTower,
     requireAdmin: true,
-    section: BUILD,
   },
   {
     to: "/webhooks",

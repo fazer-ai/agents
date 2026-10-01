@@ -16,8 +16,8 @@ export function Logo({
 }: {
   className?: string;
   // `mark` is the square symbol alone, for where the wordmark has no room (the collapsed
-  // sidebar). A custom brand supplies it through its favicon; a custom logo without one is
-  // cropped to its left edge, where a wordmark's symbol usually sits.
+  // sidebar). A custom brand supplies it through its icon or, without one, its favicon; a custom
+  // logo with neither is cropped to its left edge rather than showing the default brand's symbol.
   variant?: "full" | "mark";
 }) {
   const { logoUrl, markUrl, ready } = useBranding();

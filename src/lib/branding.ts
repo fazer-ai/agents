@@ -97,7 +97,7 @@ export function resolveBrandName(
 export const BRANDING_ASSET_BASE = "/api/v1/branding/asset";
 
 export function brandingAssetUrl(
-  kind: "logo" | "favicon",
+  kind: "logo" | "favicon" | "mark",
   variant: "dark" | "light",
   version: string,
 ): string {
@@ -112,6 +112,21 @@ export function pickVariant(
   if (theme === "dark")
     return present.dark ? "dark" : present.light ? "light" : null;
   return present.light ? "light" : present.dark ? "dark" : null;
+}
+
+type Presence = { dark: boolean; light: boolean };
+
+// The square symbol for `theme`: the uploaded icon, else the favicon, since both are square symbols
+// of the brand and an install branded before the icon existed keeps the one it already has. Null
+// when neither is stored, and the caller decides what stands in.
+export function pickMarkAsset(
+  config: { mark?: Presence; favicon: Presence },
+  theme: "light" | "dark",
+): { kind: "mark" | "favicon"; variant: "dark" | "light" } | null {
+  const mark = config.mark ? pickVariant(config.mark, theme) : null;
+  if (mark) return { kind: "mark", variant: mark };
+  const favicon = pickVariant(config.favicon, theme);
+  return favicon ? { kind: "favicon", variant: favicon } : null;
 }
 
 // Where the page's DECLARED icon links are kept, so a cleared favicon can restore them. The inline

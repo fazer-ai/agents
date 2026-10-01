@@ -3137,7 +3137,7 @@
         "security": [],
         "responses": {
           "200": {
-            "description": "The resolved global branding: brand name, color mode and tokens, which logo/favicon variants exist, and the cache-busting version."
+            "description": "The resolved global branding: brand name, color mode and tokens, which logo/favicon/mark variants exist, and the cache-busting version."
           }
         },
         "operationId": "getV1Branding"
@@ -3521,7 +3521,7 @@
           "Settings"
         ],
         "summary": "Get branding asset",
-        "description": "Serves a logo or favicon binary for the given kind and theme variant, long-cached and busted via the ?v= query. Public so assets load before any auth context.",
+        "description": "Serves a logo, favicon or mark binary for the given kind and theme variant, long-cached and busted via the ?v= query. Public so assets load before any auth context.",
         "security": [],
         "parameters": [
           {
@@ -3532,7 +3532,8 @@
               "type": "string",
               "enum": [
                 "logo",
-                "favicon"
+                "favicon",
+                "mark"
               ]
             }
           },
@@ -3636,7 +3637,7 @@
           "Settings"
         ],
         "summary": "Upload branding asset",
-        "description": "Uploads a logo or favicon binary for the given kind and theme variant (multipart). SUPER_ADMIN only.",
+        "description": "Uploads a logo, favicon or mark binary for the given kind and theme variant (multipart). SUPER_ADMIN only.",
         "parameters": [
           {
             "name": "kind",
@@ -3646,7 +3647,8 @@
               "type": "string",
               "enum": [
                 "logo",
-                "favicon"
+                "favicon",
+                "mark"
               ]
             }
           },
@@ -3686,7 +3688,7 @@
                 "properties": {
                   "file": {
                     "default": "File",
-                    "description": "Logo or favicon file (multipart). MIME and per-kind size are re-validated server-side.",
+                    "description": "Logo, favicon or mark file (multipart). MIME and per-kind size are re-validated server-side.",
                     "type": "string",
                     "format": "binary"
                   }
@@ -3702,7 +3704,7 @@
                 "properties": {
                   "file": {
                     "default": "File",
-                    "description": "Logo or favicon file (multipart). MIME and per-kind size are re-validated server-side.",
+                    "description": "Logo, favicon or mark file (multipart). MIME and per-kind size are re-validated server-side.",
                     "type": "string",
                     "format": "binary"
                   }
@@ -3718,7 +3720,7 @@
                 "properties": {
                   "file": {
                     "default": "File",
-                    "description": "Logo or favicon file (multipart). MIME and per-kind size are re-validated server-side.",
+                    "description": "Logo, favicon or mark file (multipart). MIME and per-kind size are re-validated server-side.",
                     "type": "string",
                     "format": "binary"
                   }
@@ -3840,7 +3842,7 @@
           "Settings"
         ],
         "summary": "Delete branding asset",
-        "description": "Removes the stored logo or favicon binary for the given kind and theme variant. SUPER_ADMIN only.",
+        "description": "Removes the stored logo, favicon or mark binary for the given kind and theme variant. SUPER_ADMIN only.",
         "parameters": [
           {
             "name": "kind",
@@ -3850,7 +3852,8 @@
               "type": "string",
               "enum": [
                 "logo",
-                "favicon"
+                "favicon",
+                "mark"
               ]
             }
           },

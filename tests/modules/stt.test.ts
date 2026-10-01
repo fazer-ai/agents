@@ -435,10 +435,11 @@ describe.skipIf(!dbUp)("stt", () => {
   });
   // The playground shows the operator an empty transcription for silence and for a withheld one alike;
   // the stt line, with the score, is what tells them apart.
-  test("a playground transcription logs its confidence on the stt line, withheld or not", async () => {
+  test("a playground transcription logs its confidence on the stt line, withheld, kept or empty", async () => {
     const lowThenHigh = [
       { text: "Das ist gut.", logprobs: [{ token: "x", logprob: -2.5 }] },
       { text: "Oi, tudo bem?", logprobs: [{ token: "x", logprob: -0.05 }] },
+      { text: "" },
     ];
     const turnIds: string[] = [];
     const out: string[] = [];
@@ -462,7 +463,7 @@ describe.skipIf(!dbUp)("stt", () => {
         }),
       );
     }
-    expect(out).toEqual(["", "Oi, tudo bem?"]);
+    expect(out).toEqual(["", "Oi, tudo bem?", ""]);
     const details: unknown[] = [];
     for (const turnId of turnIds) {
       let rows: Array<{ detail: unknown }> = [];
@@ -482,6 +483,8 @@ describe.skipIf(!dbUp)("stt", () => {
         withheld: "low_confidence",
       },
       { signal: "token_logprob", meanLogprob: -0.05 },
+      // Nothing heard: no confidence to report, and the line still says why the note is empty.
+      { empty: true },
     ]);
   });
 });

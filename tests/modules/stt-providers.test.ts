@@ -33,7 +33,7 @@ describe("STT providers", () => {
       baseURL: null,
       fetchImpl,
     });
-    expect(text).toBe("olá mundo");
+    expect(text).toEqual({ text: "olá mundo" });
     expect(calls[0]?.url).toBe(
       "https://api.openai.com/v1/audio/transcriptions",
     );
@@ -74,7 +74,7 @@ describe("STT providers", () => {
       baseURL: null,
       fetchImpl,
     });
-    expect(text).toBe("transcrição");
+    expect(text).toEqual({ text: "transcrição" });
     expect(calls[0]?.url).toBe("https://api.elevenlabs.io/v1/speech-to-text");
     const headers = calls[0]?.init.headers as Record<string, string>;
     expect(headers["xi-api-key"]).toBe("xi");
@@ -97,7 +97,7 @@ describe("STT providers", () => {
       baseURL: null,
       fetchImpl,
     });
-    expect(text).toBe("olá do gemini");
+    expect(text).toEqual({ text: "olá do gemini" });
     expect(calls[0]?.url).toBe(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
     );
@@ -140,7 +140,7 @@ describe("STT providers", () => {
       baseURL: null,
       fetchImpl,
     });
-    expect(text).toBe("olá da openrouter");
+    expect(text).toEqual({ text: "olá da openrouter" });
     expect(calls[0]?.url).toBe(
       "https://openrouter.ai/api/v1/audio/transcriptions",
     );
@@ -151,5 +151,195 @@ describe("STT providers", () => {
     expect(body.input_audio.format).toBe("ogg");
     expect(body.language).toBe("pt");
     expect(typeof body.input_audio.data).toBe("string");
+  });
+});
+
+// What the provider says about its own certainty decides whether the text is the customer's. The
+// numbers come from the live measurement in docs/stt.md: silence and noise come back as fluent text
+// in any language and script, and only the confidence tells them apart from speech.
+describe("STT confidence", () => {
+  const req = (model: string, fetchImpl: typeof fetch, provider = "openai") =>
+    getSttProvider(provider)?.transcribe({
+      audio,
+      mimeType: "audio/ogg",
+      language: "pt",
+      model,
+      apiKey: "sk-x",
+      baseURL: provider === "openai" ? null : "https://stt.example/v1",
+      fetchImpl,
+    });
+  const tokens = (...lps: number[]) =>
+    lps.map((logprob, i) => ({ token: `t${i}`, logprob, bytes: [] }));
+
+  test("a gpt-4o transcription asks for its token logprobs", async () => {
+    const { calls, fetchImpl } = mockFetch({
+      text: "Oi, tudo bem?",
+      logprobs: tokens(-0.01, -0.03),
+    });
+    const out = await req("gpt-4o-transcribe", fetchImpl);
+    expect(out).toEqual({
+      text: "Oi, tudo bem?",
+      confidence: { signal: "token_logprob", meanLogprob: -0.02 },
+    });
+    const form = calls[0]?.init.body as FormData;
+    expect(form.getAll("include[]")).toEqual(["logprobs"]);
+    expect(form.get("response_format")).toBe("json");
+  });
+
+  test("a gpt-4o transcription the model was unsure of is withheld, whatever its script", async () => {
+    for (const text of ["Das ist gut.", "οικογένεια."]) {
+      const { fetchImpl } = mockFetch({ text, logprobs: tokens(-1.2, -2.4) });
+      const out = await req("gpt-4o-transcribe", fetchImpl);
+      expect(out).toEqual({
+        text: "",
+        confidence: { signal: "token_logprob", meanLogprob: -1.8 },
+        withheld: true,
+      });
+    }
+  });
+
+  test("a confident transcription in another script passes: script is not the signal", async () => {
+    const { fetchImpl } = mockFetch({
+      text: "Привет, как дела?",
+      logprobs: tokens(-0.05, -0.11),
+    });
+    expect(await req("gpt-4o-mini-transcribe", fetchImpl)).toEqual({
+      text: "Привет, как дела?",
+      confidence: { signal: "token_logprob", meanLogprob: -0.08 },
+    });
+  });
+
+  test("a Whisper transcription asks for its segments and drops the ones with no speech", async () => {
+    const { calls, fetchImpl } = mockFetch({
+      text: "Oi, boa tarde. Legendas pela comunidade Amara.org",
+      segments: [
+        { text: "Oi, boa tarde.", no_speech_prob: 0.01, avg_logprob: -0.3 },
+        {
+          text: " Legendas pela comunidade Amara.org",
+          no_speech_prob: 0.85,
+          avg_logprob: -0.5,
+        },
+      ],
+    });
+    const out = await req("whisper-large-v3", fetchImpl, "openai-compatible");
+    expect(out).toEqual({
+      text: "Oi, boa tarde.",
+      confidence: { signal: "segments", segments: 2, droppedSegments: 1 },
+    });
+    const form = calls[0]?.init.body as FormData;
+    expect(form.get("response_format")).toBe("verbose_json");
+    expect(form.getAll("include[]")).toEqual([]);
+  });
+
+  test("a Whisper transcription whose segments are all speech is taken as the provider wrote it", async () => {
+    const { fetchImpl } = mockFetch({
+      text: "Oi, boa tarde. Tudo bem?",
+      segments: [
+        { text: " Oi, boa tarde.", no_speech_prob: 0.01, avg_logprob: -0.3 },
+        { text: " Tudo bem?", no_speech_prob: 0.02, avg_logprob: -0.2 },
+      ],
+    });
+    expect(await req("whisper-1", fetchImpl)).toEqual({
+      text: "Oi, boa tarde. Tudo bem?",
+      confidence: { signal: "segments", segments: 2, droppedSegments: 0 },
+    });
+  });
+
+  test("another vendor's transcribe model on a compatible server is asked as before", async () => {
+    const { calls, fetchImpl } = mockFetch({ text: "olá" });
+    await req("voxtral-mini-transcribe", fetchImpl, "openai-compatible");
+    const form = calls[0]?.init.body as FormData;
+    expect(form.get("response_format")).toBeNull();
+    expect(form.getAll("include[]")).toEqual([]);
+  });
+
+  test("segments a compatible server trimmed keep their word boundaries", async () => {
+    const segs = [
+      { text: "Quero marcar", no_speech_prob: 0.01, avg_logprob: -0.2 },
+      { text: "uma consulta", no_speech_prob: 0.02, avg_logprob: -0.3 },
+    ];
+    const kept = mockFetch({
+      text: "Quero marcar uma consulta",
+      segments: segs,
+    });
+    expect(
+      (await req("whisper-large-v3", kept.fetchImpl, "openai-compatible"))
+        ?.text,
+    ).toBe("Quero marcar uma consulta");
+    const dropped = mockFetch({
+      text: "Quero marcar uma consulta Amara.org",
+      segments: [
+        ...segs,
+        { text: "Amara.org", no_speech_prob: 0.9, avg_logprob: -0.5 },
+      ],
+    });
+    expect(
+      (await req("whisper-large-v3", dropped.fetchImpl, "openai-compatible"))
+        ?.text,
+    ).toBe("Quero marcar uma consulta");
+  });
+
+  test("with nothing dropped, the provider's own text is kept, spacing included", async () => {
+    // Languages written without spaces: a rebuilt text would put one between the segments.
+    const { fetchImpl } = mockFetch({
+      text: "你好世界",
+      segments: [
+        { text: "你好", no_speech_prob: 0.01, avg_logprob: -0.2 },
+        { text: "世界", no_speech_prob: 0.01, avg_logprob: -0.2 },
+      ],
+    });
+    expect((await req("whisper-1", fetchImpl))?.text).toBe("你好世界");
+  });
+
+  test("a Whisper segment the model was unsure of is dropped too", async () => {
+    const { fetchImpl } = mockFetch({
+      text: "Que Deus te abençoe.",
+      segments: [
+        {
+          text: "Que Deus te abençoe.",
+          no_speech_prob: 0.44,
+          avg_logprob: -1.42,
+        },
+      ],
+    });
+    expect(await req("whisper-1", fetchImpl)).toEqual({
+      text: "",
+      confidence: { signal: "segments", segments: 1, droppedSegments: 1 },
+      withheld: true,
+    });
+  });
+
+  test("a server that refuses the confidence request is asked again without it", async () => {
+    const calls: FormData[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      const form = init.body as FormData;
+      calls.push(form);
+      if (form.get("response_format") === "verbose_json") {
+        return new Response("{}", { status: 400 });
+      }
+      return new Response(JSON.stringify({ text: "olá" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    expect(await req("whisper-1", fetchImpl, "openai-compatible")).toEqual({
+      text: "olá",
+    });
+    expect(calls.map((f) => f.get("response_format"))).toEqual([
+      "verbose_json",
+      null,
+    ]);
+  });
+
+  test("a model with no known confidence shape is asked exactly as before, and nothing is withheld", async () => {
+    const { calls, fetchImpl } = mockFetch({ text: "Ελένη, até amanhã" });
+    expect(
+      await req("distil-large-v3-pt", fetchImpl, "openai-compatible"),
+    ).toEqual({ text: "Ελένη, até amanhã" });
+    const form = calls[0]?.init.body as FormData;
+    expect(form.get("response_format")).toBeNull();
+    expect(form.getAll("include[]")).toEqual([]);
+  });
+
+  test("a response that carries no confidence is taken as text", async () => {
+    const { fetchImpl } = mockFetch({ text: "olá" });
+    expect(await req("gpt-4o-transcribe", fetchImpl)).toEqual({ text: "olá" });
   });
 });

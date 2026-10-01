@@ -18,7 +18,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
-import { getSttProvider } from "./providers";
+import { getSttProvider, type SttResult } from "./providers";
 import { readSttConfig, type SttConfig } from "./settings";
 
 // Speech-to-text orchestration: download the voice note, transcribe via the configured provider
@@ -102,8 +102,9 @@ export async function transcribeInboundAudio(
     params.tenantId,
     params.instanceId,
     params.messageId,
-  )?.transcribedText;
-  if (stashed) return stashed;
+  );
+  if (stashed?.transcribedText) return stashed.transcribedText;
+  if (stashed?.transcriptionEmpty) return null;
   return shareInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
     () => transcribeOnce(params),
@@ -194,10 +195,14 @@ async function transcribeOnce(
     }
     throw err;
   }
-  const raw = await withFlowStage(
+  const result = await withFlowStage(
     params.flow,
     "stt",
-    { provider: cfg.provider, model: cfg.model || provider.defaultModel },
+    {
+      provider: cfg.provider,
+      model: cfg.model || provider.defaultModel,
+      detailOf: confidenceDetail,
+    },
     () =>
       provider.transcribe({
         audio: bytes,
@@ -209,8 +214,18 @@ async function transcribeOnce(
         fetchImpl: params.deps?.fetchImpl ?? fetch,
       }),
   );
-  const text = cleanTranscription(raw);
-  if (!text) return null;
+  const text = cleanTranscription(result.text);
+  if (!text) {
+    stashMediaAnnotation(
+      {
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        messageId: params.messageId,
+      },
+      { transcriptionEmpty: true },
+    );
+    return null;
+  }
 
   // NOTE: stash BEFORE the write-back: on upstream Chatwoot (no fork meta route) the in-process
   // overlay is the only reader that will ever see this transcription.
@@ -255,6 +270,15 @@ async function transcribeOnce(
   return text;
 }
 
+// The stt line's record of the confidence the provider reported and what it decided, numbers only:
+// the transcription itself is never logged, withheld or not.
+function confidenceDetail(r: SttResult): Record<string, unknown> {
+  if (!r.confidence) return {};
+  return r.withheld
+    ? { ...r.confidence, withheld: "low_confidence" }
+    : { ...r.confidence };
+}
+
 export interface PlaygroundTranscribeParams {
   // The request's context, not a rebuilt one: rebuilding would tell `runScopedOn`'s unknown-tenant
   // check that a stale selector was internal, answering "agent not found" instead of a refusal naming
@@ -268,6 +292,9 @@ export interface PlaygroundTranscribeParams {
   settings?: unknown;
   base?: PrismaClient;
   deps?: { fetchImpl?: typeof fetch };
+  // The playground's flow context: the stt line is what tells the operator a withheld transcription
+  // from silence.
+  flow?: FlowContext;
 }
 
 // Transcribe an uploaded audio file with the agent's configured STT provider, for the playground.
@@ -328,17 +355,27 @@ export async function transcribePlaygroundAudio(
     );
   }
 
-  let raw: string;
+  let result: SttResult;
   try {
-    raw = await provider.transcribe({
-      audio: params.audio,
-      mimeType: params.mimeType,
-      language: cfg.language,
-      model: cfg.model || provider.defaultModel,
-      apiKey: entry.secret,
-      baseURL: effectiveBaseURL,
-      fetchImpl: params.deps?.fetchImpl ?? fetch,
-    });
+    result = await withFlowStage(
+      params.flow,
+      "stt",
+      {
+        provider: cfg.provider,
+        model: cfg.model || provider.defaultModel,
+        detailOf: confidenceDetail,
+      },
+      () =>
+        provider.transcribe({
+          audio: params.audio,
+          mimeType: params.mimeType,
+          language: cfg.language,
+          model: cfg.model || provider.defaultModel,
+          apiKey: entry.secret,
+          baseURL: effectiveBaseURL,
+          fetchImpl: params.deps?.fetchImpl ?? fetch,
+        }),
+    );
   } catch (e) {
     const detail = clipText(e instanceof Error ? e.message : String(e), 300);
     throw new AppError(
@@ -348,5 +385,5 @@ export async function transcribePlaygroundAudio(
       { detail },
     );
   }
-  return cleanTranscription(raw);
+  return cleanTranscription(result.text);
 }

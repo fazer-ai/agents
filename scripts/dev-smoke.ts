@@ -31,6 +31,14 @@ const DEV_PROBES: Probe[] = [
   { path: "/settings/profile", status: 200, contentType: /^text\/html/ },
   { path: "/favicon-dark.png", status: 200, contentType: /^image\/png/ },
   { path: "/assets/logo.png", status: 200, contentType: /^image\/png/ },
+  // NOTE: the /assets/ carve-out hands a missing file to Elysia, whose SPA catch-all must not answer
+  // it with a 200: a broken reference has to look broken here, as it does in production.
+  {
+    path: "/assets/does-not-exist.png",
+    status: 404,
+    contentType: /^text\/plain/,
+    cacheControl: "no-store",
+  },
   { path: "/api/health", status: 200, contentType: /^application\/json/ },
   { path: "/api/nope", status: 404, contentType: /^application\/json/ },
   { path: "/api", status: 404, contentType: /^application\/json/ },

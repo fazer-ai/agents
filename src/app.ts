@@ -11,6 +11,7 @@ import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { schemaRefusal } from "@/api/lib/schema-refusal";
 import {
   applyStaticCacheControl,
+  developmentIndexHandler,
   productionIndexHandler,
 } from "@/api/lib/static-cache";
 import { errorDetail, isFrameworkRefusal } from "@/api/lib/unhandled-error";
@@ -40,6 +41,13 @@ const indexHandler =
   config.env === "production"
     ? productionIndexHandler("dist/index.html")
     : (await import("@/public/index.html")).default;
+
+// Elysia's own `/*`. In dev the document goes out through Bun's native routes (below), so this one
+// answers only what the carve-outs hand back: a missing asset gets the production 404.
+const spaCatchAll =
+  config.env === "production"
+    ? indexHandler
+    : developmentIndexHandler(indexHandler);
 
 // Since Elysia 1.4.30 an HTMLBundle reaches Bun's native router only on a route with no hook
 // (createNativeStaticHandler checks the pipeline before isHTMLBundle), and every route here inherits
@@ -215,7 +223,7 @@ export async function buildApp() {
     .get("/.well-known/oauth-protected-resource/*", () =>
       protectedResourceMetadata(),
     )
-    .get("/*", indexHandler);
+    .get("/*", spaCatchAll);
 
   app.use(
     cors(

@@ -65,23 +65,33 @@ export function applyStaticCacheControl({
   }
 }
 
+type CatchAllContext = {
+  path: string;
+  set: { status?: number | string; headers: Record<string, string | number> };
+};
+
+// A missing file is a 404 nothing may store, in either mode: a broken reference has to look broken.
+function missingAsset(set: CatchAllContext["set"]): string {
+  set.status = 404;
+  set.headers["cache-control"] = MISSING_ASSET_CACHE_CONTROL;
+  return "Not Found";
+}
+
 // The production SPA catch-all. staticPlugin registers only the files that exist, so every other
 // GET lands here: a deep route gets the shell, revalidated on every load so a deploy is picked up,
 // and a missing file gets a 404 nothing may store, instead of HTML under a `.js` URL.
 export function productionIndexHandler(documentPath: string) {
-  return ({
-    path,
-    set,
-  }: {
-    path: string;
-    set: { status?: number | string; headers: Record<string, string | number> };
-  }) => {
-    if (isStaticAssetPath(path)) {
-      set.status = 404;
-      set.headers["cache-control"] = MISSING_ASSET_CACHE_CONTROL;
-      return "Not Found";
-    }
+  return ({ path, set }: CatchAllContext) => {
+    if (isStaticAssetPath(path)) return missingAsset(set);
     set.headers["cache-control"] = DOCUMENT_CACHE_CONTROL;
     return Bun.file(documentPath);
   };
+}
+
+// The development catch-all behind Bun's native routes. A browser gets the document from the native
+// `/*` route, so what reaches this one is a carved-out path no file matched, like a missing
+// `/assets/` file, which gets the production 404 instead of the bundle serialized as a 200.
+export function developmentIndexHandler<T>(document: T) {
+  return ({ path, set }: CatchAllContext): string | T =>
+    isStaticAssetPath(path) ? missingAsset(set) : document;
 }

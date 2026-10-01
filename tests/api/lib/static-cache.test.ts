@@ -7,6 +7,7 @@ import { Elysia } from "elysia";
 import {
   applyStaticCacheControl,
   cacheControlFor,
+  developmentIndexHandler,
   isStaticAssetPath,
   productionIndexHandler,
 } from "@/api/lib/static-cache";
@@ -149,4 +150,31 @@ describe("productionIndexHandler", async () => {
       expect(res.headers.get("cache-control")).toBe("no-store");
     },
   );
+});
+
+// In dev the browser's document comes from Bun's native routes, so Elysia's `/*` sees only what the
+// carve-outs hand back. Run through the app's own after-handle, because that hook is what stamped a
+// missing asset with a day of cache before.
+describe("developmentIndexHandler", () => {
+  const app = new Elysia()
+    .onAfterHandle(applyStaticCacheControl)
+    .get("/*", developmentIndexHandler("the document"));
+  const get = (path: string) =>
+    app.handle(new Request(`http://localhost${path}`));
+
+  test.each(["/assets/does-not-exist.png", "/assets/fonts/nope.woff2"])(
+    "a missing file %s is a 404 nothing may store",
+    async (path) => {
+      const res = await get(path);
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe("Not Found");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+    },
+  );
+
+  test("a route still gets the document", async () => {
+    const res = await get("/settings/profile");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("the document");
+  });
 });

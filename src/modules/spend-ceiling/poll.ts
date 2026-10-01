@@ -16,11 +16,13 @@ import { claimContactAuthNotice } from "@/modules/contact-auth/state";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { wantsSpendPoll } from "./arm";
 import { monthStart } from "./decide";
 import {
   LANGFUSE_NOT_CONFIGURED,
   readTenantSpendCeiling,
   SPEND_CEILING_WARN_COOLDOWN_MS,
+  spendPollIntervalMs,
 } from "./service";
 import type { SpendCeilingConfig } from "./settings";
 
@@ -35,6 +37,10 @@ export interface PollDeps {
   fetchFn?: typeof fetch;
   // Injectable clock: the month, the window's upper edge and `polledAt` all come from it.
   now?: Date;
+  // Whether a ceiling is enforced on the figure. Off, the poll only keeps the console's number, so
+  // what it announces about the ceiling itself (a failing read, a project switch) stays on the card.
+  // Default on.
+  enforced?: boolean;
 }
 
 export type PollOutcome =
@@ -221,7 +227,7 @@ async function writeSuccess(
   seen: MonthCost,
   at: Date,
   projectKey: string,
-): Promise<{ switched: boolean }> {
+): Promise<{ switched: boolean; known: string[] }> {
   return withEntityLock(
     db,
     snapshotLockKey(tenantId, source, month),
@@ -300,7 +306,8 @@ async function writeSuccess(
         create: { tenantId, source, monthStart: month, ...figure },
         update: figure,
       });
-      return { switched };
+      // The row's list already holds the carried names (see `figure` above).
+      return { switched, known: asStringList(prev?.unpricedModels) };
     },
   );
 }
@@ -412,6 +419,26 @@ function announceProjectSwitch(
   );
 }
 
+// A MODEL LANGFUSE HAS NO PRICE FOR is announced the first time the month's row names it: every call
+// to it is left out of the figure, and the fix (a model definition in Langfuse) is the operator's.
+// Once per model per month, because the row keeps the name and the next poll finds it known.
+function announceUnpricedModels(
+  tenantId: bigint,
+  models: string[],
+  base: PrismaClient,
+): void {
+  emitFlowEvent(
+    { tenantId, turnId: randomUUID(), source: "inbox", base },
+    {
+      stage: "spend_ceiling",
+      level: "warn",
+      status: "ok",
+      detail: { subject: "unpriced", models },
+      errorMessage: `Langfuse has no price for ${models.join(", ")}: its calls are left out of the month's cost until a model definition in Langfuse (Settings > Models) prices them`,
+    },
+  );
+}
+
 // Reads the month's cost for both sources into the snapshot. Never throws: every outcome is on the
 // row, and the caller (the job) has nothing to do with an exception but die.
 export async function pollTenantSpend(
@@ -421,6 +448,7 @@ export async function pollTenantSpend(
   const base = deps.base ?? basePrisma;
   const fetchFn = deps.fetchFn ?? fetch;
   const now = deps.now ?? new Date();
+  const enforced = deps.enforced ?? true;
   const month = monthStart(now);
   const ctx = sysCtx(tenantId);
   // Held outside the try so the failure path can ask whether the credential it failed under is
@@ -486,6 +514,9 @@ export async function pollTenantSpend(
         const current = await resolveLangfuseConfig(db, tenantId);
         if (!current || !sameCredential(current, resolved)) return null;
         let switched = false;
+        // Known on EITHER half: a model first seen in the playground is not news when it reaches the
+        // inbox.
+        const known = new Set<string>();
         for (const [i, source] of SOURCES.entries()) {
           const cost = seen[i];
           if (!cost) continue;
@@ -499,8 +530,16 @@ export async function pollTenantSpend(
             projectKey,
           );
           if (r.switched) switched = true;
+          for (const m of r.known) known.add(m);
         }
-        return { switched };
+        const seenUnpriced = union(
+          seen.flatMap((c) => c?.unpricedModels ?? []),
+          [],
+        );
+        return {
+          switched,
+          newlyUnpriced: seenUnpriced.filter((m) => !known.has(m)),
+        };
       }),
     );
     if (written === null) {
@@ -510,8 +549,11 @@ export async function pollTenantSpend(
       );
       return { status: "superseded" };
     }
-    if (written.switched) {
+    if (written.switched && enforced) {
       announceProjectSwitch(tenantId, apiBaseOf(resolved), base);
+    }
+    if (written.newlyUnpriced.length > 0) {
+      announceUnpricedModels(tenantId, written.newlyUnpriced, base);
     }
     return { status: "polled" };
   } catch (err) {
@@ -576,14 +618,15 @@ export async function pollTenantSpend(
         "spend ceiling poll: the failure itself could not be recorded",
       );
     }
-    if (current) announcePollFailure(tenantId, error, base);
+    if (current && enforced) announcePollFailure(tenantId, error, base);
     if (outcome === "failed") return { status: "failed", error };
     return { status: outcome };
   }
 }
 
-// The job. A tenant whose ceiling is off ends the loop (the arm side re-creates it on the next
-// save); everyone else polls and re-arms at the configured cadence. It never throws, so the
+// The job. With the ceiling on it polls and re-arms at the configured cadence. With it off it still
+// polls, hourly, while the Langfuse block is on (a credential still pending is asked again each hour);
+// a tenant with neither ends the loop (the arm side re-creates it on the next save of either block). It never throws, so the
 // scheduler's ladder never reaches DEAD over a Langfuse that is down for an hour: `JOB_DEATH_LEVEL`
 // says a death here is an error precisely because it would mean the ceiling silently froze.
 export async function spendPollHandler(
@@ -591,9 +634,11 @@ export async function spendPollHandler(
   base: PrismaClient = basePrisma,
   deps: Omit<PollDeps, "base"> = {},
 ): Promise<JobResult> {
-  const rearm = (): JobResult => ({
+  const rearm = (
+    intervalMs = config.spendCeiling.pollIntervalMs,
+  ): JobResult => ({
     outcome: "reschedule",
-    runAt: new Date(Date.now() + config.spendCeiling.pollIntervalMs),
+    runAt: new Date(Date.now() + intervalMs),
   });
   // The settings read is a failure like any other: it sits before the poll's own try, so it
   // re-arms and asks again next period. "done" is reserved for a ceiling READ as off.
@@ -607,9 +652,19 @@ export async function spendPollHandler(
     );
     return rearm();
   }
-  if (!cfg.enabled) return { outcome: "done" };
-  await pollTenantSpend(job.tenantId, { base, ...deps });
-  return rearm();
+  const outcome = await pollTenantSpend(job.tenantId, {
+    base,
+    ...deps,
+    enforced: cfg.enabled,
+  });
+  if (
+    !cfg.enabled &&
+    outcome.status === LANGFUSE_NOT_CONFIGURED &&
+    !(await wantsSpendPoll(job.tenantId, base).catch(() => true))
+  ) {
+    return { outcome: "done" };
+  }
+  return rearm(spendPollIntervalMs(cfg.enabled));
 }
 
 let registered = false;

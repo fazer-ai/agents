@@ -1,7 +1,7 @@
 // The local price table checked against Langfuse's, per model. Two independent tables disagreeing
 // about a model means one is wrong or the tenant pays something neither knows. Computed at read time
-// beside the card's Langfuse query: the spend ceiling's poll only runs while a ceiling is on and folds
-// models into totals, so a check stored with its snapshot would exist for almost nobody.
+// beside the card's Langfuse query, over the card's own period and sources: the spend ceiling's poll
+// reads only the calendar month and folds the models into totals.
 
 // A model is flagged only when the two figures part by MORE than this fraction of the larger one...
 export const COST_DIVERGENCE_RELATIVE = 0.2;

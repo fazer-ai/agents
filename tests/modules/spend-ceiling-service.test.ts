@@ -6,9 +6,11 @@ import {
   expect,
   test,
 } from "bun:test";
+
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   readSpendSnapshot,
@@ -534,6 +536,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
           monthlyInboxUsd: 20,
         },
       });
+      expect(usage.enabled).toBe(true);
       expect(usage.periodStart).toBe("2026-08-01T00:00:00.000Z");
       expect(usage.langfuseConfigured).toBe(false);
       expect(usage.legacyTokens).toBeNull();
@@ -563,6 +566,30 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
         state: "allowed",
         ledgerCalls: 0,
       });
+    });
+
+    // With the ceiling off the poll runs hourly, so a figure is stale only past three of THOSE
+    // periods: judged on the ceiling's cadence it would read stale nearly all the time.
+    test("with the ceiling off it says so, and judges staleness on the hourly cadence", async () => {
+      const polledAt = new Date("2026-08-15T11:58:00Z").getTime();
+      const off = {
+        ...(await readTenantSpendCeiling(tenantId, appDb)),
+        enabled: false,
+      };
+      const idle = Math.max(config.spendCeiling.pollIntervalMs, 3_600_000);
+      const read = (at: number) =>
+        spendCeilingUsage({
+          ctx: ctx(),
+          base: appDb,
+          now: new Date(at),
+          cfg: off,
+        });
+      const soon = await read(polledAt + SPEND_SNAPSHOT_STALE_AFTER_MS + 1);
+      expect(soon.enabled).toBe(false);
+      expect(soon.pollIntervalMs).toBe(idle);
+      expect(soon.entries.find((e) => e.source === "inbox")?.stale).toBe(false);
+      const late = await read(polledAt + 3 * idle + 1);
+      expect(late.entries.find((e) => e.source === "inbox")?.stale).toBe(true);
     });
 
     // NOTE: WHAT OF THE FIGURE CAME FROM A PROJECT THE TENANT LEFT. The carry is what makes a month's

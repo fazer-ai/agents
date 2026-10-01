@@ -94,6 +94,7 @@ const settings = {
 };
 
 const baseUsage = () => ({
+  enabled: true,
   periodStart: "2026-08-01T00:00:00.000Z",
   langfuseConfigured: true,
   legacyTokens: null,
@@ -315,6 +316,117 @@ describe("the spend ceiling card", () => {
       expect(has("has not been read yet")).toBe(true);
     });
     expect(has("failing since")).toBe(false);
+  });
+
+  // An unread month claims no pricing coverage: nothing read is not "Langfuse priced none of it".
+  test("a month nobody has polled yet claims nothing about what Langfuse priced", async () => {
+    const usage = baseUsage();
+    usage.entries[0] = entry({
+      source: "inbox",
+      ceilingUsd: 20,
+      polledAt: null,
+      stale: true,
+      ledgerCalls: 83,
+    });
+    installFetchStub(usage);
+    renderCard();
+    await waitFor(() => {
+      expect(has("has not been read yet")).toBe(true);
+    });
+    expect(has("priced 0 of the 83 calls")).toBe(false);
+  });
+
+  // With the ceiling off the card keeps the figure and what is true of it, and says nothing about a
+  // gate that is not there.
+  test("with the ceiling off the figure stands alone, with no sentence about enforcement", async () => {
+    const usage = {
+      ...baseUsage(),
+      enabled: false,
+      pollIntervalMs: 3_600_000,
+      entries: [
+        entry({
+          source: "inbox",
+          usedUsd: 3.97,
+          tracedCalls: 40,
+          costedCalls: 25,
+          ledgerCalls: 40,
+          unpricedModels: ["gpt-6-luna"],
+        }),
+        entry({
+          source: "playground",
+          polledAt: null,
+          stale: true,
+          ledgerCalls: 83,
+        }),
+      ],
+    };
+    installFetchStub(usage);
+    renderCard({ ...settings, enabled: false });
+    await waitFor(() => {
+      expect(has("$3.97")).toBe(true);
+    });
+    expect(has("(no ceiling)")).toBe(false);
+    expect(screen.queryAllByRole("progressbar")).toHaveLength(0);
+    expect(has("calls go through")).toBe(false);
+    expect(has("has not been read yet")).toBe(true);
+    expect(has("priced 0 of the 83 calls")).toBe(false);
+    // What stays true without a ceiling is still said.
+    expect(has("priced 25 of the 40 calls")).toBe(true);
+    expect(has("gpt-6-luna")).toBe(true);
+  });
+
+  // A pending credential filled since the last read leaves the not-configured row in place, with a
+  // credential that now resolves: the card must not show a bare zero for the hour until the next read.
+  test("with the ceiling off an unread month says so even over the not-configured row", async () => {
+    const usage = {
+      ...baseUsage(),
+      enabled: false,
+      langfuseConfigured: true,
+      entries: [
+        entry({
+          source: "inbox",
+          polledAt: null,
+          stale: true,
+          pollError: "langfuse-not-configured",
+        }),
+        entry({
+          source: "playground",
+          polledAt: null,
+          stale: true,
+          pollError: "langfuse-not-configured",
+        }),
+      ],
+    };
+    installFetchStub(usage);
+    renderCard({ ...settings, enabled: false });
+    await waitFor(() => {
+      expect(screen.queryAllByText(/has not been read yet/)).toHaveLength(2);
+    });
+    expect(has("calls go through")).toBe(false);
+    expect(has("Not enforced on this half")).toBe(false);
+  });
+
+  test("with the ceiling off a stale figure and a missing Langfuse say nothing about the gate", async () => {
+    const usage = {
+      ...baseUsage(),
+      enabled: false,
+      langfuseConfigured: false,
+      entries: [
+        entry({ source: "inbox", usedUsd: 1, stale: true }),
+        entry({
+          source: "playground",
+          polledAt: null,
+          pollError: "langfuse-not-configured",
+        }),
+      ],
+    };
+    installFetchStub(usage);
+    renderCard({ ...settings, enabled: false });
+    await waitFor(() => {
+      expect(has("Not refreshed since")).toBe(true);
+    });
+    expect(has("The last figure stands")).toBe(false);
+    expect(has("Not enforced on this half")).toBe(false);
   });
 
   // NOTE: the settings' explicit null wins. After a save in dollars the settings say

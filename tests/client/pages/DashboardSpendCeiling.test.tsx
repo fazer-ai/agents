@@ -96,6 +96,7 @@ const entry = (patch: Record<string, unknown> & { source: string }) => ({
 });
 
 const baseUsage = () => ({
+  enabled: true,
   periodStart: "2026-09-01T00:00:00.000Z",
   langfuseConfigured: true,
   legacyTokens: null,
@@ -807,6 +808,16 @@ describe("the spend ceiling on the dashboard", () => {
       expect(has("cost cannot be read")).toBe(true);
     });
     expect(has("$22.50 of $30.00")).toBe(true);
+  });
+
+  test("without Langfuse and with the ceiling off the notice says nothing about refusing", async () => {
+    const u = { ...baseUsage(), enabled: false, langfuseConfigured: false };
+    await renderDash(u);
+    await waitFor(() => {
+      expect(has("cost cannot be read")).toBe(true);
+    });
+    expect(has("still being refused")).toBe(false);
+    expect(has("of $30.00")).toBe(false);
   });
 
   // The usage read follows the same window the rest of the section does: it is asked once per

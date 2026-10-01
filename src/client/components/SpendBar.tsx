@@ -17,15 +17,18 @@ export const SPEND_NOT_CONFIGURED = "langfuse-not-configured";
 // Advanced panel and watched on the dashboard, and the two would drift the moment one of them
 // learned about a new snapshot state the other did not: the colour thresholds, the "of" phrasing
 // and every warning below the bar live here once. What the state MEANS is the gate's own verdict,
-// sent by the API, so the screen and the runtime cannot disagree either.
+// sent by the API, so the screen and the runtime cannot disagree either. With the ceiling off there is
+// nothing to fill a bar against: the figure stands alone.
 export function SpendBar({
   label,
   entry,
   money,
+  enabled,
 }: {
   label: string;
   entry: SpendUsageEntry | undefined;
   money: Intl.NumberFormat;
+  enabled: boolean;
 }) {
   const { t } = useTranslation();
   const used = entry?.usedUsd ?? 0;
@@ -44,48 +47,55 @@ export function SpendBar({
             "text-error": state === "over",
           })}
         >
-          {ceiling === null
-            ? t("spendCeiling.usage.noCeiling", "{{used}} (no ceiling)", {
-                used: money.format(used),
-              })
-            : t("spendCeiling.usage.ofCeiling", "{{used}} of {{ceiling}}", {
-                used: money.format(used),
-                ceiling: money.format(ceiling),
-              })}
+          {!enabled
+            ? money.format(used)
+            : ceiling === null
+              ? t("spendCeiling.usage.noCeiling", "{{used}} (no ceiling)", {
+                  used: money.format(used),
+                })
+              : t("spendCeiling.usage.ofCeiling", "{{used}} of {{ceiling}}", {
+                  used: money.format(used),
+                  ceiling: money.format(ceiling),
+                })}
         </span>
       </div>
-      <div
-        className="h-1.5 w-full overflow-hidden rounded-full bg-bg-tertiary"
-        role="progressbar"
-        aria-label={label}
-        aria-valuenow={ceiling === null ? undefined : Math.round(pct)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
+      {enabled && (
         <div
-          className={cn("h-full rounded-full transition-all", {
-            "bg-accent-solid": state === "allowed",
-            "bg-warning": state === "warning",
-            "bg-error": state === "over",
-          })}
-          style={{ width: `${ceiling === null ? 0 : pct}%` }}
-        />
-      </div>
+          className="h-1.5 w-full overflow-hidden rounded-full bg-bg-tertiary"
+          role="progressbar"
+          aria-label={label}
+          aria-valuenow={ceiling === null ? undefined : Math.round(pct)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div
+            className={cn("h-full rounded-full transition-all", {
+              "bg-accent-solid": state === "allowed",
+              "bg-warning": state === "warning",
+              "bg-error": state === "over",
+            })}
+            style={{ width: `${ceiling === null ? 0 : pct}%` }}
+          />
+        </div>
+      )}
     </>
   );
 }
 
 // Everything the figure above cannot be trusted for, said beside it or said nowhere: when it was
 // last refreshed, whether the poll is failing, whether the row is a sentinel the gate lets through,
-// and how much of the month Langfuse actually priced.
+// and how much of the month Langfuse actually priced. With the ceiling off only what is true of the
+// figure is said: every line about what the gate does with it would describe a gate that is not there.
 export function SpendHealthLines({
   entry,
   when,
   money,
+  enabled,
 }: {
   entry: SpendUsageEntry | undefined;
   when: (iso: string) => string;
   money: Intl.NumberFormat;
+  enabled: boolean;
 }) {
   const { t } = useTranslation();
   if (!entry) return null;
@@ -93,24 +103,33 @@ export function SpendHealthLines({
     entry.pollError && entry.pollError !== SPEND_NOT_CONFIGURED
       ? entry.pollError
       : null;
+  // Nothing read is not "Langfuse priced none of it".
   const uncosted =
-    entry.ledgerCalls > 0 && entry.costedCalls < entry.ledgerCalls;
+    entry.polledAt !== null &&
+    entry.ledgerCalls > 0 &&
+    entry.costedCalls < entry.ledgerCalls;
   return (
     <div className="flex flex-col gap-0.5 text-text-muted text-xs">
       {entry.polledAt && (
         <span className={cn({ "text-warning": entry.stale })}>
           {entry.stale
-            ? t(
-                "spendCeiling.usage.stale",
-                "Not refreshed since {{when}}. The last figure stands, and it can only undercount.",
-                { when: when(entry.polledAt) },
-              )
+            ? enabled
+              ? t(
+                  "spendCeiling.usage.stale",
+                  "Not refreshed since {{when}}. The last figure stands, and it can only undercount.",
+                  { when: when(entry.polledAt) },
+                )
+              : t(
+                  "spendCeiling.usage.staleOff",
+                  "Not refreshed since {{when}}, so the figure can only undercount.",
+                  { when: when(entry.polledAt) },
+                )
             : t("spendCeiling.usage.updated", "Refreshed {{when}}", {
                 when: when(entry.polledAt),
               })}
         </span>
       )}
-      {entry.pollError === SPEND_NOT_CONFIGURED && (
+      {enabled && entry.pollError === SPEND_NOT_CONFIGURED && (
         <span className="text-warning">
           {t(
             "spendCeiling.usage.unenforced",
@@ -118,14 +137,23 @@ export function SpendHealthLines({
           )}
         </span>
       )}
-      {entry.polledAt === null && entry.pollError !== SPEND_NOT_CONFIGURED && (
-        <span className="text-warning">
-          {t(
-            "spendCeiling.usage.unpolled",
-            "The month's cost has not been read yet: calls go through until the first reading lands.",
-          )}
-        </span>
-      )}
+      {/* With the ceiling off the not-configured row is not a verdict the card names, so an unread
+          month says so even over it: a credential filled since leaves exactly that row until the
+          next hourly read. */}
+      {entry.polledAt === null &&
+        (!enabled || entry.pollError !== SPEND_NOT_CONFIGURED) && (
+          <span className={cn({ "text-warning": enabled })}>
+            {enabled
+              ? t(
+                  "spendCeiling.usage.unpolled",
+                  "The month's cost has not been read yet: calls go through until the first reading lands.",
+                )
+              : t(
+                  "spendCeiling.usage.unpolledOff",
+                  "The month's cost has not been read yet.",
+                )}
+          </span>
+        )}
       {failing && entry.pollFailedAt && (
         <span className="text-warning">
           {t(

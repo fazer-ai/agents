@@ -14,7 +14,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent } from "@/modules/flowlog/service";
-import type { ChatwootClient } from "./client";
+import { type ChatwootClient, ChatwootStatusConflictError } from "./client";
 import { consoleWriteLandedAfter } from "./console-write-order";
 import {
   describeClosedGate,
@@ -29,6 +29,7 @@ import {
   shouldBotHandle,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
+import { announceStatusChange } from "./status-announce";
 import { statusClaimDeadline } from "./status-claim";
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -182,7 +183,29 @@ export async function claimOpenForHumanQueue(p: {
             statusClaimRefusedAt: null,
           },
         });
-        return count > 0 ? claimUntil : null;
+        if (count === 0) return null;
+        // The claim moves the status, so it announces it (./status-announce.ts): Chatwoot's own
+        // event for our toggle finds the row already `open` and says nothing.
+        const row = await db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId: p.tenantId,
+              chatwootInstanceId: p.instanceId,
+              chatwootConversationId: p.conversationId,
+            },
+          },
+          select: { id: true, inboxId: true },
+        });
+        if (row) {
+          await announceStatusChange(db, p.tenantId, {
+            conversationId: row.id,
+            inboxId: row.inboxId,
+            status: "open",
+            previousStatus: "pending",
+            assigneeType: p.seen.assigneeType,
+          });
+        }
+        return claimUntil;
       },
     ),
   );
@@ -194,18 +217,19 @@ export async function claimOpenForHumanQueue(p: {
 // job for a conversation that owes nothing.
 export type HumanQueueOutcome = "opened" | "refused" | "failed";
 
-// Opens a conversation for the human queue, for every path that ends the bot's attendance (the
-// gates that refuse a turn, and a person answering). Status `open` is the handoff; the optional
-// team assignment only routes it, and a routing miss never undoes the open. The fence re-checks
-// ownership because a human can claim, resolve or reassign while the decision takes time, and the
-// client is built BEFORE the fence answers: building it resolves DNS, and asking first would put
-// that round trip between the answer and the write it guards.
+// Opens a conversation for the human queue, for every path that ends the bot's attendance (the gates
+// that refuse a turn, and a person answering); a team assignment only routes it. The fence re-checks
+// ownership, with the client built first so its DNS round trip is not between answer and write. The
+// toggle is conditional on the status the fence read (`expectedStatus`, default `pending`): Chatwoot
+// refuses it when anything moved the conversation in between, and that conflict is a refusal.
 export async function openForHumanQueue(p: {
   // Names the caller in every line this writes; it is what an operator reads to know which path
   // handed the conversation over.
   gate: string;
   conversationId: number;
   stillOurs: () => Promise<boolean>;
+  // Asked after `stillOurs` answered true, so a fence that read the live status can name it.
+  expectedStatus?: () => string;
   client: () => Promise<ChatwootClient>;
   teamId?: number | null;
   teamUsable?: (id: number) => Promise<boolean>;
@@ -221,7 +245,19 @@ export async function openForHumanQueue(p: {
       );
       return "refused";
     }
-    await client.toggleStatus(p.conversationId, "open");
+    try {
+      await client.toggleStatus(p.conversationId, "open", {
+        expectedStatus: p.expectedStatus?.() ?? "pending",
+      });
+    } catch (err) {
+      if (!(err instanceof ChatwootStatusConflictError)) throw err;
+      logger.info(
+        "chatwoot: %s handoff skipped (conv=%s) — the conversation moved on before the toggle",
+        p.gate,
+        String(p.conversationId),
+      );
+      return "refused";
+    }
     if (teamId !== null && (await (p.teamUsable?.(teamId) ?? true))) {
       try {
         await client.assignTeam(p.conversationId, teamId);
@@ -286,6 +322,134 @@ export interface HumanReplyTakeoverParams {
   heldClaimUntil?: Date | null;
 }
 
+// Without a version to order by, only the status the claim wrote is put back, and only while the row is
+// exactly as it stood before the read (still this claim's `open`, written by nobody since): the claim
+// owns that status and nothing else, and any write in between is newer than the read.
+async function withdrawClaimStatusOnly(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  claimUntil: Date;
+  status: string;
+  seenUpdatedAt: Date;
+  base: PrismaClient;
+}): Promise<{
+  id: bigint;
+  assigneeType: string | null;
+  assigneeId: number | null;
+  lastEventAt: Date | null;
+} | null> {
+  return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(
+      db,
+      `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
+      async () => {
+        const where = {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootConversationId: p.conversationId,
+          status: "open",
+          statusClaimUntil: p.claimUntil,
+          updatedAt: p.seenUpdatedAt,
+        };
+        const row = await db.conversation.findFirst({
+          where,
+          select: {
+            id: true,
+            inboxId: true,
+            assigneeType: true,
+            assigneeId: true,
+            lastEventAt: true,
+          },
+        });
+        if (!row || p.status === "open") return null;
+        // The lock does not order every writer of the row (the handled watermark moves `updatedAt`
+        // without it), so the read above does not guarantee the write: only a write that landed is
+        // announced and broadcast.
+        const { count } = await db.conversation.updateMany({
+          where,
+          data: { status: p.status },
+        });
+        if (count === 0) return null;
+        await announceStatusChange(db, p.tenantId, {
+          conversationId: row.id,
+          inboxId: row.inboxId,
+          status: p.status,
+          previousStatus: "open",
+          assigneeType: row.assigneeType,
+        });
+        return row;
+      },
+    ),
+  );
+}
+
+// Puts the row of a takeover Chatwoot refused back on the source's state, through the claim it owns.
+// A versioned read reconciles; an unversioned one moves the status alone (above). An unreadable
+// Chatwoot leaves the claim to run out, as a failed open does.
+async function withdrawClaim(
+  p: HumanReplyTakeoverParams & {
+    claimUntil: Date;
+    client: () => Promise<ChatwootClient>;
+  },
+): Promise<void> {
+  // The row as it stood BEFORE the read, so a write landing between the read and the withdrawal (an
+  // operator reopening what the read saw resolved) cancels the unversioned write-back below.
+  const before = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        tenantId: p.tenantId,
+        chatwootInstanceId: p.instanceId,
+        chatwootConversationId: p.conversationId,
+      },
+      select: { updatedAt: true },
+    }),
+  );
+  const live = parseLiveConversation(
+    await (await p.client()).getConversation(p.conversationId),
+  );
+  if (live === null) return;
+  if (live.updatedAt === null) {
+    if (!before) return;
+    const written = await withdrawClaimStatusOnly({
+      ...p,
+      status: live.status,
+      seenUpdatedAt: before.updatedAt,
+    });
+    if (written) {
+      broadcastConversationEvent(p.tenantId, {
+        conversationId: String(written.id),
+        status: live.status,
+        assigneeId: written.assigneeId,
+        assigneeType: written.assigneeType,
+        lastEventAt: written.lastEventAt
+          ? written.lastEventAt.toISOString()
+          : null,
+      });
+    }
+    return;
+  }
+  const reconciled = await reconcileMirrorFromLive({
+    tenantId: p.tenantId,
+    instanceId: p.instanceId,
+    conversationId: p.conversationId,
+    live,
+    ownsStatusClaim: p.claimUntil,
+    base: p.base,
+  });
+  if (reconciled.state && p.conversationRowId !== null) {
+    broadcastConversationEvent(p.tenantId, {
+      conversationId: String(p.conversationRowId),
+      status: reconciled.state.status,
+      assigneeId: reconciled.state.assigneeId,
+      assigneeType: reconciled.state.assigneeType,
+      lastEventAt: reconciled.state.lastEventAt
+        ? reconciled.state.lastEventAt.toISOString()
+        : null,
+    });
+  }
+}
+
 // Says WHICH of the three happened, because the two callers need different amounts of it. The live
 // delivery does the same thing with `refused` and `failed` — nothing — while the recovery is a
 // scheduler job, and a refusal mapped to a failure spends its backoff ladder and dead-letters a job
@@ -334,6 +498,9 @@ export async function runHumanReplyTakeover(
     // the two halves that need it are on the other side of the fence closure: the release below,
     // and the reconcile, which is the one write allowed THROUGH a claim it owns.
     let claimHeld: Date | null = null;
+    // The status the fence read, which the toggle is conditional on: `pending` when deciding, and when
+    // finishing whatever Chatwoot showed (`open` if only the first attempt's response was lost).
+    let expected = "pending";
     // NO PERSONA IS A REFUSAL, not a failure: it is decided here, from the row, before anything is
     // written or called, which is exactly what makes it a verdict.
     outcome = !bot
@@ -359,6 +526,7 @@ export async function runHumanReplyTakeover(
             if (finishing && live === null) {
               throw new Error("Chatwoot did not answer");
             }
+            if (finishing && live !== null) expected = live.status;
             // The same ownership question in both modes: a conversation reassigned while the
             // row sat stranded is still `pending`, and a status-only check would take it from another
             // bot's or person's queue. Only the status half differs: finishing also accepts `open`,
@@ -488,8 +656,22 @@ export async function runHumanReplyTakeover(
             }
             return true;
           },
+          expectedStatus: () => expected,
           client,
         });
+    // A refusal after the claim is Chatwoot's conflict: the conversation moved on between the fence and
+    // the toggle, nothing changed at the source, and the row says `open` where Chatwoot never will. The
+    // row takes the source's state through our own claim, and the status it moves is announced there.
+    if (outcome === "refused" && claimHeld !== null) {
+      await withdrawClaim({ ...p, claimUntil: claimHeld, client }).catch(
+        (err) =>
+          logger.warn(
+            "chatwoot: correcting the mirror after a refused takeover failed (conv=%s): %s",
+            convLabel,
+            errMsg(err),
+          ),
+      );
+    }
     // NOTE: a failed open keeps the claim. A failed call is an unknown outcome (Chatwoot can commit
     // and lose the response), and rolling back would put the agent back on a conversation the
     // platform may have handed over. The claim stays on the row until the reconcile stamps it,

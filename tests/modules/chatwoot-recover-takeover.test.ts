@@ -76,6 +76,11 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (toggle && body && typeof body === "object" && "status" in body) {
     if (failingToggles.has(Number(toggle[1])))
       return new Response("nope", { status: 502 });
+    // The fork's conditional toggle: applied only while the conversation holds the expected status.
+    const current = liveStatus.get(Number(toggle[1])) ?? "pending";
+    if ("expected_status" in body && body.expected_status !== current) {
+      return Response.json({ current_status: current }, { status: 409 });
+    }
     liveStatus.set(Number(toggle[1]), String(body.status));
   }
   const show = url.match(/\/conversations\/(\d+)(?:\?|$)/);
@@ -384,7 +389,10 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     // path writes, both required (an unversioned `open` that claims nothing is walked back by any
     // payload still in flight).
     expect(togglesFor(convId)).toHaveLength(1);
-    expect(togglesFor(convId)[0]?.body).toEqual({ status: "open" });
+    expect(togglesFor(convId)[0]?.body).toEqual({
+      status: "open",
+      expected_status: "pending",
+    });
     const row = await convRow(convId);
     expect(row.status).toBe("open");
     expect(row.statusClaimFrom).toBe("pending");
@@ -719,6 +727,26 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(liveStatus.get(convId)).toBe("open");
     // And the version the first attempt never earned, written through the claim it still holds.
     expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
+  });
+
+  test("an attempt whose toggle landed but whose answer was lost is finished against `open`", async () => {
+    const convId = 9135;
+    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    // Chatwoot applied the first toggle; only its response never came back.
+    liveStatus.set(convId, "open");
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId).map((t) => t.body)).toEqual([
+      { status: "open", expected_status: "open" },
+    ]);
+    expect(liveStatus.get(convId)).toBe("open");
   });
 
   test("a live claim that replaced some OTHER status is not this takeover's", async () => {

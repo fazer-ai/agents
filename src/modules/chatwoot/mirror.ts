@@ -9,6 +9,7 @@ import { retireJobsByDedupeKeyOn } from "@/modules/scheduler/service";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import { isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
+import { announceStatusChange } from "./status-announce";
 import type { NormalizedChatwootEvent } from "./types";
 
 // Fire an outbound event from inside the mirror's scoped tx. Best-effort for the DOMAIN: a fan-out
@@ -508,13 +509,13 @@ export async function mirrorChatwootEvent(
           },
         });
         const inboxIdStr = inboxRowId != null ? String(inboxRowId) : null;
-        if (appliedStatus != null && appliedStatus !== existing.status) {
-          await emitMirrorEvent(db, tenantId, "conversation.status_changed", {
-            conversation_id: String(existing.id),
-            inbox_id: inboxIdStr,
-            status: nextStatus,
-            previous_status: existing.status,
-            assignee_type: nextAssigneeType,
+        if (appliedStatus != null) {
+          await announceStatusChange(db, tenantId, {
+            conversationId: existing.id,
+            inboxId: inboxRowId,
+            status: appliedStatus,
+            previousStatus: existing.status,
+            assigneeType: nextAssigneeType,
           });
         }
         // NOTE: Handoff = the assignee transitions to a human (User). Detect the bot→human edge:

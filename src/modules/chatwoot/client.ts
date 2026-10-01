@@ -64,6 +64,17 @@ export class ChatwootApiError extends Error {
   }
 }
 
+// A conditional toggle Chatwoot refused because the conversation no longer held the expected status.
+// Nothing changed at the source: the caller's decision is stale, not failed.
+export class ChatwootStatusConflictError extends Error {
+  readonly conversationId: number;
+  constructor(conversationId: number) {
+    super(`conversation ${conversationId} no longer holds the expected status`);
+    this.name = "ChatwootStatusConflictError";
+    this.conversationId = conversationId;
+  }
+}
+
 // Raised INSTEAD of dialing Chatwoot when the client holds no token for the call it was asked to
 // make. Distinct from ChatwootApiError on purpose: nothing was sent, so there is no status, and the
 // fault is local (a caller that built the client without the token) rather than remote.
@@ -701,17 +712,33 @@ export class ChatwootClient {
     );
   }
 
-  toggleStatus(
+  // `expectedStatus` is the status the caller read before deciding: the fork applies the change only while
+  // the conversation still holds it, under a row lock, and otherwise answers 409 and changes nothing,
+  // raised here as ChatwootStatusConflictError. A Chatwoot without that support ignores the field.
+  async toggleStatus(
     conversationId: number,
     status: "open" | "pending" | "resolved",
-    opts: { asAdmin?: boolean } = {},
+    opts: { asAdmin?: boolean; expectedStatus?: string } = {},
   ): Promise<unknown> {
-    return this.request(
-      opts.asAdmin ? this.config.adminToken : this.config.botToken,
-      "POST",
-      `/conversations/${conversationId}/toggle_status`,
-      { status },
-    );
+    try {
+      return await this.request(
+        opts.asAdmin ? this.config.adminToken : this.config.botToken,
+        "POST",
+        `/conversations/${conversationId}/toggle_status`,
+        opts.expectedStatus === undefined
+          ? { status }
+          : { status, expected_status: opts.expectedStatus },
+      );
+    } catch (err) {
+      if (
+        opts.expectedStatus !== undefined &&
+        err instanceof ChatwootApiError &&
+        err.status === 409
+      ) {
+        throw new ChatwootStatusConflictError(conversationId);
+      }
+      throw err;
+    }
   }
 
   // Both custom-attribute endpoints ASSIGN the hash they are given (a plain

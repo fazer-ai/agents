@@ -94,6 +94,9 @@ let whileBuildingClient: (() => Promise<void>) | null = null;
 // Work that runs while the toggle is in flight, which is the OTHER window: the fence has already
 // answered, the write to Chatwoot is on the wire, and a conversation event can commit here.
 let whileToggling: (() => Promise<void>) | null = null;
+// Work that runs while a REST show is being answered, after Chatwoot read the conversation: something
+// committing between a live read and what its caller does with it.
+const whileReading = new Map<number, () => Promise<void>>();
 const posted: { url: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -112,6 +115,15 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     // still carries the OLD status. Running it after would hand concurrent work a snapshot from the
     // future and hide the very race it is standing in.
     await whileToggling?.();
+    // The fork's conditional toggle: the change applies only while the conversation still holds the
+    // status the caller read, and otherwise answers 409 and changes nothing.
+    const current = liveStatus.get(Number(toggle[1])) ?? "pending";
+    if ("expected_status" in body && body.expected_status !== current) {
+      return Response.json(
+        { error: "conversation status changed", current_status: current },
+        { status: 409 },
+      );
+    }
     liveStatus.set(Number(toggle[1]), String(body.status));
   }
   // The live read the takeover reconciles from, answered the way the REST show does: the current
@@ -121,10 +133,16 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (show && (init?.method ?? "GET") === "GET") {
     const id = Number(show[1]);
     if (failingReads.has(id)) return new Response("nope", { status: 502 });
+    const statusRead = liveStatus.get(id) ?? "pending";
+    const hook = whileReading.get(id);
+    if (hook) {
+      whileReading.delete(id);
+      await hook();
+    }
     stamp += 1;
     return Response.json({
       id,
-      status: liveStatus.get(id) ?? "pending",
+      status: statusRead,
       meta: {
         assignee_type: "AgentBot",
         assignee: { id: liveHolder.get(id) ?? OUR_BOT, name: "Atendente" },
@@ -1358,6 +1376,327 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // refusal had kept, over the older one our own read came back with.
     expect(row?.chatwootStatusAt ?? 0).toBeGreaterThan(pinned);
   });
+
+  // A person sends a closing line and resolves within the same second (a macro does both in one
+  // request). Chatwoot's toggle has no compare-and-set, so a toggle that lands after the resolve
+  // reopens what the person closed.
+  test("a resolve made right after the person's reply stays resolved, and is announced once", async () => {
+    const conv = 8572;
+    await deliver(conv, { ...customerSays("oi") });
+    const sub = await suDb.webhookSubscription.create({
+      data: {
+        tenantId,
+        url: "https://example.com/hook",
+        events: ["conversation.status_changed"],
+      },
+    });
+    // The resolve commits while the toggle is on the wire, after the fence read `pending`.
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+      const resolved = conversation(conv);
+      await deliverConversationEvent(conv, "conversation_updated", resolved);
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        resolved,
+      );
+    };
+    try {
+      await deliver(conv, composerReply("obrigado, até mais"));
+    } finally {
+      whileToggling = null;
+    }
+    try {
+      expect(liveStatus.get(conv)).toBe("resolved");
+      expect((await convRow(conv))?.status).toBe("resolved");
+      const out = await suDb.outboundWebhookDelivery.findMany({
+        where: { tenantId, subscriptionId: sub.id },
+        orderBy: { id: "asc" },
+      });
+      const statuses = out.map(
+        (o) => (o.payload as { data: { status: string } }).data.status,
+      );
+      expect(statuses.filter((s) => s === "resolved")).toEqual(["resolved"]);
+    } finally {
+      await suDb.outboundWebhookDelivery.deleteMany({
+        where: { subscriptionId: sub.id },
+      });
+      await suDb.webhookSubscription.delete({ where: { id: sub.id } });
+    }
+  });
+
+  // The statuses announced on the outbound bus for one conversation, in order, while `fn` runs.
+  async function announcedStatuses(
+    conv: number,
+    fn: () => Promise<void>,
+  ): Promise<string[]> {
+    const sub = await suDb.webhookSubscription.create({
+      data: {
+        tenantId,
+        url: "https://example.com/hook",
+        events: ["conversation.status_changed"],
+      },
+    });
+    try {
+      await fn();
+      const row = await convRow(conv);
+      const out = await suDb.outboundWebhookDelivery.findMany({
+        where: { tenantId, subscriptionId: sub.id },
+        orderBy: { id: "asc" },
+      });
+      return out
+        .map(
+          (o) =>
+            (o.payload as { data: { conversation_id: string; status: string } })
+              .data,
+        )
+        .filter((d) => row && d.conversation_id === String(row.id))
+        .map((d) => d.status);
+    } finally {
+      await suDb.outboundWebhookDelivery.deleteMany({
+        where: { subscriptionId: sub.id },
+      });
+      await suDb.webhookSubscription.delete({ where: { id: sub.id } });
+    }
+  }
+
+  test("a resolve whose own event never arrives still reaches the mirror, announced", async () => {
+    const conv = 8579;
+    await deliver(conv, { ...customerSays("oi") });
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+    };
+    const statuses = await announcedStatuses(conv, async () => {
+      try {
+        await deliver(conv, composerReply("até mais"));
+      } finally {
+        whileToggling = null;
+      }
+    });
+    expect(liveStatus.get(conv)).toBe("resolved");
+    expect((await convRow(conv))?.status).toBe("resolved");
+    expect(statuses).toEqual(["open", "resolved"]);
+  });
+
+  test("on a Chatwoot that renders no version, a refused toggle still puts the mirror on the source", async () => {
+    const conv = 8583;
+    await deliver(conv, { ...customerSays("oi") });
+    const rowId = String((await convRow(conv))?.id);
+    const published: Record<string, unknown>[] = [];
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)));
+    });
+    unversionedReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+    };
+    try {
+      const statuses = await announcedStatuses(conv, async () => {
+        try {
+          await deliver(conv, composerReply("até mais"));
+        } finally {
+          whileToggling = null;
+        }
+      });
+      expect(liveStatus.get(conv)).toBe("resolved");
+      expect((await convRow(conv))?.status).toBe("resolved");
+      expect(statuses).toEqual(["open", "resolved"]);
+      // The delivery's own snapshot, the claim's `open`, and then what the row now holds.
+      expect(
+        published
+          .filter(
+            (d) => d.type === "conversation" && d.conversationId === rowId,
+          )
+          .map((d) => d.status),
+      ).toEqual(["pending", "open", "resolved"]);
+    } finally {
+      unversionedReads.delete(conv);
+      setPublisher(() => undefined);
+    }
+  });
+
+  // A trigger stands in for a writer the advisory lock does not order: it drops the withdrawal's
+  // UPDATE of this row, which is what the compare-and-set sees when such a write lands between its
+  // read and its write.
+  test("on a Chatwoot that renders no version, a withdrawal whose write lost announces nothing", async () => {
+    const conv = 8588;
+    await deliver(conv, { ...customerSays("oi") });
+    const rowId = String((await convRow(conv))?.id);
+    const fn = `skip_withdrawal_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE UPDATE ON conversations FOR EACH ROW WHEN (OLD.id = ${rowId} AND OLD.status = 'open' AND NEW.status = 'resolved') EXECUTE FUNCTION ${fn}()`,
+    );
+    const published: Record<string, unknown>[] = [];
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)));
+    });
+    unversionedReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+    };
+    try {
+      const statuses = await announcedStatuses(conv, async () => {
+        try {
+          await deliver(conv, composerReply("até mais"));
+        } finally {
+          whileToggling = null;
+        }
+      });
+      expect((await convRow(conv))?.status).toBe("open");
+      expect(statuses).toEqual(["open"]);
+      expect(
+        published
+          .filter(
+            (d) => d.type === "conversation" && d.conversationId === rowId,
+          )
+          .map((d) => d.status),
+      ).toEqual(["pending", "open"]);
+    } finally {
+      unversionedReads.delete(conv);
+      setPublisher(() => undefined);
+      await suDb.$executeRawUnsafe(`DROP TRIGGER ${fn} ON conversations`);
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
+  });
+
+  // A failed statement aborts a Postgres transaction whether or not the error is caught, so a fan-out
+  // that fails (a subscription deleted between its read and the delivery insert) would roll back the
+  // claim it was announcing. A trigger makes the insert fail.
+  test("a takeover whose announcement fails still holds its claim", async () => {
+    const conv = 8589;
+    await deliver(conv, { ...customerSays("oi") });
+    const fn = `fail_delivery_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'delivery insert refused'; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON outbound_webhook_deliveries FOR EACH ROW WHEN (NEW.tenant_id = ${tenantId}) EXECUTE FUNCTION ${fn}()`,
+    );
+    try {
+      await announcedStatuses(conv, async () => {
+        await deliver(conv, composerReply("assumo daqui"));
+      });
+      expect(liveStatus.get(conv)).toBe("open");
+      const row = await convRow(conv);
+      expect(row?.status).toBe("open");
+      expect(row?.statusClaimUntil).not.toBeNull();
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER ${fn} ON outbound_webhook_deliveries`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
+  });
+
+  test("on a Chatwoot that renders no version, a refused toggle leaves an assignment made meanwhile alone", async () => {
+    const conv = 8586;
+    await deliver(conv, { ...customerSays("oi") });
+    unversionedReads.add(conv);
+    // A person resolves and is assigned while the toggle is on the wire; the live read that follows
+    // still names our bot, and carries no version to say it is older than that assignment.
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+      const snapshot = conversation(conv);
+      await deliverConversationEvent(conv, "conversation_updated", {
+        ...snapshot,
+        meta: {
+          ...snapshot.meta,
+          assignee_type: "User",
+          assignee: { id: 5, name: "Ana" },
+        },
+      });
+    };
+    try {
+      await deliver(conv, composerReply("até mais"));
+    } finally {
+      whileToggling = null;
+      unversionedReads.delete(conv);
+    }
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true, assigneeType: true, assigneeId: true },
+    });
+    expect(row).toEqual({
+      status: "resolved",
+      assigneeType: "User",
+      assigneeId: 5,
+    });
+  });
+
+  test("on a Chatwoot that renders no version, a reopen landing after the corrective read is not undone", async () => {
+    const conv = 8587;
+    await deliver(conv, { ...customerSays("oi") });
+    unversionedReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+      // The read that follows the refusal sees `resolved`; an operator reopens right after it.
+      whileReading.set(conv, async () => {
+        liveStatus.set(conv, "open");
+        await deliverConversationEvent(conv, "conversation_status_changed");
+      });
+    };
+    try {
+      await deliver(conv, composerReply("até mais"));
+    } finally {
+      whileToggling = null;
+      whileReading.delete(conv);
+      unversionedReads.delete(conv);
+    }
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  test("a takeover with nothing in the way opens, and is announced once", async () => {
+    const conv = 8575;
+    await deliver(conv, { ...customerSays("oi") });
+    const statuses = await announcedStatuses(conv, async () => {
+      await deliver(conv, composerReply("assumo daqui"));
+      // Chatwoot's own event for our toggle, which must not announce the transition a second time.
+      await deliverConversationEvent(conv, "conversation_status_changed");
+    });
+    expect(liveStatus.get(conv)).toBe("open");
+    expect(statuses).toEqual(["open"]);
+    expect(
+      toggles(conv).map(
+        (t) => (t.body as { expected_status?: string }).expected_status,
+      ),
+    ).toEqual(["pending"]);
+  });
+
+  for (const versioned of [true, false]) {
+    test(`a console resolve is announced once, ${versioned ? "versioned" : "unversioned"}`, async () => {
+      const conv = versioned ? 8577 : 8578;
+      await deliver(conv, { ...customerSays("oi") });
+      if (!versioned) unversionedReads.add(conv);
+      try {
+        const statuses = await announcedStatuses(conv, async () => {
+          const row = await convRow(conv);
+          if (!row) throw new Error("no mirrored conversation");
+          await setConversationStatus(
+            { tenantId, userId: null, role: "TENANT_ADMIN" },
+            row.id,
+            "resolved",
+            deps,
+            appDb,
+          );
+          // Chatwoot's own event for the click, arriving after the console wrote the row.
+          await deliverConversationEvent(conv, "conversation_status_changed");
+        });
+        expect((await convRow(conv))?.status).toBe("resolved");
+        expect(statuses).toEqual(["resolved"]);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+  }
 
   function deliverReplyOff() {
     return deviceReply("já te respondo");

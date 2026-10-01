@@ -13,6 +13,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { withEntityLock } from "@/lib/locks";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
@@ -39,6 +40,7 @@ import {
   parseLiveConversation,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { announceStatusChange } from "@/modules/chatwoot/status-announce";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import {
@@ -694,12 +696,46 @@ async function updateMirror(
     assigneeName?: string | null;
   },
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) =>
-    db.conversation.updateMany({
+  await runScopedOn(base, ctx, async (db) => {
+    const key = await db.conversation.findUnique({
       where: { id },
-      data,
-    }),
-  );
+      select: {
+        tenantId: true,
+        chatwootInstanceId: true,
+        chatwootConversationId: true,
+      },
+    });
+    if (!key) return;
+    // NOTE: under the conversation's own lock, the one the mirror, the reconcile and the takeover claim
+    // take: the status this write moves is announced here, and read outside the lock a webhook for the
+    // same click could read the old status too and announce the transition a second time.
+    await withEntityLock(
+      db,
+      `${key.tenantId}:${key.chatwootInstanceId}:${key.chatwootConversationId}`,
+      async () => {
+        const before =
+          data.status === undefined
+            ? null
+            : await db.conversation.findUnique({
+                where: { id },
+                select: { status: true, inboxId: true, assigneeType: true },
+              });
+        await db.conversation.updateMany({ where: { id }, data });
+        if (before && data.status !== undefined) {
+          await announceStatusChange(db, key.tenantId, {
+            conversationId: id,
+            inboxId: before.inboxId,
+            status: data.status,
+            previousStatus: before.status,
+            assigneeType:
+              data.assigneeType === undefined
+                ? before.assigneeType
+                : data.assigneeType,
+          });
+        }
+      },
+    );
+  });
 }
 
 // The conversation state as it stands after a console write, when the live read decided it. null =

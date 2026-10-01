@@ -5150,8 +5150,6 @@ export async function processChatwootDelivery(
       lastEventAt: mirror.lastEventAt,
       base,
       makeClient: params.deps?.makeClient,
-      repliedAt: n.message?.createdAt ?? null,
-      settle: params.deps?.takeoverSettle,
     });
   }
 

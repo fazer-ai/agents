@@ -199,7 +199,6 @@ export async function mirrorChatwootEvent(
             statusClaimFrom: true,
             statusClaimStampedAt: true,
             statusClaimRefusedAt: true,
-            statusClaimHandbackAt: true,
           },
         });
         const prevAssigneeId = existing?.assigneeId ?? null;
@@ -474,15 +473,6 @@ export async function mirrorChatwootEvent(
             // back and answers. See `statusClaimRefusedAt` on the decision.
             ...(decision.statusClaimRefusedAt != null
               ? { statusClaimRefusedAt: decision.statusClaimRefusedAt }
-              : {}),
-            // A refused STATUS EVENT is a transition somebody dispatched (a hand-back), unlike the
-            // snapshot a message restates; the takeover's settle reads it. Forward-only.
-            ...(decision.statusClaimDeferred &&
-            n.event === "conversation_status_changed" &&
-            statePayload.version != null &&
-            (existing.statusClaimHandbackAt == null ||
-              statePayload.version > existing.statusClaimHandbackAt)
-              ? { statusClaimHandbackAt: statePayload.version }
               : {}),
             ...(decision.assigneeAt != null
               ? { chatwootAssigneeAt: decision.assigneeAt }

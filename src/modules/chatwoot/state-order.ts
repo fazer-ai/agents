@@ -109,8 +109,6 @@ export interface StateDecision {
    * like every mark here, so the newest refusal is the one kept. ./status-claim.ts.
    */
   statusClaimRefusedAt: number | null;
-  /** Whether the local claim refused this payload's status and kept its version for later. */
-  statusClaimDeferred: boolean;
   /** Version to stamp on the assignee mark, or null to leave it where it is. */
   assigneeAt: number | null;
   /**
@@ -171,7 +169,6 @@ export function decideConversationWrites(
       unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
       statusClaimRefusedAt: null,
-      statusClaimDeferred: false,
       assigneeAt: payload.assigneeStated ? payload.version : null,
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
@@ -218,7 +215,6 @@ export function decideConversationWrites(
       unversioned: false,
       statusAt: null,
       statusClaimRefusedAt: null,
-      statusClaimDeferred: false,
       assigneeAt: null,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
@@ -316,7 +312,6 @@ export function decideConversationWrites(
       claim === "refuse-and-defer"
         ? advancesFrom(row.statusClaimRefusedAt, payload.version)
         : null,
-    statusClaimDeferred: claim === "refuse-and-defer",
     assigneeAt: assignee ? advances(row.assigneeAt) : null,
     redirectOrigin,
     redirectOriginAt: redirectOrigin ? advances(row.redirectOriginAt) : null,

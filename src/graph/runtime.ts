@@ -242,8 +242,6 @@ export interface RuntimeDeps {
   visionFetch?: typeof fetch;
   // Injectable fetch for the STT provider (tests); real fetch in production.
   sttFetch?: typeof fetch;
-  // Injectable wait for the human-reply takeover's settle (tests); a timer in production.
-  takeoverSettle?: (ms: number) => Promise<void>;
   // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
   imageDeps?: ImageFetchDeps;
   // Injectable for tests: where a document tool writes and reads its rendered PDF.

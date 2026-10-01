@@ -6,8 +6,6 @@ import { encryptJson } from "@/api/lib/crypto";
 import { createChatwootClient } from "@/modules/chatwoot/client";
 import {
   claimOpenForHumanQueue,
-  HUMAN_REPLY_SETTLE_MS,
-  humanReplySettleMs,
   OWNERSHIP_PROJECTION,
 } from "@/modules/chatwoot/human-takeover";
 import {
@@ -96,9 +94,6 @@ let whileBuildingClient: (() => Promise<void>) | null = null;
 // Work that runs while the toggle is in flight, which is the OTHER window: the fence has already
 // answered, the write to Chatwoot is on the wire, and a conversation event can commit here.
 let whileToggling: (() => Promise<void>) | null = null;
-// Work that runs during the takeover's settle wait, which stands in for the wait itself:
-// a person still acting on the conversation a moment after their reply.
-let whileSettling: (() => Promise<void>) | null = null;
 const posted: { url: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -117,6 +112,15 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     // still carries the OLD status. Running it after would hand concurrent work a snapshot from the
     // future and hide the very race it is standing in.
     await whileToggling?.();
+    // The fork's conditional toggle: the change applies only while the conversation still holds the
+    // status the caller read, and otherwise answers 409 and changes nothing.
+    const current = liveStatus.get(Number(toggle[1])) ?? "pending";
+    if ("expected_status" in body && body.expected_status !== current) {
+      return Response.json(
+        { error: "conversation status changed", current_status: current },
+        { status: 409 },
+      );
+    }
     liveStatus.set(Number(toggle[1]), String(body.status));
   }
   // The live read the takeover reconciles from, answered the way the REST show does: the current
@@ -165,9 +169,6 @@ const deps = {
       assertSafe: async (url: string) => new URL(url),
       fetchImpl: stubFetch,
     });
-  },
-  takeoverSettle: async () => {
-    await whileSettling?.();
   },
 };
 
@@ -1380,12 +1381,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         events: ["conversation.status_changed"],
       },
     });
-    // The resolve lands a moment after the reply: inside the settle wait when there is one, and
-    // otherwise while the toggle is on the wire, which is where it fell before the wait existed.
-    let resolvedOnce = false;
-    const resolve = async () => {
-      if (resolvedOnce) return;
-      resolvedOnce = true;
+    // The resolve commits while the toggle is on the wire, after the fence read `pending`.
+    whileToggling = async () => {
+      whileToggling = null;
       liveStatus.set(conv, "resolved");
       const resolved = conversation(conv);
       await deliverConversationEvent(conv, "conversation_updated", resolved);
@@ -1395,15 +1393,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         resolved,
       );
     };
-    whileSettling = resolve;
-    whileToggling = resolve;
     try {
-      await deliver(conv, {
-        ...composerReply("obrigado, até mais"),
-        created_at: Math.floor(Date.now() / 1000),
-      });
+      await deliver(conv, composerReply("obrigado, até mais"));
     } finally {
-      whileSettling = null;
       whileToggling = null;
     }
     try {
@@ -1460,246 +1452,78 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
   }
 
-  const repliedNow = () => ({ created_at: Math.floor(Date.now() / 1000) });
-
-  test("the settle wait counts from the reply, so a late delivery does not wait", () => {
-    const now = new Date("2026-10-01T12:00:10Z");
-    expect(humanReplySettleMs(null, now)).toBe(0);
-    expect(humanReplySettleMs(new Date("2026-10-01T12:00:08Z"), now)).toBe(
-      HUMAN_REPLY_SETTLE_MS - 2_000,
-    );
-    expect(humanReplySettleMs(new Date("2026-10-01T11:30:00Z"), now)).toBe(0);
-    // A source clock ahead of ours waits the full wait, never longer.
-    expect(humanReplySettleMs(new Date("2026-10-01T12:01:00Z"), now)).toBe(
-      HUMAN_REPLY_SETTLE_MS,
-    );
-  });
-
-  test("a hand-back made during the settle wait is not undone by the toggle", async () => {
-    const conv = 8573;
-    await deliver(conv, { ...customerSays("oi") });
-    whileSettling = async () => {
-      whileSettling = null;
-      const row = await convRow(conv);
-      if (!row) throw new Error("no mirrored conversation");
-      expect(
-        await returnConversationToAgent(
-          { tenantId, userId: null, role: "TENANT_ADMIN" },
-          row.id,
-          deps,
-          appDb,
-        ),
-      ).toBe("returned");
-    };
-    const before = toggles(conv).length;
-    try {
-      await deliver(conv, {
-        ...composerReply("só um instante"),
-        ...repliedNow(),
-      });
-    } finally {
-      whileSettling = null;
-    }
-    expect(
-      toggles(conv)
-        .slice(before)
-        .map((t) => (t.body as { status: string }).status),
-    ).toEqual(["pending"]);
-    expect(liveStatus.get(conv)).toBe("pending");
-    expect((await convRow(conv))?.status).toBe("pending");
-  });
-
   test("a resolve whose own event never arrives still reaches the mirror, announced", async () => {
     const conv = 8579;
     await deliver(conv, { ...customerSays("oi") });
-    whileSettling = async () => {
-      whileSettling = null;
+    whileToggling = async () => {
+      whileToggling = null;
       liveStatus.set(conv, "resolved");
     };
-    const before = toggles(conv).length;
     const statuses = await announcedStatuses(conv, async () => {
       try {
-        await deliver(conv, { ...composerReply("até mais"), ...repliedNow() });
+        await deliver(conv, composerReply("até mais"));
       } finally {
-        whileSettling = null;
+        whileToggling = null;
       }
     });
-    expect(toggles(conv).length).toBe(before);
+    expect(liveStatus.get(conv)).toBe("resolved");
     expect((await convRow(conv))?.status).toBe("resolved");
     expect(statuses).toEqual(["open", "resolved"]);
   });
 
-  test("a resolve the mirror holds withdraws the toggle even when Chatwoot cannot be read", async () => {
-    const conv = 8580;
-    await deliver(conv, { ...customerSays("oi") });
-    whileSettling = async () => {
-      whileSettling = null;
-      liveStatus.set(conv, "resolved");
-      await deliverConversationEvent(conv, "conversation_status_changed");
-      failingReads.add(conv);
-    };
-    const before = toggles(conv).length;
-    try {
-      await deliver(conv, { ...composerReply("até mais"), ...repliedNow() });
-    } finally {
-      whileSettling = null;
-      failingReads.delete(conv);
-    }
-    expect(toggles(conv).length).toBe(before);
-    expect(liveStatus.get(conv)).toBe("resolved");
-    expect((await convRow(conv))?.status).toBe("resolved");
-  });
-
-  test("a hand-back made in Chatwoot during the settle wait is not undone", async () => {
-    const conv = 8581;
-    await deliver(conv, { ...customerSays("oi") });
-    whileSettling = async () => {
-      whileSettling = null;
-      liveStatus.set(conv, "pending");
-      await deliverConversationEvent(conv, "conversation_status_changed");
-    };
-    const before = toggles(conv).length;
-    const statuses = await announcedStatuses(conv, async () => {
-      try {
-        await deliver(conv, {
-          ...composerReply("volta pro bot"),
-          ...repliedNow(),
-        });
-      } finally {
-        whileSettling = null;
-      }
-    });
-    expect(toggles(conv).length).toBe(before);
-    expect(liveStatus.get(conv)).toBe("pending");
-    expect((await convRow(conv))?.status).toBe("pending");
-    expect(statuses).toEqual(["open", "pending"]);
-  });
-
-  test("a delayed status event from before the reply does not withdraw the takeover", async () => {
-    const conv = 8584;
-    await deliver(conv, { ...customerSays("oi") });
-    // Serialized before the reply, delivered during the wait.
-    const earlier = conversation(conv);
-    whileSettling = async () => {
-      whileSettling = null;
-      await deliverConversationEvent(
-        conv,
-        "conversation_status_changed",
-        earlier,
-      );
-    };
-    try {
-      await deliver(conv, { ...composerReply("assumo"), ...repliedNow() });
-    } finally {
-      whileSettling = null;
-    }
-    expect(liveStatus.get(conv)).toBe("open");
-    expect((await convRow(conv))?.status).toBe("open");
-  });
-
-  test("a customer message during the settle wait does not withdraw the takeover", async () => {
-    const conv = 8582;
-    await deliver(conv, { ...customerSays("oi") });
-    whileSettling = async () => {
-      whileSettling = null;
-      await deliver(conv, { ...customerSays("tem alguém aí?") });
-    };
-    try {
-      await deliver(conv, { ...composerReply("estou aqui"), ...repliedNow() });
-    } finally {
-      whileSettling = null;
-    }
-    expect(liveStatus.get(conv)).toBe("open");
-    expect((await convRow(conv))?.status).toBe("open");
-  });
-
-  test("on a Chatwoot that renders no version, a resolve seen after the wait still reaches the mirror", async () => {
+  test("on a Chatwoot that renders no version, a refused toggle still puts the mirror on the source", async () => {
     const conv = 8583;
     await deliver(conv, { ...customerSays("oi") });
+    const rowId = String((await convRow(conv))?.id);
+    const published: Record<string, unknown>[] = [];
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)));
+    });
     unversionedReads.add(conv);
-    whileSettling = async () => {
-      whileSettling = null;
+    whileToggling = async () => {
+      whileToggling = null;
       liveStatus.set(conv, "resolved");
     };
-    const before = toggles(conv).length;
     try {
       const statuses = await announcedStatuses(conv, async () => {
         try {
-          await deliver(conv, {
-            ...composerReply("até mais"),
-            ...repliedNow(),
-          });
+          await deliver(conv, composerReply("até mais"));
         } finally {
-          whileSettling = null;
+          whileToggling = null;
         }
       });
-      expect(toggles(conv).length).toBe(before);
+      expect(liveStatus.get(conv)).toBe("resolved");
       expect((await convRow(conv))?.status).toBe("resolved");
       expect(statuses).toEqual(["open", "resolved"]);
+      // The delivery's own snapshot, the claim's `open`, and then what the row now holds.
+      expect(
+        published
+          .filter(
+            (d) => d.type === "conversation" && d.conversationId === rowId,
+          )
+          .map((d) => d.status),
+      ).toEqual(["pending", "open", "resolved"]);
     } finally {
       unversionedReads.delete(conv);
+      setPublisher(() => undefined);
     }
   });
 
-  test("a conversation another party picked up during the settle wait is left to them", async () => {
-    const conv = 8574;
-    await deliver(conv, { ...customerSays("oi") });
-    whileSettling = async () => {
-      whileSettling = null;
-      liveHolder.set(conv, 99);
-    };
-    const before = toggles(conv).length;
-    try {
-      await deliver(conv, {
-        ...composerReply("deixa comigo"),
-        ...repliedNow(),
-      });
-    } finally {
-      whileSettling = null;
-      liveHolder.delete(conv);
-    }
-    expect(toggles(conv).length).toBe(before);
-    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
-  });
-
-  test("a takeover with nothing in the way waits, opens, and is announced once", async () => {
+  test("a takeover with nothing in the way opens, and is announced once", async () => {
     const conv = 8575;
     await deliver(conv, { ...customerSays("oi") });
-    let waited = 0;
-    whileSettling = async () => {
-      waited += 1;
-    };
     const statuses = await announcedStatuses(conv, async () => {
-      try {
-        await deliver(conv, {
-          ...composerReply("assumo daqui"),
-          ...repliedNow(),
-        });
-      } finally {
-        whileSettling = null;
-      }
+      await deliver(conv, composerReply("assumo daqui"));
       // Chatwoot's own event for our toggle, which must not announce the transition a second time.
       await deliverConversationEvent(conv, "conversation_status_changed");
     });
-    expect(waited).toBe(1);
     expect(liveStatus.get(conv)).toBe("open");
     expect(statuses).toEqual(["open"]);
-  });
-
-  test("a reply with no source timestamp takes over without waiting", async () => {
-    const conv = 8576;
-    await deliver(conv, { ...customerSays("oi") });
-    let waited = 0;
-    whileSettling = async () => {
-      waited += 1;
-    };
-    try {
-      await deliver(conv, composerReply("assumo daqui"));
-    } finally {
-      whileSettling = null;
-    }
-    expect(waited).toBe(0);
-    expect(liveStatus.get(conv)).toBe("open");
+    expect(
+      toggles(conv).map(
+        (t) => (t.body as { expected_status?: string }).expected_status,
+      ),
+    ).toEqual(["pending"]);
   });
 
   for (const versioned of [true, false]) {

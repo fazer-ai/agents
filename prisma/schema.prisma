@@ -881,11 +881,6 @@ model Conversation {
   // one against it, and a version ahead of ours is a transition committed after our write (a
   // colleague handing the conversation back) whose status therefore stands. Cleared with the answer.
   statusClaimRefusedAt         Float?    @map("status_claim_refused_at")
-  // The newest version of a refused `conversation_status_changed`, which is a transition somebody
-  // dispatched rather than the snapshot every message carries: a hand-back made while the claim stood.
-  // The takeover reads it after its settle wait and withdraws the toggle when it is newer than the
-  // reply, which is also what keeps an earlier claim's hand-back from counting.
-  statusClaimHandbackAt        Float?    @map("status_claim_handback_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

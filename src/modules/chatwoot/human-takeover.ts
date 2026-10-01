@@ -363,7 +363,14 @@ async function withdrawClaimStatusOnly(p: {
           },
         });
         if (!row || p.status === "open") return null;
-        await db.conversation.updateMany({ where, data: { status: p.status } });
+        // The lock does not order every writer of the row (the handled watermark moves `updatedAt`
+        // without it), so the read above does not guarantee the write: only a write that landed is
+        // announced and broadcast.
+        const { count } = await db.conversation.updateMany({
+          where,
+          data: { status: p.status },
+        });
+        if (count === 0) return null;
         await announceStatusChange(db, p.tenantId, {
           conversationId: row.id,
           inboxId: row.inboxId,

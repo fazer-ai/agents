@@ -1518,6 +1518,83 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
   });
 
+  // A trigger stands in for a writer the advisory lock does not order: it drops the withdrawal's
+  // UPDATE of this row, which is what the compare-and-set sees when such a write lands between its
+  // read and its write.
+  test("on a Chatwoot that renders no version, a withdrawal whose write lost announces nothing", async () => {
+    const conv = 8588;
+    await deliver(conv, { ...customerSays("oi") });
+    const rowId = String((await convRow(conv))?.id);
+    const fn = `skip_withdrawal_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE UPDATE ON conversations FOR EACH ROW WHEN (OLD.id = ${rowId} AND OLD.status = 'open' AND NEW.status = 'resolved') EXECUTE FUNCTION ${fn}()`,
+    );
+    const published: Record<string, unknown>[] = [];
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)));
+    });
+    unversionedReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+    };
+    try {
+      const statuses = await announcedStatuses(conv, async () => {
+        try {
+          await deliver(conv, composerReply("até mais"));
+        } finally {
+          whileToggling = null;
+        }
+      });
+      expect((await convRow(conv))?.status).toBe("open");
+      expect(statuses).toEqual(["open"]);
+      expect(
+        published
+          .filter(
+            (d) => d.type === "conversation" && d.conversationId === rowId,
+          )
+          .map((d) => d.status),
+      ).toEqual(["pending", "open"]);
+    } finally {
+      unversionedReads.delete(conv);
+      setPublisher(() => undefined);
+      await suDb.$executeRawUnsafe(`DROP TRIGGER ${fn} ON conversations`);
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
+  });
+
+  // A failed statement aborts a Postgres transaction whether or not the error is caught, so a fan-out
+  // that fails (a subscription deleted between its read and the delivery insert) would roll back the
+  // claim it was announcing. A trigger makes the insert fail.
+  test("a takeover whose announcement fails still holds its claim", async () => {
+    const conv = 8589;
+    await deliver(conv, { ...customerSays("oi") });
+    const fn = `fail_delivery_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'delivery insert refused'; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON outbound_webhook_deliveries FOR EACH ROW WHEN (NEW.tenant_id = ${tenantId}) EXECUTE FUNCTION ${fn}()`,
+    );
+    try {
+      await announcedStatuses(conv, async () => {
+        await deliver(conv, composerReply("assumo daqui"));
+      });
+      expect(liveStatus.get(conv)).toBe("open");
+      const row = await convRow(conv);
+      expect(row?.status).toBe("open");
+      expect(row?.statusClaimUntil).not.toBeNull();
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER ${fn} ON outbound_webhook_deliveries`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
+  });
+
   test("on a Chatwoot that renders no version, a refused toggle leaves an assignment made meanwhile alone", async () => {
     const conv = 8586;
     await deliver(conv, { ...customerSays("oi") });

@@ -823,18 +823,18 @@ function ContactFieldsPicker({
                 />
                 {t("editor.contactFieldWritable", "Agent can update")}
               </label>
+              {field === "email" && contactFields.writable.includes(field) && (
+                <span className="basis-full text-warning text-xs">
+                  {t(
+                    "editor.contactFieldEmailGate",
+                    "The email is one of the values contact authorization sends to identify the person, so an agent that can change it changes who that check asks about.",
+                  )}
+                </span>
+              )}
             </div>
           );
         })}
       </div>
-      {contactFields.writable.includes("email") && (
-        <span className="mt-2 block text-warning text-xs">
-          {t(
-            "editor.contactFieldEmailGate",
-            "The email is one of the values contact authorization sends to identify the person, so an agent that can change it changes who that check asks about.",
-          )}
-        </span>
-      )}
     </FormField>
   );
 }

@@ -33,6 +33,7 @@
     "chatwootTooManyAccounts": "Contas demais em uma única requisição ({{count}}); no máximo {{max}} contas podem ser definidas de uma vez.",
     "codeToolNameTaken": "Esse nome já está em uso por outra ferramenta.",
     "codeToolNotFound": "Ferramenta de código não encontrada.",
+    "contactFieldNotInContext": "Um campo do contato que o agente pode atualizar precisa estar também no contexto dele: {{fields}}.",
     "conversationNotFound": "Conversa não encontrada.",
     "credentialKindUnusableAsKey": "Este campo lê uma chave de API e o tipo de credencial \"{{kind}}\" não consegue fornecer uma: ou ele guarda vários campos em vez de um segredo único, ou é um tipo que este produto nunca envia para outro serviço. Escolha outra credencial.",
     "credentialKindUnusableOutbound": "O tipo de credencial \"{{kind}}\" é lido dentro deste produto e nunca é enviado para outro serviço, então não consegue autenticar uma requisição. Escolha outra credencial.",

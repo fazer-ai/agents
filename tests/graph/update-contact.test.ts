@@ -8,7 +8,11 @@ import { encryptJson } from "@/api/lib/crypto";
 import { buildToolset, loadAgentConfig } from "@/graph/prepare";
 import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { getAgentToolSelections } from "@/modules/agents/service";
+import {
+  assertSettingsContactFields,
+  getAgentToolSelections,
+  updateAgent,
+} from "@/modules/agents/service";
 import { buildContactFieldsSection } from "@/modules/chatwoot/attributes";
 import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -18,6 +22,8 @@ import {
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { agentSettingsSet } from "@/modules/mcp/write";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The agent's view of the contact's standard Chatwoot fields and the update_contact tool: the
@@ -122,6 +128,27 @@ describe("the per-agent selection", () => {
   });
 });
 
+describe("the write boundary", () => {
+  test("a writable field outside context is refused, a subset is not", () => {
+    expect(() =>
+      assertSettingsContactFields(
+        { contactFields: { context: ["name"], writable: ["name", "email"] } },
+        {},
+      ),
+    ).toThrow("email");
+    assertSettingsContactFields(
+      { contactFields: { context: ["name", "email"], writable: ["email"] } },
+      {},
+    );
+    assertSettingsContactFields({ contactFields: { context: ["name"] } }, {});
+  });
+
+  test("an unchanged bad block stored some other way does not block an unrelated write", () => {
+    const stored = { contactFields: { context: [], writable: ["email"] } };
+    assertSettingsContactFields(stored, stored);
+  });
+});
+
 describe("update_contact", () => {
   test("is not built when no field is writable, even with fields in context", () => {
     const { client } = recordingClient();
@@ -139,8 +166,11 @@ describe("update_contact", () => {
     if (!t) throw new Error("update_contact was not built");
     const json = z.toJSONSchema(t.schema as z.ZodTypeAny) as {
       properties: Record<string, unknown>;
+      minProperties?: number;
     };
     expect(Object.keys(json.properties).sort()).toEqual(["city", "name"]);
+    // An empty call is out of the schema the model sees, not only refused in the body.
+    expect(json.minProperties).toBe(1);
     expect(JSON.stringify(json)).not.toContain("\\p{L}");
   });
 
@@ -618,6 +648,64 @@ describe.skipIf(!dbUp)("the mirror and the write-through", () => {
     const names = view.catalog.native.map((n) => n.name);
     expect(names).toContain("set_custom_attribute");
     expect(names).not.toContain("update_contact");
+  });
+
+  test("REST and MCP refuse a writable field outside context, MCP against the stored context", async () => {
+    const principal: VerifiedToken = {
+      userId: 1n,
+      tenantId,
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+      clientId: "c",
+      jti: "j",
+    };
+    const stored = {
+      context: ["name", "email", "city"],
+      writable: ["name", "city"],
+    };
+    await expect(
+      updateAgent(
+        ctx(tenantId),
+        agentId,
+        {
+          settings: {
+            contactFields: { context: ["name"], writable: ["name", "email"] },
+          },
+        },
+        appDb,
+        { settingsMode: "replace" },
+      ),
+    ).rejects.toThrow("email");
+    const bad = await agentSettingsSet(
+      principal,
+      {
+        agent_id: String(agentId),
+        contactFields: { writable: ["description"] },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(bad.ok).toBe(false);
+    expect(JSON.stringify(bad)).toContain("description");
+    const row = await suDb.agent.findUniqueOrThrow({ where: { id: agentId } });
+    expect((row.settings as Record<string, unknown>).contactFields).toEqual(
+      stored,
+    );
+    // A patch naming only writable is valid when the stored context holds the field.
+    const ok = await agentSettingsSet(
+      principal,
+      {
+        agent_id: String(agentId),
+        contactFields: { writable: ["email"] },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(ok.ok).toBe(true);
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { settings: { contactFields: stored } },
+    });
   });
 
   test("a tie that disputes one field clears that field only", async () => {

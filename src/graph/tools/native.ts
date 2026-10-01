@@ -2021,7 +2021,9 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
         ctx,
         "update_contact",
       ),
-      schema: z.object(shape),
+      // NOTE: minProperties reaches the model's JSON schema only; an empty call that slips through is
+      // still refused in the body.
+      schema: z.object(shape).meta({ minProperties: 1 }),
     },
   );
 }

@@ -94,6 +94,9 @@ let whileBuildingClient: (() => Promise<void>) | null = null;
 // Work that runs while the toggle is in flight, which is the OTHER window: the fence has already
 // answered, the write to Chatwoot is on the wire, and a conversation event can commit here.
 let whileToggling: (() => Promise<void>) | null = null;
+// Work that runs while a REST show is being answered, after Chatwoot read the conversation: something
+// committing between a live read and what its caller does with it.
+const whileReading = new Map<number, () => Promise<void>>();
 const posted: { url: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -130,10 +133,16 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (show && (init?.method ?? "GET") === "GET") {
     const id = Number(show[1]);
     if (failingReads.has(id)) return new Response("nope", { status: 502 });
+    const statusRead = liveStatus.get(id) ?? "pending";
+    const hook = whileReading.get(id);
+    if (hook) {
+      whileReading.delete(id);
+      await hook();
+    }
     stamp += 1;
     return Response.json({
       id,
-      status: liveStatus.get(id) ?? "pending",
+      status: statusRead,
       meta: {
         assignee_type: "AgentBot",
         assignee: { id: liveHolder.get(id) ?? OUR_BOT, name: "Atendente" },
@@ -1543,6 +1552,29 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       assigneeType: "User",
       assigneeId: 5,
     });
+  });
+
+  test("on a Chatwoot that renders no version, a reopen landing after the corrective read is not undone", async () => {
+    const conv = 8587;
+    await deliver(conv, { ...customerSays("oi") });
+    unversionedReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+      // The read that follows the refusal sees `resolved`; an operator reopens right after it.
+      whileReading.set(conv, async () => {
+        liveStatus.set(conv, "open");
+        await deliverConversationEvent(conv, "conversation_status_changed");
+      });
+    };
+    try {
+      await deliver(conv, composerReply("até mais"));
+    } finally {
+      whileToggling = null;
+      whileReading.delete(conv);
+      unversionedReads.delete(conv);
+    }
+    expect((await convRow(conv))?.status).toBe("open");
   });
 
   test("a takeover with nothing in the way opens, and is announced once", async () => {

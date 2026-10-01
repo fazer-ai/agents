@@ -322,15 +322,16 @@ export interface HumanReplyTakeoverParams {
   heldClaimUntil?: Date | null;
 }
 
-// Without a version to order by, only the status the claim wrote is put back, and only while the row
-// still stands on this claim: the claim owns that status and nothing else, so an assignment a webhook
-// wrote meanwhile is left alone.
+// Without a version to order by, only the status the claim wrote is put back, and only while the row is
+// exactly as it stood before the read (still this claim's `open`, written by nobody since): the claim
+// owns that status and nothing else, and any write in between is newer than the read.
 async function withdrawClaimStatusOnly(p: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
   claimUntil: Date;
   status: string;
+  seenUpdatedAt: Date;
   base: PrismaClient;
 }): Promise<{
   id: bigint;
@@ -349,6 +350,7 @@ async function withdrawClaimStatusOnly(p: {
           chatwootConversationId: p.conversationId,
           status: "open",
           statusClaimUntil: p.claimUntil,
+          updatedAt: p.seenUpdatedAt,
         };
         const row = await db.conversation.findFirst({
           where,
@@ -384,14 +386,28 @@ async function withdrawClaim(
     client: () => Promise<ChatwootClient>;
   },
 ): Promise<void> {
+  // The row as it stood BEFORE the read, so a write landing between the read and the withdrawal (an
+  // operator reopening what the read saw resolved) cancels the unversioned write-back below.
+  const before = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        tenantId: p.tenantId,
+        chatwootInstanceId: p.instanceId,
+        chatwootConversationId: p.conversationId,
+      },
+      select: { updatedAt: true },
+    }),
+  );
   const live = parseLiveConversation(
     await (await p.client()).getConversation(p.conversationId),
   );
   if (live === null) return;
   if (live.updatedAt === null) {
+    if (!before) return;
     const written = await withdrawClaimStatusOnly({
       ...p,
       status: live.status,
+      seenUpdatedAt: before.updatedAt,
     });
     if (written) {
       broadcastConversationEvent(p.tenantId, {

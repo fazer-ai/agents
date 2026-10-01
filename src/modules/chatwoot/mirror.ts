@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { ADDITIONAL_CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { retireJobsByDedupeKeyOn } from "@/modules/scheduler/service";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
@@ -575,10 +576,22 @@ async function upsertContact(
   const nameStated = c.name !== undefined;
   const emailStated = c.email !== undefined;
   const phoneStated = c.phone !== undefined;
-  const attrsStated = c.identifier !== undefined;
-  const attrs = JSON.stringify(
-    c.identifier ? { identifier: c.identifier } : {},
-  );
+  // The attributes bag holds two statements, the identifier and the four
+  // additional_attributes fields, and a payload may carry either one alone. Each replaces only its
+  // own keys (`attributes - <its keys> || <its values>`), so one never clears the other.
+  const idStated = c.identifier !== undefined;
+  const additionalStated = c.additionalAttributes !== undefined;
+  const attrsStated = idStated || additionalStated;
+  const attrsPatch: Record<string, string> = {};
+  if (c.identifier) attrsPatch.identifier = c.identifier;
+  for (const [key, value] of Object.entries(c.additionalAttributes ?? {})) {
+    if (value) attrsPatch[key] = value;
+  }
+  const attrsKeys = [
+    ...(idStated ? ["identifier"] : []),
+    ...(additionalStated ? ADDITIONAL_CONTACT_FIELDS : []),
+  ];
+  const attrs = JSON.stringify(attrsPatch);
 
   // Keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
   // accounts under one tenant can share an id.
@@ -597,9 +610,7 @@ async function upsertContact(
       name: c.name ?? null,
       email: c.email ?? null,
       phone: c.phone ?? null,
-      attributes: (c.identifier
-        ? { identifier: c.identifier }
-        : {}) as Prisma.InputJsonValue,
+      attributes: attrsPatch as Prisma.InputJsonValue,
     },
     // Identity is written below, under a compare-and-set. Unconditionally here, a delivery arriving
     // late would restore what a newer one changed or cleared.
@@ -639,8 +650,8 @@ async function upsertContact(
           WHEN ${phoneStated} AND (phone_at IS NULL OR phone_at < ${eventAt}) THEN ${eventAt}
           ELSE phone_at END,
         attributes = CASE
-          WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${attrs}::jsonb
-          WHEN ${attrsStated} AND attributes_at = ${eventAt} AND attributes IS DISTINCT FROM ${attrs}::jsonb THEN '{}'::jsonb
+          WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN (attributes - ${attrsKeys}::text[]) || ${attrs}::jsonb
+          WHEN ${attrsStated} AND attributes_at = ${eventAt} AND attributes IS DISTINCT FROM ((attributes - ${attrsKeys}::text[]) || ${attrs}::jsonb) THEN attributes - ${attrsKeys}::text[]
           ELSE attributes END,
         attributes_at = CASE
           WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${eventAt}

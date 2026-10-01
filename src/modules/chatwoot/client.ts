@@ -3,6 +3,7 @@ import { withKeyedQueue } from "@/lib/locks";
 import { withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
+import type { AdditionalContactField } from "@/modules/chatwoot/contact-fields";
 import {
   CHATWOOT_AUTH_HEADER,
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
@@ -1371,6 +1372,9 @@ export class ChatwootClient {
       phone_number?: string;
       email?: string;
       name?: string;
+      // NOTE: Merged by Chatwoot into what the contact already holds
+      // (contacts_controller#contact_additional_attributes), so only the keys being written are sent.
+      additional_attributes?: Partial<Record<AdditionalContactField, string>>;
     },
   ): Promise<unknown> {
     return this.request(

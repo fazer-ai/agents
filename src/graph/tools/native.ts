@@ -26,10 +26,17 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import {
+  ChatwootApiError,
   ChatwootCalledOffError,
   type ChatwootClient,
   type CustomAttributeDef,
 } from "@/modules/chatwoot/client";
+import {
+  type AdditionalContactField,
+  type ContactField,
+  type ContactFieldsConfig,
+  isAdditionalContactField,
+} from "@/modules/chatwoot/contact-fields";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
@@ -429,6 +436,9 @@ export interface ToolCtx {
   // convention as ToolpackCtx: the SSRF assertion resolves DNS, so a hermetic test has to stub it.
   fetchImpl?: typeof fetch;
   assertSafe?: ImageFetchDeps["assertSafe"];
+  // The contact fields this agent sees and may change (agent.settings.contactFields). update_contact
+  // is built only when `writable` names at least one field, and its schema offers only those.
+  contactFields?: ContactFieldsConfig;
   // `open_case_in_inbox`: the agent's destination config and the origin conversation's
   // contact, as Chatwoot knows it. Absent, or with no destination inbox, the tool is not built.
   crossInboxCase?: {
@@ -1807,6 +1817,203 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
   );
 }
 
+const CONTACT_FIELD_SCHEMA: Record<ContactField, z.ZodString> = {
+  name: z
+    .string()
+    .max(120)
+    .describe(
+      "The customer's own name exactly as they stated or corrected it; never invent a surname.",
+    ),
+  email: z.string().max(254).describe("The customer's email address."),
+  company_name: z.string().max(120).describe("The customer's company."),
+  city: z.string().max(120).describe("The customer's city."),
+  country: z
+    .string()
+    .max(120)
+    .describe(
+      "The country's name as Chatwoot spells it in English (e.g. Brazil, Portugal).",
+    ),
+  description: z
+    .string()
+    .max(500)
+    .describe("A short note about the customer, in their own terms."),
+};
+
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_SHAPE = /^\+?[\d\s().-]+$/;
+
+// One field's value as it is written, or the reason it is refused. Every value has its whitespace
+// collapsed; a name must carry a letter and must not be a phone number (the shape a model most
+// often mistakes for one), and an email must look like one. The letter test lives here and not in
+// the zod schema: `\p{L}` does not survive the JSON Schema some providers are handed.
+function contactFieldValue(
+  field: ContactField,
+  raw: string,
+): { value: string } | { refused: string } {
+  const value = raw.trim().replace(/\s+/g, " ");
+  if (!value) return { refused: `${field} is empty` };
+  if (field === "name") {
+    if (PHONE_SHAPE.test(value))
+      return { refused: "name must not be a phone number" };
+    if (!/\p{L}/u.test(value))
+      return { refused: "name must contain at least one letter" };
+  }
+  if (field === "email" && !EMAIL_SHAPE.test(value)) {
+    return { refused: "email is not an email address" };
+  }
+  return { value };
+}
+
+// Write-through of the fields just written into OUR mirror, so the contact block of the next turn
+// (and a proactive nudge, which has no inbound event before it) reads them at once. Each field's
+// source watermark moves to now, never back (GREATEST ignores NULL): Chatwoot does not deliver
+// contact_updated to bots, so the next event about this contact may carry a snapshot from before
+// the write, and the watermark is what keeps it from undoing it. `AT TIME ZONE 'UTC'` because the
+// columns are TIMESTAMP holding UTC (see mirrorAttributeWrite). Best-effort: logged, never surfaced.
+async function mirrorContactFieldsWrite(
+  ctx: ToolCtx,
+  written: Partial<Record<ContactField, string>>,
+): Promise<void> {
+  if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) return;
+  const tenantId = ctx.tenantId;
+  const contactDbId = ctx.contactDbId;
+  const hasName = written.name !== undefined;
+  const hasEmail = written.email !== undefined;
+  const additional: Partial<Record<AdditionalContactField, string>> = {};
+  for (const [field, value] of Object.entries(written) as [
+    ContactField,
+    string,
+  ][]) {
+    if (isAdditionalContactField(field)) additional[field] = value;
+  }
+  const hasAdditional = Object.keys(additional).length > 0;
+  const patch = JSON.stringify(additional);
+  try {
+    await runScopedOn(
+      ctx.base,
+      sysCtx(tenantId),
+      (db) =>
+        db.$executeRaw`
+        UPDATE contacts SET
+          name = CASE WHEN ${hasName} THEN ${written.name ?? null}::text ELSE name END,
+          name_at = CASE WHEN ${hasName} THEN GREATEST(name_at, (NOW() AT TIME ZONE 'UTC')) ELSE name_at END,
+          email = CASE WHEN ${hasEmail} THEN ${written.email ?? null}::text ELSE email END,
+          email_at = CASE WHEN ${hasEmail} THEN GREATEST(email_at, (NOW() AT TIME ZONE 'UTC')) ELSE email_at END,
+          attributes = CASE WHEN ${hasAdditional} THEN attributes || ${patch}::jsonb ELSE attributes END,
+          attributes_at = CASE WHEN ${hasAdditional} THEN GREATEST(attributes_at, (NOW() AT TIME ZONE 'UTC')) ELSE attributes_at END
+        WHERE id = ${contactDbId} AND tenant_id = ${tenantId}
+      `,
+    );
+  } catch (e) {
+    logger.warn(
+      "contact mirror write-through failed: %s",
+      e instanceof Error ? e.message : String(e),
+    );
+    ctx.onSideEffectError?.({
+      tool: "update_contact",
+      phase: "mirror_write",
+      detail: { fields: Object.keys(written) },
+      err: e,
+    });
+  }
+}
+
+// Writes the contact's standard Chatwoot fields the operator made writable for this agent, in one
+// PUT. The schema carries only those fields, so a field the operator did not enable cannot even be
+// attempted. A write Chatwoot refuses (an email already on another contact of the account is the
+// ordinary case) comes back as a tool failure, never as a friendly sentence on an `ok` line.
+function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
+  const shape: Partial<Record<ContactField, z.ZodOptional<z.ZodString>>> = {};
+  for (const f of writable) shape[f] = CONTACT_FIELD_SCHEMA[f].optional();
+  return failableTool(
+    async (input: Partial<Record<ContactField, string>>) => {
+      const written: Partial<Record<ContactField, string>> = {};
+      const refused: string[] = [];
+      for (const f of writable) {
+        const raw = input[f];
+        if (raw === undefined) continue;
+        const r = contactFieldValue(f, raw);
+        if ("refused" in r) refused.push(r.refused);
+        else written[f] = r.value;
+      }
+      if (refused.length > 0) {
+        ctx.onNoEffect?.("update_contact");
+        return toolFailure(
+          `Nothing was updated: ${refused.join("; ")}. Ask the customer again rather than guessing.`,
+        );
+      }
+      if (Object.keys(written).length === 0) {
+        ctx.onNoEffect?.("update_contact");
+        return toolFailure(
+          `Nothing was updated: pass at least one of ${writable.join(", ")}.`,
+        );
+      }
+      if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+        ctx.onNoEffect?.("update_contact");
+        return "Could not update the contact (no contact in scope).";
+      }
+      const tenantId = ctx.tenantId;
+      const contactDbId = ctx.contactDbId;
+      const contact = await runScopedOn(ctx.base, sysCtx(tenantId), (db) =>
+        db.contact.findUnique({
+          where: { id: contactDbId },
+          select: { chatwootContactId: true },
+        }),
+      );
+      if (!contact?.chatwootContactId) {
+        ctx.onNoEffect?.("update_contact");
+        return "Could not update the contact (contact not linked to Chatwoot).";
+      }
+      // NOTE: Asked after the lookup and before the write, as set_custom_attribute does: a contact's
+      // data outlives the conversation, so a write after a `/reset` is one nothing later corrects.
+      if (ctx.stillWanted && !(await ctx.stillWanted())) {
+        ctx.onNoEffect?.("update_contact");
+        return "Could not update the contact (the run was called off while this write waited).";
+      }
+      const additional: Partial<Record<AdditionalContactField, string>> = {};
+      for (const [f, v] of Object.entries(written) as [
+        ContactField,
+        string,
+      ][]) {
+        if (isAdditionalContactField(f)) additional[f] = v;
+      }
+      try {
+        await ctx.client.updateContact(contact.chatwootContactId, {
+          ...(written.name !== undefined ? { name: written.name } : {}),
+          ...(written.email !== undefined ? { email: written.email } : {}),
+          ...(Object.keys(additional).length > 0
+            ? { additional_attributes: additional }
+            : {}),
+        });
+      } catch (e) {
+        if (
+          e instanceof ChatwootApiError &&
+          e.status >= 400 &&
+          e.status < 500
+        ) {
+          return toolFailure(
+            written.email !== undefined && e.status === 422
+              ? "Chatwoot refused the update (HTTP 422). The email is most likely already on another contact of this account; tell the customer it could not be saved rather than retrying."
+              : `Chatwoot refused the update (HTTP ${e.status}). Nothing was saved.`,
+          );
+        }
+        throw e;
+      }
+      await mirrorContactFieldsWrite(ctx, written);
+      return `Contact updated: ${Object.keys(written).join(", ")}.`;
+    },
+    {
+      name: "update_contact",
+      description: withOperatorNote(
+        `Save the customer's own contact details on their Chatwoot contact: ${writable.join(", ")}. Only what the customer explicitly said in this conversation; never invent or complete a value. The current values are in <contact_fields>. Pass only the fields that change.`,
+        ctx,
+        "update_contact",
+      ),
+      schema: z.object(shape),
+    },
+  );
+}
+
 // Records the customer's audio-vs-text reply preference on the Contact (TTS "preference" mode). A
 // DB write (RLS-scoped), not a Chatwoot call — the elegant replacement for the n8n custom attribute.
 function setVoicePreferenceTool(ctx: ToolCtx) {
@@ -2552,6 +2759,10 @@ export function buildNativeTools(
   // Cheaper too: one Set instead of one per candidate.
   const allowSet = allowed ? new Set(allowed) : null;
   const granted = allowSet ? all.filter((t) => allowSet.has(t.name)) : all;
+  // update_contact is outside the allowlist: the operator grants it by marking a field
+  // writable, so an empty `writable` is the fail-closed state and there is no second switch.
+  const writable = ctx.contactFields?.writable ?? [];
+  if (writable.length > 0) granted.push(updateContactTool(ctx, writable));
   if (!ctx.client?.muted) return granted;
   return granted.filter((t) => !MUTED_CANNOT_COMPLETE.has(t.name));
 }

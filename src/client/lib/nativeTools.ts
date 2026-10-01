@@ -15,6 +15,7 @@ import {
   StickyNote,
   Tag,
   Tags,
+  UserRoundPen,
 } from "lucide-react";
 
 // Display metadata for the built-in native tools (icon + friendly label + one-line description),
@@ -30,6 +31,7 @@ export const NATIVE_TOOL_ICONS: Record<string, LucideIcon> = {
   kanban_move_card: LayoutGrid,
   update_kanban_task: SquarePen,
   set_voice_preference: Mic,
+  update_contact: UserRoundPen,
   react_to_message: Smile,
   send_image: ImageIcon,
   open_case_in_inbox: FolderInput,
@@ -118,6 +120,15 @@ export function nativeToolMeta(name: string, t: TFunction): NativeToolMeta {
         description: t(
           "nativeTools.set_voice_preference.desc",
           "Record whether the customer prefers audio or text replies.",
+        ),
+      };
+    case "update_contact":
+      return {
+        icon,
+        label: t("nativeTools.update_contact.label", "Update contact"),
+        description: t(
+          "nativeTools.update_contact.desc",
+          "Save the contact details the customer gives (name, email, city…) on the Chatwoot contact, limited to the fields chosen in Data in context.",
         ),
       };
     case "react_to_message":

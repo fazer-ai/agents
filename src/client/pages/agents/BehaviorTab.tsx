@@ -51,6 +51,7 @@ import {
 } from "@/client/lib/providerDefaults";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { serverNow, serverNowDate } from "@/client/lib/serverClock";
+import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
@@ -73,6 +74,11 @@ import {
 } from "@/modules/agents/text-caps";
 import { formatWindowsSummary } from "@/modules/business-hours/announce";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
+import {
+  CONTACT_FIELDS,
+  type ContactField,
+  type ContactFieldsConfig,
+} from "@/modules/chatwoot/contact-fields";
 import {
   CONTACT_AUTH_IDENTIFIERS_TEXT_MAX,
   CONTACT_AUTH_PHONES_TEXT_MAX,
@@ -427,6 +433,8 @@ interface BehaviorTabProps {
   setAttributeContext: React.Dispatch<
     React.SetStateAction<AttributeContextState>
   >;
+  contactFields: ContactFieldsConfig;
+  setContactFields: React.Dispatch<React.SetStateAction<ContactFieldsConfig>>;
   serviceWindow: ServiceWindowState;
   setServiceWindow: React.Dispatch<React.SetStateAction<ServiceWindowState>>;
   followUp: FollowUpState;
@@ -737,6 +745,97 @@ function AttributeContextPickers({
         </span>
       )}
     </div>
+  );
+}
+
+// The contact's standard Chatwoot fields, one row each: whether the agent sees the current value,
+// and whether update_contact may change it. A field the agent cannot see cannot be writable, so
+// clearing "in context" clears "can update" too. Mirrors readContactFieldsConfig.
+function ContactFieldsPicker({
+  contactFields,
+  setContactFields,
+}: {
+  contactFields: ContactFieldsConfig;
+  setContactFields: React.Dispatch<React.SetStateAction<ContactFieldsConfig>>;
+}) {
+  const { t } = useTranslation();
+  const labels: Record<ContactField, string> = {
+    name: t("editor.contactFieldName", "Name"),
+    email: t("editor.contactFieldEmail", "Email"),
+    company_name: t("editor.contactFieldCompany", "Company"),
+    city: t("editor.contactFieldCity", "City"),
+    country: t("editor.contactFieldCountry", "Country"),
+    description: t("editor.contactFieldDescription", "Description"),
+  };
+  const setVisible = (field: ContactField, on: boolean) =>
+    setContactFields((prev) => ({
+      context: on
+        ? CONTACT_FIELDS.filter((f) => f === field || prev.context.includes(f))
+        : prev.context.filter((f) => f !== field),
+      writable: on ? prev.writable : prev.writable.filter((f) => f !== field),
+    }));
+  const setWritable = (field: ContactField, on: boolean) =>
+    setContactFields((prev) => ({
+      ...prev,
+      writable: on
+        ? CONTACT_FIELDS.filter((f) => f === field || prev.writable.includes(f))
+        : prev.writable.filter((f) => f !== field),
+    }));
+  return (
+    <FormField
+      group
+      label={t("editor.contactFields", "Contact details")}
+      description={t(
+        "editor.contactFieldsHint",
+        "The contact's own Chatwoot fields. The agent sees the current value of each one you check, and can save what the customer tells it in the ones marked as updatable.",
+      )}
+    >
+      <div className="flex flex-col gap-1.5">
+        {CONTACT_FIELDS.map((field) => {
+          const visible = contactFields.context.includes(field);
+          return (
+            <div
+              key={field}
+              className="flex flex-wrap items-center gap-x-4 gap-y-1"
+            >
+              <span className="w-28 text-sm text-text-primary">
+                {labels[field]}
+              </span>
+              <label className="flex items-center gap-1.5 text-text-secondary text-xs">
+                <input
+                  type="checkbox"
+                  checked={visible}
+                  onChange={(e) => setVisible(field, e.target.checked)}
+                />
+                {t("editor.contactFieldVisible", "In context")}
+              </label>
+              <label
+                className={cn(
+                  "flex items-center gap-1.5 text-text-secondary text-xs",
+                  { "opacity-50": !visible },
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={contactFields.writable.includes(field)}
+                  disabled={!visible}
+                  onChange={(e) => setWritable(field, e.target.checked)}
+                />
+                {t("editor.contactFieldWritable", "Agent can update")}
+              </label>
+            </div>
+          );
+        })}
+      </div>
+      {contactFields.writable.includes("email") && (
+        <span className="mt-2 block text-warning text-xs">
+          {t(
+            "editor.contactFieldEmailGate",
+            "The email is one of the values contact authorization sends to identify the person, so an agent that can change it changes who that check asks about.",
+          )}
+        </span>
+      )}
+    </FormField>
   );
 }
 
@@ -1149,6 +1248,8 @@ export function BehaviorTab({
   setTakeover,
   attributeContext,
   setAttributeContext,
+  contactFields,
+  setContactFields,
   serviceWindow,
   setServiceWindow,
   followUp,
@@ -2975,6 +3076,10 @@ export function BehaviorTab({
               agentId={agentId}
               attributeContext={attributeContext}
               setAttributeContext={setAttributeContext}
+            />
+            <ContactFieldsPicker
+              contactFields={contactFields}
+              setContactFields={setContactFields}
             />
           </Section>
 

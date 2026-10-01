@@ -151,6 +151,8 @@ export function behaviorTabProps(
     takeover: { onHumanReply: true },
     setTakeover: () => {},
     attributeContext: { conversation: [], contact: [], task: [] },
+    contactFields: { context: [], writable: [] },
+    setContactFields: () => {},
     setAttributeContext: noop,
     serviceWindow: {
       enabled: false,

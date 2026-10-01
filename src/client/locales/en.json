@@ -1162,6 +1162,17 @@
     "contactAuthUrl": "Authorization URL",
     "contactAuthUrlHint": "Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { \"authorized\": true | false }.",
     "contactAuthUrlInvalid": "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
+    "contactFieldCity": "City",
+    "contactFieldCompany": "Company",
+    "contactFieldCountry": "Country",
+    "contactFieldDescription": "Description",
+    "contactFieldEmail": "Email",
+    "contactFieldEmailGate": "The email is one of the values contact authorization sends to identify the person, so an agent that can change it changes who that check asks about.",
+    "contactFieldName": "Name",
+    "contactFields": "Contact details",
+    "contactFieldsHint": "The contact's own Chatwoot fields. The agent sees the current value of each one you check, and can save what the customer tells it in the ones marked as updatable.",
+    "contactFieldVisible": "In context",
+    "contactFieldWritable": "Agent can update",
     "credential": "API key",
     "crossInboxCase": {
       "attributeKey": "Case number attribute",
@@ -2335,6 +2346,10 @@
     "skip_reply": {
       "desc": "Decide not to reply when a message needs no answer (e.g. just 'ok' or an emoji). When the agent says the conversation is not for it or needs a person, or nobody has answered it yet, it goes to the team as open with a private note, and the agent stops answering there.",
       "label": "Skip reply"
+    },
+    "update_contact": {
+      "desc": "Save the contact details the customer gives (name, email, city…) on the Chatwoot contact, limited to the fields chosen in Data in context.",
+      "label": "Update contact"
     },
     "update_kanban_task": {
       "desc": "Update a funnel card's title, description, priority or scheduled dates.",

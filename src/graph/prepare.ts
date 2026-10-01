@@ -46,10 +46,16 @@ import {
   ATTRIBUTE_SCOPES,
   attributeBagsFrom,
   buildAttributeContextSection,
+  buildContactFieldsSection,
   isAttributeContextEmpty,
   readAttributeContextConfig,
 } from "@/modules/chatwoot/attributes";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ContactFieldsConfig,
+  contactFieldValuesFrom,
+  readContactFieldsConfig,
+} from "@/modules/chatwoot/contact-fields";
 import { mirroredContactIdentifier } from "@/modules/chatwoot/contact-identifier";
 import {
   type KanbanContext,
@@ -305,6 +311,8 @@ export interface AgentConfig {
   sendImageConfig: SendImageConfig;
   // Where `open_case_in_inbox` opens the case (operator-set; no inbox = the tool is not built).
   crossInboxCaseConfig: CrossInboxCaseConfig;
+  // The contact fields in the prompt and the ones update_contact may write (none = no tool).
+  contactFieldsConfig: ContactFieldsConfig;
   // The origin contact as Chatwoot knows it; what `open_case_in_inbox` settles the identity on.
   chatwootContactId: number | null;
   // Per-agent kanban guidance (operator funnel note), surfaced in the kanban_move_card description.
@@ -600,6 +608,7 @@ export async function loadAgentConfig(
     }
   }
   const attributeContext = readAttributeContextConfig(effSettings);
+  const contactFieldsConfig = readContactFieldsConfig(effSettings);
   // One read for both observability knobs, and one instant for the debug mode's expiry (two
   // reads would let the window close between the answers). Read from the SAVED bag, the only block
   // here that ignores the draft: every other override changes how the agent BEHAVES, this one what
@@ -815,6 +824,14 @@ export async function loadAgentConfig(
             sel.nativeToolsAllow.includes("set_custom_attribute"),
         )
       : null;
+  // The current values of the contact fields the operator selected, from the same mirrored row,
+  // appended like the attribute block and for the same reasons.
+  const contactFieldsSection = conv
+    ? buildContactFieldsSection(
+        contactFieldValuesFrom(conv.contact ?? {}),
+        contactFieldsConfig,
+      )
+    : null;
   // The LIVE appointments booked in THIS conversation, re-read from the reminder scheduler
   // rows on EVERY turn — including after the last reminder fired (job DONE, start still ahead), the
   // exact turn where the customer replies to it. loadAgentConfig is shared by the reactive turn, the
@@ -855,9 +872,11 @@ export async function loadAgentConfig(
       );
     }
   }
-  const promptSections = [attributeSection, appointmentSection].filter(
-    (s): s is string => s !== null,
-  );
+  const promptSections = [
+    attributeSection,
+    contactFieldsSection,
+    appointmentSection,
+  ].filter((s): s is string => s !== null);
   // The same prompt with every customer-authored value taken out, for the row the Logs page shows.
   // Built here, from the same parts, so the two can never describe different turns. The alternative
   // (reconstructing it at the emit) would read a prompt that had already lost the seam between the
@@ -870,6 +889,13 @@ export async function loadAgentConfig(
         attributeContext[scope].map((k) => `${scope}:${k}`),
       ),
       text: attributeSection,
+    });
+  }
+  if (contactFieldsSection) {
+    auditedSections.push({
+      label: "contato",
+      keys: contactFieldsConfig.context.map((f) => `contact_field:${f}`),
+      text: contactFieldsSection,
     });
   }
   if (appointmentSection) {
@@ -929,6 +955,7 @@ export async function loadAgentConfig(
     contactAuthConfig: readContactAuthConfig(effSettings),
     sendImageConfig: readSendImageConfig(effSettings),
     crossInboxCaseConfig,
+    contactFieldsConfig,
     chatwootContactId: conv?.contact?.chatwootContactId ?? null,
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
@@ -1142,6 +1169,7 @@ export interface ToolBuildDeps {
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
+      contactFields?: ContactFieldsConfig;
       crossInboxCase?: {
         config: CrossInboxCaseConfig;
         contactId: number | null;
@@ -1526,6 +1554,7 @@ export async function buildToolset(
           : undefined),
       kanban,
       sendImage: cfg.sendImageConfig,
+      contactFields: cfg.contactFieldsConfig,
       // NOTE: The inbox id is account-scoped: on a conversation of another account it names a different
       // inbox or none, so the tool is not built there (same drift the pinned handoff covers above).
       // The playground (conversationId 0, instance 0) belongs to no account and only simulates the

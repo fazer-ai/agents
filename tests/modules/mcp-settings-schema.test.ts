@@ -356,6 +356,10 @@ describe("agent_settings_set argument schema", () => {
       { followUp: { steps: [{ instructions: "x".repeat(3_000) }] } },
     ],
     [
+      "a writable contact field the agent does not see (dropped on read)",
+      { contactFields: { context: ["name"], writable: ["name", "email"] } },
+    ],
+    [
       "more attribute keys than the reader keeps",
       {
         attributeContext: {
@@ -409,6 +413,14 @@ describe("agent_settings_set argument schema", () => {
     [
       "attribute keys that are not strings",
       { attributeContext: { conversation: [1, 2] } },
+    ],
+    [
+      "a contact field outside the closed set",
+      { contactFields: { context: ["name", "phone_number"] } },
+    ],
+    [
+      "the identifier as a writable contact field",
+      { contactFields: { writable: ["identifier"] } },
     ],
     ["a block sent as an array", { debounce: [] }],
     // NOTE: The identifier family. `posInt`/`inboxRef` keep a positive integer and drop everything else, so each

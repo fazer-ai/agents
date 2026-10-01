@@ -1509,6 +1509,42 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
   });
 
+  test("on a Chatwoot that renders no version, a refused toggle leaves an assignment made meanwhile alone", async () => {
+    const conv = 8586;
+    await deliver(conv, { ...customerSays("oi") });
+    unversionedReads.add(conv);
+    // A person resolves and is assigned while the toggle is on the wire; the live read that follows
+    // still names our bot, and carries no version to say it is older than that assignment.
+    whileToggling = async () => {
+      whileToggling = null;
+      liveStatus.set(conv, "resolved");
+      const snapshot = conversation(conv);
+      await deliverConversationEvent(conv, "conversation_updated", {
+        ...snapshot,
+        meta: {
+          ...snapshot.meta,
+          assignee_type: "User",
+          assignee: { id: 5, name: "Ana" },
+        },
+      });
+    };
+    try {
+      await deliver(conv, composerReply("até mais"));
+    } finally {
+      whileToggling = null;
+      unversionedReads.delete(conv);
+    }
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true, assigneeType: true, assigneeId: true },
+    });
+    expect(row).toEqual({
+      status: "resolved",
+      assigneeType: "User",
+      assigneeId: 5,
+    });
+  });
+
   test("a takeover with nothing in the way opens, and is announced once", async () => {
     const conv = 8575;
     await deliver(conv, { ...customerSays("oi") });

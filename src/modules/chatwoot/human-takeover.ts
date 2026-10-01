@@ -322,9 +322,62 @@ export interface HumanReplyTakeoverParams {
   heldClaimUntil?: Date | null;
 }
 
-// Puts the row of a takeover Chatwoot refused back on the source's state, through the claim it owns:
-// the reconcile orders the read by version, or by activity when Chatwoot renders none, so a webhook
-// that reached the row first keeps what it wrote. An unreadable Chatwoot leaves the claim to run out.
+// Without a version to order by, only the status the claim wrote is put back, and only while the row
+// still stands on this claim: the claim owns that status and nothing else, so an assignment a webhook
+// wrote meanwhile is left alone.
+async function withdrawClaimStatusOnly(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  claimUntil: Date;
+  status: string;
+  base: PrismaClient;
+}): Promise<{
+  id: bigint;
+  assigneeType: string | null;
+  assigneeId: number | null;
+  lastEventAt: Date | null;
+} | null> {
+  return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(
+      db,
+      `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
+      async () => {
+        const where = {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootConversationId: p.conversationId,
+          status: "open",
+          statusClaimUntil: p.claimUntil,
+        };
+        const row = await db.conversation.findFirst({
+          where,
+          select: {
+            id: true,
+            inboxId: true,
+            assigneeType: true,
+            assigneeId: true,
+            lastEventAt: true,
+          },
+        });
+        if (!row || p.status === "open") return null;
+        await db.conversation.updateMany({ where, data: { status: p.status } });
+        await announceStatusChange(db, p.tenantId, {
+          conversationId: row.id,
+          inboxId: row.inboxId,
+          status: p.status,
+          previousStatus: "open",
+          assigneeType: row.assigneeType,
+        });
+        return row;
+      },
+    ),
+  );
+}
+
+// Puts the row of a takeover Chatwoot refused back on the source's state, through the claim it owns.
+// A versioned read reconciles; an unversioned one moves the status alone (above). An unreadable
+// Chatwoot leaves the claim to run out, as a failed open does.
 async function withdrawClaim(
   p: HumanReplyTakeoverParams & {
     claimUntil: Date;
@@ -335,6 +388,24 @@ async function withdrawClaim(
     await (await p.client()).getConversation(p.conversationId),
   );
   if (live === null) return;
+  if (live.updatedAt === null) {
+    const written = await withdrawClaimStatusOnly({
+      ...p,
+      status: live.status,
+    });
+    if (written) {
+      broadcastConversationEvent(p.tenantId, {
+        conversationId: String(written.id),
+        status: live.status,
+        assigneeId: written.assigneeId,
+        assigneeType: written.assigneeType,
+        lastEventAt: written.lastEventAt
+          ? written.lastEventAt.toISOString()
+          : null,
+      });
+    }
+    return;
+  }
   const reconciled = await reconcileMirrorFromLive({
     tenantId: p.tenantId,
     instanceId: p.instanceId,

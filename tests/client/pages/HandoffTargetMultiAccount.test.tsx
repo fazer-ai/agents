@@ -235,6 +235,8 @@ function renderContactAuth(
       resolveConversation: { assignLabels: [] },
       setResolveConversation: noop,
       attributeContext: { conversation: [], contact: [], task: [] },
+      contactFields: { context: [], writable: [] },
+      setContactFields: () => {},
       setAttributeContext: noop,
       serviceWindow: {
         enabled: false,

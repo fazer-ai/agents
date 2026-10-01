@@ -5,6 +5,7 @@
 // (display_id, the per-account id the bot-token API uses), `status`, `inbox_id`, and
 // `meta.{assignee, assignee_type}` ("User" for a human, "AgentBot" or null otherwise).
 
+import type { AdditionalContactField } from "@/modules/chatwoot/contact-fields";
 import type { UnreadFile } from "@/modules/vision/unread";
 
 export type ChatwootStatus = "open" | "pending" | "resolved" | "snoozed";
@@ -140,6 +141,10 @@ export interface NormalizedChatwootContact {
   // the agent reads it with no extra API call. `undefined` = the payload
   // did not carry it ⇒ the mirror keeps whatever it had (never wiped by a degraded payload).
   customAttributes?: Record<string, unknown>;
+  // The four `additional_attributes` keys the agent may see (contact-fields.ts), each a string or
+  // null when the bag lacks it. `undefined` = the payload carried no `additional_attributes` at all,
+  // and the mirror keeps what it had.
+  additionalAttributes?: Partial<Record<AdditionalContactField, string | null>>;
 }
 
 export interface NormalizedChatwootEvent {

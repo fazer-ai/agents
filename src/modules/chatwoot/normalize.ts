@@ -1,3 +1,7 @@
+import {
+  ADDITIONAL_CONTACT_FIELDS,
+  type AdditionalContactField,
+} from "@/modules/chatwoot/contact-fields";
 import { closedByTheAgentSide } from "@/modules/conversations/resolution-origin";
 import {
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
@@ -262,6 +266,7 @@ export function normalizeChatwootEvent(
         : {}) as { phone?: string | null }),
       ...stated("identifier", sender.identifier),
       ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
+      ...additionalContactFields(sender),
     };
   }
   // Conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
@@ -897,4 +902,19 @@ function fileNameOf(dataUrl: string): string | null {
     name = base.trim();
   }
   return name.length > 0 && name.length <= 120 ? name : null;
+}
+
+// The `additional_attributes` keys the agent may see, when the payload carried the bag at all. Every
+// key is stated once the bag is there: a key missing from it is a value Chatwoot does not hold, so
+// it reads as null and clears the mirrored one, the same rule the identity fields follow.
+function additionalContactFields(sender: Record<string, unknown>): {
+  additionalAttributes?: Partial<Record<AdditionalContactField, string | null>>;
+} {
+  if (!("additional_attributes" in sender)) return {};
+  const bag = isRecord(sender.additional_attributes)
+    ? sender.additional_attributes
+    : {};
+  const out: Partial<Record<AdditionalContactField, string | null>> = {};
+  for (const key of ADDITIONAL_CONTACT_FIELDS) out[key] = str(bag[key]) || null;
+  return { additionalAttributes: out };
 }

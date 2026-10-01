@@ -91,6 +91,7 @@ export function makeConfig(
     handoffConfig: HANDOFF_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     crossInboxCaseConfig: { ...CROSS_INBOX_CASE_DEFAULTS },
+    contactFieldsConfig: { context: [], writable: [] },
     chatwootContactId: null,
     kanbanConfig: KANBAN_DEFAULTS,
     toolGuidance: {},

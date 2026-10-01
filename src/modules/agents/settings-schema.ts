@@ -18,6 +18,7 @@ import {
   PROTECTED_LABELS_MAX,
 } from "@/modules/agents/tool-guidance";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
+import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
 import {
   FULL_DETAIL_MAX_HOURS,
@@ -457,6 +458,16 @@ const attributeContext = z.looseObject({
   task: attributeKeys(),
 });
 
+// The contact's standard Chatwoot fields: a closed set, so an unknown name is refused rather than
+// stored and dropped by the reader.
+const contactFields = z.looseObject({
+  context: z.array(oneOf(CONTACT_FIELDS)).optional(),
+  writable: z
+    .array(oneOf(CONTACT_FIELDS))
+    .optional()
+    .describe("⊆ context, else refused; empty = no update_contact"),
+});
+
 const crossInboxCase = z.looseObject({
   targetInboxId: chatwootId().describe(
     "chatwootInboxId the case opens in; unset = tool not offered",
@@ -858,6 +869,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   contactAuth: contactAuth.optional(),
   channelRedirect: channelRedirect.optional(),
   attributeContext: attributeContext.optional(),
+  contactFields: contactFields.optional(),
   sendImage: sendImage.optional(),
   resolveConversation: resolveConversation.optional(),
   crossInboxCase: crossInboxCase.optional(),

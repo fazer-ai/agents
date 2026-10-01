@@ -11,6 +11,7 @@ import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
+import { readContactFieldsConfig } from "@/modules/chatwoot/contact-fields";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 import { readDebounceConfig } from "@/modules/debounce/settings";
@@ -80,6 +81,8 @@ export interface BehaviorSettings {
   guardrails: ReturnType<typeof readGuardrailsConfig>;
   // NOTE: Which Chatwoot custom attributes (per scope) are injected into the system prompt.
   attributeContext: ReturnType<typeof readAttributeContextConfig>;
+  // NOTE: Which standard contact fields go into the prompt, and which update_contact may change.
+  contactFields: ReturnType<typeof readContactFieldsConfig>;
   observability: ReturnType<typeof readObservabilityConfig>;
   // NOTE: The one block in this bag whose default is ON (see modules/memory/settings), so a bag with
   // no `memory` key projects `enabled: true` rather than the usual "absent means off".
@@ -121,6 +124,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "channelRedirect",
   "guardrails",
   "attributeContext",
+  "contactFields",
   "observability",
   "memory",
   "modelFallback",
@@ -160,6 +164,7 @@ export function readBehaviorSettings(
     channelRedirect: readChannelRedirectConfig(settings),
     guardrails: readGuardrailsConfig(settings),
     attributeContext: readAttributeContextConfig(settings),
+    contactFields: readContactFieldsConfig(settings),
     observability: readObservabilityConfig(settings, now),
     memory: readMemoryConfig(settings),
     modelFallback: readModelFallbackConfig(settings),
@@ -198,6 +203,7 @@ export interface BehaviorSettingsPatch {
   channelRedirect?: Record<string, unknown>;
   guardrails?: Record<string, unknown>;
   attributeContext?: Record<string, unknown>;
+  contactFields?: Record<string, unknown>;
   observability?: Record<string, unknown>;
   memory?: Record<string, unknown>;
   modelFallback?: Record<string, unknown>;

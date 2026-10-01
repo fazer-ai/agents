@@ -33,6 +33,7 @@
     "chatwootTooManyAccounts": "Too many accounts in one request ({{count}}); at most {{max}} accounts can be set at once.",
     "codeToolNameTaken": "That tool name is already in use by another tool.",
     "codeToolNotFound": "Code tool not found.",
+    "contactFieldNotInContext": "A contact field the agent may update must also be in its context: {{fields}}.",
     "conversationNotFound": "Conversation not found.",
     "credentialKindUnusableAsKey": "This field reads an API key and the \"{{kind}}\" credential type cannot supply one: it either holds several fields instead of a single secret, or it is one this product never sends to another service. Pick a different credential.",
     "credentialKindUnusableOutbound": "The \"{{kind}}\" credential type is read inside this product and is never sent to another service, so it cannot authenticate a request. Pick a different credential.",

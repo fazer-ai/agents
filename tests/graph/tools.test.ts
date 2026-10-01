@@ -55,14 +55,16 @@ function fakeContactDb(chatwootContactId: number): PrismaClient {
 describe("native tools", () => {
   test("exposes all tools by default; the allowlist filters (fail-closed)", () => {
     const { client } = recordingClient();
-    // NOTE: `open_case_in_inbox` is the one native that needs its config to exist: with no
-    // destination inbox there is nothing it could do, so it is not offered.
+    // NOTE: `open_case_in_inbox` and `update_contact` are the natives that need their config to
+    // exist: with no destination inbox, or no writable contact field, there is nothing they could do.
     expect(
       buildNativeTools({ client, conversationId: 1 })
         .map((t) => t.name)
         .sort(),
     ).toEqual(
-      NATIVE_TOOL_NAMES.filter((n) => n !== "open_case_in_inbox").sort(),
+      NATIVE_TOOL_NAMES.filter(
+        (n) => n !== "open_case_in_inbox" && n !== "update_contact",
+      ).sort(),
     );
     expect(
       buildNativeTools({
@@ -72,6 +74,7 @@ describe("native tools", () => {
           config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 9 },
           contactId: 55,
         },
+        contactFields: { context: ["name"], writable: ["name"] },
       })
         .map((t) => t.name)
         .sort(),
@@ -3195,6 +3198,12 @@ describe("the fence rule, over every native tool", () => {
     { tool: "kanban_move_card", label: "", args: { targetStep: "Ganho" } },
     { tool: "update_kanban_task", label: "", args: { title: "outro" } },
     { tool: "set_voice_preference", label: "", args: { preference: "audio" } },
+    {
+      tool: "update_contact",
+      label: "",
+      args: { name: "Mariana Almeida" },
+      ctx: { contactFields: { context: ["name"], writable: ["name"] } },
+    },
     { tool: "react_to_message", label: "", args: { emoji: "👍" } },
     {
       tool: "send_image",

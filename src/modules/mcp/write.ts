@@ -36,6 +36,7 @@ import {
   assertPromptSize,
   assertResolveLabelsNotProtected,
   assertSettingsContactAuthRule,
+  assertSettingsContactFields,
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
   assertSettingsProtectedLabels,
@@ -639,6 +640,21 @@ export async function agentSettingsSet(
     assertSettingsToolPreconditions(patch, current.settings);
     // NOTE: same reason: the contactAuth reader drops a rule it cannot parse.
     assertSettingsContactAuthRule(patch, current.settings);
+    // NOTE: same reason (the reader drops a writable field outside context), but asked of the block as
+    // it will be stored: a patch naming only `writable` is checked against the stored `context`.
+    if (patch.contactFields) {
+      const stored = (current.settings as Record<string, unknown> | null)
+        ?.contactFields;
+      assertSettingsContactFields(
+        {
+          contactFields: {
+            ...(stored && typeof stored === "object" ? stored : {}),
+            ...patch.contactFields,
+          },
+        },
+        current.settings,
+      );
+    }
     // NOTE: same reason: `mergeBehaviorSettings` normalizes through readers that no longer know the
     // retired taxonomy keys, so they would vanish and both halves answer ok for configuration that
     // does nothing. Asked of the PATCH, the only place the key still exists.

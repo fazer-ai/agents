@@ -4,7 +4,11 @@ import { owesHandbackNote } from "@/graph/handback";
 import { interpolatePromptVars } from "@/graph/prompt";
 import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
-import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  ChatwootCalledOffError,
+  ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { markValue } from "@/modules/chatwoot/liquid";
 import {
@@ -1671,6 +1675,39 @@ describe("openCaseInInbox", () => {
           .map((c) => c.id)
           .sort(),
       ).toEqual([100, 30, 7].sort());
+    });
+
+    test("called off while the email write waits on the contact's queue: no write, no case", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        incoming: ["ana@exemplo.com"],
+      });
+      let wanted = true;
+      let reachedPut = false;
+      f.client.updateContact = async (
+        _id: number,
+        _fields: unknown,
+        opts?: { stillWanted?: () => Promise<boolean> },
+      ) => {
+        // NOTE: The run is withdrawn while this write waits its turn; the real client asks the
+        // fence inside the queue and refuses with ChatwootCalledOffError.
+        wanted = false;
+        if (opts?.stillWanted && !(await opts.stillWanted())) {
+          throw new ChatwootCalledOffError("contacts/5");
+        }
+        reachedPut = true;
+        return {};
+      };
+      const r = await openCaseInInbox(
+        f.client,
+        input({
+          email: "ana@exemplo.com",
+          stillWanted: async () => wanted,
+        }),
+      );
+      expect(r.kind).toBe("called_off");
+      expect(reachedPut).toBe(false);
+      expect(f.calls.filter((c) => c.fn === "createConversation")).toEqual([]);
     });
 
     test("a refused write that is not a 422 fails, and nobody's address is looked up or merged", async () => {

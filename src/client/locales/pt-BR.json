@@ -1191,6 +1191,17 @@
     "contactAuthUrl": "URL de autorização",
     "contactAuthUrlHint": "Recebe um POST com a identidade em um corpo JSON (contact, conversation, message) e responde { \"authorized\": true | false }.",
     "contactAuthUrlInvalid": "Obrigatória: uma URL http(s) válida, com credencial no cofre em vez de na URL.",
+    "contactFieldCity": "Cidade",
+    "contactFieldCompany": "Empresa",
+    "contactFieldCountry": "País",
+    "contactFieldDescription": "Descrição",
+    "contactFieldEmail": "E-mail",
+    "contactFieldEmailGate": "O e-mail é um dos dados que a autorização de contato envia para identificar a pessoa; um agente que pode alterá-lo muda sobre quem essa verificação pergunta.",
+    "contactFieldName": "Nome",
+    "contactFields": "Dados cadastrais do contato",
+    "contactFieldsHint": "Os campos próprios do contato no Chatwoot. O agente vê o valor atual de cada campo marcado e pode gravar o que o cliente informar nos campos marcados como editáveis.",
+    "contactFieldVisible": "No contexto",
+    "contactFieldWritable": "Agente pode alterar",
     "credential": "Chave de API",
     "crossInboxCase": {
       "attributeKey": "Atributo do número do caso",
@@ -2401,6 +2412,10 @@
     "skip_reply": {
       "desc": "Decide não responder quando a mensagem não pede resposta (ex.: só 'ok' ou um emoji). Quando o agente diz que a conversa não é para ele ou precisa de uma pessoa, ou quando ninguém respondeu nela ainda, ela vai para a equipe como aberta, com uma nota privada, e o agente deixa de responder ali.",
       "label": "Não responder"
+    },
+    "update_contact": {
+      "desc": "Grava no contato do Chatwoot os dados que o cliente informar (nome, e-mail, cidade…), limitado aos campos escolhidos em Dados no contexto.",
+      "label": "Atualizar contato"
     },
     "update_kanban_task": {
       "desc": "Atualiza o título, a descrição, a prioridade ou as datas de um card do funil.",

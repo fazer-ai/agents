@@ -101,6 +101,10 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
+  type ContactFieldsConfig,
+  readContactFieldsConfig,
+} from "@/modules/chatwoot/contact-fields";
+import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
 } from "@/modules/guardrails/settings";
@@ -530,6 +534,7 @@ function readBehaviorState(a: Agent) {
       contact: attrKeys(ac.contact),
       task: attrKeys(ac.task),
     },
+    contactFields: readContactFieldsConfig(s),
     sendImage: readSendImageState(s.sendImage),
     resolveConversation: readResolveConversationState(s.resolveConversation),
     crossInboxCase: readCrossInboxCaseState(s.crossInboxCase),
@@ -924,6 +929,12 @@ function AgentEditor() {
     contact: string[];
     task: string[];
   }>({ conversation: [], contact: [], task: [] });
+  // The standard contact fields in the prompt and the ones update_contact may change. Mirrors
+  // agent.settings.contactFields (modules/chatwoot/contact-fields).
+  const [contactFields, setContactFields] = useState<ContactFieldsConfig>({
+    context: [],
+    writable: [],
+  });
   // WhatsApp → website-chat redirect. Its own editor section (own Save + dirty tracking), though the
   // config lives in agent.settings.channelRedirect. Mirrors modules/channel-redirect/service.
   const [channelRedirect, setChannelRedirect] =
@@ -1400,6 +1411,7 @@ function AgentEditor() {
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
+    setContactFields(b.contactFields);
     setChannelRedirect(readChannelRedirectState(a));
     setGuardrails(readGuardrailsFormState(a.settings));
   }, []);
@@ -1441,6 +1453,7 @@ function AgentEditor() {
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
+    setContactFields(b.contactFields);
   }, []);
 
   // Reset ONLY the channelRedirect section from a synced agent — the post-save sync for the Redirect tab.
@@ -1743,6 +1756,10 @@ function AgentEditor() {
         contact: attributeContext.contact,
         task: attributeContext.task,
       },
+      contactFields: {
+        context: contactFields.context,
+        writable: contactFields.writable,
+      },
       takeover: { onHumanReply: takeover.onHumanReply },
     };
   }
@@ -1778,6 +1795,7 @@ function AgentEditor() {
       vision,
       limits,
       attributeContext,
+      contactFields,
       takeover,
       observability,
       memory,
@@ -2770,6 +2788,7 @@ function AgentEditor() {
     setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
+    setContactFields(b.contactFields);
   };
   const revertChannelRedirect = () => {
     settleRefusalFor("channelRedirect");
@@ -3911,6 +3930,8 @@ function AgentEditor() {
                 setTakeover={setTakeover}
                 attributeContext={attributeContext}
                 setAttributeContext={setAttributeContext}
+                contactFields={contactFields}
+                setContactFields={setContactFields}
                 onScheduleSaved={onScheduleSaved}
                 refusals={{
                   sttCredential: refusal.at(

@@ -8,6 +8,7 @@ import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import {
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+  GRANTABLE_NATIVE_TOOL_NAMES,
   NATIVE_TOOL_NAMES,
   RAG_TOOL_NAMES,
 } from "@/graph/tools/catalog";
@@ -469,6 +470,43 @@ export function assertSettingsContactAuthRule(
     return;
   }
   throw new InvalidContactAuthRuleError();
+}
+
+export class ContactFieldNotInContextError extends AppError {
+  constructor(fields: string[]) {
+    super(
+      `settings.contactFields.writable names fields outside context: ${fields.join(", ")}`,
+      400,
+      "errors.contactFieldNotInContext",
+      { fields: fields.join(", ") },
+      "contactFields.writable",
+    );
+  }
+}
+
+function rawContactFieldsBlock(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return undefined;
+  return (settings as Record<string, unknown>).contactFields;
+}
+
+// A writable field outside context is dropped by the reader, so the agent would get no update_contact
+// for it while the stored bag says it can write it. Refused when the write CHANGES the block, like the
+// contact gate's rule above.
+export function assertSettingsContactFields(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const block = rawContactFieldsBlock(settings);
+  if (!block || typeof block !== "object") return;
+  const { context, writable } = block as Record<string, unknown>;
+  if (!Array.isArray(writable)) return;
+  const seen = Array.isArray(context) ? context : [];
+  const outside = writable.filter((f) => !seen.includes(f));
+  if (outside.length === 0) return;
+  if (JSON.stringify(block) === JSON.stringify(rawContactFieldsBlock(stored))) {
+    return;
+  }
+  throw new ContactFieldNotInContextError(outside.map(String));
 }
 
 // A precondition that does not parse is REFUSED here rather than dropped at turn time, and the two
@@ -1615,6 +1653,7 @@ export async function updateAgent(
     assertSettingsSignature(rest.settings, before?.settings);
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsContactAuthRule(rest.settings, before?.settings);
+    assertSettingsContactFields(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
     stripDerivedFullDetailInPlace(rest.settings);
@@ -1831,6 +1870,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsSignature(input.settings, undefined);
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsContactAuthRule(input.settings, undefined);
+  assertSettingsContactFields(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);
@@ -2570,7 +2610,7 @@ async function buildToolSelectionView(
     agentUpdatedAt: agent?.updatedAt ?? null,
     grants: grants.map(toGrantDto),
     catalog: {
-      native: NATIVE_TOOL_NAMES.map((n) => ({
+      native: GRANTABLE_NATIVE_TOOL_NAMES.map((n) => ({
         name: n,
         ...(DELIVERS_TO_CUSTOMER.has(n) ? { deliversToCustomer: true } : {}),
       })),

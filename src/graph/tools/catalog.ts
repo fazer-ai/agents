@@ -12,6 +12,7 @@ export const NATIVE_TOOL_NAMES = [
   "kanban_move_card",
   "update_kanban_task",
   "set_voice_preference",
+  "update_contact",
   "react_to_message",
   "send_image",
   "open_case_in_inbox",
@@ -61,6 +62,7 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     kanban_move_card: "conversation",
     update_kanban_task: "conversation",
     set_voice_preference: "conversation",
+    update_contact: "conversation",
     react_to_message: "conversation",
     send_image: "conversation",
     open_case_in_inbox: "conversation",
@@ -68,6 +70,17 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     calculator: "utility",
     get_current_time: "utility",
   };
+
+// Natives granted by their own configuration rather than by the allowlist: update_contact exists
+// when the agent marks a contact field writable (agent.settings.contactFields). A grant toggle for
+// it would be a control that changes nothing, so the grant catalog leaves it out.
+export const CONFIG_GRANTED_NATIVE_TOOL_NAMES: readonly NativeToolName[] = [
+  "update_contact",
+];
+
+export const GRANTABLE_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
+  (n) => !CONFIG_GRANTED_NATIVE_TOOL_NAMES.includes(n),
+);
 
 export const UTILITY_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
   (n) => NATIVE_TOOL_CATEGORY[n] === "utility",

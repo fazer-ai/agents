@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { ADDITIONAL_CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { retireJobsByDedupeKeyOn } from "@/modules/scheduler/service";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
@@ -579,6 +580,10 @@ async function upsertContact(
   const attrs = JSON.stringify(
     c.identifier ? { identifier: c.identifier } : {},
   );
+  const additional: Record<string, string> = {};
+  for (const [key, value] of Object.entries(c.additionalAttributes ?? {})) {
+    if (value) additional[key] = value;
+  }
 
   // Keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
   // accounts under one tenant can share an id.
@@ -600,6 +605,7 @@ async function upsertContact(
       attributes: (c.identifier
         ? { identifier: c.identifier }
         : {}) as Prisma.InputJsonValue,
+      additionalAttributes: additional as Prisma.InputJsonValue,
     },
     // Identity is written below, under a compare-and-set. Unconditionally here, a delivery arriving
     // late would restore what a newer one changed or cleared.
@@ -645,6 +651,27 @@ async function upsertContact(
         attributes_at = CASE
           WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${eventAt}
           ELSE attributes_at END
+      WHERE id = ${row.id} AND tenant_id = ${tenantId}
+    `;
+  }
+
+  // NOTE: The additional fields follow the identity rule (absent keeps, strictly newer wins, older
+  // changes nothing) under their OWN position, so a city edit never moves the identifier's. On a tie
+  // only the keys the two snapshots disagree on are emptied.
+  if (eventAt && c.additionalAttributes !== undefined) {
+    const bag = JSON.stringify(additional);
+    await db.$executeRaw`
+      UPDATE contacts SET
+        additional_attributes = CASE
+          WHEN additional_attributes_at IS NULL OR additional_attributes_at < ${eventAt} THEN ${bag}::jsonb
+          WHEN additional_attributes_at = ${eventAt} THEN additional_attributes - ARRAY(
+            SELECT k FROM unnest(${ADDITIONAL_CONTACT_FIELDS}::text[]) AS k
+            WHERE additional_attributes -> k IS DISTINCT FROM ${bag}::jsonb -> k
+          )
+          ELSE additional_attributes END,
+        additional_attributes_at = CASE
+          WHEN additional_attributes_at IS NULL OR additional_attributes_at < ${eventAt} THEN ${eventAt}
+          ELSE additional_attributes_at END
       WHERE id = ${row.id} AND tenant_id = ${tenantId}
     `;
   }

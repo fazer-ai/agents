@@ -675,19 +675,19 @@ model InboxObserver {
 }
 
 model Contact {
-  id                 BigInt    @id @default(autoincrement())
-  tenantId           BigInt    @map("tenant_id")
+  id                     BigInt    @id @default(autoincrement())
+  tenantId               BigInt    @map("tenant_id")
   // A Chatwoot contact id is unique inside ONE account, not across the tenant. Without this column
   // two accounts under the same tenant collapsed contact 42 into one row, and the mirror's
   // last-writer-wins left one person's name over another's phone. Inbox and Conversation were
   // already scoped this way; the contact was the odd one out, and the contact-authorization gate
   // treats these fields as the identity it sends to the operator's endpoint.
-  chatwootInstanceId BigInt    @map("chatwoot_instance_id")
-  chatwootContactId  Int?      @map("chatwoot_contact_id")
-  name               String?
-  email              String?
-  phone              String?
-  attributes         Json      @default("{}")
+  chatwootInstanceId     BigInt    @map("chatwoot_instance_id")
+  chatwootContactId      Int?      @map("chatwoot_contact_id")
+  name                   String?
+  email                  String?
+  phone                  String?
+  attributes             Json      @default("{}")
   // Mirror of the contact's Chatwoot custom attributes (meta.sender.custom_attributes, refreshed on
   // every webhook event). Read-only projection: the agent WRITES through the Chatwoot API and this
   // column follows. Feeds the per-agent attribute context injected into the system prompt, so a turn
@@ -695,8 +695,8 @@ model Contact {
   // customAttributesAt is this bag's SOURCE watermark (the Chatwoot event timestamp it came from),
   // not a row mtime: the contact upsert runs outside the per-conversation lock and a contact can be
   // touched by several conversations, so the write is gated on it to keep the snapshot monotonic.
-  customAttributes   Json      @default("{}") @map("custom_attributes")
-  customAttributesAt DateTime? @map("custom_attributes_at")
+  customAttributes       Json      @default("{}") @map("custom_attributes")
+  customAttributesAt     DateTime? @map("custom_attributes_at")
   // Source watermark of each identity field above, for the same reason customAttributesAt exists one
   // field up: the write is unconditional otherwise, and deliveries do arrive out of order, so an
   // older event could restore what a newer one cleared. These are load-bearing beyond the prompt —
@@ -705,16 +705,22 @@ model Contact {
   // One per FIELD, because a Chatwoot payload states a subset of them and absent is not cleared: a
   // row-wide position would let an event that says nothing about the phone advance the phone's own
   // position, and a clear arriving late behind it would then be rejected as stale.
-  nameAt             DateTime? @map("name_at")
-  emailAt            DateTime? @map("email_at")
-  phoneAt            DateTime? @map("phone_at")
-  attributesAt       DateTime? @map("attributes_at")
+  nameAt                 DateTime? @map("name_at")
+  emailAt                DateTime? @map("email_at")
+  phoneAt                DateTime? @map("phone_at")
+  attributesAt           DateTime? @map("attributes_at")
+  // The four `additional_attributes` keys an agent may see and write (contact-fields.ts), as the last
+  // event stated them. Their own watermark, apart from attributesAt: they change for reasons that have
+  // nothing to do with identity, and sharing a position would let a city edit hide a later identifier
+  // change from the authorization gate.
+  additionalAttributes   Json      @default("{}") @map("additional_attributes")
+  additionalAttributesAt DateTime? @map("additional_attributes_at")
   // Per-contact audio-reply preference (TTS mode "preference"): true = wants audio, false = wants
   // text, null = unknown (falls back to mirroring what the customer sent). Set by the agent's
   // set_voice_preference native tool. RLS-scoped column — NOT a Chatwoot custom attribute.
-  voiceReply         Boolean?  @map("voice_reply")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  voiceReply             Boolean?  @map("voice_reply")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
   tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance      ChatwootInstance   @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

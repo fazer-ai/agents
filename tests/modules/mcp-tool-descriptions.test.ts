@@ -109,7 +109,7 @@ const SETTINGS_DESC_CEILING = 2_000;
 // description alone would watch the half that shrank while the shape grew unwatched. Headroom stays
 // tighter than one settings block; how a raise is decided (trim first, keep what a caller cannot
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
-const SETTINGS_SCHEMA_CEILING = 29_224;
+const SETTINGS_SCHEMA_CEILING = 30_003;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -208,8 +208,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(65_259);
+    expect(desc).toBeLessThanOrEqual(31_552);
+    expect(schema).toBeLessThanOrEqual(66_012);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

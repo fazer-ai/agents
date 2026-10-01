@@ -1899,8 +1899,8 @@ async function mirrorContactFieldsWrite(
           name_at = CASE WHEN ${hasName} THEN GREATEST(name_at, (NOW() AT TIME ZONE 'UTC')) ELSE name_at END,
           email = CASE WHEN ${hasEmail} THEN ${written.email ?? null}::text ELSE email END,
           email_at = CASE WHEN ${hasEmail} THEN GREATEST(email_at, (NOW() AT TIME ZONE 'UTC')) ELSE email_at END,
-          attributes = CASE WHEN ${hasAdditional} THEN attributes || ${patch}::jsonb ELSE attributes END,
-          attributes_at = CASE WHEN ${hasAdditional} THEN GREATEST(attributes_at, (NOW() AT TIME ZONE 'UTC')) ELSE attributes_at END
+          additional_attributes = CASE WHEN ${hasAdditional} THEN additional_attributes || ${patch}::jsonb ELSE additional_attributes END,
+          additional_attributes_at = CASE WHEN ${hasAdditional} THEN GREATEST(additional_attributes_at, (NOW() AT TIME ZONE 'UTC')) ELSE additional_attributes_at END
         WHERE id = ${contactDbId} AND tenant_id = ${tenantId}
       `,
     );

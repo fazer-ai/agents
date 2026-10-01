@@ -13,7 +13,7 @@ export const CONTACT_FIELDS = [
 export type ContactField = (typeof CONTACT_FIELDS)[number];
 
 // The four that live in Chatwoot's `additional_attributes`, the group its own contact form edits.
-// The mirror keeps them in Contact.attributes under the same keys, beside `identifier`.
+// The mirror keeps them in Contact.additionalAttributes under the same keys.
 export const ADDITIONAL_CONTACT_FIELDS = [
   "company_name",
   "city",
@@ -70,21 +70,21 @@ export function readContactFieldsConfig(
 }
 
 // The current value of each field, as the mirror holds it: name and email in their own columns,
-// the other four in the attributes bag.
+// the other four in the additional_attributes column.
 export type ContactFieldValues = Partial<Record<ContactField, unknown>>;
 
 export function contactFieldValuesFrom(row: {
   name?: string | null;
   email?: string | null;
-  attributes?: unknown;
+  additionalAttributes?: unknown;
 }): ContactFieldValues {
-  const attrs =
-    row.attributes &&
-    typeof row.attributes === "object" &&
-    !Array.isArray(row.attributes)
-      ? (row.attributes as Record<string, unknown>)
+  const bag =
+    row.additionalAttributes &&
+    typeof row.additionalAttributes === "object" &&
+    !Array.isArray(row.additionalAttributes)
+      ? (row.additionalAttributes as Record<string, unknown>)
       : {};
   const out: ContactFieldValues = { name: row.name, email: row.email };
-  for (const f of ADDITIONAL_CONTACT_FIELDS) out[f] = attrs[f];
+  for (const f of ADDITIONAL_CONTACT_FIELDS) out[f] = bag[f];
   return out;
 }

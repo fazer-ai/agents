@@ -641,6 +641,7 @@ export async function loadAgentConfig(
           email: true,
           phone: true,
           attributes: true,
+          additionalAttributes: contactFieldsConfig.context.length > 0,
           voiceReply: true,
           customAttributes: wantsAttributeContext,
         },

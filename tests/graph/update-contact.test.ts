@@ -356,8 +356,8 @@ async function contactRow() {
       name: true,
       email: true,
       attributes: true,
+      additionalAttributes: true,
       nameAt: true,
-      attributesAt: true,
     },
   });
 }
@@ -412,76 +412,59 @@ describe.skipIf(!dbUp)("the mirror and the write-through", () => {
     await su?.$disconnect();
   });
 
-  test("the identifier and the additional fields each keep the other when a payload states only one", async () => {
+  test("the additional fields keep their own position, so out of order neither hides the other", async () => {
     const t0 = Math.floor(Date.now() / 1000) - 3600;
+    const extra = (company: string | null, city: string | null) => ({
+      company_name: company,
+      city,
+      country: null,
+      description: null,
+    });
     await mirrorChatwootEvent(
       tenantId,
       instanceId,
       event(t0, {
         name: "Joana",
         identifier: "cli-1",
-        additionalAttributes: {
-          company_name: null,
-          city: "Recife",
-          country: null,
-          description: null,
-        },
+        additionalAttributes: extra(null, "Recife"),
       }),
       appDb,
     );
-    expect((await contactRow()).attributes).toEqual({
-      identifier: "cli-1",
-      city: "Recife",
-    });
+    let row = await contactRow();
+    expect(row.attributes).toEqual({ identifier: "cli-1" });
+    expect(row.additionalAttributes).toEqual({ city: "Recife" });
 
+    // A newer event about the company alone.
     await mirrorChatwootEvent(
       tenantId,
       instanceId,
-      event(t0 + 10, { identifier: "cli-2" }),
+      event(t0 + 20, { additionalAttributes: extra("ACME", null) }),
       appDb,
     );
-    expect((await contactRow()).attributes).toEqual({
-      identifier: "cli-2",
-      city: "Recife",
-    });
-
+    // A clear of the identifier built between the two, delivered late: it still lands.
     await mirrorChatwootEvent(
       tenantId,
       instanceId,
-      event(t0 + 20, {
-        additionalAttributes: {
-          company_name: "ACME",
-          city: null,
-          country: null,
-          description: null,
-        },
-      }),
+      event(t0 + 10, { identifier: null }),
       appDb,
     );
-    expect((await contactRow()).attributes).toEqual({
-      identifier: "cli-2",
-      company_name: "ACME",
-    });
+    row = await contactRow();
+    expect(row.attributes).toEqual({});
+    expect(row.additionalAttributes).toEqual({ company_name: "ACME" });
 
-    // An older delivery after those changes nothing.
+    // Older than both: changes nothing.
     await mirrorChatwootEvent(
       tenantId,
       instanceId,
       event(t0 + 5, {
         identifier: "cli-1",
-        additionalAttributes: {
-          company_name: null,
-          city: "Recife",
-          country: null,
-          description: null,
-        },
+        additionalAttributes: extra(null, "Recife"),
       }),
       appDb,
     );
-    expect((await contactRow()).attributes).toEqual({
-      identifier: "cli-2",
-      company_name: "ACME",
-    });
+    row = await contactRow();
+    expect(row.attributes).toEqual({});
+    expect(row.additionalAttributes).toEqual({ company_name: "ACME" });
   });
 
   test("turn prep shows the selected fields and builds the tool over the writable ones", async () => {
@@ -551,11 +534,11 @@ describe.skipIf(!dbUp)("the mirror and the write-through", () => {
     ]);
     const after = await contactRow();
     expect(after.name).toBe("Joana Lima");
-    expect(after.attributes).toEqual({
-      identifier: "cli-2",
+    expect(after.additionalAttributes).toEqual({
       company_name: "ACME",
       city: "Olinda",
     });
+    expect(after.attributes).toEqual(row.attributes);
     expect(after.nameAt?.getTime() ?? 0).toBeGreaterThan(
       row.nameAt?.getTime() ?? 0,
     );
@@ -578,7 +561,9 @@ describe.skipIf(!dbUp)("the mirror and the write-through", () => {
     );
     const later = await contactRow();
     expect(later.name).toBe("Joana Lima");
-    expect((later.attributes as Record<string, unknown>).city).toBe("Olinda");
+    expect((later.additionalAttributes as Record<string, unknown>).city).toBe(
+      "Olinda",
+    );
   });
   test("the grant catalog offers no toggle for update_contact, whose grant is the writable field", async () => {
     const view = await getAgentToolSelections(ctx(tenantId), agentId, appDb);
@@ -613,9 +598,8 @@ describe.skipIf(!dbUp)("the mirror and the write-through", () => {
       }),
       appDb,
     );
-    expect((await contactRow()).attributes).toEqual({
-      identifier: "cli-9",
-      company_name: "ACME",
-    });
+    const row = await contactRow();
+    expect(row.attributes).toEqual({ identifier: "cli-9" });
+    expect(row.additionalAttributes).toEqual({ company_name: "ACME" });
   });
 });

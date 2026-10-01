@@ -576,22 +576,14 @@ async function upsertContact(
   const nameStated = c.name !== undefined;
   const emailStated = c.email !== undefined;
   const phoneStated = c.phone !== undefined;
-  // The attributes bag holds two statements, the identifier and the four
-  // additional_attributes fields, and a payload may carry either one alone. Each replaces only its
-  // own keys (`attributes - <its keys> || <its values>`), so one never clears the other.
-  const idStated = c.identifier !== undefined;
-  const additionalStated = c.additionalAttributes !== undefined;
-  const attrsStated = idStated || additionalStated;
-  const attrsPatch: Record<string, string> = {};
-  if (c.identifier) attrsPatch.identifier = c.identifier;
+  const attrsStated = c.identifier !== undefined;
+  const attrs = JSON.stringify(
+    c.identifier ? { identifier: c.identifier } : {},
+  );
+  const additional: Record<string, string> = {};
   for (const [key, value] of Object.entries(c.additionalAttributes ?? {})) {
-    if (value) attrsPatch[key] = value;
+    if (value) additional[key] = value;
   }
-  const attrsKeys = [
-    ...(idStated ? ["identifier"] : []),
-    ...(additionalStated ? ADDITIONAL_CONTACT_FIELDS : []),
-  ];
-  const attrs = JSON.stringify(attrsPatch);
 
   // Keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
   // accounts under one tenant can share an id.
@@ -610,7 +602,10 @@ async function upsertContact(
       name: c.name ?? null,
       email: c.email ?? null,
       phone: c.phone ?? null,
-      attributes: attrsPatch as Prisma.InputJsonValue,
+      attributes: (c.identifier
+        ? { identifier: c.identifier }
+        : {}) as Prisma.InputJsonValue,
+      additionalAttributes: additional as Prisma.InputJsonValue,
     },
     // Identity is written below, under a compare-and-set. Unconditionally here, a delivery arriving
     // late would restore what a newer one changed or cleared.
@@ -650,15 +645,33 @@ async function upsertContact(
           WHEN ${phoneStated} AND (phone_at IS NULL OR phone_at < ${eventAt}) THEN ${eventAt}
           ELSE phone_at END,
         attributes = CASE
-          WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN (attributes - ${attrsKeys}::text[]) || ${attrs}::jsonb
-          WHEN ${attrsStated} AND attributes_at = ${eventAt} THEN attributes - ARRAY(
-            SELECT k FROM unnest(${attrsKeys}::text[]) AS k
-            WHERE attributes -> k IS DISTINCT FROM ${attrs}::jsonb -> k
-          )
+          WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${attrs}::jsonb
+          WHEN ${attrsStated} AND attributes_at = ${eventAt} AND attributes IS DISTINCT FROM ${attrs}::jsonb THEN '{}'::jsonb
           ELSE attributes END,
         attributes_at = CASE
           WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${eventAt}
           ELSE attributes_at END
+      WHERE id = ${row.id} AND tenant_id = ${tenantId}
+    `;
+  }
+
+  // NOTE: The additional fields follow the identity rule (absent keeps, strictly newer wins, older
+  // changes nothing) under their OWN position, so a city edit never moves the identifier's. On a tie
+  // only the keys the two snapshots disagree on are emptied.
+  if (eventAt && c.additionalAttributes !== undefined) {
+    const bag = JSON.stringify(additional);
+    await db.$executeRaw`
+      UPDATE contacts SET
+        additional_attributes = CASE
+          WHEN additional_attributes_at IS NULL OR additional_attributes_at < ${eventAt} THEN ${bag}::jsonb
+          WHEN additional_attributes_at = ${eventAt} THEN additional_attributes - ARRAY(
+            SELECT k FROM unnest(${ADDITIONAL_CONTACT_FIELDS}::text[]) AS k
+            WHERE additional_attributes -> k IS DISTINCT FROM ${bag}::jsonb -> k
+          )
+          ELSE additional_attributes END,
+        additional_attributes_at = CASE
+          WHEN additional_attributes_at IS NULL OR additional_attributes_at < ${eventAt} THEN ${eventAt}
+          ELSE additional_attributes_at END
       WHERE id = ${row.id} AND tenant_id = ${tenantId}
     `;
   }

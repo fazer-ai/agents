@@ -123,12 +123,15 @@ function judgeTranscription(json: OpenAiTranscription): SttResult {
     segments: segments.length,
     droppedSegments: segments.length - spoken.length,
   };
+  // Nothing dropped: the provider's own text, which carries its spacing. A compatible server may trim
+  // each segment, so a rebuilt text puts one space between them.
+  if (spoken.length === segments.length) return { text, confidence };
   if (spoken.length === 0) return { text: "", confidence, withheld: true };
   return {
     text: spoken
-      .map((s) => s.text ?? "")
-      .join("")
-      .trim(),
+      .map((s) => (s.text ?? "").trim())
+      .filter(Boolean)
+      .join(" "),
     confidence,
   };
 }

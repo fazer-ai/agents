@@ -253,6 +253,44 @@ describe("STT confidence", () => {
     expect(form.getAll("include[]")).toEqual([]);
   });
 
+  test("segments a compatible server trimmed keep their word boundaries", async () => {
+    const segs = [
+      { text: "Quero marcar", no_speech_prob: 0.01, avg_logprob: -0.2 },
+      { text: "uma consulta", no_speech_prob: 0.02, avg_logprob: -0.3 },
+    ];
+    const kept = mockFetch({
+      text: "Quero marcar uma consulta",
+      segments: segs,
+    });
+    expect(
+      (await req("whisper-large-v3", kept.fetchImpl, "openai-compatible"))
+        ?.text,
+    ).toBe("Quero marcar uma consulta");
+    const dropped = mockFetch({
+      text: "Quero marcar uma consulta Amara.org",
+      segments: [
+        ...segs,
+        { text: "Amara.org", no_speech_prob: 0.9, avg_logprob: -0.5 },
+      ],
+    });
+    expect(
+      (await req("whisper-large-v3", dropped.fetchImpl, "openai-compatible"))
+        ?.text,
+    ).toBe("Quero marcar uma consulta");
+  });
+
+  test("with nothing dropped, the provider's own text is kept, spacing included", async () => {
+    // Languages written without spaces: a rebuilt text would put one between the segments.
+    const { fetchImpl } = mockFetch({
+      text: "你好世界",
+      segments: [
+        { text: "你好", no_speech_prob: 0.01, avg_logprob: -0.2 },
+        { text: "世界", no_speech_prob: 0.01, avg_logprob: -0.2 },
+      ],
+    });
+    expect((await req("whisper-1", fetchImpl))?.text).toBe("你好世界");
+  });
+
   test("a Whisper segment the model was unsure of is dropped too", async () => {
     const { fetchImpl } = mockFetch({
       text: "Que Deus te abençoe.",

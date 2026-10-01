@@ -2151,7 +2151,7 @@
       "normalize": "Speech rewrite",
       "observe": "Observation",
       "route": "Routing",
-      "spend_ceiling": "Token ceiling",
+      "spend_ceiling": "Spend ceiling",
       "split": "Delivery",
       "stt": "Transcription",
       "tool": "Tool call",

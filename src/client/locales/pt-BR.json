@@ -2215,7 +2215,7 @@
       "normalize": "Reescrita para fala",
       "observe": "Observação",
       "route": "Roteamento",
-      "spend_ceiling": "Teto de tokens",
+      "spend_ceiling": "Teto de gasto",
       "split": "Entrega",
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",

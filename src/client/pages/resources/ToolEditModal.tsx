@@ -63,8 +63,13 @@ import {
 } from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
+  effectiveMaxResponseChars,
   enclosingBlock,
   MAX_TEMPLATE_CHARS,
+  MODEL_RESPONSE_CHAR_LIMIT,
+  MODEL_RESPONSE_CHAR_MAX,
+  MODEL_RESPONSE_CHAR_MIN,
+  maxResponseCharsAcceptable,
   type ProjectedResponse,
   projectToolResponse,
   readResponseTemplateResult,
@@ -175,6 +180,8 @@ export function templatePreviewFor(args: {
   template: string;
   sample: string;
   status: number | null;
+  // The tool's own `maxResponseChars` as the form holds it; absent or null is the default.
+  maxResponseChars?: number | null;
 }): {
   // The runtime's OWN reason, carried rather than collapsed to a boolean: a 2xx body that is not
   // JSON and a status outside 2xx are different causes with different sentences.
@@ -198,20 +205,22 @@ export function templatePreviewFor(args: {
   if (!sample.trim() && templateNeedsBody(template)) return null;
   // The runtime's own function decides (the 2xx gate, the token-less render, the clip), so
   // the preview cannot drift from it. `status: null` is a hand-pasted sample and reads as 200.
+  const maxChars = effectiveMaxResponseChars(args.maxResponseChars);
   const p = projectToolResponse(
     { mode: "template", template },
     args.status ?? 200,
     sample,
+    { maxChars },
   );
   return p.text === null
     ? {
         skipped: p.skipped,
-        text: clipToModelLimit(sample).text,
+        text: clipToModelLimit(sample, maxChars).text,
         missing: [],
       }
     : {
         skipped: null,
-        text: clipToModelLimit(p.text).text,
+        text: clipToModelLimit(p.text, maxChars).text,
         missing: p.missing,
       };
 }
@@ -333,6 +342,8 @@ function emptyForm() {
     // NOTE: the GENERIC integration this tool hands `{{conversation_ref}}` for, by id.
     conversationRefIntegrationId: "",
     expectedStatuses: "",
+    // NOTE: the tool's ceiling on what the model receives, as typed; empty is the default.
+    maxResponseChars: "",
     ackEnabled: false,
     ackMessage: "",
     // NOTE: the response template, edited as the plain markdown the operator writes; the
@@ -368,6 +379,13 @@ export function parseExpectedStatuses(raw: string): number[] {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
+// The response limit as the API takes it: empty is null (the default), anything else the number typed,
+// NaN included, so the field's own check can say what is wrong with it. Exported for the tests.
+export function parseMaxResponseChars(raw: string): number | null {
+  const v = raw.trim();
+  return v === "" ? null : Number(v);
+}
+
 type ToolForm = ReturnType<typeof emptyForm>;
 
 // The payload keys that cannot change WHICH RESPONSE comes back. A sample followed by an edit to
@@ -381,6 +399,7 @@ const NOT_RESPONSE_AFFECTING = new Set([
   "description",
   "outputSchema",
   "expectedStatuses",
+  "maxResponseChars",
   "ackEnabled",
   "ackMessage",
   "appointment",
@@ -556,6 +575,7 @@ export function payloadOf(form: ToolForm) {
     credentialRef: form.credentialRef || null,
     conversationRefIntegrationId: form.conversationRefIntegrationId || null,
     expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
+    maxResponseChars: parseMaxResponseChars(form.maxResponseChars),
     ackEnabled: form.ackEnabled,
     ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
     // A written template wins; an empty field falls back to whatever else the column held, which is
@@ -587,6 +607,7 @@ const TOOL_FIELDS = [
   "credentialRef",
   "conversationRefIntegrationId",
   "expectedStatuses",
+  "maxResponseChars",
 ] as const;
 
 // The two this modal draws behind a switch. Both stay in the BODY when their control is gone —
@@ -691,6 +712,8 @@ export function formFromTool(tool: Tool) {
     credentialRef: tool.credentialRef ?? "",
     conversationRefIntegrationId: tool.conversationRefIntegrationId ?? "",
     expectedStatuses: (tool.expectedStatuses ?? []).join(", "),
+    maxResponseChars:
+      tool.maxResponseChars == null ? "" : String(tool.maxResponseChars),
     ackEnabled: tool.ackEnabled,
     ackMessage: tool.ackMessage ?? "",
     ...outputSchemaForm(tool.outputSchema),
@@ -1589,6 +1612,12 @@ export function ToolEditModal({
       setFormError(t("tools.invalidJson", "Headers must be valid JSON."));
       return;
     }
+    // NOTE: the server refuses the same value; the field already says why.
+    if (
+      !maxResponseCharsAcceptable(parseMaxResponseChars(form.maxResponseChars))
+    ) {
+      return;
+    }
     // NOTE: a test run has no conversation to hand a reference for; the server refuses the same
     // way, and saying it here spares the round trip.
     if (sendsConversationRef(payload)) {
@@ -1822,8 +1851,9 @@ export function ToolEditModal({
         template: form.outputTemplate,
         sample,
         status: sampleStatus,
+        maxResponseChars: parseMaxResponseChars(form.maxResponseChars),
       }),
-    [form.outputTemplate, sample, sampleStatus],
+    [form.outputTemplate, sample, sampleStatus, form.maxResponseChars],
   );
   const badTemplateTokens = unusableTemplateTokens(form.outputTemplate);
   // A `{{` or `}}` that is not part of a token: `{{a}` is not an unusable token, it is not a token,
@@ -1861,6 +1891,9 @@ export function ToolEditModal({
   // The ack tone example is required when the holding message is enabled: the runtime gate keys off a
   // non-empty ackMessage, so saving it blank would silently turn the feature off.
   const ackInvalid = form.ackEnabled && !form.ackMessage.trim();
+  const maxResponseCharsInvalid = !maxResponseCharsAcceptable(
+    parseMaxResponseChars(form.maxResponseChars),
+  );
   const valid =
     !loadingForm &&
     !loadError &&
@@ -1874,7 +1907,8 @@ export function ToolEditModal({
     !apptProviderInvalid &&
     !apptOffsetsInvalid &&
     templateDeclProblem === null &&
-    !ackInvalid;
+    !ackInvalid &&
+    !maxResponseCharsInvalid;
   // Baseline is captured on open (create defaults / loaded tool); null while never opened or
   // while the edit fetch is in flight.
   const isDirty =
@@ -2502,7 +2536,7 @@ export function ToolEditModal({
                 label={t("tools.outputTemplate", "What the agent receives")}
                 help={t(
                   "tools.outputTemplateHelp",
-                  "By default the agent gets the whole response, cut off at 4000 characters — so a long answer loses its end, and an agent that cannot see a field tends to make one up.\n\nWrite the few lines you actually want instead. {{campo}} is replaced with that field from the response; a field the API does not return shows as (not returned) rather than a blank. Leave it empty to keep the whole response.\n\nFor a list of results, wrap one line in {{#each results}} … {{/each}}: it repeats per item, the fields inside are the item's own, and {{.}} is the item itself when the list holds plain values. At most 50 items are shown; the rest is counted.",
+                  "By default the agent gets the whole response, cut off at the response limit below (4000 characters unless you change it), so a long answer loses its end, and an agent that cannot see a field tends to make one up.\n\nWrite the few lines you actually want instead. {{campo}} is replaced with that field from the response; a field the API does not return shows as (not returned) rather than a blank. Leave it empty to keep the whole response.\n\nFor a list of results, wrap one line in {{#each results}} … {{/each}}: it repeats per item, the fields inside are the item's own, and {{.}} is the item itself when the list holds plain values. At most 50 items are shown; the rest is counted.",
                 )}
                 description={t(
                   "tools.outputTemplateHint",
@@ -2684,6 +2718,46 @@ export function ToolEditModal({
                   )}
                 </p>
               )}
+              <FormField
+                label={t(
+                  "tools.maxResponseChars",
+                  "Response limit (characters)",
+                )}
+                description={t(
+                  "tools.maxResponseCharsHint",
+                  "How much of the response the agent reads; the rest is cut off. Empty uses {{default}}. From {{min}} to {{max}}.",
+                  {
+                    default: MODEL_RESPONSE_CHAR_LIMIT,
+                    min: MODEL_RESPONSE_CHAR_MIN,
+                    max: MODEL_RESPONSE_CHAR_MAX,
+                  },
+                )}
+                error={
+                  maxResponseCharsInvalid
+                    ? t(
+                        "tools.maxResponseCharsInvalid",
+                        "Use a whole number from {{min}} to {{max}}, or leave it empty.",
+                        {
+                          min: MODEL_RESPONSE_CHAR_MIN,
+                          max: MODEL_RESPONSE_CHAR_MAX,
+                        },
+                      )
+                    : refusal.at("maxResponseChars", current.maxResponseChars)
+                }
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={MODEL_RESPONSE_CHAR_MIN}
+                  max={MODEL_RESPONSE_CHAR_MAX}
+                  step={500}
+                  value={form.maxResponseChars}
+                  onChange={(e) =>
+                    setForm({ ...form, maxResponseChars: e.target.value })
+                  }
+                  placeholder={String(MODEL_RESPONSE_CHAR_LIMIT)}
+                />
+              </FormField>
             </div>
 
             <div className="flex flex-col gap-3 rounded-md border border-border p-3">

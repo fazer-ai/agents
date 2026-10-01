@@ -17,6 +17,9 @@ import {
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
+  MODEL_RESPONSE_CHAR_MAX,
+  MODEL_RESPONSE_CHAR_MIN,
+  maxResponseCharsAcceptable,
   readResponseTemplateResult,
   storableResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
@@ -86,6 +89,8 @@ export interface ToolDefinitionDto {
   appointment: Record<string, unknown> | null;
   // The GENERIC integration instance this tool hands `{{conversation_ref}}` for, or null.
   conversationRefIntegrationId: string | null;
+  // This tool's ceiling on what the model receives, or null for the default.
+  maxResponseChars: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -110,6 +115,7 @@ const SELECT = {
   ackMessage: true,
   appointment: true,
   conversationRefIntegrationId: true,
+  maxResponseChars: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -134,6 +140,7 @@ function toDto(r: {
   ackMessage: string | null;
   appointment: unknown;
   conversationRefIntegrationId: bigint | null;
+  maxResponseChars: number | null;
   createdAt: Date;
   updatedAt: Date;
 }): ToolDefinitionDto {
@@ -170,6 +177,7 @@ function toDto(r: {
       r.conversationRefIntegrationId === null
         ? null
         : String(r.conversationRefIntegrationId),
+    maxResponseChars: r.maxResponseChars,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -199,6 +207,7 @@ function auditProjection(r: {
   ackMessage: string | null;
   appointment: unknown;
   conversationRefIntegrationId: bigint | null;
+  maxResponseChars: number | null;
 }) {
   const cred = refForAudit(r.credentialRef);
   return {
@@ -214,6 +223,7 @@ function auditProjection(r: {
     enabled: r.enabled,
     ackEnabled: r.ackEnabled,
     expectedStatuses: r.expectedStatuses,
+    maxResponseChars: r.maxResponseChars,
     // An id, and the door it names is the point of the trail: a tool starting to hand this
     // conversation to an operator's system is exactly the change a reader of the trail looks for.
     conversationRefIntegrationId:
@@ -301,6 +311,9 @@ export const toolDefinitionCreateSchema = z
     conversationRefIntegrationId: z
       .union([z.string().regex(/^[1-9]\d{0,18}$/), z.number().int().positive()])
       .nullish(),
+    // How many characters of the response the model receives; null (or absent) is the default. Any
+    // number is let through here and judged by `assertMaxResponseChars`, so the refusal names the band.
+    maxResponseChars: z.number().nullish(),
   })
   .strict();
 export type ToolDefinitionCreate = z.infer<typeof toolDefinitionCreateSchema>;
@@ -553,6 +566,18 @@ export async function assertToolRelativeTemplateResolvable(
   );
 }
 
+// Exported for the editor's test run, which refuses what the save refuses.
+export function assertMaxResponseChars(value: number | null | undefined): void {
+  if (maxResponseCharsAcceptable(value)) return;
+  throw new AppError(
+    `maxResponseChars must be an integer from ${MODEL_RESPONSE_CHAR_MIN} to ${MODEL_RESPONSE_CHAR_MAX}, or null for the default`,
+    400,
+    "errors.toolMaxResponseCharsOutOfRange",
+    { min: MODEL_RESPONSE_CHAR_MIN, max: MODEL_RESPONSE_CHAR_MAX },
+    "maxResponseChars",
+  );
+}
+
 function assertUsableUrlTemplate(urlTemplate: string | undefined): void {
   if (urlTemplate === undefined) return;
   const problem = urlTemplateProblem(urlTemplate);
@@ -590,6 +615,7 @@ export function assertToolDefinitionCreatable(input: ToolDefinitionCreate) {
   const data = parseInput(toolDefinitionCreateSchema, input);
   assertSupportedBody(data.body);
   assertUsableUrlTemplate(data.urlTemplate);
+  assertMaxResponseChars(data.maxResponseChars);
   return data;
 }
 
@@ -620,6 +646,7 @@ export function assertToolDefinitionPatchValid(
   const data = parseInput(toolDefinitionUpdateSchema, patch);
   assertSupportedBody(data.body);
   assertUsableUrlTemplate(data.urlTemplate);
+  assertMaxResponseChars(data.maxResponseChars);
   return data;
 }
 
@@ -685,6 +712,7 @@ export async function createToolDefinition(
         appointment: (readAppointmentDeclaration(data.appointment) ??
           Prisma.DbNull) as unknown as Prisma.InputJsonValue,
         conversationRefIntegrationId,
+        maxResponseChars: data.maxResponseChars ?? null,
       },
       select: SELECT,
     });
@@ -789,6 +817,8 @@ export async function updateToolDefinition(
     if (data.ackEnabled !== undefined) patchData.ackEnabled = data.ackEnabled;
     if (data.ackMessage !== undefined)
       patchData.ackMessage = data.ackMessage ?? null;
+    if (data.maxResponseChars !== undefined)
+      patchData.maxResponseChars = data.maxResponseChars;
     if (data.appointment !== undefined)
       patchData.appointment = (readAppointmentDeclaration(data.appointment) ??
         Prisma.DbNull) as unknown as Prisma.InputJsonValue;

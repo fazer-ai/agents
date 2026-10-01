@@ -28,6 +28,7 @@ import {
 // translate('errors.toolConversationRefFieldReserved', 'The field name conversation_ref is reserved for the conversation reference the agent creates. Give the field another name.')
 // translate('errors.toolConversationRefIntegrationRequired', 'This tool sends the conversation reference (conversation_ref), so it has to name the generic webhook integration the reference is for.')
 // translate('errors.toolDefinitionNotFound', 'Tool definition not found.')
+// translate('errors.toolMaxResponseCharsOutOfRange', 'The response limit must be a whole number from {{min}} to {{max}} characters, or empty for the default.')
 // translate('errors.toolNameTaken', 'That tool name is already in use.')
 // translate('errors.toolNameReserved', 'That name belongs to a built-in tool; choose another.')
 // translate('errors.urlTemplateNotAUrl', 'The request URL must be an http(s) URL, or a path starting with / when the credential carries a base URL')
@@ -154,6 +155,12 @@ export const writeBody = t.Object({
     t.Boolean({
       description:
         "Whether the tool sends an acknowledgement message before executing.",
+    }),
+  ),
+  maxResponseChars: t.Optional(
+    t.Union([t.Number(), t.Null()], {
+      description:
+        "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
     }),
   ),
   ackMessage: t.Optional(
@@ -307,6 +314,7 @@ export const toolsController = new Elysia({
           credentialRef: t.Optional(t.Union([t.String(), t.Null()])),
           expectedStatuses: t.Optional(t.Array(t.Number())),
           outputSchema: t.Optional(t.Record(t.String(), t.Unknown())),
+          maxResponseChars: t.Optional(t.Union([t.Number(), t.Null()])),
         }),
         args: t.Optional(
           t.Record(t.String(), t.Unknown(), {

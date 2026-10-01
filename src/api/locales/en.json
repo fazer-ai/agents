@@ -244,6 +244,7 @@
     "toolGrantToolNotInIntegration": "The tool {{tool}} is not available for the {{integration}} integration.",
     "toolGrantUnknownSource": "Unknown tool source: {{source}}.",
     "toolGrantUnknownTool": "Unknown {{source}} tool: {{tool}}.",
+    "toolMaxResponseCharsOutOfRange": "The response limit must be a whole number from {{min}} to {{max}} characters, or empty for the default.",
     "toolNameReserved": "That name belongs to a built-in tool; choose another.",
     "toolNameTaken": "That tool name is already in use.",
     "tooManyAllowedLabels": "`Labels it may add` takes at most {{max}} labels.",

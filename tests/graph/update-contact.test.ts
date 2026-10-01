@@ -8,6 +8,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { buildToolset, loadAgentConfig } from "@/graph/prepare";
 import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { getAgentToolSelections } from "@/modules/agents/service";
 import { buildContactFieldsSection } from "@/modules/chatwoot/attributes";
 import {
   ChatwootApiError,
@@ -578,5 +579,43 @@ describe.skipIf(!dbUp)("the mirror and the write-through", () => {
     const later = await contactRow();
     expect(later.name).toBe("Joana Lima");
     expect((later.attributes as Record<string, unknown>).city).toBe("Olinda");
+  });
+  test("the grant catalog offers no toggle for update_contact, whose grant is the writable field", async () => {
+    const view = await getAgentToolSelections(ctx(tenantId), agentId, appDb);
+    const names = view.catalog.native.map((n) => n.name);
+    expect(names).toContain("set_custom_attribute");
+    expect(names).not.toContain("update_contact");
+  });
+
+  test("a tie that disputes one field clears that field only", async () => {
+    const at = Math.floor(Date.now() / 1000) + 3600;
+    const additional = (city: string) => ({
+      company_name: "ACME",
+      city,
+      country: null,
+      description: null,
+    });
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      event(at, {
+        identifier: "cli-9",
+        additionalAttributes: additional("Natal"),
+      }),
+      appDb,
+    );
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      event(at, {
+        identifier: "cli-9",
+        additionalAttributes: additional("Recife"),
+      }),
+      appDb,
+    );
+    expect((await contactRow()).attributes).toEqual({
+      identifier: "cli-9",
+      company_name: "ACME",
+    });
   });
 });

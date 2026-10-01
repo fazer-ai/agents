@@ -8,6 +8,7 @@ import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import {
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+  GRANTABLE_NATIVE_TOOL_NAMES,
   NATIVE_TOOL_NAMES,
   RAG_TOOL_NAMES,
 } from "@/graph/tools/catalog";
@@ -2570,7 +2571,7 @@ async function buildToolSelectionView(
     agentUpdatedAt: agent?.updatedAt ?? null,
     grants: grants.map(toGrantDto),
     catalog: {
-      native: NATIVE_TOOL_NAMES.map((n) => ({
+      native: GRANTABLE_NATIVE_TOOL_NAMES.map((n) => ({
         name: n,
         ...(DELIVERS_TO_CUSTOMER.has(n) ? { deliversToCustomer: true } : {}),
       })),

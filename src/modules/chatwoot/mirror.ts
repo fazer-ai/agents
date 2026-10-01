@@ -651,7 +651,10 @@ async function upsertContact(
           ELSE phone_at END,
         attributes = CASE
           WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN (attributes - ${attrsKeys}::text[]) || ${attrs}::jsonb
-          WHEN ${attrsStated} AND attributes_at = ${eventAt} AND attributes IS DISTINCT FROM ((attributes - ${attrsKeys}::text[]) || ${attrs}::jsonb) THEN attributes - ${attrsKeys}::text[]
+          WHEN ${attrsStated} AND attributes_at = ${eventAt} THEN attributes - ARRAY(
+            SELECT k FROM unnest(${attrsKeys}::text[]) AS k
+            WHERE attributes -> k IS DISTINCT FROM ${attrs}::jsonb -> k
+          )
           ELSE attributes END,
         attributes_at = CASE
           WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${eventAt}

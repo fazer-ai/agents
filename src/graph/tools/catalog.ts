@@ -71,6 +71,17 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     get_current_time: "utility",
   };
 
+// Natives granted by their own configuration rather than by the allowlist: update_contact exists
+// when the agent marks a contact field writable (agent.settings.contactFields). A grant toggle for
+// it would be a control that changes nothing, so the grant catalog leaves it out.
+export const CONFIG_GRANTED_NATIVE_TOOL_NAMES: readonly NativeToolName[] = [
+  "update_contact",
+];
+
+export const GRANTABLE_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
+  (n) => !CONFIG_GRANTED_NATIVE_TOOL_NAMES.includes(n),
+);
+
 export const UTILITY_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
   (n) => NATIVE_TOOL_CATEGORY[n] === "utility",
 );

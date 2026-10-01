@@ -3,10 +3,11 @@
 // the takeover's fence read it. See docs/chatwoot.md, "A person answering the customer ends the attendance".
 
 // Outlasts the critical section it fences plus the deliveries in flight when taken, and no longer: the
-// writer's two round trips (toggle and stamping live read, `REQUEST_TIMEOUT_MS` 15s each in ./client.ts)
-// plus Chatwoot's redelivery ladder (3 retries 3s apart, see ./state-order.ts), 30s plus ~9s rounded up
-// to 45s. A claim that expired mid-flight would be a fence reporting protection it is not giving.
-export const STATUS_CLAIM_TTL_MS = 45_000;
+// takeover's settle wait (5s, ./human-takeover.ts), its three round trips after the claim (the settled
+// live read, the toggle and the stamping read, `REQUEST_TIMEOUT_MS` 15s each in ./client.ts) and
+// Chatwoot's redelivery ladder (3 retries 3s apart, see ./state-order.ts): 5s plus 45s plus ~9s, rounded
+// up to 60s. A claim that expired mid-flight would be a fence reporting protection it is not giving.
+export const STATUS_CLAIM_TTL_MS = 60_000;
 
 /** The instant a claim taken at `now` stops standing. */
 export function statusClaimDeadline(now: Date): Date {

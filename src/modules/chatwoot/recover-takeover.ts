@@ -206,7 +206,7 @@ export async function recoverStrandedTakeover(
   // NOTE: our own unfinished write, asked before ownership because ownership cannot see it. The claim
   // is taken before the toggle, so a death between the two (the widest gap, so the likeliest death)
   // leaves the row `open` from `pending` with Chatwoot never told. Not gated on the claim's deadline:
-  // it is 45s (STATUS_CLAIM_TTL_MS) and nothing is stranded before 30 minutes (STALE_AFTER_MS), so
+  // it is 60s (STATUS_CLAIM_TTL_MS) and nothing is stranded before 30 minutes (STALE_AFTER_MS), so
   // that branch would never run. The LIVE READ inside the retry stands in: Chatwoot `pending` against
   // our `open` is the signature of exactly the lost write (a hand-back writes `pending` on the ROW; a
   // person who opened it left Chatwoot `open`). `pending` as the replaced status says this `open`

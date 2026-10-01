@@ -1529,6 +1529,27 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(statuses).toEqual(["open", "resolved"]);
   });
 
+  test("a resolve the mirror holds withdraws the toggle even when Chatwoot cannot be read", async () => {
+    const conv = 8580;
+    await deliver(conv, { ...customerSays("oi") });
+    whileSettling = async () => {
+      whileSettling = null;
+      liveStatus.set(conv, "resolved");
+      await deliverConversationEvent(conv, "conversation_status_changed");
+      failingReads.add(conv);
+    };
+    const before = toggles(conv).length;
+    try {
+      await deliver(conv, { ...composerReply("até mais"), ...repliedNow() });
+    } finally {
+      whileSettling = null;
+      failingReads.delete(conv);
+    }
+    expect(toggles(conv).length).toBe(before);
+    expect(liveStatus.get(conv)).toBe("resolved");
+    expect((await convRow(conv))?.status).toBe("resolved");
+  });
+
   test("a conversation another party picked up during the settle wait is left to them", async () => {
     const conv = 8574;
     await deliver(conv, { ...customerSays("oi") });

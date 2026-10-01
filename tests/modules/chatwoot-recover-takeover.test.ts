@@ -790,7 +790,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a claim long past its deadline is still the write this recovery finishes", async () => {
-    // Arithmetic rather than judgement: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS)
+    // Arithmetic rather than judgement: the claim stands for 60 seconds (STATUS_CLAIM_TTL_MS)
     // and the sweep calls a delivery stranded only after 30 minutes (STALE_AFTER_MS), so a retry
     // gated on a LIVE claim could never run on a real strand. This is the shape a real one has:
     // `open` on the row, the claim expired long ago, and Chatwoot never told. The authority is the

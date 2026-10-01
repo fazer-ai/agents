@@ -318,7 +318,7 @@ export interface HumanReplyTakeoverParams {
   // leaves the row `open` with Chatwoot never told; then exactly two steps do not apply (the mirror
   // ownership read, which would see our own `open`, and the claim CAS, already done), and everything
   // else is the same code. The value is the row's stored deadline, compared for equality by the
-  // reconcile to prove ownership; it is not a liveness test (the claim lasts 45s, the sweep waits
+  // reconcile to prove ownership; it is not a liveness test (the claim lasts 60s, the sweep waits
   // 30 minutes), and the live read is what authorises the write.
   heldClaimUntil?: Date | null;
   // When the person's reply was created at the source, which starts the settle wait above. Null or
@@ -332,14 +332,18 @@ function defaultSettle(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// The console mark alone, re-read after the settle wait. The ownership read cannot answer it any more:
-// our own claim has made the row `open`, and that read returns no mark for a row that is not ours.
-async function storedConsoleWriteMark(p: {
+// The row as it stands after the settle wait: whether the status is still the `open` this claim wrote.
+// The ownership read cannot answer it, since our own claim made the row `open` and that read says
+// nothing about a row that is not the bot's.
+async function storedAfterSettle(p: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
   base: PrismaClient;
-}): Promise<number | null> {
+}): Promise<{
+  status: string | null;
+  statusClaimUntil: Date | null;
+}> {
   const row = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
     db.conversation.findUnique({
       where: {
@@ -349,10 +353,13 @@ async function storedConsoleWriteMark(p: {
           chatwootConversationId: p.conversationId,
         },
       },
-      select: { consoleWriteAtMessageId: true },
+      select: { status: true, statusClaimUntil: true },
     }),
   );
-  return row?.consoleWriteAtMessageId ?? null;
+  return {
+    status: row?.status ?? null,
+    statusClaimUntil: row?.statusClaimUntil ?? null,
+  };
 }
 
 // Says WHICH of the three happened, because the two callers need different amounts of it. The live
@@ -561,10 +568,11 @@ export async function runHumanReplyTakeover(
                 lastEventAt: p.lastEventAt ? p.lastEventAt.toISOString() : null,
               });
             }
-            // The settle wait, then the same two questions again, because the person may still
-            // be acting: a resolve (or an assignment) is read off Chatwoot, a hand-back off the console
-            // mark it stamps. Either one means the toggle would undo a later decision, so it is not
-            // sent and the mirror is put back on the source's state below.
+            // The settle wait, then the conversation is asked again, because the person may still be
+            // acting: Chatwoot for a resolve or another holder, and the row for anything written since
+            // the claim (a resolve's own webhook, a hand-back from the console, which always writes the
+            // row). Either one means the toggle would undo a later decision, so it is not sent and the
+            // mirror is put back on the source's state below.
             const waitMs = humanReplySettleMs(p.repliedAt ?? null, new Date());
             if (waitMs > 0) {
               await (p.settle ?? defaultSettle)(waitMs);
@@ -573,10 +581,12 @@ export async function runHumanReplyTakeover(
                   .getConversation(conversationId)
                   .catch(() => null),
               );
-              const handedBack = consoleWriteLandedAfter(
-                p.decidedAtMessageId ?? null,
-                await storedConsoleWriteMark(p),
-              );
+              const stored = await storedAfterSettle(p);
+              // The row still standing on this claim's `open` is ours; anything else is newer, and it
+              // is asked even when the read above failed.
+              const rowMovedOn =
+                stored.status !== "open" ||
+                stored.statusClaimUntil?.getTime() !== claimUntil.getTime();
               const movedOn =
                 after !== null &&
                 !shouldBotHandle(
@@ -587,13 +597,13 @@ export async function runHumanReplyTakeover(
                   },
                   { ourAgentBotId: p.ourAgentBotId },
                 );
-              if (handedBack || movedOn) {
+              if (movedOn || rowMovedOn) {
                 settled.live = after;
                 logger.info(
                   "chatwoot: %s handoff withdrawn (conv=%s) — the conversation moved on while the reply settled (%s)",
                   `human reply (${p.route})`,
                   convLabel,
-                  handedBack ? "handed back" : after?.status,
+                  after?.status ?? stored.status,
                 );
                 return false;
               }

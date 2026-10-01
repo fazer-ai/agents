@@ -60,6 +60,7 @@ export {
   type ScheduleOption,
   SchedulePicker,
 } from "./SchedulePicker";
+export { SectionLayout, type SectionTab } from "./SectionLayout";
 export {
   SegmentedControl,
   type SegmentedOption,

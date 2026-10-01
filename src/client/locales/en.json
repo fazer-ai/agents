@@ -50,6 +50,8 @@
     "roleUpdateFailed": "Failed to update role",
     "searchUsers": "Search users by email...",
     "sections": "Admin sections",
+    "subtitleFleet": "Manage users, tenants and branding",
+    "subtitleTenant": "Manage who has access to this tenant",
     "tabBranding": "Branding",
     "tabTenants": "Tenants",
     "tabUsers": "Users",

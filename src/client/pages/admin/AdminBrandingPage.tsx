@@ -18,13 +18,13 @@ export function AdminBrandingPage() {
   }
 
   return (
-    <div className="space-y-6 pt-2">
+    <div className="space-y-6">
       <header className="flex items-center gap-3">
         <Palette className="h-6 w-6 text-accent" aria-hidden="true" />
         <div>
-          <h1 className="font-semibold text-text-primary text-xl">
+          <h2 className="font-semibold text-text-primary text-xl">
             {t("branding.title", "Branding")}
-          </h1>
+          </h2>
           <p className="mt-0.5 text-sm text-text-muted">
             {t(
               "branding.subtitle",

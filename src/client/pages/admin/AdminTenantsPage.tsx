@@ -42,7 +42,7 @@ export function AdminTenantsPage() {
   }
 
   return (
-    <div className="space-y-6 pt-2">
+    <div className="space-y-6">
       <div className="flex items-center justify-end">
         <ProGate
           feature="multiTenant"

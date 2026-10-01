@@ -50,6 +50,8 @@
     "roleUpdateFailed": "Falha ao atualizar função",
     "searchUsers": "Buscar usuários por email...",
     "sections": "Seções do admin",
+    "subtitleFleet": "Gerencie usuários, tenants e a identidade visual",
+    "subtitleTenant": "Gerencie quem tem acesso a este tenant",
     "tabBranding": "Identidade visual",
     "tabTenants": "Tenants",
     "tabUsers": "Usuários",

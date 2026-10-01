@@ -123,7 +123,6 @@ function judgeTranscription(json: OpenAiTranscription): SttResult {
     segments: segments.length,
     droppedSegments: segments.length - spoken.length,
   };
-  if (spoken.length === segments.length) return { text, confidence };
   if (spoken.length === 0) return { text: "", confidence, withheld: true };
   return {
     text: spoken

@@ -1376,20 +1376,27 @@ export class ChatwootClient {
       // (contacts_controller#contact_additional_attributes), so only the keys being written are sent.
       additional_attributes?: Partial<Record<AdditionalContactField, string>>;
     },
-    // NOTE: Asked inside the queue, right before the write, as setContactCustomAttributes does.
-    opts: { stillWanted?: () => Promise<boolean> } = {},
+    // NOTE: `stillWanted` is asked inside the queue, right before the write, as
+    // setContactCustomAttributes does. `afterWrite` runs inside it too, once Chatwoot accepted, so
+    // whatever follows the write (a mirror update) lands in the order the writes did.
+    opts: {
+      stillWanted?: () => Promise<boolean>;
+      afterWrite?: () => Promise<void>;
+    } = {},
   ): Promise<unknown> {
     // NOTE: On the contact's own queue, the one setContactCustomAttributes uses: Chatwoot answers a
     // PUT by merging `additional_attributes` and rewriting `custom_attributes` from the snapshot that
     // request loaded, so two overlapping writes to one contact lose whichever saved first.
     return withKeyedQueue(this.targetKey("contact", contactId), async () => {
       await this.assertStillWanted(opts.stillWanted, `contacts/${contactId}`);
-      return this.request(
+      const res = await this.request(
         this.config.adminToken,
         "PUT",
         `/contacts/${contactId}`,
         fields,
       );
+      await opts.afterWrite?.();
+      return res;
     });
   }
 

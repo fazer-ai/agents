@@ -28,9 +28,11 @@ function recordingClient(fail?: Error) {
   const calls: unknown[][] = [];
   const client = {
     updateContact: async (...args: unknown[]) => {
-      // NOTE: The contact id and the fields; the third argument is the queue's fence.
+      // NOTE: The contact id and the fields; the third argument carries the fence and the
+      // follow-up the real client runs inside its queue once Chatwoot accepted.
       calls.push(args.slice(0, 2));
       if (fail) throw fail;
+      await (args[2] as { afterWrite?: () => Promise<void> })?.afterWrite?.();
       return {};
     },
   } as unknown as ChatwootClient;
@@ -226,21 +228,13 @@ describe("update_contact", () => {
   });
 });
 
-test("two writes to one contact in the same turn go out one after the other", async () => {
+test("two writes to one contact in the same turn reach Chatwoot and the mirror in one order", async () => {
   const events: string[] = [];
-  let first = true;
+  const tagOf = (body: Record<string, unknown>) =>
+    Object.keys(body).sort().join("+");
   const fetchImpl = (async (_url: string, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as Record<
-      string,
-      unknown
-    >;
-    const tag = Object.keys(body).sort().join("+");
-    events.push(`start ${tag}`);
-    if (first) {
-      first = false;
-      await new Promise((r) => setTimeout(r, 40));
-    }
-    events.push(`end ${tag}`);
+    const tag = tagOf(JSON.parse(String(init?.body ?? "{}")));
+    events.push(`put ${tag}`);
     return new Response("{}", {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -255,18 +249,31 @@ test("two writes to one contact in the same turn go out one after the other", as
     },
     fetchImpl,
   );
-  const t = toolFor(
-    { context: ["name", "city"], writable: ["name", "city"] },
-    client,
-  );
+  // The FIRST mirror write is the slow one: without the queue around it, the second call would
+  // finish both of its writes while the first still holds its mirror update.
+  let firstMirror = true;
+  const tx = {
+    $executeRaw: async (sql: TemplateStringsArray, ...values: unknown[]) => {
+      if (!sql.join("").includes("UPDATE contacts")) return 0;
+      const name = values[1] ?? "-";
+      if (firstMirror) {
+        firstMirror = false;
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      events.push(`mirror ${String(name)}`);
+      return 1;
+    },
+    contact: { findUnique: async () => ({ chatwootContactId: 321 }) },
+  };
+  const base = {
+    $extends: () => ({
+      $transaction: (fn: (t: unknown) => unknown) => fn(tx),
+    }),
+  } as unknown as PrismaClient;
+  const t = toolFor({ context: ["name"], writable: ["name"] }, client, base);
   if (!t) throw new Error("update_contact was not built");
-  await Promise.all([call(t, { city: "Recife" }), call(t, { name: "Joana" })]);
-  expect(events).toEqual([
-    "start additional_attributes",
-    "end additional_attributes",
-    "start name",
-    "end name",
-  ]);
+  await Promise.all([call(t, { name: "Ana" }), call(t, { name: "Bia" })]);
+  expect(events).toEqual(["put name", "mirror Ana", "put name", "mirror Bia"]);
 });
 
 describe("the prompt block", () => {

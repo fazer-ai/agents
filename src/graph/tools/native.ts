@@ -1987,8 +1987,12 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
               ? { additional_attributes: additional }
               : {}),
           },
-          // NOTE: Asked again inside the contact's queue, since the wait for it is a wait too.
-          { stillWanted: ctx.stillWanted },
+          // NOTE: The fence is asked again inside the contact's queue, since the wait for it is a
+          // wait too, and the mirror is written inside it, so two writes reach it in Chatwoot's order.
+          {
+            stillWanted: ctx.stillWanted,
+            afterWrite: () => mirrorContactFieldsWrite(ctx, written),
+          },
         );
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
@@ -2008,7 +2012,6 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
         }
         throw e;
       }
-      await mirrorContactFieldsWrite(ctx, written);
       return `Contact updated: ${Object.keys(written).join(", ")}.`;
     },
     {

@@ -343,3 +343,85 @@ describe("STT confidence", () => {
     expect(await req("gpt-4o-transcribe", fetchImpl)).toEqual({ text: "olá" });
   });
 });
+
+// Scribe writes audio events into the transcript ("[silêncio]", "[ruído]") and reports a logprob per
+// word. Measured live in docs/stt.md: a note with no speech comes back as a tag alone.
+describe("ElevenLabs transcription", () => {
+  const scribe = (body: unknown) => {
+    const { calls, fetchImpl } = mockFetch(body);
+    const out = getSttProvider("elevenlabs")?.transcribe({
+      audio,
+      mimeType: "audio/ogg",
+      language: "pt",
+      model: "scribe_v2",
+      apiKey: "xi",
+      baseURL: null,
+      fetchImpl,
+    });
+    return { calls, out };
+  };
+  const w = (type: string, text: string, logprob: number) => ({
+    type,
+    text,
+    logprob,
+  });
+
+  test("audio events are not asked for", async () => {
+    const { calls, out } = scribe({
+      text: "Sim",
+      words: [w("word", "Sim", -0.01)],
+    });
+    await out;
+    const form = calls[0]?.init.body as FormData;
+    expect(form.get("tag_audio_events")).toBe("false");
+  });
+
+  test("a note that is only an audio event carries no text", async () => {
+    const { out } = scribe({
+      text: "[silêncio]",
+      words: [w("audio_event", "[silêncio]", -0.03)],
+    });
+    expect(await out).toEqual({ text: "" });
+  });
+
+  test("an audio event inside speech is dropped and the words around it kept", async () => {
+    const { out } = scribe({
+      text: "Oi, [risos] tudo bem? 😊",
+      words: [
+        w("word", "Oi,", -0.01),
+        w("spacing", " ", 0),
+        w("audio_event", "[risos]", -0.2),
+        w("spacing", " ", 0),
+        w("word", "tudo", -0.02),
+        w("spacing", " ", 0),
+        w("word", "bem? 😊", -0.03),
+      ],
+    });
+    expect(await out).toEqual({
+      text: "Oi, tudo bem? 😊",
+      confidence: { signal: "word_logprob", meanLogprob: -0.02 },
+    });
+  });
+
+  test("a transcription Scribe was unsure of is withheld, whatever is around its words", async () => {
+    const { out } = scribe({
+      text: "A inflação vai continuar",
+      words: [
+        w("word", "A", -0.9),
+        w("spacing", " ", -0.001),
+        w("word", "inflação", -1.6),
+        w("audio_event", "[ruído]", -0.01),
+      ],
+    });
+    expect(await out).toEqual({
+      text: "",
+      confidence: { signal: "word_logprob", meanLogprob: -1.25 },
+      withheld: true,
+    });
+  });
+
+  test("a response without words is taken as it came", async () => {
+    const { out } = scribe({ text: "transcrição" });
+    expect(await out).toEqual({ text: "transcrição" });
+  });
+});

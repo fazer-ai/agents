@@ -465,7 +465,7 @@ const contactFields = z.looseObject({
   writable: z
     .array(oneOf(CONTACT_FIELDS))
     .optional()
-    .describe("⊆ context, else ignored; empty = no update_contact"),
+    .describe("⊆ context, else refused; empty = no update_contact"),
 });
 
 const crossInboxCase = z.looseObject({

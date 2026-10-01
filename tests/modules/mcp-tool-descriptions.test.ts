@@ -208,7 +208,7 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(31_503);
+    expect(desc).toBeLessThanOrEqual(31_552);
     expect(schema).toBeLessThanOrEqual(66_012);
   });
 

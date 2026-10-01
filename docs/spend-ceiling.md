@@ -38,16 +38,18 @@ silence every agent of the tenant. Instead a periodic scheduler job, `SPEND_CEIL
 `spend_cost_snapshots` (one per tenant, source and calendar month), and the gate reads the row. That
 moves the failure from **availability to staleness**, which is a failure the row can be honest about.
 
-- **One job per tenant, armed while the ceiling is on or Langfuse is configured**
+- **One job per tenant, armed while the ceiling is on or the Langfuse block is**
   (`src/modules/spend-ceiling/arm.ts`): on every save of the ceiling or the Langfuse block, and once
   at boot for every such tenant, so a row lost to a reset is not a ceiling deciding on a figure frozen
   at its last poll. Self-re-arming like the heartbeat; the handler never throws, so a Langfuse down for
   an hour never walks the scheduler's ladder to `DEAD`. The cadence is
   `SPEND_CEILING_POLL_INTERVAL_MS` (default 5 min) with the ceiling on. **With the ceiling off the
-  poll still runs** wherever Langfuse is configured, hourly (`SPEND_POLL_IDLE_INTERVAL_MS`, or the
-  configured cadence if slower), so the console always has the month's cost and the reconciliation
-  below; nothing is enforced on that figure, so the failing-read and project-switch announcements stay
-  on the card, and a tenant with neither a ceiling nor Langfuse ends the loop until the next save.
+  poll still runs** wherever the Langfuse block is switched on with a credential named, hourly
+  (`SPEND_POLL_IDLE_INTERVAL_MS`, or the configured cadence if slower), so the console always has the
+  month's cost and the reconciliation below; nothing is enforced on that figure, so the failing-read
+  and project-switch announcements stay on the card. It is armed on the block's intent, not on a
+  credential that resolves: a pending vault entry filled later is not a save of either block, so the
+  hourly poll is what notices it. A tenant with neither ends the loop until the next save.
 - **The two sources are told apart by the trace's environment.** Every trace goes out under
   `environmentForSource` (`<env>` for inbox, `<env>-playground` for the playground), which is a
   filterable column of the Langfuse metrics API, so the poll runs one query per source: the
@@ -113,8 +115,9 @@ moves the failure from **availability to staleness**, which is a failure the row
   since drops off. **A model the month's row did not name before is announced** on the
   `spend_ceiling` stage at `warn`, naming it and where it gets a price (a model definition in
   Langfuse), ceiling or not: the card is read only by whoever opens it, and every call to that model
-  is left out of the figure until someone acts. The row keeps the name, so it is said once per model
-  per month.
+  is left out of the figure until someone acts. The row keeps the name, and a name either half's row
+  already holds is not news, so it is said once per model per month, across both halves and across
+  restarts.
 - **A billed call no callback saw reaches Langfuse by hand.** Vision reaches its provider by raw
   fetch, so the LangChain handler never observes it, and Langfuse only prices the generations it was
   shown: the ledger had the row and the ceiling had nothing, which left an extraction-only playground

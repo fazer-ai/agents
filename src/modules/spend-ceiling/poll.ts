@@ -16,6 +16,7 @@ import { claimContactAuthNotice } from "@/modules/contact-auth/state";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { wantsSpendPoll } from "./arm";
 import { monthStart } from "./decide";
 import {
   LANGFUSE_NOT_CONFIGURED,
@@ -226,7 +227,7 @@ async function writeSuccess(
   seen: MonthCost,
   at: Date,
   projectKey: string,
-): Promise<{ switched: boolean; newlyUnpriced: string[] }> {
+): Promise<{ switched: boolean; known: string[] }> {
   return withEntityLock(
     db,
     snapshotLockKey(tenantId, source, month),
@@ -306,11 +307,7 @@ async function writeSuccess(
         update: figure,
       });
       // The row's list already holds the carried names (see `figure` above).
-      const known = new Set(asStringList(prev?.unpricedModels));
-      return {
-        switched,
-        newlyUnpriced: seen.unpricedModels.filter((m) => !known.has(m)),
-      };
+      return { switched, known: asStringList(prev?.unpricedModels) };
     },
   );
 }
@@ -517,7 +514,9 @@ export async function pollTenantSpend(
         const current = await resolveLangfuseConfig(db, tenantId);
         if (!current || !sameCredential(current, resolved)) return null;
         let switched = false;
-        const newlyUnpriced = new Set<string>();
+        // Known on EITHER half: a model first seen in the playground is not news when it reaches the
+        // inbox.
+        const known = new Set<string>();
         for (const [i, source] of SOURCES.entries()) {
           const cost = seen[i];
           if (!cost) continue;
@@ -531,9 +530,16 @@ export async function pollTenantSpend(
             projectKey,
           );
           if (r.switched) switched = true;
-          for (const m of r.newlyUnpriced) newlyUnpriced.add(m);
+          for (const m of r.known) known.add(m);
         }
-        return { switched, newlyUnpriced: [...newlyUnpriced].sort() };
+        const seenUnpriced = union(
+          seen.flatMap((c) => c?.unpricedModels ?? []),
+          [],
+        );
+        return {
+          switched,
+          newlyUnpriced: seenUnpriced.filter((m) => !known.has(m)),
+        };
       }),
     );
     if (written === null) {
@@ -619,8 +625,8 @@ export async function pollTenantSpend(
 }
 
 // The job. With the ceiling on it polls and re-arms at the configured cadence. With it off it still
-// polls, hourly, while Langfuse is configured, so the console has the month's figure; a tenant with
-// neither ends the loop (the arm side re-creates it on the next save of either block). It never throws, so the
+// polls, hourly, while the Langfuse block is on (a credential still pending is asked again each hour);
+// a tenant with neither ends the loop (the arm side re-creates it on the next save of either block). It never throws, so the
 // scheduler's ladder never reaches DEAD over a Langfuse that is down for an hour: `JOB_DEATH_LEVEL`
 // says a death here is an error precisely because it would mean the ceiling silently froze.
 export async function spendPollHandler(
@@ -651,7 +657,11 @@ export async function spendPollHandler(
     ...deps,
     enforced: cfg.enabled,
   });
-  if (!cfg.enabled && outcome.status === LANGFUSE_NOT_CONFIGURED) {
+  if (
+    !cfg.enabled &&
+    outcome.status === LANGFUSE_NOT_CONFIGURED &&
+    !(await wantsSpendPoll(job.tenantId, base).catch(() => true))
+  ) {
     return { outcome: "done" };
   }
   return rearm(spendPollIntervalMs(cfg.enabled));

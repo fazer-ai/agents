@@ -364,6 +364,39 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(warned[0]?.errorMessage).toContain("openrouter/free-model");
   });
 
+  // The playground usually meets a model before customers do, and that is one model, not two news.
+  test("a model already named on the other half is not announced again", async () => {
+    const unpricedRows = () =>
+      flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+        where: { tenantId: tenantA, stage: "spend_ceiling" },
+      });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub({
+        [INBOX_ENV]: [],
+        [PLAY_ENV]: [
+          { providedModelName: "lab-model", sum_totalCost: 0, count_count: 1 },
+        ],
+      }).fetchFn,
+      now: NOW,
+    });
+    expect(await unpricedRows()).toHaveLength(1);
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub({
+        [INBOX_ENV]: [
+          { providedModelName: "lab-model", sum_totalCost: 0, count_count: 2 },
+        ],
+        [PLAY_ENV]: [
+          { providedModelName: "lab-model", sum_totalCost: 0, count_count: 1 },
+        ],
+      }).fetchFn,
+      now: at(1),
+    });
+    expect(await unpricedRows()).toHaveLength(1);
+  });
+
   test("a model with no price is announced once a month, not once a poll", async () => {
     const answer = () =>
       langfuseStub({
@@ -1488,6 +1521,70 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         ).toHaveLength(0);
       } finally {
         await setCeiling(tenantA, { enabled: true, monthlyInboxUsd: 10 });
+      }
+    });
+
+    // A credential saved while still pending in the vault is filled later through the vault, which is
+    // not a save of either block: the loop has to outlive the not-configured answer to notice it.
+    test("with the ceiling off, a Langfuse credential still pending keeps the loop alive until it is filled", async () => {
+      const pendingEntry = await suDb.vaultEntry.create({
+        data: {
+          tenantId: tenantC,
+          name: "lf-pending",
+          kind: "langfuse",
+          secret: encryptJson({}),
+          status: "pending",
+          baseUrl: BASE_URL,
+        },
+        select: { id: true },
+      });
+      await updateLangfuse(
+        ctxOf(tenantC),
+        { enabled: true, credentialRef: formatVaultRef(pendingEntry.id) },
+        appDb,
+      );
+      try {
+        expect(
+          await suDb.schedulerJob.count({
+            where: {
+              tenantId: tenantC,
+              kind: "SPEND_CEILING_POLL",
+              status: "PENDING",
+            },
+          }),
+        ).toBe(1);
+        const quiet = langfuseStub({});
+        const first = await spendPollHandler(job(tenantC), appDb, {
+          fetchFn: quiet.fetchFn,
+          now: NOW,
+        });
+        expect(first.outcome).toBe("reschedule");
+        expect(quiet.seen).toHaveLength(0);
+
+        await suDb.vaultEntry.update({
+          where: { id: pendingEntry.id },
+          data: {
+            secret: encryptJson({ publicKey: "pk-c", secretKey: "sk-c" }),
+            status: "active",
+          },
+        });
+        const filled = langfuseStub({
+          [INBOX_ENV]: [
+            { providedModelName: "m", sum_totalCost: "3", count_count: 1 },
+          ],
+          [PLAY_ENV]: [],
+        });
+        await spendPollHandler(job(tenantC), appDb, {
+          fetchFn: filled.fetchFn,
+          now: at(1),
+        });
+        expect(Number((await snapshot(tenantC, "inbox"))?.costUsd)).toBe(3);
+      } finally {
+        await updateLangfuse(
+          ctxOf(tenantC),
+          { enabled: false, credentialRef: null },
+          appDb,
+        );
       }
     });
 

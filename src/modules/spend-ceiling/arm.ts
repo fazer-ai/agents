@@ -1,16 +1,18 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { resolveLangfuseConfig } from "@/graph/observability";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
+import { parseLangfuseSettings } from "@/modules/tenant-settings/service";
 import { readSpendCeilingConfig } from "./settings";
 
 // Arms the per-tenant `SPEND_CEILING_POLL` job: on every save of the ceiling or Langfuse block, and at
 // boot, so a lost row does not leave a figure that stops refreshing. Armed while the ceiling is ON (a
 // tenant with no Langfuse IS armed, and its poll writes the reason on the row) and, with the ceiling
-// off, while Langfuse is configured, so the console always has the month's cost. Kept apart from
-// ./poll.ts so the settings service imports it without a cycle.
+// off, while the Langfuse block is switched on with a credential named, so the console always has the
+// month's cost. The block's intent, not a credential that resolves: a pending vault entry filled later
+// is not a save of either block, and the poll is what notices it. Kept apart from ./poll.ts so the
+// settings service does not pull the poll in.
 
 export const SPEND_POLL_DEDUPE_KEY = "spend-ceiling";
 
@@ -18,18 +20,20 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-async function wantsSpendPoll(
+export async function wantsSpendPoll(
   tenantId: bigint,
   base: PrismaClient,
 ): Promise<boolean> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const row = await db.tenant.findUnique({
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.tenant.findUnique({
       where: { id: tenantId },
       select: { settings: true },
-    });
-    if (readSpendCeilingConfig(row?.settings ?? {}).enabled) return true;
-    return (await resolveLangfuseConfig(db, tenantId)) !== null;
-  });
+    }),
+  );
+  const settings = row?.settings ?? {};
+  if (readSpendCeilingConfig(settings).enabled) return true;
+  const langfuse = parseLangfuseSettings(settings);
+  return langfuse.enabled && Boolean(langfuse.credentialRef);
 }
 
 // Idempotent: `enqueueJob` upserts on (tenant, kind, dedupeKey), so the second save keeps exactly

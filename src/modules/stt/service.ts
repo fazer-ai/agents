@@ -272,11 +272,12 @@ async function transcribeOnce(
 
 // The stt line's record of the confidence the provider reported and what it decided, numbers only:
 // the transcription itself is never logged, withheld or not.
+// An empty transcription says so too: the provider heard no speech, which is a different answer from
+// one withheld for its confidence and from a provider that reports none.
 function confidenceDetail(r: SttResult): Record<string, unknown> {
-  if (!r.confidence) return {};
-  return r.withheld
-    ? { ...r.confidence, withheld: "low_confidence" }
-    : { ...r.confidence };
+  if (r.withheld) return { ...r.confidence, withheld: "low_confidence" };
+  const empty = r.text.trim() === "" ? { empty: true } : {};
+  return { ...r.confidence, ...empty };
 }
 
 export interface PlaygroundTranscribeParams {

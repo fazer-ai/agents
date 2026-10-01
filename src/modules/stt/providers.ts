@@ -20,7 +20,7 @@ export interface SttRequest {
 // whether it withheld the text: silence and noise come back as fluent text in any language and
 // script, and the confidence is what tells them apart (docs/stt.md has the measurement).
 export type SttConfidence =
-  | { signal: "token_logprob"; meanLogprob: number }
+  | { signal: "token_logprob" | "word_logprob"; meanLogprob: number }
   | { signal: "segments"; segments: number; droppedSegments: number };
 
 export interface SttResult {
@@ -68,7 +68,9 @@ function audioBlob(req: SttRequest): Blob {
 // Below these the text is not taken as speech. Measured live (docs/stt.md): on gpt-4o-transcribe,
 // silence, noise and speech buried under noise averaged -1.39 or lower per token, clear speech -0.16
 // or higher; on Whisper, a segment of silence or noise reported a no-speech probability of 0.82 or
-// more, speech 0.69 or less.
+// more, speech 0.69 or less. Scribe's word logprobs share the first floor: clear speech averaged
+// -0.65 or higher there, and speech buried under noise came back as fluent text between -0.46 and
+// -1.19, so on Scribe the floor catches only part of that.
 const MIN_MEAN_TOKEN_LOGPROB = -1.0;
 const MAX_SEGMENT_NO_SPEECH_PROB = 0.7;
 const MIN_SEGMENT_AVG_LOGPROB = -1.0;
@@ -167,6 +169,40 @@ async function openaiTranscribe(req: SttRequest): Promise<SttResult> {
   return judgeTranscription((await res.json()) as OpenAiTranscription);
 }
 
+interface ScribeTranscription {
+  text?: string;
+  words?: Array<{ type?: string; text?: string; logprob?: number | null }>;
+}
+
+// Scribe's transcript, judged. Audio events ("[silêncio]", "[ruído]", "[risos]") are not asked for,
+// and any that still come are dropped from the words: none of them is something the customer said,
+// and a note with no speech comes back as one alone. The words' mean logprob decides like the OpenAI
+// token logprob, under the same floor.
+function judgeScribe(json: ScribeTranscription): SttResult {
+  const words = json.words ?? [];
+  if (words.length === 0) return { text: (json.text ?? "").trim() };
+  const text = words
+    .filter((w) => w.type !== "audio_event")
+    .map((w) => w.text ?? "")
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  const lps = words
+    .filter((w) => w.type === "word")
+    .map((w) => w.logprob)
+    .filter((lp): lp is number => typeof lp === "number");
+  if (lps.length === 0) return { text };
+  const mean = lps.reduce((a, b) => a + b, 0) / lps.length;
+  const confidence: SttConfidence = {
+    signal: "word_logprob",
+    meanLogprob: Math.round(mean * 100) / 100,
+  };
+  if (mean < MIN_MEAN_TOKEN_LOGPROB) {
+    return { text: "", confidence, withheld: true };
+  }
+  return { text, confidence };
+}
+
 // ElevenLabs Scribe.
 async function elevenlabsTranscribe(req: SttRequest): Promise<SttResult> {
   const base = (req.baseURL ?? "https://api.elevenlabs.io/v1").replace(
@@ -177,6 +213,7 @@ async function elevenlabsTranscribe(req: SttRequest): Promise<SttResult> {
   form.append("file", audioBlob(req), fileNameFor(req.mimeType));
   form.append("model_id", req.model);
   if (req.language) form.append("language_code", req.language);
+  form.append("tag_audio_events", "false");
   const res = await req.fetchImpl(`${base}/speech-to-text`, {
     method: "POST",
     headers: { "xi-api-key": req.apiKey },
@@ -185,8 +222,7 @@ async function elevenlabsTranscribe(req: SttRequest): Promise<SttResult> {
     signal: AbortSignal.timeout(STT_TIMEOUT_MS),
   });
   if (!res.ok) throw new SttError("elevenlabs", res.status);
-  const json = (await res.json()) as { text?: string };
-  return { text: (json.text ?? "").trim() };
+  return judgeScribe((await res.json()) as ScribeTranscription);
 }
 
 // Google Gemini: transcription via generateContent with the audio inlined as base64. The key goes in

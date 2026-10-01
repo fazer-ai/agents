@@ -1550,6 +1550,97 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("resolved");
   });
 
+  test("a hand-back made in Chatwoot during the settle wait is not undone", async () => {
+    const conv = 8581;
+    await deliver(conv, { ...customerSays("oi") });
+    whileSettling = async () => {
+      whileSettling = null;
+      liveStatus.set(conv, "pending");
+      await deliverConversationEvent(conv, "conversation_status_changed");
+    };
+    const before = toggles(conv).length;
+    const statuses = await announcedStatuses(conv, async () => {
+      try {
+        await deliver(conv, {
+          ...composerReply("volta pro bot"),
+          ...repliedNow(),
+        });
+      } finally {
+        whileSettling = null;
+      }
+    });
+    expect(toggles(conv).length).toBe(before);
+    expect(liveStatus.get(conv)).toBe("pending");
+    expect((await convRow(conv))?.status).toBe("pending");
+    expect(statuses).toEqual(["open", "pending"]);
+  });
+
+  test("a delayed status event from before the reply does not withdraw the takeover", async () => {
+    const conv = 8584;
+    await deliver(conv, { ...customerSays("oi") });
+    // Serialized before the reply, delivered during the wait.
+    const earlier = conversation(conv);
+    whileSettling = async () => {
+      whileSettling = null;
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        earlier,
+      );
+    };
+    try {
+      await deliver(conv, { ...composerReply("assumo"), ...repliedNow() });
+    } finally {
+      whileSettling = null;
+    }
+    expect(liveStatus.get(conv)).toBe("open");
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  test("a customer message during the settle wait does not withdraw the takeover", async () => {
+    const conv = 8582;
+    await deliver(conv, { ...customerSays("oi") });
+    whileSettling = async () => {
+      whileSettling = null;
+      await deliver(conv, { ...customerSays("tem alguém aí?") });
+    };
+    try {
+      await deliver(conv, { ...composerReply("estou aqui"), ...repliedNow() });
+    } finally {
+      whileSettling = null;
+    }
+    expect(liveStatus.get(conv)).toBe("open");
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  test("on a Chatwoot that renders no version, a resolve seen after the wait still reaches the mirror", async () => {
+    const conv = 8583;
+    await deliver(conv, { ...customerSays("oi") });
+    unversionedReads.add(conv);
+    whileSettling = async () => {
+      whileSettling = null;
+      liveStatus.set(conv, "resolved");
+    };
+    const before = toggles(conv).length;
+    try {
+      const statuses = await announcedStatuses(conv, async () => {
+        try {
+          await deliver(conv, {
+            ...composerReply("até mais"),
+            ...repliedNow(),
+          });
+        } finally {
+          whileSettling = null;
+        }
+      });
+      expect(toggles(conv).length).toBe(before);
+      expect((await convRow(conv))?.status).toBe("resolved");
+      expect(statuses).toEqual(["open", "resolved"]);
+    } finally {
+      unversionedReads.delete(conv);
+    }
+  });
+
   test("a conversation another party picked up during the settle wait is left to them", async () => {
     const conv = 8574;
     await deliver(conv, { ...customerSays("oi") });

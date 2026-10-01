@@ -343,6 +343,7 @@ async function storedAfterSettle(p: {
 }): Promise<{
   status: string | null;
   statusClaimUntil: Date | null;
+  statusClaimHandbackAt: number | null;
 }> {
   const row = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
     db.conversation.findUnique({
@@ -353,13 +354,70 @@ async function storedAfterSettle(p: {
           chatwootConversationId: p.conversationId,
         },
       },
-      select: { status: true, statusClaimUntil: true },
+      select: {
+        status: true,
+        statusClaimUntil: true,
+        statusClaimHandbackAt: true,
+      },
     }),
   );
   return {
     status: row?.status ?? null,
     statusClaimUntil: row?.statusClaimUntil ?? null,
+    statusClaimHandbackAt: row?.statusClaimHandbackAt ?? null,
   };
+}
+
+// Puts a withdrawn claim's row on the status the source was seen in when there is no version to
+// reconcile with. Guarded by the claim itself: only a row still `open` under THIS claim is written,
+// so a webhook that reached it first keeps what it wrote. Announced like every status write.
+async function withdrawClaimUnversioned(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  claimUntil: Date;
+  status: string;
+  live: ReturnType<typeof parseLiveConversation>;
+  base: PrismaClient;
+}): Promise<void> {
+  await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(
+      db,
+      `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
+      async () => {
+        const where = {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootConversationId: p.conversationId,
+          status: "open",
+          statusClaimUntil: p.claimUntil,
+        };
+        const row = await db.conversation.findFirst({
+          where,
+          select: { id: true, inboxId: true, assigneeType: true },
+        });
+        if (!row) return;
+        const assignee = p.live
+          ? {
+              assigneeType: p.live.assigneeType,
+              assigneeId: p.live.assigneeId,
+              assigneeName: p.live.assigneeName,
+            }
+          : {};
+        await db.conversation.updateMany({
+          where,
+          data: { status: p.status, ...assignee },
+        });
+        await announceStatusChange(db, p.tenantId, {
+          conversationId: row.id,
+          inboxId: row.inboxId,
+          status: p.status,
+          previousStatus: "open",
+          assigneeType: p.live ? p.live.assigneeType : row.assigneeType,
+        });
+      },
+    ),
+  );
 }
 
 // Says WHICH of the three happened, because the two callers need different amounts of it. The live
@@ -413,9 +471,10 @@ export async function runHumanReplyTakeover(
     // The live read taken after the settle wait when it found the conversation moved on, which the
     // mirror is reconciled from below: our claim wrote `open` and no toggle will make it true.
     // A holder, not a `let`: assigned inside the fence closure, which a narrowed `let` would not see.
-    const settled: { live: ReturnType<typeof parseLiveConversation> } = {
-      live: null,
-    };
+    const settled: {
+      live: ReturnType<typeof parseLiveConversation>;
+      handedBack: boolean;
+    } = { live: null, handedBack: false };
     // NO PERSONA IS A REFUSAL, not a failure: it is decided here, from the row, before anything is
     // written or called, which is exactly what makes it a verdict.
     outcome = !bot
@@ -587,6 +646,13 @@ export async function runHumanReplyTakeover(
               const rowMovedOn =
                 stored.status !== "open" ||
                 stored.statusClaimUntil?.getTime() !== claimUntil.getTime();
+              // A hand-back made at the source during the wait: its status event was refused by the
+              // claim (it restates the `pending` the claim replaced), so neither the row nor a live
+              // read of a bot-owned `pending` shows it. Newer than the reply is after the reply.
+              const handedBack =
+                stored.statusClaimHandbackAt !== null &&
+                (p.decidedAtVersion == null ||
+                  stored.statusClaimHandbackAt > p.decidedAtVersion);
               const movedOn =
                 after !== null &&
                 !shouldBotHandle(
@@ -597,13 +663,14 @@ export async function runHumanReplyTakeover(
                   },
                   { ourAgentBotId: p.ourAgentBotId },
                 );
-              if (movedOn || rowMovedOn) {
+              if (movedOn || rowMovedOn || handedBack) {
                 settled.live = after;
+                settled.handedBack = handedBack;
                 logger.info(
                   "chatwoot: %s handoff withdrawn (conv=%s) — the conversation moved on while the reply settled (%s)",
                   `human reply (${p.route})`,
                   convLabel,
-                  after?.status ?? stored.status,
+                  handedBack ? "handed back" : (after?.status ?? stored.status),
                 );
                 return false;
               }
@@ -617,9 +684,31 @@ export async function runHumanReplyTakeover(
     if (
       outcome === "refused" &&
       claimHeld !== null &&
-      settled.live !== null &&
-      settled.live.updatedAt !== null
+      (settled.live === null || settled.live.updatedAt === null)
     ) {
+      // No version to reconcile with (a Chatwoot that renders no `updated_at`, or a read that
+      // failed): the status the source was seen in, or the hand-back's `pending`, is written only
+      // while the row still stands on this claim, so anything newer that reached it wins.
+      const target =
+        settled.live?.status ?? (settled.handedBack ? "pending" : null);
+      if (target !== null) {
+        await withdrawClaimUnversioned({
+          tenantId: p.tenantId,
+          instanceId: p.instanceId,
+          conversationId,
+          claimUntil: claimHeld,
+          status: target,
+          live: settled.live,
+          base: p.base,
+        }).catch((err) =>
+          logger.warn(
+            "chatwoot: correcting the mirror after a withdrawn takeover failed (conv=%s): %s",
+            convLabel,
+            errMsg(err),
+          ),
+        );
+      }
+    } else if (outcome === "refused" && claimHeld !== null && settled.live) {
       try {
         const reconciled = await reconcileMirrorFromLive({
           tenantId: p.tenantId,

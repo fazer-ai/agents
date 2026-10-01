@@ -58,6 +58,7 @@ beforeAll(() => {
     if (url.includes("/spend-ceiling/usage"))
       return json({
         instance: {},
+        enabled: true,
         periodStart: "2026-09-01T00:00:00.000Z",
         langfuseConfigured: false,
         legacyTokens: null,

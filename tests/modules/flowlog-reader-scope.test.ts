@@ -220,7 +220,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/scheduler-discard-announced.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,
-  "tests/modules/spend-ceiling-poll.test.ts": 6,
+  "tests/modules/spend-ceiling-poll.test.ts": 9,
   "tests/modules/stt.test.ts": 1,
   "tests/modules/tts-check.test.ts": 3,
   "tests/modules/tts-normalize-observability.test.ts": 1,

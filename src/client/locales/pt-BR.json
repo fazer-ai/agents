@@ -2740,9 +2740,11 @@
       "ofCeiling": "{{used}} de {{ceiling}}",
       "pollFailing": "A leitura do custo no Langfuse está falhando desde {{when}}: {{error}}",
       "stale": "Sem atualização desde {{when}}. O último valor continua valendo, e ele só pode subestimar.",
+      "staleOff": "Sem atualização desde {{when}}, então o valor só pode estar abaixo do real.",
       "title": "Gasto neste mês",
       "unenforced": "Não aplicado nesta metade: a última leitura não encontrou o Langfuse, então as chamadas passam até ele ser configurado e lido de novo.",
       "unpolled": "O custo do mês ainda não foi lido: as chamadas passam até a primeira leitura chegar.",
+      "unpolledOff": "O custo do mês ainda não foi lido.",
       "unpriced": "Sem preço no Langfuse para: {{models}}",
       "updated": "Atualizado {{when}}"
     },

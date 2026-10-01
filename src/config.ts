@@ -459,11 +459,11 @@ const config = {
       MAX_DURATION_MS,
     ),
   },
-  // Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job: how often a
-  // tenant's month-to-date cost is read from Langfuse into the local snapshot the spend ceiling's
-  // gate reads. Armed only while the tenant's ceiling is on. The ceiling's effective lag is THIS plus
-  // Langfuse's own ingestion lag, and the two ADD, so it is the overshoot bound an operator accepts
-  // by leaving it. Default 5 min.
+  // Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job while the ceiling is on: how often
+  // a tenant's month-to-date cost is read from Langfuse into the local snapshot the spend ceiling's
+  // gate reads (slower with it off, see `spendPollIntervalMs`). The ceiling's effective lag is THIS
+  // plus Langfuse's own ingestion lag, and the two ADD, so it is the overshoot bound an operator
+  // accepts by leaving it. Default 5 min.
   spendCeiling: {
     pollIntervalMs: parseIntSetting(
       SPEND_CEILING_POLL_INTERVAL_MS,

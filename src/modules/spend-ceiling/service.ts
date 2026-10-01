@@ -99,6 +99,17 @@ export async function spendUsedInMonth(
 export const SPEND_SNAPSHOT_STALE_AFTER_MS =
   3 * config.spendCeiling.pollIntervalMs;
 
+// With the ceiling off the poll still runs wherever Langfuse is configured, so the console always
+// has the month's figure, but nothing is enforced on it: an hour is plenty, and it spares Langfuse
+// twelve queries an hour per tenant that never set a ceiling.
+export const SPEND_POLL_IDLE_INTERVAL_MS = 3_600_000;
+
+export function spendPollIntervalMs(enabled: boolean): number {
+  return enabled
+    ? config.spendCeiling.pollIntervalMs
+    : Math.max(config.spendCeiling.pollIntervalMs, SPEND_POLL_IDLE_INTERVAL_MS);
+}
+
 // WHAT THE POLL WRITES AS THE ERROR WHEN THE TENANT HAS NO USABLE LANGFUSE: the block is off, the
 // credential reference is dangling, or the keys do not parse. One string, shared with the poll that
 // writes it and the console that reads it, because three copies of a sentinel are three ways to
@@ -125,6 +136,7 @@ export interface SpendSnapshotHealth {
 export function snapshotHealth(
   row: SpendSnapshot,
   now: Date,
+  staleAfterMs: number = SPEND_SNAPSHOT_STALE_AFTER_MS,
 ): SpendSnapshotHealth {
   return {
     polledAt: row.polledAt,
@@ -132,7 +144,7 @@ export function snapshotHealth(
     pollFailedAt: row.pollFailedAt,
     stale:
       row.polledAt === null ||
-      now.getTime() - row.polledAt.getTime() > SPEND_SNAPSHOT_STALE_AFTER_MS,
+      now.getTime() - row.polledAt.getTime() > staleAfterMs,
   };
 }
 
@@ -427,7 +439,7 @@ export interface SpendCeilingUsageEntry {
   ceilingUsd: number | null;
   state: SpendVerdict["state"];
   // The snapshot's health, ISO instants: when the figure was last refreshed, and the last failure
-  // if the poll is failing now. `stale` past three missed polls (`SPEND_SNAPSHOT_STALE_AFTER_MS`).
+  // if the poll is failing now. `stale` past three missed polls at this tenant's cadence.
   polledAt: string | null;
   pollError: string | null;
   pollFailedAt: string | null;
@@ -445,6 +457,9 @@ export interface SpendCeilingUsageEntry {
 }
 
 export interface SpendCeilingUsageDto {
+  // Whether the ceiling is on. Off, the figures are still read and shown, and nothing is enforced
+  // on them, so the console drops every line that speaks of enforcement.
+  enabled: boolean;
   // Start of the calendar month the figures cover, in UTC. Sent so the console can label the period
   // instead of guessing it from the browser's own clock, which sits in another timezone often
   // enough that "this month" would silently mean a different window than the gate's.
@@ -456,7 +471,8 @@ export interface SpendCeilingUsageDto {
   // A ceiling this block was given in tokens before the unit changed, never enforced: see
   // `SpendCeilingConfig.legacyTokens`.
   legacyTokens: SpendCeilingConfig["legacyTokens"];
-  // The poll cadence, so the console can say how old a figure may be at most.
+  // This tenant's poll cadence (slower with the ceiling off), so the console can say how old a
+  // figure may be at most.
   pollIntervalMs: number;
   entries: SpendCeilingUsageEntry[];
 }
@@ -483,6 +499,7 @@ export async function spendCeilingUsage(params: {
   const since = monthStart(at);
   const until = monthEnd(at);
   const sources: UsageSource[] = ["inbox", "playground"];
+  const pollIntervalMs = spendPollIntervalMs(cfg.enabled);
   const { langfuse, entries } = await runScopedOn(
     base,
     params.ctx,
@@ -522,7 +539,9 @@ export async function spendCeilingUsage(params: {
             source,
             usedUsd: snapshot?.costUsd ?? 0,
           });
-          const health = snapshot ? snapshotHealth(snapshot, at) : null;
+          const health = snapshot
+            ? snapshotHealth(snapshot, at, 3 * pollIntervalMs)
+            : null;
           return {
             source,
             usedUsd: snapshot?.costUsd ?? 0,
@@ -546,10 +565,11 @@ export async function spendCeilingUsage(params: {
     },
   );
   return {
+    enabled: cfg.enabled,
     periodStart: since.toISOString(),
     langfuseConfigured: langfuse !== null,
     legacyTokens: cfg.legacyTokens,
-    pollIntervalMs: config.spendCeiling.pollIntervalMs,
+    pollIntervalMs,
     entries,
   };
 }

@@ -329,8 +329,9 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
   // that stood down: a select and the type it is handed as.
   "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],
-  // The poll's failure line: the Langfuse error text travels as a flow event.
-  "src/modules/spend-ceiling/poll.ts": [2, "flow-event"],
+  // The poll's failure line (the Langfuse error text) and its unpriced-model line (the model names
+  // Langfuse answered with) travel as flow events.
+  "src/modules/spend-ceiling/poll.ts": [3, "flow-event"],
   // The balloon send reports its failure without throwing: the flow line is the only place an
   // operator can see that part of a reply went missing.
   "src/modules/split/service.ts": [1, "flow-event"],

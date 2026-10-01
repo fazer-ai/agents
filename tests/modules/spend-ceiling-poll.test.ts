@@ -350,13 +350,53 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(Number(play?.costUsd)).toBe(0.5);
     expect(play?.tracedCalls).toBe(1);
     expect(play?.unpricedModels).toEqual([]);
-    // Nothing was worth warning about.
-    expect(
+    // The one thing worth warning about is the model Langfuse could not price.
+    const warned = await flowLogRows(suDb, {
       // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
-      await flowLogRows(suDb, {
+      where: { tenantId: tenantA, stage: "spend_ceiling" },
+    });
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.level).toBe("warn");
+    expect(warned[0]?.detail).toMatchObject({
+      subject: "unpriced",
+      models: ["openrouter/free-model"],
+    });
+    expect(warned[0]?.errorMessage).toContain("openrouter/free-model");
+  });
+
+  test("a model with no price is announced once a month, not once a poll", async () => {
+    const answer = () =>
+      langfuseStub({
+        [INBOX_ENV]: [
+          {
+            providedModelName: "gpt-5.4-mini",
+            sum_totalCost: "1",
+            count_count: 1,
+          },
+          { providedModelName: "gpt-6-luna", sum_totalCost: 0, count_count: 2 },
+        ],
+        [PLAY_ENV]: [
+          { providedModelName: "gpt-6-luna", sum_totalCost: 0, count_count: 1 },
+        ],
+      }).fetchFn;
+    const unpricedRows = () =>
+      flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
         where: { tenantId: tenantA, stage: "spend_ceiling" },
-      }),
-    ).toHaveLength(0);
+      });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: answer(),
+      now: NOW,
+    });
+    // Both halves name it, and it is said once.
+    expect(await unpricedRows()).toHaveLength(1);
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: answer(),
+      now: new Date(NOW.getTime() + 60_000),
+    });
+    expect(await unpricedRows()).toHaveLength(1);
   });
 
   test("a failed poll keeps the last good figure, records the failure, and warns once per window", async () => {
@@ -942,6 +982,35 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(65);
     });
 
+    // With the ceiling off the carry still happens, since the figure is still shown, but the switch
+    // is a fact about enforcement and stays off the channels.
+    test("a project switched mid-month with the ceiling off still carries, and is not announced", async () => {
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: langfuseStub(rows(40, 40), [], { projectId: "proj-a" })
+          .fetchFn,
+        now: NOW,
+        enforced: false,
+      });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: langfuseStub(rows(20, 10), [], { projectId: "proj-b" })
+          .fetchFn,
+        now: at(1),
+        enforced: false,
+      });
+      expect(Number((await snapshot(tenantA, "inbox"))?.carriedUsd)).toBe(40);
+      const lines = await flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+        where: { tenantId: tenantA, stage: "spend_ceiling" },
+      });
+      expect(
+        lines.filter(
+          (r) => (r.detail as { subject?: string })?.subject === "project",
+        ),
+      ).toHaveLength(0);
+    });
+
     // NOTE: the names travel with the figure: the old project is never asked again, so a
     // model it could not price would otherwise vanish from the screen while its calls stay in the
     // carried counters. Carried names stay for the month; the current project's own list is still
@@ -1376,6 +1445,52 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(seen).toHaveLength(0);
     });
 
+    // With the ceiling off the figure is still read where Langfuse is configured, hourly, and what the
+    // poll announces about the ceiling itself (a failing read) stays on the card.
+    test("a tenant with the ceiling off and Langfuse configured still polls, hourly, and pages nobody about a failing read", async () => {
+      await setCeiling(tenantA, { enabled: false, monthlyInboxUsd: 10 });
+      try {
+        const ok = langfuseStub({
+          [INBOX_ENV]: [
+            { providedModelName: "m", sum_totalCost: "2", count_count: 1 },
+          ],
+          [PLAY_ENV]: [],
+        });
+        const before = Date.now();
+        const result = await spendPollHandler(job(tenantA), appDb, {
+          fetchFn: ok.fetchFn,
+          now: NOW,
+        });
+        expect(ok.seen).toHaveLength(2);
+        expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(2);
+        expect(result.outcome).toBe("reschedule");
+        if (result.outcome !== "reschedule") throw new Error("unreachable");
+        const delay = result.runAt.getTime() - before;
+        expect(delay).toBeGreaterThanOrEqual(
+          Math.max(config.spendCeiling.pollIntervalMs, 3_600_000) - 1000,
+        );
+        expect(delay).toBeLessThanOrEqual(
+          Math.max(config.spendCeiling.pollIntervalMs, 3_600_000) + 5000,
+        );
+
+        const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+        const failed = await spendPollHandler(job(tenantA), appDb, {
+          fetchFn: down.fetchFn,
+          now: new Date(NOW.getTime() + 60_000),
+        });
+        expect(failed.outcome).toBe("reschedule");
+        expect((await snapshot(tenantA, "inbox"))?.pollError).toContain("500");
+        expect(
+          await flowLogRows(suDb, {
+            // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+            where: { tenantId: tenantA, stage: "spend_ceiling" },
+          }),
+        ).toHaveLength(0);
+      } finally {
+        await setCeiling(tenantA, { enabled: true, monthlyInboxUsd: 10 });
+      }
+    });
+
     test("a tenant with the ceiling on polls and re-arms at the configured cadence", async () => {
       const { fetchFn, seen } = langfuseStub({
         [INBOX_ENV]: [
@@ -1446,16 +1561,29 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         where: { tenantId, kind: "SPEND_CEILING_POLL", status: "PENDING" },
       });
 
-    test("saving the ceiling on arms one job; saving it off cancels it; twice is once", async () => {
+    test("saving the ceiling on arms one job; saving it off cancels it where there is no Langfuse; twice is once", async () => {
       await syncTenantSpendPoll(tenantA, appDb);
       await syncTenantSpendPoll(tenantA, appDb);
       const rows = await pending(tenantA);
       expect(rows).toHaveLength(1);
       expect(rows[0]?.dedupeKey).toBe(SPEND_POLL_DEDUPE_KEY);
+      await syncTenantSpendPoll(tenantB, appDb);
+      expect(await pending(tenantB)).toHaveLength(1);
+      await setCeiling(tenantB, { enabled: false, monthlyInboxUsd: 10 });
+      try {
+        await syncTenantSpendPoll(tenantB, appDb);
+        expect(await pending(tenantB)).toHaveLength(0);
+      } finally {
+        await setCeiling(tenantB, { enabled: true, monthlyInboxUsd: 10 });
+      }
+    });
+
+    // Off, the poll still keeps the console's figure wherever Langfuse is configured.
+    test("saving the ceiling off keeps the poll armed while Langfuse is configured", async () => {
       await setCeiling(tenantA, { enabled: false, monthlyInboxUsd: 10 });
       try {
         await syncTenantSpendPoll(tenantA, appDb);
-        expect(await pending(tenantA)).toHaveLength(0);
+        expect(await pending(tenantA)).toHaveLength(1);
       } finally {
         await setCeiling(tenantA, { enabled: true, monthlyInboxUsd: 10 });
       }
@@ -1498,11 +1626,16 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       }
     });
 
-    test("boot arms every tenant with the ceiling on, and no other", async () => {
-      await ensureAllSpendPolls(appDb);
-      expect(await pending(tenantA)).toHaveLength(1);
-      expect(await pending(tenantB)).toHaveLength(1);
-      expect(await pending(tenantC)).toHaveLength(0);
+    test("boot arms every tenant with the ceiling on or Langfuse configured, and no other", async () => {
+      await setCeiling(tenantA, { enabled: false, monthlyInboxUsd: 10 });
+      try {
+        await ensureAllSpendPolls(appDb);
+        expect(await pending(tenantA)).toHaveLength(1);
+        expect(await pending(tenantB)).toHaveLength(1);
+        expect(await pending(tenantC)).toHaveLength(0);
+      } finally {
+        await setCeiling(tenantA, { enabled: true, monthlyInboxUsd: 10 });
+      }
     });
   });
 

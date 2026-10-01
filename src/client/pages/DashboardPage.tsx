@@ -1162,10 +1162,15 @@ export function DashboardPage() {
                             ceiling stopped applying. */}
                         {!ceiling.langfuseConfigured && (
                           <p className="text-sm text-warning">
-                            {t(
-                              "dashboard.ceiling.unenforceable",
-                              "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
-                            )}
+                            {ceiling.enabled
+                              ? t(
+                                  "dashboard.ceiling.unenforceable",
+                                  "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
+                                )
+                              : t(
+                                  "spendCeiling.usage.langfuseMissing",
+                                  "Langfuse is not configured for this tenant, so the month's cost cannot be read. Configure it in the Langfuse card.",
+                                )}
                           </p>
                         )}
                         {ceilingSources.map((src) => (
@@ -1181,11 +1186,13 @@ export function DashboardPage() {
                               }
                               entry={ceilingEntry(src)}
                               money={cf}
+                              enabled={ceiling.enabled}
                             />
                             <SpendHealthLines
                               entry={ceilingEntry(src)}
                               when={ceilingWhen}
                               money={cf}
+                              enabled={ceiling.enabled}
                             />
                           </div>
                         ))}

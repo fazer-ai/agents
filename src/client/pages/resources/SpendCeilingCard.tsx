@@ -45,16 +45,23 @@ function BarRow({
   entry,
   money,
   when,
+  enabled,
 }: {
   label: string;
   entry: UsageEntry | undefined;
   money: Intl.NumberFormat;
   when: (iso: string) => string;
+  enabled: boolean;
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <SpendBar label={label} entry={entry} money={money} />
-      <SpendHealthLines entry={entry} when={when} money={money} />
+      <SpendBar label={label} entry={entry} money={money} enabled={enabled} />
+      <SpendHealthLines
+        entry={entry}
+        when={when}
+        money={money}
+        enabled={enabled}
+      />
     </div>
   );
 }
@@ -294,6 +301,7 @@ export function SpendCeilingCard({
               entry={entry("inbox")}
               money={money}
               when={when}
+              enabled={usage.enabled}
             />
             <BarRow
               label={t(
@@ -303,6 +311,7 @@ export function SpendCeilingCard({
               entry={entry("playground")}
               money={money}
               when={when}
+              enabled={usage.enabled}
             />
           </>
         )}

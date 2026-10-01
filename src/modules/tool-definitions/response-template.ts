@@ -24,6 +24,36 @@ import {
 // nobody is looking at.
 export const MODEL_RESPONSE_CHAR_LIMIT = 4000;
 
+// The band an operator may set a tool's own clip in (`ToolDefinition.maxResponseChars`). The floor is
+// where a structured answer stops fitting at all; the ceiling is what one tool result may cost a turn.
+export const MODEL_RESPONSE_CHAR_MIN = 500;
+export const MODEL_RESPONSE_CHAR_MAX = 20_000;
+
+// The clip a tool's model input meets: its declared `maxResponseChars`, or the default when it
+// declares none. Clamped rather than refused, because this is the READER: the writers refuse a value
+// outside the band, and a row that reached the column another way must still run.
+export function effectiveMaxResponseChars(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return MODEL_RESPONSE_CHAR_LIMIT;
+  }
+  return Math.min(
+    MODEL_RESPONSE_CHAR_MAX,
+    Math.max(MODEL_RESPONSE_CHAR_MIN, Math.trunc(raw)),
+  );
+}
+
+// The write-side question: a declared value has to be an integer inside the band. `null` and
+// `undefined` are not declarations (they mean the default) and pass.
+export function maxResponseCharsAcceptable(raw: unknown): boolean {
+  if (raw === null || raw === undefined) return true;
+  return (
+    typeof raw === "number" &&
+    Number.isInteger(raw) &&
+    raw >= MODEL_RESPONSE_CHAR_MIN &&
+    raw <= MODEL_RESPONSE_CHAR_MAX
+  );
+}
+
 export const MAX_TEMPLATE_CHARS = 4000;
 
 // Per value, and the cap is what keeps the template's promise rather than a cost control. Without
@@ -31,6 +61,13 @@ export const MAX_TEMPLATE_CHARS = 4000;
 // silently, which is the exact defect being fixed. Cutting HERE leaves the label and an explicit
 // marker at the place the cut happened.
 const MAX_VALUE_CHARS = 2000;
+
+// The per-value cut under a given clip: everything but the same 2000 the default clip leaves the rest
+// of the template, and never under 2000. At the default (4000) it is 2000, as it always was; a tool
+// raised to fit one long description gets that description, with the fields after it still in view.
+export function valueCharLimit(budget: number): number {
+  return Math.max(MAX_VALUE_CHARS, budget - MAX_VALUE_CHARS);
+}
 
 // What the model sees where a value did not come back. Never an empty string: a blank after a label
 // is the gap that gets filled from training data, and this whole module exists because of that.
@@ -667,6 +704,7 @@ function renderTokens(
   scope: unknown,
   at: TokenScope,
   report: (label: string, key: string) => void,
+  valueMax: number,
 ): string {
   return text.replace(TOKEN, (whole, rawToken: string) => {
     const path = (rawToken ?? "").trim();
@@ -677,8 +715,8 @@ function renderTokens(
     const node = resolveTemplatePath(scope, path);
     const value = renderScalar(node);
     if (value !== undefined && value !== "") {
-      return value.length > MAX_VALUE_CHARS
-        ? `${clipText(value, MAX_VALUE_CHARS)}…[truncated]`
+      return value.length > valueMax
+        ? `${clipText(value, valueMax)}…[truncated]`
         : value;
     }
     if (value === undefined && node !== null) {
@@ -700,8 +738,8 @@ function renderTokens(
 }
 
 export interface RenderOptions {
-  // The clip the rendered text will meet, which a block has to render UNDER. The runtime passes its
-  // own; the preview takes the default, which is the same number, so the two agree.
+  // The clip the rendered text will meet, which a block has to render UNDER and the per-value cut
+  // follows. The runtime and the preview both pass the tool's own (`effectiveMaxResponseChars`).
   maxChars?: number;
 }
 
@@ -711,6 +749,7 @@ export function renderResponseTemplate(
   opts: RenderOptions = {},
 ): RenderedResponse {
   const budget = opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT;
+  const valueMax = valueCharLimit(budget);
   const missing: string[] = [];
   const seen = new Set<string>();
   const report = (label: string, key: string) => {
@@ -728,7 +767,7 @@ export function renderResponseTemplate(
   let text = "";
   for (const seg of segments) {
     if (seg.kind === "text") {
-      text += renderTokens(seg.text, body, null, report);
+      text += renderTokens(seg.text, body, null, report, valueMax);
       continue;
     }
     const node = resolveTemplatePath(body, seg.path);
@@ -770,6 +809,7 @@ export function renderResponseTemplate(
         (label, key) => {
           pending.push([label, key]);
         },
+        valueMax,
       );
       const after = node.length - index - 1;
       // The count AND the line ending it carries, or a standalone block lands one character

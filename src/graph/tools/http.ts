@@ -22,7 +22,7 @@ import {
 } from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
-  MODEL_RESPONSE_CHAR_LIMIT,
+  effectiveMaxResponseChars,
   type ProjectedResponse,
   projectToolResponse,
 } from "@/modules/tool-definitions/response-template";
@@ -80,6 +80,9 @@ export interface HttpToolDef {
   // whose templates use the variable and name no instance refuses to run: sending an empty handle
   // would be a request the receiver stores and can never use.
   conversationRefIntegrationId?: bigint | null;
+  // This tool's ceiling on what the model receives (raw or rendered). Read through
+  // `effectiveMaxResponseChars`: absent is the default, and a value outside the band is clamped.
+  maxResponseChars?: number | null;
 }
 
 // The context variable an HTTP tool uses to hand the operator's system a handle to THIS
@@ -115,6 +118,7 @@ export interface HttpToolDeps {
   // credential or DNS resolution withdraws the run with the budget alive. Absent ⇒ proceed; only an
   // explicit `false` stops it, since a fence that could not answer is not a withdrawal.
   stillWanted?: () => Promise<boolean>;
+  // A test seam over the definition's own `maxResponseChars`; production passes none.
   maxResponseChars?: number;
   // Posts a "I'll look into that…" ack to the customer before a slow tool runs (best-effort). Wired
   // only on a real conversation; absent in the playground (no client / no conversation). An
@@ -498,6 +502,7 @@ function projectResponse(
   deps: HttpToolDeps,
   status: number,
   rawBody: string,
+  maxChars: number,
 ): ProjectedResponse {
   // The decision is `projectToolResponse`'s, in `modules/tool-definitions/response-template.ts`,
   // because the editor's preview has to make the identical one and a second copy of the rules is
@@ -508,7 +513,7 @@ function projectResponse(
     status,
     rawBody,
     // The clip this text will meet, so a block renders under it with its count intact.
-    { maxChars: deps.maxResponseChars ?? MODEL_RESPONSE_CHAR_LIMIT },
+    { maxChars },
   );
   const report = (err: Error, detail?: Record<string, unknown>) =>
     deps.onSideEffectError?.({
@@ -570,7 +575,8 @@ export function buildHttpTool(
     method === "POST" || method === "PUT" || method === "PATCH";
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS;
-  const maxChars = deps.maxResponseChars ?? MODEL_RESPONSE_CHAR_LIMIT;
+  const maxChars =
+    deps.maxResponseChars ?? effectiveMaxResponseChars(def.maxResponseChars);
   const expectedStatuses = normalizeExpectedStatuses(def.expectedStatuses);
   const usesConversationRef =
     renderedVariableNames(shapes).has(CONVERSATION_REF_VAR);
@@ -942,7 +948,7 @@ export function buildHttpTool(
       // THE PROJECTION runs BEFORE the clip: the fields a template wants can sit past the
       // clip point, where rendering after the cut could never reach them. The clip still applies
       // to the rendered text as a backstop (many tokens, or one long value, can overrun).
-      const rendered = projectResponse(def, deps, res.status, text);
+      const rendered = projectResponse(def, deps, res.status, text, maxChars);
       const modelBody = rendered.text ?? text;
       const trimmed = clipToModelLimit(modelBody, maxChars).text;
       // NOTE: The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an

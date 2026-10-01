@@ -14327,6 +14327,17 @@
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
                   },
+                  "maxResponseChars": {
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
                     "anyOf": [
@@ -14494,6 +14505,17 @@
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
                   },
+                  "maxResponseChars": {
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
                     "anyOf": [
@@ -14660,6 +14682,17 @@
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
+                  },
+                  "maxResponseChars": {
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
@@ -15185,6 +15218,17 @@
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
                   },
+                  "maxResponseChars": {
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
                     "anyOf": [
@@ -15346,6 +15390,17 @@
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
                   },
+                  "maxResponseChars": {
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
                     "anyOf": [
@@ -15506,6 +15561,17 @@
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
+                  },
+                  "maxResponseChars": {
+                    "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
@@ -16037,6 +16103,16 @@
                         "patternProperties": {
                           "^(.*)$": {}
                         }
+                      },
+                      "maxResponseChars": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     }
                   },
@@ -16128,6 +16204,16 @@
                         "patternProperties": {
                           "^(.*)$": {}
                         }
+                      },
+                      "maxResponseChars": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     }
                   },
@@ -16219,6 +16305,16 @@
                         "patternProperties": {
                           "^(.*)$": {}
                         }
+                      },
+                      "maxResponseChars": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     }
                   },

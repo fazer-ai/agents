@@ -1738,7 +1738,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". A list: {{#each items}}- {{name}}\n{{/each}} repeats per item, paths inside are relative to the item and {{.}} is the item; 50 items at most, the rest counted. Rendered BEFORE the 4000-char clip. Omitted, or any other shape: the raw body, clipped.',
+              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". A list: {{#each items}}- {{name}}\n{{/each}} repeats per item, paths inside are relative to the item and {{.}} is the item; 50 items at most, the rest counted. Rendered BEFORE the max_response_chars clip. Omitted, or any other shape: the raw body, clipped.',
             ),
           query: z.record(z.string(), z.unknown()).optional(),
           body: z.record(z.string(), z.unknown()).optional(),
@@ -1752,6 +1752,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
+          max_response_chars: z
+            .number()
+            .nullable()
+            .optional()
+            .describe(
+              "Characters of the response the model gets: 500-20000; null is the default, 4000.",
+            ),
           conversation_ref_integration_id: z
             .union([z.string(), z.number().int()])
             .nullable()
@@ -1780,6 +1787,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
+          max_response_chars?: number | null;
           conversation_ref_integration_id?: string | number | null;
           dry_run?: boolean;
         },
@@ -1808,7 +1816,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". A list: {{#each items}}- {{name}}\n{{/each}} repeats per item, paths inside are relative to the item and {{.}} is the item; 50 items at most, the rest counted. Rendered BEFORE the 4000-char clip. Omitted, or any other shape: the raw body, clipped.',
+              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". A list: {{#each items}}- {{name}}\n{{/each}} repeats per item, paths inside are relative to the item and {{.}} is the item; 50 items at most, the rest counted. Rendered BEFORE the max_response_chars clip. Omitted, or any other shape: the raw body, clipped.',
             ),
           query: z.record(z.string(), z.unknown()).optional(),
           body: z.record(z.string(), z.unknown()).optional(),
@@ -1822,6 +1830,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
+          max_response_chars: z
+            .number()
+            .nullable()
+            .optional()
+            .describe(
+              "Characters of the response the model gets: 500-20000; null is the default, 4000.",
+            ),
           conversation_ref_integration_id: z
             .union([z.string(), z.number().int()])
             .nullable()
@@ -1851,6 +1866,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
+          max_response_chars?: number | null;
           conversation_ref_integration_id?: string | number | null;
           dry_run?: boolean;
         },

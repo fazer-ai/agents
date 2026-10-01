@@ -74,6 +74,9 @@ export interface LoadedHttpToolDef {
   // reason: a forgotten column would read as "names no instance", and the tool would refuse every
   // call instead of failing to compile.
   conversationRefIntegrationId: bigint | null;
+  // This tool's ceiling on what the model receives, or null for the default. Required for the same
+  // reason as the fields above.
+  maxResponseChars: number | null;
 }
 
 // An operator-authored code tool, as the turn builds it (tools/code.ts). Required fields for the
@@ -174,6 +177,7 @@ export async function loadToolSelections(
           appointment: true,
           outputSchema: true,
           conversationRefIntegrationId: true,
+          maxResponseChars: true,
         },
       },
       mcpServerConnection: {
@@ -271,6 +275,7 @@ export async function loadToolSelections(
           appointment: td.appointment,
           outputSchema: td.outputSchema,
           conversationRefIntegrationId: td.conversationRefIntegrationId,
+          maxResponseChars: td.maxResponseChars,
         });
         break;
       }
@@ -470,6 +475,7 @@ export function buildHttpTools(
       appointment: d.appointment,
       outputSchema: d.outputSchema,
       conversationRefIntegrationId: d.conversationRefIntegrationId,
+      maxResponseChars: d.maxResponseChars,
     };
     return buildHttpTool(def, deps);
   });

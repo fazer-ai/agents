@@ -244,6 +244,7 @@
     "toolGrantToolNotInIntegration": "A ferramenta {{tool}} não está disponível na integração {{integration}}.",
     "toolGrantUnknownSource": "Origem de ferramenta desconhecida: {{source}}.",
     "toolGrantUnknownTool": "Ferramenta {{source}} desconhecida: {{tool}}.",
+    "toolMaxResponseCharsOutOfRange": "O limite da resposta deve ser um número inteiro de {{min}} a {{max}} caracteres, ou vazio para usar o padrão.",
     "toolNameReserved": "Esse nome é de uma ferramenta nativa; escolha outro.",
     "toolNameTaken": "Este nome de ferramenta já está em uso.",
     "tooManyAllowedLabels": "`Etiquetas que pode acrescentar` aceita no máximo {{max}} etiquetas.",

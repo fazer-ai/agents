@@ -37,7 +37,11 @@ import {
   renderedVariableNames,
 } from "./normalize";
 import { readResponseTemplateResult } from "./response-template";
-import { DEFAULT_HTTP_METHOD, readHttpMethod } from "./service";
+import {
+  assertMaxResponseChars,
+  DEFAULT_HTTP_METHOD,
+  readHttpMethod,
+} from "./service";
 
 // A DISPLAY bound on the RAW response the operator picks paths from (not the model's clipped view).
 // Tighter than the runtime's MAX_OUTBOUND_BODY_CHARS on purpose: `modelText` comes from the runtime
@@ -61,6 +65,7 @@ export interface ToolTestInput {
     credentialRef?: string | null;
     expectedStatuses?: number[];
     outputSchema?: Record<string, unknown>;
+    maxResponseChars?: number | null;
   };
   // Values for the AI-filled fields, as the model would have supplied them.
   args?: Record<string, unknown>;
@@ -133,6 +138,7 @@ export async function runToolTest(
   // undeclared shape (a legacy JSON Schema written through MCP) still passes.
   const tpl = readResponseTemplateResult(d.outputSchema);
   if (tpl.declared && !tpl.ok) throw new AppError(tpl.problem, 400);
+  assertMaxResponseChars(d.maxResponseChars);
 
   // NOTE: a test run has no conversation for `{{conversation_ref}}`. Refused up front because the
   // runtime's own refusal would read as a problem with a definition that may be fine.
@@ -185,6 +191,7 @@ export async function runToolTest(
     credentialBaseUrl: meta?.baseUrl ?? null,
     ackMessage: null,
     outputSchema: d.outputSchema,
+    maxResponseChars: d.maxResponseChars ?? null,
   };
 
   const context: Record<string, string> = {};

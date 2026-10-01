@@ -95,7 +95,10 @@ import {
   toolUnderModelName,
 } from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
-import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
+import {
+  effectiveMaxResponseChars,
+  storableResponseTemplate,
+} from "@/modules/tool-definitions/response-template";
 import {
   type HttpToolMethod,
   readHttpMethod,
@@ -222,6 +225,8 @@ const exportedHttpToolSchema = z.object({
   // The NAME of the GENERIC integration this tool hands `{{conversation_ref}}` for, bundled beside it
   // in `integrations`. By name because an id is tenant-local; optional for older bundles.
   conversationRefIntegration: z.string().nullable().optional(),
+  // This tool's ceiling on what the model receives; absent or null is the default.
+  maxResponseChars: z.number().nullable().optional(),
 });
 // An operator-authored code tool. The body is its wiring, the way an HTTP tool's request is, and it
 // travels so the grant points at something. No credential: the sandbox reaches nothing outside the
@@ -893,6 +898,7 @@ export async function exportAgent(
                   r.conversationRefIntegrationId.toString(),
                 ) ?? null)
               : null,
+          maxResponseChars: r.maxResponseChars,
         })),
         codeTools: codeRows.map((r) => ({
           name: r.name,
@@ -2120,6 +2126,12 @@ async function createMissingComponents(
             Prisma.DbNull) as unknown as Prisma.InputJsonValue,
           ackEnabled: tdef.ackEnabled,
           ackMessage: tdef.ackMessage ?? null,
+          // NOTE: clamped into the band rather than refused: the service refuses, but a bundle cannot
+          // be refused over one number, and the clamped value is what the runtime would read anyway.
+          maxResponseChars:
+            tdef.maxResponseChars == null
+              ? null
+              : effectiveMaxResponseChars(tdef.maxResponseChars),
           credentialRef,
           enabled: true,
         },

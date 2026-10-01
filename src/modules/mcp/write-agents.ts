@@ -45,6 +45,9 @@ import {
   type ToolShapePatch,
 } from "@/modules/tool-definitions/normalize";
 import {
+  MODEL_RESPONSE_CHAR_MAX,
+  MODEL_RESPONSE_CHAR_MIN,
+  maxResponseCharsAcceptable,
   readResponseTemplateResult,
   storableResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
@@ -500,6 +503,7 @@ export interface ToolWriteArgs {
   expected_statuses?: number[];
   ack_enabled?: boolean;
   ack_message?: string | null;
+  max_response_chars?: number | null;
   conversation_ref_integration_id?: string | number | null;
 }
 
@@ -550,6 +554,18 @@ export async function buildToolPatch(
     patch.expectedStatuses = normalizeExpectedStatuses(args.expected_statuses);
   if (args.ack_enabled !== undefined) patch.ackEnabled = args.ack_enabled;
   if (args.ack_message !== undefined) patch.ackMessage = args.ack_message;
+  if (args.max_response_chars !== undefined) {
+    // NOTE: refused here as well as in the service so the sentence names the argument THIS caller
+    // sent; the service's names the REST field.
+    if (!maxResponseCharsAcceptable(args.max_response_chars)) {
+      return {
+        fail: err(
+          `max_response_chars must be an integer from ${MODEL_RESPONSE_CHAR_MIN} to ${MODEL_RESPONSE_CHAR_MAX}, or null for the default`,
+        ),
+      };
+    }
+    patch.maxResponseChars = args.max_response_chars;
+  }
   if (args.conversation_ref_integration_id !== undefined) {
     patch.conversationRefIntegrationId =
       args.conversation_ref_integration_id === ""

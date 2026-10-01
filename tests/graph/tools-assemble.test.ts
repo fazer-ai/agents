@@ -132,6 +132,7 @@ describe("buildHttpTools — credentialParamName propagation", () => {
           headers: {},
           inputSchema: {},
           expectedStatuses: [],
+          maxResponseChars: null,
           appointment: null,
           conversationRefIntegrationId: null,
           outputSchema: {},

@@ -7,6 +7,7 @@ import {
   nativeVarItems,
   outputSchemaForm,
   parseExpectedStatuses,
+  parseMaxResponseChars,
   payloadOf,
   type Tool,
   templatePreviewFor,
@@ -748,4 +749,42 @@ test("the value picker offers every name the runtime renders into a template, an
   expect(offered.sort()).toEqual(
     [...CONTEXT_VAR_NAMES, ...HTTP_TOOL_ONLY_VAR_NAMES].sort(),
   );
+});
+
+describe("the response limit", () => {
+  test("empty is null, so the tool keeps the default; a typed value goes as a number", () => {
+    expect(parseMaxResponseChars("")).toBeNull();
+    expect(parseMaxResponseChars("  ")).toBeNull();
+    expect(parseMaxResponseChars("12000")).toBe(12000);
+    expect(Number.isNaN(parseMaxResponseChars("abc"))).toBe(true);
+  });
+
+  test("it loads into the form and saves back, and an empty field clears it", () => {
+    const form = formFromTool(legacyTool({ maxResponseChars: 12000 }));
+    expect(form.maxResponseChars).toBe("12000");
+    expect(payloadOf(form)?.maxResponseChars).toBe(12000);
+    expect(payloadOf({ ...form, maxResponseChars: "" })?.maxResponseChars).toBe(
+      null,
+    );
+    expect(
+      payloadOf(formFromTool(legacyTool({ maxResponseChars: null })))
+        ?.maxResponseChars,
+    ).toBeNull();
+  });
+
+  test("the preview clips by the form's limit, the way the runtime would", () => {
+    const description = `${"d".repeat(8994)}FIM-9K`;
+    const sample = JSON.stringify({ descricao: description, preco: "R$ 10" });
+    const template = "Descrição: {{descricao}}\nPreço: {{preco}}";
+    const raised = templatePreviewFor({
+      template,
+      sample,
+      status: 200,
+      maxResponseChars: 20000,
+    });
+    expect(raised?.text).toBe(`Descrição: ${description}\nPreço: R$ 10`);
+    const asBefore = templatePreviewFor({ template, sample, status: 200 });
+    expect(asBefore?.text).not.toContain("FIM-9K");
+    expect(asBefore?.text).toContain(`${"d".repeat(2000)}…[truncated]`);
+  });
 });

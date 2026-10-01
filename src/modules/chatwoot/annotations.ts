@@ -11,6 +11,10 @@ import type { ChatwootMessageRow } from "./messages";
 
 export interface MediaAnnotation {
   transcribedText?: string;
+  // The voice note was transcribed and nothing usable came back (empty, or withheld for low
+  // confidence). Kept so a later delivery of the same message does not draw a new sample, which
+  // could be a hallucination the model happens to be sure of.
+  transcriptionEmpty?: boolean;
   imageDescription?: string;
   extractedText?: string;
   // How many attachments the eager pass did NOT read (over the cap, or failed): the model's move is

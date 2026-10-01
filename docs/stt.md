@@ -13,7 +13,7 @@ incoming message with an audio attachment (gate=act)
         ▼
    transcribeInboundAudio:
      download data_url (client.downloadAttachment, anti-SSRF, 404-retry) →
-     provider.transcribe (key from vault) →
+     provider.transcribe (key from vault; withholds a transcription the model was unsure of) →
      cleanTranscription (drop Whisper's Amara.org silence hallucination) →
      client.updateAttachmentMeta { transcribed_text }   ← write-back (no body mirrored in OUR DB)
         │  also stashed on the in-memory event (n.message.transcribedText) for the direct path
@@ -38,10 +38,22 @@ The OpenAI `/audio/transcriptions` multipart shape is a de-facto standard, so `o
 
 | Provider            | Default model       | Endpoint                                   | Auth             |
 | ------------------- | ------------------- | ------------------------------------------ | ---------------- |
-| `openai`            | `whisper-1`         | `…/v1/audio/transcriptions`                | `Bearer`         |
-| `openai-compatible` | (set yours)         | `{baseURL}/audio/transcriptions`           | `Bearer`         |
-| `gemini`            | `gemini-2.0-flash`  | `…/models/{model}:generateContent`         | `x-goog-api-key` |
-| `elevenlabs`        | `scribe_v1`         | `…/v1/speech-to-text`                       | `xi-api-key`     |
+| `openai`            | `gpt-4o-transcribe` | `…/v1/audio/transcriptions`                | `Bearer`         |
+| `openai-compatible` | `whisper-1`         | `{baseURL}/audio/transcriptions`           | `Bearer`         |
+| `gemini`            | `gemini-3.5-flash`  | `…/models/{model}:generateContent`         | `x-goog-api-key` |
+| `elevenlabs`        | `scribe_v2`         | `…/v1/speech-to-text`                       | `xi-api-key`     |
+
+### A transcription the model was unsure of is withheld (issue #1014)
+
+On silence, noise or speech buried under noise the models do not return nothing: they return fluent text, in any language and script. On one production deployment, 3 of 678 voice notes in 7 days came back as Greek, Cyrillic or Hangul with `language: pt`, and the agent answered them. The script is not the signal: the same measurement below shows `gpt-4o-transcribe` inventing "Das ist gut." and "The sky is blue." and Whisper inventing Portuguese ("Legendas pela comunidade Amara.org", "Tchau!", "e aí"). What separates them from speech is the confidence the provider reports, so that is what decides.
+
+- **gpt-4o transcription models** (`gpt-4o-transcribe`, `gpt-4o-mini-transcribe`) are asked for `include[]=logprobs`. A mean token logprob below -1.0 withholds the whole text.
+- **Whisper models** (any model id containing `whisper`, through `openai` or `openai-compatible`) are asked for `verbose_json`. A segment with `no_speech_prob` above 0.7 or `avg_logprob` below -1.0 is dropped, which is how Whisper itself skips a stretch with no speech; when no segment is left, the text is withheld.
+- **Any other model, Gemini, ElevenLabs and OpenRouter** are asked exactly as before and nothing is withheld: a compatible server may not know either parameter, and the other APIs report no confidence through these adapters. A compatible server that answers `400` to the confidence request is asked again without it.
+
+A withheld transcription reaches the agent as the inaudible-audio marker, is never written back to Chatwoot, and is logged on the `stt` line as numbers only (`withheld: "low_confidence"`, the signal and its value, or the count of dropped segments). The empty result is kept in the annotation store like a transcription, so the other deliveries of the same voice note do not draw a new sample, which could be a hallucination the model happened to be sure of.
+
+Measured live in 2026-10 against the OpenAI API, on synthetic voice notes (pt-BR speech from macOS voices, alone, with leading noise, with trailing silence and buried under noise; silence and white, pink and brown noise from 1 to 8 s): on `gpt-4o-transcribe` every silence and noise sample was transcribed as text, with a mean token logprob between -1.76 and -7.0, speech buried under noise between -1.39 and -3.54, and clear speech between -0.001 and -0.16. On `whisper-1`, silence and noise segments reported `no_speech_prob` of 0.82 or more and speech 0.69 or less. `gpt-4o-mini-transcribe` returned empty text on silence and noise. The cost of the threshold is a one-word note the model was unsure of ("Tá" came back as "다" or "が"): it is withheld, and the agent asks the customer to repeat.
 
 ## Inbound rendering (`src/modules/chatwoot/render.ts`)
 

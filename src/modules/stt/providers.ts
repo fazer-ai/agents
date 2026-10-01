@@ -16,11 +16,25 @@ export interface SttRequest {
   fetchImpl: typeof fetch;
 }
 
+// What the provider's own confidence said about the text, for the providers that report one.
+// `withheld` means none of it is the customer's: silence and noise come back as fluent text in any
+// language and script, and the confidence is what tells them apart (docs/stt.md has the measurement).
+export type SttWithheld =
+  | { signal: "token_logprob"; meanLogprob: number }
+  | { signal: "segments"; droppedSegments: number };
+
+export interface SttResult {
+  text: string;
+  withheld?: SttWithheld;
+  // Segments dropped from a transcription whose other segments were kept.
+  droppedSegments?: number;
+}
+
 export interface SttProvider {
   defaultModel: string;
   // openai-compatible requires an explicit baseURL (no public default endpoint).
   requiresBaseURL?: boolean;
-  transcribe(req: SttRequest): Promise<string>;
+  transcribe(req: SttRequest): Promise<SttResult>;
 }
 
 export class SttError extends Error {
@@ -51,27 +65,111 @@ function audioBlob(req: SttRequest): Blob {
   return new Blob([req.audio], { type: req.mimeType ?? "audio/ogg" });
 }
 
+// Below these the text is not taken as speech. Measured live (docs/stt.md): on gpt-4o-transcribe,
+// silence, noise and speech buried under noise averaged -1.39 or lower per token, clear speech -0.16
+// or higher; on Whisper, a segment of silence or noise reported a no-speech probability of 0.82 or
+// more, speech 0.69 or less.
+const MIN_MEAN_TOKEN_LOGPROB = -1.0;
+const MAX_SEGMENT_NO_SPEECH_PROB = 0.7;
+const MIN_SEGMENT_AVG_LOGPROB = -1.0;
+
+// The confidence each model family can report through the OpenAI shape: gpt-4o transcription models
+// return token logprobs on request, Whisper models per-segment probabilities in `verbose_json`. Any
+// other model is asked exactly as before, since a server may not know either parameter.
+function confidenceShapeFor(model: string): "logprobs" | "segments" | null {
+  const m = model.toLowerCase();
+  if (m.startsWith("gpt-4o") && m.includes("transcribe")) return "logprobs";
+  if (m.includes("whisper")) return "segments";
+  return null;
+}
+
+interface OpenAiTranscription {
+  text?: string;
+  logprobs?: Array<{ logprob?: number }>;
+  segments?: Array<{
+    text?: string;
+    no_speech_prob?: number;
+    avg_logprob?: number;
+  }>;
+}
+
+function judgeTranscription(json: OpenAiTranscription): SttResult {
+  const text = (json.text ?? "").trim();
+  const lps = (json.logprobs ?? [])
+    .map((t) => t.logprob)
+    .filter((lp): lp is number => typeof lp === "number");
+  if (lps.length > 0) {
+    const mean = lps.reduce((a, b) => a + b, 0) / lps.length;
+    if (mean < MIN_MEAN_TOKEN_LOGPROB) {
+      return {
+        text: "",
+        withheld: {
+          signal: "token_logprob",
+          meanLogprob: Math.round(mean * 100) / 100,
+        },
+      };
+    }
+    return { text };
+  }
+  const segments = json.segments ?? [];
+  if (segments.length === 0) return { text };
+  const spoken = segments.filter(
+    (s) =>
+      !(
+        (s.no_speech_prob ?? 0) > MAX_SEGMENT_NO_SPEECH_PROB ||
+        (s.avg_logprob ?? 0) < MIN_SEGMENT_AVG_LOGPROB
+      ),
+  );
+  const dropped = segments.length - spoken.length;
+  if (dropped === 0) return { text };
+  if (spoken.length === 0) {
+    return {
+      text: "",
+      withheld: { signal: "segments", droppedSegments: dropped },
+    };
+  }
+  return {
+    text: spoken
+      .map((s) => s.text ?? "")
+      .join("")
+      .trim(),
+    droppedSegments: dropped,
+  };
+}
+
 // OpenAI Whisper + any OpenAI-compatible endpoint (Groq, self-hosted faster-whisper, …).
-async function openaiTranscribe(req: SttRequest): Promise<string> {
+async function openaiTranscribe(req: SttRequest): Promise<SttResult> {
   const base = (req.baseURL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
-  const form = new FormData();
-  form.append("file", audioBlob(req), fileNameFor(req.mimeType));
-  form.append("model", req.model);
-  if (req.language) form.append("language", req.language);
-  const res = await req.fetchImpl(`${base}/audio/transcriptions`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${req.apiKey}` },
-    body: form,
-    redirect: "error",
-    signal: AbortSignal.timeout(STT_TIMEOUT_MS),
-  });
+  const post = (shape: "logprobs" | "segments" | null) => {
+    const form = new FormData();
+    form.append("file", audioBlob(req), fileNameFor(req.mimeType));
+    form.append("model", req.model);
+    if (req.language) form.append("language", req.language);
+    if (shape === "logprobs") {
+      form.append("response_format", "json");
+      form.append("include[]", "logprobs");
+    } else if (shape === "segments") {
+      form.append("response_format", "verbose_json");
+    }
+    return req.fetchImpl(`${base}/audio/transcriptions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${req.apiKey}` },
+      body: form,
+      redirect: "error",
+      signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+    });
+  };
+  const shape = confidenceShapeFor(req.model);
+  let res = await post(shape);
+  // A compatible server that does not know the confidence parameters may refuse them; the
+  // transcription matters more than the confidence, so it is asked again the way it always was.
+  if (shape && res.status === 400) res = await post(null);
   if (!res.ok) throw new SttError("openai", res.status);
-  const json = (await res.json()) as { text?: string };
-  return (json.text ?? "").trim();
+  return judgeTranscription((await res.json()) as OpenAiTranscription);
 }
 
 // ElevenLabs Scribe.
-async function elevenlabsTranscribe(req: SttRequest): Promise<string> {
+async function elevenlabsTranscribe(req: SttRequest): Promise<SttResult> {
   const base = (req.baseURL ?? "https://api.elevenlabs.io/v1").replace(
     /\/+$/,
     "",
@@ -89,12 +187,12 @@ async function elevenlabsTranscribe(req: SttRequest): Promise<string> {
   });
   if (!res.ok) throw new SttError("elevenlabs", res.status);
   const json = (await res.json()) as { text?: string };
-  return (json.text ?? "").trim();
+  return { text: (json.text ?? "").trim() };
 }
 
 // Google Gemini: transcription via generateContent with the audio inlined as base64. The key goes in
 // the x-goog-api-key header (not the URL) to keep it out of logs.
-async function geminiTranscribe(req: SttRequest): Promise<string> {
+async function geminiTranscribe(req: SttRequest): Promise<SttResult> {
   const base = (
     req.baseURL ?? "https://generativelanguage.googleapis.com/v1beta"
   ).replace(/\/+$/, "");
@@ -135,10 +233,12 @@ async function geminiTranscribe(req: SttRequest): Promise<string> {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   };
   const parts = json.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((p) => p.text ?? "")
-    .join("")
-    .trim();
+  return {
+    text: parts
+      .map((p) => p.text ?? "")
+      .join("")
+      .trim(),
+  };
 }
 
 // OpenRouter transcription: dedicated audio API (launched 2026-05-01), JSON + base64 — NOT the
@@ -155,7 +255,7 @@ function audioFormatFor(mimeType: string | null): string {
   return "ogg";
 }
 
-async function openrouterTranscribe(req: SttRequest): Promise<string> {
+async function openrouterTranscribe(req: SttRequest): Promise<SttResult> {
   const base = (req.baseURL ?? "https://openrouter.ai/api/v1").replace(
     /\/+$/,
     "",
@@ -180,7 +280,7 @@ async function openrouterTranscribe(req: SttRequest): Promise<string> {
   });
   if (!res.ok) throw new SttError("openrouter", res.status);
   const json = (await res.json()) as { text?: string };
-  return (json.text ?? "").trim();
+  return { text: (json.text ?? "").trim() };
 }
 
 const PROVIDERS: Record<string, SttProvider> = {

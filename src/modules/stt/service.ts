@@ -18,7 +18,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
-import { getSttProvider } from "./providers";
+import { getSttProvider, type SttResult } from "./providers";
 import { readSttConfig, type SttConfig } from "./settings";
 
 // Speech-to-text orchestration: download the voice note, transcribe via the configured provider
@@ -102,8 +102,9 @@ export async function transcribeInboundAudio(
     params.tenantId,
     params.instanceId,
     params.messageId,
-  )?.transcribedText;
-  if (stashed) return stashed;
+  );
+  if (stashed?.transcribedText) return stashed.transcribedText;
+  if (stashed?.transcriptionEmpty) return null;
   return shareInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
     () => transcribeOnce(params),
@@ -194,10 +195,14 @@ async function transcribeOnce(
     }
     throw err;
   }
-  const raw = await withFlowStage(
+  const result = await withFlowStage(
     params.flow,
     "stt",
-    { provider: cfg.provider, model: cfg.model || provider.defaultModel },
+    {
+      provider: cfg.provider,
+      model: cfg.model || provider.defaultModel,
+      detailOf: confidenceDetail,
+    },
     () =>
       provider.transcribe({
         audio: bytes,
@@ -209,8 +214,18 @@ async function transcribeOnce(
         fetchImpl: params.deps?.fetchImpl ?? fetch,
       }),
   );
-  const text = cleanTranscription(raw);
-  if (!text) return null;
+  const text = cleanTranscription(result.text);
+  if (!text) {
+    stashMediaAnnotation(
+      {
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        messageId: params.messageId,
+      },
+      { transcriptionEmpty: true },
+    );
+    return null;
+  }
 
   // NOTE: stash BEFORE the write-back: on upstream Chatwoot (no fork meta route) the in-process
   // overlay is the only reader that will ever see this transcription.
@@ -253,6 +268,14 @@ async function transcribeOnce(
     );
   }
   return text;
+}
+
+// The stt line's record of what the confidence decided, numbers only: the withheld text is never
+// logged, like every transcription.
+function confidenceDetail(r: SttResult): Record<string, unknown> {
+  if (r.withheld) return { withheld: "low_confidence", ...r.withheld };
+  if (r.droppedSegments) return { droppedSegments: r.droppedSegments };
+  return {};
 }
 
 export interface PlaygroundTranscribeParams {
@@ -328,9 +351,9 @@ export async function transcribePlaygroundAudio(
     );
   }
 
-  let raw: string;
+  let result: SttResult;
   try {
-    raw = await provider.transcribe({
+    result = await provider.transcribe({
       audio: params.audio,
       mimeType: params.mimeType,
       language: cfg.language,
@@ -348,5 +371,5 @@ export async function transcribePlaygroundAudio(
       { detail },
     );
   }
-  return cleanTranscription(raw);
+  return cleanTranscription(result.text);
 }

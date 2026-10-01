@@ -363,4 +363,71 @@ describe.skipIf(!dbUp)("stt", () => {
     expect(text).toBeNull();
     expect(meta).toEqual([]);
   });
+  // A hallucination on silence or noise arrives as fluent text; only the provider's own confidence
+  // gives it away. It reaches nobody: not the agent, not the attachment meta, not the flow log.
+  test("a transcription the model was unsure of is withheld, logged without its text, and not asked for again", async () => {
+    clearMediaAnnotations();
+    const cfg = (await resolveSttConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as SttConfig;
+    const meta: Array<Record<string, unknown>> = [];
+    let asked = 0;
+    const fetchImpl = (async () => {
+      asked++;
+      return new Response(
+        JSON.stringify({
+          text: "Das ist gut.",
+          logprobs: [
+            { token: "Das", logprob: -1.9, bytes: [] },
+            { token: " ist", logprob: -2.1, bytes: [] },
+          ],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const turnId = crypto.randomUUID();
+    const deliver = () =>
+      transcribeInboundAudio({
+        tenantId,
+        instanceId,
+        conversationId: 904,
+        messageId: 61,
+        attachmentId: 13,
+        dataUrl: "https://chat.example.com/audio.ogg",
+        cfg,
+        base: appDb,
+        deps: { makeClient: stubClient(meta), fetchImpl },
+        flow: {
+          tenantId,
+          turnId,
+          source: "inbox",
+          threadId: `${tenantId}:${instanceId}:904`,
+          base: appDb,
+        },
+      });
+    expect(await deliver()).toBeNull();
+    // Chatwoot delivers a voice note more than once; the next delivery must not draw a new sample.
+    expect(await deliver()).toBeNull();
+    expect(asked).toBe(1);
+    expect(meta).toEqual([]);
+    let rows: Array<{ status: string; detail: unknown }> = [];
+    for (let i = 0; i < 30 && rows.length === 0; i++) {
+      rows = (await flowLogRows(suDb, {
+        where: { tenantId, turnId, stage: "stt" },
+        select: { status: true, detail: true },
+      })) as Array<{ status: string; detail: unknown }>;
+      if (rows.length === 0) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("ok");
+    expect(rows[0]?.detail).toEqual({
+      withheld: "low_confidence",
+      signal: "token_logprob",
+      meanLogprob: -2,
+    });
+    expect(JSON.stringify(rows)).not.toContain("Das ist");
+  });
 });

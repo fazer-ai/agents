@@ -209,7 +209,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(64_799);
+    expect(schema).toBeLessThanOrEqual(65_259);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

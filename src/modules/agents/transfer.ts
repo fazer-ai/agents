@@ -71,6 +71,11 @@ import {
   isKnownCatalogType,
 } from "@/modules/integrations/catalog";
 import {
+  credentialHeaderName,
+  mcpHeadersProblem,
+  readMcpHeaders,
+} from "@/modules/mcp-connections/headers";
+import {
   assertNoSecrets,
   assertNoSecretsInCode,
 } from "@/modules/n8n-export/n8n";
@@ -244,6 +249,9 @@ const exportedMcpServerSchema = z.object({
   url: z.string().nullable().optional(),
   command: z.string().nullable().optional(),
   credentialRef: z.string().nullable().optional(),
+  // Optional for back-compat: an export written before connection headers existed has none. The
+  // templates travel, never a resolved value.
+  headers: z.record(z.string(), z.unknown()).optional(),
 });
 const exportedIntegrationSchema = z.object({
   catalogType: z.string(),
@@ -902,6 +910,7 @@ export async function exportAgent(
           url: r.url,
           command: r.command,
           credentialRef: r.credentialRef,
+          headers: readMcpHeaders(r.headers),
         })),
         integrations: integrationRows.map((r) => ({
           catalogType: r.catalogType,
@@ -2302,6 +2311,27 @@ async function createMissingComponents(
         continue;
       }
     }
+    // Same reason as the stdio check: this write bypasses createMcpConnection, which is where the
+    // headers are judged.
+    const credentialRef = resolveCredName(m.credentialRef);
+    const headers = m.headers ?? {};
+    const credEntry = credentialRef
+      ? await readVaultRefFacts(db, credentialRef)
+      : null;
+    if (
+      mcpHeadersProblem(
+        headers,
+        m.transport,
+        credentialHeaderName(
+          credentialRef !== null,
+          credEntry?.kind,
+          credEntry?.paramName,
+        ),
+      )
+    ) {
+      warnings.push({ code: "mcpInvalidHeaders", params: { name: m.name } });
+      continue;
+    }
     // `createMany({ skipDuplicates })` for the same reason as the loop above: a lost race on
     // `@@unique([tenantId, name])` would abort the import's transaction.
     const { count } = await db.mcpServerConnection.createMany({
@@ -2312,7 +2342,8 @@ async function createMissingComponents(
           transport: m.transport,
           url: m.url ?? null,
           command: m.command ?? null,
-          credentialRef: resolveCredName(m.credentialRef),
+          credentialRef,
+          headers: headers as Prisma.InputJsonValue,
           enabled: true,
         },
       ],

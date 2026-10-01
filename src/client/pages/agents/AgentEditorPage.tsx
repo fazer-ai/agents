@@ -2402,6 +2402,12 @@ function AgentEditor() {
           'MCP server "{{name}}" has an unsupported command and was skipped.',
           p,
         );
+      case "mcpInvalidHeaders":
+        return t(
+          "editor.importWarning.mcpInvalidHeaders",
+          'MCP server "{{name}}" declares headers this server does not accept and was skipped.',
+          p,
+        );
       case "integrationUnknownType":
         return t(
           "editor.importWarning.integrationUnknownType",

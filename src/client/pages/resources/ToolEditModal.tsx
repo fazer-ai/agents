@@ -107,7 +107,7 @@ function parseJsonOr(value: string, fallback: Record<string, unknown>) {
   return JSON.parse(trimmed) as Record<string, unknown>;
 }
 
-type KvRow = { _id: string; key: string; value: string };
+export type KvRow = { _id: string; key: string; value: string };
 
 // A value that is EXACTLY one {{token}} (no surrounding text). When the token names a declared AI field,
 // the runtime keeps the AI value's original type; the editor uses it to badge the row as AI-filled.
@@ -288,7 +288,9 @@ function isKnownToolToken(
   name: string,
   params: string[],
   includeSecret: boolean,
+  contextOnly = false,
 ): boolean {
+  if (contextOnly) return NATIVE_VAR_NAMES.has(name);
   return (
     params.includes(name) ||
     KNOWN_VAR_NAMES.has(name) ||
@@ -296,14 +298,14 @@ function isKnownToolToken(
   );
 }
 
-function objToKv(obj: Record<string, unknown>): KvRow[] {
+export function objToKv(obj: Record<string, unknown>): KvRow[] {
   return Object.entries(obj ?? {}).map(([key, value]) => ({
     _id: rid(),
     key,
     value: typeof value === "string" ? value : JSON.stringify(value),
   }));
 }
-function kvToObj(rows: KvRow[]): Record<string, unknown> {
+export function kvToObj(rows: KvRow[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const r of rows) {
     const key = r.key.trim();
@@ -1266,20 +1268,26 @@ function VarItem({
 // the native context variables are always offered; {{secret}} only when a credential is selected.
 // `compact` renders an icon-only trigger that sits inline next to the input (vs the labeled button below
 // a textarea).
+// `contextOnly` offers the conversation variables alone, for a template the runtime resolves from
+// the turn and nothing else (an MCP connection's headers).
 function VariablePicker({
   params,
   includeSecret,
   onInsert,
   compact,
+  contextOnly,
 }: {
   params?: string[];
   includeSecret?: boolean;
   onInsert: (token: string) => void;
   compact?: boolean;
+  contextOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const paramList = (params ?? []).filter(Boolean);
-  const vars = nativeVarItems(t);
+  const vars = nativeVarItems(t).filter(
+    (v) => !contextOnly || NATIVE_VAR_NAMES.has(v.name),
+  );
   return (
     <DropdownMenuPrimitive.Root>
       <DropdownMenuPrimitive.Trigger asChild>
@@ -3032,6 +3040,7 @@ function KvRowItem({
   includeSecret,
   aiFields,
   keyPlaceholder,
+  contextOnly,
 }: {
   row: KvRow;
   onKey: (v: string) => void;
@@ -3041,6 +3050,7 @@ function KvRowItem({
   includeSecret: boolean;
   aiFields: AiFieldRow[];
   keyPlaceholder: string;
+  contextOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const ref = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
@@ -3061,7 +3071,9 @@ function KvRowItem({
           ref={ref}
           value={row.value}
           onChange={onValue}
-          isKnownToken={(n) => isKnownToolToken(n, params, includeSecret)}
+          isKnownToken={(n) =>
+            isKnownToolToken(n, params, includeSecret, contextOnly)
+          }
           patternSource={TOOL_TOKEN_SOURCE}
           placeholder={t("tools.kvValue", "Value")}
           className="flex-1"
@@ -3071,6 +3083,7 @@ function KvRowItem({
           compact
           params={params}
           includeSecret={includeSecret}
+          contextOnly={contextOnly}
           onInsert={(tok) => insertToken(ref.current, row.value, tok, onValue)}
         />
         <button
@@ -3095,7 +3108,7 @@ function KvRowItem({
 
 // Key-value editor (query, headers, body fields). Each row carries its own inline variable picker so
 // {{aiField}}/{{context}}/{{secret}} placeholders drop into that row's value at the caret.
-function KvEditor({
+export function KvEditor({
   rows,
   onChange,
   params,
@@ -3103,6 +3116,7 @@ function KvEditor({
   aiFields,
   keyPlaceholder,
   addLabel,
+  contextOnly,
 }: {
   rows: KvRow[];
   onChange: (rows: KvRow[]) => void;
@@ -3111,6 +3125,7 @@ function KvEditor({
   aiFields: AiFieldRow[];
   keyPlaceholder: string;
   addLabel: string;
+  contextOnly?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -3122,6 +3137,7 @@ function KvEditor({
           includeSecret={includeSecret}
           aiFields={aiFields}
           keyPlaceholder={keyPlaceholder}
+          contextOnly={contextOnly}
           onKey={(v) =>
             onChange(rows.map((r, idx) => (idx === i ? { ...r, key: v } : r)))
           }

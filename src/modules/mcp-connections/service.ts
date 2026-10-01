@@ -21,11 +21,19 @@ import {
   undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
+import {
+  credentialHeaderName,
+  type McpHeaders,
+  mcpHeadersInput,
+  mcpHeadersProblem,
+  readMcpHeaders,
+} from "@/modules/mcp-connections/headers";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
 import {
   readableVaultRef,
+  readVaultRefFacts,
   readVaultRefId,
   requireVaultRef,
   tryResolveVaultEntry,
@@ -45,6 +53,7 @@ export interface McpConnectionDto {
   url: string | null;
   command: string | null;
   credentialRef: string | null;
+  headers: McpHeaders;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -57,6 +66,7 @@ const SELECT = {
   url: true,
   command: true,
   credentialRef: true,
+  headers: true,
   enabled: true,
   createdAt: true,
   updatedAt: true,
@@ -69,6 +79,7 @@ function toDto(r: {
   url: string | null;
   command: string | null;
   credentialRef: string | null;
+  headers: unknown;
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -80,6 +91,7 @@ function toDto(r: {
     ...r,
     id: String(r.id),
     credentialRef: readableVaultRef(r.credentialRef),
+    headers: readMcpHeaders(r.headers),
   };
 }
 
@@ -95,6 +107,7 @@ function auditProjection(r: {
   url: string | null;
   command: string | null;
   credentialRef: string | null;
+  headers: unknown;
   enabled: boolean;
 }) {
   const cred = refForAudit(r.credentialRef);
@@ -106,6 +119,7 @@ function auditProjection(r: {
       r.command === null ? null : stdioCommandLauncher(r.command),
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
+    headerNames: Object.keys(readMcpHeaders(r.headers)).sort(),
     enabled: r.enabled,
   };
 }
@@ -113,8 +127,9 @@ function auditProjection(r: {
 // The columns the projection above may not publish, compared and never carried
 // (`@/modules/audit/projection`). All three are in BOTH halves: the row shows the URL's origin, the
 // stdio launcher and the readable ref, and the comparison sees the whole value, so a token moved
-// inside a path or an argument still records that the connection changed.
-const UNDISCLOSED = ["url", "command", "credentialRef"] as const;
+// inside a path or an argument still records that the connection changed. `headers` shows its
+// names only: a value is a template, but an operator can still type a literal key into one.
+const UNDISCLOSED = ["url", "command", "credentialRef", "headers"] as const;
 
 export const mcpConnectionCreateSchema = z
   .object({
@@ -123,6 +138,7 @@ export const mcpConnectionCreateSchema = z
     url: z.string().url().max(2000).nullish(),
     command: z.string().min(1).max(2000).nullish(),
     credentialRef: z.string().min(1).max(128).nullish(),
+    headers: mcpHeadersInput.optional(),
     enabled: z.boolean().optional(),
   })
   .strict();
@@ -188,6 +204,50 @@ async function assertTransportValid(effective: {
   await assertSafeOutboundUrl(effective.url);
 }
 
+function assertHeadersFit(
+  headers: Record<string, unknown>,
+  transport: string,
+  credentialHeader: string | null,
+): asserts headers is McpHeaders {
+  const problem = mcpHeadersProblem(headers, transport, credentialHeader);
+  if (problem) {
+    throw new AppError(
+      `invalid headers: ${problem}`,
+      400,
+      "errors.mcpHeadersInvalid",
+      { reason: problem },
+      "headers",
+    );
+  }
+}
+
+async function credentialHeaderFor(
+  db: ScopedDb,
+  ref: string | null,
+): Promise<string | null> {
+  if (!ref) return null;
+  const entry = await readVaultRefFacts(db, ref);
+  return credentialHeaderName(true, entry?.kind, entry?.paramName);
+}
+
+// The half of the headers check that needs the credential: a declared header may not be the one the
+// credential is sent in. Exported for the MCP dry run, which asks it of the state the write would
+// leave; the write asks it again inside its transaction.
+export async function assertMcpConnectionHeadersFit(
+  ctx: TenantContext,
+  state: {
+    headers: Record<string, unknown>;
+    transport: string;
+    credentialRef: string | null;
+  },
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const credentialHeader = await runScopedOn(base, ctx, (db) =>
+    credentialHeaderFor(db, state.credentialRef),
+  );
+  assertHeadersFit(state.headers, state.transport, credentialHeader);
+}
+
 export async function listMcpConnections(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
@@ -242,6 +302,8 @@ async function assertNameFree(
 export async function assertMcpConnectionCreatable(input: McpConnectionCreate) {
   const data = parseInput(mcpConnectionCreateSchema, input);
   await assertTransportValid(data);
+  const headers = data.headers ?? {};
+  assertHeadersFit(headers, data.transport, null);
   return data;
 }
 
@@ -270,6 +332,12 @@ export async function createMcpConnection(
     const credentialRef = data.credentialRef
       ? await requireVaultRef(db, data.credentialRef, "credentialRef")
       : null;
+    const headers = data.headers ?? {};
+    assertHeadersFit(
+      headers,
+      data.transport,
+      await credentialHeaderFor(db, credentialRef),
+    );
     const row = await db.mcpServerConnection.create({
       data: {
         tenantId,
@@ -278,6 +346,7 @@ export async function createMcpConnection(
         url: data.url ?? null,
         command: data.command ?? null,
         credentialRef,
+        headers,
         enabled: data.enabled ?? true,
       },
       select: SELECT,
@@ -297,15 +366,23 @@ export async function createMcpConnection(
 // describe another.
 export async function assertMcpConnectionUpdatable(
   patch: McpConnectionUpdate,
-  current: { transport: string; url: string | null; command: string | null },
+  current: {
+    transport: string;
+    url: string | null;
+    command: string | null;
+    headers: unknown;
+  },
 ): Promise<McpConnectionUpdate> {
   const data = parseInput(mcpConnectionUpdateSchema, patch);
+  const transport = data.transport ?? current.transport;
   // Re-validate the merged result (SSRF/DNS outside the tx).
   await assertTransportValid({
-    transport: data.transport ?? current.transport,
+    transport,
     url: data.url !== undefined ? data.url : current.url,
     command: data.command !== undefined ? data.command : current.command,
   });
+  const headers = data.headers ?? readMcpHeaders(current.headers);
+  assertHeadersFit(headers, transport, null);
   return data;
 }
 
@@ -318,7 +395,7 @@ export async function updateMcpConnection(
   const current = await runScopedOn(base, ctx, (db) =>
     db.mcpServerConnection.findUnique({
       where: { id },
-      select: { transport: true, url: true, command: true },
+      select: { transport: true, url: true, command: true, headers: true },
     }),
   );
   if (!current) {
@@ -342,6 +419,17 @@ export async function updateMcpConnection(
     const credentialRef = data.credentialRef
       ? await requireVaultRef(db, data.credentialRef, "credentialRef")
       : null;
+    const headers = data.headers ?? readMcpHeaders(snapshot.headers);
+    assertHeadersFit(
+      headers,
+      data.transport ?? snapshot.transport,
+      await credentialHeaderFor(
+        db,
+        data.credentialRef !== undefined
+          ? credentialRef
+          : snapshot.credentialRef,
+      ),
+    );
     await db.mcpServerConnection.update({
       where: { id },
       data: {
@@ -352,6 +440,7 @@ export async function updateMcpConnection(
           ? { command: data.command ?? null }
           : {}),
         ...(data.credentialRef !== undefined ? { credentialRef } : {}),
+        ...(data.headers !== undefined ? { headers } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       },
     });

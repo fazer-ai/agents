@@ -27,6 +27,7 @@ import {
 import { agentExportSchema, importAgent } from "@/modules/agents/transfer";
 import {
   assertMcpConnectionCreatable,
+  assertMcpConnectionHeadersFit,
   assertMcpConnectionNameAvailable,
   assertMcpConnectionUpdatable,
   createMcpConnection,
@@ -952,6 +953,7 @@ export interface McpConnectionWriteArgs {
   url?: string | null;
   command?: string | null;
   credential_ref?: string | null;
+  headers?: Record<string, unknown>;
   enabled?: boolean;
 }
 
@@ -966,6 +968,7 @@ async function buildConnectionPatch(
   if (args.url !== undefined) patch.url = args.url;
   if (args.command !== undefined) patch.command = args.command;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
+  if (args.headers !== undefined) patch.headers = args.headers;
   if (args.credential_ref !== undefined) {
     if (args.credential_ref === null || args.credential_ref === "") {
       patch.credentialRef = null;
@@ -1000,6 +1003,15 @@ export async function mcpConnectionCreate(
       // The core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = await assertMcpConnectionCreatable(input);
+      await assertMcpConnectionHeadersFit(
+        ctx,
+        {
+          headers: parsed.headers ?? {},
+          transport: parsed.transport,
+          credentialRef: parsed.credentialRef ?? null,
+        },
+        base,
+      );
       // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken
       // meanwhile. The unique index inside the write is what guarantees one name per row.
       await assertMcpConnectionNameAvailable(ctx, parsed.name, base);
@@ -1049,6 +1061,18 @@ export async function mcpConnectionUpdate(
       // concurrent write land between the two, and the preview would approve one state while
       // describing another.
       await assertMcpConnectionUpdatable(built.patch, current);
+      await assertMcpConnectionHeadersFit(
+        ctx,
+        {
+          headers: built.patch.headers ?? current.headers,
+          transport: built.patch.transport ?? current.transport,
+          credentialRef:
+            built.patch.credentialRef !== undefined
+              ? built.patch.credentialRef
+              : current.credentialRef,
+        },
+        base,
+      );
       // NOTE: ADVISORY, and only on a rename. `exceptId` keeps a connection's own name from reading
       // as a collision.
       if (built.patch.name !== undefined) {

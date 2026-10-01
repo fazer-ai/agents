@@ -5,6 +5,7 @@ import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
+import { MCP_HEADERS_DESCRIPTION } from "@/modules/mcp-connections/headers";
 import {
   createMcpConnection,
   deleteMcpConnection,
@@ -21,6 +22,7 @@ import {
 // translate('errors.mcpCommandInvalid', 'The stdio command contains unsupported characters.')
 // translate('errors.mcpCommandRequired', 'The stdio transport requires a command.')
 // translate('errors.mcpConnectionNotFound', 'MCP connection not found.')
+// translate('errors.mcpHeadersInvalid', 'Invalid headers: {{reason}}.')
 // translate('errors.mcpLauncherInvalid', 'The stdio command must start with a supported launcher ({{launchers}}).')
 // translate('errors.mcpNameTaken', 'That MCP connection name is already in use.')
 // translate('errors.mcpStdioDisabled', 'The stdio transport is disabled on this server.')
@@ -70,6 +72,14 @@ const writeBody = t.Object({
     t.Union([t.String(), t.Null()], {
       description:
         "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
+    }),
+  ),
+  headers: t.Optional(
+    // NOTE: t.Record drops a `__proto__` key before the service could refuse it, so the map is
+    // passed through unparsed and validated by the service.
+    t.Unknown({
+      patternProperties: { "^(.*)$": { type: "string" } },
+      description: MCP_HEADERS_DESCRIPTION,
     }),
   ),
   enabled: t.Optional(

@@ -4,6 +4,7 @@ import type { ScopedDb } from "@/lib/tenancy";
 import type { DocumentField } from "@/modules/documents/blocks";
 import { parseTemplateContent } from "@/modules/documents/validate";
 import type { IntegrationSelection } from "@/modules/integrations/toolpacks";
+import { readMcpHeaders } from "@/modules/mcp-connections/headers";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
 import {
   dialableBaseUrl,
@@ -183,6 +184,7 @@ export async function loadToolSelections(
           url: true,
           command: true,
           credentialRef: true,
+          headers: true,
           enabled: true,
         },
       },
@@ -304,6 +306,7 @@ export async function loadToolSelections(
           credentialKind,
           credentialParamName,
           credentialRef: conn.credentialRef,
+          headers: readMcpHeaders(conn.headers),
           enabledTools: row.enabledTools,
         });
         break;

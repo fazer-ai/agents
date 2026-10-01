@@ -1,6 +1,14 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import { type Connection, MultiServerMCPClient } from "@langchain/mcp-adapters";
+import {
+  type Connection,
+  loadMcpTools,
+  MultiServerMCPClient,
+} from "@langchain/mcp-adapters";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import {
@@ -9,6 +17,10 @@ import {
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import {
+  type McpHeaders,
+  renderMcpHeaders,
+} from "@/modules/mcp-connections/headers";
 import {
   isManagedOAuthKind,
   resolveSecretInjection,
@@ -41,6 +53,9 @@ export interface McpSelection {
   // by resolveSecretInjection to name a custom-header / query credential.
   credentialParamName?: string | null;
   credentialRef?: string | null;
+  // The connection's declared headers, as templates (modules/mcp-connections/headers.ts). Absent or
+  // empty ⇒ the connection goes through MultiServerMCPClient exactly as before.
+  headers?: McpHeaders;
 }
 
 export interface McpLoadOpts {
@@ -206,10 +221,13 @@ interface McpServerMeta {
 // Re-exposes a server tool under its namespaced name WITHOUT mutating the cached original (the client
 // cache reuses tool instances across turns). A shallow clone keeps the prototype (so .invoke/.call
 // work) and the bound func (which still targets the ORIGINAL tool name on the original server).
+// With `call`, the call runs inside `callHeaders`, which is how the connection's shared transport
+// learns the headers of THIS conversation (see fetchWithCallHeaders).
 function exposeMcpTool(
   tool: StructuredToolInterface,
   newName: string,
   server: McpServerMeta,
+  call?: CallHeaders,
 ): StructuredToolInterface {
   const clone = Object.create(Object.getPrototypeOf(tool)) as Record<
     string,
@@ -221,6 +239,12 @@ function exposeMcpTool(
     ...((tool as { metadata?: Record<string, unknown> }).metadata ?? {}),
     mcpServer: server,
   };
+  const func = (tool as unknown as { func?: (...a: unknown[]) => unknown })
+    .func;
+  if (call && typeof func === "function") {
+    clone.func = (...args: unknown[]) =>
+      callHeaders.run(call, () => func.apply(tool, args));
+  }
   return clone as unknown as StructuredToolInterface;
 }
 
@@ -261,7 +285,9 @@ export function buildMcpContextSection(
 
 interface ClientEntry {
   hash: string;
-  client: MultiServerMCPClient;
+  // The server's tools (a warm client answers from its cached list), and the teardown.
+  tools: () => Promise<StructuredToolInterface[]>;
+  close: () => Promise<void>;
   // Coalesced FIRST connect: every concurrent caller awaits this single promise, so a cold-start
   // burst establishes EXACTLY ONE transport (no double-spawn / orphaned stdio process). It resolves
   // void once connected; callers then call getTools() (cheap + warm, re-probing liveness). On
@@ -294,8 +320,119 @@ function djb2(s: string): string {
   return (h >>> 0).toString(36);
 }
 
+// The headers of the tool call in flight, for the connection `key` names. Set around a tool's func
+// by exposeMcpTool and read by the connection's own fetch, so one shared client and MCP session
+// serves every conversation and each request still carries its own conversation's values. Nothing
+// sets it during connect or tools/list, which therefore go out without them.
+interface CallHeaders {
+  key: string;
+  headers: McpHeaders;
+}
+const CALL_HEADERS_KEY = Symbol.for("fazerai.mcp.callHeaders");
+
+// Lives on globalThis beside the client cache: a cached transport keeps the storage it was built
+// with, so under `bun --hot` a module-local instance would leave it reading one nobody sets.
+const callHeaders: AsyncLocalStorage<CallHeaders> = (() => {
+  const g = globalThis as unknown as Record<
+    symbol,
+    AsyncLocalStorage<CallHeaders>
+  >;
+  g[CALL_HEADERS_KEY] ??= new AsyncLocalStorage<CallHeaders>();
+  return g[CALL_HEADERS_KEY];
+})();
+
+// A header the transport already set (the credential, the session id, the content type) is kept:
+// a declared header never replaces it.
+function fetchWithCallHeaders(key: string): typeof fetch {
+  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const call = callHeaders.getStore();
+    if (!call || call.key !== key) return fetch(input, init);
+    const headers = new Headers(init?.headers);
+    for (const [name, value] of Object.entries(call.headers)) {
+      if (!headers.has(name)) headers.set(name, value);
+    }
+    return fetch(input, { ...init, headers });
+  }) as typeof fetch;
+}
+
+export const __callHeadersForTest = { callHeaders, fetchWithCallHeaders };
+
+function httpErrorCode(err: unknown): number | null {
+  const e = err as { code?: unknown; message?: unknown };
+  if (typeof e?.code === "number") return e.code;
+  const m = String(e?.message ?? "").match(/\(HTTP (\d\d\d)\)/);
+  return m ? Number(m[1]) : null;
+}
+
+// The adapter's fallback for a server that answers streamable HTTP with a 4xx: SSE at the same URL,
+// then at `/sse` in place of a trailing `/mcp`. Kept so a connection behaves the same with or
+// without declared headers.
+function sseFallbackUrls(url: string): string[] {
+  const u = new URL(url);
+  const parts = u.pathname.split("/");
+  if (parts.at(-1) !== "mcp") return [url];
+  parts[parts.length - 1] = "sse";
+  u.pathname = parts.join("/");
+  return [url, u.toString()];
+}
+
+// A network connection that declares headers, on its own SDK client, since MultiServerMCPClient
+// takes headers only per connection (a per-call header set is a new connection and session each).
+async function connectWithCallHeaders(
+  sel: McpSelection,
+  connConfig: Connection,
+  key: string,
+): Promise<{ client: Client; tools: StructuredToolInterface[] }> {
+  const { url, headers } = connConfig as {
+    url: string;
+    headers?: Record<string, string>;
+  };
+  const opts = {
+    ...(headers ? { requestInit: { headers } } : {}),
+    fetch: fetchWithCallHeaders(key),
+  };
+  const open = async (
+    transport: StreamableHTTPClientTransport | SSEClientTransport,
+  ) => {
+    const client = new Client({ name: "fazer-ai-agents", version: "1" });
+    try {
+      await client.connect(transport);
+      const tools = await loadMcpTools(sel.name, client, {
+        throwOnLoadError: true,
+        prefixToolNameWithServerName: false,
+        additionalToolNamePrefix: "",
+        useStandardContentBlocks: true,
+      });
+      return { client, tools };
+    } catch (err) {
+      void client.close().catch(() => {});
+      throw err;
+    }
+  };
+  if (normalizeTransport(sel.transport) === "sse") {
+    return open(new SSEClientTransport(new URL(url), opts));
+  }
+  try {
+    return await open(new StreamableHTTPClientTransport(new URL(url), opts));
+  } catch (err) {
+    const code = httpErrorCode(err);
+    if (code === null || code < 400 || code >= 500) throw err;
+    let last: unknown = err;
+    for (const sseUrl of sseFallbackUrls(url)) {
+      try {
+        return await open(new SSEClientTransport(new URL(sseUrl), opts));
+      } catch (e) {
+        last = e;
+      }
+    }
+    throw last;
+  }
+}
+
 // Connects (or reuses a cached client) and returns ALL of the server's tools. The cache key is
-// tenant+connection; the hash over the (secret-bearing) config invalidates on rotation.
+// tenant+connection; the hash over the (secret-bearing) config and the header TEMPLATES invalidates
+// on rotation or edit. The resolved header values never enter it: they differ per conversation and
+// ride on each call instead.
 async function defaultConnect(
   sel: McpSelection,
   opts: McpLoadOpts,
@@ -305,43 +442,75 @@ async function defaultConnect(
     allowHttp: opts.allowHttp,
   });
   const key = `${opts.tenantId}:${sel.connId}`;
-  const hash = djb2(JSON.stringify(connConfig));
+  const declared =
+    connConfig.transport !== "stdio" &&
+    Object.keys(sel.headers ?? {}).length > 0;
+  const hash = djb2(
+    JSON.stringify({ connConfig, headers: declared ? sel.headers : null }),
+  );
   const cache = clientCache();
   let entry = cache.get(key);
   if (!entry || entry.hash !== hash) {
     // Credential/config changed (or first use) → drop any stale client (closes its transport/process).
-    if (entry) void entry.client.close().catch(() => {});
-    const client = new MultiServerMCPClient({
-      throwOnLoadError: true,
-      prefixToolNameWithServerName: false,
-      additionalToolNamePrefix: "",
-      useStandardContentBlocks: true,
-      mcpServers: { [sel.name]: connConfig },
-    });
-    // `connecting` is assigned on the very next line (synchronously, before any caller can read it).
-    const created = { hash, client } as ClientEntry;
-    created.connecting = (async () => {
-      try {
-        // First getTools() establishes the connection (spawns the stdio process / opens the HTTP
-        // session) and loads the tool list. Run exactly once; concurrent callers await this promise.
-        await client.getTools();
-        // Best-effort: capture the server's native `instructions` (MCP initialize result) once, for
-        // the prompt-context section. getClient returns the already-connected SDK client.
+    if (entry) void entry.close().catch(() => {});
+    // The fields are assigned below, synchronously, before any caller can read the entry.
+    const created = { hash } as ClientEntry;
+    const evict = () => {
+      if (cache.get(key) === created) cache.delete(key);
+    };
+    if (declared) {
+      let own: { client: Client; tools: StructuredToolInterface[] } | null =
+        null;
+      created.tools = async () => own?.tools ?? [];
+      created.close = async () => {
+        await own?.client.close();
+      };
+      created.connecting = (async () => {
         try {
-          const raw = (await client.getClient(sel.name))?.getInstructions();
+          own = await connectWithCallHeaders(sel, connConfig, key);
+          // NOTE: a dropped session is not reused: the next turn opens a new one.
+          own.client.onclose = evict;
+          const raw = own.client.getInstructions();
           created.instructions =
             typeof raw === "string" && raw.trim() ? raw.trim() : null;
-        } catch {
-          created.instructions = null;
+        } catch (err) {
+          evict();
+          throw err;
         }
-      } catch (err) {
-        // Evict so the next turn rebuilds (no dead client cached) and close the orphaned
-        // transport/process. Guard the delete so a newer entry under this key is not clobbered.
-        if (cache.get(key) === created) cache.delete(key);
-        void client.close().catch(() => {});
-        throw err;
-      }
-    })();
+      })();
+    } else {
+      const client = new MultiServerMCPClient({
+        throwOnLoadError: true,
+        prefixToolNameWithServerName: false,
+        additionalToolNamePrefix: "",
+        useStandardContentBlocks: true,
+        mcpServers: { [sel.name]: connConfig },
+      });
+      created.tools = () => client.getTools();
+      created.close = () => client.close();
+      created.connecting = (async () => {
+        try {
+          // First getTools() establishes the connection (spawns the stdio process / opens the HTTP
+          // session) and loads the tool list. Run exactly once; concurrent callers await this promise.
+          await client.getTools();
+          // Best-effort: capture the server's native `instructions` (MCP initialize result) once, for
+          // the prompt-context section. getClient returns the already-connected SDK client.
+          try {
+            const raw = (await client.getClient(sel.name))?.getInstructions();
+            created.instructions =
+              typeof raw === "string" && raw.trim() ? raw.trim() : null;
+          } catch {
+            created.instructions = null;
+          }
+        } catch (err) {
+          // Evict so the next turn rebuilds (no dead client cached) and close the orphaned
+          // transport/process. Guard the delete so a newer entry under this key is not clobbered.
+          evict();
+          void client.close().catch(() => {});
+          throw err;
+        }
+      })();
+    }
     entry = created;
     cache.set(key, entry);
   }
@@ -349,7 +518,7 @@ async function defaultConnect(
   // return the warm tools. getTools() on an already-connected client returns its cached list (no new
   // spawn) and re-runs the connection check, so a reconnect recovers without a config change.
   await entry.connecting;
-  return entry.client.getTools();
+  return entry.tools();
 }
 
 export type McpConnect = (
@@ -372,6 +541,9 @@ export interface McpLoadDeps {
   // Lets the caller surface the failure (flowlog warn + alert) without coupling this module to the
   // observability layer. Never throws into the turn; the reply still degrades gracefully.
   onDiscoverError?: (sel: McpSelection, err: unknown) => void;
+  // The turn's conversation variables (the ones an HTTP tool's placeholders read), which a
+  // connection's declared headers resolve against. Absent ⇒ every placeholder renders empty.
+  context?: Record<string, string>;
 }
 
 // Loads the agent's MCP tools across its selections, filtered to each connection's allowlist.
@@ -414,6 +586,13 @@ export async function loadMcpToolsForAgent(
         label: sel.name,
         instructions: instructions ?? null,
       };
+      const call: CallHeaders | undefined =
+        Object.keys(sel.headers ?? {}).length > 0
+          ? {
+              key: `${tenantId}:${sel.connId}`,
+              headers: renderMcpHeaders(sel.headers ?? {}, deps.context ?? {}),
+            }
+          : undefined;
       // Expose each allowed tool under its namespaced name (collision-free across servers) carrying
       // the server context for the prompt section. The bare name was already used for the allowlist.
       for (const tl of allowed) {
@@ -422,6 +601,7 @@ export async function loadMcpToolsForAgent(
             tl,
             namespacedToolName(slug, tl.name, usedNames),
             server,
+            call,
           ),
         );
       }

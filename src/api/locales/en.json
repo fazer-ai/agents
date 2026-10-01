@@ -158,6 +158,7 @@
     "mcpCommandInvalid": "The stdio command contains unsupported characters.",
     "mcpCommandRequired": "The stdio transport requires a command.",
     "mcpConnectionNotFound": "MCP connection not found.",
+    "mcpHeadersInvalid": "Invalid headers: {{reason}}.",
     "mcpLauncherInvalid": "The stdio command must start with a supported launcher ({{launchers}}).",
     "mcpNameTaken": "That MCP connection name is already in use.",
     "mcpOAuthCredentialNotFound": "This MCP credential no longer exists",

@@ -39,6 +39,7 @@ import {
   parseLiveConversation,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { announceStatusChange } from "@/modules/chatwoot/status-announce";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import {
@@ -694,12 +695,35 @@ async function updateMirror(
     assigneeName?: string | null;
   },
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) =>
-    db.conversation.updateMany({
-      where: { id },
-      data,
-    }),
-  );
+  await runScopedOn(base, ctx, async (db) => {
+    // The status this write moves is announced here: Chatwoot's own event for the click reaches the
+    // mirror after it, finds the status already equal and says nothing.
+    const before =
+      data.status === undefined
+        ? null
+        : await db.conversation.findUnique({
+            where: { id },
+            select: {
+              tenantId: true,
+              status: true,
+              inboxId: true,
+              assigneeType: true,
+            },
+          });
+    await db.conversation.updateMany({ where: { id }, data });
+    if (before && data.status !== undefined) {
+      await announceStatusChange(db, before.tenantId, {
+        conversationId: id,
+        inboxId: before.inboxId,
+        status: data.status,
+        previousStatus: before.status,
+        assigneeType:
+          data.assigneeType === undefined
+            ? before.assigneeType
+            : data.assigneeType,
+      });
+    }
+  });
 }
 
 // The conversation state as it stands after a console write, when the live read decided it. null =

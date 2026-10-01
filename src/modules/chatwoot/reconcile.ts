@@ -1,11 +1,10 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
-import logger from "@/api/lib/logger";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
-import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import type { LiveConversationState } from "./normalize";
+import { announceStatusChange } from "./status-announce";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 
 // Applies a live conversation snapshot (REST `GET /conversations/:id`) to the mirror row, under the
@@ -94,9 +93,9 @@ export async function reconcileMirrorFromLive(
           where,
           select: {
             // The mirror's own row id, which is what a console and an outbound consumer name this
-            // conversation by — needed only on the deferred path below, which is the one write here
-            // that no webhook will announce. The inbox travels with it because subscribers route and
-            // filter on it, and this path is not the one that gets to be the exception.
+            // conversation by — needed for the status this write announces below, since the webhook
+            // for the same transition will find nothing to announce. The inbox travels with it because
+            // subscribers route and filter on it.
             id: true,
             inboxId: true,
             status: true,
@@ -286,10 +285,21 @@ export async function reconcileMirrorFromLive(
         };
         if (Object.keys(data).length === 0) return;
         await db.conversation.update({ where, data });
-        // NOTE: the deferred transition is announced here because nothing else will: its webhook was
-        // acknowledged with the status refused, so the mirror emitted nothing and consoles would stay
-        // on the claim's `open`. Every other write here agrees with what the source announced or is
-        // announced by its caller.
+        // NOTE: the durable half for EVERY status this call moves, not only the deferred one: the
+        // source's own event for the same transition reaches the mirror after this write, finds the
+        // status already equal and says nothing. ./status-announce.ts.
+        if (nextStatus !== null) {
+          await announceStatusChange(db, tenantId, {
+            conversationId: current.id,
+            inboxId: current.inboxId,
+            status: nextStatus,
+            previousStatus: current.status,
+            assigneeType: nextAssigneeType,
+          });
+        }
+        // NOTE: the realtime half only for the deferred transition, because nothing else will: its
+        // webhook was acknowledged with the status refused, and consoles would stay on the claim's
+        // `open`. Every other status written here is broadcast by its caller.
         if (
           deferredWins &&
           nextStatus !== null &&
@@ -299,8 +309,7 @@ export async function reconcileMirrorFromLive(
           // of this function). Announced from in here, a statement that fails afterwards — or a
           // commit that does — leaves every open console told `pending` while the row rolls back to
           // `open`, which is the ownership gate's own reading and the one thing a console must not
-          // disagree with. The durable half stays inside, because it IS a row and rolls back with
-          // everything else.
+          // disagree with.
           announce = {
             conversationId: String(current.id),
             status: nextStatus,
@@ -308,21 +317,6 @@ export async function reconcileMirrorFromLive(
             assigneeType: nextAssigneeType,
             lastEventAt: nextEventAt ? nextEventAt.toISOString() : null,
           };
-          try {
-            await emitOutbound(db, tenantId, "conversation.status_changed", {
-              conversation_id: String(current.id),
-              inbox_id:
-                current.inboxId != null ? String(current.inboxId) : null,
-              status: nextStatus,
-              previous_status: current.status,
-              assignee_type: nextAssigneeType,
-            });
-          } catch (err) {
-            logger.warn(
-              "outbound emit failed (event=conversation.status_changed): %s",
-              err instanceof Error ? err.message : String(err),
-            );
-          }
         }
         result.state = {
           status: nextStatus ?? current.status,

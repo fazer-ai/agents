@@ -6,6 +6,8 @@ import { encryptJson } from "@/api/lib/crypto";
 import { createChatwootClient } from "@/modules/chatwoot/client";
 import {
   claimOpenForHumanQueue,
+  HUMAN_REPLY_SETTLE_MS,
+  humanReplySettleMs,
   OWNERSHIP_PROJECTION,
 } from "@/modules/chatwoot/human-takeover";
 import {
@@ -94,6 +96,9 @@ let whileBuildingClient: (() => Promise<void>) | null = null;
 // Work that runs while the toggle is in flight, which is the OTHER window: the fence has already
 // answered, the write to Chatwoot is on the wire, and a conversation event can commit here.
 let whileToggling: (() => Promise<void>) | null = null;
+// Work that runs during the takeover's settle wait, which stands in for the wait itself:
+// a person still acting on the conversation a moment after their reply.
+let whileSettling: (() => Promise<void>) | null = null;
 const posted: { url: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -160,6 +165,9 @@ const deps = {
       assertSafe: async (url: string) => new URL(url),
       fetchImpl: stubFetch,
     });
+  },
+  takeoverSettle: async () => {
+    await whileSettling?.();
   },
 };
 
@@ -1358,6 +1366,256 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // refusal had kept, over the older one our own read came back with.
     expect(row?.chatwootStatusAt ?? 0).toBeGreaterThan(pinned);
   });
+
+  // A person sends a closing line and resolves within the same second (a macro does both in one
+  // request). Chatwoot's toggle has no compare-and-set, so a toggle that lands after the resolve
+  // reopens what the person closed.
+  test("a resolve made right after the person's reply stays resolved, and is announced once", async () => {
+    const conv = 8572;
+    await deliver(conv, { ...customerSays("oi") });
+    const sub = await suDb.webhookSubscription.create({
+      data: {
+        tenantId,
+        url: "https://example.com/hook",
+        events: ["conversation.status_changed"],
+      },
+    });
+    // The resolve lands a moment after the reply: inside the settle wait when there is one, and
+    // otherwise while the toggle is on the wire, which is where it fell before the wait existed.
+    let resolvedOnce = false;
+    const resolve = async () => {
+      if (resolvedOnce) return;
+      resolvedOnce = true;
+      liveStatus.set(conv, "resolved");
+      const resolved = conversation(conv);
+      await deliverConversationEvent(conv, "conversation_updated", resolved);
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        resolved,
+      );
+    };
+    whileSettling = resolve;
+    whileToggling = resolve;
+    try {
+      await deliver(conv, {
+        ...composerReply("obrigado, até mais"),
+        created_at: Math.floor(Date.now() / 1000),
+      });
+    } finally {
+      whileSettling = null;
+      whileToggling = null;
+    }
+    try {
+      expect(liveStatus.get(conv)).toBe("resolved");
+      expect((await convRow(conv))?.status).toBe("resolved");
+      const out = await suDb.outboundWebhookDelivery.findMany({
+        where: { tenantId, subscriptionId: sub.id },
+        orderBy: { id: "asc" },
+      });
+      const statuses = out.map(
+        (o) => (o.payload as { data: { status: string } }).data.status,
+      );
+      expect(statuses.filter((s) => s === "resolved")).toEqual(["resolved"]);
+    } finally {
+      await suDb.outboundWebhookDelivery.deleteMany({
+        where: { subscriptionId: sub.id },
+      });
+      await suDb.webhookSubscription.delete({ where: { id: sub.id } });
+    }
+  });
+
+  // The statuses announced on the outbound bus for one conversation, in order, while `fn` runs.
+  async function announcedStatuses(
+    conv: number,
+    fn: () => Promise<void>,
+  ): Promise<string[]> {
+    const sub = await suDb.webhookSubscription.create({
+      data: {
+        tenantId,
+        url: "https://example.com/hook",
+        events: ["conversation.status_changed"],
+      },
+    });
+    try {
+      await fn();
+      const row = await convRow(conv);
+      const out = await suDb.outboundWebhookDelivery.findMany({
+        where: { tenantId, subscriptionId: sub.id },
+        orderBy: { id: "asc" },
+      });
+      return out
+        .map(
+          (o) =>
+            (o.payload as { data: { conversation_id: string; status: string } })
+              .data,
+        )
+        .filter((d) => row && d.conversation_id === String(row.id))
+        .map((d) => d.status);
+    } finally {
+      await suDb.outboundWebhookDelivery.deleteMany({
+        where: { subscriptionId: sub.id },
+      });
+      await suDb.webhookSubscription.delete({ where: { id: sub.id } });
+    }
+  }
+
+  const repliedNow = () => ({ created_at: Math.floor(Date.now() / 1000) });
+
+  test("the settle wait counts from the reply, so a late delivery does not wait", () => {
+    const now = new Date("2026-10-01T12:00:10Z");
+    expect(humanReplySettleMs(null, now)).toBe(0);
+    expect(humanReplySettleMs(new Date("2026-10-01T12:00:08Z"), now)).toBe(
+      HUMAN_REPLY_SETTLE_MS - 2_000,
+    );
+    expect(humanReplySettleMs(new Date("2026-10-01T11:30:00Z"), now)).toBe(0);
+    // A source clock ahead of ours waits the full wait, never longer.
+    expect(humanReplySettleMs(new Date("2026-10-01T12:01:00Z"), now)).toBe(
+      HUMAN_REPLY_SETTLE_MS,
+    );
+  });
+
+  test("a hand-back made during the settle wait is not undone by the toggle", async () => {
+    const conv = 8573;
+    await deliver(conv, { ...customerSays("oi") });
+    whileSettling = async () => {
+      whileSettling = null;
+      const row = await convRow(conv);
+      if (!row) throw new Error("no mirrored conversation");
+      expect(
+        await returnConversationToAgent(
+          { tenantId, userId: null, role: "TENANT_ADMIN" },
+          row.id,
+          deps,
+          appDb,
+        ),
+      ).toBe("returned");
+    };
+    const before = toggles(conv).length;
+    try {
+      await deliver(conv, {
+        ...composerReply("só um instante"),
+        ...repliedNow(),
+      });
+    } finally {
+      whileSettling = null;
+    }
+    expect(
+      toggles(conv)
+        .slice(before)
+        .map((t) => (t.body as { status: string }).status),
+    ).toEqual(["pending"]);
+    expect(liveStatus.get(conv)).toBe("pending");
+    expect((await convRow(conv))?.status).toBe("pending");
+  });
+
+  test("a resolve whose own event never arrives still reaches the mirror, announced", async () => {
+    const conv = 8579;
+    await deliver(conv, { ...customerSays("oi") });
+    whileSettling = async () => {
+      whileSettling = null;
+      liveStatus.set(conv, "resolved");
+    };
+    const before = toggles(conv).length;
+    const statuses = await announcedStatuses(conv, async () => {
+      try {
+        await deliver(conv, { ...composerReply("até mais"), ...repliedNow() });
+      } finally {
+        whileSettling = null;
+      }
+    });
+    expect(toggles(conv).length).toBe(before);
+    expect((await convRow(conv))?.status).toBe("resolved");
+    expect(statuses).toEqual(["open", "resolved"]);
+  });
+
+  test("a conversation another party picked up during the settle wait is left to them", async () => {
+    const conv = 8574;
+    await deliver(conv, { ...customerSays("oi") });
+    whileSettling = async () => {
+      whileSettling = null;
+      liveHolder.set(conv, 99);
+    };
+    const before = toggles(conv).length;
+    try {
+      await deliver(conv, {
+        ...composerReply("deixa comigo"),
+        ...repliedNow(),
+      });
+    } finally {
+      whileSettling = null;
+      liveHolder.delete(conv);
+    }
+    expect(toggles(conv).length).toBe(before);
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+  });
+
+  test("a takeover with nothing in the way waits, opens, and is announced once", async () => {
+    const conv = 8575;
+    await deliver(conv, { ...customerSays("oi") });
+    let waited = 0;
+    whileSettling = async () => {
+      waited += 1;
+    };
+    const statuses = await announcedStatuses(conv, async () => {
+      try {
+        await deliver(conv, {
+          ...composerReply("assumo daqui"),
+          ...repliedNow(),
+        });
+      } finally {
+        whileSettling = null;
+      }
+      // Chatwoot's own event for our toggle, which must not announce the transition a second time.
+      await deliverConversationEvent(conv, "conversation_status_changed");
+    });
+    expect(waited).toBe(1);
+    expect(liveStatus.get(conv)).toBe("open");
+    expect(statuses).toEqual(["open"]);
+  });
+
+  test("a reply with no source timestamp takes over without waiting", async () => {
+    const conv = 8576;
+    await deliver(conv, { ...customerSays("oi") });
+    let waited = 0;
+    whileSettling = async () => {
+      waited += 1;
+    };
+    try {
+      await deliver(conv, composerReply("assumo daqui"));
+    } finally {
+      whileSettling = null;
+    }
+    expect(waited).toBe(0);
+    expect(liveStatus.get(conv)).toBe("open");
+  });
+
+  for (const versioned of [true, false]) {
+    test(`a console resolve is announced once, ${versioned ? "versioned" : "unversioned"}`, async () => {
+      const conv = versioned ? 8577 : 8578;
+      await deliver(conv, { ...customerSays("oi") });
+      if (!versioned) unversionedReads.add(conv);
+      try {
+        const statuses = await announcedStatuses(conv, async () => {
+          const row = await convRow(conv);
+          if (!row) throw new Error("no mirrored conversation");
+          await setConversationStatus(
+            { tenantId, userId: null, role: "TENANT_ADMIN" },
+            row.id,
+            "resolved",
+            deps,
+            appDb,
+          );
+          // Chatwoot's own event for the click, arriving after the console wrote the row.
+          await deliverConversationEvent(conv, "conversation_status_changed");
+        });
+        expect((await convRow(conv))?.status).toBe("resolved");
+        expect(statuses).toEqual(["resolved"]);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+  }
 
   function deliverReplyOff() {
     return deviceReply("já te respondo");

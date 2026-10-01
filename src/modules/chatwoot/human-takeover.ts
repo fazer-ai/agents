@@ -29,6 +29,7 @@ import {
   shouldBotHandle,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
+import { announceStatusChange } from "./status-announce";
 import { statusClaimDeadline } from "./status-claim";
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -182,7 +183,29 @@ export async function claimOpenForHumanQueue(p: {
             statusClaimRefusedAt: null,
           },
         });
-        return count > 0 ? claimUntil : null;
+        if (count === 0) return null;
+        // The claim moves the status, so it announces it (./status-announce.ts): Chatwoot's own
+        // event for our toggle finds the row already `open` and says nothing.
+        const row = await db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId: p.tenantId,
+              chatwootInstanceId: p.instanceId,
+              chatwootConversationId: p.conversationId,
+            },
+          },
+          select: { id: true, inboxId: true },
+        });
+        if (row) {
+          await announceStatusChange(db, p.tenantId, {
+            conversationId: row.id,
+            inboxId: row.inboxId,
+            status: "open",
+            previousStatus: "pending",
+            assigneeType: p.seen.assigneeType,
+          });
+        }
+        return claimUntil;
       },
     ),
   );
@@ -246,6 +269,20 @@ export async function openForHumanQueue(p: {
   }
 }
 
+// How long after the person's reply the takeover waits before its toggle. A closing line and a
+// resolve come within a second or two (a macro sends both in one request), and Chatwoot's toggle has no
+// compare-and-set, so a resolve landing between the live read and the toggle would be reopened by it.
+// The claim is taken first and the bot stays silent, so the wait only delays the source's `open`.
+export const HUMAN_REPLY_SETTLE_MS = 5_000;
+
+// What is left of the wait, counted from the reply rather than from this delivery, so a late delivery
+// (or the recovery, half an hour on) does not wait at all. No timestamp, no wait.
+export function humanReplySettleMs(repliedAt: Date | null, now: Date): number {
+  if (repliedAt === null) return 0;
+  const left = repliedAt.getTime() + HUMAN_REPLY_SETTLE_MS - now.getTime();
+  return Math.min(Math.max(left, 0), HUMAN_REPLY_SETTLE_MS);
+}
+
 export interface HumanReplyTakeoverParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -284,6 +321,38 @@ export interface HumanReplyTakeoverParams {
   // reconcile to prove ownership; it is not a liveness test (the claim lasts 45s, the sweep waits
   // 30 minutes), and the live read is what authorises the write.
   heldClaimUntil?: Date | null;
+  // When the person's reply was created at the source, which starts the settle wait above. Null or
+  // absent: no wait.
+  repliedAt?: Date | null;
+  // The wait itself, injectable so a test can stand inside it.
+  settle?: (ms: number) => Promise<void>;
+}
+
+function defaultSettle(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The console mark alone, re-read after the settle wait. The ownership read cannot answer it any more:
+// our own claim has made the row `open`, and that read returns no mark for a row that is not ours.
+async function storedConsoleWriteMark(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  base: PrismaClient;
+}): Promise<number | null> {
+  const row = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootConversationId: p.conversationId,
+        },
+      },
+      select: { consoleWriteAtMessageId: true },
+    }),
+  );
+  return row?.consoleWriteAtMessageId ?? null;
 }
 
 // Says WHICH of the three happened, because the two callers need different amounts of it. The live
@@ -334,6 +403,12 @@ export async function runHumanReplyTakeover(
     // the two halves that need it are on the other side of the fence closure: the release below,
     // and the reconcile, which is the one write allowed THROUGH a claim it owns.
     let claimHeld: Date | null = null;
+    // The live read taken after the settle wait when it found the conversation moved on, which the
+    // mirror is reconciled from below: our claim wrote `open` and no toggle will make it true.
+    // A holder, not a `let`: assigned inside the fence closure, which a narrowed `let` would not see.
+    const settled: { live: ReturnType<typeof parseLiveConversation> } = {
+      live: null,
+    };
     // NO PERSONA IS A REFUSAL, not a failure: it is decided here, from the row, before anything is
     // written or called, which is exactly what makes it a verdict.
     outcome = !bot
@@ -486,10 +561,83 @@ export async function runHumanReplyTakeover(
                 lastEventAt: p.lastEventAt ? p.lastEventAt.toISOString() : null,
               });
             }
+            // The settle wait, then the same two questions again, because the person may still
+            // be acting: a resolve (or an assignment) is read off Chatwoot, a hand-back off the console
+            // mark it stamps. Either one means the toggle would undo a later decision, so it is not
+            // sent and the mirror is put back on the source's state below.
+            const waitMs = humanReplySettleMs(p.repliedAt ?? null, new Date());
+            if (waitMs > 0) {
+              await (p.settle ?? defaultSettle)(waitMs);
+              const after = parseLiveConversation(
+                await (await client())
+                  .getConversation(conversationId)
+                  .catch(() => null),
+              );
+              const handedBack = consoleWriteLandedAfter(
+                p.decidedAtMessageId ?? null,
+                await storedConsoleWriteMark(p),
+              );
+              const movedOn =
+                after !== null &&
+                !shouldBotHandle(
+                  {
+                    assigneeType: after.assigneeType,
+                    assigneeId: after.assigneeId,
+                    status: after.status,
+                  },
+                  { ourAgentBotId: p.ourAgentBotId },
+                );
+              if (handedBack || movedOn) {
+                settled.live = after;
+                logger.info(
+                  "chatwoot: %s handoff withdrawn (conv=%s) — the conversation moved on while the reply settled (%s)",
+                  `human reply (${p.route})`,
+                  convLabel,
+                  handedBack ? "handed back" : after?.status,
+                );
+                return false;
+              }
+            }
             return true;
           },
           client,
         });
+    // NOTE: a takeover withdrawn after its claim: the row says `open` and Chatwoot never will, so the
+    // row takes the source's state through our own claim, and the status it moves is announced there.
+    if (
+      outcome === "refused" &&
+      claimHeld !== null &&
+      settled.live !== null &&
+      settled.live.updatedAt !== null
+    ) {
+      try {
+        const reconciled = await reconcileMirrorFromLive({
+          tenantId: p.tenantId,
+          instanceId: p.instanceId,
+          conversationId,
+          live: settled.live,
+          ownsStatusClaim: claimHeld,
+          base: p.base,
+        });
+        if (reconciled.state && p.conversationRowId !== null) {
+          broadcastConversationEvent(p.tenantId, {
+            conversationId: String(p.conversationRowId),
+            status: reconciled.state.status,
+            assigneeId: reconciled.state.assigneeId,
+            assigneeType: reconciled.state.assigneeType,
+            lastEventAt: reconciled.state.lastEventAt
+              ? reconciled.state.lastEventAt.toISOString()
+              : null,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          "chatwoot: reconciling the mirror after a withdrawn takeover failed (conv=%s): %s",
+          convLabel,
+          errMsg(err),
+        );
+      }
+    }
     // NOTE: a failed open keeps the claim. A failed call is an unknown outcome (Chatwoot can commit
     // and lose the response), and rolling back would put the agent back on a conversation the
     // platform may have handed over. The claim stays on the row until the reconcile stamps it,

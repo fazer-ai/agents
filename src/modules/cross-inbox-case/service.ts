@@ -9,6 +9,7 @@
 import { withKeyedQueue } from "@/lib/locks";
 import {
   ChatwootApiError,
+  ChatwootCalledOffError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
@@ -489,9 +490,16 @@ async function run(
     if (pendingEmail !== null) {
       step = "write_email";
       try {
-        await client.updateContact(contactId, { email: pendingEmail });
+        // NOTE: The write waits on the contact's queue, so the withdrawal is asked again in there.
+        await client.updateContact(
+          contactId,
+          { email: pendingEmail },
+          { stillWanted: input.stillWanted },
+        );
         identity = "written";
       } catch (err) {
+        if (err instanceof ChatwootCalledOffError)
+          return { kind: "called_off" };
         // 422 is the fork's answer to an address another contact of the account already holds
         // (the uniqueness is per account, case-insensitive). Anything else is a real failure.
         if (!(err instanceof ChatwootApiError && err.status === 422)) throw err;

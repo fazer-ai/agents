@@ -174,10 +174,13 @@ describe("STT confidence", () => {
   test("a gpt-4o transcription asks for its token logprobs", async () => {
     const { calls, fetchImpl } = mockFetch({
       text: "Oi, tudo bem?",
-      logprobs: tokens(-0.01, -0.02),
+      logprobs: tokens(-0.01, -0.03),
     });
     const out = await req("gpt-4o-transcribe", fetchImpl);
-    expect(out).toEqual({ text: "Oi, tudo bem?" });
+    expect(out).toEqual({
+      text: "Oi, tudo bem?",
+      confidence: { signal: "token_logprob", meanLogprob: -0.02 },
+    });
     const form = calls[0]?.init.body as FormData;
     expect(form.getAll("include[]")).toEqual(["logprobs"]);
     expect(form.get("response_format")).toBe("json");
@@ -189,7 +192,8 @@ describe("STT confidence", () => {
       const out = await req("gpt-4o-transcribe", fetchImpl);
       expect(out).toEqual({
         text: "",
-        withheld: { signal: "token_logprob", meanLogprob: -1.8 },
+        confidence: { signal: "token_logprob", meanLogprob: -1.8 },
+        withheld: true,
       });
     }
   });
@@ -197,10 +201,11 @@ describe("STT confidence", () => {
   test("a confident transcription in another script passes: script is not the signal", async () => {
     const { fetchImpl } = mockFetch({
       text: "Привет, как дела?",
-      logprobs: tokens(-0.05, -0.1),
+      logprobs: tokens(-0.05, -0.11),
     });
     expect(await req("gpt-4o-mini-transcribe", fetchImpl)).toEqual({
       text: "Привет, как дела?",
+      confidence: { signal: "token_logprob", meanLogprob: -0.08 },
     });
   });
 
@@ -217,7 +222,10 @@ describe("STT confidence", () => {
       ],
     });
     const out = await req("whisper-large-v3", fetchImpl, "openai-compatible");
-    expect(out).toEqual({ text: "Oi, boa tarde.", droppedSegments: 1 });
+    expect(out).toEqual({
+      text: "Oi, boa tarde.",
+      confidence: { signal: "segments", segments: 2, droppedSegments: 1 },
+    });
     const form = calls[0]?.init.body as FormData;
     expect(form.get("response_format")).toBe("verbose_json");
     expect(form.getAll("include[]")).toEqual([]);
@@ -233,6 +241,7 @@ describe("STT confidence", () => {
     });
     expect(await req("whisper-1", fetchImpl)).toEqual({
       text: "Oi, boa tarde. Tudo bem?",
+      confidence: { signal: "segments", segments: 2, droppedSegments: 0 },
     });
   });
 
@@ -257,7 +266,8 @@ describe("STT confidence", () => {
     });
     expect(await req("whisper-1", fetchImpl)).toEqual({
       text: "",
-      withheld: { signal: "segments", droppedSegments: 1 },
+      confidence: { signal: "segments", segments: 1, droppedSegments: 1 },
+      withheld: true,
     });
   });
 

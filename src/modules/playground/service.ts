@@ -1500,6 +1500,14 @@ export async function runPlaygroundTranscribe(
     base: params.base,
     deps: params.sttDeps,
     settings: params.overrides?.settings,
+    // A step of its own, before any turn exists. No agent on the context: one that names an agent
+    // also has to carry its debug mode, which this step never loads.
+    flow: {
+      tenantId: params.ctx.tenantId as bigint,
+      turnId: crypto.randomUUID(),
+      source: "playground",
+      base: params.base,
+    },
   });
   return { transcription };
 }
@@ -1561,6 +1569,14 @@ export async function runPlaygroundAudioTurn(
               base: params.base,
               deps: params.sttDeps,
               settings: params.overrides?.settings,
+              // The turn's own id and thread; no agent, as in the transcribe-only step.
+              flow: {
+                tenantId: ctx.tenantId as bigint,
+                turnId,
+                source: "playground",
+                threadId,
+                base: params.base,
+              },
             });
 
       // Faithful rendering: the agent sees exactly what production would feed it for a voice note.

@@ -16,18 +16,18 @@ export interface SttRequest {
   fetchImpl: typeof fetch;
 }
 
-// What the provider's own confidence said about the text, for the providers that report one.
-// `withheld` means none of it is the customer's: silence and noise come back as fluent text in any
-// language and script, and the confidence is what tells them apart (docs/stt.md has the measurement).
-export type SttWithheld =
+// What the provider's own confidence said about the text, for the providers that report one, and
+// whether it withheld the text: silence and noise come back as fluent text in any language and
+// script, and the confidence is what tells them apart (docs/stt.md has the measurement).
+export type SttConfidence =
   | { signal: "token_logprob"; meanLogprob: number }
-  | { signal: "segments"; droppedSegments: number };
+  | { signal: "segments"; segments: number; droppedSegments: number };
 
 export interface SttResult {
   text: string;
-  withheld?: SttWithheld;
-  // Segments dropped from a transcription whose other segments were kept.
-  droppedSegments?: number;
+  confidence?: SttConfidence;
+  // None of the text is the customer's; `text` is empty.
+  withheld?: true;
 }
 
 export interface SttProvider {
@@ -100,16 +100,14 @@ function judgeTranscription(json: OpenAiTranscription): SttResult {
     .filter((lp): lp is number => typeof lp === "number");
   if (lps.length > 0) {
     const mean = lps.reduce((a, b) => a + b, 0) / lps.length;
+    const confidence: SttConfidence = {
+      signal: "token_logprob",
+      meanLogprob: Math.round(mean * 100) / 100,
+    };
     if (mean < MIN_MEAN_TOKEN_LOGPROB) {
-      return {
-        text: "",
-        withheld: {
-          signal: "token_logprob",
-          meanLogprob: Math.round(mean * 100) / 100,
-        },
-      };
+      return { text: "", confidence, withheld: true };
     }
-    return { text };
+    return { text, confidence };
   }
   const segments = json.segments ?? [];
   if (segments.length === 0) return { text };
@@ -120,20 +118,19 @@ function judgeTranscription(json: OpenAiTranscription): SttResult {
         (s.avg_logprob ?? 0) < MIN_SEGMENT_AVG_LOGPROB
       ),
   );
-  const dropped = segments.length - spoken.length;
-  if (dropped === 0) return { text };
-  if (spoken.length === 0) {
-    return {
-      text: "",
-      withheld: { signal: "segments", droppedSegments: dropped },
-    };
-  }
+  const confidence: SttConfidence = {
+    signal: "segments",
+    segments: segments.length,
+    droppedSegments: segments.length - spoken.length,
+  };
+  if (spoken.length === segments.length) return { text, confidence };
+  if (spoken.length === 0) return { text: "", confidence, withheld: true };
   return {
     text: spoken
       .map((s) => s.text ?? "")
       .join("")
       .trim(),
-    droppedSegments: dropped,
+    confidence,
   };
 }
 

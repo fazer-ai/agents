@@ -11,6 +11,7 @@ import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
   resolveSttConfig,
   transcribeInboundAudio,
+  transcribePlaygroundAudio,
 } from "@/modules/stt/service";
 import type { SttConfig } from "@/modules/stt/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -42,6 +43,7 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 let sttKeyId = 0n;
+let agentId = 0n;
 
 const TRANSCRIPT = "olá, gostaria de agendar uma consulta";
 const CHATWOOT_INBOX_ID = 7;
@@ -105,6 +107,7 @@ describe.skipIf(!dbUp)("stt", () => {
         },
       },
     });
+    agentId = agent.id;
     await suDb.inbox.create({
       data: {
         tenantId,
@@ -424,10 +427,61 @@ describe.skipIf(!dbUp)("stt", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("ok");
     expect(rows[0]?.detail).toEqual({
-      withheld: "low_confidence",
       signal: "token_logprob",
       meanLogprob: -2,
+      withheld: "low_confidence",
     });
     expect(JSON.stringify(rows)).not.toContain("Das ist");
+  });
+  // The playground shows the operator an empty transcription for silence and for a withheld one alike;
+  // the stt line, with the score, is what tells them apart.
+  test("a playground transcription logs its confidence on the stt line, withheld or not", async () => {
+    const lowThenHigh = [
+      { text: "Das ist gut.", logprobs: [{ token: "x", logprob: -2.5 }] },
+      { text: "Oi, tudo bem?", logprobs: [{ token: "x", logprob: -0.05 }] },
+    ];
+    const turnIds: string[] = [];
+    const out: string[] = [];
+    for (const body of lowThenHigh) {
+      const turnId = crypto.randomUUID();
+      turnIds.push(turnId);
+      out.push(
+        await transcribePlaygroundAudio({
+          ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+          agentId,
+          audio: new ArrayBuffer(16),
+          mimeType: "audio/ogg",
+          base: appDb,
+          deps: {
+            fetchImpl: (async () =>
+              new Response(JSON.stringify(body), {
+                status: 200,
+              })) as unknown as typeof fetch,
+          },
+          flow: { tenantId, turnId, source: "playground", base: appDb },
+        }),
+      );
+    }
+    expect(out).toEqual(["", "Oi, tudo bem?"]);
+    const details: unknown[] = [];
+    for (const turnId of turnIds) {
+      let rows: Array<{ detail: unknown }> = [];
+      for (let i = 0; i < 30 && rows.length === 0; i++) {
+        rows = (await flowLogRows(suDb, {
+          where: { tenantId, turnId, stage: "stt", source: "playground" },
+          select: { detail: true },
+        })) as Array<{ detail: unknown }>;
+        if (rows.length === 0) await new Promise((r) => setTimeout(r, 100));
+      }
+      details.push(rows[0]?.detail);
+    }
+    expect(details).toEqual([
+      {
+        signal: "token_logprob",
+        meanLogprob: -2.5,
+        withheld: "low_confidence",
+      },
+      { signal: "token_logprob", meanLogprob: -0.05 },
+    ]);
   });
 });

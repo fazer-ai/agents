@@ -270,12 +270,13 @@ async function transcribeOnce(
   return text;
 }
 
-// The stt line's record of what the confidence decided, numbers only: the withheld text is never
-// logged, like every transcription.
+// The stt line's record of the confidence the provider reported and what it decided, numbers only:
+// the transcription itself is never logged, withheld or not.
 function confidenceDetail(r: SttResult): Record<string, unknown> {
-  if (r.withheld) return { withheld: "low_confidence", ...r.withheld };
-  if (r.droppedSegments) return { droppedSegments: r.droppedSegments };
-  return {};
+  if (!r.confidence) return {};
+  return r.withheld
+    ? { ...r.confidence, withheld: "low_confidence" }
+    : { ...r.confidence };
 }
 
 export interface PlaygroundTranscribeParams {
@@ -291,6 +292,9 @@ export interface PlaygroundTranscribeParams {
   settings?: unknown;
   base?: PrismaClient;
   deps?: { fetchImpl?: typeof fetch };
+  // The playground's flow context: the stt line is what tells the operator a withheld transcription
+  // from silence.
+  flow?: FlowContext;
 }
 
 // Transcribe an uploaded audio file with the agent's configured STT provider, for the playground.
@@ -353,15 +357,25 @@ export async function transcribePlaygroundAudio(
 
   let result: SttResult;
   try {
-    result = await provider.transcribe({
-      audio: params.audio,
-      mimeType: params.mimeType,
-      language: cfg.language,
-      model: cfg.model || provider.defaultModel,
-      apiKey: entry.secret,
-      baseURL: effectiveBaseURL,
-      fetchImpl: params.deps?.fetchImpl ?? fetch,
-    });
+    result = await withFlowStage(
+      params.flow,
+      "stt",
+      {
+        provider: cfg.provider,
+        model: cfg.model || provider.defaultModel,
+        detailOf: confidenceDetail,
+      },
+      () =>
+        provider.transcribe({
+          audio: params.audio,
+          mimeType: params.mimeType,
+          language: cfg.language,
+          model: cfg.model || provider.defaultModel,
+          apiKey: entry.secret,
+          baseURL: effectiveBaseURL,
+          fetchImpl: params.deps?.fetchImpl ?? fetch,
+        }),
+    );
   } catch (e) {
     const detail = clipText(e instanceof Error ? e.message : String(e), 300);
     throw new AppError(

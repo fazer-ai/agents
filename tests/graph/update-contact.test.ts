@@ -10,10 +10,7 @@ import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { getAgentToolSelections } from "@/modules/agents/service";
 import { buildContactFieldsSection } from "@/modules/chatwoot/attributes";
-import {
-  ChatwootApiError,
-  type ChatwootClient,
-} from "@/modules/chatwoot/client";
+import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
 import {
   type ContactFieldsConfig,
   readContactFieldsConfig,
@@ -31,7 +28,8 @@ function recordingClient(fail?: Error) {
   const calls: unknown[][] = [];
   const client = {
     updateContact: async (...args: unknown[]) => {
-      calls.push(args);
+      // NOTE: The contact id and the fields; the third argument is the queue's fence.
+      calls.push(args.slice(0, 2));
       if (fail) throw fail;
       return {};
     },
@@ -226,6 +224,49 @@ describe("update_contact", () => {
     if (!t) throw new Error("update_contact was not built");
     await expect(call(t, { name: "Joana" })).rejects.toThrow("503");
   });
+});
+
+test("two writes to one contact in the same turn go out one after the other", async () => {
+  const events: string[] = [];
+  let first = true;
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+      string,
+      unknown
+    >;
+    const tag = Object.keys(body).sort().join("+");
+    events.push(`start ${tag}`);
+    if (first) {
+      first = false;
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    events.push(`end ${tag}`);
+    return new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  const client = new ChatwootClient(
+    {
+      baseUrl: "https://chat.example.com",
+      accountId: 5,
+      adminToken: "admin",
+      botToken: "bot",
+    },
+    fetchImpl,
+  );
+  const t = toolFor(
+    { context: ["name", "city"], writable: ["name", "city"] },
+    client,
+  );
+  if (!t) throw new Error("update_contact was not built");
+  await Promise.all([call(t, { city: "Recife" }), call(t, { name: "Joana" })]);
+  expect(events).toEqual([
+    "start additional_attributes",
+    "end additional_attributes",
+    "start name",
+    "end name",
+  ]);
 });
 
 describe("the prompt block", () => {

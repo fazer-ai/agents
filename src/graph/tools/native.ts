@@ -1978,14 +1978,23 @@ function updateContactTool(ctx: ToolCtx, writable: ContactField[]) {
         if (isAdditionalContactField(f)) additional[f] = v;
       }
       try {
-        await ctx.client.updateContact(contact.chatwootContactId, {
-          ...(written.name !== undefined ? { name: written.name } : {}),
-          ...(written.email !== undefined ? { email: written.email } : {}),
-          ...(Object.keys(additional).length > 0
-            ? { additional_attributes: additional }
-            : {}),
-        });
+        await ctx.client.updateContact(
+          contact.chatwootContactId,
+          {
+            ...(written.name !== undefined ? { name: written.name } : {}),
+            ...(written.email !== undefined ? { email: written.email } : {}),
+            ...(Object.keys(additional).length > 0
+              ? { additional_attributes: additional }
+              : {}),
+          },
+          // NOTE: Asked again inside the contact's queue, since the wait for it is a wait too.
+          { stillWanted: ctx.stillWanted },
+        );
       } catch (e) {
+        if (e instanceof ChatwootCalledOffError) {
+          ctx.onNoEffect?.("update_contact");
+          return "Could not update the contact (the run was called off while this write waited its turn).";
+        }
         if (
           e instanceof ChatwootApiError &&
           e.status >= 400 &&

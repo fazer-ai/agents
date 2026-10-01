@@ -375,6 +375,37 @@ describe("the spend ceiling card", () => {
     expect(has("gpt-6-luna")).toBe(true);
   });
 
+  // A pending credential filled since the last read leaves the not-configured row in place, with a
+  // credential that now resolves: the card must not show a bare zero for the hour until the next read.
+  test("with the ceiling off an unread month says so even over the not-configured row", async () => {
+    const usage = {
+      ...baseUsage(),
+      enabled: false,
+      langfuseConfigured: true,
+      entries: [
+        entry({
+          source: "inbox",
+          polledAt: null,
+          stale: true,
+          pollError: "langfuse-not-configured",
+        }),
+        entry({
+          source: "playground",
+          polledAt: null,
+          stale: true,
+          pollError: "langfuse-not-configured",
+        }),
+      ],
+    };
+    installFetchStub(usage);
+    renderCard({ ...settings, enabled: false });
+    await waitFor(() => {
+      expect(screen.queryAllByText(/has not been read yet/)).toHaveLength(2);
+    });
+    expect(has("calls go through")).toBe(false);
+    expect(has("Not enforced on this half")).toBe(false);
+  });
+
   test("with the ceiling off a stale figure and a missing Langfuse say nothing about the gate", async () => {
     const usage = {
       ...baseUsage(),

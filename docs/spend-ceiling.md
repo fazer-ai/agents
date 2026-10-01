@@ -117,7 +117,10 @@ moves the failure from **availability to staleness**, which is a failure the row
   Langfuse), ceiling or not: the card is read only by whoever opens it, and every call to that model
   is left out of the figure until someone acts. The row keeps the name, and a name either half's row
   already holds is not news, so it is said once per model per month, across both halves and across
-  restarts.
+  restarts. A name leaves the row only when every call of that model is priced, and Langfuse does not
+  re-price (a model definition added mid-month, measured on 3.225.7, left the earlier calls unpriced
+  and the name on the row), so inside a month it can only be said twice if its unpriced calls are
+  deleted from Langfuse.
 - **A billed call no callback saw reaches Langfuse by hand.** Vision reaches its provider by raw
   fetch, so the LangChain handler never observes it, and Langfuse only prices the generations it was
   shown: the ledger had the row and the ceiling had nothing, which left an extraction-only playground

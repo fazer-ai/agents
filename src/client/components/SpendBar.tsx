@@ -137,19 +137,23 @@ export function SpendHealthLines({
           )}
         </span>
       )}
-      {entry.polledAt === null && entry.pollError !== SPEND_NOT_CONFIGURED && (
-        <span className={cn({ "text-warning": enabled })}>
-          {enabled
-            ? t(
-                "spendCeiling.usage.unpolled",
-                "The month's cost has not been read yet: calls go through until the first reading lands.",
-              )
-            : t(
-                "spendCeiling.usage.unpolledOff",
-                "The month's cost has not been read yet.",
-              )}
-        </span>
-      )}
+      {/* With the ceiling off the not-configured row is not a verdict the card names, so an unread
+          month says so even over it: a credential filled since leaves exactly that row until the
+          next hourly read. */}
+      {entry.polledAt === null &&
+        (!enabled || entry.pollError !== SPEND_NOT_CONFIGURED) && (
+          <span className={cn({ "text-warning": enabled })}>
+            {enabled
+              ? t(
+                  "spendCeiling.usage.unpolled",
+                  "The month's cost has not been read yet: calls go through until the first reading lands.",
+                )
+              : t(
+                  "spendCeiling.usage.unpolledOff",
+                  "The month's cost has not been read yet.",
+                )}
+          </span>
+        )}
       {failing && entry.pollFailedAt && (
         <span className="text-warning">
           {t(

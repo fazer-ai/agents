@@ -6,6 +6,7 @@ import {
   KeyRound,
   LibraryBig,
   LifeBuoy,
+  Megaphone,
   MessagesSquare,
   Package,
   Radar,
@@ -94,6 +95,7 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.sources', 'Sources')
 // t('nav.catalog', 'Catalog')
 // t('nav.orders', 'Orders')
+// t('nav.broadcasts', 'Broadcasts')
 export const NAV_ITEMS: NavItem[] = [
   {
     to: "/",
@@ -139,6 +141,14 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.orders",
     defaultLabel: "Orders",
     icon: ShoppingBag,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/broadcasts",
+    labelKey: "nav.broadcasts",
+    defaultLabel: "Broadcasts",
+    icon: Megaphone,
     requireAdmin: true,
     section: MERCHANT,
   },

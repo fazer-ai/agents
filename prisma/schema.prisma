@@ -174,6 +174,9 @@ model Tenant {
   merchantOrders                MerchantOrder[]
   merchantOrderItems            MerchantOrderItem[]
   leadSources                   LeadSource[]
+  replyDrafts                   ReplyDraft[]
+  broadcasts                    Broadcast[]
+  broadcastRecipients           BroadcastRecipient[]
 
   @@map("tenants")
 }
@@ -2565,6 +2568,8 @@ model Lead {
   source  LeadSource?        @relation(fields: [sourceId], references: [id], onDelete: SetNull)
   matches LeadProductMatch[]
   orders  MerchantOrder[]
+  drafts  ReplyDraft[]
+  broadcastRecipients BroadcastRecipient[]
 
   @@unique([tenantId, platform, externalId])
   @@index([tenantId, createdAt])
@@ -2659,4 +2664,103 @@ model MerchantOrderItem {
   @@index([tenantId, orderId])
   @@index([productId])
   @@map("merchant_order_items")
+}
+
+// ──────────────────────────────────────────── funnel (vinvin phase 2) ──
+
+// What a reply draft IS: a public comment reply under the lead's post, or the
+// first direct message of a 1:1 outreach.
+enum ReplyDraftKind {
+  PUBLIC_REPLY
+  DM_OPENER
+}
+
+// Human-in-the-loop rail: the model proposes, a person edits/approves, and SENT
+// means the operator copied it to the platform by hand (no auto-posting).
+enum ReplyDraftStatus {
+  DRAFT
+  APPROVED
+  SENT
+  REJECTED
+}
+
+enum BroadcastStatus {
+  DRAFT
+  READY
+  SENT
+}
+
+enum BroadcastRecipientStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// One outreach draft against a lead. `body` holds the exact text the operator
+// would post; `error` carries the gateway failure when generation could not
+// produce a usable body (row still records the attempt).
+model ReplyDraft {
+  id        BigInt           @id @default(autoincrement())
+  tenantId  BigInt           @map("tenant_id")
+  leadId    BigInt           @map("lead_id")
+  kind      ReplyDraftKind
+  body      String
+  status    ReplyDraftStatus @default(DRAFT)
+  error     String?
+  sentAt    DateTime?        @map("sent_at")
+  createdBy BigInt?          @map("created_by")
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, leadId])
+  @@map("reply_drafts")
+}
+
+// A broadcast composition: the template plus the audience filter it was
+// resolved with. `sentCount` mirrors the recipients' SENT rows; `status` is a
+// review gate (DRAFT -> READY -> SENT), never a transport signal.
+model Broadcast {
+  id             BigInt          @id @default(autoincrement())
+  tenantId       BigInt          @map("tenant_id")
+  name           String
+  body           String
+  audienceFilter Json            @map("audience_filter")
+  status         BroadcastStatus @default(DRAFT)
+  sentCount      Int             @default(0) @map("sent_count")
+  sentAt         DateTime?       @map("sent_at")
+  createdBy      BigInt?         @map("created_by")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  tenant     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recipients BroadcastRecipient[]
+
+  @@index([tenantId, createdAt])
+  @@map("broadcasts")
+}
+
+// One resolved audience member: the lead, the per-recipient rendered body the
+// operator copies out, and where it stands. `body` is the rendered text
+// (template tokens resolved), so the rail records what was actually sent.
+model BroadcastRecipient {
+  id          BigInt                    @id @default(autoincrement())
+  tenantId    BigInt                    @map("tenant_id")
+  broadcastId BigInt                    @map("broadcast_id")
+  leadId      BigInt                    @map("lead_id")
+  body        String
+  status      BroadcastRecipientStatus  @default(PENDING)
+  error       String?
+  sentAt      DateTime?                 @map("sent_at")
+  createdAt   DateTime                  @default(now()) @map("created_at")
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  broadcast Broadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([broadcastId, leadId])
+  @@index([tenantId, broadcastId])
+  @@map("broadcast_recipients")
 }

@@ -1,4 +1,4 @@
-import { Target } from "lucide-react";
+import { MessageSquare, Target } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -6,9 +6,15 @@ import {
   DataBoundary,
   EmptyState,
   PageContainer,
+  useModalController,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { formatDateTime } from "@/client/lib/utils";
+import {
+  type DraftLead,
+  LeadDraftsModal,
+} from "@/client/merchant/components/LeadDraftsModal";
+import { Button } from "@/client/merchant/components/ui/button";
 import {
   Card,
   CardContent,
@@ -66,6 +72,7 @@ export function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const draftsModal = useModalController<DraftLead>();
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -155,6 +162,9 @@ export function LeadsPage() {
                   <TableHead>
                     {t("merchant.leads.colCreated", "Found")}
                   </TableHead>
+                  <TableHead>
+                    {t("merchant.leads.colActions", "Actions")}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -228,6 +238,16 @@ export function LeadsPage() {
                     <TableCell className="text-muted-foreground">
                       {formatDateTime(lead.createdAt, i18n.language)}
                     </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => draftsModal.open(lead)}
+                      >
+                        <MessageSquare className="size-4" />
+                        {t("merchant.leads.createDraft", "Draft reply")}
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -235,6 +255,7 @@ export function LeadsPage() {
           </DataBoundary>
         </CardContent>
       </Card>
+      <LeadDraftsModal modal={draftsModal} onChanged={() => void fetchAll()} />
     </PageContainer>
   );
 }

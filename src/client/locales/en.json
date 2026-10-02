@@ -2539,11 +2539,11 @@
     },
     "settings": "Settings",
     "skipToContent": "Skip to content",
+    "sources": "Sources",
     "support": "Support",
     "userMenu": "User menu",
     "webhooks": "Webhooks",
-    "website": "fazer.ai",
-    "sources": "Sources"
+    "website": "fazer.ai"
   },
   "oauth": {
     "consent": {

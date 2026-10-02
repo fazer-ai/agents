@@ -91,6 +91,7 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.admin', 'Admin')
 // t('nav.settings', 'Settings')
 // t('nav.leads', 'Leads')
+// t('nav.sources', 'Sources')
 // t('nav.catalog', 'Catalog')
 // t('nav.orders', 'Orders')
 export const NAV_ITEMS: NavItem[] = [

@@ -2605,11 +2605,11 @@
     },
     "settings": "Configurações",
     "skipToContent": "Pular para o conteúdo",
+    "sources": "Sources",
     "support": "Suporte",
     "userMenu": "Menu do usuário",
     "webhooks": "Webhooks",
-    "website": "fazer.ai",
-    "sources": "Fontes"
+    "website": "fazer.ai"
   },
   "oauth": {
     "consent": {

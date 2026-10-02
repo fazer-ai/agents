@@ -31,6 +31,7 @@ import { merchantController } from "@/api/v1/merchant.controller";
 import { merchantAnalyticsController } from "@/api/v1/merchant-analytics.controller";
 import { merchantFunnelController } from "@/api/v1/merchant-funnel.controller";
 import { merchantNurtureController } from "@/api/v1/merchant-nurture.controller";
+import { merchantOutreachController } from "@/api/v1/merchant-outreach.controller";
 import { n8nExportController } from "@/api/v1/n8n-export.controller";
 import {
   oauthGoogleCallbackController,
@@ -261,6 +262,7 @@ const api = new Elysia()
   .use(merchantController)
   .use(merchantNurtureController)
   .use(merchantAnalyticsController)
-  .use(merchantFunnelController);
+  .use(merchantFunnelController)
+  .use(merchantOutreachController);
 
 export default api;

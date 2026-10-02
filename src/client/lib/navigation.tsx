@@ -14,6 +14,7 @@ import {
   Radar,
   RadioTower,
   ScrollText,
+  Send,
   Settings,
   Shield,
   ShoppingBag,
@@ -96,6 +97,7 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.settings', 'Settings')
 // t('nav.leads', 'Leads')
 // t('nav.sources', 'Sources')
+// t('nav.outreach', 'Outreach')
 // t('nav.catalog', 'Catalog')
 // t('nav.orders', 'Orders')
 // t('nav.nurture', 'Nurture')
@@ -131,6 +133,14 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.sources",
     defaultLabel: "Sources",
     icon: Radar,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/outreach",
+    labelKey: "nav.outreach",
+    defaultLabel: "Outreach",
+    icon: Send,
     requireAdmin: true,
     section: MERCHANT,
   },

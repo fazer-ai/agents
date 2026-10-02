@@ -64,6 +64,9 @@ const {
   TTS_CHECK_MODE,
   TTS_CHECK_TOKEN,
   TTS_CHECK_TIMEOUT_MS,
+  OUTREACH_ENABLED,
+  OUTREACH_WORKER_INTERVAL_MS,
+  ZCA_BRIDGE_URL,
 } = process.env;
 
 // Domain entries are trimmed, lowercased, and have a leading "@" stripped
@@ -496,6 +499,28 @@ const config = {
       MAX_DURATION_MS,
       0,
     ),
+  },
+  // NOTE: "Grey rails" outreach: opt-in, operator-approved sends from the tenant's own
+  // secondary/personal accounts (merchant leads). OFF by default and fully inert while off:
+  // the REST surface refuses with 403 and no tick is scheduled. Sends are NEVER automatic: a job
+  // stays QUEUED until an operator approves it, and the per-account dailyCap/cooldownMin bound the
+  // rate. This is deliberately NOT a bulk/"cold blast" rail; enable only where compliant outreach
+  // from personal accounts is acceptable under local law and the platform's terms.
+  outreach: {
+    enabled: OUTREACH_ENABLED === "true",
+    intervalMs: parseIntSetting(
+      OUTREACH_WORKER_INTERVAL_MS,
+      "OUTREACH_WORKER_INTERVAL_MS",
+      15_000,
+      "It is how often the outreach worker claims approved jobs.",
+      MAX_DURATION_MS,
+    ),
+    // The zca-bridge sidecar this instance POSTs `zca_bridge` sends to. Deployment config like
+    // DATABASE_URL, not a per-tenant setting; an account's vault credential can still override it
+    // per account through its JSON `baseUrl`. Empty string = no bridge configured (zca jobs fail).
+    zcaBridgeUrl: (ZCA_BRIDGE_URL ?? "http://localhost:4001")
+      .trim()
+      .replace(/\/+$/, ""),
   },
   // NOTE: Retention for the high-write execution_logs table (+ terminal alert_deliveries). A daily
   // per-tenant FLOWLOG_SWEEP job deletes rows older than this. Default 30 days.

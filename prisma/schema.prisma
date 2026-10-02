@@ -175,6 +175,8 @@ model Tenant {
   leadProductMatches            LeadProductMatch[]
   merchantOrders                MerchantOrder[]
   merchantOrderItems            MerchantOrderItem[]
+  outreachAccounts              OutreachAccount[]
+  outreachJobs                  OutreachJob[]
   leadSources                   LeadSource[]
   nurtureSequences              NurtureSequence[]
   nurtureEnrollments            NurtureEnrollment[]
@@ -2577,6 +2579,7 @@ model Lead {
   nurtureOutbox       NurtureOutbox[]
   drafts              ReplyDraft[]
   broadcastRecipients BroadcastRecipient[]
+  outreachJobs        OutreachJob[]
 
   @@unique([tenantId, platform, externalId])
   @@index([tenantId, createdAt])
@@ -2851,4 +2854,99 @@ model BroadcastRecipient {
   @@unique([broadcastId, leadId])
   @@index([tenantId, broadcastId])
   @@map("broadcast_recipients")
+}
+
+// ── Outreach ("grey rails") ──────────────────────────────────────────────────
+// Controlled outreach on the operator's own secondary/personal accounts. The
+// whole feature is behind config.outreach.enabled (OUTREACH_ENABLED): every job
+// starts QUEUED and only a manual operator approval makes it sendable, a
+// per-account dailyCap + cooldownMin bound the send rate, and nothing here is a
+// bulk/"cold blast" rail by design. Statuses are Prisma enums like the other
+// merchant tables; `platform`/`transport` stay validated Strings so a new
+// platform or bridge is a code deploy, never a migration.
+
+enum OutreachAccountStatus {
+  ACTIVE
+  PAUSED
+  BANNED
+}
+
+enum OutreachJobKind {
+  GROUP_COMMENT
+  FRIEND_REQUEST
+  DM
+}
+
+// QUEUED (needs operator approval) -> APPROVED -> SENDING (claimed by the
+// worker) -> SENT, or READY_FOR_MANUAL when the account's transport is `manual`
+// (the operator performs the send and marks it). FAILED is terminal after the
+// retry budget; CANCELLED is operator-only.
+enum OutreachJobStatus {
+  QUEUED
+  APPROVED
+  SENDING
+  READY_FOR_MANUAL
+  SENT
+  FAILED
+  CANCELLED
+}
+
+// One personal/secondary account the operator sends from. `credentialRef` is the
+// stable `vault:<id>` reference to the entry holding the bridge session/token;
+// `dailyCap`/`sentToday`(+`sentTodayDate`)/`cooldownMin`/`lastSentAt` are the
+// rate controls the worker enforces atomically.
+model OutreachAccount {
+  id            BigInt                @id @default(autoincrement())
+  tenantId      BigInt                @map("tenant_id")
+  platform      String
+  handle        String
+  credentialRef String?               @map("credential_ref")
+  transport     String                @default("manual")
+  dailyCap      Int                   @default(20) @map("daily_cap")
+  sentToday     Int                   @default(0) @map("sent_today")
+  // The UTC calendar day `sentToday` counts; a different day resets the counter
+  // inside the same atomic UPDATE that consumes a slot.
+  sentTodayDate DateTime?             @map("sent_today_date") @db.Date
+  cooldownMin   Int                   @default(10) @map("cooldown_min")
+  lastSentAt    DateTime?             @map("last_sent_at")
+  status        OutreachAccountStatus @default(ACTIVE)
+  notes         String?
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  jobs   OutreachJob[]
+
+  @@unique([tenantId, platform, handle])
+  @@index([tenantId, status])
+  @@map("outreach_accounts")
+}
+
+// One outreach action against one lead from one account. The
+// (tenant, lead, account, kind) unique key is the per-lead dedupe: the same
+// lead can never be double-messaged the same way from the same account.
+model OutreachJob {
+  id          BigInt            @id @default(autoincrement())
+  tenantId    BigInt            @map("tenant_id")
+  accountId   BigInt            @map("account_id")
+  leadId      BigInt            @map("lead_id")
+  kind        OutreachJobKind
+  body        String
+  status      OutreachJobStatus @default(QUEUED)
+  scheduledAt DateTime          @default(now()) @map("scheduled_at")
+  sentAt      DateTime?         @map("sent_at")
+  error       String?
+  attempts    Int               @default(0)
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account OutreachAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  lead    Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, leadId, accountId, kind])
+  @@index([tenantId, status, scheduledAt])
+  @@index([accountId])
+  @@index([leadId])
+  @@map("outreach_jobs")
 }

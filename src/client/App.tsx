@@ -25,6 +25,7 @@ import { LeadsPage } from "@/client/merchant/pages/LeadsPage";
 import { NurturePage } from "@/client/merchant/pages/NurturePage";
 import { OnboardingPage } from "@/client/merchant/pages/OnboardingPage";
 import { OrdersPage } from "@/client/merchant/pages/OrdersPage";
+import { OutreachPage } from "@/client/merchant/pages/OutreachPage";
 import { SourcesPage } from "@/client/merchant/pages/SourcesPage";
 import { AcceptInvitePage } from "@/client/pages/AcceptInvitePage";
 import { AgentsPage } from "@/client/pages/AgentsPage";
@@ -206,6 +207,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <SourcesPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/outreach"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <OutreachPage />
                                     </ProtectedRoute>
                                   }
                                 />

@@ -78,11 +78,99 @@ comments in `merchant.controller.ts`).
 
 ## Scheduling
 
-Runs are manual/API-triggered (`POST /api/v1/merchant/sources/:id/run`, or the
-page's "Run now"). The durable scheduler's job kinds are a Postgres enum; a
-discovery job kind would need a migration, so none was added. `intervalMin` +
-`enabled` are stored and editable but nothing consumes them yet - wire a
-scheduler lane later if recurring scans are wanted.
+`enabled` + `intervalMin` now drive recurring scans through the durable
+scheduler (the homegrown `scheduler_jobs` worker, not a new table or lock):
+
+- New job kind `LEAD_SOURCE_SCAN` (Postgres enum + `scheduler_jobs` row per
+  source, dedupe key `lead-source:<id>`). Migration:
+  `prisma/migrations/20261003120000_scheduler_lead_source_scan_kind/migration.sql`
+  (`ALTER TYPE ... ADD VALUE`, add-value only; `prisma migrate deploy` applies
+  it, no backfill).
+- `src/modules/discovery/scan-jobs.ts` - the row primitives:
+  `leadSourceScanKey`, `leadSourceScanDueAt` (`lastRunAt + intervalMin`, or now
+  for a never-run source), `armLeadSourceScan`, `cancelLeadSourceScanOn`.
+- `src/modules/discovery/sources.ts` - `createLeadSource` arms the row
+  due-now when `enabled`; `updateLeadSource` re-arms at the source's due time
+  or retires the row when disabled; `deleteLeadSource` retires it. All inside
+  the writer's own transaction, so a source cannot commit enabled and
+  un-scheduled.
+- `src/modules/discovery/schedule.ts` - `registerLeadSourceScanHandler()`
+  (registered in `src/index.ts` beside the other handler registrations, inside
+  `if (config.schedulerWorker.enabled)`) and `ensureAllLeadSourceScans()`
+  (boot re-arm, also in `src/index.ts`, best-effort).
+- The handler re-reads the source under its tenant scope: missing or disabled
+  ends the row; not-due reschedules to the real due time (a manual run can
+  have moved `lastRunAt`); due runs the same `runLeadSource` as
+  `POST .../run`, so `lastRunAt`/`lastStatus`/`lastError` and the
+  `merchant_source.run` audit entry are identical. Success reschedules at
+  `lastRunAt + intervalMin`; a scan failure logs a warning and reschedules
+  from `now + intervalMin`, so a broken source keeps its interval instead of
+  dead-lettering its schedule, and one source never blocks another (the
+  shared tick drains claimed rows with `Promise.allSettled`).
+- Lane classification (all exhaustive maps in `src/modules/scheduler/lanes.ts`
+  and mirrored in `tests/modules/scheduler-lanes.test.ts`): `shared` lane, not
+  provider-spending, not traffic-proportional, kept on DONE (re-armed, not
+  deleted), death level `warn`, retry base 2s.
+
+### Poll cadence / env
+
+No new env var: the due-source poller IS the shared scheduler tick. A due scan
+is at most `SCHEDULER_WORKER_INTERVAL_MS` late (default 15000; already in
+`.env.example`), and `intervalMin` (minutes, per source) is the scan cadence.
+The claim is the same `FOR UPDATE SKIP LOCKED` path every shared-lane kind
+uses, so the single-replica invariant is unchanged.
+
+### Manual verification (curl)
+
+Requires the enum migration applied to the server's database. With the dev
+server on `:3000`:
+
+```bash
+# Login (dev seed account) -> cookie jar
+curl -c /tmp/cookies.txt -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"gateway-admin@vinvin.dev","password":"GatewayAdmin-2026!"}'
+
+# Create an enabled source; armed for now because it never ran
+curl -b /tmp/cookies.txt -X POST http://localhost:3000/api/v1/merchant/sources \
+  -H 'Content-Type: application/json' -H 'X-Tenant-Id: 1' \
+  -d '{"name":"scan","kind":"file_import","intervalMin":1,
+       "config":{"format":"jsonl","content":"{\"platform\":\"tiktok\",\"id\":\"x1\",\"author\":\"Lan\",\"text\":\"cần mua serum BHA\"}"}}'
+
+# Within one tick the row runs and re-arms +intervalMin:
+#   SELECT status, run_at FROM scheduler_jobs WHERE dedupe_key='lead-source:<id>';
+#   SELECT last_status, last_run_at FROM lead_sources WHERE id=<id>;
+#   GET /api/v1/merchant/sources/:id/leads lists the ingested lead.
+
+# Disable retires the row (status DONE); manual run still works while disabled:
+curl -b /tmp/cookies.txt -X PATCH http://localhost:3000/api/v1/merchant/sources/<id> \
+  -H 'Content-Type: application/json' -H 'X-Tenant-Id: 1' -d '{"enabled":false}'
+curl -b /tmp/cookies.txt -X POST http://localhost:3000/api/v1/merchant/sources/<id>/run \
+  -H 'Content-Type: application/json' -H 'X-Tenant-Id: 1' -d '{}'
+```
+
+Verified end-to-end on a local server pointed at the per-checkout test DB
+(scheduler tick at 2s): create armed `lead-source:12` PENDING; the tick ran it
+(`lastStatus=ok`, one lead ingested); it re-armed and ran again one interval
+later (lead deduped, count unchanged); `enabled:false` set the row DONE; the
+manual `/run` still ran while disabled; `enabled:true` re-armed at
+`lastRunAt + intervalMin` and the tick resumed the loop.
+
+### Tests
+
+```bash
+bun db:test:setup
+bun test tests/modules/discovery-source-scan.test.ts tests/modules/scheduler-lanes.test.ts
+```
+
+Result: 15 pass, 0 fail. The scan file covers due-source selection (never-run
+due now, `lastRunAt + intervalMin` due/pending), the disabled skip (no row on
+create, retire on disable, stray row finishes without running), interval
+gating (an early-firing armed row waits out the interval instead of
+rescanning), failure isolation (a failing source records `lastStatus=error`,
+reschedules, and does not block the source beside it), and the boot re-arm
+covering every enabled source without postponing an already-pending run. The
+lanes suite keeps the new kind's exhaustive map entries honest.
 
 ## Credentials still missing for real scans
 

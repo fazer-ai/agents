@@ -22,6 +22,10 @@ import {
   stopDebounceWorker,
 } from "@/modules/debounce/worker";
 import {
+  ensureAllLeadSourceScans,
+  registerLeadSourceScanHandler,
+} from "@/modules/discovery/schedule";
+import {
   startAlertWorker,
   stopAlertWorker,
 } from "@/modules/flowlog/alert-worker";
@@ -179,6 +183,7 @@ if (config.schedulerWorker.enabled) {
   registerSpendPollHandler();
   registerKnowledgeSourceHandler();
   registerInboundSweepHandlers();
+  registerLeadSourceScanHandler();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).
@@ -208,6 +213,11 @@ if (config.schedulerWorker.enabled) {
   // is not a ceiling deciding on a figure frozen at its last poll.
   void ensureAllSpendPolls().catch((error) =>
     logger.warn({ error }, "Failed to arm spend ceiling polls"),
+  );
+  // NOTE: Each enabled lead source gets its perpetual scan row back, due when its interval since
+  // the last run ends; a never-run source is due now.
+  void ensureAllLeadSourceScans().catch((error) =>
+    logger.warn({ error }, "Failed to arm lead source scans"),
   );
 }
 

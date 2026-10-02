@@ -16,6 +16,11 @@ import {
   scanFileImport,
 } from "./file-import";
 import { normalizeScannedPosts } from "./posts";
+import {
+  armLeadSourceScan,
+  cancelLeadSourceScanOn,
+  leadSourceScanDueAt,
+} from "./scan-jobs";
 import { scanThreadsApi, threadsConfigSchema } from "./threads";
 import { scanTiktokComments, tiktokConfigSchema } from "./tiktok";
 
@@ -26,6 +31,11 @@ import { scanTiktokComments, tiktokConfigSchema } from "./tiktok";
 //
 // runLeadSource keeps no state between calls beyond LeadSource.lastRun*/lastError
 // bookkeeping; dedupe is the lead table's (tenant, platform, external_id) key.
+//
+// `enabled` + `intervalMin` drive the recurring scan (./schedule.ts, ./scan-jobs.ts):
+// one perpetual `LEAD_SOURCE_SCAN` scheduler row per source, armed here inside the
+// writer's own transaction - a source that committed without its row would be
+// enabled and never scanned, with nothing but a restart to notice.
 
 export const LEAD_SOURCE_KINDS = [
   "file_import",
@@ -272,6 +282,8 @@ export async function createLeadSource(
       target: `lead_source:${dto.id}`,
       after: auditProjection(dto),
     });
+    // Armed for now rather than one interval out: a source that never ran is due.
+    if (row.enabled) await armLeadSourceScan(db, tenantId, row.id, new Date());
     return dto;
   });
 }
@@ -283,6 +295,8 @@ export async function updateLeadSource(
   base: PrismaClient = basePrisma,
 ): Promise<LeadSourceDto> {
   const data = parseInput(leadSourceUpdateSchema, patch);
+  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
+  const tenantId = ctx.tenantId;
   return runScopedOn(base, ctx, async (db) => {
     const current = await getSourceRowOn(db, id);
     // A kind change re-validates the config against the NEW kind: a config that
@@ -316,6 +330,19 @@ export async function updateLeadSource(
       before: auditProjection(toDto(current)),
       after: auditProjection(dto),
     });
+    // The schedule follows the saved state: an enabled source's row is (re)armed
+    // at its due time under the interval just written, a disabled one's waiting
+    // row is retired here rather than firing once more to find the switch off.
+    if (row.enabled) {
+      await armLeadSourceScan(
+        db,
+        tenantId,
+        row.id,
+        leadSourceScanDueAt(row.lastRunAt, row.intervalMin),
+      );
+    } else {
+      await cancelLeadSourceScanOn(db, row.id);
+    }
     return dto;
   });
 }
@@ -336,6 +363,10 @@ export async function deleteLeadSource(
         "errors.merchantSourceNotFound",
       );
     }
+    // The waiting row is retired IN this transaction: a source recreated under a
+    // new id arms its own key, and a run already claimed finds no source and
+    // stops (./schedule.ts).
+    await cancelLeadSourceScanOn(db, id);
     await auditMutation(db, ctx, {
       action: "merchant_source.delete",
       target: `lead_source:${id}`,

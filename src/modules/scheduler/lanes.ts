@@ -74,6 +74,9 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   INBOUND_REDISPATCH: "shared",
   // Shared: a delayed judgement of one conversation, a handful of Chatwoot reads and no model.
   NOTHING_TO_ANSWER: "shared",
+  // Shared: one row per lead source, re-armed by its own reschedule at a cadence of minutes by
+  // design (LeadSource.intervalMin). The KNOWLEDGE_SOURCE_SYNC reasoning, verbatim.
+  LEAD_SOURCE_SCAN: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -125,6 +128,9 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // flag is about what ONE job may do.
   INBOUND_REDISPATCH: true,
   NOTHING_TO_ANSWER: false,
+  // A fetch against the source's platform and database writes; the lead scorer is rule-based, so no
+  // model or embedding is spent here.
+  LEAD_SOURCE_SCAN: false,
 };
 
 // How many OBSERVE rows one shared tick claims: enough to keep the provider bound busy for about one
@@ -200,6 +206,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // (`retireNothingToAnswer`); only a row retired mid-run stays, as a DONE tombstone the next arm
   // reuses.
   NOTHING_TO_ANSWER: true,
+  // One row per source, re-armed by its own reschedule: bounded by sources, reused forever.
+  LEAD_SOURCE_SCAN: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the
@@ -260,6 +268,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INBOUND_REDISPATCH: true,
   // One per conversation that received a blank message.
   NOTHING_TO_ANSWER: true,
+  // One per lead source, whatever the traffic.
+  LEAD_SOURCE_SCAN: false,
 };
 
 // What one kind's death means to the operator, read by the generic dead-letter announcement in
@@ -340,6 +350,10 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // The conversation stays pending with nobody on it, exactly as before this job existed, and
   // nobody else will notice: this is the alert.
   NOTHING_TO_ANSWER: "warn",
+  // `warn`, the KNOWLEDGE_SOURCE_SYNC answer: a scan's failure is written on the source where the
+  // operator reads it (the handler reschedules rather than throwing), so what reaches DEAD is the
+  // schedule loop itself gone, and the next save or boot re-arms it.
+  LEAD_SOURCE_SCAN: "warn",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -376,6 +390,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   INBOUND_REDISPATCH: 60_000,
   // The judgement is already half an hour late by design; a minute between retries changes nothing.
   NOTHING_TO_ANSWER: 60_000,
+  LEAD_SOURCE_SCAN: 2_000,
 };
 
 export function kindsInLane(

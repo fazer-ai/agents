@@ -39,6 +39,10 @@ import {
   stopCompactionWorker,
 } from "@/modules/memory/worker";
 import { registerObserveHandler } from "@/modules/observe/job";
+import {
+  startOutreachWorker,
+  stopOutreachWorker,
+} from "@/modules/outreach/worker";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
   ensureAllKnowledgeSourceSyncs,
@@ -236,6 +240,14 @@ if (config.compactionWorker.enabled) {
   startCompactionWorker();
 }
 
+// NOTE: "Grey rails" outreach worker (approved merchant-lead sends from the tenant's own
+// secondary accounts). OFF unless OUTREACH_ENABLED=true: no tick is scheduled while disabled,
+// and the tick itself also no-ops on the flag. Same single-replica discipline (globalThis
+// singleton + non-overlapping tick + FOR UPDATE SKIP LOCKED claim).
+if (config.outreach.enabled) {
+  startOutreachWorker();
+}
+
 // Reached through the EventEmitter surface because `process.on("SIGTERM", …)` does not
 // type-check. @types/node 25 declares `Process extends InternalEventEmitter<ProcessEventMap>`, so
 // the signal handlers are INHERITED from an event map rather than declared as overloads, and
@@ -252,6 +264,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     stopDebounceWorker();
     stopCompactionWorker();
     stopAlertWorker();
+    stopOutreachWorker();
     process.exit(0);
   });
 }

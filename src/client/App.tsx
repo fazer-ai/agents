@@ -17,6 +17,10 @@ import { NavGuardProvider } from "@/client/contexts/NavGuardContext";
 import { SidebarProvider } from "@/client/contexts/SidebarContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { UpdatesProvider } from "@/client/contexts/UpdatesContext";
+// vinvin merchant extension: all implementation lives under src/client/merchant/.
+import { CatalogPage } from "@/client/merchant/pages/CatalogPage";
+import { LeadsPage } from "@/client/merchant/pages/LeadsPage";
+import { OrdersPage } from "@/client/merchant/pages/OrdersPage";
 import { AcceptInvitePage } from "@/client/pages/AcceptInvitePage";
 import { AgentsPage } from "@/client/pages/AgentsPage";
 import { ApiKeysPage } from "@/client/pages/ApiKeysPage";
@@ -180,6 +184,31 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <WebhooksPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                {/* vinvin merchant extension: real pages over /api/v1/merchant. */}
+                                <Route
+                                  path="/leads"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <LeadsPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/catalog"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <CatalogPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/orders"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <OrdersPage />
                                     </ProtectedRoute>
                                   }
                                 />

@@ -2289,6 +2289,67 @@
     },
     "url": "URL"
   },
+  "merchant": {
+    "catalog": {
+      "active": "Active",
+      "colName": "Name",
+      "colPrice": "Price",
+      "colStatus": "Status",
+      "colStock": "Stock",
+      "colTags": "Tags",
+      "emptyDescription": "Create one via POST /api/v1/merchant/products or run the merchant seed.",
+      "emptyTitle": "No products yet",
+      "inactive": "Inactive",
+      "subtitle": "Products the lead scorer matches incoming posts against.",
+      "tableSubtitle": "Names and tags are what the scorer matches on - keep them in the words customers use.",
+      "tableTitle": "Products",
+      "title": "Catalog"
+    },
+    "leads": {
+      "colAuthor": "Author",
+      "colCreated": "Found",
+      "colMatches": "Matched products",
+      "colScore": "Score",
+      "colSource": "Source",
+      "colStatus": "Status",
+      "colText": "Post",
+      "emptyDescription": "Ingest a social post via POST /api/v1/merchant/leads/ingest or the seed script.",
+      "emptyTitle": "No leads yet",
+      "noMatch": "-",
+      "status": {
+        "contacted": "Contacted",
+        "converted": "Converted",
+        "dead": "Dead",
+        "new": "New",
+        "qualified": "Qualified"
+      },
+      "subtitle": "Social posts scored for buying intent against the catalog.",
+      "tableSubtitle": "Newest first. The score and matched products come from the rule-based ingest scorer.",
+      "tableTitle": "Scored leads",
+      "title": "Leads"
+    },
+    "orders": {
+      "colContact": "Contact",
+      "colCreated": "Created",
+      "colId": "Order",
+      "colItems": "Items",
+      "colLead": "Lead",
+      "colStatus": "Status",
+      "colTotal": "Total",
+      "emptyDescription": "Orders appear here once a lead converts.",
+      "emptyTitle": "No orders yet",
+      "status": {
+        "cancelled": "Cancelled",
+        "confirmed": "Confirmed",
+        "draft": "Draft",
+        "paid": "Paid"
+      },
+      "subtitle": "Orders attributed back to the lead that produced them.",
+      "tableSubtitle": "Newest first.",
+      "tableTitle": "Orders",
+      "title": "Orders"
+    }
+  },
   "monitoring": {
     "badge": {
       "agent": "Monitoring"
@@ -2362,6 +2423,7 @@
     "apiKeys": "API keys",
     "audit": "Audit",
     "breadcrumbs": "Breadcrumbs",
+    "catalog": "Catalog",
     "channels": "Channels",
     "closeMenu": "Close menu",
     "collapse": "Collapse",
@@ -2371,13 +2433,16 @@
     "expand": "Expand",
     "github": "GitHub",
     "home": "Home",
+    "leads": "Leads",
     "logs": "Logs",
     "mainNavigation": "Main navigation",
     "openMenu": "Open menu",
+    "orders": "Orders",
     "resizeSidebar": "Resize sidebar",
     "resources": "Components",
     "section": {
       "integrations": "Integrations",
+      "merchant": "Merchant",
       "monitoring": "Monitoring",
       "system": "System"
     },

@@ -57,6 +57,11 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ApiKey",
   "AttendanceSummary",
   "PlaygroundTurnNote",
+  "MerchantProduct",
+  "Lead",
+  "LeadProductMatch",
+  "MerchantOrder",
+  "MerchantOrderItem",
 ]);
 
 function withTenant<T>(data: T, tenantId: bigint): T {

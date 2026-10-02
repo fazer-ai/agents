@@ -2355,6 +2355,67 @@
     },
     "url": "URL"
   },
+  "merchant": {
+    "catalog": {
+      "active": "Ativo",
+      "colName": "Nome",
+      "colPrice": "Preço",
+      "colStatus": "Status",
+      "colStock": "Estoque",
+      "colTags": "Tags",
+      "emptyDescription": "Crie um via POST /api/v1/merchant/products ou rode o seed de merchant.",
+      "emptyTitle": "Nenhum produto ainda",
+      "inactive": "Inativo",
+      "subtitle": "Produtos com os quais o scorer de leads compara os posts recebidos.",
+      "tableSubtitle": "Nomes e tags são o que o scorer usa na correspondência - mantenha-os nas palavras que os clientes usam.",
+      "tableTitle": "Produtos",
+      "title": "Catálogo"
+    },
+    "leads": {
+      "colAuthor": "Autor",
+      "colCreated": "Encontrado",
+      "colMatches": "Produtos correspondentes",
+      "colScore": "Score",
+      "colSource": "Origem",
+      "colStatus": "Status",
+      "colText": "Post",
+      "emptyDescription": "Ingira um post social via POST /api/v1/merchant/leads/ingest ou pelo script de seed.",
+      "emptyTitle": "Nenhum lead ainda",
+      "noMatch": "-",
+      "status": {
+        "contacted": "Contatado",
+        "converted": "Convertido",
+        "dead": "Perdido",
+        "new": "Novo",
+        "qualified": "Qualificado"
+      },
+      "subtitle": "Posts sociais pontuados por intenção de compra contra o catálogo.",
+      "tableSubtitle": "Mais recentes primeiro. O score e os produtos correspondentes vêm do scorer de ingest baseado em regras.",
+      "tableTitle": "Leads pontuados",
+      "title": "Leads"
+    },
+    "orders": {
+      "colContact": "Contato",
+      "colCreated": "Criado",
+      "colId": "Pedido",
+      "colItems": "Itens",
+      "colLead": "Lead",
+      "colStatus": "Status",
+      "colTotal": "Total",
+      "emptyDescription": "Pedidos aparecem aqui quando um lead converte.",
+      "emptyTitle": "Nenhum pedido ainda",
+      "status": {
+        "cancelled": "Cancelado",
+        "confirmed": "Confirmado",
+        "draft": "Rascunho",
+        "paid": "Pago"
+      },
+      "subtitle": "Pedidos atribuídos ao lead que os originou.",
+      "tableSubtitle": "Mais recentes primeiro.",
+      "tableTitle": "Pedidos",
+      "title": "Pedidos"
+    }
+  },
   "monitoring": {
     "badge": {
       "agent": "Monitoramento"
@@ -2428,6 +2489,7 @@
     "apiKeys": "Chaves de API",
     "audit": "Auditoria",
     "breadcrumbs": "Navegação contextual",
+    "catalog": "Catálogo",
     "channels": "Canais",
     "closeMenu": "Fechar menu",
     "collapse": "Recolher",
@@ -2437,13 +2499,16 @@
     "expand": "Expandir",
     "github": "GitHub",
     "home": "Início",
+    "leads": "Leads",
     "logs": "Logs",
     "mainNavigation": "Navegação principal",
     "openMenu": "Abrir menu",
+    "orders": "Pedidos",
     "resizeSidebar": "Redimensionar menu lateral",
     "resources": "Componentes",
     "section": {
       "integrations": "Integrações",
+      "merchant": "Merchant",
       "monitoring": "Monitoramento",
       "system": "Sistema"
     },

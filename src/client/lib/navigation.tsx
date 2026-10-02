@@ -7,10 +7,13 @@ import {
   LibraryBig,
   LifeBuoy,
   MessagesSquare,
+  Package,
   RadioTower,
   ScrollText,
   Settings,
   Shield,
+  ShoppingBag,
+  Target,
   Webhook,
 } from "lucide-react";
 import type { ElementType, SVGProps } from "react";
@@ -61,8 +64,10 @@ export function groupNavItems(items: NavItem[]): NavGroup[] {
 }
 
 // t('nav.section.integrations', 'Integrations')
+// t('nav.section.merchant', 'Merchant')
 // t('nav.section.monitoring', 'Monitoring')
 // t('nav.section.system', 'System')
+const MERCHANT = { labelKey: "nav.section.merchant", defaultLabel: "Merchant" };
 const INTEGRATIONS = {
   labelKey: "nav.section.integrations",
   defaultLabel: "Integrations",
@@ -84,6 +89,9 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.audit', 'Audit')
 // t('nav.admin', 'Admin')
 // t('nav.settings', 'Settings')
+// t('nav.leads', 'Leads')
+// t('nav.catalog', 'Catalog')
+// t('nav.orders', 'Orders')
 export const NAV_ITEMS: NavItem[] = [
   {
     to: "/",
@@ -97,6 +105,32 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.conversations",
     defaultLabel: "Conversations",
     icon: MessagesSquare,
+  },
+  {
+    // vinvin merchant extension: leads -> catalog -> orders read off the same
+    // /api/v1/merchant services.
+    to: "/leads",
+    labelKey: "nav.leads",
+    defaultLabel: "Leads",
+    icon: Target,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/catalog",
+    labelKey: "nav.catalog",
+    defaultLabel: "Catalog",
+    icon: Package,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/orders",
+    labelKey: "nav.orders",
+    defaultLabel: "Orders",
+    icon: ShoppingBag,
+    requireAdmin: true,
+    section: MERCHANT,
   },
   {
     to: "/agents",

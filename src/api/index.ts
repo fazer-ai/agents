@@ -27,6 +27,7 @@ import { mcpAdminController } from "@/api/v1/mcp-admin.controller";
 import { mcpConnectionsController } from "@/api/v1/mcp-connections.controller";
 import { mcpMeController } from "@/api/v1/mcp-me.controller";
 import { mcpOAuthController } from "@/api/v1/mcp-oauth.controller";
+import { merchantController } from "@/api/v1/merchant.controller";
 import { n8nExportController } from "@/api/v1/n8n-export.controller";
 import {
   oauthGoogleCallbackController,
@@ -200,6 +201,10 @@ const api = new Elysia()
           },
           { name: "Audit", description: "Audit log." },
           {
+            name: "Merchant",
+            description: "Merchant catalog, leads & orders (vinvin MVP).",
+          },
+          {
             name: "Logs",
             description: "Execution-flow logs & external alert channels.",
           },
@@ -249,6 +254,7 @@ const api = new Elysia()
   .use(mcpMeController)
   .use(mcpAdminController)
   .use(chatwootController)
-  .use(chatwootAdminController);
+  .use(chatwootAdminController)
+  .use(merchantController);
 
 export default api;

@@ -1,0 +1,48 @@
+/*
+ * shadcn/ui theme bridge for the merchant console.
+ *
+ * Every shadcn token below is mapped onto the host app's palette (public/index.css,
+ * `@theme static`) so generated components inherit the operator's theme, dark/light
+ * mode and density for free. Only names the app does NOT already define are declared
+ * here — `--color-accent`, `--color-accent-foreground`, `--color-border`, the
+ * `--radius-*` scale and the status colors already exist with different semantics
+ * (accent = link indigo, not a hover surface) and are intentionally left alone.
+ *
+ * Generated components are post-processed where the host palette diverges:
+ * `hover:bg-accent`/`text-accent-foreground` are rewritten to
+ * `bg-bg-hover`/`text-text-primary` (see merchant/README note in docs/fazer-audit.md).
+ *
+ * This file is a standalone Tailwind v4 entry (`@import "tailwindcss"` is required for
+ * bun-plugin-tailwind to compile the `@theme inline` block; utilities it re-emits are
+ * deduplicated by the browser, the cost is CSS weight only).
+ */
+@import "tailwindcss";
+
+@theme inline {
+  /* Surfaces: shadcn `background` = page, `card`/`popover` = raised panel. */
+  --color-background: var(--color-bg-secondary);
+  --color-foreground: var(--color-text-primary);
+  --color-card: var(--color-bg-secondary);
+  --color-card-foreground: var(--color-text-primary);
+  --color-popover: var(--color-bg-tertiary);
+  --color-popover-foreground: var(--color-text-primary);
+
+  /* Primary action = the host's accent fill. */
+  --color-primary: var(--color-accent-solid);
+  --color-primary-foreground: var(--color-accent-foreground);
+
+  /* Secondary/muted surfaces = recessed fills + muted text. */
+  --color-secondary: var(--color-bg-tertiary);
+  --color-secondary-foreground: var(--color-text-primary);
+  --color-muted: var(--color-bg-hover);
+  --color-muted-foreground: var(--color-text-secondary);
+
+  /* Destructive maps onto the existing error pair. */
+  --color-destructive: var(--color-error);
+  --color-destructive-foreground: var(--color-accent-foreground);
+
+  /* Inputs and focus ring reuse the existing hairline + focus tokens.
+     --color-border already exists in the host theme (compatible semantics). */
+  --color-input: var(--color-border-hover);
+  --color-ring: var(--color-border-focus);
+}

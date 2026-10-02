@@ -92,6 +92,10 @@
       "description": "Audit log."
     },
     {
+      "name": "Merchant",
+      "description": "Merchant catalog, leads & orders (vinvin MVP)."
+    },
+    {
       "name": "Logs",
       "description": "Execution-flow logs & external alert channels."
     },
@@ -46463,6 +46467,2277 @@
           }
         },
         "operationId": "postV1ChatwootInboxesByIdReconnect"
+      }
+    },
+    "/v1/merchant/products": {
+      "get": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "List products",
+        "description": "List the tenant's merchant catalog products, ordered by name.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MerchantProducts",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Create product",
+        "description": "Create a catalog product for the current tenant.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "price"
+                ],
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "price": {
+                    "minimum": 0,
+                    "description": "Unit price in VND (zero-decimal).",
+                    "type": "number"
+                  },
+                  "stock": {
+                    "minimum": 0,
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "maxItems": 50,
+                    "description": "Search words the lead scorer matches post text against.",
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "type": "string"
+                    }
+                  },
+                  "imageUrl": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "price"
+                ],
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "price": {
+                    "minimum": 0,
+                    "description": "Unit price in VND (zero-decimal).",
+                    "type": "number"
+                  },
+                  "stock": {
+                    "minimum": 0,
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "maxItems": 50,
+                    "description": "Search words the lead scorer matches post text against.",
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "type": "string"
+                    }
+                  },
+                  "imageUrl": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "price"
+                ],
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "price": {
+                    "minimum": 0,
+                    "description": "Unit price in VND (zero-decimal).",
+                    "type": "number"
+                  },
+                  "stock": {
+                    "minimum": 0,
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "maxItems": 50,
+                    "description": "Search words the lead scorer matches post text against.",
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "type": "string"
+                    }
+                  },
+                  "imageUrl": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1MerchantProducts",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/merchant/products/{id}": {
+      "get": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Get product",
+        "description": "Fetch a single catalog product by id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Row primary key (BigInt serialized as a decimal string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MerchantProductsById"
+      },
+      "patch": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Update product",
+        "description": "Update a catalog product's mutable fields by id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Row primary key (BigInt serialized as a decimal string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "price": {
+                    "minimum": 0,
+                    "description": "Unit price in VND.",
+                    "type": "number"
+                  },
+                  "stock": {
+                    "minimum": 0,
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "type": "string"
+                    }
+                  },
+                  "imageUrl": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "price": {
+                    "minimum": 0,
+                    "description": "Unit price in VND.",
+                    "type": "number"
+                  },
+                  "stock": {
+                    "minimum": 0,
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "type": "string"
+                    }
+                  },
+                  "imageUrl": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "description": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "price": {
+                    "minimum": 0,
+                    "description": "Unit price in VND.",
+                    "type": "number"
+                  },
+                  "stock": {
+                    "minimum": 0,
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "tags": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "maxLength": 100,
+                      "type": "string"
+                    }
+                  },
+                  "imageUrl": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patchV1MerchantProductsById"
+      },
+      "delete": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Delete product",
+        "description": "Delete a catalog product.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Row primary key (BigInt serialized as a decimal string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteV1MerchantProductsById"
+      }
+    },
+    "/v1/merchant/leads": {
+      "get": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "List leads",
+        "description": "Returns a page of scored leads (newest first) with their product matches; use nextCursor to page.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Optional max number of items to return, parsed as an integer.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Keyset cursor: the id of the last item from the previous page; returns the next page.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Optional funnel-stage filter (NEW, CONTACTED, QUALIFIED, CONVERTED, DEAD).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MerchantLeads"
+      }
+    },
+    "/v1/merchant/leads/{id}": {
+      "get": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Get lead",
+        "description": "Fetch a single lead with its product matches by id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Row primary key (BigInt serialized as a decimal string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MerchantLeadsById"
+      }
+    },
+    "/v1/merchant/leads/ingest": {
+      "post": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Ingest a lead",
+        "description": "Scores a social post for buying intent (rule-based Vietnamese scorer, no LLM), stores it as a lead and writes its product matches.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "platform",
+                  "authorName",
+                  "text"
+                ],
+                "properties": {
+                  "platform": {
+                    "minLength": 1,
+                    "description": "Source platform the post was found on (facebook, zalo, threads, tiktok, instagram, whatsapp, telegram, web, other).",
+                    "type": "string"
+                  },
+                  "authorName": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "Display name of the post author.",
+                    "type": "string"
+                  },
+                  "authorHandle": {
+                    "maxLength": 300,
+                    "description": "Platform handle or id.",
+                    "type": "string"
+                  },
+                  "text": {
+                    "minLength": 1,
+                    "maxLength": 20000,
+                    "description": "The post text the intent scorer runs on.",
+                    "type": "string"
+                  },
+                  "groupName": {
+                    "maxLength": 300,
+                    "description": "Group/community the post came from.",
+                    "type": "string"
+                  },
+                  "sourceUrl": {
+                    "maxLength": 2000,
+                    "description": "Permalink to the post.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "platform",
+                  "authorName",
+                  "text"
+                ],
+                "properties": {
+                  "platform": {
+                    "minLength": 1,
+                    "description": "Source platform the post was found on (facebook, zalo, threads, tiktok, instagram, whatsapp, telegram, web, other).",
+                    "type": "string"
+                  },
+                  "authorName": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "Display name of the post author.",
+                    "type": "string"
+                  },
+                  "authorHandle": {
+                    "maxLength": 300,
+                    "description": "Platform handle or id.",
+                    "type": "string"
+                  },
+                  "text": {
+                    "minLength": 1,
+                    "maxLength": 20000,
+                    "description": "The post text the intent scorer runs on.",
+                    "type": "string"
+                  },
+                  "groupName": {
+                    "maxLength": 300,
+                    "description": "Group/community the post came from.",
+                    "type": "string"
+                  },
+                  "sourceUrl": {
+                    "maxLength": 2000,
+                    "description": "Permalink to the post.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "platform",
+                  "authorName",
+                  "text"
+                ],
+                "properties": {
+                  "platform": {
+                    "minLength": 1,
+                    "description": "Source platform the post was found on (facebook, zalo, threads, tiktok, instagram, whatsapp, telegram, web, other).",
+                    "type": "string"
+                  },
+                  "authorName": {
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "Display name of the post author.",
+                    "type": "string"
+                  },
+                  "authorHandle": {
+                    "maxLength": 300,
+                    "description": "Platform handle or id.",
+                    "type": "string"
+                  },
+                  "text": {
+                    "minLength": 1,
+                    "maxLength": 20000,
+                    "description": "The post text the intent scorer runs on.",
+                    "type": "string"
+                  },
+                  "groupName": {
+                    "maxLength": 300,
+                    "description": "Group/community the post came from.",
+                    "type": "string"
+                  },
+                  "sourceUrl": {
+                    "maxLength": 2000,
+                    "description": "Permalink to the post.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1MerchantLeadsIngest",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/merchant/orders": {
+      "get": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "List orders",
+        "description": "Returns a page of merchant orders (newest first) with their line items; use nextCursor to page.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Optional max number of items to return, parsed as an integer.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Keyset cursor: the id of the last item from the previous page; returns the next page.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MerchantOrders"
+      },
+      "post": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Create order",
+        "description": "Create a merchant order (DRAFT) with line items; unitPrice defaults to the catalog price, total is computed server-side.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "items"
+                ],
+                "properties": {
+                  "leadId": {
+                    "description": "Optional lead row id this order converts; the lead's status becomes CONVERTED.",
+                    "type": "string"
+                  },
+                  "contactName": {
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "contactPhone": {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  "contactAddress": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "note": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "items": {
+                    "description": "Order lines: [{productId, qty?, unitPrice?}] as an array or its JSON-string form.",
+                    "anyOf": [
+                      {
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "productId": {
+                              "description": "Catalog product id; must exist when given.",
+                              "type": "string"
+                            },
+                            "qty": {
+                              "minimum": 1,
+                              "maximum": 10000,
+                              "anyOf": [
+                                {
+                                  "format": "integer",
+                                  "default": 0,
+                                  "type": "string"
+                                },
+                                {
+                                  "minimum": 1,
+                                  "maximum": 10000,
+                                  "type": "integer"
+                                }
+                              ]
+                            },
+                            "unitPrice": {
+                              "minimum": 0,
+                              "description": "VND unit price snapshot; defaults to the product's catalog price.",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "items"
+                ],
+                "properties": {
+                  "leadId": {
+                    "description": "Optional lead row id this order converts; the lead's status becomes CONVERTED.",
+                    "type": "string"
+                  },
+                  "contactName": {
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "contactPhone": {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  "contactAddress": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "note": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "items": {
+                    "description": "Order lines: [{productId, qty?, unitPrice?}] as an array or its JSON-string form.",
+                    "anyOf": [
+                      {
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "productId": {
+                              "description": "Catalog product id; must exist when given.",
+                              "type": "string"
+                            },
+                            "qty": {
+                              "minimum": 1,
+                              "maximum": 10000,
+                              "anyOf": [
+                                {
+                                  "format": "integer",
+                                  "default": 0,
+                                  "type": "string"
+                                },
+                                {
+                                  "minimum": 1,
+                                  "maximum": 10000,
+                                  "type": "integer"
+                                }
+                              ]
+                            },
+                            "unitPrice": {
+                              "minimum": 0,
+                              "description": "VND unit price snapshot; defaults to the product's catalog price.",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "items"
+                ],
+                "properties": {
+                  "leadId": {
+                    "description": "Optional lead row id this order converts; the lead's status becomes CONVERTED.",
+                    "type": "string"
+                  },
+                  "contactName": {
+                    "maxLength": 300,
+                    "type": "string"
+                  },
+                  "contactPhone": {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  "contactAddress": {
+                    "maxLength": 1000,
+                    "type": "string"
+                  },
+                  "note": {
+                    "maxLength": 5000,
+                    "type": "string"
+                  },
+                  "items": {
+                    "description": "Order lines: [{productId, qty?, unitPrice?}] as an array or its JSON-string form.",
+                    "anyOf": [
+                      {
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "productId": {
+                              "description": "Catalog product id; must exist when given.",
+                              "type": "string"
+                            },
+                            "qty": {
+                              "minimum": 1,
+                              "maximum": 10000,
+                              "anyOf": [
+                                {
+                                  "format": "integer",
+                                  "default": 0,
+                                  "type": "string"
+                                },
+                                {
+                                  "minimum": 1,
+                                  "maximum": 10000,
+                                  "type": "integer"
+                                }
+                              ]
+                            },
+                            "unitPrice": {
+                              "minimum": 0,
+                              "description": "VND unit price snapshot; defaults to the product's catalog price.",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1MerchantOrders",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/merchant/orders/{id}": {
+      "get": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Get order",
+        "description": "Fetch a single merchant order with its line items by id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Row primary key (BigInt serialized as a decimal string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MerchantOrdersById"
       }
     }
   }

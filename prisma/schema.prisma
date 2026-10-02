@@ -168,6 +168,11 @@ model Tenant {
   mcpOAuthRefreshTokens         McpOAuthRefreshToken[]
   mcpOAuthPendingAuthorizations McpOAuthPendingAuthorization[]
   appointments                  Appointment[]
+  merchantProducts              MerchantProduct[]
+  leads                         Lead[]
+  leadProductMatches            LeadProductMatch[]
+  merchantOrders                MerchantOrder[]
+  merchantOrderItems            MerchantOrderItem[]
 
   @@map("tenants")
 }
@@ -2482,4 +2487,136 @@ model McpOAuthClientApproval {
 
   @@unique([userId, clientId])
   @@map("mcp_oauth_client_approvals")
+}
+
+// ──────────────────────────────────────────────── merchant (vinvin) ──
+
+// Social-selling lead funnel stages for the merchant MVP.
+enum MerchantLeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CONVERTED
+  DEAD
+}
+
+enum MerchantOrderStatus {
+  DRAFT
+  CONFIRMED
+  PAID
+  CANCELLED
+}
+
+// A sellable item in the tenant's catalog. The rule-based lead scorer matches post
+// text against name + tags; prices are VND (zero-decimal).
+model MerchantProduct {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  name        String
+  description String?
+  price       Decimal  @db.Decimal(15, 0)
+  stock       Int      @default(0)
+  tags        String[] @default([])
+  imageUrl    String?  @map("image_url")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leadMatches LeadProductMatch[]
+  orderItems  MerchantOrderItem[]
+
+  @@index([tenantId])
+  @@map("merchant_products")
+}
+
+// A scored prospect: one social post/comment that showed buying intent, created by
+// the ingest endpoint (rule-based scorer) or manually. `platform` is a validated
+// String, not an enum, so a new source is a code deploy, never a migration.
+model Lead {
+  id           BigInt             @id @default(autoincrement())
+  tenantId     BigInt             @map("tenant_id")
+  platform     String
+  authorName   String             @map("author_name")
+  authorHandle String?            @map("author_handle")
+  text         String
+  sourceUrl    String?            @map("source_url")
+  groupName    String?            @map("group_name")
+  score        Int                @default(0)
+  status       MerchantLeadStatus @default(NEW)
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  matches LeadProductMatch[]
+  orders  MerchantOrder[]
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@map("leads")
+}
+
+// Why a lead matched a catalog product: the scorer's per-product relevance score
+// plus the explanation the lead detail sheet shows.
+model LeadProductMatch {
+  id        BigInt  @id @default(autoincrement())
+  tenantId  BigInt  @map("tenant_id")
+  leadId    BigInt  @map("lead_id")
+  productId BigInt  @map("product_id")
+  score     Float
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead    Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  product MerchantProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, productId])
+  @@index([tenantId, leadId])
+  @@index([productId])
+  @@map("lead_product_matches")
+}
+
+// An order drafted from a lead (or by hand). leadId keeps the attribution chain
+// post -> lead -> order; contact fields are a snapshot taken at order time.
+model MerchantOrder {
+  id             BigInt              @id @default(autoincrement())
+  tenantId       BigInt              @map("tenant_id")
+  leadId         BigInt?             @map("lead_id")
+  contactName    String?             @map("contact_name")
+  contactPhone   String?             @map("contact_phone")
+  contactAddress String?             @map("contact_address")
+  status         MerchantOrderStatus @default(DRAFT)
+  totalAmount    Decimal             @default(0) @map("total_amount") @db.Decimal(15, 0)
+  note           String?
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  tenant Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead   Lead?               @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  items  MerchantOrderItem[]
+
+  @@index([tenantId, createdAt])
+  @@index([leadId])
+  @@map("merchant_orders")
+}
+
+// A line item. productId is a soft link (SetNull) so a deleted product leaves the
+// order row intact; unitPrice is the price snapshot at order time.
+model MerchantOrderItem {
+  id        BigInt  @id @default(autoincrement())
+  tenantId  BigInt  @map("tenant_id")
+  orderId   BigInt  @map("order_id")
+  productId BigInt? @map("product_id")
+  qty       Int     @default(1)
+  unitPrice Decimal @map("unit_price") @db.Decimal(15, 0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order   MerchantOrder    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product MerchantProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, orderId])
+  @@index([productId])
+  @@map("merchant_order_items")
 }

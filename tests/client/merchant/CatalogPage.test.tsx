@@ -41,6 +41,10 @@ function installFetchStub() {
             tags: ["serum", "trị mụn", "BHA"],
             imageUrl: null,
             active: true,
+            category: "mỹ phẩm/skincare",
+            attributes: { size: "30ml", priceSegment: "trung bình" },
+            taggedAt: "2026-10-02T04:42:43.000Z",
+            tagSource: "llm",
             createdAt: "2026-10-01T20:24:15.000Z",
             updatedAt: "2026-10-01T20:24:15.000Z",
           },
@@ -52,6 +56,7 @@ function installFetchStub() {
 }
 
 const { CatalogPage } = await import("@/client/merchant/pages/CatalogPage");
+const { ToastProvider } = await import("@/client/components");
 
 afterEach(() => {
   cleanup();
@@ -66,7 +71,9 @@ describe("merchant CatalogPage", () => {
     installFetchStub();
     render(
       <MemoryRouter initialEntries={["/catalog"]}>
-        <CatalogPage />
+        <ToastProvider>
+          <CatalogPage />
+        </ToastProvider>
       </MemoryRouter>,
     );
     await waitFor(() => {
@@ -75,6 +82,12 @@ describe("merchant CatalogPage", () => {
     expect(screen.queryByText("289.000 ₫") !== null).toBe(true);
     expect(screen.queryByText("trị mụn") !== null).toBe(true);
     expect(screen.queryByText("Active") !== null).toBe(true);
+    // PIM-lite columns: the LLM's category and the facet summary the row shows.
+    expect(screen.queryByText("mỹ phẩm/skincare") !== null).toBe(true);
+    expect(
+      screen.queryByText("size: 30ml · priceSegment: trung bình") !== null,
+    ).toBe(true);
+    expect(screen.queryByText("Re-tag") !== null).toBe(true);
     expect(
       requests.some(
         (r) => r.method === "GET" && r.path === "/api/v1/merchant/products",

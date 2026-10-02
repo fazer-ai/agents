@@ -2358,18 +2358,40 @@
   "merchant": {
     "catalog": {
       "active": "Ativo",
+      "aiTagged": "Etiquetado por IA",
+      "colAttributes": "Atributos",
+      "colCategory": "Categoria",
       "colName": "Nome",
       "colPrice": "Preço",
       "colStatus": "Status",
       "colStock": "Estoque",
       "colTags": "Tags",
-      "emptyDescription": "Crie um via POST /api/v1/merchant/products ou rode o seed de merchant.",
+      "emptyDescription": "Crie um via POST /api/v1/merchant/products, importe um CSV ou rode o seed de merchant.",
       "emptyTitle": "Nenhum produto ainda",
+      "import": {
+        "button": "Importar CSV",
+        "colErrors": "Erros",
+        "colLine": "Linha",
+        "confirm": "Importar",
+        "done": "{{created}} novos importados, {{updated}} atualizados. A etiquetagem automática está rodando em segundo plano.",
+        "importing": "Importando…",
+        "parsing": "Analisando…",
+        "pickFile": "Escolher arquivo CSV",
+        "previewSummary": "{{ok}} de {{total}} linhas prontas para importar.",
+        "rowOk": "OK",
+        "subtitle": "Linha de cabeçalho: name,price,stock,description,tags (tags separadas por |). A prévia mostra o que seria gravado antes de salvar.",
+        "title": "Importar produtos de um CSV"
+      },
       "inactive": "Inativo",
+      "noAttributes": "—",
+      "retag": "Re-etiquetar",
+      "retagFailed": "A re-etiquetagem falhou.",
+      "retagging": "Etiquetando…",
       "subtitle": "Produtos com os quais o scorer de leads compara os posts recebidos.",
       "tableSubtitle": "Nomes e tags são o que o scorer usa na correspondência - mantenha-os nas palavras que os clientes usam.",
       "tableTitle": "Produtos",
-      "title": "Catálogo"
+      "title": "Catálogo",
+      "untagged": "—"
     },
     "leads": {
       "colAuthor": "Autor",

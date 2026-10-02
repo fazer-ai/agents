@@ -1,13 +1,16 @@
 import { z } from "zod";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { NotFoundError, TenantTargetRequiredError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
+import { normalizeVi } from "./scorer";
 
 // Merchant catalog (per-tenant): the products the rule-based scorer matches lead
 // text against, and the rows the /catalog console page lists. Prices are VND.
+
+export type ProductAttributes = Record<string, string | number | boolean>;
 
 export interface MerchantProductDto {
   id: string;
@@ -18,6 +21,13 @@ export interface MerchantProductDto {
   tags: string[];
   imageUrl: string | null;
   active: boolean;
+  // PIM-lite: the shop-taxonomy node the tagger (or the operator) filed the
+  // product under, the extracted facets, and when/by whom it was last tagged
+  // ("manual" | "llm"; null = never tagged).
+  category: string | null;
+  attributes: ProductAttributes | null;
+  taggedAt: Date | null;
+  tagSource: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,6 +41,10 @@ const SELECT = {
   tags: true,
   imageUrl: true,
   active: true,
+  category: true,
+  attributes: true,
+  taggedAt: true,
+  tagSource: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -44,6 +58,10 @@ function toDto(r: {
   tags: string[];
   imageUrl: string | null;
   active: boolean;
+  category: string | null;
+  attributes: unknown;
+  taggedAt: Date | null;
+  tagSource: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): MerchantProductDto {
@@ -56,10 +74,20 @@ function toDto(r: {
     tags: r.tags,
     imageUrl: r.imageUrl,
     active: r.active,
+    category: r.category,
+    attributes: (r.attributes as ProductAttributes | null) ?? null,
+    taggedAt: r.taggedAt,
+    tagSource: r.tagSource,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
 }
+
+const attributeValueSchema = z.union([
+  z.string().max(300),
+  z.number(),
+  z.boolean(),
+]);
 
 export const merchantProductCreateSchema = z
   .object({
@@ -71,6 +99,13 @@ export const merchantProductCreateSchema = z
     tags: z.array(z.string().min(1).max(100)).max(50).optional(),
     imageUrl: z.string().max(2000).optional(),
     active: z.boolean().optional(),
+    // PIM-lite fields an operator may set by hand. `tagSource` stays
+    // caller-declared: only the tagger writes "llm", but nothing in this schema
+    // gains by refusing the spelling (the audit row records who wrote what).
+    category: z.string().min(1).max(200).nullish(),
+    attributes: z.record(z.string(), attributeValueSchema).nullish(),
+    tagSource: z.enum(["manual", "llm"]).nullish(),
+    taggedAt: z.iso.datetime().nullish(),
   })
   .strict();
 export type MerchantProductCreate = z.infer<typeof merchantProductCreateSchema>;
@@ -89,6 +124,9 @@ function auditProjection(dto: MerchantProductDto) {
     tags: dto.tags,
     imageUrl: dto.imageUrl,
     active: dto.active,
+    category: dto.category,
+    attributes: dto.attributes,
+    tagSource: dto.tagSource,
   };
 }
 
@@ -100,17 +138,62 @@ export function assertMerchantProductUpdatable(patch: MerchantProductUpdate) {
   return parseInput(merchantProductUpdateSchema, patch);
 }
 
+// Structured listing filters, applied BEFORE the text match: the SQL `where`
+// narrows by category/price first (both indexed-friendly column comparisons),
+// then the tag/text match runs over that narrowed set in JS — substring and
+// array matching there is diacritics-insensitive via normalizeVi, the same
+// normalization the scorer already gives post text ("ao" finds "áo").
+export interface MerchantProductFilter {
+  q?: string;
+  category?: string;
+  // Products must carry EVERY listed tag (AND semantics: the caller is
+  // narrowing a catalog, so each extra tag shrinks the answer set).
+  tags?: string[];
+  priceMax?: number;
+}
+
+// The in-memory half of the filter, exported so the precedence is testable
+// without a database. Runs after the SQL where.
+export function matchesProductFilter(
+  row: { name: string; description: string | null; tags: string[] },
+  filter: Pick<MerchantProductFilter, "tags" | "q">,
+): boolean {
+  if (filter.tags && filter.tags.length > 0) {
+    const owned = new Set(row.tags.map((t) => normalizeVi(t).trim()));
+    const wantsAll = filter.tags.every((t) => owned.has(normalizeVi(t).trim()));
+    if (!wantsAll) return false;
+  }
+  const q = filter.q?.trim();
+  if (q) {
+    const needle = normalizeVi(q);
+    const hay = normalizeVi(
+      `${row.name} ${row.description ?? ""} ${row.tags.join(" ")}`,
+    );
+    if (!hay.includes(needle)) return false;
+  }
+  return true;
+}
+
 export async function listMerchantProducts(
   ctx: TenantContext,
+  filter: MerchantProductFilter = {},
   base: PrismaClient = basePrisma,
 ): Promise<MerchantProductDto[]> {
   const rows = await runScopedOn(base, ctx, (db) =>
     db.merchantProduct.findMany({
+      where: {
+        ...(filter.category
+          ? { category: { equals: filter.category, mode: "insensitive" } }
+          : {}),
+        ...(filter.priceMax !== undefined
+          ? { price: { lte: filter.priceMax } }
+          : {}),
+      },
       select: SELECT,
       orderBy: [{ name: "asc" }, { id: "asc" }],
     }),
   );
-  return rows.map(toDto);
+  return rows.filter((r) => matchesProductFilter(r, filter)).map(toDto);
 }
 
 export async function getMerchantProduct(
@@ -128,6 +211,48 @@ export async function getMerchantProduct(
     );
   }
   return toDto(row);
+}
+
+// The columns a caller may write through create/update. tagSource/taggedAt are
+// accepted on the wire (the schema above) so an import can carry them, but the
+// tagger is the only path that writes "llm".
+function writableData(data: {
+  name?: string;
+  description?: string | null;
+  price?: number;
+  stock?: number;
+  tags?: string[];
+  imageUrl?: string | null;
+  active?: boolean;
+  category?: string | null;
+  attributes?: ProductAttributes | null;
+  tagSource?: string | null;
+  taggedAt?: string | null;
+}) {
+  return {
+    ...(data.name !== undefined ? { name: data.name } : {}),
+    ...(data.description !== undefined
+      ? { description: data.description }
+      : {}),
+    ...(data.price !== undefined ? { price: data.price } : {}),
+    ...(data.stock !== undefined ? { stock: data.stock } : {}),
+    ...(data.tags !== undefined ? { tags: data.tags } : {}),
+    ...(data.imageUrl !== undefined ? { imageUrl: data.imageUrl } : {}),
+    ...(data.active !== undefined ? { active: data.active } : {}),
+    ...(data.category !== undefined ? { category: data.category } : {}),
+    // Nullable Json columns take Prisma.DbNull for SQL NULL; a raw null is rejected.
+    ...(data.attributes !== undefined
+      ? {
+          attributes: (data.attributes === null
+            ? Prisma.DbNull
+            : data.attributes) as Prisma.InputJsonValue,
+        }
+      : {}),
+    ...(data.tagSource !== undefined ? { tagSource: data.tagSource } : {}),
+    ...(data.taggedAt !== undefined
+      ? { taggedAt: data.taggedAt === null ? null : new Date(data.taggedAt) }
+      : {}),
+  };
 }
 
 export async function createMerchantProduct(
@@ -149,6 +274,12 @@ export async function createMerchantProduct(
         tags: data.tags ?? [],
         imageUrl: data.imageUrl ?? null,
         active: data.active ?? true,
+        ...writableData({
+          category: data.category,
+          attributes: data.attributes,
+          tagSource: data.tagSource,
+          taggedAt: data.taggedAt,
+        }),
       },
       select: SELECT,
     });
@@ -183,17 +314,7 @@ export async function updateMerchantProduct(
     const before = toDto(current);
     const row = await db.merchantProduct.update({
       where: { id },
-      data: {
-        ...(data.name !== undefined ? { name: data.name } : {}),
-        ...(data.description !== undefined
-          ? { description: data.description }
-          : {}),
-        ...(data.price !== undefined ? { price: data.price } : {}),
-        ...(data.stock !== undefined ? { stock: data.stock } : {}),
-        ...(data.tags !== undefined ? { tags: data.tags } : {}),
-        ...(data.imageUrl !== undefined ? { imageUrl: data.imageUrl } : {}),
-        ...(data.active !== undefined ? { active: data.active } : {}),
-      },
+      data: writableData(data),
       select: SELECT,
     });
     const dto = toDto(row);

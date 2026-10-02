@@ -2292,18 +2292,40 @@
   "merchant": {
     "catalog": {
       "active": "Active",
+      "aiTagged": "Tagged by AI",
+      "colAttributes": "Attributes",
+      "colCategory": "Category",
       "colName": "Name",
       "colPrice": "Price",
       "colStatus": "Status",
       "colStock": "Stock",
       "colTags": "Tags",
-      "emptyDescription": "Create one via POST /api/v1/merchant/products or run the merchant seed.",
+      "emptyDescription": "Create one via POST /api/v1/merchant/products, import a CSV, or run the merchant seed.",
       "emptyTitle": "No products yet",
+      "import": {
+        "button": "Import CSV",
+        "colErrors": "Errors",
+        "colLine": "Line",
+        "confirm": "Import",
+        "done": "Imported {{created}} new, updated {{updated}}. Auto-tagging is running in the background.",
+        "importing": "Importing…",
+        "parsing": "Parsing…",
+        "pickFile": "Choose CSV file",
+        "previewSummary": "{{ok}} of {{total}} rows ready to import.",
+        "rowOk": "OK",
+        "subtitle": "Header row: name,price,stock,description,tags (tags split on |). Preview shows what would be written before anything is saved.",
+        "title": "Import products from CSV"
+      },
       "inactive": "Inactive",
+      "noAttributes": "—",
+      "retag": "Re-tag",
+      "retagFailed": "Re-tagging failed.",
+      "retagging": "Tagging…",
       "subtitle": "Products the lead scorer matches incoming posts against.",
       "tableSubtitle": "Names and tags are what the scorer matches on - keep them in the words customers use.",
       "tableTitle": "Products",
-      "title": "Catalog"
+      "title": "Catalog",
+      "untagged": "—"
     },
     "leads": {
       "colAuthor": "Author",

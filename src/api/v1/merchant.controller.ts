@@ -1,13 +1,27 @@
 import { Elysia, t } from "elysia";
 import type { MerchantLeadStatus } from "@/../generated/prisma/client";
 import { doc, errors } from "@/api/lib/openapi";
-import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
+import {
+  parseQueryCount,
+  parseQueryId,
+  parseQueryText,
+} from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
-import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
+import {
+  AppError,
+  ForbiddenError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import { badQueryParam } from "@/lib/query-param";
 import type { TenantContext } from "@/lib/tenancy";
+import {
+  applyMerchantImport,
+  csvToRowInputs,
+  type ImportRowInput,
+  validateImportRows,
+} from "@/modules/merchant/import";
 import {
   getLead,
   ingestLead,
@@ -30,11 +44,14 @@ import {
   type MerchantProductUpdate,
   updateMerchantProduct,
 } from "@/modules/merchant/products";
+import { tagMerchantProductWithLlm } from "@/modules/merchant/tagging";
 
 // The error catalog this controller's routes answer with (`bun i18n:extract` reads these lines).
 // translate('errors.merchantProductNotFound', 'Product not found.')
 // translate('errors.merchantLeadNotFound', 'Lead not found.')
 // translate('errors.merchantOrderNotFound', 'Order not found.')
+// translate('errors.merchantTaggingFailed', 'The auto-tagger did not return a usable result.')
+// translate('errors.merchantImportEmpty', 'The import carried no product rows: send a CSV file or a rows array.')
 
 // Merchant MVP: per-tenant catalog, social-lead pipeline (rule-based scoring, no
 // LLM) and orders. Reads are for any authenticated member; writes are TENANT_ADMIN.
@@ -84,17 +101,51 @@ export const merchantController = new Elysia({
   .use(tenancyPlugin)
   .get(
     "/products",
-    async ({ tenantContext }) => ({
+    async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      products: await listMerchantProducts(ctxOrThrow(tenantContext)),
+      products: await listMerchantProducts(ctxOrThrow(tenantContext), {
+        q: parseQueryText(query.q, "q"),
+        category: parseQueryText(query.category, "category"),
+        tags: parseQueryText(query.tags, "tags")
+          ?.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        priceMax: parseQueryCount(query.priceMax, "priceMax"),
+      }),
     }),
     {
       requireAuth: true,
+      query: t.Object({
+        q: t.Optional(
+          t.String({
+            description:
+              "Free-text match on name/description/tags (diacritics-insensitive). Applied AFTER the structured filters below.",
+          }),
+        ),
+        category: t.Optional(
+          t.String({
+            description:
+              "Category node filter, case-insensitive exact match (e.g. 'thời trang nữ').",
+          }),
+        ),
+        tags: t.Optional(
+          t.String({
+            description:
+              "Comma-separated tag list; a product must carry ALL listed tags to match.",
+          }),
+        ),
+        priceMax: t.Optional(
+          t.String({
+            description:
+              "Keep only products priced at or under this VND amount.",
+          }),
+        ),
+      }),
       detail: doc(
         "List products",
-        "List the tenant's merchant catalog products, ordered by name.",
+        "List the tenant's merchant catalog products, ordered by name. Structured filters (category, tags, priceMax) narrow the set before the optional free-text q match.",
       ),
-      response: errors(401, 403, 404),
+      response: errors(400, 401, 403, 404),
     },
   )
   .get(
@@ -141,6 +192,26 @@ export const merchantController = new Elysia({
         ),
         imageUrl: t.Optional(t.String({ maxLength: 2000 })),
         active: t.Optional(t.Boolean()),
+        category: t.Optional(
+          t.Union([t.String({ minLength: 1, maxLength: 200 }), t.Null()], {
+            description: "Shop-taxonomy node (e.g. 'thời trang nữ').",
+          }),
+        ),
+        attributes: t.Optional(
+          t.Union([
+            t.Record(
+              t.String(),
+              t.Union([t.String({ maxLength: 300 }), t.Number(), t.Boolean()]),
+            ),
+            t.Null(),
+          ]),
+        ),
+        tagSource: t.Optional(
+          t.Union([t.Union([t.Literal("manual"), t.Literal("llm")]), t.Null()]),
+        ),
+        taggedAt: t.Optional(
+          t.Union([t.String({ format: "date-time" }), t.Null()]),
+        ),
       }),
       detail: doc(
         "Create product",
@@ -176,12 +247,148 @@ export const merchantController = new Elysia({
         ),
         imageUrl: t.Optional(t.String({ maxLength: 2000 })),
         active: t.Optional(t.Boolean()),
+        category: t.Optional(
+          t.Union([t.String({ minLength: 1, maxLength: 200 }), t.Null()]),
+        ),
+        attributes: t.Optional(
+          t.Union([
+            t.Record(
+              t.String(),
+              t.Union([t.String({ maxLength: 300 }), t.Number(), t.Boolean()]),
+            ),
+            t.Null(),
+          ]),
+        ),
+        tagSource: t.Optional(
+          t.Union([t.Union([t.Literal("manual"), t.Literal("llm")]), t.Null()]),
+        ),
+        taggedAt: t.Optional(
+          t.Union([t.String({ format: "date-time" }), t.Null()]),
+        ),
       }),
       detail: doc(
         "Update product",
         "Update a catalog product's mutable fields by id.",
       ),
       response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .post(
+    "/products/import",
+    async ({ tenantContext, body, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const b = body as {
+        rows?: ImportRowInput[] | string;
+        file?: File;
+      };
+      let inputs: ImportRowInput[] = [];
+      if (b.file) {
+        inputs = csvToRowInputs(await b.file.text());
+      } else if (typeof b.rows === "string") {
+        const raw = b.rows.trim();
+        // A multipart text field can carry the rows as a JSON string or as
+        // raw CSV text; the leading character tells them apart.
+        if (raw.startsWith("[")) {
+          try {
+            inputs = JSON.parse(raw) as ImportRowInput[];
+          } catch {
+            throw new AppError(
+              "The request is not valid.",
+              422,
+              "errors.invalidRequest",
+            );
+          }
+        } else {
+          inputs = csvToRowInputs(raw);
+        }
+      } else if (Array.isArray(b.rows)) {
+        inputs = b.rows;
+      }
+      if (inputs.length === 0) {
+        throw new AppError(
+          "The import carried no product rows.",
+          422,
+          "errors.merchantImportEmpty",
+        );
+      }
+      const preview = validateImportRows(inputs);
+      if (query.dryRun === "true") {
+        return {
+          instance: instanceIdentity,
+          dryRun: true,
+          ok: preview.ok,
+          rows: preview.rows,
+        };
+      }
+      const result = await applyMerchantImport(ctx, preview.rows);
+      return {
+        instance: instanceIdentity,
+        dryRun: false,
+        ok: preview.ok,
+        rows: preview.rows,
+        result,
+      };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      query: t.Object({
+        dryRun: t.Optional(
+          t.String({
+            description:
+              "'true' parses and validates only: the parsed rows and their errors come back, nothing is written.",
+          }),
+        ),
+      }),
+      // JSON {rows:[...]} and multipart {file|rows} share one schema: `file`
+      // makes the route accept multipart, `rows` carries the JSON spelling
+      // (or a CSV/JSON text field on multipart).
+      body: t.Object({
+        rows: t.Optional(
+          t.Union([t.Array(t.Record(t.String(), t.Any())), t.String()], {
+            description:
+              "Product rows as objects (name, price, stock, description, tags), or a JSON string / CSV text when sent as a multipart field.",
+          }),
+        ),
+        file: t.Optional(
+          t.File({
+            description:
+              "CSV file with header name,price,stock,description,tags (Vietnamese spellings accepted).",
+          }),
+        ),
+      }),
+      detail: doc(
+        "Import products",
+        "Bulk-upsert catalog rows by (tenant, name) from JSON rows or a CSV file. ?dryRun=true returns the parsed rows and validation errors without writing; a real run also kicks off LLM auto-tagging for each written product.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .post(
+    "/products/:id/retag",
+    async ({ tenantContext, params }) => {
+      const outcome = await tagMerchantProductWithLlm(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
+      if (!outcome.ok) {
+        throw new AppError(
+          outcome.detail
+            ? `The auto-tagger did not return a usable result (${outcome.detail}).`
+            : "The auto-tagger did not return a usable result.",
+          502,
+          "errors.merchantTaggingFailed",
+        );
+      }
+      return { instance: instanceIdentity, product: outcome.product };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      params: idParam,
+      detail: doc(
+        "Re-tag product",
+        "Re-run the LLM auto-tagger on one product: refreshes category, attributes and merged tags (tagSource=llm, taggedAt=now). Manual tags are preserved.",
+      ),
+      response: errors(400, 401, 403, 404, 502),
     },
   )
   .delete(

@@ -46475,8 +46475,83 @@
           "Merchant"
         ],
         "summary": "List products",
-        "description": "List the tenant's merchant catalog products, ordered by name.",
+        "description": "List the tenant's merchant catalog products, ordered by name. Structured filters (category, tags, priceMax) narrow the set before the optional free-text q match.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Free-text match on name/description/tags (diacritics-insensitive). Applied AFTER the structured filters below.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Category node filter, case-insensitive exact match (e.g. 'thời trang nữ').",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Comma-separated tag list; a product must carry ALL listed tags to match.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "priceMax",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Keep only products priced at or under this VND amount.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
         "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
             "content": {
@@ -46556,20 +46631,7 @@
             }
           }
         },
-        "operationId": "getV1MerchantProducts",
-        "parameters": [
-          {
-            "name": "x-tenant-id",
-            "in": "header",
-            "required": true,
-            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
-            "schema": {
-              "type": "string",
-              "default": "1"
-            },
-            "example": "1"
-          }
-        ]
+        "operationId": "getV1MerchantProducts"
       },
       "post": {
         "tags": [
@@ -46632,6 +46694,75 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "category": {
+                    "description": "Shop-taxonomy node (e.g. 'thời trang nữ').",
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attributes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {
+                            "anyOf": [
+                              {
+                                "maxLength": 300,
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tagSource": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "const": "manual",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llm",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taggedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -46688,6 +46819,75 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "category": {
+                    "description": "Shop-taxonomy node (e.g. 'thời trang nữ').",
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attributes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {
+                            "anyOf": [
+                              {
+                                "maxLength": 300,
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tagSource": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "const": "manual",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llm",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taggedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -46744,6 +46944,75 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "category": {
+                    "description": "Shop-taxonomy node (e.g. 'thời trang nữ').",
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attributes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {
+                            "anyOf": [
+                              {
+                                "maxLength": 300,
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tagSource": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "const": "manual",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llm",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taggedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -47113,6 +47382,74 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "category": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attributes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {
+                            "anyOf": [
+                              {
+                                "maxLength": 300,
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tagSource": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "const": "manual",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llm",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taggedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -47164,6 +47501,74 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "category": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attributes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {
+                            "anyOf": [
+                              {
+                                "maxLength": 300,
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tagSource": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "const": "manual",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llm",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taggedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -47215,6 +47620,74 @@
                   },
                   "active": {
                     "type": "boolean"
+                  },
+                  "category": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "attributes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {
+                            "anyOf": [
+                              {
+                                "maxLength": 300,
+                                "type": "string"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tagSource": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "const": "manual",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llm",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "taggedAt": {
+                    "anyOf": [
+                      {
+                        "format": "date-time",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -47490,6 +47963,429 @@
           }
         },
         "operationId": "deleteV1MerchantProductsById"
+      }
+    },
+    "/v1/merchant/products/import": {
+      "post": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Import products",
+        "description": "Bulk-upsert catalog rows by (tenant, name) from JSON rows or a CSV file. ?dryRun=true returns the parsed rows and validation errors without writing; a real run also kicks off LLM auto-tagging for each written product.",
+        "parameters": [
+          {
+            "name": "dryRun",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "'true' parses and validates only: the parsed rows and their errors come back, nothing is written.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "rows": {
+                    "description": "Product rows as objects (name, price, stock, description, tags), or a JSON string / CSV text when sent as a multipart field.",
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "patternProperties": {
+                            "^(.*)$": {}
+                          }
+                        }
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "file": {
+                    "default": "File",
+                    "description": "CSV file with header name,price,stock,description,tags (Vietnamese spellings accepted).",
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "rows": {
+                    "description": "Product rows as objects (name, price, stock, description, tags), or a JSON string / CSV text when sent as a multipart field.",
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "patternProperties": {
+                            "^(.*)$": {}
+                          }
+                        }
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "file": {
+                    "default": "File",
+                    "description": "CSV file with header name,price,stock,description,tags (Vietnamese spellings accepted).",
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "rows": {
+                    "description": "Product rows as objects (name, price, stock, description, tags), or a JSON string / CSV text when sent as a multipart field.",
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "patternProperties": {
+                            "^(.*)$": {}
+                          }
+                        }
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "file": {
+                    "default": "File",
+                    "description": "CSV file with header name,price,stock,description,tags (Vietnamese spellings accepted).",
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1MerchantProductsImport"
+      }
+    },
+    "/v1/merchant/products/{id}/retag": {
+      "post": {
+        "tags": [
+          "Merchant"
+        ],
+        "summary": "Re-tag product",
+        "description": "Re-run the LLM auto-tagger on one product: refreshes category, attributes and merged tags (tagSource=llm, taggedAt=now). Manual tags are preserved.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Row primary key (BigInt serialized as a decimal string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad gateway — an upstream dependency failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad gateway — an upstream dependency failed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1MerchantProductsByIdRetag"
       }
     },
     "/v1/merchant/leads": {

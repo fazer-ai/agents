@@ -78,6 +78,7 @@ enum SchedulerJobKind {
   INBOUND_REDISPATCH
   NOTHING_TO_ANSWER
   LEAD_SOURCE_SCAN
+  NURTURE_DRAIN
 }
 
 enum SchedulerJobStatus {
@@ -175,6 +176,9 @@ model Tenant {
   merchantOrders                MerchantOrder[]
   merchantOrderItems            MerchantOrderItem[]
   leadSources                   LeadSource[]
+  nurtureSequences              NurtureSequence[]
+  nurtureEnrollments            NurtureEnrollment[]
+  nurtureOutbox                 NurtureOutbox[]
 
   @@map("tenants")
 }
@@ -2562,10 +2566,12 @@ model Lead {
   createdAt    DateTime           @default(now()) @map("created_at")
   updatedAt    DateTime           @updatedAt @map("updated_at")
 
-  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  source  LeadSource?        @relation(fields: [sourceId], references: [id], onDelete: SetNull)
-  matches LeadProductMatch[]
-  orders  MerchantOrder[]
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source              LeadSource?         @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  matches             LeadProductMatch[]
+  orders              MerchantOrder[]
+  nurtureEnrollments  NurtureEnrollment[]
+  nurtureOutbox       NurtureOutbox[]
 
   @@unique([tenantId, platform, externalId])
   @@index([tenantId, createdAt])
@@ -2660,4 +2666,85 @@ model MerchantOrderItem {
   @@index([tenantId, orderId])
   @@index([productId])
   @@map("merchant_order_items")
+}
+
+// A nurture sequence: an ordered list of follow-up steps a lead is walked
+// through. `steps` is a Json column ([{delayMin, bodyTemplate, channel}])
+// validated in src/modules/nurture/sequences.ts — the closed shape is a union
+// Prisma cannot express, the same reason document blocks are Json.
+model NurtureSequence {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  name      String
+  steps     Json
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  enrollments NurtureEnrollment[]
+
+  @@index([tenantId])
+  @@map("nurture_sequences")
+}
+
+enum NurtureEnrollmentStatus {
+  ACTIVE
+  DONE
+  CANCELLED
+}
+
+// One lead inside one sequence. `stepIndex` names the step that fires NEXT;
+// `nextRunAt` is when the drain may claim it. The unique rule — one ACTIVE
+// enrollment per (tenant, sequence, lead) — is a PARTIAL index written in the
+// migration (Prisma cannot model a WHERE on an index): a DONE or CANCELLED row
+// stays as history and a re-enroll writes a new one.
+model NurtureEnrollment {
+  id         BigInt                  @id @default(autoincrement())
+  tenantId   BigInt                  @map("tenant_id")
+  sequenceId BigInt                  @map("sequence_id")
+  leadId     BigInt                  @map("lead_id")
+  stepIndex  Int                     @default(0) @map("step_index")
+  nextRunAt  DateTime                @map("next_run_at")
+  status     NurtureEnrollmentStatus @default(ACTIVE)
+  createdAt  DateTime                @default(now()) @map("created_at")
+  updatedAt  DateTime                @updatedAt @map("updated_at")
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sequence NurtureSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  lead     Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  outbox   NurtureOutbox[]
+
+  @@index([tenantId, status, nextRunAt])
+  @@index([leadId])
+  @@map("nurture_enrollments")
+}
+
+enum NurtureOutboxStatus {
+  PENDING
+  SENT
+  CANCELLED
+}
+
+// A rendered follow-up, staged for an operator to copy out and send by hand.
+// Nothing here is ever sent by the platform: the row IS the whole rail, and
+// `sentAt` records when a person marked it delivered.
+model NurtureOutbox {
+  id           BigInt              @id @default(autoincrement())
+  tenantId     BigInt              @map("tenant_id")
+  enrollmentId BigInt              @map("enrollment_id")
+  leadId       BigInt              @map("lead_id")
+  body         String
+  status       NurtureOutboxStatus @default(PENDING)
+  sentAt       DateTime?           @map("sent_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  enrollment NurtureEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  lead       Lead              @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@index([enrollmentId])
+  @@map("nurture_outbox")
 }

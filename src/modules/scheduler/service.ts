@@ -67,7 +67,8 @@ export type SchedulerJobKind =
   | "INBOUND_SWEEP"
   | "INBOUND_REDISPATCH"
   | "NOTHING_TO_ANSWER"
-  | "LEAD_SOURCE_SCAN";
+  | "LEAD_SOURCE_SCAN"
+  | "NURTURE_DRAIN";
 
 export interface ClaimedJob {
   id: bigint;

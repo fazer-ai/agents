@@ -77,6 +77,11 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Shared: one row per lead source, re-armed by its own reschedule at a cadence of minutes by
   // design (LeadSource.intervalMin). The KNOWLEDGE_SOURCE_SYNC reasoning, verbatim.
   LEAD_SOURCE_SCAN: "shared",
+  // Shared, and neither reason applies — the same shape as INBOUND_SWEEP: a cadence of about a
+  // minute by design (a nurture step written as a delay of N minutes is not felt at second
+  // granularity), and one SKIP LOCKED claim plus a few row writes per pass, nothing a customer
+  // waits on.
+  NURTURE_DRAIN: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -131,6 +136,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // A fetch against the source's platform and database writes; the lead scorer is rule-based, so no
   // model or embedding is spent here.
   LEAD_SOURCE_SCAN: false,
+  // No model, no provider, no Chatwoot: reads enrollments, renders a template, writes outbox rows.
+  NURTURE_DRAIN: false,
 };
 
 // How many OBSERVE rows one shared tick claims: enough to keep the provider bound busy for about one
@@ -201,6 +208,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // next sweep pass would arm the same attempt again. Rows exist only for stranded deliveries, which
   // are rare, and at most one per processing attempt of each.
   INBOUND_REDISPATCH: false,
+  // One perpetual row per tenant, re-armed by its own reschedule (the INBOUND_SWEEP shape).
+  NURTURE_DRAIN: false,
   // One row per thread, but a thread gets one only when a blank message arrived, and a finished
   // judgement is never read again. The retirement deletes a waiting row itself
   // (`retireNothingToAnswer`); only a row retired mid-run stays, as a DONE tombstone the next arm
@@ -270,6 +279,9 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: true,
   // One per lead source, whatever the traffic.
   LEAD_SOURCE_SCAN: false,
+  // One row per tenant with nurture work armed, re-armed forever. Bounded by the
+  // install's tenant count, not by traffic.
+  NURTURE_DRAIN: false,
 };
 
 // What one kind's death means to the operator, read by the generic dead-letter announcement in
@@ -354,6 +366,9 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // operator reads it (the handler reschedules rather than throwing), so what reaches DEAD is the
   // schedule loop itself gone, and the next save or boot re-arms it.
   LEAD_SOURCE_SCAN: "warn",
+  // Self-rescheduling: its death is nurture follow-ups silently never being staged into the
+  // outbox, for every enrolled lead — nobody on the console side would notice.
+  NURTURE_DRAIN: "error",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -391,6 +406,9 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   // The judgement is already half an hour late by design; a minute between retries changes nothing.
   NOTHING_TO_ANSWER: 60_000,
   LEAD_SOURCE_SCAN: 2_000,
+  // A failed pass retries quickly rather than waiting out a sweep-style base; the row is
+  // self-rescheduling, so the next successful run restores the cadence.
+  NURTURE_DRAIN: 2_000,
 };
 
 export function kindsInLane(

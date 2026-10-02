@@ -100,6 +100,8 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   INBOUND_SWEEP: "shared",
   INBOUND_REDISPATCH: "shared",
   NOTHING_TO_ANSWER: "shared",
+  // Shared: one perpetual row per tenant, minutes between passes, no model.
+  NURTURE_DRAIN: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -140,6 +142,8 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   INBOUND_REDISPATCH: true,
   // Chatwoot reads and one status write: no model.
   NOTHING_TO_ANSWER: false,
+  // Reads enrollments, writes outbox rows and audits: no model, no external call.
+  NURTURE_DRAIN: false,
 };
 
 // Same discipline again, for these two maps. A behaviour test exercises only INGEST_MESSAGE end to
@@ -181,6 +185,8 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INBOUND_REDISPATCH: true,
   // One per conversation that received a blank message.
   NOTHING_TO_ANSWER: true,
+  // One perpetual row per tenant: the count is the tenant count, never traffic.
+  NURTURE_DRAIN: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -214,6 +220,9 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // One row per conversation that ever got a blank message, and a finished judgement is never read
   // again.
   NOTHING_TO_ANSWER: true,
+  // The perpetual row IS the drain: deleting it on completion would orphan every active
+  // enrollment until the next enroll nudged a new one into being.
+  NURTURE_DRAIN: false,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -254,6 +263,8 @@ const EXPECTED_DEATH_LEVEL: Record<
   // The conversation stays pending with nobody on it, as before the job existed: this line is the
   // alert.
   NOTHING_TO_ANSWER: "warn",
+  // Nothing else reports a stopped drain: without the error, enrollments age out silently.
+  NURTURE_DRAIN: "error",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

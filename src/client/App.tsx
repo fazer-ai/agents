@@ -18,8 +18,11 @@ import { SidebarProvider } from "@/client/contexts/SidebarContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { UpdatesProvider } from "@/client/contexts/UpdatesContext";
 // vinvin merchant extension: all implementation lives under src/client/merchant/.
+import { AnalyticsPage } from "@/client/merchant/pages/AnalyticsPage";
 import { CatalogPage } from "@/client/merchant/pages/CatalogPage";
 import { LeadsPage } from "@/client/merchant/pages/LeadsPage";
+import { NurturePage } from "@/client/merchant/pages/NurturePage";
+import { OnboardingPage } from "@/client/merchant/pages/OnboardingPage";
 import { OrdersPage } from "@/client/merchant/pages/OrdersPage";
 import { SourcesPage } from "@/client/merchant/pages/SourcesPage";
 import { AcceptInvitePage } from "@/client/pages/AcceptInvitePage";
@@ -218,6 +221,30 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <OrdersPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/nurture"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <NurturePage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/analytics"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <AnalyticsPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/onboarding"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <OnboardingPage />
                                     </ProtectedRoute>
                                   }
                                 />

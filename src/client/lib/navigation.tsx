@@ -1,4 +1,5 @@
 import {
+  BarChart3,
   Bot,
   ClipboardList,
   Gauge,
@@ -6,6 +7,7 @@ import {
   KeyRound,
   LibraryBig,
   LifeBuoy,
+  ListChecks,
   MessagesSquare,
   Package,
   Radar,
@@ -14,6 +16,7 @@ import {
   Settings,
   Shield,
   ShoppingBag,
+  Sprout,
   Target,
   Webhook,
 } from "lucide-react";
@@ -94,6 +97,9 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.sources', 'Sources')
 // t('nav.catalog', 'Catalog')
 // t('nav.orders', 'Orders')
+// t('nav.nurture', 'Nurture')
+// t('nav.analytics', 'Analytics')
+// t('nav.onboarding', 'Getting started')
 export const NAV_ITEMS: NavItem[] = [
   {
     to: "/",
@@ -139,6 +145,30 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.orders",
     defaultLabel: "Orders",
     icon: ShoppingBag,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/nurture",
+    labelKey: "nav.nurture",
+    defaultLabel: "Nurture",
+    icon: Sprout,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/analytics",
+    labelKey: "nav.analytics",
+    defaultLabel: "Analytics",
+    icon: BarChart3,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/onboarding",
+    labelKey: "nav.onboarding",
+    defaultLabel: "Getting started",
+    icon: ListChecks,
     requireAdmin: true,
     section: MERCHANT,
   },

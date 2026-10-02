@@ -38,6 +38,10 @@ import {
   startCompactionWorker,
   stopCompactionWorker,
 } from "@/modules/memory/worker";
+import {
+  ensureAllNurtureDrains,
+  registerNurtureDrainHandler,
+} from "@/modules/nurture/drain";
 import { registerObserveHandler } from "@/modules/observe/job";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
@@ -179,6 +183,7 @@ if (config.schedulerWorker.enabled) {
   registerSpendPollHandler();
   registerKnowledgeSourceHandler();
   registerInboundSweepHandlers();
+  registerNurtureDrainHandler();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).
@@ -208,6 +213,11 @@ if (config.schedulerWorker.enabled) {
   // is not a ceiling deciding on a figure frozen at its last poll.
   void ensureAllSpendPolls().catch((error) =>
     logger.warn({ error }, "Failed to arm spend ceiling polls"),
+  );
+  // NOTE: Arm the nurture drain for every tenant holding an ACTIVE enrollment, so a scheduler_jobs
+  // row lost to a reset does not silently stop the follow-ups it stages.
+  void ensureAllNurtureDrains().catch((error) =>
+    logger.warn({ error }, "Failed to arm nurture drains"),
   );
 }
 

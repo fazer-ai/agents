@@ -29,6 +29,7 @@ import { mcpMeController } from "@/api/v1/mcp-me.controller";
 import { mcpOAuthController } from "@/api/v1/mcp-oauth.controller";
 import { merchantController } from "@/api/v1/merchant.controller";
 import { merchantAnalyticsController } from "@/api/v1/merchant-analytics.controller";
+import { merchantFunnelController } from "@/api/v1/merchant-funnel.controller";
 import { merchantNurtureController } from "@/api/v1/merchant-nurture.controller";
 import { n8nExportController } from "@/api/v1/n8n-export.controller";
 import {
@@ -259,6 +260,7 @@ const api = new Elysia()
   .use(chatwootAdminController)
   .use(merchantController)
   .use(merchantNurtureController)
-  .use(merchantAnalyticsController);
+  .use(merchantAnalyticsController)
+  .use(merchantFunnelController);
 
 export default api;

@@ -8,6 +8,7 @@ import {
   LibraryBig,
   LifeBuoy,
   ListChecks,
+  Megaphone,
   MessagesSquare,
   Package,
   Radar,
@@ -100,6 +101,7 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.nurture', 'Nurture')
 // t('nav.analytics', 'Analytics')
 // t('nav.onboarding', 'Getting started')
+// t('nav.broadcasts', 'Broadcasts')
 export const NAV_ITEMS: NavItem[] = [
   {
     to: "/",
@@ -169,6 +171,14 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: "nav.onboarding",
     defaultLabel: "Getting started",
     icon: ListChecks,
+    requireAdmin: true,
+    section: MERCHANT,
+  },
+  {
+    to: "/broadcasts",
+    labelKey: "nav.broadcasts",
+    defaultLabel: "Broadcasts",
+    icon: Megaphone,
     requireAdmin: true,
     section: MERCHANT,
   },

@@ -60,6 +60,7 @@ function installFetchStub() {
 }
 
 const { LeadsPage } = await import("@/client/merchant/pages/LeadsPage");
+const { ToastProvider } = await import("@/client/components/Toast");
 
 afterEach(() => {
   cleanup();
@@ -74,7 +75,9 @@ describe("merchant LeadsPage", () => {
     installFetchStub();
     render(
       <MemoryRouter initialEntries={["/leads"]}>
-        <LeadsPage />
+        <ToastProvider>
+          <LeadsPage />
+        </ToastProvider>
       </MemoryRouter>,
     );
     await waitFor(() => {

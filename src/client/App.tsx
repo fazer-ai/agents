@@ -19,6 +19,7 @@ import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { UpdatesProvider } from "@/client/contexts/UpdatesContext";
 // vinvin merchant extension: all implementation lives under src/client/merchant/.
 import { AnalyticsPage } from "@/client/merchant/pages/AnalyticsPage";
+import { BroadcastsPage } from "@/client/merchant/pages/BroadcastsPage";
 import { CatalogPage } from "@/client/merchant/pages/CatalogPage";
 import { LeadsPage } from "@/client/merchant/pages/LeadsPage";
 import { NurturePage } from "@/client/merchant/pages/NurturePage";
@@ -245,6 +246,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <OnboardingPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/broadcasts"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <BroadcastsPage />
                                     </ProtectedRoute>
                                   }
                                 />

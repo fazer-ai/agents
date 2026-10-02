@@ -173,6 +173,7 @@ model Tenant {
   leadProductMatches            LeadProductMatch[]
   merchantOrders                MerchantOrder[]
   merchantOrderItems            MerchantOrderItem[]
+  leadSources                   LeadSource[]
 
   @@map("tenants")
 }
@@ -2519,6 +2520,13 @@ model MerchantProduct {
   tags        String[] @default([])
   imageUrl    String?  @map("image_url")
   active      Boolean  @default(true)
+  // PIM-lite: `category` is one node of the shop taxonomy; `attributes` holds
+  // extracted facets (size, color, material, price segment). `tags` stays the
+  // free-form label list the scorer and agent filter on.
+  category    String?
+  attributes  Json?
+  taggedAt    DateTime? @map("tagged_at")
+  tagSource   String?   @map("tag_source")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -2527,6 +2535,7 @@ model MerchantProduct {
   orderItems  MerchantOrderItem[]
 
   @@index([tenantId])
+  @@index([tenantId, category])
   @@map("merchant_products")
 }
 
@@ -2544,16 +2553,47 @@ model Lead {
   groupName    String?            @map("group_name")
   score        Int                @default(0)
   status       MerchantLeadStatus @default(NEW)
+  // Discovery provenance: which configured source scanned this post, and the
+  // post's upstream id. (tenant_id, platform, external_id) is the dedupe key;
+  // Postgres treats NULL external_id as distinct so manual leads never collide.
+  sourceId     BigInt?            @map("source_id")
+  externalId   String?            @map("external_id")
   createdAt    DateTime           @default(now()) @map("created_at")
   updatedAt    DateTime           @updatedAt @map("updated_at")
 
   tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source  LeadSource?        @relation(fields: [sourceId], references: [id], onDelete: SetNull)
   matches LeadProductMatch[]
   orders  MerchantOrder[]
 
+  @@unique([tenantId, platform, externalId])
   @@index([tenantId, createdAt])
   @@index([tenantId, status])
   @@map("leads")
+}
+
+// A configured discovery channel: where scanned posts come from (file import,
+// Threads keyword search, TikTok comments, FB group). `kind` is a validated
+// String for the same reason Lead.platform is.
+model LeadSource {
+  id          BigInt    @id @default(autoincrement())
+  tenantId    BigInt    @map("tenant_id")
+  name        String
+  kind        String
+  config      Json
+  intervalMin Int       @default(60) @map("interval_min")
+  enabled     Boolean   @default(true)
+  lastRunAt   DateTime? @map("last_run_at")
+  lastStatus  String?   @map("last_status")
+  lastError   String?   @map("last_error")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leads  Lead[]
+
+  @@index([tenantId])
+  @@map("lead_sources")
 }
 
 // Why a lead matched a catalog product: the scorer's per-product relevance score

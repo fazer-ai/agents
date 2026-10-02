@@ -176,10 +176,19 @@ export function LeadsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      <div className="flex flex-col">
+                      <div className="flex flex-col gap-1">
                         <span className="capitalize">{lead.platform}</span>
                         {lead.groupName && (
                           <span className="text-xs">{lead.groupName}</span>
+                        )}
+                        {lead.sourceId && (
+                          <Badge variant="secondary" className="w-fit text-xs">
+                            {lead.sourceName ??
+                              t(
+                                "merchant.leads.sourceDeleted",
+                                "source deleted",
+                              )}
+                          </Badge>
                         )}
                       </div>
                     </TableCell>

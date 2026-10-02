@@ -21,6 +21,7 @@ import { UpdatesProvider } from "@/client/contexts/UpdatesContext";
 import { CatalogPage } from "@/client/merchant/pages/CatalogPage";
 import { LeadsPage } from "@/client/merchant/pages/LeadsPage";
 import { OrdersPage } from "@/client/merchant/pages/OrdersPage";
+import { SourcesPage } from "@/client/merchant/pages/SourcesPage";
 import { AcceptInvitePage } from "@/client/pages/AcceptInvitePage";
 import { AgentsPage } from "@/client/pages/AgentsPage";
 import { ApiKeysPage } from "@/client/pages/ApiKeysPage";
@@ -193,6 +194,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <LeadsPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/sources"
+                                  element={
+                                    <ProtectedRoute requireAdmin>
+                                      <SourcesPage />
                                     </ProtectedRoute>
                                   }
                                 />

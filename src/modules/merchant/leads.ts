@@ -7,7 +7,7 @@ import basePrisma from "@/api/lib/prisma";
 import { NotFoundError, TenantTargetRequiredError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertUsableCount } from "@/lib/query-param";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { scoreLeadText } from "./scorer";
 
@@ -53,6 +53,11 @@ export interface LeadDto {
   score: number;
   status: MerchantLeadStatus;
   matches: LeadMatchDto[];
+  // Discovery provenance: which configured source scanned this post, and the
+  // upstream post id it carries. Both null on a manually-ingested lead.
+  sourceId: string | null;
+  sourceName: string | null;
+  externalId: string | null;
   createdAt: Date;
 }
 
@@ -66,6 +71,9 @@ const SELECT = {
   groupName: true,
   score: true,
   status: true,
+  sourceId: true,
+  externalId: true,
+  source: { select: { name: true } },
   createdAt: true,
   matches: {
     orderBy: { score: "desc" as const },
@@ -87,6 +95,9 @@ type LeadRow = {
   groupName: string | null;
   score: number;
   status: MerchantLeadStatus;
+  sourceId: bigint | null;
+  externalId: string | null;
+  source: { name: string } | null;
   createdAt: Date;
   matches: {
     score: number;
@@ -112,6 +123,9 @@ function toDto(r: LeadRow): LeadDto {
       score: m.score,
       reason: m.reason,
     })),
+    sourceId: r.sourceId === null ? null : String(r.sourceId),
+    sourceName: r.source?.name ?? null,
+    externalId: r.externalId,
     createdAt: r.createdAt,
   };
 }
@@ -128,10 +142,20 @@ export const leadIngestSchema = z
   .strict();
 export type LeadIngestInput = z.infer<typeof leadIngestSchema>;
 
+// What the discovery scanner feeds in on top of a plain post: the upstream id
+// the dedupe key is built from, and which configured source found it. Never
+// part of leadIngestSchema - the REST ingest endpoint cannot forge provenance.
+export interface ScannedLeadInput extends LeadIngestInput {
+  externalId: string;
+  sourceId: bigint;
+}
+
 export interface ListLeadsFilter {
   limit?: number;
   cursor?: bigint;
   status?: MerchantLeadStatus;
+  // Restrict to the leads one configured source produced (/sources/:id/leads).
+  sourceId?: bigint;
 }
 
 export interface LeadsPage {
@@ -152,7 +176,10 @@ export async function listLeads(
   const take = clampLimit(filter.limit);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.lead.findMany({
-      where: filter.status ? { status: filter.status } : {},
+      where: {
+        ...(filter.status ? { status: filter.status } : {}),
+        ...(filter.sourceId !== undefined ? { sourceId: filter.sourceId } : {}),
+      },
       orderBy: { id: "desc" },
       take,
       ...(filter.cursor != null
@@ -183,6 +210,88 @@ export async function getLead(
 // One ingest: score the post text against the tenant's active catalog, write the
 // lead and its product matches in the same transaction. The scorer is pure and
 // synchronous, so there is no network I/O inside the scoped transaction.
+//
+// `provenance` marks a scanned post (source + upstream id); when it is present
+// the (tenant, platform, external_id) dedupe key is checked FIRST and an
+// existing row answers null instead of a second lead.
+async function ingestLeadOn(
+  db: ScopedDb,
+  ctx: TenantContext,
+  tenantId: bigint,
+  data: LeadIngestInput,
+  provenance?: { sourceId: bigint; externalId: string },
+): Promise<LeadDto | null> {
+  if (provenance) {
+    const existing = await db.lead.findUnique({
+      where: {
+        tenantId_platform_externalId: {
+          tenantId,
+          platform: data.platform,
+          externalId: provenance.externalId,
+        },
+      },
+      select: { id: true },
+    });
+    if (existing) return null;
+  }
+  const products = await db.merchantProduct.findMany({
+    where: { active: true },
+    select: { id: true, name: true, tags: true },
+  });
+  const scored = scoreLeadText(data.text, products);
+  const lead = await db.lead.create({
+    data: {
+      tenantId,
+      platform: data.platform,
+      authorName: data.authorName,
+      authorHandle: data.authorHandle ?? null,
+      text: data.text,
+      sourceUrl: data.sourceUrl ?? null,
+      groupName: data.groupName ?? null,
+      sourceId: provenance?.sourceId ?? null,
+      externalId: provenance?.externalId ?? null,
+      score: scored.score,
+    },
+    select: { id: true },
+  });
+  if (scored.matches.length > 0) {
+    // Flat createMany (not a nested write): the tenancy extension only
+    // injects tenant_id on top-level writes, so each row names it here.
+    await db.leadProductMatch.createMany({
+      data: scored.matches.map((m) => ({
+        tenantId,
+        leadId: lead.id,
+        productId: m.productId,
+        score: m.score,
+        reason: m.reason,
+      })),
+    });
+  }
+  const row = await db.lead.findUniqueOrThrow({
+    where: { id: lead.id },
+    select: SELECT,
+  });
+  const dto = toDto(row);
+  await auditMutation(db, ctx, {
+    action: "merchant_lead.ingest",
+    target: `lead:${dto.id}`,
+    after: {
+      platform: dto.platform,
+      authorName: dto.authorName,
+      score: dto.score,
+      signals: scored.signals,
+      matches: dto.matches.map((m) => m.productId),
+      ...(provenance
+        ? {
+            sourceId: String(provenance.sourceId),
+            externalId: provenance.externalId,
+          }
+        : {}),
+    },
+  });
+  return dto;
+}
+
 export async function ingestLead(
   ctx: TenantContext,
   input: LeadIngestInput,
@@ -191,54 +300,37 @@ export async function ingestLead(
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
   const tenantId = ctx.tenantId;
   const data = parseInput(leadIngestSchema, input);
-  return runScopedOn(base, ctx, async (db) => {
-    const products = await db.merchantProduct.findMany({
-      where: { active: true },
-      select: { id: true, name: true, tags: true },
-    });
-    const scored = scoreLeadText(data.text, products);
-    const lead = await db.lead.create({
-      data: {
-        tenantId,
-        platform: data.platform,
-        authorName: data.authorName,
-        authorHandle: data.authorHandle ?? null,
-        text: data.text,
-        sourceUrl: data.sourceUrl ?? null,
-        groupName: data.groupName ?? null,
-        score: scored.score,
-      },
-      select: { id: true },
-    });
-    if (scored.matches.length > 0) {
-      // Flat createMany (not a nested write): the tenancy extension only
-      // injects tenant_id on top-level writes, so each row names it here.
-      await db.leadProductMatch.createMany({
-        data: scored.matches.map((m) => ({
-          tenantId,
-          leadId: lead.id,
-          productId: m.productId,
-          score: m.score,
-          reason: m.reason,
-        })),
-      });
-    }
-    const row = await db.lead.findUniqueOrThrow({
-      where: { id: lead.id },
-      select: SELECT,
-    });
-    const dto = toDto(row);
-    await auditMutation(db, ctx, {
-      action: "merchant_lead.ingest",
-      target: `lead:${dto.id}`,
-      after: {
-        platform: dto.platform,
-        authorName: dto.authorName,
-        score: dto.score,
-        signals: scored.signals,
-        matches: dto.matches.map((m) => m.productId),
-      },
-    });
-    return dto;
-  });
+  const dto = await runScopedOn(base, ctx, (db) =>
+    ingestLeadOn(db, ctx, tenantId, data),
+  );
+  // The manual path carries no provenance, so ingestLeadOn never answers null.
+  return dto as LeadDto;
+}
+
+// The discovery door into the same ingest: a scanned post with its provenance.
+// Answers null when (tenant, platform, externalId) already has a lead - the
+// caller counts it as deduped, not as an error.
+export async function ingestScannedLead(
+  ctx: TenantContext,
+  input: ScannedLeadInput,
+  base: PrismaClient = basePrisma,
+): Promise<LeadDto | null> {
+  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
+  const tenantId = ctx.tenantId;
+  // Split provenance off BEFORE parseInput: leadIngestSchema is strict, and an
+  // extra key on the record is a rejection, not a detail.
+  const { sourceId, externalId: rawExternalId, ...post } = input;
+  const data = parseInput(leadIngestSchema, post);
+  const externalId = rawExternalId.trim();
+  // Unreachable through the scanner path (normalize guarantees a non-empty id,
+  // hashing content when the upstream gave none) - a caller-side invariant.
+  if (externalId === "") {
+    throw new Error("scanned lead requires externalId");
+  }
+  return runScopedOn(base, ctx, (db) =>
+    ingestLeadOn(db, ctx, tenantId, data, {
+      sourceId,
+      externalId,
+    }),
+  );
 }

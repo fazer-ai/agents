@@ -17,6 +17,17 @@ import { instanceIdentity } from "@/lib/instance";
 import { badQueryParam } from "@/lib/query-param";
 import type { TenantContext } from "@/lib/tenancy";
 import {
+  createLeadSource,
+  deleteLeadSource,
+  getLeadSource,
+  LEAD_SOURCE_KINDS,
+  type LeadSourceCreate,
+  type LeadSourceUpdate,
+  listLeadSources,
+  runLeadSource,
+  updateLeadSource,
+} from "@/modules/discovery/sources";
+import {
   applyMerchantImport,
   csvToRowInputs,
   type ImportRowInput,
@@ -52,6 +63,11 @@ import { tagMerchantProductWithLlm } from "@/modules/merchant/tagging";
 // translate('errors.merchantOrderNotFound', 'Order not found.')
 // translate('errors.merchantTaggingFailed', 'The auto-tagger did not return a usable result.')
 // translate('errors.merchantImportEmpty', 'The import carried no product rows: send a CSV file or a rows array.')
+// translate('errors.merchantSourceNotFound', 'Source not found.')
+// translate('errors.merchantSourceKindUnsupported', 'Unsupported source kind (supported: {{kinds}}).')
+// translate('errors.merchantSourceModeUnsupported', 'Mode {{mode}} is not supported for source kind {{kind}}.')
+// translate('errors.merchantSourceCredentialRequired', 'This source needs a credential - point its credentialRef at a filled vault entry.')
+// translate('errors.merchantSourceContentMissing', 'This source has no content to import - pass it in the run request or store it in the source config.')
 
 // Merchant MVP: per-tenant catalog, social-lead pipeline (rule-based scoring, no
 // LLM) and orders. Reads are for any authenticated member; writes are TENANT_ADMIN.
@@ -602,6 +618,223 @@ export const merchantController = new Elysia({
       detail: doc(
         "Get order",
         "Fetch a single merchant order with its line items by id.",
+      ),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  // Discovery lead sources: the configured rails that scan social platforms and
+  // feed the ingest pipeline. CRUD is TENANT_ADMIN; reads any member.
+  .get(
+    "/sources",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      sources: await listLeadSources(ctxOrThrow(tenantContext)),
+    }),
+    {
+      requireAuth: true,
+      detail: doc(
+        "List lead sources",
+        "List the tenant's configured discovery sources, newest status first, with per-source lead counts.",
+      ),
+      response: errors(401, 403, 404),
+    },
+  )
+  .get(
+    "/sources/:id",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      source: await getLeadSource(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      ),
+    }),
+    {
+      requireAuth: true,
+      params: idParam,
+      detail: doc("Get lead source", "Fetch a single discovery source by id."),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  .post(
+    "/sources",
+    async ({ tenantContext, body }) => ({
+      instance: instanceIdentity,
+      source: await createLeadSource(
+        ctxOrThrow(tenantContext),
+        body as LeadSourceCreate,
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        name: t.String({ minLength: 1, maxLength: 200 }),
+        kind: t.String({
+          minLength: 1,
+          maxLength: 60,
+          description: `Source kind: ${LEAD_SOURCE_KINDS.join(", ")}.`,
+        }),
+        config: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description:
+              "Kind-specific config object, validated against the kind's schema (file_import: format/platform/content; threads_api: credentialRef/keywords; tiktok_comments: mode/keywords).",
+          }),
+        ),
+        intervalMin: t.Optional(
+          t.Integer({
+            minimum: 1,
+            maximum: 10080,
+            description:
+              "Scan interval in minutes; honoured when a scheduler is wired (manual run works regardless).",
+          }),
+        ),
+        enabled: t.Optional(t.Boolean()),
+      }),
+      detail: doc(
+        "Create lead source",
+        "Create a discovery source: a file_import export rail, a Threads keyword search, or TikTok comment mining (fixture mode).",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .patch(
+    "/sources/:id",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      source: await updateLeadSource(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        body as LeadSourceUpdate,
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: idParam,
+      body: t.Object({
+        name: t.Optional(t.String({ minLength: 1, maxLength: 200 })),
+        kind: t.Optional(
+          t.String({
+            minLength: 1,
+            maxLength: 60,
+            description: `Source kind: ${LEAD_SOURCE_KINDS.join(", ")}.`,
+          }),
+        ),
+        config: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description:
+              "Kind-specific config; replaces the stored config wholesale.",
+          }),
+        ),
+        intervalMin: t.Optional(t.Integer({ minimum: 1, maximum: 10080 })),
+        enabled: t.Optional(t.Boolean()),
+      }),
+      detail: doc(
+        "Update lead source",
+        "Update a discovery source's mutable fields by id.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .delete(
+    "/sources/:id",
+    async ({ tenantContext, params }) => {
+      await deleteLeadSource(ctxOrThrow(tenantContext), requireDbId(params.id));
+      return { instance: instanceIdentity, success: true };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      params: idParam,
+      detail: doc(
+        "Delete lead source",
+        "Delete a discovery source. Its leads are kept (their sourceId is cleared).",
+      ),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  .post(
+    "/sources/:id/run",
+    async ({ tenantContext, params, body }) => {
+      const file = body?.file;
+      const content =
+        body?.content ?? (file !== undefined ? await file.text() : undefined);
+      const result = await runLeadSource(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        {
+          content,
+          format: body?.format,
+        },
+      );
+      return { instance: instanceIdentity, ...result };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      params: idParam,
+      // Optional body: for file_import, either a `content` string (JSON) or an
+      // uploaded `file` (multipart) overrides the stored config for this run.
+      body: t.Optional(
+        t.Object({
+          content: t.Optional(
+            t.String({
+              description:
+                "file_import only: raw JSONL/CSV content to import for this run (overrides config.content).",
+            }),
+          ),
+          format: t.Optional(
+            t.Union([t.Literal("auto"), t.Literal("jsonl"), t.Literal("csv")], {
+              description: "file_import only: force the parser format.",
+            }),
+          ),
+          file: t.Optional(
+            t.File({
+              description:
+                "file_import only: uploaded JSONL/CSV export (multipart form).",
+            }),
+          ),
+        }),
+      ),
+      detail: doc(
+        "Run a source scan",
+        "Runs one scan now: fetch -> normalize -> dedupe on (tenant, platform, externalId) -> ingest with scoring. Returns {scanned, new, deduped, skipped, leads:[ids]} and always writes lastRunAt/lastStatus/lastError.",
+      ),
+      response: errors(400, 401, 403, 404, 422, 502),
+    },
+  )
+  .get(
+    "/sources/:id/leads",
+    async ({ tenantContext, params, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const id = requireDbId(params.id);
+      // 404 on a missing source, not an empty page: the caller named a row.
+      await getLeadSource(ctx, id);
+      const page = await listLeads(ctx, {
+        sourceId: id,
+        limit: parseQueryCount(query.limit, "limit"),
+        cursor: parseQueryId(query.cursor, "cursor"),
+        status: parseLeadStatus(query.status),
+      });
+      return {
+        instance: instanceIdentity,
+        leads: page.items,
+        nextCursor: page.nextCursor,
+      };
+    },
+    {
+      requireAuth: true,
+      params: idParam,
+      query: t.Composite([
+        pageQuery,
+        t.Object({
+          status: t.Optional(
+            t.String({
+              description:
+                "Optional funnel-stage filter (NEW, CONTACTED, QUALIFIED, CONVERTED, DEAD).",
+            }),
+          ),
+        }),
+      ]),
+      detail: doc(
+        "List a source's leads",
+        "Returns a page of scored leads (newest first) this discovery source produced; use nextCursor to page.",
       ),
       response: errors(400, 401, 403, 404),
     },

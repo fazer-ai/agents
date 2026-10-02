@@ -59,6 +59,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "PlaygroundTurnNote",
   "MerchantProduct",
   "Lead",
+  "LeadSource",
   "LeadProductMatch",
   "MerchantOrder",
   "MerchantOrderItem",

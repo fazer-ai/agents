@@ -71,9 +71,10 @@ export class ConflictError extends AppError {
   constructor(
     message = "Conflict",
     translationKey?: ErrorTranslationKey,
+    translationParams?: Record<string, string | number>,
     field?: string,
   ) {
-    super(message, 409, translationKey, undefined, field);
+    super(message, 409, translationKey, translationParams, field);
   }
 }
 

@@ -6,20 +6,21 @@ import { NotFoundError } from "@/lib/errors";
 import { fetchBounded } from "@/lib/outbound";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
-import { getMerchantProduct, type MerchantProductDto } from "./products";
+import {
+  getMerchantProduct,
+  type MerchantProductDto,
+  type ProductAttributes,
+} from "./products";
 import { normalizeVi } from "./scorer";
 
-// PIM-lite auto-tagger: one product at a time is sent to the LOCAL OpenAI-shaped
-// gateway, which classifies it into the shop taxonomy below and extracts the
-// facets (size/color/material/price segment) a customer would filter on. The
-// write happens ONLY on a verified-JSON success: a refusal, a network failure
-// or an answer that is not the declared shape leaves the row untouched, so
-// tagSource="llm" is never stamped on a guess.
-//
-// The gateway call sits OUTSIDE any runScoped transaction on purpose:
-// multi-tenant.ts pins a pooled connection for the length of a tx and a 15-40s
-// LLM round-trip held inside one would drain the pool (see the header comment
-// there). The flow is read (scoped) -> fetch (no tx) -> write (scoped).
+// PIM-lite auto-tagger: one product at a time is sent to the LOCAL OpenAI-shaped gateway,
+// which classifies it into the shop taxonomy below and extracts the facets
+// (size/color/material/price segment) a customer would filter on. The write happens ONLY on
+// a verified-JSON success: a refusal, a network failure or an answer that is not the
+// declared shape leaves the row untouched, so tagSource="llm" is never stamped on a guess.
+// The gateway call sits OUTSIDE any runScoped transaction: a scoped tx pins a pooled
+// connection and a 15-40s LLM round-trip inside one would drain the pool - the flow is
+// read (scoped) -> fetch (no tx) -> write (scoped).
 
 // The shop taxonomy the model must pick from. Vietnamese display labels, one
 // node per category; "khác" is the honest fallback the prompt instructs.
@@ -49,12 +50,19 @@ const attributeValueSchema = z.union([
   z.number(),
   z.boolean(),
 ]);
+// `attributes` stays `z.unknown()`: a constrained record would let a
+// model-chosen key reach a refusal path. Each VALUE is checked in
+// parseTaggingResponse, where a bad one fails the answer like a schema miss.
 const taggingResultSchema = z.object({
   category: z.string().min(1).max(200),
   tags: z.array(z.string().min(1).max(100)).max(50).default([]),
-  attributes: z.record(z.string(), attributeValueSchema).default({}),
+  attributes: z.record(z.string(), z.unknown()).default({}),
 });
-export type TaggingResult = z.infer<typeof taggingResultSchema>;
+export interface TaggingResult {
+  category: string;
+  tags: string[];
+  attributes: ProductAttributes;
+}
 
 // Category names the model returns get normalized the way the scorer normalizes
 // post text (diacritics stripped, lowercased) so "Thời trang nữ" and "thoi trang
@@ -87,7 +95,14 @@ export function parseTaggingResponse(content: string): TaggingResult | null {
     return null;
   }
   const result = taggingResultSchema.safeParse(parsed);
-  return result.success ? result.data : null;
+  if (!result.success) return null;
+  const attributes: ProductAttributes = {};
+  for (const [key, value] of Object.entries(result.data.attributes)) {
+    const parsedValue = attributeValueSchema.safeParse(value);
+    if (!parsedValue.success) return null;
+    attributes[key] = parsedValue.data;
+  }
+  return { ...result.data, attributes };
 }
 
 // Manual tags are never silently overwritten: the LLM's list is UNIONED onto

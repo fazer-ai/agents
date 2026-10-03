@@ -7,9 +7,11 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { ingestScannedLead, type LeadDto } from "@/modules/merchant/leads";
+import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import {
   fileImportConfigSchema,
   type ImportFormat,
@@ -24,18 +26,14 @@ import {
 import { scanThreadsApi, threadsConfigSchema } from "./threads";
 import { scanTiktokComments, tiktokConfigSchema } from "./tiktok";
 
-// Lead sources: the configured rails that scan social platforms and feed the
-// merchant lead pipeline. `kind` selects a scanner from SOURCE_KIND_REGISTRY;
-// everything after the scan (normalize -> dedupe -> score -> store) is the
-// shared path in runLeadSource, so a new kind only ever owns its fetch.
+// Lead sources: the configured rails that scan social platforms and feed the merchant lead
+// pipeline. `kind` selects a scanner from SOURCE_KIND_REGISTRY; everything after the scan
+// (normalize -> dedupe -> score -> store) is the shared path in runLeadSource, so a new kind
+// only ever owns its fetch. Dedupe is the lead table's (tenant, platform, external_id) key.
 //
-// runLeadSource keeps no state between calls beyond LeadSource.lastRun*/lastError
-// bookkeeping; dedupe is the lead table's (tenant, platform, external_id) key.
-//
-// `enabled` + `intervalMin` drive the recurring scan (./schedule.ts, ./scan-jobs.ts):
-// one perpetual `LEAD_SOURCE_SCAN` scheduler row per source, armed here inside the
-// writer's own transaction - a source that committed without its row would be
-// enabled and never scanned, with nothing but a restart to notice.
+// `enabled` + `intervalMin` drive the recurring scan (./schedule.ts, ./scan-jobs.ts): one
+// perpetual `LEAD_SOURCE_SCAN` scheduler row per source, armed here inside the writer's own
+// transaction - a source that committed without its row would be enabled and never scanned.
 
 export const LEAD_SOURCE_KINDS = [
   "file_import",
@@ -161,10 +159,38 @@ function configDto(
   const out: Record<string, unknown> = {
     ...(config as Record<string, unknown>),
   };
+  // A `credentialRef` inside a config is a vault reference: only the canonical
+  // `vault:<id>` spelling ever leaves the service, so a stored non-ref value
+  // (a pasted token, say) is never echoed back. Audit projections share this
+  // DTO, so the trail gets the same shape.
+  if (typeof out.credentialRef === "string") {
+    out.credentialRef = readableVaultRef(out.credentialRef);
+  }
   const content = out.content;
   if (!includeContent && typeof content === "string") {
     delete out.content;
     out.contentChars = content.length;
+  }
+  return out;
+}
+
+// The write half of the same rule: a config's `credentialRef` must BE a vault
+// reference, canonicalized to `vault:<id>` by `requireVaultRef` (which also
+// verifies the entry exists) before it is ever stored.
+async function canonicalizeConfigRefs(
+  db: ScopedDb,
+  config: unknown,
+): Promise<Record<string, unknown>> {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) {
+    return {};
+  }
+  const out = { ...(config as Record<string, unknown>) };
+  if (typeof out.credentialRef === "string") {
+    out.credentialRef = await requireVaultRef(
+      db,
+      out.credentialRef,
+      "config.credentialRef",
+    );
   }
   return out;
 }
@@ -263,8 +289,9 @@ export async function createLeadSource(
   const spec = SOURCE_KIND_REGISTRY[kind];
   // Config is validated AT the boundary, per kind, so a stored row is always
   // runnable-shaped (what runLeadSource later re-parses).
-  const config = parseInput(spec.configSchema, data.config ?? {}, "config");
+  const parsed = parseInput(spec.configSchema, data.config ?? {}, "config");
   return runScopedOn(base, ctx, async (db) => {
+    const config = await canonicalizeConfigRefs(db, parsed);
     const row = await db.leadSource.create({
       data: {
         tenantId,
@@ -306,7 +333,10 @@ export async function updateLeadSource(
     const spec = SOURCE_KIND_REGISTRY[kind];
     const config =
       data.config !== undefined || data.kind !== undefined
-        ? parseInput(spec.configSchema, data.config ?? {}, "config")
+        ? await canonicalizeConfigRefs(
+            db,
+            parseInput(spec.configSchema, data.config ?? {}, "config"),
+          )
         : undefined;
     const row = await db.leadSource.update({
       where: { id },
@@ -391,10 +421,9 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 function errMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
   // The column is a String; cap it so a multi-line stack or a leaked body
   // excerpt does not sit in a UI field.
-  return raw.length > 500 ? `${raw.slice(0, 500)}...` : raw;
+  return sanitizeErrorMessage(err, 500);
 }
 
 // One scan of one source, run to completion: scan -> normalize -> dedupe ->

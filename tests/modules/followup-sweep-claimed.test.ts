@@ -174,8 +174,11 @@ async function elapse(convId: number, ms: number): Promise<void> {
            last_inbound_at = last_inbound_at - ${ms} * interval '1 millisecond',
            last_follow_up_at = last_follow_up_at - ${ms} * interval '1 millisecond'
      WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${convId}`;
+  // run_at is written as the UTC wall everywhere else (the arm passes a Date parameter), so the
+  // backdate writes the same wall - plain now() lands the session zone's wall and the claim's
+  // own UTC cutoff would read it as future on a non-UTC machine.
   await suDb.$executeRaw`
-    UPDATE scheduler_jobs SET run_at = now() - interval '1 second'
+    UPDATE scheduler_jobs SET run_at = (now() - interval '1 second') AT TIME ZONE 'UTC'
      WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(convId)}`;
 }
 

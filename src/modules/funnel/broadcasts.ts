@@ -18,15 +18,13 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { LEAD_STATUSES } from "@/modules/merchant/leads";
 
-// Broadcasts (per-tenant): the composer rail for one-to-many outreach. A
-// broadcast is a template + an audience filter resolved ONCE at create into
-// recipient rows, each carrying the rendered body the operator copies out by
-// hand. There is deliberately no transport: "send" marks the rail complete and
-// is where a real rail (zca-bridge / Zalo OA) would plug in later.
-//
-// Template vocabulary is intentionally small and literal: {{authorName}},
-// {{authorHandle}}, {{platform}}, {{groupName}}. Anything else passes through
-// untouched so the operator sees their typo instead of a silently blank field.
+// Broadcasts (per-tenant): the composer rail for one-to-many outreach. A broadcast is a
+// template + an audience filter resolved ONCE at create into recipient rows, each carrying
+// the rendered body the operator copies out by hand. There is deliberately no transport:
+// "send" marks the rail complete and is where a real rail (zca-bridge / Zalo OA) would plug
+// in later. Template vocabulary is intentionally small and literal: {{authorName}},
+// {{authorHandle}}, {{platform}}, {{groupName}} - anything else passes through untouched so
+// the operator sees their typo instead of a silently blank field.
 
 // Resolved audiences are capped so a filter mistake stays a page of work, not a
 // thousand hand-sends.
@@ -483,7 +481,7 @@ export async function sendBroadcast(
     const current = await getBroadcastRowOn(db, id);
     if (current.status === "SENT") {
       throw new AppError(
-        "this broadcast was already sent",
+        "a sent broadcast can no longer be edited",
         409,
         "errors.merchantBroadcastNotEditable",
       );

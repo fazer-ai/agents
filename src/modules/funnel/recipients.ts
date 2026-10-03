@@ -49,7 +49,7 @@ export async function setRecipientStatus(
     if (!recipient) {
       throw new NotFoundError(
         "broadcast recipient not found",
-        "errors.merchantBroadcastNotFound",
+        "errors.merchantBroadcastRecipientNotFound",
       );
     }
     const now = new Date();

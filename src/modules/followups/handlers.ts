@@ -712,7 +712,7 @@ export async function followUpHandler(
     const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.$executeRaw(Prisma.sql`
         UPDATE conversations
-           SET last_follow_up_at = now()
+           SET last_follow_up_at = now() AT TIME ZONE 'UTC'
          WHERE id = ${ctx.conv.id}
            AND ${jobNotRetiredSql(job)}`),
     );

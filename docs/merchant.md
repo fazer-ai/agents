@@ -57,9 +57,12 @@ score -> product match).
   (optional keyword filter). `mode: "api"` refuses: TikTok exposes no public
   keyword comment search.
 
-Runs are manual: `POST /api/v1/merchant/sources/:id/run` or the page's "Run
-now". `intervalMin`/`enabled` are stored for a future scheduler lane but
-nothing consumes them yet.
+Runs are manual (`POST /api/v1/merchant/sources/:id/run` or the page's "Run
+now") or recurring: a source with `enabled: true` and `intervalMin` set gets
+one self-rescheduling `LEAD_SOURCE_SCAN` scheduler row, re-armed at boot and
+due `intervalMin` after its last run. The row reschedules itself through
+failures - the source's `lastStatus`/`lastError` carry the outcome, the
+schedule keeps its interval.
 
 ## Leads (`/leads`)
 
@@ -104,9 +107,12 @@ sleeps at the next due `next_run_at`, or 15 minutes when idle.
 ## Orders (`/orders`)
 
 Orders are drafted from a lead (or by hand) with line items priced off the
-catalog. Statuses: `DRAFT -> CONFIRMED -> PAID` or `CANCELLED`. `leadId`
-keeps the attribution chain post -> lead -> order, which is what the
-analytics conversion number reads.
+catalog. Statuses: `DRAFT -> CONFIRMED -> PAID`, or `CANCELLED` from an open
+stage; terminal states take no writes. `PATCH
+/api/v1/merchant/orders/:id` moves an order along the lifecycle - illegal
+jumps return 409, and the write is compare-and-set so two tabs cannot both
+win. `leadId` keeps the attribution chain post -> lead -> order, which is
+what the analytics conversion number reads.
 
 ## Analytics (`/analytics`)
 
@@ -118,6 +124,10 @@ orders count and `totalAmount` by status, lead-to-order conversion
 
 ## Drafts and the outbox - safety and compliance
 
+(The outreach surface is separate: `POST /api/v1/merchant/outreach/*` sends
+over configured bridges, and every job starts `QUEUED` behind an operator's
+explicit approval. What follows is the nurture rail only.)
+
 The nurture outbox is a **human-executed rail by design**:
 
 - No automatic external outreach exists in this feature. A `PENDING` row is
@@ -128,13 +138,15 @@ The nurture outbox is a **human-executed rail by design**:
 - Enroll leads who asked for contact or engaged publicly; the sequence is
   follow-up, not cold spam. Keep step counts low (1-3) and delays honest.
 - `channel` on a step is a label for the operator (`dm` vs `reply`), not a
-  delivery mechanism.
+  delivery mechanism. The drain stamps it on each staged outbox row so the
+  card can name the rail without re-reading a sequence that may have been
+  edited since.
 - Every stage and transition is audited (`nurture_sequence.*`,
   `nurture_enrollment.*`, `nurture_outbox.*`), so the record shows who
   marked what sent and when.
 - Personal data in rendered bodies stays inside the tenant's RLS fence;
-  the outbox row carries the lead's display name and platform, nothing
-  more.
+  the outbox row carries the lead's display name, platform and source URL
+  for context - nothing more.
 
 ## Onboarding checklist (`/onboarding`)
 

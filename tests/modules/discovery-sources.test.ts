@@ -23,6 +23,7 @@ import {
 } from "@/modules/discovery/sources";
 import { scanTiktokComments } from "@/modules/discovery/tiktok";
 import { listLeads } from "@/modules/merchant/leads";
+import { ensurePendingVaultEntryOn } from "@/modules/vault/service";
 
 // Discovery sources: parser + normalization stay pure (no DB); run/bookkeeping
 // tests use their own app-role client (TEST_APP_DATABASE_URL) so they run under
@@ -367,6 +368,9 @@ describe.skipIf(!dbUp)("discovery source runs", () => {
         `DELETE FROM merchant_products WHERE tenant_id = ${tenantId}`,
       );
       await su.$executeRawUnsafe(
+        `DELETE FROM vault_entries WHERE tenant_id = ${tenantId}`,
+      );
+      await su.$executeRawUnsafe(
         `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
       );
       await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantId}`);
@@ -476,14 +480,42 @@ describe.skipIf(!dbUp)("discovery source runs", () => {
     expect(stored.lastRunAt).not.toBeNull();
   });
 
-  test("threads_api without a resolvable credential fails cleanly and books error", async () => {
+  test("a credentialRef naming no vault entry is refused at write", async () => {
+    await expect(
+      createLeadSource(
+        ctx(),
+        {
+          name: "Threads search",
+          kind: "threads_api",
+          config: {
+            credentialRef: "vault:999999999",
+            keywords: ["cần mua"],
+          },
+        },
+        appDb,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      translationKey: "errors.vaultRefNotFound",
+      field: "config.credentialRef",
+    });
+  });
+
+  test("threads_api with an unfilled credential fails cleanly and books error", async () => {
+    // A pending vault entry exists (so the write passes) but holds no secret -
+    // the state tryResolveApiKeyEntry cannot run on.
+    const { ref } = await runScopedOn(appDb, ctx(), (db) =>
+      ensurePendingVaultEntryOn(db, ctx(), {
+        name: `threads-${process.pid}`,
+      }),
+    );
     const source = await createLeadSource(
       ctx(),
       {
         name: "Threads search",
         kind: "threads_api",
         config: {
-          credentialRef: "vault:999999999",
+          credentialRef: ref,
           keywords: ["cần mua"],
         },
       },

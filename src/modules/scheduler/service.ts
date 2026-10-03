@@ -210,7 +210,7 @@ export async function upsertJobRows(
            t.payload::jsonb,
            'PENDING'::"SchedulerJobStatus",
            now(),
-           now()
+           now() AT TIME ZONE 'UTC'
       FROM unnest(${keys}::text[], ${payloads}::text[]) AS t(dedupe_key, payload)
     ${
       params.rearm === "once"
@@ -225,7 +225,7 @@ export async function upsertJobRows(
            -- than left behind from a previous arming.
            payload_secret = NULL,
            attempts = ${params.rearm === "new-work" ? Prisma.sql`0` : Prisma.sql`scheduler_jobs.attempts`},
-           updated_at = now()`
+           updated_at = now() AT TIME ZONE 'UTC'`
     }`;
 }
 
@@ -411,7 +411,7 @@ export async function retireJobsByDedupeKeyOn(
          SET status = 'DONE',
              payload = payload || ${stamp}::jsonb,
              claim_seq = claim_seq + 1,
-             updated_at = now()
+             updated_at = now() AT TIME ZONE 'UTC'
        WHERE tenant_id = ${tenantId}
          AND kind = ${kind}::"SchedulerJobKind"
          AND dedupe_key = ${dedupeKey}
@@ -866,7 +866,7 @@ export function claimSql(
   return Prisma.sql`
     WITH ${due}
     UPDATE scheduler_jobs
-    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
+    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now() AT TIME ZONE 'UTC'
     FROM due
     WHERE scheduler_jobs.id = due.id
     RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
@@ -1163,7 +1163,7 @@ export async function rescheduleJob(
                last_error = NULL,
                attempts = 0,
                payload = payload || ${patch}::jsonb,
-               updated_at = now()
+               updated_at = now() AT TIME ZONE 'UTC'
          WHERE id = ${id}
            AND tenant_id = ${tenantId}
            AND status = 'CLAIMED'
@@ -1248,8 +1248,8 @@ export async function reclaimAfterDeadline(
       db.$executeRaw`
         UPDATE scheduler_jobs
            SET status = 'CLAIMED'::"SchedulerJobStatus",
-               claimed_at = now(),
-               updated_at = now()
+               claimed_at = now() AT TIME ZONE 'UTC',
+               updated_at = now() AT TIME ZONE 'UTC'
          WHERE id = ${id}
            AND tenant_id = ${tenantId}
            AND status = 'PENDING'
@@ -1306,7 +1306,7 @@ export async function reapStaleJobs(
       SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
           attempts = attempts + 1,
           claimed_at = NULL,
-          updated_at = now()
+          updated_at = now() AT TIME ZONE 'UTC'
       WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
       RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,
                 attempts, claim_seq, status`);

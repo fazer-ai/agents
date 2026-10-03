@@ -38,8 +38,9 @@ import {
 // translate('errors.merchantLeadNotFound', 'Lead not found.')
 // translate('errors.merchantDraftNotFound', 'Reply draft not found.')
 // translate('errors.merchantDraftBadTransition', 'This draft cannot move from {{from}} to {{to}}.')
-// translate('errors.merchantDraftGenerateFailed', 'The draft generator did not return a usable reply.')
+// translate('errors.merchantDraftGenerateFailed', 'The draft generator did not return a usable reply: {{reason}}')
 // translate('errors.merchantBroadcastNotFound', 'Broadcast not found.')
+// translate('errors.merchantBroadcastRecipientNotFound', 'Broadcast recipient not found.')
 // translate('errors.merchantBroadcastNotEditable', 'A sent broadcast can no longer be edited.')
 
 // Merchant funnel (phase 2): per-lead reply drafts + the broadcast composer.
@@ -138,12 +139,12 @@ export const merchantFunnelController = new Elysia({
         body as ReplyDraftCreate,
       );
       if (!outcome.ok) {
+        const reason = outcome.detail ?? outcome.reason;
         throw new AppError(
-          outcome.detail
-            ? `The draft generator did not return a usable reply (${outcome.detail}).`
-            : "The draft generator did not return a usable reply.",
+          `The draft generator did not return a usable reply: ${reason}`,
           502,
           "errors.merchantDraftGenerateFailed",
+          { reason },
         );
       }
       return { instance: instanceIdentity, draft: outcome.draft };
@@ -297,7 +298,7 @@ export const merchantFunnelController = new Elysia({
         "List broadcasts",
         "Broadcast compositions (newest first) with resolved recipient counts.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .post(
@@ -325,7 +326,7 @@ export const merchantFunnelController = new Elysia({
         "Create a broadcast",
         "Resolves the audience filter into recipient rows (best score first, capped at 500) and renders each one's message body. The send itself is manual: the operator copies each body out.",
       ),
-      response: errors(400, 401, 403, 422),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(

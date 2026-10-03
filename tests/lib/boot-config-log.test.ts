@@ -25,6 +25,7 @@ const READABLE_STRING_FIELDS = [
   "ssrf.internalTargets",
   "hub.url",
   "hub.updateCheckUrl",
+  "outreach.zcaBridgeUrl",
 ];
 
 function clearStrings(obj: unknown, path = "", out: string[] = []): string[] {

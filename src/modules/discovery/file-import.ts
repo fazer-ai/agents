@@ -37,6 +37,7 @@ export function scanFileImport(
       `source "${source.name}" has no content to import - pass it in the run request or store it in config.content`,
       422,
       "errors.merchantSourceContentMissing",
+      { name: source.name },
     );
   }
   const records = parseImport(content, run.format ?? cfg.format ?? "auto");

@@ -10,7 +10,7 @@
  *
  * Generated components are post-processed where the host palette diverges:
  * `hover:bg-accent`/`text-accent-foreground` are rewritten to
- * `bg-bg-hover`/`text-text-primary` (see merchant/README note in docs/fazer-audit.md).
+ * `bg-bg-hover`/`text-text-primary`.
  *
  * This file is a standalone Tailwind v4 entry (`@import "tailwindcss"` is required for
  * bun-plugin-tailwind to compile the `@theme inline` block; utilities it re-emits are

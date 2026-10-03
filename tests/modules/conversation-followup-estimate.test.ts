@@ -1615,7 +1615,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       // silence, a death just now still belongs to an earlier episode.
       await suDb.$executeRaw`
         UPDATE scheduler_jobs
-           SET updated_at = now(),
+           SET updated_at = now() AT TIME ZONE 'UTC',
                payload = jsonb_build_object('threadId', ${threadId}::text, 'episode', '1')
          WHERE tenant_id = ${tenant} AND dedupe_key = ${key}`;
       const marked = await getConversationDetail(

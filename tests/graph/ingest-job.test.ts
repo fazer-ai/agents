@@ -808,9 +808,11 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       compactionEnabled: false,
       base: appDb,
     });
-    // Push it into the future, which is what a deferral leaves behind.
+    // Push it into the future, which is what a deferral leaves behind - a real deferral writes
+    // run_at through a Date parameter, the UTC wall, so the same wall goes in here whatever the
+    // session zone is.
     await suDb.$executeRawUnsafe(
-      `UPDATE scheduler_jobs SET run_at = now() + interval '1 hour'
+      `UPDATE scheduler_jobs SET run_at = (now() + interval '1 hour') AT TIME ZONE 'UTC'
         WHERE tenant_id = ${tenantId} AND kind = 'INGEST_MESSAGE'
           AND dedupe_key = 'ingest:${graphThreadId}:500'`,
     );
@@ -874,9 +876,13 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       compactionEnabled: false,
       base: appDb,
     });
-    // What a crash leaves: CLAIMED, and claimed long enough ago to be presumed dead.
+    // What a crash leaves: CLAIMED, and claimed long enough ago to be presumed dead. The wall
+    // clock lands in UTC because the app writes claimed_at through a Date parameter, which a
+    // timestamp column stores as the UTC wall - writing it with now() would land the session
+    // zone's wall on machines whose TZ is not UTC, and the reap's cutoff would never be older.
     await suDb.$executeRawUnsafe(
-      `UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = now() - interval '30 minutes'
+      `UPDATE scheduler_jobs SET status = 'CLAIMED',
+        claimed_at = (now() - interval '30 minutes') AT TIME ZONE 'UTC'
         WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:700'`,
     );
 
@@ -932,11 +938,13 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       base: appDb,
     });
     // A minute ago, not `now()`: the cutoff is computed from the HOST clock and written against the
-    // database's, and those differ by seconds on a Docker Postgres. At `now()` the assertion would
-    // turn on that skew and pass for whichever reason the machine happened to supply. A minute is
-    // unambiguously inside the five-minute window and unambiguously in the past.
+    // database's, and those differ by seconds on a Docker Postgres and by the session's whole zone
+    // offset anywhere else - the app writes claimed_at as the UTC wall through a Date parameter, so
+    // AT TIME ZONE 'UTC' here writes the same wall. A minute is unambiguously inside the five-minute
+    // window and unambiguously in the past.
     await suDb.$executeRawUnsafe(
-      `UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = now() - interval '1 minute'
+      `UPDATE scheduler_jobs SET status = 'CLAIMED',
+        claimed_at = (now() - interval '1 minute') AT TIME ZONE 'UTC'
         WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:701'`,
     );
 

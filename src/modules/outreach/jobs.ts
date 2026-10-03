@@ -16,6 +16,7 @@ import {
 import { parseInput } from "@/lib/parse-input";
 import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
 import { assertAccountQueueable, effectiveSentToday } from "./accounts";
 import { recordJobSent } from "./send";
@@ -93,7 +94,7 @@ function toDto(r: JobRow): OutreachJobDto {
     leadId: String(r.leadId),
     leadAuthorName: r.lead.authorName,
     leadAuthorHandle: r.lead.authorHandle,
-    leadText: r.lead.text.slice(0, 200),
+    leadText: clipText(r.lead.text, 200),
     kind: r.kind,
     body: r.body,
     status: r.status,
@@ -209,7 +210,13 @@ export async function queueOutreachJob(
   const leadId = requireDbId(data.leadId, "leadId");
   const scheduledAt = data.scheduledAt ? new Date(data.scheduledAt) : null;
   if (scheduledAt && Number.isNaN(scheduledAt.getTime())) {
-    throw new AppError("invalid scheduledAt", 400, "errors.invalidRequest");
+    throw new AppError(
+      "The value sent in scheduledAt is not valid.",
+      422,
+      "errors.invalidRequestValue",
+      { field: "scheduledAt" },
+      "scheduledAt",
+    );
   }
   try {
     return await runScopedOn(base, ctx, async (db) => {
@@ -317,8 +324,9 @@ async function transitionJob(
     }
     if (!from.includes(before.status)) {
       throw new ConflictError(
-        `This job is ${before.status} and cannot make this transition`,
+        `This job is ${before.status} and cannot make this transition.`,
         "errors.outreachJobState",
+        { status: before.status },
       );
     }
     const { count } = await db.outreachJob.updateMany({
@@ -330,7 +338,7 @@ async function transitionJob(
     if (count === 0) {
       throw new ConflictError(
         "This job changed state while the request was in flight",
-        "errors.outreachJobState",
+        "errors.outreachJobRace",
       );
     }
     await auditMutation(db, ctx, {
@@ -420,8 +428,9 @@ export async function markOutreachJobSent(
     }
     if (before.status !== "READY_FOR_MANUAL") {
       throw new ConflictError(
-        `Only a READY_FOR_MANUAL job can be marked sent (this job is ${before.status})`,
+        `This job is ${before.status} and cannot make this transition.`,
         "errors.outreachJobState",
+        { status: before.status },
       );
     }
     const { count } = await db.outreachJob.updateMany({
@@ -431,7 +440,7 @@ export async function markOutreachJobSent(
     if (count === 0) {
       throw new ConflictError(
         "This job changed state while the request was in flight",
-        "errors.outreachJobState",
+        "errors.outreachJobRace",
       );
     }
     await recordJobSent(db, ctx, before);

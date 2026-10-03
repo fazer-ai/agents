@@ -154,6 +154,24 @@ describe("csvToRowInputs", () => {
     const rows = csvToRowInputs("ten,gia,ton kho\nÁo thun,150000,5");
     expect(rows).toEqual([{ name: "Áo thun", price: "150000", stock: "5" }]);
   });
+
+  test("category lands on its own field, 'the loai' included - not on tags", () => {
+    const rows = csvToRowInputs(
+      "name,price,the loai,tags\nSerum,289000,my pham,serum|bha",
+    );
+    expect(rows).toEqual([
+      {
+        name: "Serum",
+        price: "289000",
+        category: "my pham",
+        tags: "serum|bha",
+      },
+    ]);
+    // And the validated row keeps them separate.
+    const { rows: validated } = validateImportRows(rows);
+    expect(validated[0]?.data?.category).toBe("my pham");
+    expect(validated[0]?.data?.tags).toEqual(["serum", "bha"]);
+  });
 });
 
 describe("validateImportRows (the dry-run half)", () => {
@@ -167,6 +185,7 @@ describe("validateImportRows (the dry-run half)", () => {
       price: 289000,
       stock: 12,
       description: null,
+      category: null,
       tags: ["serum", "bha"],
     });
     expect(rows[0]?.line).toBe(2);

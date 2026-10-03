@@ -63,6 +63,14 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "LeadProductMatch",
   "MerchantOrder",
   "MerchantOrderItem",
+  "NurtureSequence",
+  "NurtureEnrollment",
+  "NurtureOutbox",
+  "ReplyDraft",
+  "Broadcast",
+  "BroadcastRecipient",
+  "OutreachAccount",
+  "OutreachJob",
 ]);
 
 function withTenant<T>(data: T, tenantId: bigint): T {

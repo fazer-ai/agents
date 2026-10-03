@@ -2,20 +2,13 @@ import config from "@/config";
 import { ForbiddenError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 
-// Shared constants and the one feature gate for the "grey rails" outreach
-// module: controlled, opt-in sends from the tenant's own secondary/personal
-// accounts against merchant leads.
-//
-// The risk model, in one place:
-//   * OFF by default (OUTREACH_ENABLED=false). While off, every surface
-//     refuses: the REST routes throw 403 through assertOutreachEnabled, and the
-//     worker tick is never scheduled (and no-ops if it somehow runs).
-//   * Nothing is ever sent without an operator's explicit per-job approval:
-//     a job starts QUEUED and the worker only claims APPROVED rows.
-//   * Per-account dailyCap + cooldownMin bound the send rate, enforced in one
-//     atomic UPDATE so concurrent claims cannot race past them.
-//   * Every state change is audit-logged.
-// This is deliberately not a bulk send rail.
+// Shared constants and the one feature gate for the "grey rails" outreach module:
+// controlled, opt-in sends from the tenant's own secondary/personal accounts against
+// merchant leads. The risk model: OFF by default (OUTREACH_ENABLED=false, every surface
+// refuses and no worker tick is scheduled); nothing sends without an operator's explicit
+// per-job approval (jobs start QUEUED, the worker only claims APPROVED); per-account
+// dailyCap + cooldownMin bound the send rate in one atomic UPDATE; every state change is
+// audit-logged. Deliberately not a bulk send rail.
 
 // The transports an account can carry (String column: a new bridge is a code
 // deploy, not a migration). `manual` = the operator copies the text out and

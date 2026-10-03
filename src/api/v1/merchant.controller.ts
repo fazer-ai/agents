@@ -38,13 +38,17 @@ import {
   ingestLead,
   LEAD_STATUSES,
   type LeadIngestInput,
+  type LeadUpdateInput,
   listLeads,
+  updateLeadStatus,
 } from "@/modules/merchant/leads";
 import {
   createMerchantOrder,
   getMerchantOrder,
   listMerchantOrders,
   type MerchantOrderCreate,
+  type MerchantOrderUpdate,
+  updateMerchantOrderStatus,
 } from "@/modules/merchant/orders";
 import {
   createMerchantProduct,
@@ -61,13 +65,16 @@ import { tagMerchantProductWithLlm } from "@/modules/merchant/tagging";
 // translate('errors.merchantProductNotFound', 'Product not found.')
 // translate('errors.merchantLeadNotFound', 'Lead not found.')
 // translate('errors.merchantOrderNotFound', 'Order not found.')
-// translate('errors.merchantTaggingFailed', 'The auto-tagger did not return a usable result.')
+// translate('errors.merchantTaggingFailed', 'The auto-tagger did not return a usable result: {{reason}}')
 // translate('errors.merchantImportEmpty', 'The import carried no product rows: send a CSV file or a rows array.')
+// translate('errors.merchantOrderItemIncomplete', 'An order item needs a productId or a unitPrice.')
+// translate('errors.merchantOrderState', 'This order is {{from}} and cannot become {{to}}.')
+// translate('errors.merchantOrderRace', 'This order changed state while the request was in flight.')
 // translate('errors.merchantSourceNotFound', 'Source not found.')
 // translate('errors.merchantSourceKindUnsupported', 'Unsupported source kind (supported: {{kinds}}).')
 // translate('errors.merchantSourceModeUnsupported', 'Mode {{mode}} is not supported for source kind {{kind}}.')
-// translate('errors.merchantSourceCredentialRequired', 'This source needs a credential - point its credentialRef at a filled vault entry.')
-// translate('errors.merchantSourceContentMissing', 'This source has no content to import - pass it in the run request or store it in the source config.')
+// translate('errors.merchantSourceCredentialRequired', 'Source {{name}} needs a credential - point its credentialRef at a filled vault entry.')
+// translate('errors.merchantSourceContentMissing', 'Source {{name}} has no content to import - pass it in the run request or store it in the source config.')
 
 // Merchant MVP: per-tenant catalog, social-lead pipeline (rule-based scoring, no
 // LLM) and orders. Reads are for any authenticated member; writes are TENANT_ADMIN.
@@ -387,12 +394,12 @@ export const merchantController = new Elysia({
         requireDbId(params.id),
       );
       if (!outcome.ok) {
+        const reason = outcome.detail ?? outcome.reason;
         throw new AppError(
-          outcome.detail
-            ? `The auto-tagger did not return a usable result (${outcome.detail}).`
-            : "The auto-tagger did not return a usable result.",
+          `The auto-tagger did not return a usable result: ${reason}`,
           502,
           "errors.merchantTaggingFailed",
+          { reason },
         );
       }
       return { instance: instanceIdentity, product: outcome.product };
@@ -471,6 +478,38 @@ export const merchantController = new Elysia({
         "Fetch a single lead with its product matches by id.",
       ),
       response: errors(400, 401, 403, 404),
+    },
+  )
+  .patch(
+    "/leads/:id",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      lead: await updateLeadStatus(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        body as LeadUpdateInput,
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: idParam,
+      body: t.Object({
+        status: t.Union(
+          [
+            t.Literal("NEW"),
+            t.Literal("CONTACTED"),
+            t.Literal("QUALIFIED"),
+            t.Literal("CONVERTED"),
+            t.Literal("DEAD"),
+          ],
+          { description: "The operator's call on the lead's stage." },
+        ),
+      }),
+      detail: doc(
+        "Update lead status",
+        "Move a lead to any stage; the funnel stage is the operator's call (implicit CONTACTED/CONVERTED marks still happen beside it).",
+      ),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .post(
@@ -620,6 +659,35 @@ export const merchantController = new Elysia({
         "Fetch a single merchant order with its line items by id.",
       ),
       response: errors(400, 401, 403, 404),
+    },
+  )
+  .patch(
+    "/orders/:id",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      order: await updateMerchantOrderStatus(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        body as MerchantOrderUpdate,
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: idParam,
+      body: t.Object({
+        status: t.Union(
+          [t.Literal("CONFIRMED"), t.Literal("PAID"), t.Literal("CANCELLED")],
+          {
+            description:
+              "Lifecycle target: DRAFT -> CONFIRMED -> PAID, or CANCELLED from an open stage.",
+          },
+        ),
+      }),
+      detail: doc(
+        "Update order status",
+        "Move an order along its lifecycle (DRAFT -> CONFIRMED -> PAID, or CANCELLED); illegal transitions answer 409.",
+      ),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   // Discovery lead sources: the configured rails that scan social platforms and

@@ -71,7 +71,7 @@ async function seed(
     }),
   );
   await suDb.$executeRawUnsafe(
-    `UPDATE audit_logs SET created_at = '${at}'::timestamptz
+    `UPDATE audit_logs SET created_at = '${at}'::timestamptz AT TIME ZONE 'UTC'
       WHERE tenant_id = ${tenantId} AND id = (
         SELECT max(id) FROM audit_logs WHERE tenant_id = ${tenantId})`,
   );

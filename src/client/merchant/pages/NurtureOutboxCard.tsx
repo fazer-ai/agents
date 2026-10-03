@@ -2,6 +2,7 @@ import { MailCheck, Send, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Badge,
   Button,
   DataBoundary,
   EmptyState,
@@ -35,6 +36,13 @@ type OutboxData = Awaited<
   ReturnType<(typeof api.api.v1.merchant.nurture.outbox)["get"]>
 >["data"];
 export type NurtureOutboxItem = NonNullable<OutboxData>["outbox"][number];
+
+// The rail the staged body is meant for, named on the row so the operator
+// knows whether to open the lead's DM thread or reply under their post.
+const CHANNEL_LABEL = {
+  dm: "merchant.nurture.channel.dm",
+  reply: "merchant.nurture.channel.reply",
+} as const;
 
 export function NurtureOutboxCard({
   items,
@@ -120,7 +128,7 @@ export function NurtureOutboxCard({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t("merchant.nurture.colLead", "Lead")}</TableHead>
+                <TableHead>{"Lead"}</TableHead>
                 <TableHead>
                   {t("merchant.nurture.colSequence", "Sequence")}
                 </TableHead>
@@ -145,7 +153,17 @@ export function NurtureOutboxCard({
                     </div>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {item.sequenceName}
+                    <div className="flex flex-col gap-1">
+                      <span>{item.sequenceName}</span>
+                      <Badge variant="info">
+                        {
+                          // t('merchant.nurture.channel.dm', 'Direct message')
+                          // t('merchant.nurture.channel.reply', 'Public reply')
+                          // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in CHANNEL_LABEL
+                          t(CHANNEL_LABEL[item.channel], item.channel)
+                        }
+                      </Badge>
+                    </div>
                   </TableCell>
                   <TableCell className="max-w-md">
                     <span className="line-clamp-3 whitespace-pre-wrap text-muted-foreground">

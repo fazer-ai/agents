@@ -7,23 +7,19 @@ import {
   type TenantContext,
 } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import { resolveVaultSecret } from "@/modules/vault/service";
 import { sysCtx } from "./shared";
 import { type OutreachSendInput, sendOutreach } from "./transports";
 
 // The send pipeline the outreach worker drives for each claimed job:
-//
 //   claim (cross-tenant, FOR UPDATE SKIP LOCKED, APPROVED + ACTIVE account only)
 //     -> reserve the account slot + read the credential (tenant-scoped tx)
 //     -> transport send OUTSIDE any transaction (no network I/O in a scoped tx)
 //     -> finalize (tenant-scoped tx): SENT / READY_FOR_MANUAL / retry / FAILED
-//
-// The slot reservation is one guarded UPDATE on the account row: day-reset,
-// dailyCap and cooldownMin are all checked in the WHERE, so two claims on the
-// same account serialize on the row lock and cannot overspend the cap. A send
-// that fails RELEASES the slot (the cap counts real touches, not attempts),
-// while last_sent_at stays - the platform did see the attempt, so the cooldown
-// still applies.
+// The slot reservation is one guarded UPDATE on the account row: day-reset, dailyCap and
+// cooldownMin are all checked in the WHERE, so concurrent claims serialize on the row lock
+// and cannot overspend the cap. A failed send releases the slot but keeps last_sent_at.
 
 const MAX_ATTEMPTS = 3;
 const MAX_ERROR_LEN = 500;
@@ -82,13 +78,13 @@ export async function claimDueOutreachJobs(
     base,
     (db) => db.$queryRaw<ClaimedOutreachJob[]>`
       UPDATE outreach_jobs AS j
-      SET status = 'SENDING', updated_at = now()
+      SET status = 'SENDING', updated_at = now() AT TIME ZONE 'UTC'
       FROM (
         SELECT j2.id
         FROM outreach_jobs j2
         JOIN outreach_accounts a2 ON a2.id = j2.account_id
         WHERE j2.status = 'APPROVED'
-          AND j2.scheduled_at <= now()
+          AND j2.scheduled_at <= now() AT TIME ZONE 'UTC'
           AND a2.status = 'ACTIVE'
           ${tenantClause}
         ORDER BY j2.scheduled_at, j2.id
@@ -107,6 +103,9 @@ export async function claimDueOutreachJobs(
     `,
   );
 }
+
+const STALE_SENDING_ERROR =
+  "worker stopped mid-send; delivery is unknown - check the account before requeueing";
 
 // A claimed row whose owner crashed mid-send is NOT rearmed automatically:
 // whether the platform received that attempt is unknowable, and a duplicate
@@ -131,17 +130,30 @@ export async function reapStaleSending(
     }),
   );
   for (const job of stale) {
-    await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
+    const failed = await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
       await releaseAccountSlot(db, job.accountId);
-      await db.outreachJob.updateMany({
+      const res = await db.outreachJob.updateMany({
         where: { id: job.id, status: "SENDING" },
-        data: {
-          status: "FAILED",
-          error:
-            "worker stopped mid-send; delivery is unknown - check the account before requeueing",
-        },
+        data: { status: "FAILED", error: STALE_SENDING_ERROR },
       });
+      return res.count > 0;
     });
+    if (failed) {
+      // `error`, not `warn`: the send may have landed and the row cannot say.
+      // Emitted after the write commits so the line never announces a death
+      // the row then rolled back.
+      emitDeadLetter({
+        tenantId: job.tenantId,
+        unit: "outreach_job",
+        level: "error",
+        error: STALE_SENDING_ERROR,
+        detail: {
+          jobId: String(job.id),
+          accountId: String(job.accountId),
+        },
+        base,
+      });
+    }
   }
   return stale.length;
 }
@@ -172,19 +184,19 @@ async function consumeAccountSlot(
   return db.$queryRaw<SlotAccount[]>`
     UPDATE outreach_accounts
     SET sent_today = CASE
-          WHEN sent_today_date = CURRENT_DATE THEN sent_today + 1
+          WHEN sent_today_date = (now() AT TIME ZONE 'UTC')::date THEN sent_today + 1
           ELSE 1
         END,
-        sent_today_date = CURRENT_DATE,
-        last_sent_at = now(),
-        updated_at = now()
+        sent_today_date = (now() AT TIME ZONE 'UTC')::date,
+        last_sent_at = now() AT TIME ZONE 'UTC',
+        updated_at = now() AT TIME ZONE 'UTC'
     WHERE id = ${accountId}
       AND status = 'ACTIVE'
       AND (sent_today_date IS NULL
-           OR sent_today_date < CURRENT_DATE
+           OR sent_today_date < (now() AT TIME ZONE 'UTC')::date
            OR sent_today < daily_cap)
       AND (last_sent_at IS NULL
-           OR last_sent_at <= now() - (cooldown_min * interval '1 minute'))
+           OR last_sent_at <= (now() AT TIME ZONE 'UTC') - (cooldown_min * interval '1 minute'))
     RETURNING id, platform, handle, transport,
               credential_ref AS "credentialRef",
               daily_cap      AS "dailyCap",
@@ -203,9 +215,9 @@ async function releaseAccountSlot(
 ): Promise<void> {
   await db.$executeRaw`
     UPDATE outreach_accounts
-    SET sent_today = GREATEST(sent_today - 1, 0), updated_at = now()
+    SET sent_today = GREATEST(sent_today - 1, 0), updated_at = now() AT TIME ZONE 'UTC'
     WHERE id = ${accountId}
-      AND sent_today_date = CURRENT_DATE
+      AND sent_today_date = (now() AT TIME ZONE 'UTC')::date
       AND sent_today > 0
   `;
 }
@@ -322,8 +334,13 @@ interface Prepared {
 }
 
 type PhaseOne =
-  | { outcome: "failed" | "deferred" }
+  | { outcome: "failed"; error: string }
+  | { outcome: "deferred" }
   | { outcome: "send"; prepared: Prepared };
+
+function deadJobDetail(job: ClaimedOutreachJob): Record<string, unknown> {
+  return { jobId: String(job.id), accountId: String(job.accountId) };
+}
 
 export async function deliverOutreachJob(
   base: PrismaClient,
@@ -352,11 +369,12 @@ export async function deliverOutreachJob(
       },
     });
     if (!account) {
+      const error = "account removed";
       await db.outreachJob.update({
         where: { id: job.id },
-        data: { status: "FAILED", error: "account removed" },
+        data: { status: "FAILED", error },
       });
-      return { outcome: "failed" };
+      return { outcome: "failed", error };
     }
     const slots = await consumeAccountSlot(db, job.accountId);
     if (slots.length === 0) {
@@ -368,12 +386,13 @@ export async function deliverOutreachJob(
       select: { authorName: true, authorHandle: true, sourceUrl: true },
     });
     if (!lead) {
+      const error = "lead removed";
       await releaseAccountSlot(db, job.accountId);
       await db.outreachJob.update({
         where: { id: job.id },
-        data: { status: "FAILED", error: "lead removed" },
+        data: { status: "FAILED", error },
       });
-      return { outcome: "failed" };
+      return { outcome: "failed", error };
     }
     const slotAccount = slots[0];
     if (!slotAccount) {
@@ -389,15 +408,13 @@ export async function deliverOutreachJob(
       } catch (err) {
         // A credential that does not resolve is a config problem, not a retry:
         // failed once, the operator fixes the entry and requeues.
+        const error = `credential unresolved: ${errMsg(err)}`;
         await releaseAccountSlot(db, job.accountId);
         await db.outreachJob.update({
           where: { id: job.id },
-          data: {
-            status: "FAILED",
-            error: `credential unresolved: ${errMsg(err)}`,
-          },
+          data: { status: "FAILED", error },
         });
-        return { outcome: "failed" };
+        return { outcome: "failed", error };
       }
     }
     return {
@@ -406,7 +423,22 @@ export async function deliverOutreachJob(
     };
   });
 
-  if (phaseOne.outcome !== "send") return phaseOne.outcome;
+  if (phaseOne.outcome === "failed") {
+    // Every terminal write in this function owes a dead_letter line. `warn`,
+    // not `error`: the Jobs page lists the FAILED row with its reason and a
+    // Requeue action - the operator's way back. Emitted after the committing
+    // transaction so the line never announces a death the row rolled back.
+    emitDeadLetter({
+      tenantId: job.tenantId,
+      unit: "outreach_job",
+      level: "warn",
+      error: phaseOne.error,
+      detail: deadJobDetail(job),
+      base,
+    });
+    return "failed";
+  }
+  if (phaseOne.outcome === "deferred") return "deferred";
   const { account, lead, credential } = phaseOne.prepared;
 
   // Phase 2: the transport call, deliberately outside any transaction. A
@@ -428,9 +460,10 @@ export async function deliverOutreachJob(
   } catch (err) {
     sendResult = { ok: false, error: errMsg(err) };
   }
+  const sendError = sendResult.ok ? null : sendResult.error;
 
   // Phase 3 (scoped tx): record the outcome.
-  return runScopedOn(base, ctx, async (db) => {
+  const outcome = await runScopedOn(base, ctx, async (db) => {
     if (!sendResult.ok) {
       await releaseAccountSlot(db, job.accountId);
       return recordFailure(db, job, sendResult.error, now);
@@ -442,13 +475,24 @@ export async function deliverOutreachJob(
         where: { id: job.id },
         data: { status: "READY_FOR_MANUAL", error: null },
       });
-      return "ready_for_manual";
+      return "ready_for_manual" as const;
     }
     await db.outreachJob.update({
       where: { id: job.id },
       data: { status: "SENT", sentAt: new Date(), error: null },
     });
     await recordJobSent(db, ctx, job);
-    return "sent";
+    return "sent" as const;
   });
+  if (outcome === "failed") {
+    emitDeadLetter({
+      tenantId: job.tenantId,
+      unit: "outreach_job",
+      level: "warn",
+      error: sendError ?? "retry budget exhausted",
+      detail: deadJobDetail(job),
+      base,
+    });
+  }
+  return outcome;
 }

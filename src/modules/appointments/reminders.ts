@@ -353,7 +353,7 @@ async function retireReminderJobs(
       UPDATE scheduler_jobs
          SET payload = payload || ${stamp}::jsonb,
              claim_seq = claim_seq + ${armFollows ? 1 : 0},
-             updated_at = now()
+             updated_at = now() AT TIME ZONE 'UTC'
        WHERE tenant_id = ${tenantId}
          AND kind = 'APPOINTMENT_REMINDER'
          AND dedupe_key LIKE ${likePrefix}`;
@@ -387,7 +387,7 @@ export async function cancelThreadAppointments(
                       END,
              payload = payload || ${stamp}::jsonb,
              claim_seq = claim_seq + 1,
-             updated_at = now()
+             updated_at = now() AT TIME ZONE 'UTC'
        WHERE tenant_id = ${tenantId}
          AND kind = 'APPOINTMENT_REMINDER'
          AND payload->>'threadId' = ${threadId}`;

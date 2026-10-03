@@ -371,11 +371,9 @@ export function NurturePage() {
               <Select
                 value={enrollLeadId}
                 onChange={(e) => setEnrollLeadId(e.target.value)}
-                aria-label={t("merchant.nurture.pickLead", "Lead")}
+                aria-label="Lead"
               >
-                <option value="">
-                  {t("merchant.nurture.pickLead", "Lead")}
-                </option>
+                <option value="">{"Lead"}</option>
                 {leads.map((lead) => (
                   <option key={lead.id} value={lead.id}>
                     {`${lead.authorName} (${lead.platform})`}
@@ -415,9 +413,7 @@ export function NurturePage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>
-                      {t("merchant.nurture.colLead", "Lead")}
-                    </TableHead>
+                    <TableHead>{"Lead"}</TableHead>
                     <TableHead>
                       {t("merchant.nurture.colSequence", "Sequence")}
                     </TableHead>
@@ -427,9 +423,7 @@ export function NurturePage() {
                     <TableHead>
                       {t("merchant.nurture.colNextRun", "Next run")}
                     </TableHead>
-                    <TableHead>
-                      {t("merchant.nurture.colStatus", "Status")}
-                    </TableHead>
+                    <TableHead>{"Status"}</TableHead>
                     <TableHead>
                       {t("merchant.nurture.colActions", "Actions")}
                     </TableHead>

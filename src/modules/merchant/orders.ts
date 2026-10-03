@@ -5,14 +5,39 @@ import type {
 } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { optionalDbId } from "@/lib/db-id";
-import { NotFoundError, TenantTargetRequiredError } from "@/lib/errors";
+import {
+  AppError,
+  ConflictError,
+  NotFoundError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 
 // Merchant orders (per-tenant): the /orders console page lists them; writes come
-// from the sales flow (an agent's create_order HTTP tool, or seeds).
+// from the sales flow (an agent's create_order HTTP tool, or seeds) plus the
+// operator's own status moves.
+
+export const ORDER_STATUSES = [
+  "DRAFT",
+  "CONFIRMED",
+  "PAID",
+  "CANCELLED",
+] as const;
+
+// The documented lifecycle (docs/merchant.md): DRAFT -> CONFIRMED -> PAID, with
+// CANCELLED reachable from either open stage. Terminal states take no writes.
+const ORDER_TRANSITIONS: Record<
+  MerchantOrderStatus,
+  readonly MerchantOrderStatus[]
+> = {
+  DRAFT: ["CONFIRMED", "CANCELLED"],
+  CONFIRMED: ["PAID", "CANCELLED"],
+  PAID: [],
+  CANCELLED: [],
+};
 
 export interface MerchantOrderItemDto {
   id: string;
@@ -142,6 +167,67 @@ export async function getMerchantOrder(
   return toDto(row);
 }
 
+export const merchantOrderUpdateSchema = z
+  .object({
+    status: z.enum(ORDER_STATUSES),
+  })
+  .strict();
+export type MerchantOrderUpdate = z.infer<typeof merchantOrderUpdateSchema>;
+
+// The operator moves an order along its lifecycle. The transition is written
+// CAS-style (`where status = before`) so a concurrent move surfaces as a
+// conflict rather than silently overwriting.
+export async function updateMerchantOrderStatus(
+  ctx: TenantContext,
+  id: bigint,
+  input: MerchantOrderUpdate,
+  base: PrismaClient = basePrisma,
+): Promise<MerchantOrderDto> {
+  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
+  const data = parseInput(merchantOrderUpdateSchema, input);
+  return runScopedOn(base, ctx, async (db) => {
+    const before = await db.merchantOrder.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!before) {
+      throw new NotFoundError(
+        "order not found",
+        "errors.merchantOrderNotFound",
+      );
+    }
+    if (!ORDER_TRANSITIONS[before.status].includes(data.status)) {
+      throw new ConflictError(
+        `This order is ${before.status} and cannot become ${data.status}.`,
+        "errors.merchantOrderState",
+        { from: before.status, to: data.status },
+      );
+    }
+    const { count } = await db.merchantOrder.updateMany({
+      where: { id, status: before.status },
+      data: { status: data.status },
+    });
+    if (count === 0) {
+      throw new ConflictError(
+        "This order changed state while the request was in flight",
+        "errors.merchantOrderRace",
+      );
+    }
+    const row = await db.merchantOrder.findUniqueOrThrow({
+      where: { id },
+      select: SELECT,
+    });
+    const dto = toDto(row);
+    await auditMutation(db, ctx, {
+      action: "merchant_order.update",
+      target: `merchant_order:${dto.id}`,
+      before: { status: before.status },
+      after: { status: dto.status },
+    });
+    return dto;
+  });
+}
+
 export const merchantOrderItemCreateSchema = z
   .object({
     productId: z.string().optional(),
@@ -230,9 +316,10 @@ export async function createMerchantOrder(
           unitPrice ??= Number(product.price);
         }
         if (unitPrice === undefined) {
-          throw new NotFoundError(
-            "order item needs a productId or unitPrice",
-            "errors.merchantOrderNotFound",
+          throw new AppError(
+            "An order item needs a productId or a unitPrice.",
+            422,
+            "errors.merchantOrderItemIncomplete",
           );
         }
         return { productId, qty: item.qty ?? 1, unitPrice };

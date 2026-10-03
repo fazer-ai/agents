@@ -6,6 +6,7 @@ import config from "@/config";
 import { AppError } from "@/lib/errors";
 import { fetchBounded } from "@/lib/outbound";
 import { sanitizeErrorMessage } from "@/lib/redact";
+import { clipText } from "@/lib/text";
 import type { OutreachTransport } from "./shared";
 
 // Transports turn an approved job into an actual touch. The interface is kept
@@ -66,16 +67,13 @@ function sendManual(): OutreachSendOutcome {
   return "ready_for_manual";
 }
 
-// `zca_bridge`: POST the send to the zca-bridge sidecar (an operator-run
-// service that holds the real Zalo account session). The bridge URL is
-// deployment config (config.outreach.zcaBridgeUrl, default localhost:4001)
-// unless the account's credential names a per-account override. The body names
-// the job, the sending account and the recipient, and nothing else - the
-// bridge owns session state, we own the audit trail.
-//
-// Failure semantics: a thrown error means retryable (network error, timeout,
-// non-2xx); the worker applies its attempt budget. The bridge being down is
-// expected infrastructure behaviour, not a reason to give up the job.
+// `zca_bridge`: POST the send to the zca-bridge sidecar (an operator-run service holding
+// the real Zalo account session). The bridge URL is deployment config
+// (config.outreach.zcaBridgeUrl, default localhost:4001) unless the account's credential
+// names a per-account override. The body names the job, the sending account and the
+// recipient, and nothing else - the bridge owns session state, we own the audit trail.
+// A thrown error means retryable (network, timeout, non-2xx); the worker applies its
+// attempt budget, so the bridge being down never gives up the job.
 async function sendZcaBridge(input: OutreachSendInput): Promise<"sent"> {
   const { token, baseUrl } = credentialParts(input.credential);
   const root = (baseUrl ?? config.outreach.zcaBridgeUrl).replace(/\/+$/, "");
@@ -116,7 +114,7 @@ async function sendZcaBridge(input: OutreachSendInput): Promise<"sent"> {
   );
   if (!res.ok) {
     throw new Error(
-      `zca bridge answered ${res.status}: ${sanitizeErrorMessage(body.text.slice(0, 200), MAX_ERROR_LEN)}`,
+      `zca bridge answered ${res.status}: ${sanitizeErrorMessage(clipText(body.text, 200), MAX_ERROR_LEN)}`,
     );
   }
   return "sent";

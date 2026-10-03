@@ -1480,8 +1480,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       compactionEnabled: false,
       base: appDb,
     });
+    // A deferral writes run_at through a Date parameter - the UTC wall - so the same wall goes
+    // in here whatever the session zone is.
     await suDb.$executeRawUnsafe(
-      `UPDATE scheduler_jobs SET run_at = now() + interval '1 hour'
+      `UPDATE scheduler_jobs SET run_at = (now() + interval '1 hour') AT TIME ZONE 'UTC'
         WHERE tenant_id = ${tenantId} AND kind = 'INGEST_MESSAGE'`,
     );
 

@@ -137,13 +137,13 @@ async function claimDueDeliveries(
     (db) =>
       db.$queryRaw<ClaimedDelivery[]>`
       UPDATE outbound_webhook_deliveries AS d
-      SET status = 'SENDING', updated_at = now()
+      SET status = 'SENDING', updated_at = now() AT TIME ZONE 'UTC'
       FROM (
         SELECT d2.id, s2.url, s2.secret_ref
         FROM outbound_webhook_deliveries d2
         JOIN webhook_subscriptions s2 ON s2.id = d2.subscription_id
         WHERE d2.status = 'PENDING'
-          AND (d2.next_attempt_at IS NULL OR d2.next_attempt_at <= now())
+          AND (d2.next_attempt_at IS NULL OR d2.next_attempt_at <= now() AT TIME ZONE 'UTC')
           AND s2.enabled = true
           ${tenantClause}
         ORDER BY d2.next_attempt_at NULLS FIRST, d2.id

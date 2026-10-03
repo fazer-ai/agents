@@ -63,12 +63,12 @@ const ROWS: Row[] = [
     body: { error: "Forbidden" },
   },
   {
-    // The class carries a field and no params, so the slug refusal below is not thrown
-    // through it: a 409 that has to interpolate cannot be.
+    // The class carries a field after the params slot, mirroring AppError's ordering.
     name: "a ConflictError carries its field through, like any other refusal",
     error: new ConflictError(
       "mcp connection name already in use",
       "errors.mcpNameTaken",
+      undefined,
       "name",
     ),
     acceptLanguage: "en",

@@ -20,16 +20,14 @@ import {
   TAGGING_TIMEOUT_MS,
 } from "@/modules/merchant/tagging";
 
-// Reply drafts (per-tenant): the human-in-the-loop outreach rail. The local LLM
-// gateway proposes Vietnamese sales copy for one lead; the operator edits,
-// approves and then copies the text to the platform by hand. NOTHING here posts
-// anywhere - SENT is a bookkeeping mark, not a send.
+// Reply drafts (per-tenant): the human-in-the-loop outreach rail. The local LLM gateway
+// proposes Vietnamese sales copy for one lead; the operator edits, approves and then copies
+// the text to the platform by hand. NOTHING here posts anywhere - SENT is a bookkeeping
+// mark, not a send.
 //
-// The gateway call sits OUTSIDE any runScoped transaction for the same reason
-// as merchant/tagging.ts: a scoped tx pins a pooled connection and a 15-40s
-// LLM round-trip inside one would drain the pool. Flow: read (scoped) -> fetch
-// (no tx) -> write (scoped). The tagging gateway constants are reused verbatim:
-// same loopback endpoint, same model, same timeout headroom.
+// The gateway call sits OUTSIDE any runScoped transaction for the same reason as
+// merchant/tagging.ts: a scoped tx pins a pooled connection and a 15-40s LLM round-trip
+// inside one would drain the pool. Flow: read (scoped) -> fetch (no tx) -> write (scoped).
 
 export const REPLY_DRAFT_KINDS = ["PUBLIC_REPLY", "DM_OPENER"] as const;
 
@@ -356,6 +354,14 @@ const TRANSITIONS: Record<string, ReplyDraftStatus[]> = {
   markSent: ["APPROVED"],
 };
 
+// Audit actions as literals: the audit-vocabulary sweep finds producers by the
+// quoted string, so a computed `merchant_reply_draft.${action}` is invisible to it.
+const AUDIT_ACTION_BY_TRANSITION = {
+  approve: "merchant_reply_draft.approve",
+  reject: "merchant_reply_draft.reject",
+  markSent: "merchant_reply_draft.mark_sent",
+} as const;
+
 function badTransition(action: string, from: ReplyDraftStatus): AppError {
   const allowed = TRANSITIONS[action] ?? [];
   const to =
@@ -415,7 +421,7 @@ async function touchLeadOnSend(db: ScopedDb, leadId: bigint): Promise<boolean> {
 async function transition(
   ctx: TenantContext,
   id: bigint,
-  action: "approve" | "reject" | "markSent",
+  action: keyof typeof AUDIT_ACTION_BY_TRANSITION,
   base: PrismaClient,
 ): Promise<ReplyDraftDto> {
   const allowed = TRANSITIONS[action] ?? [];
@@ -444,7 +450,7 @@ async function transition(
         : false;
     const dto = toDto(row);
     await auditMutation(db, ctx, {
-      action: `merchant_reply_draft.${action === "markSent" ? "mark_sent" : action}`,
+      action: AUDIT_ACTION_BY_TRANSITION[action],
       target: `reply_draft:${id}`,
       before: { status: current.status },
       after: {

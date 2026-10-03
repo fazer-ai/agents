@@ -259,9 +259,7 @@ export function NurtureSequenceModal({
                       )
                     }
                   >
-                    <option value="dm">
-                      {t("merchant.nurture.channelDm", "DM")}
-                    </option>
+                    <option value="dm">{"DM"}</option>
                     <option value="reply">
                       {t("merchant.nurture.channelReply", "Reply")}
                     </option>

@@ -169,6 +169,7 @@ export async function assertTenantSlugAvailable(
     throw new ConflictError(
       "tenant slug already in use",
       "errors.tenantSlugInUse",
+      undefined,
       "slug",
     );
   }

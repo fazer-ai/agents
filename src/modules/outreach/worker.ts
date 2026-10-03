@@ -10,15 +10,14 @@ import {
   reapStaleSending,
 } from "./send";
 
-// The outreach worker: a single-replica interval tick that drains due APPROVED
-// jobs. It exists only while config.outreach.enabled is on - index.ts does not
-// start it otherwise, and processOutreachBatch still no-ops on the flag so an
-// imported call graph can never run sends behind a disabled feature.
+// The outreach worker: a single-replica interval tick that drains due APPROVED jobs. It
+// exists only while config.outreach.enabled is on - index.ts does not start it otherwise,
+// and processOutreachBatch still no-ops on the flag so an imported call graph can never
+// run sends behind a disabled feature.
 //
-// Concurrency is deliberately small: sends to the same account serialize on
-// the account row's slot reservation anyway, and a slow tick is the SAFE side
-// for outreach. FOR UPDATE SKIP LOCKED in the claim keeps the pattern correct
-// if a second replica ever briefly runs.
+// Concurrency is deliberately small: same-account sends serialize on the account row's
+// slot reservation anyway, and FOR UPDATE SKIP LOCKED keeps the claim correct if a
+// second replica ever briefly runs.
 
 const CLAIM_LIMIT = 20;
 const SEND_CONCURRENCY = 3;

@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
+import { fetchBounded } from "@/lib/outbound";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 
 // threads_api scanner: keyword search over the official Threads API
@@ -43,9 +45,10 @@ export async function scanThreadsApi(
   );
   if (credential.state !== "ok") {
     throw new AppError(
-      `source "${source.name}" needs a Threads access token: point config.credentialRef at a filled vault entry`,
+      `source ${source.name} needs a Threads access token: point config.credentialRef at a filled vault entry`,
       400,
       "errors.merchantSourceCredentialRequired",
+      { name: source.name },
     );
   }
   const out: unknown[] = [];
@@ -59,16 +62,23 @@ export async function scanThreadsApi(
     url.searchParams.set("fields", "id,text,username,permalink,timestamp");
     url.searchParams.set("limit", String(cfg.limit ?? 25));
     url.searchParams.set("access_token", credential.secret);
-    const res = await fetch(url);
+    // fetchBounded, never a bare fetch: headers AND body share one timer and
+    // the reply lands already capped, so a stalled or oversized page cannot
+    // pin the scan lane.
+    const { res, body } = await fetchBounded(
+      url.toString(),
+      {},
+      { timeoutMs: 15_000 },
+    );
     if (!res.ok) {
-      const detail = (await res.text().catch(() => "")).slice(0, 300);
+      const detail = clipText(body.text, 300);
       throw new AppError(
         `threads search failed: HTTP ${res.status}${detail ? ` - ${detail}` : ""}`,
         502,
       );
     }
-    const body = (await res.json()) as { data?: ThreadsSearchItem[] };
-    for (const item of body.data ?? []) {
+    const page = JSON.parse(body.text) as { data?: ThreadsSearchItem[] };
+    for (const item of page.data ?? []) {
       // Search returns username only; authorName falls back to it (a post with
       // neither is dropped at normalize).
       out.push({

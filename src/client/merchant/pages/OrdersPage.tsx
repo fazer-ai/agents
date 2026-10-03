@@ -6,8 +6,11 @@ import {
   DataBoundary,
   EmptyState,
   PageContainer,
+  Select,
+  useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDateTime } from "@/client/lib/utils";
 import {
   Card,
@@ -54,11 +57,52 @@ function formatVnd(amount: number): string {
   return `${new Intl.NumberFormat("vi-VN").format(amount)} ₫`;
 }
 
+// The documented lifecycle (docs/merchant.md): DRAFT -> CONFIRMED -> PAID, or
+// CANCELLED from an open stage. Terminal rows show a badge, not a select.
+const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
+  DRAFT: ["CONFIRMED", "CANCELLED"],
+  CONFIRMED: ["PAID", "CANCELLED"],
+  PAID: [],
+  CANCELLED: [],
+};
+
 export function OrdersPage() {
   const { t, i18n } = useTranslation();
+  const { showToast } = useToast();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
+
+  const setStatus = async (
+    order: Order,
+    // The route's union: orders start DRAFT, so DRAFT is never a target.
+    status: Exclude<OrderStatus, "DRAFT">,
+  ) => {
+    if (status === order.status) return;
+    setStatusBusy(order.id);
+    try {
+      const { data, error: err } = await api.api.v1.merchant
+        .orders({ id: order.id })
+        .patch({ status });
+      if (err || !data) {
+        showToast(
+          apiErrorMessage(err) ??
+            t("merchant.orders.statusFailed", "Could not update the status"),
+          "error",
+        );
+        return;
+      }
+      setOrders((cur) => cur.map((o) => (o.id === order.id ? data.order : o)));
+    } catch {
+      showToast(
+        t("merchant.orders.statusFailed", "Could not update the status"),
+        "error",
+      );
+    } finally {
+      setStatusBusy(null);
+    }
+  };
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -133,13 +177,9 @@ export function OrdersPage() {
                   <TableHead>
                     {t("merchant.orders.colItems", "Items")}
                   </TableHead>
-                  <TableHead>
-                    {t("merchant.orders.colTotal", "Total")}
-                  </TableHead>
-                  <TableHead>{t("merchant.orders.colLead", "Lead")}</TableHead>
-                  <TableHead>
-                    {t("merchant.orders.colStatus", "Status")}
-                  </TableHead>
+                  <TableHead>{"Total"}</TableHead>
+                  <TableHead>{"Lead"}</TableHead>
+                  <TableHead>{"Status"}</TableHead>
                   <TableHead>
                     {t("merchant.orders.colCreated", "Created")}
                   </TableHead>
@@ -175,16 +215,46 @@ export function OrdersPage() {
                       {order.leadAuthorName ?? "-"}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={STATUS_VARIANT[order.status]}>
-                        {
-                          // t('merchant.orders.status.draft', 'Draft')
-                          // t('merchant.orders.status.confirmed', 'Confirmed')
-                          // t('merchant.orders.status.paid', 'Paid')
-                          // t('merchant.orders.status.cancelled', 'Cancelled')
-                          // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in STATUS_LABEL
-                          t(STATUS_LABEL[order.status], order.status)
-                        }
-                      </Badge>
+                      {ORDER_TRANSITIONS[order.status].length === 0 ? (
+                        <Badge variant={STATUS_VARIANT[order.status]}>
+                          {
+                            // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in STATUS_LABEL
+                            t(STATUS_LABEL[order.status], order.status)
+                          }
+                        </Badge>
+                      ) : (
+                        <Select
+                          value={order.status}
+                          disabled={statusBusy === order.id}
+                          aria-label={t("merchant.orders.colStatus", "Status")}
+                          className="h-8 w-36"
+                          onChange={(e) =>
+                            void setStatus(
+                              order,
+                              e.target.value as Exclude<OrderStatus, "DRAFT">,
+                            )
+                          }
+                        >
+                          <option value={order.status}>
+                            {
+                              // t('merchant.orders.status.draft', 'Draft')
+                              // t('merchant.orders.status.confirmed', 'Confirmed')
+                              // t('merchant.orders.status.paid', 'Paid')
+                              // t('merchant.orders.status.cancelled', 'Cancelled')
+                              // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in STATUS_LABEL
+                              t(STATUS_LABEL[order.status], order.status)
+                            }
+                          </option>
+                          {ORDER_TRANSITIONS[order.status].map((s) => (
+                            <option key={s} value={s}>
+                              {
+                                // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in STATUS_LABEL
+                                t(STATUS_LABEL[s], s)
+                              }
+                            </option>
+                          ))}
+                        </Select>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatDateTime(order.createdAt, i18n.language)}

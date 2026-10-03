@@ -55,7 +55,7 @@ async function arm(kind: "INGEST_MESSAGE" | "HEARTBEAT", tag: string) {
     INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, payload, run_at,
                                 status, attempts, claim_seq, created_at, updated_at)
     SELECT ${tenantId}, ${kind}::"SchedulerJobKind", ${tag} || '-' || g, '{}'::jsonb,
-           now() - interval '2 min', 'PENDING', 0, 0, now(), now()
+           (now() - interval '2 min') AT TIME ZONE 'UTC', 'PENDING', 0, 0, now(), now() AT TIME ZONE 'UTC'
     FROM generate_series(1, ${DUE}) g`;
 }
 

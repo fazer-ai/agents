@@ -18,6 +18,7 @@ export interface ImportRowInput {
   price?: unknown;
   stock?: unknown;
   description?: unknown;
+  category?: unknown;
   tags?: unknown;
 }
 
@@ -29,6 +30,7 @@ export interface ValidatedImportRow {
     price: number;
     stock: number;
     description: string | null;
+    category: string | null;
     tags: string[];
   } | null;
   // Per-row refusal reasons, in English; the preview renders them verbatim.
@@ -48,6 +50,7 @@ const HEADER_ALIASES: Record<string, keyof ImportRowInput> = {
   price: "price",
   stock: "stock",
   description: "description",
+  category: "category",
   tags: "tags",
   // Vietnamese spellings a shopkeeper's own sheet is likely to carry.
   ten: "name",
@@ -55,8 +58,9 @@ const HEADER_ALIASES: Record<string, keyof ImportRowInput> = {
   ton: "stock",
   "ton kho": "stock",
   "mo ta": "description",
+  "the loai": "category",
+  "danh muc": "category",
   tag: "tags",
-  "the loai": "tags",
 };
 
 // A minimal RFC-4180-ish reader: handles quoted cells ("" escape), commas and
@@ -136,6 +140,11 @@ const rowDataSchema = z.object({
     .max(5000)
     .nullish()
     .transform((v) => (v?.trim() ? v : null)),
+  category: z
+    .string()
+    .max(200)
+    .nullish()
+    .transform((v) => v?.trim() || null),
   tags: z
     .union([
       z.array(z.string().min(1).max(100)),
@@ -195,7 +204,7 @@ export async function applyMerchantImport(
   const written = await runScopedOn(base, ctx, async (db) => {
     let created = 0;
     let updated = 0;
-    const productIds: string[] = [];
+    const productIds: bigint[] = [];
     for (const { data } of valid) {
       const existing = await db.merchantProduct.findFirst({
         where: { name: data.name },
@@ -204,6 +213,7 @@ export async function applyMerchantImport(
       const payload = {
         name: data.name,
         description: data.description,
+        category: data.category,
         price: data.price,
         stock: data.stock,
         tags: data.tags,
@@ -227,7 +237,7 @@ export async function applyMerchantImport(
         ).id;
         created++;
       }
-      productIds.push(String(id));
+      productIds.push(id);
       await auditMutation(db, ctx, {
         action: existing
           ? "merchant_product.update"
@@ -240,8 +250,8 @@ export async function applyMerchantImport(
   });
   if (opts.tagging !== false) {
     for (const id of written.productIds) {
-      kickOffTagging(ctx, BigInt(id), opts.tagging ?? {});
+      kickOffTagging(ctx, id, opts.tagging ?? {});
     }
   }
-  return written;
+  return { ...written, productIds: written.productIds.map(String) };
 }

@@ -591,13 +591,14 @@ model B {
 });
 
 describe("every ref column in the schema is projected through one guard", () => {
-  test("the schema still holds the six this issue is about", async () => {
+  test("the schema still holds the seven this issue is about", async () => {
     const schema = await Bun.file("prisma/schema.prisma").text();
     expect(refColumnsInSchema(schema)).toEqual([
       "AlertChannel.secretRef",
       "IntegrationInstance.credentialRef",
       "IntegrationInstance.inboundSecretRef",
       "McpServerConnection.credentialRef",
+      "OutreachAccount.credentialRef",
       "ToolDefinition.credentialRef",
       "WebhookSubscription.secretRef",
     ]);
@@ -608,6 +609,7 @@ describe("every ref column in the schema is projected through one guard", () => 
       "src/modules/flowlog/channels.ts",
       "src/modules/integrations/service.ts",
       "src/modules/mcp-connections/service.ts",
+      "src/modules/outreach/accounts.ts",
       "src/modules/tool-definitions/service.ts",
       "src/modules/webhooks/outbound/subscriptions.ts",
     ];

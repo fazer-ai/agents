@@ -311,6 +311,9 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
+  // The select, the two DTO fields and the projection are reads; the write goes through
+  // `errMessage`, which delegates to `sanitizeErrorMessage`.
+  "src/modules/discovery/sources.ts": [5, "read + guarded"],
   // Both roads to DEAD write through one `finalizeDead`.
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
   // The follow-up sweep's reading of the failure backoff: the type of the row it is handed. And the
@@ -354,16 +357,30 @@ const GUARD_CALLS: Record<string, number> = {
   "src/lib/redact.ts": 1,
   "src/modules/conversations/error.ts": 1,
   "src/modules/conversations/failure-note.ts": 1,
+  // The scan loop's two warn lines: a failed source run keeps its interval, and a failed boot
+  // re-arm is reported rather than thrown. Neither message reaches a column directly.
+  "src/modules/discovery/schedule.ts": 2,
+  // `errMessage` guards `lead_sources.last_error` on every failed run.
+  "src/modules/discovery/sources.ts": 1,
   // The worker's send, shared with the console's Test button, sanitizes in its own `catch`. The
   // column it guards (`alert_deliveries.last_error`) is written by the worker, from a string this
   // file built.
   "src/modules/flowlog/alert-send.ts": 1,
   "src/modules/flowlog/alerts.ts": 1,
   "src/modules/flowlog/service.ts": 2,
+  // The boot re-arm's warn line, same class as the discovery scan loop's: a
+  // tenant whose drain row fails to arm is reported, not thrown.
+  "src/modules/nurture/drain.ts": 1,
   "src/modules/rag/documents.ts": 1,
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
   // and the boot re-arm's before it reaches the log.
   "src/modules/rag/source.ts": 3,
+  // `errMsg` feeds `outreach_jobs.error` on every terminal job write.
+  "src/modules/outreach/send.ts": 1,
+  // The bridge's own answer text, carried inside the thrown send error.
+  "src/modules/outreach/transports.ts": 1,
+  // The tick's catch line, which a stranded send's reap also travels through.
+  "src/modules/outreach/worker.ts": 1,
   // The third reads it back: a run past its deadline takes its row back only while the row still
   // carries the failure that deadline wrote, compared in the form `failJob` stored it.
   "src/modules/scheduler/service.ts": 3,

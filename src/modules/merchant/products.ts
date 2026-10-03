@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { NotFoundError, TenantTargetRequiredError } from "@/lib/errors";
+import {
+  AppError,
+  NotFoundError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
@@ -89,6 +93,27 @@ const attributeValueSchema = z.union([
   z.boolean(),
 ]);
 
+// `attributes` is a free-form bag keyed by caller-chosen names, so the record
+// stays `z.unknown()` (a constrained value would put the caller's key in the
+// refusal path) and each value is checked by hand, naming `attributes` alone.
+function parseAttributeValues(raw: Record<string, unknown>): ProductAttributes {
+  const out: ProductAttributes = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const parsed = attributeValueSchema.safeParse(value);
+    if (!parsed.success) {
+      throw new AppError(
+        "The value sent in attributes is not valid.",
+        422,
+        "errors.invalidRequestValue",
+        { field: "attributes" },
+        "attributes",
+      );
+    }
+    out[key] = parsed.data;
+  }
+  return out;
+}
+
 export const merchantProductCreateSchema = z
   .object({
     name: z.string().min(1).max(300),
@@ -103,7 +128,7 @@ export const merchantProductCreateSchema = z
     // caller-declared: only the tagger writes "llm", but nothing in this schema
     // gains by refusing the spelling (the audit row records who wrote what).
     category: z.string().min(1).max(200).nullish(),
-    attributes: z.record(z.string(), attributeValueSchema).nullish(),
+    attributes: z.record(z.string(), z.unknown()).nullish(),
     tagSource: z.enum(["manual", "llm"]).nullish(),
     taggedAt: z.iso.datetime().nullish(),
   })
@@ -131,11 +156,25 @@ function auditProjection(dto: MerchantProductDto) {
 }
 
 export function assertMerchantProductCreatable(input: MerchantProductCreate) {
-  return parseInput(merchantProductCreateSchema, input);
+  const data = parseInput(merchantProductCreateSchema, input);
+  return {
+    ...data,
+    attributes:
+      data.attributes == null
+        ? data.attributes
+        : parseAttributeValues(data.attributes),
+  };
 }
 
 export function assertMerchantProductUpdatable(patch: MerchantProductUpdate) {
-  return parseInput(merchantProductUpdateSchema, patch);
+  const data = parseInput(merchantProductUpdateSchema, patch);
+  return {
+    ...data,
+    attributes:
+      data.attributes == null
+        ? data.attributes
+        : parseAttributeValues(data.attributes),
+  };
 }
 
 // Structured listing filters, applied BEFORE the text match: the SQL `where`

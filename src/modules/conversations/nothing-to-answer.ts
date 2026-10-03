@@ -130,7 +130,7 @@ export async function retireNothingToAnswer(params: {
          SET status = 'DONE',
              payload = payload || ${stamp}::jsonb,
              claim_seq = claim_seq + 1,
-             updated_at = now()
+             updated_at = now() AT TIME ZONE 'UTC'
        WHERE tenant_id = ${params.tenantId}
          AND kind = 'NOTHING_TO_ANSWER'::"SchedulerJobKind"
          AND dedupe_key = ${key}

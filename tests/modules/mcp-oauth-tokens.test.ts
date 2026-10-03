@@ -222,8 +222,11 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
 
   test("an expired persisted token is rejected even with a valid signature", async () => {
     const { token, jti } = await issue();
+    // expires_at is compared against a Date parameter (the UTC wall), so the backdate writes
+    // the same wall - plain now() lands the session zone's wall and reads as unexpired on a
+    // non-UTC machine.
     await suDb.$executeRawUnsafe(
-      `UPDATE mcp_oauth_access_tokens SET expires_at = now() - interval '1 hour' WHERE jti = '${jti}'`,
+      `UPDATE mcp_oauth_access_tokens SET expires_at = (now() - interval '1 hour') AT TIME ZONE 'UTC' WHERE jti = '${jti}'`,
     );
     expect(await verifyAccessToken(token, suDb)).toBeNull();
   });

@@ -207,6 +207,50 @@ export async function getLead(
   return toDto(row);
 }
 
+export const leadUpdateSchema = z
+  .object({
+    status: z.enum(LEAD_STATUSES),
+  })
+  .strict();
+export type LeadUpdateInput = z.infer<typeof leadUpdateSchema>;
+
+// The operator's own call on a lead's stage: every enum value is a legal
+// target (a human deciding "this one is qualified" is the whole point of the
+// funnel), so the write validates the value, not the transition. Implicit
+// moves still happen beside it - a draft going out marks CONTACTED, an order
+// marks CONVERTED.
+export async function updateLeadStatus(
+  ctx: TenantContext,
+  id: bigint,
+  input: LeadUpdateInput,
+  base: PrismaClient = basePrisma,
+): Promise<LeadDto> {
+  if (ctx.tenantId === null) throw new TenantTargetRequiredError();
+  const data = parseInput(leadUpdateSchema, input);
+  return runScopedOn(base, ctx, async (db) => {
+    const current = await db.lead.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!current) {
+      throw new NotFoundError("lead not found", "errors.merchantLeadNotFound");
+    }
+    const row = await db.lead.update({
+      where: { id },
+      data: { status: data.status },
+      select: SELECT,
+    });
+    const dto = toDto(row);
+    await auditMutation(db, ctx, {
+      action: "merchant_lead.update",
+      target: `lead:${dto.id}`,
+      before: { status: current.status },
+      after: { status: dto.status },
+    });
+    return dto;
+  });
+}
+
 // One ingest: score the post text against the tenant's active catalog, write the
 // lead and its product matches in the same transaction. The scorer is pure and
 // synchronous, so there is no network I/O inside the scoped transaction.

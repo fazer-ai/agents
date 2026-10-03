@@ -291,6 +291,7 @@ async function assertNameFree(
     throw new ConflictError(
       "mcp connection name already in use",
       "errors.mcpNameTaken",
+      undefined,
       "name",
     );
   }

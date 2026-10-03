@@ -1,4 +1,5 @@
 import type {
+  NurtureChannel,
   NurtureOutboxStatus,
   PrismaClient,
 } from "@/../generated/prisma/client";
@@ -23,6 +24,9 @@ export interface NurtureOutboxDto {
   leadPlatform: string;
   leadSourceUrl: string | null;
   body: string;
+  // The rail the operator sends on: a direct message, or a public reply under
+  // the lead's post. Frozen at render time — a later step edit never rewrites it.
+  channel: NurtureChannel;
   status: NurtureOutboxStatus;
   sentAt: Date | null;
   createdAt: Date;
@@ -33,6 +37,7 @@ const SELECT = {
   enrollmentId: true,
   leadId: true,
   body: true,
+  channel: true,
   status: true,
   sentAt: true,
   createdAt: true,
@@ -45,6 +50,7 @@ type OutboxRow = {
   enrollmentId: bigint;
   leadId: bigint;
   body: string;
+  channel: NurtureChannel;
   status: NurtureOutboxStatus;
   sentAt: Date | null;
   createdAt: Date;
@@ -62,6 +68,7 @@ function toDto(r: OutboxRow): NurtureOutboxDto {
     leadPlatform: r.lead.platform,
     leadSourceUrl: r.lead.sourceUrl,
     body: r.body,
+    channel: r.channel,
     status: r.status,
     sentAt: r.sentAt,
     createdAt: r.createdAt,

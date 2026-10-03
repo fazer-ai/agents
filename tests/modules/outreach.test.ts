@@ -23,17 +23,13 @@ import {
 } from "@/modules/outreach/send";
 import { processOutreachBatch } from "@/modules/outreach/worker";
 
-// "Grey rails" outreach: the whole suite is about the SAFETY invariants the
-// module exists to hold - the feature flag refuses every surface while off,
-// the worker can never send a QUEUED job (approval is the only door), the
-// account's dailyCap/cooldownMin bound the send rate atomically, the
-// (tenant, lead, account, kind) unique key dedupes, and a manual send is only
-// ever CONFIRMED by the operator. DB-backed tests run on the app-role client
-// under real RLS and skip when no test database is up.
-//
-// config.outreach.enabled is a plain mutable property: the DB describe turns it
-// on for its run and restores it afterwards so nothing leaks into a neighbouring
-// file sharing the process.
+// "Grey rails" outreach: the whole suite is about the SAFETY invariants the module
+// exists to hold - the feature flag refuses every surface while off, the worker can
+// never send a QUEUED job (approval is the only door), the account's
+// dailyCap/cooldownMin bound the send rate atomically, the (tenant, lead, account,
+// kind) unique key dedupes, and a manual send is only ever CONFIRMED by the operator.
+// DB-backed tests run on the app-role client under real RLS and skip when no test
+// database is up; the describe toggles config.outreach.enabled for its run only.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -444,9 +440,11 @@ describe.skipIf(!dbUp)("outreach safety invariants", () => {
     const lead = await makeLead("cooldown");
     const job = await approvedJob(account.id, lead.id);
 
-    // The account touched someone a minute ago.
+    // The account touched someone a minute ago. last_sent_at is stored as the UTC
+    // wall (the slot UPDATE writes now() AT TIME ZONE 'UTC'), so the backdate writes
+    // the same wall - plain now() lands the session zone's wall on a non-UTC machine.
     await suDb.$executeRawUnsafe(
-      `UPDATE outreach_accounts SET last_sent_at = now() - interval '1 minute' WHERE id = ${account.id}`,
+      `UPDATE outreach_accounts SET last_sent_at = (now() - interval '1 minute') AT TIME ZONE 'UTC' WHERE id = ${account.id}`,
     );
 
     const claimed = await claimOne(job.id);
@@ -607,7 +605,7 @@ describe.skipIf(!dbUp)("outreach safety invariants", () => {
     // failed attempt still pays - last_sent_at stays) has long elapsed by then;
     // the test moves it back the way a real retry finds it.
     await suDb.$executeRawUnsafe(
-      `UPDATE outreach_accounts SET last_sent_at = now() - interval '1 hour' WHERE id = ${account.id}`,
+      `UPDATE outreach_accounts SET last_sent_at = (now() - interval '1 hour') AT TIME ZONE 'UTC' WHERE id = ${account.id}`,
     );
     const last = await deliverOutreachJob(
       appDb,

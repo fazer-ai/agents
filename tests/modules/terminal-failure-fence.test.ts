@@ -22,8 +22,11 @@ const ARG = new RegExp(`[(,]\\s*"${TERMINAL}"\\s*[,)]`);
 const SQL = new RegExp(`'${TERMINAL}'::`);
 
 // Asking which rows are dead is a question, not a death. These are the shapes a READ takes, and
-// leaving them in would bury the eight real sites under filters, comparisons and type annotations.
-const NOT_A_WRITE = /\bin:\s*\[|\|\s*"|"\s*\||===|!==|\.status\s*[!=]=/;
+// leaving them in would bury the real sites under filters, comparisons and type annotations.
+// `Literal(` is the TypeBox enum-member spelling (`t.Union([t.Literal("FAILED"), ...])`): a
+// request-schema declaration, not a write, and the argument-form regex cannot tell it apart.
+const NOT_A_WRITE =
+  /\bin:\s*\[|\|\s*"|"\s*\||===|!==|\.status\s*[!=]=|Literal\(/;
 
 const FUNCTION_DECL = /(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/;
 
@@ -108,10 +111,21 @@ const CENSUS: Record<string, string> = {
     "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter",
   "src/modules/scheduler/service.ts:reapStaleJobs":
     "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter, via announceReaped",
+  // The merchant outreach bus's terminal writes. The stranded-SENDING reaper and the delivery
+  // pipeline each emit their own `dead_letter` line (`warn`: the Jobs page carries the row and a
+  // Requeue action; `error` only for a send whose delivery is unknowable); `recordFailure` is the
+  // retry-budget write whose line the only caller emits once the write commits.
+  "src/modules/outreach/send.ts:reapStaleSending":
+    "an outreach send whose worker vanished mid-flight; the row cannot say whether it landed",
+  "src/modules/outreach/send.ts:deliverOutreachJob":
+    "an outreach job dying in phase 1 (account, lead or credential gone) or past its retry budget",
+  "src/modules/outreach/send.ts:recordFailure":
+    "ANNOUNCES ELSEWHERE: same file's deliverOutreachJob, which emits after the phase-3 commit",
 };
 const ANNOUNCES_ELSEWHERE = new Set([
   "src/modules/scheduler/service.ts:failJob",
   "src/modules/scheduler/service.ts:reapStaleJobs",
+  "src/modules/outreach/send.ts:recordFailure",
   // Not "announces elsewhere" but "was announced ALREADY", which lands in the same set because the
   // question this asks is whether the write reaches an operator, and this one's already did.
   "src/modules/chatwoot/recover-delivery.ts:putRowBack",
@@ -191,6 +205,15 @@ async function someNewPath(base, d) {
         `function c() { if (current.status !== "DEAD") return; }`,
       ),
     ).toEqual([]);
+  });
+
+  test("positive control: a TypeBox enum member is a schema, not a write", () => {
+    expect(
+      terminalWriteSites(
+        `const s = t.Union([t.Literal("PENDING"), t.Literal("SENT"), t.Literal("FAILED")]);`,
+      ),
+    ).toEqual([]);
+    expect(terminalWriteSites(`const s = t.Literal("DEAD"),`)).toEqual([]);
   });
 
   test("positive control: a commented-out write is not a write", () => {

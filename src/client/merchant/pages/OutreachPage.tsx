@@ -247,10 +247,7 @@ function AccountModal({
               ))}
             </Select>
           </FormField>
-          <FormField
-            label={t("merchant.outreach.fieldHandle", "Handle")}
-            required
-          >
+          <FormField label={"Handle"} required>
             <Input
               value={form.handle}
               onChange={(e) => set("handle", e.target.value)}
@@ -272,9 +269,7 @@ function AccountModal({
                   "Manual (operator sends)",
                 )}
               </option>
-              <option value="zca_bridge">
-                {t("merchant.outreach.transportZca", "zca-bridge")}
-              </option>
+              <option value="zca_bridge">{"zca-bridge"}</option>
             </Select>
           </FormField>
           <FormField label={t("merchant.outreach.fieldDailyCap", "Daily cap")}>
@@ -431,7 +426,7 @@ function JobModal({
             </Select>
           </FormField>
         </div>
-        <FormField label={t("merchant.outreach.fieldLead", "Lead")} required>
+        <FormField label={"Lead"} required>
           <Select
             value={form.leadId}
             onChange={(e) => set("leadId", e.target.value)}
@@ -632,9 +627,7 @@ export function OutreachPage() {
                           <TableHead>
                             {t("merchant.outreach.colTransport", "Send via")}
                           </TableHead>
-                          <TableHead>
-                            {t("merchant.outreach.colStatus", "Status")}
-                          </TableHead>
+                          <TableHead>{"Status"}</TableHead>
                           <TableHead>
                             {t("merchant.outreach.colActions", "Actions")}
                           </TableHead>
@@ -727,18 +720,14 @@ export function OutreachPage() {
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>
-                            {t("merchant.outreach.colLead", "Lead")}
-                          </TableHead>
+                          <TableHead>{"Lead"}</TableHead>
                           <TableHead>
                             {t("merchant.outreach.colKind", "Kind")}
                           </TableHead>
                           <TableHead>
                             {t("merchant.outreach.colAccount", "Account")}
                           </TableHead>
-                          <TableHead>
-                            {t("merchant.outreach.colStatus", "Status")}
-                          </TableHead>
+                          <TableHead>{"Status"}</TableHead>
                           <TableHead>
                             {t("merchant.outreach.colActions", "Actions")}
                           </TableHead>

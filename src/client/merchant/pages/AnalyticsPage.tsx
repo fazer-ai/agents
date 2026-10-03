@@ -289,9 +289,7 @@ export function AnalyticsPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>
-                          {t("merchant.analytics.colStatus", "Status")}
-                        </TableHead>
+                        <TableHead>{"Status"}</TableHead>
                         <TableHead>
                           {t("merchant.analytics.colCount", "Count")}
                         </TableHead>
@@ -376,10 +374,7 @@ export function AnalyticsPage() {
                         // A null sourceId has no key of its own; it is unique
                         // in the bucket, so the index keeps the key stable.
                         <TableRow key={row.sourceId ?? `manual-${index}`}>
-                          <TableCell>
-                            {row.name ??
-                              t("merchant.analytics.sourceManual", "Manual")}
-                          </TableCell>
+                          <TableCell>{row.name ?? "Manual"}</TableCell>
                           <TableCell>
                             <BarCell count={row.count} max={sourceMax} />
                           </TableCell>
@@ -456,15 +451,11 @@ export function AnalyticsPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>
-                          {t("merchant.analytics.colStatus", "Status")}
-                        </TableHead>
+                        <TableHead>{"Status"}</TableHead>
                         <TableHead>
                           {t("merchant.analytics.colCount", "Count")}
                         </TableHead>
-                        <TableHead>
-                          {t("merchant.analytics.colTotal", "Total")}
-                        </TableHead>
+                        <TableHead>{"Total"}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>

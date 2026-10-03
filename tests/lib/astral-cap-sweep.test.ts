@@ -452,6 +452,8 @@ const BARE_SLICES: Record<
   // The operator's case labels capped as an ARRAY of labels, never a string.
   "src/modules/cross-inbox-case/settings.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
+  // The synthetic lead id keeps the head of a sha256 hex digest.
+  "src/modules/discovery/posts.ts": [1, "ascii"],
   // The logo's one-shot download token is hex from randomUUID.
   "src/modules/documents/company.ts": [1, "ascii"],
   // The legacy date fallback reads a fixed ISO prefix; the file name was already reduced to
@@ -478,6 +480,15 @@ const BARE_SLICES: Record<
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
+  // The day bound on an analytics range, cut from `toISOString()`: a fixed-width ASCII
+  // `YYYY-MM-DD`, never received text.
+  "src/modules/merchant/analytics.ts": [1, "fixed-format"],
+  // The cap on how MANY tags one import keeps: an ARRAY of tag strings, never a string.
+  "src/modules/merchant/import.ts": [1, "array"],
+  // The match list kept to MAX_MATCHES entries: an ARRAY of match rows, never a string.
+  "src/modules/merchant/scorer.ts": [1, "array"],
+  // The sent-today day prefix off `toISOString()`: a fixed-width ASCII `YYYY-MM-DD`.
+  "src/modules/outreach/accounts.ts": [1, "fixed-format"],
   // Four: the transcript window, the notes window, the label-change window and the page walk. Every
   // one is a slice of an ARRAY of rows, so none can land inside a surrogate pair.
   "src/modules/observe/job.ts": [4, "array"],

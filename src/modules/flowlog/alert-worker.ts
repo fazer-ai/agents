@@ -125,7 +125,7 @@ async function claimDue(
     (db) =>
       db.$queryRaw<ClaimedAlert[]>`
       UPDATE alert_deliveries AS a
-      SET status = 'SENDING', updated_at = now()
+      SET status = 'SENDING', updated_at = now() AT TIME ZONE 'UTC'
       FROM (
         SELECT a2.id, c2.type, c2.url, c2.secret_ref
         FROM alert_deliveries a2
@@ -133,7 +133,7 @@ async function claimDue(
         WHERE a2.status = 'PENDING'
           AND c2.enabled = true
           AND (
-            (a2.next_attempt_at IS NOT NULL AND a2.next_attempt_at <= now())
+            (a2.next_attempt_at IS NOT NULL AND a2.next_attempt_at <= now() AT TIME ZONE 'UTC')
             OR (a2.next_attempt_at IS NULL
                 AND a2.created_at <= now() - make_interval(secs => ${coalesceSeconds}))
           )

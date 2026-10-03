@@ -1092,6 +1092,7 @@ export async function createVaultEntry(
       throw new ConflictError(
         "vault entry name and type already in use",
         "errors.vaultNameInUse",
+        undefined,
         "name",
       );
     }
@@ -1119,6 +1120,7 @@ export async function createVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          undefined,
           "name",
         );
       }
@@ -1150,6 +1152,7 @@ export async function assertVaultNameAvailable(
     throw new ConflictError(
       "vault entry name and type already in use",
       "errors.vaultNameInUse",
+      undefined,
       "name",
     );
   }
@@ -1230,6 +1233,7 @@ export async function createPendingVaultEntry(
       throw new ConflictError(
         "vault entry name and type already in use",
         "errors.vaultNameInUse",
+        undefined,
         "name",
       );
     }
@@ -1346,6 +1350,7 @@ export async function updateVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          undefined,
           "name",
         );
       }
@@ -1378,6 +1383,7 @@ export async function updateVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          undefined,
           "name",
         );
       }

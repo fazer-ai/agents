@@ -6,9 +6,12 @@ import {
   DataBoundary,
   EmptyState,
   PageContainer,
+  Select,
   useModalController,
+  useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDateTime } from "@/client/lib/utils";
 import {
   type DraftLead,
@@ -50,17 +53,6 @@ const STATUS_LABEL: Record<LeadStatus, string> = {
   DEAD: "merchant.leads.status.dead",
 };
 
-const STATUS_VARIANT: Record<
-  LeadStatus,
-  "info" | "success" | "warning" | "error" | "secondary" | "primary"
-> = {
-  NEW: "info",
-  CONTACTED: "warning",
-  QUALIFIED: "primary",
-  CONVERTED: "success",
-  DEAD: "secondary",
-};
-
 function scoreVariant(score: number): "success" | "warning" | "secondary" {
   if (score >= 70) return "success";
   if (score >= 40) return "warning";
@@ -69,10 +61,38 @@ function scoreVariant(score: number): "success" | "warning" | "secondary" {
 
 export function LeadsPage() {
   const { t, i18n } = useTranslation();
+  const { showToast } = useToast();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
   const draftsModal = useModalController<DraftLead>();
+
+  const setStatus = async (lead: Lead, status: LeadStatus) => {
+    if (status === lead.status) return;
+    setStatusBusy(lead.id);
+    try {
+      const { data, error: err } = await api.api.v1.merchant
+        .leads({ id: lead.id })
+        .patch({ status });
+      if (err || !data) {
+        showToast(
+          apiErrorMessage(err) ??
+            t("merchant.leads.statusFailed", "Could not update the status"),
+          "error",
+        );
+        return;
+      }
+      setLeads((cur) => cur.map((l) => (l.id === lead.id ? data.lead : l)));
+    } catch {
+      showToast(
+        t("merchant.leads.statusFailed", "Could not update the status"),
+        "error",
+      );
+    } finally {
+      setStatusBusy(null);
+    }
+  };
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -101,9 +121,7 @@ export function LeadsPage() {
     <PageContainer size="wide">
       <div className="flex items-center justify-between gap-4 py-4">
         <div>
-          <h1 className="font-semibold text-text-primary text-xl">
-            {t("merchant.leads.title", "Leads")}
-          </h1>
+          <h1 className="font-semibold text-text-primary text-xl">{"Leads"}</h1>
           <p className="text-sm text-text-secondary">
             {t(
               "merchant.leads.subtitle",
@@ -156,9 +174,7 @@ export function LeadsPage() {
                   <TableHead>
                     {t("merchant.leads.colMatches", "Matched products")}
                   </TableHead>
-                  <TableHead>
-                    {t("merchant.leads.colStatus", "Status")}
-                  </TableHead>
+                  <TableHead>{"Status"}</TableHead>
                   <TableHead>
                     {t("merchant.leads.colCreated", "Found")}
                   </TableHead>
@@ -211,7 +227,7 @@ export function LeadsPage() {
                       <div className="flex flex-wrap gap-1">
                         {lead.matches.length === 0 ? (
                           <span className="text-muted-foreground text-xs">
-                            {t("merchant.leads.noMatch", "-")}
+                            {"-"}
                           </span>
                         ) : (
                           lead.matches.map((m) => (
@@ -223,17 +239,31 @@ export function LeadsPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={STATUS_VARIANT[lead.status]}>
-                        {
-                          // t('merchant.leads.status.new', 'New')
-                          // t('merchant.leads.status.contacted', 'Contacted')
-                          // t('merchant.leads.status.qualified', 'Qualified')
-                          // t('merchant.leads.status.converted', 'Converted')
-                          // t('merchant.leads.status.dead', 'Dead')
-                          // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in STATUS_LABEL
-                          t(STATUS_LABEL[lead.status], lead.status)
+                      <Select
+                        value={lead.status}
+                        disabled={statusBusy === lead.id}
+                        aria-label={t("merchant.leads.colStatus", "Status")}
+                        className="h-8 w-36"
+                        onChange={(e) =>
+                          void setStatus(lead, e.target.value as LeadStatus)
                         }
-                      </Badge>
+                      >
+                        {(Object.keys(STATUS_LABEL) as LeadStatus[]).map(
+                          (s) => (
+                            <option key={s} value={s}>
+                              {
+                                // t('merchant.leads.status.new', 'New')
+                                // t('merchant.leads.status.contacted', 'Contacted')
+                                // t('merchant.leads.status.qualified', 'Qualified')
+                                // t('merchant.leads.status.converted', 'Converted')
+                                // t('merchant.leads.status.dead', 'Dead')
+                                // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in STATUS_LABEL
+                                t(STATUS_LABEL[s], s)
+                              }
+                            </option>
+                          ),
+                        )}
+                      </Select>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {formatDateTime(lead.createdAt, i18n.language)}

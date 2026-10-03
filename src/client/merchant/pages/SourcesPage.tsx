@@ -351,12 +351,8 @@ function SourceEditModal({
                   <option value="auto">
                     {t("merchant.sources.formatAuto", "Auto-detect")}
                   </option>
-                  <option value="jsonl">
-                    {t("merchant.sources.formatJsonl", "JSONL")}
-                  </option>
-                  <option value="csv">
-                    {t("merchant.sources.formatCsv", "CSV")}
-                  </option>
+                  <option value="jsonl">{"JSONL"}</option>
+                  <option value="csv">{"CSV"}</option>
                 </Select>
               </FormField>
               <FormField
@@ -808,9 +804,7 @@ export function SourcesPage() {
                   <TableHead>
                     {t("merchant.sources.colLastRun", "Last run")}
                   </TableHead>
-                  <TableHead>
-                    {t("merchant.sources.colLeads", "Leads")}
-                  </TableHead>
+                  <TableHead>{"Leads"}</TableHead>
                   <TableHead>
                     {t("merchant.sources.colActions", "Actions")}
                   </TableHead>

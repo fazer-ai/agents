@@ -171,9 +171,7 @@ export function CatalogPage() {
                     {t("merchant.catalog.colAttributes", "Attributes")}
                   </TableHead>
                   <TableHead>{t("merchant.catalog.colTags", "Tags")}</TableHead>
-                  <TableHead>
-                    {t("merchant.catalog.colStatus", "Status")}
-                  </TableHead>
+                  <TableHead>{"Status"}</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -195,13 +193,13 @@ export function CatalogPage() {
                           <Badge variant="info">{p.category}</Badge>
                         ) : (
                           <span className="text-muted-foreground text-xs">
-                            {t("merchant.catalog.untagged", "—")}
+                            {"—"}
                           </span>
                         )}
                       </TableCell>
                       <TableCell className="max-w-48">
                         <span className="text-muted-foreground text-xs">
-                          {summary ?? t("merchant.catalog.noAttributes", "—")}
+                          {summary ?? "—"}
                         </span>
                       </TableCell>
                       <TableCell className="max-w-xs">

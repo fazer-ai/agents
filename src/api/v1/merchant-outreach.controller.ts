@@ -37,7 +37,8 @@ import { OUTREACH_JOB_STATUSES } from "@/modules/outreach/shared";
 // translate('errors.outreachAccountBanned', 'This outreach account is banned and cannot take new jobs.')
 // translate('errors.outreachJobNotFound', 'Outreach job not found.')
 // translate('errors.outreachJobDuplicate', 'This lead already has an outreach job of this kind on this account.')
-// translate('errors.outreachJobState', 'This job is not in a state that allows this change.')
+// translate('errors.outreachJobState', 'This job is {{status}} and cannot make this transition.')
+// translate('errors.outreachJobRace', 'This job changed state while the request was in flight.')
 // translate('errors.outreachDailyCap', 'This outreach account has reached its daily cap.')
 
 // "Grey rails" outreach: opt-in sends from the tenant's own secondary/personal
@@ -102,7 +103,7 @@ export const merchantOutreachController = new Elysia({
         "List outreach accounts",
         "List the tenant's outreach accounts with effective daily-cap usage (sentToday is reset to 0 when its UTC day rolled over).",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .post(
@@ -161,7 +162,7 @@ export const merchantOutreachController = new Elysia({
         "Create outreach account",
         "Register a secondary/personal account to send outreach from. The account starts ACTIVE with a zeroed daily counter.",
       ),
-      response: errors(400, 401, 403, 409, 422),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .get(
@@ -283,7 +284,7 @@ export const merchantOutreachController = new Elysia({
         "List outreach jobs",
         "Returns a page of outreach jobs (newest first) with their account and lead snippets; use nextCursor to page.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .post(
@@ -439,6 +440,6 @@ export const merchantOutreachController = new Elysia({
         "Outreach stats",
         "Account totals by status, today's sends, and job counts by status.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   );

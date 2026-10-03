@@ -324,9 +324,12 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
       subscriptionId: unsignedSubId,
       status: "SENDING",
     });
-    // Backdate updated_at so the reaper considers it stale.
+    // Backdate updated_at so the reaper considers it stale. The column is timestamp and every
+    // write path stores the UTC wall (the claim writes now() AT TIME ZONE 'UTC', the finalize
+    // paths a Date parameter), so the same wall goes in here - plain now() would land the
+    // session zone's wall and the cutoff would never be older on a non-UTC machine.
     await suDb.$executeRawUnsafe(
-      `UPDATE outbound_webhook_deliveries SET updated_at = now() - interval '5 minutes' WHERE id = ${id}`,
+      `UPDATE outbound_webhook_deliveries SET updated_at = (now() - interval '5 minutes') AT TIME ZONE 'UTC' WHERE id = ${id}`,
     );
     const { fetchImpl } = stubFetch(200);
     const summary = await processOutboundBatch({

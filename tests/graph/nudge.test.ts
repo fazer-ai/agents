@@ -1570,9 +1570,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       base: appDb,
     });
     // Pushed into the future, which is what a deferral leaves behind: only a drain that ignores
-    // run_at can take it, so nothing else in this process would.
+    // run_at can take it, so nothing else in this process would. A real deferral writes run_at
+    // through a Date parameter, the UTC wall - the same wall goes in here whatever the session
+    // zone is.
     await suDb.$executeRawUnsafe(
-      `UPDATE scheduler_jobs SET run_at = now() + interval '1 hour'
+      `UPDATE scheduler_jobs SET run_at = (now() + interval '1 hour') AT TIME ZONE 'UTC'
         WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:8401'`,
     );
 

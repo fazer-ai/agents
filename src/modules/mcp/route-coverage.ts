@@ -221,6 +221,109 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/mcp/": { none: TRANSPORT },
   "GET /v1/mcp/": { none: TRANSPORT },
   "DELETE /v1/mcp/": { none: TRANSPORT },
+  "GET /v1/merchant/products": { gap: "merchant product catalog" },
+  "GET /v1/merchant/products/:id": { gap: "one merchant product" },
+  "POST /v1/merchant/products": { gap: "create a merchant product" },
+  "PATCH /v1/merchant/products/:id": { gap: "edit a merchant product" },
+  "DELETE /v1/merchant/products/:id": { gap: "delete a merchant product" },
+  "POST /v1/merchant/products/import": {
+    gap: "bulk-import a product catalog",
+  },
+  "POST /v1/merchant/products/:id/retag": {
+    gap: "re-run the LLM tagger on a product",
+  },
+  "GET /v1/merchant/leads": { gap: "merchant lead list" },
+  "GET /v1/merchant/leads/:id": { gap: "one merchant lead" },
+  "PATCH /v1/merchant/leads/:id": { gap: "set a lead's funnel stage" },
+  "POST /v1/merchant/leads/ingest": {
+    gap: "ingest raw social content into leads",
+  },
+  "GET /v1/merchant/orders": { gap: "merchant order list" },
+  "POST /v1/merchant/orders": { gap: "create a merchant order" },
+  "GET /v1/merchant/orders/:id": { gap: "one merchant order" },
+  "PATCH /v1/merchant/orders/:id": { gap: "move an order along its lifecycle" },
+  "GET /v1/merchant/sources": { gap: "discovery source list" },
+  "GET /v1/merchant/sources/:id": { gap: "one discovery source" },
+  "POST /v1/merchant/sources": { gap: "register a discovery source" },
+  "PATCH /v1/merchant/sources/:id": { gap: "edit a discovery source" },
+  "DELETE /v1/merchant/sources/:id": { gap: "delete a discovery source" },
+  "POST /v1/merchant/sources/:id/run": {
+    gap: "run a discovery source scan now",
+  },
+  "GET /v1/merchant/sources/:id/leads": {
+    gap: "the leads one source produced",
+  },
+  "GET /v1/merchant/leads/:id/drafts": {
+    gap: "reply drafts for one lead",
+  },
+  "POST /v1/merchant/leads/:id/drafts": {
+    gap: "generate a reply draft for a lead",
+  },
+  "PATCH /v1/merchant/drafts/:id": { gap: "edit a reply draft" },
+  "POST /v1/merchant/drafts/:id/approve": { gap: "approve a reply draft" },
+  "POST /v1/merchant/drafts/:id/reject": { gap: "reject a reply draft" },
+  "POST /v1/merchant/drafts/:id/mark-sent": {
+    gap: "mark an approved draft as sent",
+  },
+  "GET /v1/merchant/broadcasts": { gap: "broadcast list" },
+  "POST /v1/merchant/broadcasts": { gap: "create a broadcast" },
+  "GET /v1/merchant/broadcasts/:id": { gap: "one broadcast" },
+  "PATCH /v1/merchant/broadcasts/:id": { gap: "edit a broadcast" },
+  "POST /v1/merchant/broadcasts/:id/send": { gap: "send a broadcast" },
+  "PATCH /v1/merchant/broadcasts/:id/recipients/:rid": {
+    gap: "update one broadcast recipient",
+  },
+  "GET /v1/merchant/analytics/summary": { gap: "merchant funnel analytics" },
+  "GET /v1/merchant/nurture/sequences": { gap: "nurture sequence list" },
+  "POST /v1/merchant/nurture/sequences": { gap: "create a nurture sequence" },
+  "GET /v1/merchant/nurture/sequences/:id": { gap: "one nurture sequence" },
+  "PATCH /v1/merchant/nurture/sequences/:id": {
+    gap: "edit a nurture sequence",
+  },
+  "DELETE /v1/merchant/nurture/sequences/:id": {
+    gap: "delete a nurture sequence",
+  },
+  "GET /v1/merchant/nurture/enrollments": { gap: "nurture enrollments" },
+  "POST /v1/merchant/nurture/enrollments": {
+    gap: "enroll a lead in a nurture sequence",
+  },
+  "DELETE /v1/merchant/nurture/enrollments/:id": {
+    gap: "unenroll a lead",
+  },
+  "GET /v1/merchant/nurture/outbox": { gap: "nurture outbox" },
+  "POST /v1/merchant/nurture/outbox/:id/send": {
+    gap: "send a queued nurture message",
+  },
+  "POST /v1/merchant/nurture/outbox/:id/cancel": {
+    gap: "cancel a queued nurture message",
+  },
+  "GET /v1/merchant/outreach/accounts": { gap: "outreach account list" },
+  "POST /v1/merchant/outreach/accounts": {
+    gap: "register an outreach account",
+  },
+  "GET /v1/merchant/outreach/accounts/:id": { gap: "one outreach account" },
+  "PATCH /v1/merchant/outreach/accounts/:id": {
+    gap: "edit an outreach account",
+  },
+  "DELETE /v1/merchant/outreach/accounts/:id": {
+    gap: "remove an outreach account",
+  },
+  "GET /v1/merchant/outreach/jobs": { gap: "outreach job list" },
+  "POST /v1/merchant/outreach/jobs": { gap: "queue an outreach job" },
+  "GET /v1/merchant/outreach/jobs/:id": { gap: "one outreach job" },
+  "POST /v1/merchant/outreach/jobs/:id/approve": {
+    gap: "approve an outreach job",
+  },
+  "POST /v1/merchant/outreach/jobs/:id/cancel": {
+    gap: "cancel an outreach job",
+  },
+  "POST /v1/merchant/outreach/jobs/:id/mark-sent": {
+    gap: "mark a manual outreach job as sent",
+  },
+  "POST /v1/merchant/outreach/jobs/:id/requeue": {
+    gap: "requeue a failed outreach job",
+  },
+  "GET /v1/merchant/outreach/stats": { gap: "outreach send stats" },
   "GET /v1/n8n-export/tools/:id": { none: EXPORT },
   "POST /v1/vault/:id/oauth/google/authorize": { none: OAUTH },
   "GET /v1/vault/:id/oauth/google/status": { none: OAUTH },

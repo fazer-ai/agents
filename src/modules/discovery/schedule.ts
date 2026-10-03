@@ -9,15 +9,12 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { leadSourceScanDueAt, leadSourceScanKey } from "./scan-jobs";
 import { runLeadSource } from "./sources";
 
-// The recurring side of a lead source: `LeadSource.enabled` + `intervalMin` drive one perpetual
-// scheduler row per source (`lead-source:<id>`), armed by the source's write paths and re-armed by
-// every run of this handler, due when `lastRunAt + intervalMin` passes (or now, for a source that
-// never ran). The shared tick claims it like every other shared-lane row, so a due scan is at most
-// one SCHEDULER_WORKER_INTERVAL_MS late.
-//
-// The run itself is the same `runLeadSource` the manual POST /sources/:id/run calls: it records
-// lastRunAt/lastStatus/lastError and audits `merchant_source.run`, so a scheduled scan is
-// indistinguishable from a manual one on the row and in the trail.
+// The recurring side of a lead source: `enabled` + `intervalMin` drive one perpetual scheduler
+// row per source (`lead-source:<id>`), armed by the source's write paths and re-armed by every
+// run of this handler, due when `lastRunAt + intervalMin` passes (or now, if it never ran). The
+// shared tick claims it like every other shared-lane row, so a due scan is at most one
+// SCHEDULER_WORKER_INTERVAL_MS late. The run is the same `runLeadSource` the manual run route
+// calls, so a scheduled scan is indistinguishable from a manual one on the row and in the trail.
 
 const sysCtx = (tenantId: bigint): TenantContext => ({
   tenantId,

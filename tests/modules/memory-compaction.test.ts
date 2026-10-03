@@ -303,8 +303,12 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     // test would pass with the drain's outcome ignored. A row already CLAIMED is the honest shape of
     // it: some other process is executing this ingestion right now, the drain's PENDING claim cannot
     // see it, and it is owed all the same.
+    // The app writes claimed_at through a Date parameter, which a timestamp column stores as the
+    // UTC wall - write the same wall here so the claim reads "a moment ago" whatever the session's
+    // time zone is.
     await suDb.$executeRawUnsafe(
-      `UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = now()
+      `UPDATE scheduler_jobs SET status = 'CLAIMED',
+        claimed_at = now() AT TIME ZONE 'UTC'
         WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${threadId}:7801'`,
     );
     expect(isTurnInFlight(threadId)).toBe(false);

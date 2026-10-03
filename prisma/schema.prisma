@@ -2544,7 +2544,6 @@ model MerchantProduct {
   leadMatches LeadProductMatch[]
   orderItems  MerchantOrderItem[]
 
-  @@index([tenantId])
   @@index([tenantId, category])
   @@map("merchant_products")
 }
@@ -2734,6 +2733,14 @@ enum NurtureOutboxStatus {
   CANCELLED
 }
 
+// The step's channel frozen onto the staged row: dm = a direct message, reply
+// = a public reply under the lead's post. Lowercase members mirror the Json
+// step vocabulary (NURTURE_CHANNELS) they are written from.
+enum NurtureChannel {
+  dm
+  reply
+}
+
 // A rendered follow-up, staged for an operator to copy out and send by hand.
 // Nothing here is ever sent by the platform: the row IS the whole rail, and
 // `sentAt` records when a person marked it delivered.
@@ -2743,6 +2750,7 @@ model NurtureOutbox {
   enrollmentId BigInt              @map("enrollment_id")
   leadId       BigInt              @map("lead_id")
   body         String
+  channel      NurtureChannel
   status       NurtureOutboxStatus @default(PENDING)
   sentAt       DateTime?           @map("sent_at")
   createdAt    DateTime            @default(now()) @map("created_at")

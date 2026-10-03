@@ -118,7 +118,7 @@ describe.skipIf(!dbUp)("which trail the read answers for", () => {
       SELECT max(created_at) AS at FROM audit_logs WHERE tenant_id IS NULL`;
     const after = new Date((top?.at ?? new Date()).getTime() + 3_600_000);
     await suDb.$executeRawUnsafe(
-      `UPDATE audit_logs SET created_at = '${after.toISOString()}'::timestamptz
+      `UPDATE audit_logs SET created_at = '${after.toISOString()}'::timestamptz AT TIME ZONE 'UTC'
          WHERE target = '${TAG}:mine'`,
     );
   });

@@ -322,10 +322,12 @@ describe.skipIf(!dbUp)("nurture rail", () => {
     let page = await listNurtureOutbox(ctx(tenantId), {}, appDb);
     expect(page.items).toHaveLength(1);
     expect(page.items[0]?.status).toBe("PENDING");
-    // {{name}}/{{platform}} rendered from the lead.
+    // {{name}}/{{platform}} rendered from the lead, and the step's rail is
+    // frozen onto the row for the operator's card.
     expect(page.items[0]?.body).toBe("Hi Lan Anh, saw you on facebook");
     expect(page.items[0]?.leadAuthorName).toBe("Lan Anh");
     expect(page.items[0]?.sequenceName).toBe("Instant two-step");
+    expect(page.items[0]?.channel).toBe("dm");
 
     const afterFirst = await listNurtureEnrollments(ctx(tenantId), {}, appDb);
     const mid = afterFirst.items.find((e) => e.id === en.id);
@@ -345,6 +347,7 @@ describe.skipIf(!dbUp)("nurture rail", () => {
       i.body.includes("still available"),
     );
     expect(secondRow?.body).toBe("Serum BHA 2% is still available");
+    expect(secondRow?.channel).toBe("reply");
 
     const done = (await listNurtureEnrollments(ctx(tenantId), {}, appDb)).items;
     expect(done.find((e) => e.id === en.id)?.status).toBe("DONE");

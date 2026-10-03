@@ -144,9 +144,7 @@ export function BroadcastsPage() {
                   <TableHead>
                     {t("merchant.broadcasts.colAudience", "Audience")}
                   </TableHead>
-                  <TableHead>
-                    {t("merchant.broadcasts.colStatus", "Status")}
-                  </TableHead>
+                  <TableHead>{"Status"}</TableHead>
                   <TableHead>
                     {t("merchant.broadcasts.colSent", "Sent")}
                   </TableHead>

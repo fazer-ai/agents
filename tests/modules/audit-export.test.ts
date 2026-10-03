@@ -88,7 +88,7 @@ async function seed(
   }
   if (over.at) {
     await suDb.$executeRawUnsafe(
-      `UPDATE audit_logs SET created_at = '${over.at}'::timestamptz WHERE target = '${target}'`,
+      `UPDATE audit_logs SET created_at = '${over.at}'::timestamptz AT TIME ZONE 'UTC' WHERE target = '${target}'`,
     );
   }
 }

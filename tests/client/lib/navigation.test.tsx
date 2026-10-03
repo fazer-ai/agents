@@ -39,15 +39,28 @@ describe("navigation", () => {
     const groups = groupNavItems(NAV_ITEMS);
     expect(groups.map((g) => g.section?.labelKey ?? null)).toEqual([
       null,
+      "nav.section.merchant",
+      null,
       "nav.section.integrations",
       "nav.section.monitoring",
       "nav.section.system",
     ]);
     expect(groups.flatMap((g) => g.items)).toEqual(NAV_ITEMS);
-    // The day-to-day work opens the list with no heading, the agents and what they use included.
-    expect(groups[0]?.items.map((i) => i.to)).toEqual([
-      "/",
-      "/conversations",
+    // The day-to-day work opens the list with no heading; the merchant screens
+    // form their own group between conversations and the agent surfaces.
+    expect(groups[0]?.items.map((i) => i.to)).toEqual(["/", "/conversations"]);
+    expect(groups[1]?.items.map((i) => i.to)).toEqual([
+      "/leads",
+      "/sources",
+      "/outreach",
+      "/catalog",
+      "/orders",
+      "/nurture",
+      "/analytics",
+      "/onboarding",
+      "/broadcasts",
+    ]);
+    expect(groups[2]?.items.map((i) => i.to)).toEqual([
       "/agents",
       "/resources",
       "/channels",

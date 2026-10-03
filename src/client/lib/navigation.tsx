@@ -95,7 +95,8 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 // t('nav.audit', 'Audit')
 // t('nav.admin', 'Admin')
 // t('nav.settings', 'Settings')
-// t('nav.leads', 'Leads')
+// nav.leads has no catalog entry: "Leads" is kept untranslated in both locales,
+// so the item falls back to its defaultLabel.
 // t('nav.sources', 'Sources')
 // t('nav.outreach', 'Outreach')
 // t('nav.catalog', 'Catalog')

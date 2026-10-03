@@ -15,23 +15,21 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { LEAD_PLATFORMS } from "@/modules/merchant/leads";
-import { requireVaultRef } from "@/modules/vault/service";
+import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import {
   assertOutreachEnabled,
   OUTREACH_ACCOUNT_STATUSES,
   OUTREACH_TRANSPORTS,
 } from "./shared";
 
-// Outreach accounts: the personal/secondary accounts an operator sends from.
-// `credentialRef` holds the stable `vault:<id>` reference to the entry that
-// carries the session/token the transport needs (for zca_bridge a JSON object
-// like { "token": "...", "baseUrl"?: "..." }); the value never leaves the vault
-// boundary except inside the worker's own send path.
+// Outreach accounts: the personal/secondary accounts an operator sends from. `credentialRef`
+// holds the stable `vault:<id>` reference to the entry that carries the session/token the
+// transport needs (for zca_bridge a JSON object like { "token": "...", "baseUrl"?: "..." });
+// the value never leaves the vault boundary except inside the worker's own send path.
 //
-// The rate controls live on the row: `dailyCap`/`sentToday`(+`sentTodayDate`,
-// the UTC day the counter counts)/`cooldownMin`/`lastSentAt`. The worker
-// consumes a slot in ONE guarded UPDATE so a concurrent claim cannot overspend
-// the cap; this module only reads and writes them as configuration.
+// The rate controls live on the row: `dailyCap`/`sentToday`(+`sentTodayDate`, the UTC day
+// the counter counts)/`cooldownMin`/`lastSentAt`. The worker consumes a slot in ONE guarded
+// UPDATE so a concurrent claim cannot overspend the cap; this module only configures them.
 
 export interface OutreachAccountDto {
   id: string;
@@ -105,7 +103,7 @@ function toDto(r: AccountRow): OutreachAccountDto {
     id: String(r.id),
     platform: r.platform,
     handle: r.handle,
-    credentialRef: r.credentialRef,
+    credentialRef: readableVaultRef(r.credentialRef),
     transport: r.transport,
     dailyCap: r.dailyCap,
     sentToday: effectiveSentToday(r),

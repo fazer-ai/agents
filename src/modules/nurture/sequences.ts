@@ -95,7 +95,13 @@ function toDto(r: SequenceRow): NurtureSequenceDto {
 }
 
 function auditProjection(dto: NurtureSequenceDto) {
-  return { name: dto.name, steps: dto.steps, active: dto.active };
+  // Step shape only: delayMin + channel. `bodyTemplate` is a message body, and
+  // message bodies stay out of the trail (the same rule broadcasts follows).
+  return {
+    name: dto.name,
+    steps: dto.steps.map(({ delayMin, channel }) => ({ delayMin, channel })),
+    active: dto.active,
+  };
 }
 
 export async function listNurtureSequences(

@@ -359,6 +359,7 @@ async function assertNameFree(
     throw new ConflictError(
       "tool name belongs to a built-in tool",
       "errors.toolNameReserved",
+      undefined,
       "name",
     );
   }
@@ -369,6 +370,7 @@ async function assertNameFree(
     throw new ConflictError(
       "tool name belongs to a built-in tool",
       "errors.toolNameReserved",
+      undefined,
       "name",
     );
   }
@@ -384,6 +386,7 @@ async function assertNameFree(
     throw new ConflictError(
       "tool name already in use",
       "errors.toolNameTaken",
+      undefined,
       "name",
     );
   }

@@ -83,6 +83,9 @@ export const DEAD_UNITS = [
   "inbound_delivery",
   // A knowledge document whose indexing failed; the row stays FAILED and no retry is coming.
   "knowledge_document",
+  // An outreach job past its retry budget, killed in phase 1 (account, lead or credential
+  // gone), or stranded in SENDING by a worker that stopped mid-send.
+  "outreach_job",
 ] as const;
 export type DeadUnit = (typeof DEAD_UNITS)[number];
 

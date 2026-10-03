@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import {
@@ -100,6 +101,9 @@ export async function drainNurtureEnrollments(params: {
           enrollmentId: row.id,
           leadId: row.leadId,
           body,
+          // Frozen per staged row: the step's channel names the rail the
+          // operator sends on, and a later sequence edit never rewrites it.
+          channel: step.channel,
         },
         select: { id: true },
       });
@@ -205,7 +209,7 @@ export async function ensureAllNurtureDrains(
       await ensureNurtureDrain(t.tenantId, base);
     } catch (err) {
       logger.warn(
-        { tenantId: String(t.tenantId), err },
+        { tenantId: String(t.tenantId), err: sanitizeErrorMessage(err) },
         "nurture drain arm failed for tenant; continuing",
       );
     }

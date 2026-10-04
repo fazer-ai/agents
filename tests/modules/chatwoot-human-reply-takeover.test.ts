@@ -199,8 +199,8 @@ describe("the ownership fence's projection", () => {
         "consoleWriteAtMessageId",
         // the status version, which orders this decision against a later one
         "chatwootStatusAt",
-        // where the status last moved, which is what "a later decision" means
-        "chatwootStatusChangedAt",
+        // where the status or holder last moved, which is what "a later decision" means
+        "chatwootOwnershipChangedAt",
         // whether it is still open to the bot at all
         "status",
       ].sort(),
@@ -466,7 +466,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         status: true,
         lastHandledMessageId: true,
         chatwootStatusAt: true,
-        chatwootStatusChangedAt: true,
+        chatwootOwnershipChangedAt: true,
         statusClaimUntil: true,
         statusClaimFrom: true,
         statusClaimStampedAt: true,
@@ -898,12 +898,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       await suDb.conversation.update({
         where: { id: row?.id },
         // What `mirrorConsoleWrite` leaves behind on a versioned reconcile: still `pending`, and
-        // stamped ahead of everything this delivery saw, the change mark included, because a click
+        // stamped ahead of everything this delivery saw, the ownership mark included, because a click
         // is a decision even when it restates the status.
         data: {
           status: "pending",
           chatwootStatusAt: (row?.chatwootStatusAt ?? 0) + 1000,
-          chatwootStatusChangedAt: (row?.chatwootStatusAt ?? 0) + 1000,
+          chatwootOwnershipChangedAt: (row?.chatwootStatusAt ?? 0) + 1000,
         },
       });
     };
@@ -920,9 +920,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     ]);
   });
 
-  // A row from before the change mark has only the version, and the fence falls back to it: a
+  // A row from before the ownership mark has only the version, and the fence falls back to it: a
   // hand-back stamped ahead of the reply still stops the takeover there.
-  test("a row without the change mark is judged by its version", async () => {
+  test("a row without the ownership mark is judged by its version", async () => {
     const conv = 8955;
     await deliver(conv, { ...customerSays("oi") });
     const row = await convRow(conv);
@@ -932,7 +932,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         data: {
           status: "pending",
           chatwootStatusAt: (row?.chatwootStatusAt ?? 0) + 1000,
-          chatwootStatusChangedAt: null,
+          chatwootOwnershipChangedAt: null,
         },
       });
     };
@@ -1298,7 +1298,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     const seeded = await convRow(conv);
     const seen = {
       statusAt: seeded?.chatwootStatusAt ?? null,
-      statusChangedAt: seeded?.chatwootStatusChangedAt ?? null,
+      ownershipChangedAt: seeded?.chatwootOwnershipChangedAt ?? null,
       assigneeType: "AgentBot",
       assigneeId: OUR_BOT,
       consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
@@ -1332,10 +1332,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
   });
 
-  // THE SWAP PINS THE MARK THE FENCE COMPARED. On a row with a change mark, a restatement that moves
+  // THE SWAP PINS THE MARK THE FENCE COMPARED. On a row with a ownership mark, a restatement that moves
   // only the version between the read and the swap is not a later decision, so the claim stands; on
   // a row without one, the version is all there is, and a move of it loses the swap.
-  test("the claim pins the change mark, and the version only where there is none", async () => {
+  test("the claim pins the ownership mark, and the version only where there is none", async () => {
     for (const [conv, legacy] of [
       [8956, false],
       [8957, true],
@@ -1344,12 +1344,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       if (legacy) {
         await suDb.conversation.updateMany({
           where: { tenantId, chatwootConversationId: conv },
-          data: { chatwootStatusChangedAt: null },
+          data: { chatwootOwnershipChangedAt: null },
         });
       }
       const seeded = await convRow(conv);
-      if (!legacy) expect(seeded?.chatwootStatusChangedAt).not.toBeNull();
-      // The restatement lands: same status, the version a step ahead, the change mark where it was.
+      if (!legacy) expect(seeded?.chatwootOwnershipChangedAt).not.toBeNull();
+      // The restatement lands: same status, the version a step ahead, the ownership mark where it was.
       await suDb.conversation.updateMany({
         where: { tenantId, chatwootConversationId: conv },
         data: { chatwootStatusAt: (seeded?.chatwootStatusAt ?? 0) + 1 },
@@ -1360,7 +1360,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         conversationId: conv,
         seen: {
           statusAt: seeded?.chatwootStatusAt ?? null,
-          statusChangedAt: seeded?.chatwootStatusChangedAt ?? null,
+          ownershipChangedAt: seeded?.chatwootOwnershipChangedAt ?? null,
           assigneeType: "AgentBot",
           assigneeId: OUR_BOT,
           consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
@@ -1387,7 +1387,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         conversationId: conv,
         seen: {
           statusAt: seeded?.chatwootStatusAt ?? null,
-          statusChangedAt: seeded?.chatwootStatusChangedAt ?? null,
+          ownershipChangedAt: seeded?.chatwootOwnershipChangedAt ?? null,
           assigneeType: "AgentBot",
           assigneeId: OUR_BOT,
           consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
@@ -1871,6 +1871,76 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     ]);
   });
 
+  // A hand-back by assignment alone: the conversation goes to a person and comes back to the bot
+  // with the status `pending` throughout. Each move is a decision after the reply.
+  test("a hand-back by assignment alone still stops it", async () => {
+    const conv = 8960;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    const held = (assignee_type: string, id: number) =>
+      ({
+        ...conversation(conv),
+        status: "pending",
+        meta: {
+          assignee_type,
+          assignee: { id, name: "Atendente" },
+          sender: { id: 77, name: "Cliente" },
+        },
+      }) as ReturnType<typeof conversation>;
+    await deliverConversationEvent(
+      conv,
+      "conversation_updated",
+      held("User", 5),
+    );
+    await deliverConversationEvent(
+      conv,
+      "conversation_updated",
+      held("AgentBot", OUR_BOT),
+    );
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá!") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
+  // The bot assignee coming back is named in changed_attributes, and that event reaches the mirror
+  // behind a newer restatement of the same holder: the late event is the only word of the move.
+  test("an assignment back to the bot delivered behind a newer restatement still stops it", async () => {
+    const conv = 8961;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    const back = {
+      ...conversation(conv),
+      status: "pending",
+      changed_attributes: [
+        {
+          assignee_agent_bot_id: {
+            previous_value: null,
+            current_value: OUR_BOT,
+          },
+        },
+      ],
+    } as ReturnType<typeof conversation>;
+    await deliverConversationEvent(conv, "conversation_updated");
+    await deliverConversationEvent(conv, "conversation_updated", back);
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá!") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
   // The open in between never reached the mirror; the event that closed it says the status moved.
   // Two words for it on the wire: the status event by its name (it carries no changed_attributes),
   // and the companion conversation_updated by naming `status` among what changed.
@@ -1907,10 +1977,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       ]);
     });
 
-  // The console half of the change mark, through the real console function: a status click that
+  // The console half of the ownership mark, through the real console function: a status click that
   // restates `pending` is still the operator's decision, so it moves the mark the takeover compares
   // against. A restatement Chatwoot emits on its own does not (the test above with the reply's echo).
-  test("a console click that restates the status still moves the change mark", async () => {
+  test("a console click that restates the status still moves the ownership mark", async () => {
     const conv = 8954;
     await deliver(conv, { ...customerSays("oi") });
     const before = await convRow(conv);
@@ -1924,10 +1994,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       appDb,
     );
     const after = await convRow(conv);
-    expect(after?.chatwootStatusChangedAt).not.toBeNull();
-    expect(after?.chatwootStatusChangedAt).toBe(after?.chatwootStatusAt ?? -1);
+    expect(after?.chatwootOwnershipChangedAt).not.toBeNull();
+    expect(after?.chatwootOwnershipChangedAt).toBe(
+      after?.chatwootStatusAt ?? -1,
+    );
     expect(after?.chatwootStatusAt ?? 0).toBeGreaterThan(
-      before.chatwootStatusChangedAt ?? 0,
+      before.chatwootOwnershipChangedAt ?? 0,
     );
   });
 

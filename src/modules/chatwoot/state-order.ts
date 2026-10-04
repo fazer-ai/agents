@@ -30,17 +30,20 @@ export interface StatePayload {
   /** True for a brand-new incoming customer message, the one reopen a message carries faithfully. */
   reopensConversation: boolean;
   /**
-   * The source's own word that THIS write moved the status: `status` among the event's
-   * `changed_attributes`. The only way to place a change the row never saw (the event that carried
-   * it lost or still in flight), since the row then already agrees with what this one states.
+   * The source's own word that THIS write moved the status or the holder: the status event itself,
+   * or `status`/an assignee column among the event's `changed_attributes`. The only way to place a
+   * change the row never saw (the event that carried it lost or still in flight), since the row then
+   * already agrees with what this one states.
    */
-  statusChangeStated: boolean;
+  ownershipChangeStated: boolean;
   /** The status the payload states. Null means it stated none, so none is written. */
   status: string | null;
   /** False when the payload said nothing about the assignee: the degraded shape (see 6 above). */
   assigneeStated: boolean;
   /** The assignee type stated, null meaning unassigned. Only meaningful when `assigneeStated`. */
   assigneeType: string | null;
+  /** The assignee id stated, read with `assigneeType` to tell a holder change from a restatement. */
+  assigneeId: number | null;
   /**
    * True when the payload SPEAKS about the redirect pairing, which includes stating that there is
    * none: the fork ships the key on every conversation, nil included, and clears the pairing when a
@@ -62,10 +65,11 @@ export interface StateRow {
   status: string;
   activityAt: Date | null;
   statusAt: number | null;
-  /** The change mark (see `statusChangedAt` on the decision). */
-  statusChangedAt: number | null;
+  /** The ownership mark (see `ownershipChangedAt` on the decision). */
+  ownershipChangedAt: number | null;
   assigneeAt: number | null;
   assigneeType: string | null;
+  assigneeId: number | null;
   redirectOriginAt: number | null;
   /**
    * Whether this conversation has EVER had a pairing stated about it: the mark, or a stored origin
@@ -111,13 +115,14 @@ export interface StateDecision {
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
   /**
-   * Version to stamp on the CHANGE mark, or null to leave it. The status mark moves on every ordered
-   * event, a restatement included, which is what ordering snapshots needs; this one moves only when
-   * the status written differs from the stored one or the source says it changed, and only forward.
-   * It answers whether a decision about the status came after a given version, which a restatement
-   * is not: the conversation_updated Chatwoot emits for a person's own reply is one.
+   * Version to stamp on the OWNERSHIP mark, or null to leave it. The status and assignee marks move
+   * on every ordered event, a restatement included, which is what ordering snapshots needs; this one
+   * moves only when the status or the holder written differs from the stored one, or the source says
+   * one of them changed, and only forward. It answers whether a decision about who holds the
+   * conversation came after a given version, which a restatement is not: the conversation_updated
+   * Chatwoot emits for a person's own reply is one.
    */
-  statusChangedAt: number | null;
+  ownershipChangedAt: number | null;
   /**
    * Version to record as REFUSED BY THE LOCAL CLAIM, or null to leave the stored one. Written only
    * while the claim has no stamped version of its own, which is the window in which a refusal cannot
@@ -184,7 +189,10 @@ export function decideConversationWrites(
       assignee: payload.assigneeStated,
       unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
-      statusChangedAt: payload.status != null ? payload.version : null,
+      ownershipChangedAt:
+        payload.status != null || payload.assigneeStated
+          ? payload.version
+          : null,
       statusClaimRefusedAt: null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
       redirectOrigin: redirectOriginAnswers,
@@ -197,22 +205,22 @@ export function decideConversationWrites(
     row.statusAt != null &&
     payload.version != null &&
     payload.version < row.statusAt;
-  // A status change the source states, arriving behind a newer restatement, still dates a
-  // decision: the restatement moved the status mark and not the change mark, so this event is the
-  // only word that the status moved in between. It moves the change mark (never the status) on
-  // either exit. A row with no change mark is left alone: its fallback is the status mark, already
-  // ahead of this version, and stamping here would leave the fence comparing against less.
-  const lateChangeAt =
-    olderThanStatus &&
-    payload.status != null &&
-    payload.statusChangeStated &&
-    row.statusChangedAt != null
-      ? advancesFrom(row.statusChangedAt, payload.version)
-      : null;
   const olderThanAssignee =
     row.assigneeAt != null &&
     payload.version != null &&
     payload.version < row.assigneeAt;
+  // A change the source states, arriving behind a newer restatement, still dates a decision: the
+  // restatement moved the field marks and not the ownership mark, so this event is the only word
+  // that the status or the holder moved in between. It moves the ownership mark (never the field)
+  // on either exit. A row with no ownership mark is left alone: its fallback is the status mark,
+  // already ahead of this version, and stamping here would leave the fence comparing against less.
+  const lateChangeAt =
+    (olderThanStatus || olderThanAssignee) &&
+    payload.fromConversationEvent &&
+    payload.ownershipChangeStated &&
+    row.ownershipChangedAt != null
+      ? advancesFrom(row.ownershipChangedAt, payload.version)
+      : null;
   const olderThanRedirectOrigin =
     row.redirectOriginAt != null &&
     payload.version != null &&
@@ -243,7 +251,7 @@ export function decideConversationWrites(
       assignee: false,
       unversioned: false,
       statusAt: null,
-      statusChangedAt: lateChangeAt,
+      ownershipChangedAt: lateChangeAt,
       statusClaimRefusedAt: null,
       assigneeAt: null,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
@@ -334,9 +342,14 @@ export function decideConversationWrites(
     assignee,
     unversioned: row.activityAt == null || eventAt >= row.activityAt,
     statusAt: status != null ? advances(row.statusAt) : null,
-    statusChangedAt:
-      status != null && (status !== row.status || payload.statusChangeStated)
-        ? advances(row.statusChangedAt)
+    ownershipChangedAt:
+      (status != null &&
+        (status !== row.status || payload.ownershipChangeStated)) ||
+      (assignee &&
+        (payload.assigneeType !== row.assigneeType ||
+          payload.assigneeId !== row.assigneeId ||
+          payload.ownershipChangeStated))
+        ? advances(row.ownershipChangedAt)
         : lateChangeAt,
     // NOTE: a refusal the claim could not place is KEPT, on a mark of its own rather than the status
     // mark: we ack this event and Chatwoot never redelivers it, so dropping it would lose a hand-back

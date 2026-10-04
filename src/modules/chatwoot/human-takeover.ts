@@ -52,7 +52,7 @@ export const OWNERSHIP_PROJECTION = {
   assigneeId: true,
   status: true,
   chatwootStatusAt: true,
-  chatwootStatusChangedAt: true,
+  chatwootOwnershipChangedAt: true,
   consoleWriteAtMessageId: true,
 } as const;
 
@@ -78,10 +78,10 @@ export async function conversationOwnershipNow(p: {
   | {
       ours: true;
       statusAt: number | null;
-      // Where the status last MOVED at the source, which is what "a later decision" means. The mark
-      // above also moves on a restatement, and a person's reply makes Chatwoot emit one of its own a
+      // Where the status or the holder last MOVED at the source, which is what "a later decision"
+      // means. The marks also move on a restatement, and a person's reply makes Chatwoot emit one of its own a
       // few milliseconds after the reply's snapshot. Null on rows older than the column.
-      statusChangedAt: number | null;
+      ownershipChangedAt: number | null;
       assigneeType: string | null;
       assigneeId: number | null;
       // A different axis, not a fourth version: where the last unversioned console write stands in
@@ -118,7 +118,7 @@ export async function conversationOwnershipNow(p: {
     ? {
         ours: true,
         statusAt: conv?.chatwootStatusAt ?? null,
-        statusChangedAt: conv?.chatwootStatusChangedAt ?? null,
+        ownershipChangedAt: conv?.chatwootOwnershipChangedAt ?? null,
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
         consoleWriteAtMessageId: conv?.consoleWriteAtMessageId ?? null,
@@ -146,7 +146,7 @@ export async function claimOpenForHumanQueue(p: {
   /** The row this delivery decided about, which the compare-and-swap pins. */
   seen: {
     statusAt: number | null;
-    statusChangedAt: number | null;
+    ownershipChangedAt: number | null;
     assigneeType: string | null;
     assigneeId: number | null;
     // The fourth term: ordered independently of the status version, so a console write can move it
@@ -175,13 +175,13 @@ export async function claimOpenForHumanQueue(p: {
             chatwootInstanceId: p.instanceId,
             chatwootConversationId: p.conversationId,
             status: "pending",
-            // The change mark when the row has one, not the status mark: the reply's own
+            // The ownership mark when the row has one, not the status mark: the reply's own
             // conversation_updated moves the status mark between this delivery's read and this
-            // write, so pinning it would lose the swap to a restatement. A status that really moved
-            // in between moves the change mark too. A row from before the column has only the status
+            // write, so pinning it would lose the swap to a restatement. A status or holder that
+            // really moved in between moves the ownership mark too. A row from before the column has only the status
             // mark, and keeps it.
-            ...(p.seen.statusChangedAt !== null
-              ? { chatwootStatusChangedAt: p.seen.statusChangedAt }
+            ...(p.seen.ownershipChangedAt !== null
+              ? { chatwootOwnershipChangedAt: p.seen.ownershipChangedAt }
               : { chatwootStatusAt: p.seen.statusAt }),
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
@@ -614,8 +614,8 @@ export async function runHumanReplyTakeover(
               refusal = "not_ours";
               return false;
             }
-            // Where the status last moved; the version on a row from before the change mark.
-            const decidedAgainst = now.statusChangedAt ?? now.statusAt;
+            // Where ownership last moved; the version on a row from before the ownership mark.
+            const decidedAgainst = now.ownershipChangedAt ?? now.statusAt;
             // NOTE: and is this decision still the most recent one? A hand-back ("Return to AI")
             // leaves the conversation `pending` and bot-owned too, so the two are told apart by
             // version (state-order.ts): a row whose status moved after the deciding payload holds a
@@ -627,7 +627,7 @@ export async function runHumanReplyTakeover(
             ) {
               refusal = "later_decision";
               logger.info(
-                "chatwoot: %s handoff skipped (conv=%s) — the status changed after this reply (%s < %s)",
+                "chatwoot: %s handoff skipped (conv=%s) — the status or holder changed after this reply (%s < %s)",
                 `human reply (${p.route})`,
                 convLabel,
                 String(p.decidedAtVersion),

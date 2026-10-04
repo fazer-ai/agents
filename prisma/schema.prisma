@@ -840,12 +840,13 @@ model Conversation {
   // would round them to the same millisecond, making the version comparison lose the ordering these
   // columns exist to provide.
   chatwootStatusAt             Float?    @map("chatwoot_status_at")
-  // The version at which the status last MOVED at the source, beside the mark above, which moves on
-  // every ordered conversation event, a restatement included. Read by one question only: whether a
-  // person's reply was overtaken by a later decision about the status (issue #1028). The reply's
-  // own conversation_updated restates the status a few milliseconds after the reply's snapshot, and
-  // against `chatwootStatusAt` it reads as a hand-back. Null on rows written before it existed.
-  chatwootStatusChangedAt      Float?    @map("chatwoot_status_changed_at")
+  // The version at which the status or the holder last MOVED at the source, beside the field marks,
+  // which move on every ordered conversation event, a restatement included. Read by one question
+  // only: whether a person's reply was overtaken by a later decision about who holds the
+  // conversation (issue #1028). The reply's own conversation_updated restates both a few
+  // milliseconds after the reply's snapshot, and against `chatwootStatusAt` it reads as a hand-back.
+  // Null on rows written before it existed.
+  chatwootOwnershipChangedAt   Float?    @map("chatwoot_ownership_changed_at")
   chatwootAssigneeAt           Float?    @map("chatwoot_assignee_at")
   // Third mark, same axis, for `redirectOriginDisplayId`. It needs one of its own because the fork
   // records the pairing with an update of its own, so from that write on the field describes a

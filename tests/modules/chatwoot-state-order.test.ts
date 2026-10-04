@@ -34,7 +34,8 @@ function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
     assigneeType: "User",
     redirectOriginCleared: false,
     redirectOriginStated: false,
-    statusChangeStated: false,
+    ownershipChangeStated: false,
+    assigneeId: null,
     ...over,
   };
 }
@@ -60,7 +61,8 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     statusClaimFrom: null,
     statusClaimStampedAt: null,
     statusClaimRefusedAt: null,
-    statusChangedAt: null,
+    ownershipChangedAt: null,
+    assigneeId: null,
     ...over,
   };
 }
@@ -628,115 +630,170 @@ describe("decideConversationWrites", () => {
 });
 
 // THE CHANGE MARK. The status mark moves on every ordered conversation event, a
-// restatement included, and that is right for ordering snapshots. The change mark answers a different
+// restatement included, and that is right for ordering snapshots. The ownership mark answers a different
 // question, the one the human-reply takeover asks: did the status MOVE after the reply was written?
 // A person's reply makes Chatwoot emit its own conversation_updated a few milliseconds later, same
 // status, and that is not a later decision.
-describe("the status change mark", () => {
-  test("a restatement moves the status mark and leaves the change mark", () => {
+describe("the ownership mark", () => {
+  test("a restatement moves the status mark and leaves the ownership mark", () => {
     const d = decideConversationWrites(
       conversationEvent({
         status: "pending",
         assigneeType: "AgentBot",
-        statusChangeStated: false,
+        ownershipChangeStated: false,
       }),
-      storedRow({ status: "pending", statusChangedAt: V_OLD }),
+      storedRow({ status: "pending", ownershipChangedAt: V_OLD }),
       NOW,
     );
     expect(d.statusAt).toBe(V_NEW);
-    expect(d.statusChangedAt).toBeNull();
+    expect(d.ownershipChangedAt).toBeNull();
   });
 
   test("a status that differs from the row moves both marks", () => {
     const d = decideConversationWrites(
-      conversationEvent({ status: "open", statusChangeStated: false }),
-      storedRow({ status: "pending", statusChangedAt: V_OLD }),
+      conversationEvent({ status: "open", ownershipChangeStated: false }),
+      storedRow({ status: "pending", ownershipChangedAt: V_OLD }),
       NOW,
     );
     expect(d.statusAt).toBe(V_NEW);
-    expect(d.statusChangedAt).toBe(V_NEW);
+    expect(d.ownershipChangedAt).toBe(V_NEW);
   });
 
   // The row never saw the open in between: the event that would have said so was lost or is still
   // in flight. The source says the status moved at this write, and the source is the one that knows.
-  test("a change the source states moves the change mark even when the row already agrees", () => {
+  test("a change the source states moves the ownership mark even when the row already agrees", () => {
     const d = decideConversationWrites(
-      conversationEvent({ status: "pending", statusChangeStated: true }),
-      storedRow({ status: "pending", statusChangedAt: V_OLD }),
+      conversationEvent({ status: "pending", ownershipChangeStated: true }),
+      storedRow({ status: "pending", ownershipChangedAt: V_OLD }),
       NOW,
     );
-    expect(d.statusChangedAt).toBe(V_NEW);
+    expect(d.ownershipChangedAt).toBe(V_NEW);
   });
 
-  test("a first event stamps the change mark with its own version", () => {
+  test("a first event stamps the ownership mark with its own version", () => {
     const d = decideConversationWrites(
-      conversationEvent({ status: "pending", statusChangeStated: false }),
+      conversationEvent({ status: "pending", ownershipChangeStated: false }),
       null,
       NOW,
     );
-    expect(d.statusChangedAt).toBe(V_NEW);
+    expect(d.ownershipChangedAt).toBe(V_NEW); // A first event that states only the holder dates ownership too; one that states neither does not.
+    const holderOnly = (assigneeStated: boolean) =>
+      decideConversationWrites(
+        conversationEvent({ status: null, assigneeStated }),
+        null,
+        NOW,
+      ).ownershipChangedAt;
+    expect(holderOnly(true)).toBe(V_NEW);
+    expect(holderOnly(false)).toBeNull();
   });
 
-  test("the change mark only moves forward", () => {
+  test("the ownership mark only moves forward", () => {
     const d = decideConversationWrites(
       conversationEvent({
         status: "open",
         version: V_NOW,
-        statusChangeStated: true,
+        ownershipChangeStated: true,
       }),
-      storedRow({ status: "pending", statusAt: V_OLD, statusChangedAt: V_NEW }),
+      storedRow({
+        status: "pending",
+        statusAt: V_OLD,
+        ownershipChangedAt: V_NEW,
+      }),
       NOW,
     );
     expect(d.status).toBe("open");
-    expect(d.statusChangedAt).toBeNull();
+    expect(d.ownershipChangedAt).toBeNull();
   });
 
   // A hand-back delivered behind a newer restatement: the restatement moved the status mark only, so
   // this event is the one word that the status moved in between, and it dates the change.
-  test("a stated change behind a newer restatement still moves the change mark", () => {
+  test("a stated change behind a newer restatement still moves the ownership mark", () => {
     const row = storedRow({
       status: "pending",
       statusAt: V_NEW,
       assigneeAt: V_NEW,
-      statusChangedAt: V_OLD,
+      ownershipChangedAt: V_OLD,
     });
-    const late = (statusChangeStated: boolean) =>
+    const late = (ownershipChangeStated: boolean) =>
       decideConversationWrites(
         conversationEvent({
           status: "pending",
           assigneeType: "AgentBot",
           version: V_NOW,
-          statusChangeStated,
+          ownershipChangeStated,
         }),
         row,
         NOW,
       );
     expect(late(true).stale).toBe(true);
     expect(late(true).status).toBeNull();
-    expect(late(true).statusChangedAt).toBe(V_NOW);
+    expect(late(true).ownershipChangedAt).toBe(V_NOW);
     // Without the source's word it is a stale snapshot like any other.
-    expect(late(false).statusChangedAt).toBeNull();
+    expect(late(false).ownershipChangedAt).toBeNull();
   });
 
   // Same, when the assignee half is still newer and the payload is not stale as a whole.
-  test("a stated change behind the status mark moves the change mark on the live exit too", () => {
+  test("a stated change behind the status mark moves the ownership mark on the live exit too", () => {
     const d = decideConversationWrites(
       conversationEvent({
         status: "pending",
         version: V_NOW,
-        statusChangeStated: true,
+        ownershipChangeStated: true,
       }),
       storedRow({
         status: "pending",
         statusAt: V_NEW,
         assigneeAt: V_OLD,
-        statusChangedAt: V_OLD,
+        ownershipChangedAt: V_OLD,
       }),
       NOW,
     );
     expect(d.stale).toBe(false);
     expect(d.status).toBeNull();
-    expect(d.statusChangedAt).toBe(V_NOW);
+    expect(d.ownershipChangedAt).toBe(V_NOW);
+  });
+
+  // The holder is the other half of who has the conversation: an assignment away and back leaves the
+  // status `pending` throughout, and each move is still a decision a reply from before must not undo.
+  test("a holder that moved stamps the ownership mark, a restated one does not", () => {
+    const row = storedRow({
+      status: "pending",
+      assigneeType: "AgentBot",
+      assigneeId: 9,
+      ownershipChangedAt: V_OLD,
+    });
+    const at = (assigneeType: string, assigneeId: number) =>
+      decideConversationWrites(
+        conversationEvent({ status: "pending", assigneeType, assigneeId }),
+        row,
+        NOW,
+      ).ownershipChangedAt;
+    expect(at("User", 5)).toBe(V_NEW);
+    expect(at("AgentBot", 7)).toBe(V_NEW);
+    expect(at("AgentBot", 9)).toBeNull();
+  });
+
+  test("a stated holder change behind a newer restatement still moves the ownership mark", () => {
+    const d = decideConversationWrites(
+      conversationEvent({
+        status: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
+        version: V_NOW,
+        ownershipChangeStated: true,
+      }),
+      storedRow({
+        status: "pending",
+        statusAt: V_OLD,
+        assigneeAt: V_NEW,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
+        ownershipChangedAt: V_OLD,
+      }),
+      NOW,
+    );
+    expect(d.assignee).toBe(false);
+    expect(d.ownershipChangedAt).toBe(V_NOW);
   });
 
   test("a status that is not written stamps no change", () => {
@@ -744,13 +801,13 @@ describe("the status change mark", () => {
       conversationEvent({
         status: "open",
         version: V_OLD,
-        statusChangeStated: true,
+        ownershipChangeStated: true,
       }),
       storedRow({ status: "pending", statusAt: V_NOW, assigneeAt: V_NOW }),
       NOW,
     );
     expect(d.status).toBeNull();
-    // A row without the change mark falls back to the status mark, already ahead of this version.
-    expect(d.statusChangedAt).toBeNull();
+    // A row without the ownership mark falls back to the status mark, already ahead of this version.
+    expect(d.ownershipChangedAt).toBeNull();
   });
 });

@@ -57,13 +57,13 @@ export interface ReconcileFromLiveParams {
    */
   ownsStatusClaim?: Date | null;
   /**
-   * The read follows an operator's own status command (a console write), so the status it carries is a
-   * DECISION even when it restates the stored one: "Return to AI" on a conversation still `pending`
-   * is the operator asking for the agent, and a person's reply serialized before it must not undo
-   * that. It stamps the change mark (`chatwootStatusChangedAt`) whenever the status is applied. Every
-   * other read stamps it only when the status really moved.
+   * The read follows an operator's own command (a console write), so what it carries is a DECISION
+   * even when it restates the stored state: "Return to AI" on a conversation still `pending` is the
+   * operator asking for the agent, and a person's reply serialized before it must not undo that. It
+   * stamps the ownership mark (`chatwootOwnershipChangedAt`) at the read's version. Every other read
+   * stamps it only when the status or the holder really moved.
    */
-  statusIsDecision?: boolean;
+  ownershipIsDecision?: boolean;
   base: PrismaClient;
 }
 
@@ -112,7 +112,7 @@ export async function reconcileMirrorFromLive(
             assigneeName: true,
             lastEventAt: true,
             chatwootStatusAt: true,
-            chatwootStatusChangedAt: true,
+            chatwootOwnershipChangedAt: true,
             resolvedByAt: true,
             chatwootAssigneeAt: true,
             statusClaimUntil: true,
@@ -229,6 +229,36 @@ export async function reconcileMirrorFromLive(
         const nextAssigneeName = assigneeOrdered
           ? live.assigneeName
           : current.assigneeName;
+        // The ownership mark, under the same forward-only rule as the field marks: the version at which
+        // the status or the holder this read writes actually moved, or at which an operator commanded
+        // it (see `ownershipIsDecision`). A restatement leaves it, which is what keeps a person's reply
+        // from reading its own echo as a later decision. An operator's command whose read lost the
+        // status ordering to a newer restatement still dates the decision at the read's version; a
+        // row with no ownership mark falls back to the status mark, already ahead, and is left alone.
+        const holderMoved =
+          assigneeOrdered &&
+          (nextAssigneeType !== current.assigneeType ||
+            nextAssigneeId !== current.assigneeId);
+        const ownershipMovedAt = Math.max(
+          nextStatus !== null &&
+            nextStatusAt !== null &&
+            (nextStatus !== current.status ||
+              params.ownershipIsDecision === true)
+            ? nextStatusAt
+            : Number.NEGATIVE_INFINITY,
+          holderMoved && liveVersion !== null
+            ? liveVersion
+            : Number.NEGATIVE_INFINITY,
+          nextStatus === null &&
+            params.ownershipIsDecision === true &&
+            liveVersion !== null &&
+            current.chatwootOwnershipChangedAt !== null
+            ? liveVersion
+            : Number.NEGATIVE_INFINITY,
+        );
+        const ownershipStamp = Number.isFinite(ownershipMovedAt)
+          ? ownershipMovedAt
+          : null;
         const data = {
           ...(nextStatus !== null && nextStatus !== current.status
             ? { status: nextStatus }
@@ -285,25 +315,10 @@ export async function reconcileMirrorFromLive(
             nextStatusAt > current.chatwootStatusAt)
             ? { chatwootStatusAt: nextStatusAt }
             : {}),
-          // The change mark, under the same forward-only rule, for a status that moved or one an
-          // operator commanded (see `statusIsDecision`). A restatement leaves it: that is what keeps
-          // a person's reply from reading its own echo as a later decision.
-          ...(nextStatus !== null &&
-          nextStatusAt !== null &&
-          (nextStatus !== current.status || params.statusIsDecision === true) &&
-          (current.chatwootStatusChangedAt === null ||
-            nextStatusAt > current.chatwootStatusChangedAt)
-            ? { chatwootStatusChangedAt: nextStatusAt }
-            : {}),
-          // An operator's command whose read lost the status ordering to a newer restatement still
-          // dates a decision at its own version: the restatement moved only the status mark. A row
-          // with no change mark falls back to the status mark, already ahead, and is left alone.
-          ...(nextStatus === null &&
-          params.statusIsDecision === true &&
-          liveVersion !== null &&
-          current.chatwootStatusChangedAt !== null &&
-          liveVersion > current.chatwootStatusChangedAt
-            ? { chatwootStatusChangedAt: liveVersion }
+          ...(ownershipStamp !== null &&
+          (current.chatwootOwnershipChangedAt === null ||
+            ownershipStamp > current.chatwootOwnershipChangedAt)
+            ? { chatwootOwnershipChangedAt: ownershipStamp }
             : {}),
           ...(assigneeOrdered &&
           liveVersion !== null &&

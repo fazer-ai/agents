@@ -28,7 +28,7 @@ export function describeHumanTakeover(
 
 // Why a person's reply did NOT end the attendance, for the line that says so. Each is a fence that
 // stood down on purpose, decided where it is checked: Chatwoot already moved the conversation on, the
-// mirror says another party holds it, the status changed after the reply, an operator handed it
+// mirror says another party holds it, the status or holder changed after the reply, an operator handed it
 // back after the reply, the row moved between the read and the claim, the toggle met a conflict, or
 // the agent has no bot on the instance to act as.
 export type TakeoverRefusal =

@@ -100,6 +100,40 @@ function resolveCreateMeetLink(config: Record<string, unknown>): boolean {
   return config.createMeetLink !== false;
 }
 
+// Whether calendar_create_event invites the customer, and where the address comes from. OFF unless
+// the operator picked a mode: an operator who never promised an invite must not start sending Google
+// emails on upgrade. "contact" reads the contact's email from Chatwoot at call time; "agent" lets the
+// model pass the address the customer gave in the conversation. Any other value is off.
+type InviteMode = "contact" | "agent" | null;
+function resolveInviteMode(config: Record<string, unknown>): InviteMode {
+  const v = config.inviteCustomer;
+  return v === "contact" || v === "agent" ? v : null;
+}
+
+// One address, shaped like one. A list ("a@x.com, b@y.com") fails the shape, which is the point: an
+// event carries at most one invited customer.
+const EMAIL_SHAPE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
+// Whether an event already has guests. Update and cancel notify them (sendUpdates=all) by this, not
+// by the current config: an invite sent while the mode was on still sits in the customer's calendar
+// after the operator turns it off, and a move or a cancel they are not told about leaves it stale.
+function hasAttendees(ev: Record<string, unknown>): boolean {
+  return Array.isArray(ev.attendees) && ev.attendees.length > 0;
+}
+
+// A muted turn (an observer's) never speaks to the customer, and Google's emails go out by a door
+// the Chatwoot mute never sees. So on one, the create invites nobody and a move or a cancel notifies
+// nobody: the calendar still changes, the platform just does not announce it (docs/chatwoot.md,
+// "Observation").
+function mutedTurn(ctx: ToolpackCtx): boolean {
+  return ctx.chatwoot?.client?.muted === true;
+}
+
+// The query a move or a cancel carries: guests are told, unless this turn may not speak.
+function notifyQuery(ev: Record<string, unknown>, ctx: ToolpackCtx): string {
+  return hasAttendees(ev) && !mutedTurn(ctx) ? "?sendUpdates=all" : "";
+}
+
 // Friendly labels (calendar id → human name, e.g. "Dr. Ana"), captured when the operator picks
 // calendars from the connected account. Best-effort: lets the model target a calendar by name and the
 // tool description enumerate the allowed calendars. Missing labels fall back to the raw id.
@@ -562,6 +596,12 @@ const CREATE_EVENT_SCHEMA = z.object({
   end: z.string().min(1).describe("End, same format as start."),
   description: z.string().max(2000).optional().describe("Event details."),
   calendarId: z.string().optional().describe(CALENDAR_ID_DESC),
+  attendeeEmail: z
+    .string()
+    .optional()
+    .describe(
+      "The customer's email address, exactly as they gave it in this conversation, to send them the calendar invite. One address only; omit it when the customer has not given one.",
+    ),
 });
 
 const UPDATE_EVENT_SCHEMA = z.object({
@@ -1180,6 +1220,55 @@ async function judgeWrite(opts: {
   return { ok: false, refusal: notBookableMessage(verdict.alternatives) };
 }
 
+// The address the create invites, or why none. A missing or unreadable address never blocks the
+// booking: the slot is what the customer asked for, and the reply says nobody was invited so the
+// agent does not promise an email that will not come.
+async function resolveInvitee(
+  mode: InviteMode,
+  agentEmail: string | null,
+  ctx: ToolpackCtx,
+): Promise<{ email: string | null; notSent: string | null }> {
+  if (mode === null) return { email: null, notSent: null };
+  if (mode === "agent") {
+    return agentEmail
+      ? { email: agentEmail, notSent: null }
+      : { email: null, notSent: "no attendeeEmail was given" };
+  }
+  let email: string | null;
+  try {
+    email = (await ctx.readContactEmail?.())?.trim() || null;
+  } catch (err) {
+    logger.warn({ err }, "gcal: contact email read failed");
+    return {
+      email: null,
+      notSent: "the contact's email could not be read from Chatwoot",
+    };
+  }
+  // Google refuses the whole insert over a malformed attendee, so an address that is not one books
+  // the slot without an invite instead of losing it.
+  return email && EMAIL_SHAPE.test(email)
+    ? { email, notSent: null }
+    : { email: null, notSent: "the contact has no email address" };
+}
+
+// The create's arguments as the model sees them: attendeeEmail exists only in "agent" mode, so in
+// the other modes a prompt has nowhere to put an address.
+function createArgSchema(allowed: string[], mode: InviteMode): z.ZodTypeAny {
+  const schema =
+    mode === "agent"
+      ? CREATE_EVENT_SCHEMA
+      : CREATE_EVENT_SCHEMA.omit({ attendeeEmail: true });
+  return calendarArgSchema(schema, allowed);
+}
+
+function inviteDescription(mode: InviteMode): string {
+  if (mode === "contact")
+    return " The customer is invited at the email on their contact record and Google emails them the invite (invitedEmail in the reply); when the reply has inviteNotSent, nobody was invited, so do not promise an invite. To invite an address the customer just gave, save it on the contact first, then create the appointment.";
+  if (mode === "agent")
+    return " Pass attendeeEmail with the email the customer gave in this conversation and Google emails them the invite (invitedEmail in the reply). Without it, nobody is invited.";
+  return "";
+}
+
 function buildCreateEventTool(
   sel: IntegrationSelection,
   ctx: ToolpackCtx,
@@ -1190,6 +1279,7 @@ function buildCreateEventTool(
   const meetEnabled = resolveCreateMeetLink(sel.config);
   const blockingIds = resolveBlockingCalendarIds(sel.config);
   const businessHoursId = resolveBusinessHoursId(sel.config);
+  const inviteMode = mutedTurn(ctx) ? null : resolveInviteMode(sel.config);
   return failableTool(
     async (input: {
       summary: string;
@@ -1197,9 +1287,19 @@ function buildCreateEventTool(
       end: string;
       description?: string;
       calendarId?: string;
+      attendeeEmail?: string;
     }) => {
       const stamp = contactStamp(ctx);
       if (!stamp) return NO_CONTACT;
+      // Checked before anything leaves, so a refused address books nothing. The arg only exists in
+      // "agent" mode (createArgSchema), so in the others it never reaches here.
+      const agentEmail = input.attendeeEmail?.trim() || null;
+      if (agentEmail !== null && !EMAIL_SHAPE.test(agentEmail)) {
+        ctx.onNoEffect?.("calendar_create_event");
+        return toolFailure(
+          "attendeeEmail must be one email address. Nothing was booked; ask the customer for their email again, or book without it.",
+        );
+      }
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
@@ -1219,6 +1319,7 @@ function buildCreateEventTool(
         excludeBusy: null,
       });
       if (!judged.ok) return judged.refusal;
+      const invite = await resolveInvitee(inviteMode, agentEmail, ctx);
       const body: Record<string, unknown> = {
         summary: input.summary,
         start: toEventTime(input.start, timeZone),
@@ -1226,6 +1327,7 @@ function buildCreateEventTool(
         ...(input.description ? { description: input.description } : {}),
         // Owner stamp injected from context, never from the model: locks this appointment to the contact.
         extendedProperties: { private: { [SECV4_CONTACT_KEY]: stamp } },
+        ...(invite.email ? { attendees: [{ email: invite.email }] } : {}),
         // NOTE: a Meet room for the appointment. requestId MUST be unique per event: Google returns the
         // SAME room for a reused id, which would put different leads in one meeting.
         ...(meetEnabled
@@ -1239,12 +1341,17 @@ function buildCreateEventTool(
             }
           : {}),
       };
+      // Without conferenceDataVersion=1 the API IGNORES conferenceData in silence — no error,
+      // no room. Easy to lose in a refactor; pinned by tests. Without sendUpdates=all Google adds the
+      // attendee and emails nobody, so the customer never learns of the invite.
+      const query = new URLSearchParams();
+      if (meetEnabled) query.set("conferenceDataVersion", "1");
+      if (invite.email) query.set("sendUpdates", "all");
+      const qs = query.size > 0 ? `?${query}` : "";
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          // NOTE: without conferenceDataVersion=1 the API IGNORES conferenceData in silence — no error,
-          // no room. Easy to lose in a refactor; pinned by tests.
-          `/calendars/${encodeURIComponent(calendarId)}/events${meetEnabled ? "?conferenceDataVersion=1" : ""}`,
+          `/calendars/${encodeURIComponent(calendarId)}/events${qs}`,
           { method: "POST", token, body },
           ctx,
         );
@@ -1309,15 +1416,19 @@ function buildCreateEventTool(
           calendarLabel: labels[calendarId] ?? null,
         });
       }
-      return JSON.stringify(projectEvent(data));
+      return JSON.stringify({
+        ...projectEvent(data),
+        ...(invite.email ? { invitedEmail: invite.email } : {}),
+        ...(invite.notSent ? { inviteNotSent: invite.notSent } : {}),
+      });
     },
     {
       name: "calendar_create_event",
       description: withCalendarContext(
-        `Create an appointment for THIS customer on the calendar (it is automatically tagged to this customer, so only they can later see or change it). Provide a summary plus start and end, as ISO 8601 with an offset (e.g. 2026-06-20T14:00:00-03:00). The requested time is CHECKED against the same availability calendar_check_availability answers with — the service hours, the appointment length, the start times the business offers, the minimum notice and the existing bookings — and a time that tool would not have offered is refused, with the bookable times of that day in the refusal so you can offer one instead. So book a slot exactly as availability returned it: never round it, shift it or invent a time in between. Returns the created appointment's id and links${meetEnabled ? "; share meetLink (the Google Meet room) with the customer — htmlLink is only the calendar page" : ""}.`,
+        `Create an appointment for THIS customer on the calendar (it is automatically tagged to this customer, so only they can later see or change it). Provide a summary plus start and end, as ISO 8601 with an offset (e.g. 2026-06-20T14:00:00-03:00). The requested time is CHECKED against the same availability calendar_check_availability answers with — the service hours, the appointment length, the start times the business offers, the minimum notice and the existing bookings — and a time that tool would not have offered is refused, with the bookable times of that day in the refusal so you can offer one instead. So book a slot exactly as availability returned it: never round it, shift it or invent a time in between. Returns the created appointment's id and links${meetEnabled ? "; share meetLink (the Google Meet room) with the customer — htmlLink is only the calendar page" : ""}.${inviteDescription(inviteMode)}`,
         calendarContextXml(allowed, labels),
       ),
-      schema: calendarArgSchema(CREATE_EVENT_SCHEMA, allowed),
+      schema: createArgSchema(allowed, inviteMode),
     },
   );
 }
@@ -1363,7 +1474,7 @@ function buildUpdateEventTool(
       let owner: GcalResponse;
       try {
         owner = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}?fields=extendedProperties,start,end`,
+          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}?fields=extendedProperties,start,end,attendees`,
           { method: "GET", token },
           ctx,
         );
@@ -1440,7 +1551,7 @@ function buildUpdateEventTool(
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}`,
+          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}${notifyQuery(ownerEv, ctx)}`,
           { method: "PATCH", token, body },
           ctx,
         );
@@ -1517,7 +1628,7 @@ function buildCancelEventTool(
       let owner: GcalResponse;
       try {
         owner = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}?fields=extendedProperties`,
+          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}?fields=extendedProperties,attendees`,
           { method: "GET", token },
           ctx,
         );
@@ -1536,7 +1647,7 @@ function buildCancelEventTool(
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}`,
+          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}${notifyQuery(ownerEv, ctx)}`,
           { method: "DELETE", token },
           ctx,
         );

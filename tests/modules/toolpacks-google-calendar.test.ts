@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { googleCalendarToolpack } from "@/modules/integrations/toolpacks/google-calendar";
 import type {
   IntegrationSelection,
@@ -1982,5 +1983,315 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
       items: [{ id: ANA }],
     });
     expect(parse(out).slots.every((s) => s.calendarId === ANA)).toBe(true);
+  });
+});
+
+describe("google calendar toolpack — inviting the customer (issue #1005)", () => {
+  const CREATED = {
+    id: "ev9",
+    summary: "Demo",
+    start: { dateTime: "2099-06-22T14:00:00-03:00" },
+    end: { dateTime: "2099-06-22T15:00:00-03:00" },
+  };
+  const INPUT = {
+    summary: "Demo",
+    start: "2099-06-22T14:00:00-03:00",
+    end: "2099-06-22T15:00:00-03:00",
+  };
+  const OFF = { createMeetLink: false };
+  const schemaKeys = (t: unknown) =>
+    Object.keys(
+      ((t as { schema: { shape?: Record<string, unknown> } }).schema.shape ??
+        {}) as Record<string, unknown>,
+    );
+
+  test("off by default: no attendees, no sendUpdates, no address arg", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    let read = 0;
+    const tool = toolFor(
+      "calendar_create_event",
+      OFF,
+      baseCtx({
+        fetchImpl: impl,
+        readContactEmail: async () => {
+          read++;
+          return "ana@example.com";
+        },
+      }),
+    );
+    expect(schemaKeys(tool)).not.toContain("attendeeEmail");
+    const out = (await tool?.invoke(INPUT)) as string;
+    expect(writeCall(calls).url).not.toContain("sendUpdates");
+    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+    expect(read).toBe(0);
+    expect(JSON.parse(out).invitedEmail).toBeUndefined();
+  });
+
+  test("an unknown mode value stays off", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    await toolFor(
+      "calendar_create_event",
+      { ...OFF, inviteCustomer: "yes" },
+      baseCtx({
+        fetchImpl: impl,
+        readContactEmail: async () => "ana@example.com",
+      }),
+    )?.invoke(INPUT);
+    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+  });
+
+  test("contact mode: the address read from Chatwoot at call time is the one attendee, notified", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    const tool = toolFor(
+      "calendar_create_event",
+      { inviteCustomer: "contact" },
+      baseCtx({
+        fetchImpl: impl,
+        resolveContactEmail: async () => "stale@example.com",
+        readContactEmail: async () => "ana@example.com",
+      }),
+    );
+    expect(schemaKeys(tool)).not.toContain("attendeeEmail");
+    const out = (await tool?.invoke(INPUT)) as string;
+    const url = new URL(writeCall(calls).url);
+    expect(url.searchParams.get("sendUpdates")).toBe("all");
+    expect(url.searchParams.get("conferenceDataVersion")).toBe("1");
+    const body = bodyOf(writeCall(calls));
+    expect(body.attendees).toEqual([{ email: "ana@example.com" }]);
+    expect(body.conferenceData).toBeDefined();
+    expect(body.extendedProperties).toEqual(stampedExt);
+    expect(JSON.parse(out).invitedEmail).toBe("ana@example.com");
+  });
+
+  test("contact mode without an email books the slot and says nobody was invited", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    const out = (await toolFor(
+      "calendar_create_event",
+      { ...OFF, inviteCustomer: "contact" },
+      baseCtx({
+        fetchImpl: impl,
+        resolveContactEmail: async () => "mirror@example.com",
+        readContactEmail: async () => null,
+      }),
+    )?.invoke({ ...INPUT, attendeeEmail: "model@example.com" })) as string;
+    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+    expect(writeCall(calls).url).not.toContain("sendUpdates");
+    expect(JSON.parse(out).invitedEmail).toBeUndefined();
+    expect(JSON.parse(out).inviteNotSent).toContain("no email");
+  });
+
+  test("contact mode with a contact email that is not one books the slot without an invite", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    const out = (await toolFor(
+      "calendar_create_event",
+      { ...OFF, inviteCustomer: "contact" },
+      baseCtx({
+        fetchImpl: impl,
+        readContactEmail: async () => "ana at example",
+      }),
+    )?.invoke(INPUT)) as string;
+    expect(writeCalls(calls)).toHaveLength(1);
+    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+    expect(JSON.parse(out).inviteNotSent).toBeTruthy();
+  });
+
+  test("contact mode when Chatwoot cannot be read books the slot without an invite", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    const out = (await toolFor(
+      "calendar_create_event",
+      { ...OFF, inviteCustomer: "contact" },
+      baseCtx({
+        fetchImpl: impl,
+        readContactEmail: async () => {
+          throw new Error("chatwoot down");
+        },
+      }),
+    )?.invoke(INPUT)) as string;
+    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+    expect(JSON.parse(out).inviteNotSent).toBeTruthy();
+  });
+
+  test("agent mode: the address the model passes is the one attendee, notified even without Meet", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    const tool = toolFor(
+      "calendar_create_event",
+      { ...OFF, inviteCustomer: "agent" },
+      baseCtx({ fetchImpl: impl }),
+    );
+    expect(schemaKeys(tool)).toContain("attendeeEmail");
+    const out = (await tool?.invoke({
+      ...INPUT,
+      attendeeEmail: " Ana@Example.com ",
+    })) as string;
+    expect(new URL(writeCall(calls).url).searchParams.get("sendUpdates")).toBe(
+      "all",
+    );
+    expect(bodyOf(writeCall(calls)).attendees).toEqual([
+      { email: "Ana@Example.com" },
+    ]);
+    expect(JSON.parse(out).invitedEmail).toBe("Ana@Example.com");
+  });
+
+  test("agent mode without an address books without an invite", async () => {
+    const { impl, calls } = stubWriteFetch(CREATED);
+    await toolFor(
+      "calendar_create_event",
+      { ...OFF, inviteCustomer: "agent" },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(INPUT);
+    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+    expect(writeCall(calls).url).not.toContain("sendUpdates");
+  });
+
+  for (const bad of ["not-an-email", "a@x.com, b@y.com", "a@x.com b@y.com"]) {
+    test(`agent mode refuses ${JSON.stringify(bad)} before anything is written`, async () => {
+      const { impl, calls } = stubWriteFetch(CREATED);
+      const out = (await toolFor(
+        "calendar_create_event",
+        { ...OFF, inviteCustomer: "agent" },
+        baseCtx({ fetchImpl: impl }),
+      )?.invoke({ ...INPUT, attendeeEmail: bad })) as string;
+      expect(writeCalls(calls)).toHaveLength(0);
+      expect(String(out)).toContain("one email address");
+    });
+  }
+
+  const owned = (attendees?: unknown) => ({
+    ...CREATED,
+    extendedProperties: stampedExt,
+    ...(attendees ? { attendees } : {}),
+  });
+
+  test("update of an event with a guest notifies, and leaves the guest list alone", async () => {
+    const { impl, calls } = stubWriteFetch(
+      owned([{ email: "ana@example.com" }]),
+    );
+    await toolFor(
+      "calendar_update_event",
+      {},
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({ eventId: "ev9", summary: "Novo" });
+    const patch = writeCall(calls);
+    expect(new URL(patch.url).searchParams.get("sendUpdates")).toBe("all");
+    expect(bodyOf(patch).attendees).toBeUndefined();
+    // The owner read asks for the guest list, or the check could not see it.
+    const get = calls.find((c) => c.init.method === "GET") as {
+      url: string;
+    };
+    expect(get.url).toContain("attendees");
+  });
+
+  test("update of an event without a guest sends no notification", async () => {
+    const { impl, calls } = stubWriteFetch(owned());
+    await toolFor(
+      "calendar_update_event",
+      { inviteCustomer: "contact" },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({ eventId: "ev9", summary: "Novo" });
+    expect(writeCall(calls).url).not.toContain("sendUpdates");
+  });
+
+  test("cancel of an event with a guest notifies; without one it does not", async () => {
+    for (const [ev, expected] of [
+      [owned([{ email: "ana@example.com" }]), "all"],
+      [owned(), null],
+    ] as const) {
+      const { impl, calls } = stubWriteFetch(ev);
+      await toolFor(
+        "calendar_cancel_event",
+        {},
+        baseCtx({ fetchImpl: impl }),
+      )?.invoke({ eventId: "ev9" });
+      const del = calls.find((c) => c.init.method === "DELETE") as {
+        url: string;
+      };
+      expect(new URL(del.url).searchParams.get("sendUpdates")).toBe(expected);
+      const get = calls.find((c) => c.init.method === "GET") as {
+        url: string;
+      };
+      expect(get.url).toContain("attendees");
+    }
+  });
+
+  // An observer's turn carries a muted client: Google's emails would reach the customer by a door
+  // the Chatwoot mute never sees.
+  const mutedChatwoot = {
+    chatwoot: {
+      client: { muted: true } as unknown as ChatwootClient,
+      conversationId: 77,
+    },
+  };
+
+  test("a muted turn invites nobody and offers no address arg, whatever the mode", async () => {
+    for (const mode of ["contact", "agent"]) {
+      const { impl, calls } = stubWriteFetch(CREATED);
+      let read = 0;
+      const tool = toolFor(
+        "calendar_create_event",
+        { ...OFF, inviteCustomer: mode },
+        baseCtx({
+          fetchImpl: impl,
+          ...mutedChatwoot,
+          readContactEmail: async () => {
+            read++;
+            return "ana@example.com";
+          },
+        }),
+      );
+      expect(schemaKeys(tool)).not.toContain("attendeeEmail");
+      const out = (await tool?.invoke({
+        ...INPUT,
+        attendeeEmail: "ana@example.com",
+      })) as string;
+      expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+      expect(writeCall(calls).url).not.toContain("sendUpdates");
+      expect(read).toBe(0);
+      expect(JSON.parse(out).invitedEmail).toBeUndefined();
+    }
+  });
+
+  test("a muted turn moves and cancels a guest's event without notifying", async () => {
+    const ev = owned([{ email: "ana@example.com" }]);
+    const upd = stubWriteFetch(ev);
+    await toolFor(
+      "calendar_update_event",
+      {},
+      baseCtx({ fetchImpl: upd.impl, ...mutedChatwoot }),
+    )?.invoke({ eventId: "ev9", summary: "Novo" });
+    expect(writeCall(upd.calls).url).not.toContain("sendUpdates");
+    const del = stubWriteFetch(ev);
+    await toolFor(
+      "calendar_cancel_event",
+      {},
+      baseCtx({ fetchImpl: del.impl, ...mutedChatwoot }),
+    )?.invoke({ eventId: "ev9" });
+    const d = del.calls.find((c) => c.init.method === "DELETE") as {
+      url: string;
+    };
+    expect(d.url).not.toContain("sendUpdates");
+  });
+
+  test("a guest on a foreign event grants nothing: update and cancel still refuse", async () => {
+    const foreign = {
+      ...CREATED,
+      extendedProperties: { private: { secv4Contact: "1:99" } },
+      attendees: [{ email: "ana@example.com" }],
+    };
+    for (const name of ["calendar_update_event", "calendar_cancel_event"]) {
+      const { impl, calls } = stubWriteFetch(foreign);
+      await toolFor(
+        name,
+        { inviteCustomer: "contact" },
+        baseCtx({
+          fetchImpl: impl,
+          readContactEmail: async () => "ana@example.com",
+        }),
+      )?.invoke({ eventId: "ev9", summary: "x" });
+      expect(
+        calls.filter(
+          (c) => c.init.method !== "GET" && !c.url.includes("freeBusy"),
+        ),
+      ).toHaveLength(0);
+    }
   });
 });

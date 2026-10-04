@@ -1616,6 +1616,49 @@ export function IntegrationEditModal({
                         "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
                       )}
                     </p>
+                    <FormField
+                      label={t(
+                        "integrations.config.inviteCustomer",
+                        "Send the customer a calendar invite",
+                      )}
+                    >
+                      <Select
+                        value={
+                          cfg.inviteCustomer === "contact" ||
+                          cfg.inviteCustomer === "agent"
+                            ? cfg.inviteCustomer
+                            : "off"
+                        }
+                        onChange={(e) =>
+                          setCfg({
+                            inviteCustomer:
+                              e.target.value === "off" ? null : e.target.value,
+                          })
+                        }
+                      >
+                        <option value="off">
+                          {t("integrations.config.inviteCustomerOff", "Off")}
+                        </option>
+                        <option value="contact">
+                          {t(
+                            "integrations.config.inviteCustomerContact",
+                            "At the email on the Chatwoot contact",
+                          )}
+                        </option>
+                        <option value="agent">
+                          {t(
+                            "integrations.config.inviteCustomerAgent",
+                            "At the email the customer gives the agent",
+                          )}
+                        </option>
+                      </Select>
+                    </FormField>
+                    <p className="text-text-muted text-xs">
+                      {t(
+                        "integrations.config.inviteCustomerHint",
+                        "Google emails the invite, and later changes and cancellations, to the customer. The customer sees the appointment's title and description, so keep internal notes out of them.",
+                      )}
+                    </p>
                   </div>
                 )}
                 {calTab === "reminders" && (

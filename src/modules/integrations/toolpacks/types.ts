@@ -39,6 +39,11 @@ export interface ToolpackCtx {
   // conversation. A column rather than one of the attribute bags, so `contactDbId` cannot answer
   // it. Absent or null ⇒ the pack fails closed, like the Calendar stamp.
   resolveContactEmail?: () => Promise<string | null>;
+  // The contact's email as Chatwoot holds it NOW, read over the network. Not the mirror above:
+  // Chatwoot does not deliver contact_updated to bots, so an email an agent typed into the contact
+  // in Chatwoot is invisible to the mirror until another event carries the contact. Used by the
+  // Calendar invite. Absent ⇒ no live read (playground); null ⇒ the contact has no email.
+  readContactEmail?: () => Promise<string | null>;
   // Injectable for tests; default real fetch.
   fetchImpl?: typeof fetch;
   // THE CALLER'S WHOLE-TURN DEADLINE, when it has one (the observer's tick). Aborting an invoke

@@ -1427,6 +1427,23 @@ export class ChatwootClient {
     });
   }
 
+  // A contact's current email (admin token), or null when it has none. On the contact's keyed queue,
+  // so a read issued while an update_contact PUT of the same turn is still in flight waits for it and
+  // answers with the address just written.
+  getContactEmail(contactId: number): Promise<string | null> {
+    return withKeyedQueue(this.targetKey("contact", contactId), async () => {
+      const res = (await this.request(
+        this.config.adminToken,
+        "GET",
+        `/contacts/${contactId}`,
+      )) as { payload?: { email?: unknown } } | null;
+      const email = res?.payload?.email;
+      return typeof email === "string" && email.trim().length > 0
+        ? email.trim()
+        : null;
+    });
+  }
+
   // A contact's current `identifier` (admin token), or null when it has none. Addressed by id, so
   // unlike the search and filter endpoints there is no paging, no case folding and no scope that can
   // hide the row: `GET /contacts/:id` answers about exactly the contact asked for.

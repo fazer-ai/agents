@@ -4,6 +4,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
+import { firstOwnershipStamp } from "./state-order";
 import { announceStatusChange } from "./status-announce";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 
@@ -256,9 +257,13 @@ export async function reconcileMirrorFromLive(
             ? liveVersion
             : Number.NEGATIVE_INFINITY,
         );
-        const ownershipStamp = Number.isFinite(ownershipMovedAt)
-          ? ownershipMovedAt
-          : null;
+        const ownershipStamp = firstOwnershipStamp(
+          {
+            ownershipChangedAt: current.chatwootOwnershipChangedAt,
+            statusAt: current.chatwootStatusAt,
+          },
+          Number.isFinite(ownershipMovedAt) ? ownershipMovedAt : null,
+        );
         const data = {
           ...(nextStatus !== null && nextStatus !== current.status
             ? { status: nextStatus }

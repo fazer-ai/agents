@@ -621,6 +621,25 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     }
   });
 
+  test("the first ownership stamp on a row without one does not sit below the status mark", async () => {
+    const id = await seedRow({
+      status: "pending",
+      assigneeType: "AgentBot",
+      assigneeId: 9,
+      chatwootStatusAt: T + 5,
+      chatwootAssigneeAt: T,
+    });
+    await applyFor(id, {
+      status: "pending",
+      assigneeType: "User",
+      assigneeId: 5,
+      updatedAt: T + 2,
+    });
+    const row = await readRow(id);
+    expect(row.assigneeType).toBe("User");
+    expect(row.chatwootOwnershipChangedAt).toBe(T + 5);
+  });
+
   test("the ownership mark never walks backwards", async () => {
     const id = await seedRow({ status: "open", chatwootStatusAt: T });
     await suDb.conversation.updateMany({

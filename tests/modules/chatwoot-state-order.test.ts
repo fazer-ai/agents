@@ -796,6 +796,31 @@ describe("the ownership mark", () => {
     expect(d.ownershipChangedAt).toBe(V_NOW);
   });
 
+  // A row from before the mark: the fence reads the status mark there, so the first stamp, from a
+  // holder ordered while the status was not, starts at the status mark and never below it.
+  test("the first ownership stamp on a row without one does not sit below the status mark", () => {
+    const d = decideConversationWrites(
+      conversationEvent({
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 5,
+        version: V_NOW,
+      }),
+      storedRow({
+        status: "pending",
+        statusAt: V_NEW,
+        assigneeAt: V_OLD,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
+        ownershipChangedAt: null,
+      }),
+      NOW,
+    );
+    expect(d.assignee).toBe(true);
+    expect(d.status).toBeNull();
+    expect(d.ownershipChangedAt).toBe(V_NEW);
+  });
+
   test("a status that is not written stamps no change", () => {
     const d = decideConversationWrites(
       conversationEvent({

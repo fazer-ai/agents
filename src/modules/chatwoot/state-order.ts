@@ -159,6 +159,22 @@ function advancesFrom(
   return version != null && (mark == null || version > mark) ? version : null;
 }
 
+// The ownership mark a row WITHOUT one starts from never sits below the status mark: until it
+// exists the fence reads the status mark, and a first stamp below it (a holder ordered while the
+// status was not) would move the fence backwards. A row with a mark is left to the forward rule.
+export function firstOwnershipStamp(
+  row: { ownershipChangedAt: number | null; statusAt: number | null },
+  stamp: number | null,
+): number | null {
+  if (
+    stamp === null ||
+    row.ownershipChangedAt !== null ||
+    row.statusAt === null
+  )
+    return stamp;
+  return Math.max(stamp, row.statusAt);
+}
+
 export function decideConversationWrites(
   payload: StatePayload,
   row: StateRow | null,
@@ -349,7 +365,7 @@ export function decideConversationWrites(
         (payload.assigneeType !== row.assigneeType ||
           payload.assigneeId !== row.assigneeId ||
           payload.ownershipChangeStated))
-        ? advances(row.ownershipChangedAt)
+        ? firstOwnershipStamp(row, advances(row.ownershipChangedAt))
         : lateChangeAt,
     // NOTE: a refusal the claim could not place is KEPT, on a mark of its own rather than the status
     // mark: we ack this event and Chatwoot never redelivers it, so dropping it would lose a hand-back

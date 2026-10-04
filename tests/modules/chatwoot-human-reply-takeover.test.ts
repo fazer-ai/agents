@@ -1789,8 +1789,13 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     await deliverConversationEvent(conv, "conversation_updated", {
       ...conversation(conv),
       changed_attributes: [
-        { first_reply_created_at: [null, stamp] },
-        { waiting_since: [stamp - 5, null] },
+        {
+          first_reply_created_at: {
+            previous_value: null,
+            current_value: stamp,
+          },
+        },
+        { waiting_since: { previous_value: stamp - 5, current_value: null } },
       ],
     } as ReturnType<typeof conversation>);
     await deliverWithSnapshot(
@@ -1814,7 +1819,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     await deliverConversationEvent(conv, "conversation_status_changed", {
       ...conversation(conv),
       status: "open",
-      changed_attributes: [{ status: ["pending", "open"] }],
+      changed_attributes: [
+        { status: { previous_value: "pending", current_value: "open" } },
+      ],
     } as ReturnType<typeof conversation>);
     await deliverConversationEvent(conv, "conversation_status_changed", {
       ...conversation(conv),
@@ -1841,10 +1848,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     const conv = 8958;
     await deliver(conv, { ...customerSays("oi") });
     const replySnapshot = conversation(conv);
+    // The fork's status event, as it leaves: no changed_attributes, the event name is the word.
     const handBack = {
       ...conversation(conv),
       status: "pending",
-      changed_attributes: [{ status: ["open", "pending"] }],
     } as ReturnType<typeof conversation>;
     await deliverConversationEvent(conv, "conversation_updated");
     await deliverConversationEvent(
@@ -1865,27 +1872,40 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   });
 
   // The open in between never reached the mirror; the event that closed it says the status moved.
-  test("a hand-back the mirror only learns from the source's own word still stops it", async () => {
-    const conv = 8953;
-    await deliver(conv, { ...customerSays("oi") });
-    const replySnapshot = conversation(conv);
-    await deliverConversationEvent(conv, "conversation_status_changed", {
-      ...conversation(conv),
-      status: "pending",
-      changed_attributes: [{ status: ["open", "pending"] }],
-    } as ReturnType<typeof conversation>);
-    const before = toggles(conv).length;
-    await deliverWithSnapshot(
-      conv,
-      { ...composerReply("Olá!") },
-      replySnapshot,
-    );
-    expect(toggles(conv).length).toBe(before);
-    const rows = await takeoverRows(conv);
-    expect(rows.map((r) => r.detail)).toEqual([
-      { via: "composer", outcome: "refused", reason: "later_decision" },
-    ]);
-  });
+  // Two words for it on the wire: the status event by its name (it carries no changed_attributes),
+  // and the companion conversation_updated by naming `status` among what changed.
+  for (const [conv, event] of [
+    [8953, "conversation_status_changed"],
+    [8959, "conversation_updated"],
+  ] as const)
+    test(`a hand-back the mirror only learns from the source's own word still stops it (${event})`, async () => {
+      await deliver(conv, { ...customerSays("oi") });
+      const replySnapshot = conversation(conv);
+      await deliverConversationEvent(conv, event, {
+        ...conversation(conv),
+        status: "pending",
+        ...(event === "conversation_updated"
+          ? {
+              changed_attributes: [
+                {
+                  status: { previous_value: "open", current_value: "pending" },
+                },
+              ],
+            }
+          : {}),
+      } as ReturnType<typeof conversation>);
+      const before = toggles(conv).length;
+      await deliverWithSnapshot(
+        conv,
+        { ...composerReply("Olá!") },
+        replySnapshot,
+      );
+      expect(toggles(conv).length).toBe(before);
+      const rows = await takeoverRows(conv);
+      expect(rows.map((r) => r.detail)).toEqual([
+        { via: "composer", outcome: "refused", reason: "later_decision" },
+      ]);
+    });
 
   // The console half of the change mark, through the real console function: a status click that
   // restates `pending` is still the operator's decision, so it moves the mark the takeover compares

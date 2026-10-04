@@ -573,6 +573,32 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect((await readRow(id)).chatwootStatusChangedAt).toBe(T + 1);
   });
 
+  // The command's read lost the status ordering to a newer restatement: the status stays, and the
+  // decision is still dated at the read's version, since the restatement moved only the status mark.
+  test("an operator's command that loses the status ordering still dates the decision", async () => {
+    for (const [decision, changedAt, want] of [
+      [true, T, T + 2],
+      [false, T, T],
+      [true, null, null],
+    ] as const) {
+      const id = await seedRow({ status: "pending", chatwootStatusAt: T + 5 });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: id },
+        data: { chatwootStatusChangedAt: changedAt },
+      });
+      await applyFor(
+        id,
+        { status: "pending", updatedAt: T + 2 },
+        null,
+        appDb,
+        decision,
+      );
+      const row = await readRow(id);
+      expect(row.chatwootStatusAt).toBe(T + 5);
+      expect(row.chatwootStatusChangedAt).toBe(want);
+    }
+  });
+
   test("the change mark never walks backwards", async () => {
     const id = await seedRow({ status: "open", chatwootStatusAt: T });
     await suDb.conversation.updateMany({

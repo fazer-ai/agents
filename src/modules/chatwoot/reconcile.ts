@@ -295,6 +295,16 @@ export async function reconcileMirrorFromLive(
             nextStatusAt > current.chatwootStatusChangedAt)
             ? { chatwootStatusChangedAt: nextStatusAt }
             : {}),
+          // An operator's command whose read lost the status ordering to a newer restatement still
+          // dates a decision at its own version: the restatement moved only the status mark. A row
+          // with no change mark falls back to the status mark, already ahead, and is left alone.
+          ...(nextStatus === null &&
+          params.statusIsDecision === true &&
+          liveVersion !== null &&
+          current.chatwootStatusChangedAt !== null &&
+          liveVersion > current.chatwootStatusChangedAt
+            ? { chatwootStatusChangedAt: liveVersion }
+            : {}),
           ...(assigneeOrdered &&
           liveVersion !== null &&
           (current.chatwootAssigneeAt === null ||

@@ -120,7 +120,12 @@ export async function mirrorChatwootEvent(
     assigneeType: n.assigneeType ?? null,
     redirectOriginStated: n.redirectOriginDisplayId !== undefined,
     redirectOriginCleared: n.redirectOriginDisplayId === null,
-    statusChangeStated: changedAttributesNameStatus(n.changedAttributes),
+    // The event that exists only for a status transition says so by its name: the fork dispatches it
+    // after commit, when the model's own change record is already gone, so it carries no
+    // `changed_attributes`.
+    statusChangeStated:
+      n.event === "conversation_status_changed" ||
+      changedAttributesNameStatus(n.changedAttributes),
   };
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one

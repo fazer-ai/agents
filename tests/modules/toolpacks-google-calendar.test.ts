@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { googleCalendarToolpack } from "@/modules/integrations/toolpacks/google-calendar";
 import type {
   IntegrationSelection,
@@ -2210,6 +2211,64 @@ describe("google calendar toolpack — inviting the customer (issue #1005)", () 
       };
       expect(get.url).toContain("attendees");
     }
+  });
+
+  // An observer's turn carries a muted client: Google's emails would reach the customer by a door
+  // the Chatwoot mute never sees.
+  const mutedChatwoot = {
+    chatwoot: {
+      client: { muted: true } as unknown as ChatwootClient,
+      conversationId: 77,
+    },
+  };
+
+  test("a muted turn invites nobody and offers no address arg, whatever the mode", async () => {
+    for (const mode of ["contact", "agent"]) {
+      const { impl, calls } = stubWriteFetch(CREATED);
+      let read = 0;
+      const tool = toolFor(
+        "calendar_create_event",
+        { ...OFF, inviteCustomer: mode },
+        baseCtx({
+          fetchImpl: impl,
+          ...mutedChatwoot,
+          readContactEmail: async () => {
+            read++;
+            return "ana@example.com";
+          },
+        }),
+      );
+      expect(schemaKeys(tool)).not.toContain("attendeeEmail");
+      const out = (await tool?.invoke({
+        ...INPUT,
+        attendeeEmail: "ana@example.com",
+      })) as string;
+      expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
+      expect(writeCall(calls).url).not.toContain("sendUpdates");
+      expect(read).toBe(0);
+      expect(JSON.parse(out).invitedEmail).toBeUndefined();
+    }
+  });
+
+  test("a muted turn moves and cancels a guest's event without notifying", async () => {
+    const ev = owned([{ email: "ana@example.com" }]);
+    const upd = stubWriteFetch(ev);
+    await toolFor(
+      "calendar_update_event",
+      {},
+      baseCtx({ fetchImpl: upd.impl, ...mutedChatwoot }),
+    )?.invoke({ eventId: "ev9", summary: "Novo" });
+    expect(writeCall(upd.calls).url).not.toContain("sendUpdates");
+    const del = stubWriteFetch(ev);
+    await toolFor(
+      "calendar_cancel_event",
+      {},
+      baseCtx({ fetchImpl: del.impl, ...mutedChatwoot }),
+    )?.invoke({ eventId: "ev9" });
+    const d = del.calls.find((c) => c.init.method === "DELETE") as {
+      url: string;
+    };
+    expect(d.url).not.toContain("sendUpdates");
   });
 
   test("a guest on a foreign event grants nothing: update and cancel still refuse", async () => {

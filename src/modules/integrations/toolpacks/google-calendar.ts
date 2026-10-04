@@ -121,6 +121,19 @@ function hasAttendees(ev: Record<string, unknown>): boolean {
   return Array.isArray(ev.attendees) && ev.attendees.length > 0;
 }
 
+// A muted turn (an observer's) never speaks to the customer, and Google's emails go out by a door
+// the Chatwoot mute never sees. So on one, the create invites nobody and a move or a cancel notifies
+// nobody: the calendar still changes, the platform just does not announce it (docs/chatwoot.md,
+// "Observation").
+function mutedTurn(ctx: ToolpackCtx): boolean {
+  return ctx.chatwoot?.client?.muted === true;
+}
+
+// The query a move or a cancel carries: guests are told, unless this turn may not speak.
+function notifyQuery(ev: Record<string, unknown>, ctx: ToolpackCtx): string {
+  return hasAttendees(ev) && !mutedTurn(ctx) ? "?sendUpdates=all" : "";
+}
+
 // Friendly labels (calendar id → human name, e.g. "Dr. Ana"), captured when the operator picks
 // calendars from the connected account. Best-effort: lets the model target a calendar by name and the
 // tool description enumerate the allowed calendars. Missing labels fall back to the raw id.
@@ -1266,7 +1279,7 @@ function buildCreateEventTool(
   const meetEnabled = resolveCreateMeetLink(sel.config);
   const blockingIds = resolveBlockingCalendarIds(sel.config);
   const businessHoursId = resolveBusinessHoursId(sel.config);
-  const inviteMode = resolveInviteMode(sel.config);
+  const inviteMode = mutedTurn(ctx) ? null : resolveInviteMode(sel.config);
   return failableTool(
     async (input: {
       summary: string;
@@ -1538,7 +1551,7 @@ function buildUpdateEventTool(
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}${hasAttendees(ownerEv) ? "?sendUpdates=all" : ""}`,
+          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}${notifyQuery(ownerEv, ctx)}`,
           { method: "PATCH", token, body },
           ctx,
         );
@@ -1634,7 +1647,7 @@ function buildCancelEventTool(
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}${hasAttendees(ownerEv) ? "?sendUpdates=all" : ""}`,
+          `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(input.eventId)}${notifyQuery(ownerEv, ctx)}`,
           { method: "DELETE", token },
           ctx,
         );

@@ -34,6 +34,7 @@ function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
     assigneeType: "User",
     redirectOriginCleared: false,
     redirectOriginStated: false,
+    statusChangeStated: false,
     ...over,
   };
 }
@@ -59,6 +60,7 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     statusClaimFrom: null,
     statusClaimStampedAt: null,
     statusClaimRefusedAt: null,
+    statusChangedAt: null,
     ...over,
   };
 }
@@ -622,5 +624,84 @@ describe("decideConversationWrites", () => {
       NOW,
     );
     expect(got.activityAt).toEqual(NOW);
+  });
+});
+
+// THE CHANGE MARK. The status mark moves on every ordered conversation event, a
+// restatement included, and that is right for ordering snapshots. The change mark answers a different
+// question, the one the human-reply takeover asks: did the status MOVE after the reply was written?
+// A person's reply makes Chatwoot emit its own conversation_updated a few milliseconds later, same
+// status, and that is not a later decision.
+describe("the status change mark", () => {
+  test("a restatement moves the status mark and leaves the change mark", () => {
+    const d = decideConversationWrites(
+      conversationEvent({
+        status: "pending",
+        assigneeType: "AgentBot",
+        statusChangeStated: false,
+      }),
+      storedRow({ status: "pending", statusChangedAt: V_OLD }),
+      NOW,
+    );
+    expect(d.statusAt).toBe(V_NEW);
+    expect(d.statusChangedAt).toBeNull();
+  });
+
+  test("a status that differs from the row moves both marks", () => {
+    const d = decideConversationWrites(
+      conversationEvent({ status: "open", statusChangeStated: false }),
+      storedRow({ status: "pending", statusChangedAt: V_OLD }),
+      NOW,
+    );
+    expect(d.statusAt).toBe(V_NEW);
+    expect(d.statusChangedAt).toBe(V_NEW);
+  });
+
+  // The row never saw the open in between: the event that would have said so was lost or is still
+  // in flight. The source says the status moved at this write, and the source is the one that knows.
+  test("a change the source states moves the change mark even when the row already agrees", () => {
+    const d = decideConversationWrites(
+      conversationEvent({ status: "pending", statusChangeStated: true }),
+      storedRow({ status: "pending", statusChangedAt: V_OLD }),
+      NOW,
+    );
+    expect(d.statusChangedAt).toBe(V_NEW);
+  });
+
+  test("a first event stamps the change mark with its own version", () => {
+    const d = decideConversationWrites(
+      conversationEvent({ status: "pending", statusChangeStated: false }),
+      null,
+      NOW,
+    );
+    expect(d.statusChangedAt).toBe(V_NEW);
+  });
+
+  test("the change mark only moves forward", () => {
+    const d = decideConversationWrites(
+      conversationEvent({
+        status: "open",
+        version: V_NOW,
+        statusChangeStated: true,
+      }),
+      storedRow({ status: "pending", statusAt: V_OLD, statusChangedAt: V_NEW }),
+      NOW,
+    );
+    expect(d.status).toBe("open");
+    expect(d.statusChangedAt).toBeNull();
+  });
+
+  test("a status that is not written stamps no change", () => {
+    const d = decideConversationWrites(
+      conversationEvent({
+        status: "open",
+        version: V_OLD,
+        statusChangeStated: true,
+      }),
+      storedRow({ status: "pending", statusAt: V_NOW, assigneeAt: V_NOW }),
+      NOW,
+    );
+    expect(d.status).toBeNull();
+    expect(d.statusChangedAt).toBeNull();
   });
 });

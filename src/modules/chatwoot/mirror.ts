@@ -120,6 +120,7 @@ export async function mirrorChatwootEvent(
     assigneeType: n.assigneeType ?? null,
     redirectOriginStated: n.redirectOriginDisplayId !== undefined,
     redirectOriginCleared: n.redirectOriginDisplayId === null,
+    statusChangeStated: changedAttributesNameStatus(n.changedAttributes),
   };
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
@@ -177,6 +178,7 @@ export async function mirrorChatwootEvent(
             id: true,
             lastEventAt: true,
             chatwootStatusAt: true,
+            chatwootStatusChangedAt: true,
             chatwootAssigneeAt: true,
             assigneeId: true,
             assigneeType: true,
@@ -209,6 +211,7 @@ export async function mirrorChatwootEvent(
                 status: existing.status,
                 activityAt: existing.lastEventAt,
                 statusAt: existing.chatwootStatusAt,
+                statusChangedAt: existing.chatwootStatusChangedAt,
                 assigneeAt: existing.chatwootAssigneeAt,
                 assigneeType: existing.assigneeType,
                 redirectOriginAt: existing.chatwootRedirectOriginAt,
@@ -386,6 +389,7 @@ export async function mirrorChatwootEvent(
               threadId,
               lastEventAt: createdLastEventAt,
               chatwootStatusAt: decision.statusAt,
+              chatwootStatusChangedAt: decision.statusChangedAt,
               chatwootAssigneeAt: decision.assigneeAt,
               chatwootRedirectOriginAt: decision.redirectOriginAt,
               lastInboundAt: inboundAt,
@@ -468,6 +472,9 @@ export async function mirrorChatwootEvent(
             lastEventAt: effectiveLastEventAt,
             ...(decision.statusAt != null
               ? { chatwootStatusAt: decision.statusAt }
+              : {}),
+            ...(decision.statusChangedAt != null
+              ? { chatwootStatusChangedAt: decision.statusChangedAt }
               : {}),
             // The claim's own record of what it could not place, which the takeover's reconcile reads
             // back and answers. See `statusClaimRefusedAt` on the decision.
@@ -725,4 +732,17 @@ async function upsertInbox(
     select: { id: true },
   });
   return row.id;
+}
+
+// Whether a conversation event's `changed_attributes` names the status. Chatwoot renders it as a list
+// of one-key objects (`[{ status: ["open", "pending"] }]`); anything else, or its absence on a
+// message payload, is no statement.
+function changedAttributesNameStatus(changed: unknown): boolean {
+  if (!Array.isArray(changed)) return false;
+  return changed.some(
+    (entry) =>
+      entry !== null &&
+      typeof entry === "object" &&
+      Object.hasOwn(entry as object, "status"),
+  );
 }

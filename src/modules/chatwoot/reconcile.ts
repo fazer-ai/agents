@@ -56,6 +56,14 @@ export interface ReconcileFromLiveParams {
    * plain live read against a Chatwoot that has not committed someone's toggle would undo the claim.
    */
   ownsStatusClaim?: Date | null;
+  /**
+   * The read follows an operator's own status command (a console write), so the status it carries is a
+   * DECISION even when it restates the stored one: "Return to AI" on a conversation still `pending`
+   * is the operator asking for the agent, and a person's reply serialized before it must not undo
+   * that. It stamps the change mark (`chatwootStatusChangedAt`) whenever the status is applied. Every
+   * other read stamps it only when the status really moved.
+   */
+  statusIsDecision?: boolean;
   base: PrismaClient;
 }
 
@@ -104,6 +112,7 @@ export async function reconcileMirrorFromLive(
             assigneeName: true,
             lastEventAt: true,
             chatwootStatusAt: true,
+            chatwootStatusChangedAt: true,
             resolvedByAt: true,
             chatwootAssigneeAt: true,
             statusClaimUntil: true,
@@ -275,6 +284,16 @@ export async function reconcileMirrorFromLive(
           (current.chatwootStatusAt === null ||
             nextStatusAt > current.chatwootStatusAt)
             ? { chatwootStatusAt: nextStatusAt }
+            : {}),
+          // The change mark, under the same forward-only rule, for a status that moved or one an
+          // operator commanded (see `statusIsDecision`). A restatement leaves it: that is what keeps
+          // a person's reply from reading its own echo as a later decision.
+          ...(nextStatus !== null &&
+          nextStatusAt !== null &&
+          (nextStatus !== current.status || params.statusIsDecision === true) &&
+          (current.chatwootStatusChangedAt === null ||
+            nextStatusAt > current.chatwootStatusChangedAt)
+            ? { chatwootStatusChangedAt: nextStatusAt }
             : {}),
           ...(assigneeOrdered &&
           liveVersion !== null &&

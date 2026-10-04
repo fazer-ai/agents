@@ -19,7 +19,9 @@ import { consoleWriteLandedAfter } from "./console-write-order";
 import {
   describeClosedGate,
   describeHumanTakeover,
+  describeRefusedTakeover,
   type GateCloseDetail,
+  type TakeoverRefusal,
 } from "./gate-close";
 import { loadAgentBot, loadChatwootClient } from "./instance";
 import {
@@ -50,6 +52,7 @@ export const OWNERSHIP_PROJECTION = {
   assigneeId: true,
   status: true,
   chatwootStatusAt: true,
+  chatwootStatusChangedAt: true,
   consoleWriteAtMessageId: true,
 } as const;
 
@@ -75,6 +78,10 @@ export async function conversationOwnershipNow(p: {
   | {
       ours: true;
       statusAt: number | null;
+      // Where the status last MOVED at the source, which is what "a later decision" means. The mark
+      // above also moves on a restatement, and a person's reply makes Chatwoot emit one of its own a
+      // few milliseconds after the reply's snapshot. Null on rows older than the column.
+      statusChangedAt: number | null;
       assigneeType: string | null;
       assigneeId: number | null;
       // A different axis, not a fourth version: where the last unversioned console write stands in
@@ -111,6 +118,7 @@ export async function conversationOwnershipNow(p: {
     ? {
         ours: true,
         statusAt: conv?.chatwootStatusAt ?? null,
+        statusChangedAt: conv?.chatwootStatusChangedAt ?? null,
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
         consoleWriteAtMessageId: conv?.consoleWriteAtMessageId ?? null,
@@ -138,6 +146,7 @@ export async function claimOpenForHumanQueue(p: {
   /** The row this delivery decided about, which the compare-and-swap pins. */
   seen: {
     statusAt: number | null;
+    statusChangedAt: number | null;
     assigneeType: string | null;
     assigneeId: number | null;
     // The fourth term: ordered independently of the status version, so a console write can move it
@@ -166,7 +175,14 @@ export async function claimOpenForHumanQueue(p: {
             chatwootInstanceId: p.instanceId,
             chatwootConversationId: p.conversationId,
             status: "pending",
-            chatwootStatusAt: p.seen.statusAt,
+            // The change mark when the row has one, not the status mark: the reply's own
+            // conversation_updated moves the status mark between this delivery's read and this
+            // write, so pinning it would lose the swap to a restatement. A status that really moved
+            // in between moves the change mark too. A row from before the column has only the status
+            // mark, and keeps it.
+            ...(p.seen.statusChangedAt !== null
+              ? { chatwootStatusChangedAt: p.seen.statusChangedAt }
+              : { chatwootStatusAt: p.seen.statusAt }),
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
             consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
@@ -462,6 +478,9 @@ export async function runHumanReplyTakeover(
   // Hoisted out of the try so the caller can be told. Every road that does not reach the open
   // leaves the initial failure; only the persona lookup reaches the catch, and it throws.
   let outcome: HumanQueueOutcome = "failed";
+  // Why the fence stood down, set where it decides, for the operator's line below. Null on a refusal
+  // that came from the toggle itself (Chatwoot's conflict), which `openForHumanQueue` decides.
+  let refusal: TakeoverRefusal | null = null;
   // Present at all — `null` included — is the finishing mode. A boolean of its own would be a second
   // thing to keep in step with the value it describes.
   const finishing = p.heldClaimUntil !== undefined;
@@ -503,6 +522,7 @@ export async function runHumanReplyTakeover(
     let expected = "pending";
     // NO PERSONA IS A REFUSAL, not a failure: it is decided here, from the row, before anything is
     // written or called, which is exactly what makes it a verdict.
+    if (!bot) refusal = "no_bot";
     outcome = !bot
       ? "refused"
       : await openForHumanQueue({
@@ -551,6 +571,7 @@ export async function runHumanReplyTakeover(
                     { ourAgentBotId: p.ourAgentBotId },
                   ));
             if (live !== null && !stillPossible) {
+              refusal = "moved_on";
               logger.info(
                 "chatwoot: %s handoff skipped (conv=%s) — Chatwoot already moved the conversation on (%s)",
                 `human reply (${p.route})`,
@@ -589,16 +610,29 @@ export async function runHumanReplyTakeover(
               ourAgentBotId: p.ourAgentBotId,
               base: p.base,
             });
-            if (!now.ours) return false;
+            if (!now.ours) {
+              refusal = "not_ours";
+              return false;
+            }
+            // Where the status last moved; the version on a row from before the change mark.
+            const decidedAgainst = now.statusChangedAt ?? now.statusAt;
             // NOTE: and is this decision still the most recent one? A hand-back ("Return to AI")
             // leaves the conversation `pending` and bot-owned too, so the two are told apart by
-            // version (state-order.ts): a row stamped ahead of the deciding payload is a later answer,
-            // and a later answer wins.
+            // version (state-order.ts): a row whose status moved after the deciding payload holds a
+            // later answer, and a later answer wins.
             if (
-              now.statusAt !== null &&
+              decidedAgainst !== null &&
               p.decidedAtVersion != null &&
-              p.decidedAtVersion < now.statusAt
+              p.decidedAtVersion < decidedAgainst
             ) {
+              refusal = "later_decision";
+              logger.info(
+                "chatwoot: %s handoff skipped (conv=%s) — the status changed after this reply (%s < %s)",
+                `human reply (${p.route})`,
+                convLabel,
+                String(p.decidedAtVersion),
+                String(decidedAgainst),
+              );
               return false;
             }
             // NOTE: and the hand-back that could not be versioned, which the comparison above cannot
@@ -612,6 +646,7 @@ export async function runHumanReplyTakeover(
                 now.consoleWriteAtMessageId,
               )
             ) {
+              refusal = "handed_back";
               logger.info(
                 "chatwoot: %s handoff skipped (conv=%s) — an operator handed the conversation back after this message (msg=%s <= %s)",
                 `human reply (${p.route})`,
@@ -639,7 +674,10 @@ export async function runHumanReplyTakeover(
             // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
             // refusal, because that is what it is: something newer than the state this delivery
             // decided on now holds the row.
-            if (claimUntil === null) return false;
+            if (claimUntil === null) {
+              refusal = "claim_lost";
+              return false;
+            }
             claimHeld = claimUntil;
             // NOTE: the consoles hear about it from the write that happened. The snapshot this
             // delivery already broadcast still said `pending`, and after a failed open no Chatwoot
@@ -736,6 +774,29 @@ export async function runHumanReplyTakeover(
           },
         );
       }
+    }
+    // A person answered and the agent did NOT step off: the one outcome an operator has to be able
+    // to see, because what follows is the agent answering the customer's next message on top of the
+    // person. A failed open is reported by the warning it already writes and settles on the claim.
+    if (outcome === "refused" && p.conversationRowId !== null) {
+      emitFlowEvent(
+        {
+          tenantId: p.tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: p.conversationRowId,
+          agentId: p.agentId,
+          base: p.base,
+        },
+        {
+          stage: "handoff",
+          status: "skipped",
+          detail: describeRefusedTakeover(
+            p.route,
+            refusal ?? "status_conflict",
+          ),
+        },
+      );
     }
   } catch (err) {
     // Only the persona lookup can reach here: the open and the reconcile report their own. Left

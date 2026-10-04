@@ -84,6 +84,7 @@ async function readRow(conversationId: number) {
       assigneeType: true,
       assigneeId: true,
       chatwootStatusAt: true,
+      chatwootStatusChangedAt: true,
       chatwootAssigneeAt: true,
       statusClaimStampedAt: true,
       statusClaimRefusedAt: true,
@@ -103,9 +104,11 @@ async function applyFor(
   },
   ownsStatusClaim: Date | null = null,
   base: PrismaClient = appDb,
+  statusIsDecision?: boolean,
 ) {
   return reconcileMirrorFromLive({
     ownsStatusClaim,
+    statusIsDecision,
     tenantId,
     instanceId,
     conversationId,
@@ -539,5 +542,50 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     const row = await readRow(id);
     expect(row.status).toBe("resolved");
     expect(row.chatwootStatusAt).toBeNull();
+  });
+
+  // ── THE STATUS CHANGE MARK ── `chatwootStatusAt` advances on every ordered read; the
+  // change mark only when the status moved, or when the read follows an operator's status command.
+  // The human-reply takeover compares against it, so a restatement must leave it where it was.
+  test("a status that moved stamps the change mark", async () => {
+    const id = await seedRow({ status: "pending", chatwootStatusAt: T });
+    await applyFor(id, { status: "open", updatedAt: T + 1 });
+    expect((await readRow(id)).chatwootStatusChangedAt).toBe(T + 1);
+  });
+
+  test("a restated status advances the version and leaves the change mark", async () => {
+    const id = await seedRow({ status: "pending", chatwootStatusAt: T });
+    await applyFor(id, { status: "pending", updatedAt: T + 1 });
+    const row = await readRow(id);
+    expect(row.chatwootStatusAt).toBe(T + 1);
+    expect(row.chatwootStatusChangedAt).toBeNull();
+  });
+
+  test("an operator's status command stamps the change mark even when it restates", async () => {
+    const id = await seedRow({ status: "pending", chatwootStatusAt: T });
+    await applyFor(
+      id,
+      { status: "pending", updatedAt: T + 1 },
+      null,
+      appDb,
+      true,
+    );
+    expect((await readRow(id)).chatwootStatusChangedAt).toBe(T + 1);
+  });
+
+  test("the change mark never walks backwards", async () => {
+    const id = await seedRow({ status: "open", chatwootStatusAt: T });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: id },
+      data: { chatwootStatusChangedAt: T + 5 },
+    });
+    await applyFor(
+      id,
+      { status: "pending", updatedAt: T + 1 },
+      null,
+      appDb,
+      true,
+    );
+    expect((await readRow(id)).chatwootStatusChangedAt).toBe(T + 5);
   });
 });

@@ -29,6 +29,12 @@ export interface StatePayload {
   fromConversationEvent: boolean;
   /** True for a brand-new incoming customer message, the one reopen a message carries faithfully. */
   reopensConversation: boolean;
+  /**
+   * The source's own word that THIS write moved the status: `status` among the event's
+   * `changed_attributes`. The only way to place a change the row never saw (the event that carried
+   * it lost or still in flight), since the row then already agrees with what this one states.
+   */
+  statusChangeStated: boolean;
   /** The status the payload states. Null means it stated none, so none is written. */
   status: string | null;
   /** False when the payload said nothing about the assignee: the degraded shape (see 6 above). */
@@ -56,6 +62,8 @@ export interface StateRow {
   status: string;
   activityAt: Date | null;
   statusAt: number | null;
+  /** The change mark (see `statusChangedAt` on the decision). */
+  statusChangedAt: number | null;
   assigneeAt: number | null;
   assigneeType: string | null;
   redirectOriginAt: number | null;
@@ -102,6 +110,14 @@ export interface StateDecision {
   unversioned: boolean;
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
+  /**
+   * Version to stamp on the CHANGE mark, or null to leave it. The status mark moves on every ordered
+   * event, a restatement included, which is what ordering snapshots needs; this one moves only when
+   * the status written differs from the stored one or the source says it changed, and only forward.
+   * It answers whether a decision about the status came after a given version, which a restatement
+   * is not: the conversation_updated Chatwoot emits for a person's own reply is one.
+   */
+  statusChangedAt: number | null;
   /**
    * Version to record as REFUSED BY THE LOCAL CLAIM, or null to leave the stored one. Written only
    * while the claim has no stamped version of its own, which is the window in which a refusal cannot
@@ -168,6 +184,7 @@ export function decideConversationWrites(
       assignee: payload.assigneeStated,
       unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
+      statusChangedAt: payload.status != null ? payload.version : null,
       statusClaimRefusedAt: null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
       redirectOrigin: redirectOriginAnswers,
@@ -214,6 +231,7 @@ export function decideConversationWrites(
       assignee: false,
       unversioned: false,
       statusAt: null,
+      statusChangedAt: null,
       statusClaimRefusedAt: null,
       assigneeAt: null,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
@@ -304,6 +322,10 @@ export function decideConversationWrites(
     assignee,
     unversioned: row.activityAt == null || eventAt >= row.activityAt,
     statusAt: status != null ? advances(row.statusAt) : null,
+    statusChangedAt:
+      status != null && (status !== row.status || payload.statusChangeStated)
+        ? advances(row.statusChangedAt)
+        : null,
     // NOTE: a refusal the claim could not place is KEPT, on a mark of its own rather than the status
     // mark: we ack this event and Chatwoot never redelivers it, so dropping it would lose a hand-back
     // made while our toggle was on the wire, and the status mark would say the source stamped

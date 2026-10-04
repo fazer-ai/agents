@@ -58,6 +58,10 @@ export interface SecretType {
   service?: string;
   // Optional connectivity test (test-on-save). Absent ⇒ the type is not testable.
   test?: SecretTestSpec;
+  // How the operator fills a PENDING entry of this kind in the console, for an agent to relay next
+  // to the fill link (`credential_create`). Only for kinds whose fill form differs from "paste the
+  // value": without it the agent describes the fields one by one.
+  fillHint?: string;
   // Whether this kind carries a persistent base URL (VaultEntry.baseUrl), and whether it can be
   // created without one. One declaration, not a supports/requires pair, so "required but not
   // supported" cannot be written. Absent means a non-empty baseUrl is REFUSED at the write: model,
@@ -236,6 +240,8 @@ export const SECRET_TYPES: SecretType[] = [
     service: "langfuse",
     baseUrl: "required",
     fields: [{ key: "publicKey" }, { key: "secretKey", masked: true }],
+    fillHint:
+      'In Langfuse, open the project and go to Settings → API Keys → Create new API keys. Langfuse shows a .env block with LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY and LANGFUSE_BASE_URL: copy the whole block and paste it into the "Langfuse .env" field of the fill form, which reads both keys and the base URL from it. There is no need to copy the keys one by one.',
   },
 ];
 

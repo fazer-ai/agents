@@ -1521,7 +1521,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "credential_create",
       {
         description:
-          "Create a PENDING credential reference in the vault (a placeholder, NO secret). This tool NEVER accepts a secret value — it only declares that a credential will be needed and returns a fillAt deeplink for the operator to fill the secret in the console. Other write tools can reference the entry by NAME immediately (so you can wire model/integration/tool config now), but it resolves as 'missing' at runtime until filled; the vault list and the agent editor flag the pending state. kind = a vault secret type id (default 'generic'); pass base_url/param_name when the kind requires them (these are not secrets). Previews and creates NOTHING unless dry_run is false.",
+          "Create a PENDING credential reference in the vault (a placeholder). This tool NEVER accepts a secret value: it returns a fillAt deeplink where the operator fills the secret in the console, plus, for some kinds, a fillHint to relay with it (how that kind's form is filled). Other write tools can reference the entry by NAME immediately, but it resolves as 'missing' at runtime until filled; the vault list and the agent editor flag the pending state. kind = a vault secret type id (default 'generic'); pass base_url/param_name when the kind requires them (these are not secrets). Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           name: z.string(),
           kind: z.string().optional(),

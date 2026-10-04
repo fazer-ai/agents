@@ -2295,6 +2295,8 @@ async function runTurnBody(
           conversationId,
           kind,
           detail: chosenSilence(msgs)?.detail ?? null,
+          handoff: loaded.handoffConfig,
+          instanceId,
           flow,
           stillWanted: async () => !(await writeCalledOff()),
         });

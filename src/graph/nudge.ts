@@ -2282,6 +2282,8 @@ async function runAgentNudgeBody(
         conversationId,
         kind: handover,
         detail: chosen?.detail ?? null,
+        handoff: cfg.handoffConfig,
+        instanceId,
         flow,
         stillWanted,
       });

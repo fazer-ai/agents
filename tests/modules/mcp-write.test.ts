@@ -603,6 +603,49 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(JSON.stringify(audits[0]?.after ?? {})).not.toContain("sk-");
   });
 
+  test("credential_create for langfuse carries the .env paste hint in the preview and the result", async () => {
+    const p = principal({ tenantId: tenantA });
+    const args = {
+      name: "lf-pending",
+      kind: "langfuse",
+      base_url: "https://langfuse.example.com",
+    };
+    try {
+      const dry = await credentialCreate(p, args, { base: appDb });
+      const applied = await credentialCreate(
+        p,
+        { ...args, dry_run: false },
+        { base: appDb },
+      );
+      expect(dry.ok && applied.ok).toBe(true);
+      if (!dry.ok || !applied.ok) return;
+      const preview = dry.data.preview as { fillHint?: string };
+      for (const hint of [
+        String(preview.fillHint),
+        String(applied.data.fillHint),
+      ]) {
+        expect(hint).toContain("Langfuse .env");
+        expect(hint).toContain("API Keys");
+      }
+      if (applied.ok) expect(String(applied.data.fillAt)).toContain("fill=");
+    } finally {
+      await suDb.vaultEntry.deleteMany({
+        where: { tenantId: tenantA, name: "lf-pending" },
+      });
+    }
+  });
+
+  test("credential_create for a kind without a paste shortcut returns no fillHint", async () => {
+    const p = principal({ tenantId: tenantA });
+    const r = await credentialCreate(
+      p,
+      { name: "no-hint", kind: "openai", dry_run: false },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect("fillHint" in r.data).toBe(false);
+  });
+
   test("resolveSecretRef resolves a PENDING entry to its ref (wiring works before fill)", async () => {
     const p = principal({ tenantId: tenantA });
     await credentialCreate(

@@ -53,6 +53,7 @@ import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import type { ListAccountsDeps } from "@/modules/chatwoot/management";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
+import { getSecretType } from "@/modules/vault/secret-types";
 import {
   assertPendingVaultEntryCreatable,
   assertVaultNameAvailable,
@@ -329,12 +330,14 @@ export async function credentialCreate(
   if ("ok" in ctx) return ctx;
 
   const kind = args.kind ?? "generic";
+  const fillHint = getSecretType(kind)?.fillHint;
   const preview = {
     name: args.name,
     kind,
     status: "pending",
     baseUrl: args.base_url ?? null,
     paramName: args.param_name ?? null,
+    ...(fillHint ? { fillHint } : {}),
   };
 
   // dry-run is the default: create ONLY when dry_run is explicitly false.
@@ -382,6 +385,7 @@ export async function credentialCreate(
       kind,
       status: "pending",
       fillAt: vaultFillUrl(ctx.tenantId, id),
+      ...(fillHint ? { fillHint } : {}),
     });
   } catch (e) {
     if (e instanceof AppError) return err(e.message);

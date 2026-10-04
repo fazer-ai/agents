@@ -108,6 +108,12 @@ export function stashMediaAnnotation(
   sweepMediaAnnotations(nowMs);
   enforceSizeCap();
   scheduleSweep(nowMs);
+  // The words are what a waiting flush needs, and they exist from here: the pass that stashed them
+  // may still be writing them back to Chatwoot, which a flush has no reason to wait for.
+  if (note.transcribedText || note.transcriptionEmpty) {
+    const open = openTranscriptions.get(k);
+    if (open) for (const wake of [...open.waiters]) wake();
+  }
 }
 
 // One message's annotation, when this process still holds it. The audio reply stashes the text it
@@ -204,9 +210,10 @@ export function openTranscription(target: {
   };
 }
 
-// Waits until no transcription is open for any of these messages, the time runs out, or the signal
-// aborts, whichever comes first; one deadline for all of them, never one per message. Resolves to
-// whether anything was open to wait for. A message with nothing open costs nothing.
+// Waits until every one of these messages has its transcription settled (closed, or its words
+// stashed), the time runs out, or the signal aborts, whichever comes first; one deadline for all of
+// them, never one per message. Resolves to whether anything was open to wait for. A message with
+// nothing open, or whose words are already stashed, costs nothing.
 export async function awaitOpenTranscriptions(
   tenantId: bigint,
   instanceId: bigint,
@@ -214,6 +221,10 @@ export async function awaitOpenTranscriptions(
   opts: { timeoutMs: number; signal?: AbortSignal },
 ): Promise<boolean> {
   const open = messageIds
+    .filter((id) => {
+      const note = mediaAnnotationFor(tenantId, instanceId, id);
+      return !note?.transcribedText && !note?.transcriptionEmpty;
+    })
     .map((id) => openTranscriptions.get(keyOf(tenantId, instanceId, id)))
     .filter((e): e is { count: number; waiters: Set<() => void> } => !!e);
   if (open.length === 0 || opts.signal?.aborted) return open.length > 0;
@@ -230,7 +241,9 @@ export async function awaitOpenTranscriptions(
     timer.unref?.();
     opts.signal?.addEventListener("abort", finish, { once: true });
     for (const entry of open) {
+      // Leaves the set on its first call, so a stash and a close for the same message count once.
       const wake = () => {
+        entry.waiters.delete(wake);
         pending -= 1;
         if (pending === 0) finish();
       };

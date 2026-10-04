@@ -99,6 +99,7 @@ async function flush(
   convId: number,
   transcriptionWaitMs?: number,
   signal?: AbortSignal,
+  afterRead?: () => void,
 ) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
   const row = await suDb.schedulerJob.create({
@@ -114,7 +115,10 @@ async function flush(
   });
   const sent: Array<[number, string]> = [];
   const client = {
-    getMessages: async () => PAGE,
+    getMessages: async () => {
+      if (afterRead) setTimeout(afterRead, 0);
+      return PAGE;
+    },
     sendMessage: async (conversationId: number, content: string) => {
       sent.push([conversationId, content]);
       return {};
@@ -291,6 +295,22 @@ describe.skipIf(!dbUp)(
       } finally {
         close();
       }
+    });
+
+    // The words land right after the thread is read, while the selection is still reading the
+    // database: nothing is open any more when the wait is asked, and they still reach the model.
+    test("words that land after the read and before the render reach the model", async () => {
+      clearMediaAnnotations();
+      await seedConversation(907);
+      first();
+      const { seen } = await flush(907, 10_000, undefined, () =>
+        stashMediaAnnotation(
+          { tenantId, instanceId, messageId: 3 },
+          { transcribedText: WORDS },
+        ),
+      );
+      expect(seen[0]).toContain(WORDS);
+      expect(seen[0]).not.toContain(MARKER);
     });
 
     test("the job's deadline ends the wait", async () => {

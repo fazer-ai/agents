@@ -271,6 +271,61 @@ describe("transcriptions in flight", () => {
     );
   });
 
+  test("words stashed end the wait, with the pass still writing them back", async () => {
+    openTranscription(target(1));
+    setTimeout(
+      () => stashMediaAnnotation(target(1), { transcribedText: "palavras" }),
+      50,
+    );
+    const started = Date.now();
+    expect(
+      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
+    ).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("the words and then the close of one message count once, while another is still open", async () => {
+    const one = openTranscription(target(1));
+    openTranscription(target(2));
+    setTimeout(() => {
+      stashMediaAnnotation(target(1), { transcribedText: "palavras" });
+      one();
+    }, 20);
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1, 2], { timeoutMs: 200 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  test("an empty transcription stashed ends the wait too", async () => {
+    openTranscription(target(1));
+    setTimeout(
+      () => stashMediaAnnotation(target(1), { transcriptionEmpty: true }),
+      50,
+    );
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 });
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("a vision annotation does not end a transcription's wait", async () => {
+    openTranscription(target(1));
+    setTimeout(
+      () => stashMediaAnnotation(target(1), { imageDescription: "foto" }),
+      20,
+    );
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 200 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  test("a message whose words are already stashed is not waited for", async () => {
+    openTranscription(target(1));
+    stashMediaAnnotation(target(1), { transcribedText: "palavras" });
+    expect(
+      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
+    ).toBe(false);
+  });
+
   test("the job's signal ends the wait", async () => {
     openTranscription(target(1));
     const abort = new AbortController();

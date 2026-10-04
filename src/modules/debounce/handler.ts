@@ -415,10 +415,12 @@ export async function selectAnswerableBurst(
       timeoutMs: deps?.transcriptionWaitMs ?? FLUSH_TRANSCRIPTION_WAIT_MS,
       signal: ctx.signal,
     }))
-  ) {
-    overlayMediaAnnotations(tenantId, instanceId, messages);
+  )
     waitedOnMedia = true;
-  }
+  // NOTE: overlaid again whether or not anything was waited for: a transcription that settled after the
+  // first overlay above, during the selection's own reads, is closed by now and stashed all the same.
+  if (unheard.length > 0)
+    overlayMediaAnnotations(tenantId, instanceId, messages);
 
   const targetWatermark = pending[pending.length - 1]?.id as number;
   // The agent answers the burst's MOST RECENT message, so {{message_id}} must be that exact id.

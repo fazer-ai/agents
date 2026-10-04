@@ -398,6 +398,7 @@ function stub() {
   const templates: Array<[number, string]> = [];
   // Ordered log of side effects, so a test can assert message-before-resolve.
   const order: string[] = [];
+  const assignments: Array<[number, string]> = [];
   let currentLabels: string[] = [];
   const client = {
     sendMessage: async (c: number, t: string) => {
@@ -431,6 +432,16 @@ function stub() {
       order.push("template");
       return {};
     },
+    assignTeam: async (c: number, id: number) => {
+      assignments.push([c, `team:${id}`]);
+      order.push("assign");
+      return {};
+    },
+    assignToAgent: async (c: number, id: number) => {
+      assignments.push([c, `agent:${id}`]);
+      order.push("assign");
+      return {};
+    },
   } as unknown as ChatwootClient;
   return {
     client,
@@ -442,6 +453,7 @@ function stub() {
     statuses,
     templates,
     order,
+    assignments,
     makeClient: async () => client,
   };
 }
@@ -1754,6 +1766,48 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(closing.sentMessageIds).toEqual(s.noteIds);
     // The label still applies: it is how the operator triages what the bot left behind.
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  test("a follow-up silent with needs_human goes to the pinned team, like handoff_to_human (#1027)", async () => {
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true, settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agent.id },
+      data: {
+        settings: {
+          ...(agent.settings as Record<string, unknown>),
+          handoff: { mode: "pinned", targetTeamId: 4 },
+        },
+      },
+    });
+    try {
+      await seedConv(9690, null);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9690`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        postActions: { assignLabels: ["follow-up"], resolve: true },
+        base: appDb,
+        deps: {
+          makeModel: () => new NudgeSkipModel("needs_human") as never,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.statuses).toEqual([[9690, "open"]]);
+      expect(s.assignments).toEqual([[9690, "team:4"]]);
+      expect(s.order.slice(0, 3)).toEqual(["resolve", "assign", "note"]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: { settings: agent.settings as object },
+      });
+    }
   });
 
   test("a turn a gate stopped before the model closes on no line (#855, review round 2)", async () => {

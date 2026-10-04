@@ -2,6 +2,8 @@ import logger from "@/api/lib/logger";
 import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
+import type { HandoffConfig } from "@/modules/handoff/settings";
 import type { SkipReplyReason } from "./silence";
 import { RESOLVE_DONE } from "./tools/catalog";
 
@@ -82,8 +84,10 @@ export function skipHandoverNote(
   return line ? `${NOTE[kind]}\n\nNas palavras do agente: ${line}` : NOTE[kind];
 }
 
-// Status first, note after: a note without the status change claims "opened" about a parked
-// conversation, while a status without the note is at least SEEN. The private note is inert (fork
+// Status first, then the operator's pinned target, note last: a note without the status change claims
+// "opened" about a parked conversation, while a status without the note is at least SEEN. The target
+// is the agent's own handoff setting, the one `handoff_to_human` uses, so a skip lands in the same
+// queue as an explicit transfer. The private note is inert (fork
 // `app/models/message.rb`): it reopens nothing and never stamps `first_reply_created_at`. Best-effort
 // and never throws: a failure leaves the conversation where it was, with a warn line.
 export async function applySkipHandover(params: {
@@ -91,6 +95,9 @@ export async function applySkipHandover(params: {
   conversationId: number;
   kind: SkipHandoverKind;
   detail: string | null;
+  // Required, so a caller cannot hand over without deciding where to.
+  handoff: HandoffConfig;
+  instanceId: bigint;
   flow: FlowContext;
   // The caller's withdrawal fence, asked immediately before EACH write: a `/reset` or a superseding
   // run can land during the status change, and the note must not follow it into a conversation the
@@ -116,12 +123,20 @@ export async function applySkipHandover(params: {
     });
     return false;
   }
+  const assigned = await assignPinnedTarget({
+    client,
+    conversationId,
+    instanceId: params.instanceId,
+    handoff: params.handoff,
+    stillWanted: async () => !(await withdrawn()),
+    logLabel: "skip handover",
+  });
   let noted = false;
   if (await withdrawn()) {
     emitFlowEvent(flow, {
       stage: "handoff",
       status: "ok",
-      detail: { outcome: "opened_after_skip", reason: kind, noted },
+      detail: { outcome: "opened_after_skip", reason: kind, noted, assigned },
     });
     return true;
   }
@@ -141,7 +156,7 @@ export async function applySkipHandover(params: {
   emitFlowEvent(flow, {
     stage: "handoff",
     status: "ok",
-    detail: { outcome: "opened_after_skip", reason: kind, noted },
+    detail: { outcome: "opened_after_skip", reason: kind, noted, assigned },
   });
   return true;
 }

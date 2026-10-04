@@ -1,10 +1,8 @@
 import logger from "@/api/lib/logger";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
-import {
-  type HandoffConfig,
-  pinnedHandoffTarget,
-} from "@/modules/handoff/settings";
+import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
+import type { HandoffConfig } from "@/modules/handoff/settings";
 
 // The transfer a guardrail makes: the `handoff` action gives the refused reply's case to a person
 // instead of a canned refusal. Same two moves as `handoff_to_human`: status `open` first (it takes the
@@ -63,25 +61,14 @@ export async function applyGuardrailHandoff(params: {
       .catch(() => {});
     return false;
   }
-  const target = pinnedHandoffTarget(params.handoff, params.instanceId);
-  let assigned: "agent" | "team" | "routing" | "failed" | "withdrawn" =
-    "routing";
-  if (target && params.stillWanted && !(await params.stillWanted())) {
-    assigned = "withdrawn";
-  } else if (target) {
-    try {
-      if (target.kind === "agent")
-        await client.assignToAgent(conversationId, target.id);
-      else await client.assignTeam(conversationId, target.id);
-      assigned = target.kind;
-    } catch (err) {
-      assigned = "failed";
-      logger.warn(
-        { err, conversationId: String(conversationId) },
-        "guardrail handoff: opened, but the pinned target could not be assigned",
-      );
-    }
-  }
+  const assigned = await assignPinnedTarget({
+    client,
+    conversationId,
+    instanceId: params.instanceId,
+    handoff: params.handoff,
+    stillWanted: params.stillWanted,
+    logLabel: "guardrail handoff",
+  });
   emitFlowEvent(flow, {
     stage: "handoff",
     status: "ok",

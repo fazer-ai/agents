@@ -112,7 +112,10 @@ services:
     restart: unless-stopped
 
   minio:
-    image: 'minio/minio'
+    # The image upstream Langfuse ships (`minio/minio` is no longer on Docker Hub). It runs as uid
+    # 65532 by default; root keeps a `minio-data` volume first written by `minio/minio` writable.
+    image: 'cgr.dev/chainguard/minio'
+    user: 'root'
     entrypoint: sh
     command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
     environment:

@@ -1835,6 +1835,35 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     ]);
   });
 
+  // The hand-back reaches the mirror BEHIND a newer restatement of the same `pending`, which moved
+  // only the status mark. The late event still says the status moved, after the reply, and wins.
+  test("a hand-back delivered behind a newer restatement still stops it", async () => {
+    const conv = 8958;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    const handBack = {
+      ...conversation(conv),
+      status: "pending",
+      changed_attributes: [{ status: ["open", "pending"] }],
+    } as ReturnType<typeof conversation>;
+    await deliverConversationEvent(conv, "conversation_updated");
+    await deliverConversationEvent(
+      conv,
+      "conversation_status_changed",
+      handBack,
+    );
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá!") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
   // The open in between never reached the mirror; the event that closed it says the status moved.
   test("a hand-back the mirror only learns from the source's own word still stops it", async () => {
     const conv = 8953;

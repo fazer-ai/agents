@@ -691,6 +691,54 @@ describe("the status change mark", () => {
     expect(d.statusChangedAt).toBeNull();
   });
 
+  // A hand-back delivered behind a newer restatement: the restatement moved the status mark only, so
+  // this event is the one word that the status moved in between, and it dates the change.
+  test("a stated change behind a newer restatement still moves the change mark", () => {
+    const row = storedRow({
+      status: "pending",
+      statusAt: V_NEW,
+      assigneeAt: V_NEW,
+      statusChangedAt: V_OLD,
+    });
+    const late = (statusChangeStated: boolean) =>
+      decideConversationWrites(
+        conversationEvent({
+          status: "pending",
+          assigneeType: "AgentBot",
+          version: V_NOW,
+          statusChangeStated,
+        }),
+        row,
+        NOW,
+      );
+    expect(late(true).stale).toBe(true);
+    expect(late(true).status).toBeNull();
+    expect(late(true).statusChangedAt).toBe(V_NOW);
+    // Without the source's word it is a stale snapshot like any other.
+    expect(late(false).statusChangedAt).toBeNull();
+  });
+
+  // Same, when the assignee half is still newer and the payload is not stale as a whole.
+  test("a stated change behind the status mark moves the change mark on the live exit too", () => {
+    const d = decideConversationWrites(
+      conversationEvent({
+        status: "pending",
+        version: V_NOW,
+        statusChangeStated: true,
+      }),
+      storedRow({
+        status: "pending",
+        statusAt: V_NEW,
+        assigneeAt: V_OLD,
+        statusChangedAt: V_OLD,
+      }),
+      NOW,
+    );
+    expect(d.stale).toBe(false);
+    expect(d.status).toBeNull();
+    expect(d.statusChangedAt).toBe(V_NOW);
+  });
+
   test("a status that is not written stamps no change", () => {
     const d = decideConversationWrites(
       conversationEvent({
@@ -702,6 +750,7 @@ describe("the status change mark", () => {
       NOW,
     );
     expect(d.status).toBeNull();
+    // A row without the change mark falls back to the status mark, already ahead of this version.
     expect(d.statusChangedAt).toBeNull();
   });
 });

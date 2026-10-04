@@ -197,6 +197,18 @@ export function decideConversationWrites(
     row.statusAt != null &&
     payload.version != null &&
     payload.version < row.statusAt;
+  // A status change the source states, arriving behind a newer restatement, still dates a
+  // decision: the restatement moved the status mark and not the change mark, so this event is the
+  // only word that the status moved in between. It moves the change mark (never the status) on
+  // either exit. A row with no change mark is left alone: its fallback is the status mark, already
+  // ahead of this version, and stamping here would leave the fence comparing against less.
+  const lateChangeAt =
+    olderThanStatus &&
+    payload.status != null &&
+    payload.statusChangeStated &&
+    row.statusChangedAt != null
+      ? advancesFrom(row.statusChangedAt, payload.version)
+      : null;
   const olderThanAssignee =
     row.assigneeAt != null &&
     payload.version != null &&
@@ -231,7 +243,7 @@ export function decideConversationWrites(
       assignee: false,
       unversioned: false,
       statusAt: null,
-      statusChangedAt: null,
+      statusChangedAt: lateChangeAt,
       statusClaimRefusedAt: null,
       assigneeAt: null,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
@@ -325,7 +337,7 @@ export function decideConversationWrites(
     statusChangedAt:
       status != null && (status !== row.status || payload.statusChangeStated)
         ? advances(row.statusChangedAt)
-        : null,
+        : lateChangeAt,
     // NOTE: a refusal the claim could not place is KEPT, on a mark of its own rather than the status
     // mark: we ack this event and Chatwoot never redelivers it, so dropping it would lose a hand-back
     // made while our toggle was on the wire, and the status mark would say the source stamped

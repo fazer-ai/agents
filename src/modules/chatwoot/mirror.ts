@@ -338,6 +338,9 @@ export async function mirrorChatwootEvent(
               : {}),
             ...episodeRelease,
             ...staleSla,
+            ...(decision.statusChangedAt != null
+              ? { chatwootStatusChangedAt: decision.statusChangedAt }
+              : {}),
             // NOTE: the inbound watermark is monotonic and not decided by this branch's ordering:
             // `lastInboundAt` is the time of a customer message, and a newer one is newer whatever the
             // state did. It anchors the follow-up "new episode" gate and the WhatsApp 24h window, so a

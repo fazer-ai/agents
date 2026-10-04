@@ -26,7 +26,10 @@ import { isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
 import { retireRedirectFollowUp } from "@/modules/channel-redirect/followup";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
+import {
+  awaitOpenTranscriptions,
+  overlayMediaAnnotations,
+} from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
   retireCoveredDeliveries,
@@ -288,6 +291,11 @@ async function withCaughtUp(
   return [...page, ...added].sort((a, b) => a.id - b.id);
 }
 
+// How long a burst waits for a voice note whose transcription is still in flight in this process,
+// once for the whole burst. Past it the audio renders as today's "not audible" marker and the reply
+// still goes out: a provider that hangs costs this much latency, never the turn.
+export const FLUSH_TRANSCRIPTION_WAIT_MS = 8000;
+
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a full batch means more may follow.
 const CATCH_UP_PAGE = 100;
 // A burst that fell this far behind its page is not one a reaction explains; the page alone answers.
@@ -296,6 +304,7 @@ const CATCH_UP_MAX_READS = 5;
 export async function selectAnswerableBurst(
   ctx: Pick<
     CoalesceTurnContext,
+    | "signal"
     | "tenantId"
     | "instanceId"
     | "conversationId"
@@ -393,6 +402,25 @@ export async function selectAnswerableBurst(
       base,
       deps,
     });
+
+  // A voice note of this burst that the arrival pass is still transcribing: the re-read above can land
+  // a moment before its words do, and rendered now it becomes the marker that asks the customer to
+  // send it again. Waited for once, bounded, then the annotations are overlaid again.
+  const unheard = pending
+    .filter((m) => m.attachmentTypes.includes("audio") && !m.transcribedText)
+    .map((m) => m.id);
+  if (
+    unheard.length > 0 &&
+    (await awaitOpenTranscriptions(tenantId, instanceId, unheard, {
+      timeoutMs: deps?.transcriptionWaitMs ?? FLUSH_TRANSCRIPTION_WAIT_MS,
+      signal: ctx.signal,
+    }))
+  )
+    waitedOnMedia = true;
+  // NOTE: overlaid again whether or not anything was waited for: a transcription that settled after the
+  // first overlay above, during the selection's own reads, is closed by now and stashed all the same.
+  if (unheard.length > 0)
+    overlayMediaAnnotations(tenantId, instanceId, messages);
 
   const targetWatermark = pending[pending.length - 1]?.id as number;
   // The agent answers the burst's MOST RECENT message, so {{message_id}} must be that exact id.

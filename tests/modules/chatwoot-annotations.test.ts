@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  awaitOpenTranscriptions,
   clearMediaAnnotations,
   fileReadFor,
   mediaAnnotationCount,
   nextSweepDelayMs,
+  openTranscription,
   overlayMediaAnnotations,
   rememberFileRead,
   stashMediaAnnotation,
@@ -205,5 +207,142 @@ describe("media annotations (issue #49)", () => {
     overlayMediaAnnotations(T1, I1, rows);
     expect(rows[0]?.transcribedText).toBeNull();
     expect(rows[1]?.transcribedText).toBe("t2001");
+  });
+});
+
+// The transcriptions in flight, which a flush waits for before rendering a voice note as unheard.
+describe("transcriptions in flight", () => {
+  beforeEach(() => clearMediaAnnotations());
+  const target = (messageId: number) => ({
+    tenantId: T1,
+    instanceId: I1,
+    messageId,
+  });
+
+  test("nothing open: no wait, and the answer says so", async () => {
+    const started = Date.now();
+    expect(
+      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
+    ).toBe(false);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
+  test("the wait ends when the transcription closes, well before the bound", async () => {
+    const close = openTranscription(target(1));
+    setTimeout(close, 50);
+    const started = Date.now();
+    expect(
+      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
+    ).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("one bound for the whole burst, not one per message", async () => {
+    openTranscription(target(1));
+    openTranscription(target(2));
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1, 2], { timeoutMs: 150 });
+    const took = Date.now() - started;
+    expect(took).toBeGreaterThanOrEqual(140);
+    expect(took).toBeLessThan(280);
+  });
+
+  test("every message is waited for, not only the first to close", async () => {
+    const one = openTranscription(target(1));
+    const two = openTranscription(target(2));
+    setTimeout(one, 20);
+    setTimeout(two, 200);
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1, 2], { timeoutMs: 5000 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  test("two passes over one message keep it open until both settle, and a close counts once", async () => {
+    const first = openTranscription(target(1));
+    const second = openTranscription(target(1));
+    first();
+    first();
+    expect(await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 0 })).toBe(
+      true,
+    );
+    second();
+    expect(await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 0 })).toBe(
+      false,
+    );
+  });
+
+  test("words stashed end the wait, with the pass still writing them back", async () => {
+    openTranscription(target(1));
+    setTimeout(
+      () => stashMediaAnnotation(target(1), { transcribedText: "palavras" }),
+      50,
+    );
+    const started = Date.now();
+    expect(
+      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
+    ).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("the words and then the close of one message count once, while another is still open", async () => {
+    const one = openTranscription(target(1));
+    openTranscription(target(2));
+    setTimeout(() => {
+      stashMediaAnnotation(target(1), { transcribedText: "palavras" });
+      one();
+    }, 20);
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1, 2], { timeoutMs: 200 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  test("an empty transcription stashed ends the wait too", async () => {
+    openTranscription(target(1));
+    setTimeout(
+      () => stashMediaAnnotation(target(1), { transcriptionEmpty: true }),
+      50,
+    );
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 });
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("a vision annotation does not end a transcription's wait", async () => {
+    openTranscription(target(1));
+    setTimeout(
+      () => stashMediaAnnotation(target(1), { imageDescription: "foto" }),
+      20,
+    );
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 200 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+  });
+
+  test("a message whose words are already stashed is not waited for", async () => {
+    openTranscription(target(1));
+    stashMediaAnnotation(target(1), { transcribedText: "palavras" });
+    expect(
+      await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 5000 }),
+    ).toBe(false);
+  });
+
+  test("the job's signal ends the wait", async () => {
+    openTranscription(target(1));
+    const abort = new AbortController();
+    setTimeout(() => abort.abort(), 30);
+    const started = Date.now();
+    await awaitOpenTranscriptions(T1, I1, [1], {
+      timeoutMs: 5000,
+      signal: abort.signal,
+    });
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("another tenant's or instance's open transcription is not this message", async () => {
+    openTranscription({ tenantId: T1 + 1n, instanceId: I1, messageId: 1 });
+    openTranscription({ tenantId: T1, instanceId: I1 + 1n, messageId: 1 });
+    expect(await awaitOpenTranscriptions(T1, I1, [1], { timeoutMs: 0 })).toBe(
+      false,
+    );
   });
 });

@@ -118,8 +118,15 @@ export async function mirrorChatwootEvent(
     status: n.status ?? null,
     assigneeStated: n.assigneeType !== undefined,
     assigneeType: n.assigneeType ?? null,
+    assigneeId: n.assigneeId ?? null,
     redirectOriginStated: n.redirectOriginDisplayId !== undefined,
     redirectOriginCleared: n.redirectOriginDisplayId === null,
+    // The event that exists only for a status transition says so by its name: the fork dispatches it
+    // after commit, when the model's own change record is already gone, so it carries no
+    // `changed_attributes`. A holder change has no event of its own and says so in that list.
+    ownershipChangeStated:
+      n.event === "conversation_status_changed" ||
+      changedAttributesNameOwnership(n.changedAttributes),
   };
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
@@ -177,6 +184,7 @@ export async function mirrorChatwootEvent(
             id: true,
             lastEventAt: true,
             chatwootStatusAt: true,
+            chatwootOwnershipChangedAt: true,
             chatwootAssigneeAt: true,
             assigneeId: true,
             assigneeType: true,
@@ -209,8 +217,10 @@ export async function mirrorChatwootEvent(
                 status: existing.status,
                 activityAt: existing.lastEventAt,
                 statusAt: existing.chatwootStatusAt,
+                ownershipChangedAt: existing.chatwootOwnershipChangedAt,
                 assigneeAt: existing.chatwootAssigneeAt,
                 assigneeType: existing.assigneeType,
+                assigneeId: existing.assigneeId,
                 redirectOriginAt: existing.chatwootRedirectOriginAt,
                 // The mark OR a stored origin: a Chatwoot too old to send `updated_at` writes the
                 // pairing and stamps nothing, so the mark alone would read those conversations as
@@ -335,6 +345,9 @@ export async function mirrorChatwootEvent(
               : {}),
             ...episodeRelease,
             ...staleSla,
+            ...(decision.ownershipChangedAt != null
+              ? { chatwootOwnershipChangedAt: decision.ownershipChangedAt }
+              : {}),
             // NOTE: the inbound watermark is monotonic and not decided by this branch's ordering:
             // `lastInboundAt` is the time of a customer message, and a newer one is newer whatever the
             // state did. It anchors the follow-up "new episode" gate and the WhatsApp 24h window, so a
@@ -386,6 +399,7 @@ export async function mirrorChatwootEvent(
               threadId,
               lastEventAt: createdLastEventAt,
               chatwootStatusAt: decision.statusAt,
+              chatwootOwnershipChangedAt: decision.ownershipChangedAt,
               chatwootAssigneeAt: decision.assigneeAt,
               chatwootRedirectOriginAt: decision.redirectOriginAt,
               lastInboundAt: inboundAt,
@@ -468,6 +482,9 @@ export async function mirrorChatwootEvent(
             lastEventAt: effectiveLastEventAt,
             ...(decision.statusAt != null
               ? { chatwootStatusAt: decision.statusAt }
+              : {}),
+            ...(decision.ownershipChangedAt != null
+              ? { chatwootOwnershipChangedAt: decision.ownershipChangedAt }
               : {}),
             // The claim's own record of what it could not place, which the takeover's reconcile reads
             // back and answers. See `statusClaimRefusedAt` on the decision.
@@ -725,4 +742,26 @@ async function upsertInbox(
     select: { id: true },
   });
   return row.id;
+}
+
+// The columns whose change moves who holds a conversation in the fork: the status, the human
+// assignee, the bot assignee, and the type that says which of the two is meant.
+const OWNERSHIP_ATTRIBUTES = [
+  "status",
+  "assignee_id",
+  "assignee_agent_bot_id",
+  "ai_assignee_type",
+];
+
+// Whether a conversation event's `changed_attributes` names one of them. Chatwoot renders it as a
+// list of one-key objects (`[{ status: { previous_value, current_value } }]`); anything else, or its
+// absence on a message payload, is no statement.
+function changedAttributesNameOwnership(changed: unknown): boolean {
+  if (!Array.isArray(changed)) return false;
+  return changed.some(
+    (entry) =>
+      entry !== null &&
+      typeof entry === "object" &&
+      OWNERSHIP_ATTRIBUTES.some((key) => Object.hasOwn(entry as object, key)),
+  );
 }

@@ -26,6 +26,33 @@ export function describeHumanTakeover(
   return { outcome: "taken_over", via };
 }
 
+// Why a person's reply did NOT end the attendance, for the line that says so. Each is a fence that
+// stood down on purpose, decided where it is checked: Chatwoot already moved the conversation on, the
+// mirror says another party holds it, the status or holder changed after the reply, an operator handed it
+// back after the reply, the row moved between the read and the claim, the toggle met a conflict, or
+// the agent has no bot on the instance to act as.
+export type TakeoverRefusal =
+  | "moved_on"
+  | "not_ours"
+  | "later_decision"
+  | "handed_back"
+  | "claim_lost"
+  | "status_conflict"
+  | "no_bot";
+
+export type RefusedTakeoverDetail = {
+  outcome: "refused";
+  via: HumanReplyRoute;
+  reason: TakeoverRefusal;
+};
+
+export function describeRefusedTakeover(
+  via: HumanReplyRoute,
+  reason: TakeoverRefusal,
+): RefusedTakeoverDetail {
+  return { outcome: "refused", via, reason };
+}
+
 export function describeClosedGate(observed: {
   assigneeType: string | null;
   status: string | null;

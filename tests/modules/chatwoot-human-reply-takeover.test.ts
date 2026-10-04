@@ -189,7 +189,7 @@ const deps = {
 //
 // Each entry names the question it answers, and none of them is decoration:
 describe("the ownership fence's projection", () => {
-  test("asks for the four facts the decision needs, and nothing more", () => {
+  test("asks for the facts the decision needs, and nothing more", () => {
     expect(Object.keys(OWNERSHIP_PROJECTION).sort()).toEqual(
       [
         // who holds it — the pair, since User and AgentBot are separate id namespaces
@@ -199,6 +199,8 @@ describe("the ownership fence's projection", () => {
         "consoleWriteAtMessageId",
         // the status version, which orders this decision against a later one
         "chatwootStatusAt",
+        // where the status or holder last moved, which is what "a later decision" means
+        "chatwootOwnershipChangedAt",
         // whether it is still open to the bot at all
         "status",
       ].sort(),
@@ -464,6 +466,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         status: true,
         lastHandledMessageId: true,
         chatwootStatusAt: true,
+        chatwootOwnershipChangedAt: true,
         statusClaimUntil: true,
         statusClaimFrom: true,
         statusClaimStampedAt: true,
@@ -775,7 +778,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
     expect(toggles(conv).length).toBe(0);
     expect(liveStatus.get(conv) ?? "pending").toBe("pending");
-    expect((await takeoverRows(conv, 200)).length).toBe(0);
+    // Refused, and the flow log says so: a silent refusal leaves the operator nothing to read.
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "device", outcome: "refused", reason: "not_ours" },
+    ]);
   });
 
   // An agent with no Agent Bot row on this instance cannot speak here at all: every call it makes
@@ -792,6 +798,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // because a failed call is an unknown outcome. A missing bot is not unknown, so nothing is
     // claimed in the first place.
     expect((await convRow(conv))?.status).toBe("pending");
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "device", outcome: "refused", reason: "no_bot" },
+    ]);
   });
 
   // "We own this" is false when there is no "we". A delivery whose own route bot is unknown cannot
@@ -889,10 +898,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       await suDb.conversation.update({
         where: { id: row?.id },
         // What `mirrorConsoleWrite` leaves behind on a versioned reconcile: still `pending`, and
-        // stamped ahead of everything this delivery saw.
+        // stamped ahead of everything this delivery saw, the ownership mark included, because a click
+        // is a decision even when it restates the status.
         data: {
           status: "pending",
           chatwootStatusAt: (row?.chatwootStatusAt ?? 0) + 1000,
+          chatwootOwnershipChangedAt: (row?.chatwootStatusAt ?? 0) + 1000,
         },
       });
     };
@@ -904,7 +915,36 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(toggles(conv).length).toBe(0);
     expect((await convRow(conv))?.status).toBe("pending");
     expect(liveStatus.get(conv) ?? "pending").toBe("pending");
-    expect((await takeoverRows(conv, 200)).length).toBe(0);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "device", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
+  // A row from before the ownership mark has only the version, and the fence falls back to it: a
+  // hand-back stamped ahead of the reply still stops the takeover there.
+  test("a row without the ownership mark is judged by its version", async () => {
+    const conv = 8955;
+    await deliver(conv, { ...customerSays("oi") });
+    const row = await convRow(conv);
+    whileBuildingClient = async () => {
+      await suDb.conversation.update({
+        where: { id: row?.id },
+        data: {
+          status: "pending",
+          chatwootStatusAt: (row?.chatwootStatusAt ?? 0) + 1000,
+          chatwootOwnershipChangedAt: null,
+        },
+      });
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileBuildingClient = null;
+    }
+    expect(toggles(conv).length).toBe(0);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "device", outcome: "refused", reason: "later_decision" },
+    ]);
   });
 
   // THE COMPENSATION THAT MUST NOT EXIST. The claim is taken locally and then the open fails. A
@@ -1064,7 +1104,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       expect(toggles(conv).length).toBe(0);
       expect(liveStatus.get(conv)).toBe("resolved");
       expect((await convRow(conv))?.status).toBe("pending");
-      expect((await takeoverRows(conv, 200)).length).toBe(0);
+      expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+        { via: "device", outcome: "refused", reason: "moved_on" },
+      ]);
     } finally {
       liveStatus.delete(conv);
     }
@@ -1256,6 +1298,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     const seeded = await convRow(conv);
     const seen = {
       statusAt: seeded?.chatwootStatusAt ?? null,
+      ownershipChangedAt: seeded?.chatwootOwnershipChangedAt ?? null,
       assigneeType: "AgentBot",
       assigneeId: OUR_BOT,
       consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
@@ -1289,6 +1332,47 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
   });
 
+  // THE SWAP PINS THE MARK THE FENCE COMPARED. On a row with a ownership mark, a restatement that moves
+  // only the version between the read and the swap is not a later decision, so the claim stands; on
+  // a row without one, the version is all there is, and a move of it loses the swap.
+  test("the claim pins the ownership mark, and the version only where there is none", async () => {
+    for (const [conv, legacy] of [
+      [8956, false],
+      [8957, true],
+    ] as const) {
+      await deliver(conv, { ...customerSays("oi") });
+      if (legacy) {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: conv },
+          data: { chatwootOwnershipChangedAt: null },
+        });
+      }
+      const seeded = await convRow(conv);
+      if (!legacy) expect(seeded?.chatwootOwnershipChangedAt).not.toBeNull();
+      // The restatement lands: same status, the version a step ahead, the ownership mark where it was.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: conv },
+        data: { chatwootStatusAt: (seeded?.chatwootStatusAt ?? 0) + 1 },
+      });
+      const claimed = await claimOpenForHumanQueue({
+        tenantId,
+        instanceId,
+        conversationId: conv,
+        seen: {
+          statusAt: seeded?.chatwootStatusAt ?? null,
+          ownershipChangedAt: seeded?.chatwootOwnershipChangedAt ?? null,
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT,
+          consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
+        },
+        base: appDb,
+      });
+      if (legacy) expect(claimed).toBeNull();
+      else expect(claimed).not.toBeNull();
+      expect((await convRow(conv))?.status).toBe(legacy ? "pending" : "open");
+    }
+  });
+
   // The compare-and-swap does not order the claim against a mirror transaction that has already
   // READ the row and not yet written, which would commit over the `open`. The lock the mirror and
   // the reconcile share orders them, so the claim queues behind whoever holds it.
@@ -1303,6 +1387,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         conversationId: conv,
         seen: {
           statusAt: seeded?.chatwootStatusAt ?? null,
+          ownershipChangedAt: seeded?.chatwootOwnershipChangedAt ?? null,
           assigneeType: "AgentBot",
           assigneeId: OUR_BOT,
           consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
@@ -1654,6 +1739,270 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
   });
 
+  // A message delivered with a snapshot taken EARLIER than the moment it is delivered: what a
+  // message_created carries when the write it caused has already reached the mirror.
+  async function deliverWithSnapshot(
+    convId: number,
+    over: Record<string, unknown>,
+    snapshot: ReturnType<typeof conversation>,
+  ): Promise<void> {
+    deliverySeq += 1;
+    messageSeq += 1;
+    liveLatestMessageId.set(convId, messageSeq);
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      ...over,
+      conversation: snapshot,
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `hr-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      deps,
+      base: appDb,
+    });
+  }
+
+  // THE REPLY'S OWN ECHO. A person's reply makes Chatwoot write the conversation again (the first
+  // reply time, the waiting clock) and emit a conversation_updated for that write, same status, a few
+  // milliseconds newer than the snapshot the reply itself carries. When that event reaches the mirror
+  // first, it is a restatement and not a later decision, and the takeover still opens.
+  test("the reply's own conversation event does not stop the takeover", async () => {
+    const conv = 8951;
+    await deliver(conv, { ...customerSays("oi, qual o horário?") });
+    const replySnapshot = conversation(conv);
+    await deliverConversationEvent(conv, "conversation_updated", {
+      ...conversation(conv),
+      changed_attributes: [
+        {
+          first_reply_created_at: {
+            previous_value: null,
+            current_value: stamp,
+          },
+        },
+        { waiting_since: { previous_value: stamp - 5, current_value: null } },
+      ],
+    } as ReturnType<typeof conversation>);
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá! Aqui é a Ana.") },
+      replySnapshot,
+    );
+    expect(liveStatus.get(conv)).toBe("open");
+    const rows = await takeoverRows(conv);
+    expect(rows.map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "taken_over" },
+    ]);
+  });
+
+  // The other half: a decision that DID come after the reply still wins, and now says so where the
+  // operator reads.
+  test("a hand-back after the reply still stops it, with a line saying why", async () => {
+    const conv = 8952;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    await deliverConversationEvent(conv, "conversation_status_changed", {
+      ...conversation(conv),
+      status: "open",
+      changed_attributes: [
+        { status: { previous_value: "pending", current_value: "open" } },
+      ],
+    } as ReturnType<typeof conversation>);
+    await deliverConversationEvent(conv, "conversation_status_changed", {
+      ...conversation(conv),
+      status: "pending",
+      changed_attributes: [{ status: ["open", "pending"] }],
+    } as ReturnType<typeof conversation>);
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá! Aqui é a Ana.") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    const rows = await takeoverRows(conv);
+    expect(rows.map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
+  // The hand-back reaches the mirror BEHIND a newer restatement of the same `pending`, which moved
+  // only the status mark. The late event still says the status moved, after the reply, and wins.
+  test("a hand-back delivered behind a newer restatement still stops it", async () => {
+    const conv = 8958;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    // The fork's status event, as it leaves: no changed_attributes, the event name is the word.
+    const handBack = {
+      ...conversation(conv),
+      status: "pending",
+    } as ReturnType<typeof conversation>;
+    await deliverConversationEvent(conv, "conversation_updated");
+    await deliverConversationEvent(
+      conv,
+      "conversation_status_changed",
+      handBack,
+    );
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá!") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
+  // A hand-back by assignment alone: the conversation goes to a person and comes back to the bot
+  // with the status `pending` throughout. Each move is a decision after the reply.
+  test("a hand-back by assignment alone still stops it", async () => {
+    const conv = 8960;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    const held = (assignee_type: string, id: number) =>
+      ({
+        ...conversation(conv),
+        status: "pending",
+        meta: {
+          assignee_type,
+          assignee: { id, name: "Atendente" },
+          sender: { id: 77, name: "Cliente" },
+        },
+      }) as ReturnType<typeof conversation>;
+    await deliverConversationEvent(
+      conv,
+      "conversation_updated",
+      held("User", 5),
+    );
+    await deliverConversationEvent(
+      conv,
+      "conversation_updated",
+      held("AgentBot", OUR_BOT),
+    );
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá!") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
+  // The bot assignee coming back is named in changed_attributes, and that event reaches the mirror
+  // behind a newer restatement of the same holder: the late event is the only word of the move.
+  test("an assignment back to the bot delivered behind a newer restatement still stops it", async () => {
+    const conv = 8961;
+    await deliver(conv, { ...customerSays("oi") });
+    const replySnapshot = conversation(conv);
+    const back = {
+      ...conversation(conv),
+      status: "pending",
+      changed_attributes: [
+        {
+          assignee_agent_bot_id: {
+            previous_value: null,
+            current_value: OUR_BOT,
+          },
+        },
+      ],
+    } as ReturnType<typeof conversation>;
+    await deliverConversationEvent(conv, "conversation_updated");
+    await deliverConversationEvent(conv, "conversation_updated", back);
+    const before = toggles(conv).length;
+    await deliverWithSnapshot(
+      conv,
+      { ...composerReply("Olá!") },
+      replySnapshot,
+    );
+    expect(toggles(conv).length).toBe(before);
+    expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+      { via: "composer", outcome: "refused", reason: "later_decision" },
+    ]);
+  });
+
+  // The open in between never reached the mirror; the event that closed it says the status moved.
+  // Two words for it on the wire: the status event by its name (it carries no changed_attributes),
+  // and the companion conversation_updated by naming `status` among what changed.
+  for (const [conv, event] of [
+    [8953, "conversation_status_changed"],
+    [8959, "conversation_updated"],
+  ] as const)
+    test(`a hand-back the mirror only learns from the source's own word still stops it (${event})`, async () => {
+      await deliver(conv, { ...customerSays("oi") });
+      const replySnapshot = conversation(conv);
+      await deliverConversationEvent(conv, event, {
+        ...conversation(conv),
+        status: "pending",
+        ...(event === "conversation_updated"
+          ? {
+              changed_attributes: [
+                {
+                  status: { previous_value: "open", current_value: "pending" },
+                },
+              ],
+            }
+          : {}),
+      } as ReturnType<typeof conversation>);
+      const before = toggles(conv).length;
+      await deliverWithSnapshot(
+        conv,
+        { ...composerReply("Olá!") },
+        replySnapshot,
+      );
+      expect(toggles(conv).length).toBe(before);
+      const rows = await takeoverRows(conv);
+      expect(rows.map((r) => r.detail)).toEqual([
+        { via: "composer", outcome: "refused", reason: "later_decision" },
+      ]);
+    });
+
+  // The console half of the ownership mark, through the real console function: a status click that
+  // restates `pending` is still the operator's decision, so it moves the mark the takeover compares
+  // against. A restatement Chatwoot emits on its own does not (the test above with the reply's echo).
+  test("a console click that restates the status still moves the ownership mark", async () => {
+    const conv = 8954;
+    await deliver(conv, { ...customerSays("oi") });
+    const before = await convRow(conv);
+    if (!before) throw new Error("no mirrored conversation");
+    expect(before.status).toBe("pending");
+    await setConversationStatus(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      before.id,
+      "pending",
+      deps,
+      appDb,
+    );
+    const after = await convRow(conv);
+    expect(after?.chatwootOwnershipChangedAt).not.toBeNull();
+    expect(after?.chatwootOwnershipChangedAt).toBe(
+      after?.chatwootStatusAt ?? -1,
+    );
+    expect(after?.chatwootStatusAt ?? 0).toBeGreaterThan(
+      before.chatwootOwnershipChangedAt ?? 0,
+    );
+  });
+
   test("a takeover with nothing in the way opens, and is announced once", async () => {
     const conv = 8575;
     await deliver(conv, { ...customerSays("oi") });
@@ -1785,6 +2134,11 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         expect(liveStatus.get(conv)).toBe("pending");
         const after = await convRow(conv);
         expect(after?.status).toBe("pending");
+        // ...and the operator can read why: the first reply's takeover, then this one refused.
+        expect((await takeoverRows(conv)).map((r) => r.detail)).toEqual([
+          { via: "composer", outcome: "taken_over" },
+          { via: "composer", outcome: "refused", reason: "handed_back" },
+        ]);
         // And nothing was even ASKED of Chatwoot, which is what says the takeover stood down at the
         // fence rather than being undone by something downstream of it.
         expect(

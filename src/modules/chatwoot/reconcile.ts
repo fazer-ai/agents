@@ -4,6 +4,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
+import { firstOwnershipStamp } from "./state-order";
 import { announceStatusChange } from "./status-announce";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 
@@ -56,6 +57,14 @@ export interface ReconcileFromLiveParams {
    * plain live read against a Chatwoot that has not committed someone's toggle would undo the claim.
    */
   ownsStatusClaim?: Date | null;
+  /**
+   * The read follows an operator's own command (a console write), so what it carries is a DECISION
+   * even when it restates the stored state: "Return to AI" on a conversation still `pending` is the
+   * operator asking for the agent, and a person's reply serialized before it must not undo that. It
+   * stamps the ownership mark (`chatwootOwnershipChangedAt`) at the read's version. Every other read
+   * stamps it only when the status or the holder really moved.
+   */
+  ownershipIsDecision?: boolean;
   base: PrismaClient;
 }
 
@@ -104,6 +113,7 @@ export async function reconcileMirrorFromLive(
             assigneeName: true,
             lastEventAt: true,
             chatwootStatusAt: true,
+            chatwootOwnershipChangedAt: true,
             resolvedByAt: true,
             chatwootAssigneeAt: true,
             statusClaimUntil: true,
@@ -220,6 +230,40 @@ export async function reconcileMirrorFromLive(
         const nextAssigneeName = assigneeOrdered
           ? live.assigneeName
           : current.assigneeName;
+        // The ownership mark, under the same forward-only rule as the field marks: the version at which
+        // the status or the holder this read writes actually moved, or at which an operator commanded
+        // it (see `ownershipIsDecision`). A restatement leaves it, which is what keeps a person's reply
+        // from reading its own echo as a later decision. An operator's command whose read lost the
+        // status ordering to a newer restatement still dates the decision at the read's version; a
+        // row with no ownership mark falls back to the status mark, already ahead, and is left alone.
+        const holderMoved =
+          assigneeOrdered &&
+          (nextAssigneeType !== current.assigneeType ||
+            nextAssigneeId !== current.assigneeId);
+        const ownershipMovedAt = Math.max(
+          nextStatus !== null &&
+            nextStatusAt !== null &&
+            (nextStatus !== current.status ||
+              params.ownershipIsDecision === true)
+            ? nextStatusAt
+            : Number.NEGATIVE_INFINITY,
+          holderMoved && liveVersion !== null
+            ? liveVersion
+            : Number.NEGATIVE_INFINITY,
+          nextStatus === null &&
+            params.ownershipIsDecision === true &&
+            liveVersion !== null &&
+            current.chatwootOwnershipChangedAt !== null
+            ? liveVersion
+            : Number.NEGATIVE_INFINITY,
+        );
+        const ownershipStamp = firstOwnershipStamp(
+          {
+            ownershipChangedAt: current.chatwootOwnershipChangedAt,
+            statusAt: current.chatwootStatusAt,
+          },
+          Number.isFinite(ownershipMovedAt) ? ownershipMovedAt : null,
+        );
         const data = {
           ...(nextStatus !== null && nextStatus !== current.status
             ? { status: nextStatus }
@@ -275,6 +319,11 @@ export async function reconcileMirrorFromLive(
           (current.chatwootStatusAt === null ||
             nextStatusAt > current.chatwootStatusAt)
             ? { chatwootStatusAt: nextStatusAt }
+            : {}),
+          ...(ownershipStamp !== null &&
+          (current.chatwootOwnershipChangedAt === null ||
+            ownershipStamp > current.chatwootOwnershipChangedAt)
+            ? { chatwootOwnershipChangedAt: ownershipStamp }
             : {}),
           ...(assigneeOrdered &&
           liveVersion !== null &&

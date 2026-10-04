@@ -865,6 +865,8 @@ async function mirrorConsoleWrite(
         instanceId: conv.chatwootInstanceId,
         conversationId: conv.chatwootConversationId,
         live,
+        // NOTE: an operator's click is a decision even when it restates the stored state.
+        ownershipIsDecision: fallback.status != null,
         base,
       });
       // Applied, or beaten by a stored version: either way the row now holds the newest thing known,

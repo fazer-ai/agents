@@ -84,6 +84,7 @@ async function readRow(conversationId: number) {
       assigneeType: true,
       assigneeId: true,
       chatwootStatusAt: true,
+      chatwootOwnershipChangedAt: true,
       chatwootAssigneeAt: true,
       statusClaimStampedAt: true,
       statusClaimRefusedAt: true,
@@ -103,9 +104,11 @@ async function applyFor(
   },
   ownsStatusClaim: Date | null = null,
   base: PrismaClient = appDb,
+  ownershipIsDecision?: boolean,
 ) {
   return reconcileMirrorFromLive({
     ownsStatusClaim,
+    ownershipIsDecision,
     tenantId,
     instanceId,
     conversationId,
@@ -539,5 +542,117 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     const row = await readRow(id);
     expect(row.status).toBe("resolved");
     expect(row.chatwootStatusAt).toBeNull();
+  });
+
+  // ── THE STATUS CHANGE MARK ── `chatwootStatusAt` advances on every ordered read; the
+  // ownership mark only when the status moved, or when the read follows an operator's status command.
+  // The human-reply takeover compares against it, so a restatement must leave it where it was.
+  test("a status that moved stamps the ownership mark", async () => {
+    const id = await seedRow({ status: "pending", chatwootStatusAt: T });
+    await applyFor(id, { status: "open", updatedAt: T + 1 });
+    expect((await readRow(id)).chatwootOwnershipChangedAt).toBe(T + 1);
+  });
+
+  test("a restated status advances the version and leaves the ownership mark", async () => {
+    const id = await seedRow({ status: "pending", chatwootStatusAt: T });
+    await applyFor(id, { status: "pending", updatedAt: T + 1 });
+    const row = await readRow(id);
+    expect(row.chatwootStatusAt).toBe(T + 1);
+    expect(row.chatwootOwnershipChangedAt).toBeNull();
+  });
+
+  test("an operator's status command stamps the ownership mark even when it restates", async () => {
+    const id = await seedRow({ status: "pending", chatwootStatusAt: T });
+    await applyFor(
+      id,
+      { status: "pending", updatedAt: T + 1 },
+      null,
+      appDb,
+      true,
+    );
+    expect((await readRow(id)).chatwootOwnershipChangedAt).toBe(T + 1);
+  });
+
+  // The command's read lost the status ordering to a newer restatement: the status stays, and the
+  // decision is still dated at the read's version, since the restatement moved only the status mark.
+  test("an operator's command that loses the status ordering still dates the decision", async () => {
+    for (const [decision, changedAt, want] of [
+      [true, T, T + 2],
+      [false, T, T],
+      [true, null, null],
+    ] as const) {
+      const id = await seedRow({ status: "pending", chatwootStatusAt: T + 5 });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: id },
+        data: { chatwootOwnershipChangedAt: changedAt },
+      });
+      await applyFor(
+        id,
+        { status: "pending", updatedAt: T + 2 },
+        null,
+        appDb,
+        decision,
+      );
+      const row = await readRow(id);
+      expect(row.chatwootStatusAt).toBe(T + 5);
+      expect(row.chatwootOwnershipChangedAt).toBe(want);
+    }
+  });
+
+  test("a holder that moved stamps the ownership mark, a restated one does not", async () => {
+    for (const [assigneeId, want] of [
+      [5, T + 1],
+      [9, null],
+    ] as const) {
+      const id = await seedRow({
+        status: "pending",
+        assigneeType: "AgentBot",
+        assigneeId: 9,
+        chatwootStatusAt: T,
+        chatwootAssigneeAt: T,
+      });
+      await applyFor(id, {
+        status: "pending",
+        assigneeType: "AgentBot",
+        assigneeId,
+        updatedAt: T + 1,
+      });
+      expect((await readRow(id)).chatwootOwnershipChangedAt).toBe(want);
+    }
+  });
+
+  test("the first ownership stamp on a row without one does not sit below the status mark", async () => {
+    const id = await seedRow({
+      status: "pending",
+      assigneeType: "AgentBot",
+      assigneeId: 9,
+      chatwootStatusAt: T + 5,
+      chatwootAssigneeAt: T,
+    });
+    await applyFor(id, {
+      status: "pending",
+      assigneeType: "User",
+      assigneeId: 5,
+      updatedAt: T + 2,
+    });
+    const row = await readRow(id);
+    expect(row.assigneeType).toBe("User");
+    expect(row.chatwootOwnershipChangedAt).toBe(T + 5);
+  });
+
+  test("the ownership mark never walks backwards", async () => {
+    const id = await seedRow({ status: "open", chatwootStatusAt: T });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: id },
+      data: { chatwootOwnershipChangedAt: T + 5 },
+    });
+    await applyFor(
+      id,
+      { status: "pending", updatedAt: T + 1 },
+      null,
+      appDb,
+      true,
+    );
+    expect((await readRow(id)).chatwootOwnershipChangedAt).toBe(T + 5);
   });
 });

@@ -751,6 +751,68 @@ describe("ChatwootClient", () => {
     });
   });
 
+  describe("getContactEmail", () => {
+    test("reads the contact's email with the admin token; blank or missing is null", async () => {
+      for (const [email, want] of [
+        [" ana@example.com ", "ana@example.com"],
+        ["", null],
+        [null, null],
+        [undefined, null],
+      ] as const) {
+        const { fetchImpl, calls } = stub(200, { payload: { email } });
+        const client = await createChatwootClient(baseConfig, {
+          fetchImpl,
+          assertSafe: passthroughSafe,
+        });
+        expect(await client.getContactEmail(7)).toBe(want);
+        expect(calls[0]?.method).toBe("GET");
+        expect(calls[0]?.url).toBe(
+          "https://chat.example.com/api/v1/accounts/5/contacts/7",
+        );
+        expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+      }
+    });
+
+    // The Calendar invite reads the address an update_contact of the same turn may still be writing.
+    // On the contact's queue the read waits for the PUT, so it cannot answer with the old address.
+    test("waits behind an update of the same contact that is still in flight", async () => {
+      const order: string[] = [];
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      let stored = "old@example.com";
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        order.push(`${method} start`);
+        if (method === "PUT") {
+          await gate;
+          stored = (JSON.parse(init?.body as string) as { email: string })
+            .email;
+        }
+        order.push(`${method} end`);
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({ payload: { email: stored, id: 7, url } }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      const put = client.updateContact(7, { email: "new@example.com" });
+      const read = client.getContactEmail(7);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(order).toEqual(["PUT start"]);
+      release();
+      await put;
+      expect(await read).toBe("new@example.com");
+      expect(order).toEqual(["PUT start", "PUT end", "GET start", "GET end"]);
+    });
+  });
+
   test("updateContact can clear an identifier with null", async () => {
     // The unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
     // a value like any other and a second contact cleared that way would collide with the first.

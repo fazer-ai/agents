@@ -1369,6 +1369,17 @@ export async function buildToolset(
       const email = row?.email?.trim();
       return email ? email : null;
     },
+    // NOTE: Live from Chatwoot, for the Calendar invite: the mirror misses an email an agent typed in
+    // Chatwoot (no contact_updated reaches a bot). Read only when a create invites, so a turn that
+    // books nothing pays no call. Only a real conversation has a client that reaches Chatwoot.
+    ...(ctx.conversationId > 0
+      ? {
+          readContactEmail: async () => {
+            const id = cfg.chatwootContactId;
+            return id == null ? null : ctx.client.getContactEmail(id);
+          },
+        }
+      : {}),
     resolveBusinessHours,
     appointmentBooked: appointmentBookedFn,
     cancelAppointment: cancelAppointmentFn,

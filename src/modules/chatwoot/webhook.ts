@@ -58,7 +58,10 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import {
+  openTranscription,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
   retireCoveredDeliveries,
@@ -1623,6 +1626,13 @@ export async function runEagerMedia(
     if (audio.transcribedText) {
       n.message.transcribedText = audio.transcribedText;
     } else {
+      // Announced before the config is even read, so a debounce flush re-reading the thread in the
+      // meantime waits for these words instead of rendering the audio as unheard; closed on every exit.
+      const closeTranscription = openTranscription({
+        tenantId,
+        instanceId,
+        messageId: n.message.id,
+      });
       try {
         const sttCfg = await resolveSttConfig(
           tenantId,
@@ -1648,6 +1658,9 @@ export async function runEagerMedia(
               fetchImpl: owner.deps?.sttFetch,
             },
           });
+          // NOTE: the words are already stashed for the overlay; the ledger write below can retry, and a
+          // waiting flush has nothing more to learn from it.
+          closeTranscription();
           if (text) {
             n.message.transcribedText = text;
             // NOTE: FILL-ONLY, and immediately: the next statement can throw, and from here on the words exist
@@ -1663,6 +1676,8 @@ export async function runEagerMedia(
         }
       } catch (err) {
         logger.warn("stt failed (conv=%s): %s", convLabel, errMsg(err));
+      } finally {
+        closeTranscription();
       }
     }
   }

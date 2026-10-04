@@ -12,6 +12,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import {
+  awaitOpenTranscriptions,
   clearMediaAnnotations,
   mediaAnnotationFor,
   stashMediaAnnotation,
@@ -411,6 +412,46 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.auth).toBe(1);
     expect(providers.stt).toBe(1);
     expect(providers.vision).toBe(1);
+  });
+
+  // While the provider is busy the transcription is announced, so a flush re-reading the thread
+  // waits for it; once the pass settles nothing is left open.
+  test("a transcription in flight is announced while the provider works, and closed after", async () => {
+    await seedConversation(8870, INBOX_GATED);
+    authAnswers.push(true);
+    const messageId = 7_810;
+    let openDuring: boolean | null = null;
+    duringStt = async () => {
+      openDuring = await awaitOpenTranscriptions(
+        tenantId,
+        instanceId,
+        [messageId],
+        { timeoutMs: 0 },
+      );
+    };
+    await deliver({ convId: 8870, chatwootInboxId: INBOX_GATED, messageId });
+    expect(providers.stt).toBeGreaterThan(0);
+    expect(openDuring as boolean | null).toBe(true);
+    expect(
+      await awaitOpenTranscriptions(tenantId, instanceId, [messageId], {
+        timeoutMs: 0,
+      }),
+    ).toBe(false);
+  });
+
+  test("a transcription the provider fails is closed too", async () => {
+    await seedConversation(8871, INBOX_GATED);
+    authAnswers.push(true);
+    const messageId = 7_811;
+    duringStt = async () => {
+      throw new Error("provider down");
+    };
+    await deliver({ convId: 8871, chatwootInboxId: INBOX_GATED, messageId });
+    expect(
+      await awaitOpenTranscriptions(tenantId, instanceId, [messageId], {
+        timeoutMs: 0,
+      }),
+    ).toBe(false);
   });
 
   test("on a conversation a person holds no turn runs, and the media is read only if the gate allows it", async () => {

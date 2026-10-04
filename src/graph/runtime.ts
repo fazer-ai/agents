@@ -242,6 +242,9 @@ export interface RuntimeDeps {
   visionFetch?: typeof fetch;
   // Injectable fetch for the STT provider (tests); real fetch in production.
   sttFetch?: typeof fetch;
+  // How long a debounce flush waits for a voice note of its burst whose transcription is still in
+  // flight (tests shorten it); `FLUSH_TRANSCRIPTION_WAIT_MS` otherwise.
+  transcriptionWaitMs?: number;
   // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
   imageDeps?: ImageFetchDeps;
   // Injectable for tests: where a document tool writes and reads its rendered PDF.

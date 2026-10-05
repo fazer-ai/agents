@@ -30,6 +30,8 @@ export interface LoadedCodeToolDef {
   inputSchema: unknown;
   // The body of `function (input, context) { … }`.
   code: string;
+  // A clip of what the model reads goes to the flow log at `info` instead of paging at `warn`.
+  silenceTruncationAlert?: boolean;
 }
 
 export interface CodeToolDeps {
@@ -151,7 +153,11 @@ export async function runCodeToolDefinition(
 // The line an HTTP tool writes when it clips (`response_clipped`), so alert channels hear a code
 // tool's cut the same way: the model reads `…[truncated]` as the end of the data, and a dropped
 // console block leaves no mark in its text at all.
-function reportClip(name: string, r: CodeToolRun, deps: CodeToolDeps): void {
+function reportClip(
+  def: LoadedCodeToolDef,
+  r: CodeToolRun,
+  deps: CodeToolDeps,
+): void {
   const cut = r.cut ?? [];
   const what = cut
     .map((c) =>
@@ -165,13 +171,15 @@ function reportClip(name: string, r: CodeToolRun, deps: CodeToolDeps): void {
     )
     .join("; ");
   deps.onSideEffectError?.({
-    tool: name,
+    tool: def.name,
     phase: "response_clipped",
+    ...(def.silenceTruncationAlert ? { level: "info" as const } : {}),
     detail: {
       kind: "code",
       limit: MODEL_RESPONSE_CHAR_LIMIT,
       cut,
       ...(r.chars !== undefined ? { chars: r.chars } : {}),
+      ...(def.silenceTruncationAlert ? { silenced: true } : {}),
     },
     err: new Error(
       `${what}, past the model's limit of ${MODEL_RESPONSE_CHAR_LIMIT}; return a summary of what the agent needs instead of the whole payload`,
@@ -186,7 +194,7 @@ export function buildCodeTool(
   return failableTool(
     async (input: Record<string, unknown>) => {
       const r = await runCodeToolDefinition(def, input ?? {}, deps);
-      if (r.cut && r.cut.length > 0) reportClip(def.name, r, deps);
+      if (r.cut && r.cut.length > 0) reportClip(def, r, deps);
       return r.failed ? toolFailure(r.text) : r.text;
     },
     {

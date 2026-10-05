@@ -504,6 +504,7 @@ export interface ToolWriteArgs {
   ack_enabled?: boolean;
   ack_message?: string | null;
   max_response_chars?: number | null;
+  silence_truncation_alert?: boolean;
   conversation_ref_integration_id?: string | number | null;
 }
 
@@ -566,6 +567,8 @@ export async function buildToolPatch(
     }
     patch.maxResponseChars = args.max_response_chars;
   }
+  if (args.silence_truncation_alert !== undefined)
+    patch.silenceTruncationAlert = args.silence_truncation_alert;
   if (args.conversation_ref_integration_id !== undefined) {
     patch.conversationRefIntegrationId =
       args.conversation_ref_integration_id === ""

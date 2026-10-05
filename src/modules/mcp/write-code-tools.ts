@@ -41,6 +41,7 @@ export interface CodeToolWriteArgs {
   input_schema?: Record<string, unknown>;
   code?: string;
   enabled?: boolean;
+  silence_truncation_alert?: boolean;
 }
 
 // Map snake_case tool args → the service's camelCase shape, with input_schema in the form the
@@ -68,6 +69,8 @@ export function buildCodeToolPatch(args: CodeToolWriteArgs): {
   }
   if (args.code !== undefined) patch.code = args.code;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
+  if (args.silence_truncation_alert !== undefined)
+    patch.silenceTruncationAlert = args.silence_truncation_alert;
   return { patch, warnings };
 }
 
@@ -94,6 +97,7 @@ export async function codeToolCreate(
     inputSchema: built.patch.inputSchema ?? {},
     code: args.code,
     enabled: args.enabled ?? true,
+    silenceTruncationAlert: args.silence_truncation_alert ?? false,
   };
   const schemaWarnings =
     built.warnings.length > 0 ? { schemaWarnings: built.warnings } : {};

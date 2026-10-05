@@ -91,6 +91,8 @@ export interface ToolDefinitionDto {
   conversationRefIntegrationId: string | null;
   // This tool's ceiling on what the model receives, or null for the default.
   maxResponseChars: number | null;
+  // A clip of this tool's response is logged at info instead of paging; false is the default.
+  silenceTruncationAlert: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -116,6 +118,7 @@ const SELECT = {
   appointment: true,
   conversationRefIntegrationId: true,
   maxResponseChars: true,
+  silenceTruncationAlert: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -141,6 +144,7 @@ function toDto(r: {
   appointment: unknown;
   conversationRefIntegrationId: bigint | null;
   maxResponseChars: number | null;
+  silenceTruncationAlert: boolean;
   createdAt: Date;
   updatedAt: Date;
 }): ToolDefinitionDto {
@@ -178,6 +182,7 @@ function toDto(r: {
         ? null
         : String(r.conversationRefIntegrationId),
     maxResponseChars: r.maxResponseChars,
+    silenceTruncationAlert: r.silenceTruncationAlert,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -208,6 +213,7 @@ function auditProjection(r: {
   appointment: unknown;
   conversationRefIntegrationId: bigint | null;
   maxResponseChars: number | null;
+  silenceTruncationAlert: boolean;
 }) {
   const cred = refForAudit(r.credentialRef);
   return {
@@ -224,6 +230,7 @@ function auditProjection(r: {
     ackEnabled: r.ackEnabled,
     expectedStatuses: r.expectedStatuses,
     maxResponseChars: r.maxResponseChars,
+    silenceTruncationAlert: r.silenceTruncationAlert,
     // An id, and the door it names is the point of the trail: a tool starting to hand this
     // conversation to an operator's system is exactly the change a reader of the trail looks for.
     conversationRefIntegrationId:
@@ -314,6 +321,7 @@ export const toolDefinitionCreateSchema = z
     // How many characters of the response the model receives; null (or absent) is the default. Any
     // number is let through here and judged by `assertMaxResponseChars`, so the refusal names the band.
     maxResponseChars: z.number().nullish(),
+    silenceTruncationAlert: z.boolean().optional(),
   })
   .strict();
 export type ToolDefinitionCreate = z.infer<typeof toolDefinitionCreateSchema>;
@@ -713,6 +721,7 @@ export async function createToolDefinition(
           Prisma.DbNull) as unknown as Prisma.InputJsonValue,
         conversationRefIntegrationId,
         maxResponseChars: data.maxResponseChars ?? null,
+        silenceTruncationAlert: data.silenceTruncationAlert ?? false,
       },
       select: SELECT,
     });
@@ -819,6 +828,8 @@ export async function updateToolDefinition(
       patchData.ackMessage = data.ackMessage ?? null;
     if (data.maxResponseChars !== undefined)
       patchData.maxResponseChars = data.maxResponseChars;
+    if (data.silenceTruncationAlert !== undefined)
+      patchData.silenceTruncationAlert = data.silenceTruncationAlert;
     if (data.appointment !== undefined)
       patchData.appointment = (readAppointmentDeclaration(data.appointment) ??
         Prisma.DbNull) as unknown as Prisma.InputJsonValue;

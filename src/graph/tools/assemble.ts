@@ -77,6 +77,9 @@ export interface LoadedHttpToolDef {
   // This tool's ceiling on what the model receives, or null for the default. Required for the same
   // reason as the fields above.
   maxResponseChars: number | null;
+  // Whether a clip of this tool's response is written at `info` instead of paging. Required for the
+  // same reason: a forgotten column would read as "alert", which is the default and fails silently.
+  silenceTruncationAlert: boolean;
 }
 
 // An operator-authored code tool, as the turn builds it (tools/code.ts). Required fields for the
@@ -86,6 +89,7 @@ export interface LoadedCodeToolDef {
   description: string;
   inputSchema: unknown;
   code: string;
+  silenceTruncationAlert: boolean;
 }
 
 export interface AgentToolSelections {
@@ -178,6 +182,7 @@ export async function loadToolSelections(
           outputSchema: true,
           conversationRefIntegrationId: true,
           maxResponseChars: true,
+          silenceTruncationAlert: true,
         },
       },
       mcpServerConnection: {
@@ -209,6 +214,7 @@ export async function loadToolSelections(
           inputSchema: true,
           code: true,
           enabled: true,
+          silenceTruncationAlert: true,
         },
       },
       documentTemplate: {
@@ -276,6 +282,7 @@ export async function loadToolSelections(
           outputSchema: td.outputSchema,
           conversationRefIntegrationId: td.conversationRefIntegrationId,
           maxResponseChars: td.maxResponseChars,
+          silenceTruncationAlert: td.silenceTruncationAlert,
         });
         break;
       }
@@ -336,6 +343,7 @@ export async function loadToolSelections(
           description: cd.description,
           inputSchema: cd.inputSchema,
           code: cd.code,
+          silenceTruncationAlert: cd.silenceTruncationAlert,
         });
         break;
       }
@@ -476,6 +484,7 @@ export function buildHttpTools(
       outputSchema: d.outputSchema,
       conversationRefIntegrationId: d.conversationRefIntegrationId,
       maxResponseChars: d.maxResponseChars,
+      silenceTruncationAlert: d.silenceTruncationAlert,
     };
     return buildHttpTool(def, deps);
   });

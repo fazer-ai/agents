@@ -163,6 +163,12 @@ export const writeBody = t.Object({
         "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
     }),
   ),
+  silenceTruncationAlert: t.Optional(
+    t.Boolean({
+      description:
+        "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+    }),
+  ),
   ackMessage: t.Optional(
     t.Union([t.String(), t.Null()], {
       description:

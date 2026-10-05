@@ -76,6 +76,12 @@ export const writeBody = t.Object({
   enabled: t.Optional(
     t.Boolean({ description: "Whether the tool is available to agents." }),
   ),
+  silenceTruncationAlert: t.Optional(
+    t.Boolean({
+      description:
+        "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+    }),
+  ),
 });
 
 const CREATE_REQUIRED = ["name", "label", "description", "code"] as const;

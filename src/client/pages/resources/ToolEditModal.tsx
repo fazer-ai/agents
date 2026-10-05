@@ -344,6 +344,7 @@ function emptyForm() {
     expectedStatuses: "",
     // NOTE: the tool's ceiling on what the model receives, as typed; empty is the default.
     maxResponseChars: "",
+    silenceTruncationAlert: false,
     ackEnabled: false,
     ackMessage: "",
     // NOTE: the response template, edited as the plain markdown the operator writes; the
@@ -400,6 +401,7 @@ const NOT_RESPONSE_AFFECTING = new Set([
   "outputSchema",
   "expectedStatuses",
   "maxResponseChars",
+  "silenceTruncationAlert",
   "ackEnabled",
   "ackMessage",
   "appointment",
@@ -576,6 +578,7 @@ export function payloadOf(form: ToolForm) {
     conversationRefIntegrationId: form.conversationRefIntegrationId || null,
     expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
     maxResponseChars: parseMaxResponseChars(form.maxResponseChars),
+    silenceTruncationAlert: form.silenceTruncationAlert,
     ackEnabled: form.ackEnabled,
     ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
     // A written template wins; an empty field falls back to whatever else the column held, which is
@@ -714,6 +717,7 @@ export function formFromTool(tool: Tool) {
     expectedStatuses: (tool.expectedStatuses ?? []).join(", "),
     maxResponseChars:
       tool.maxResponseChars == null ? "" : String(tool.maxResponseChars),
+    silenceTruncationAlert: tool.silenceTruncationAlert,
     ackEnabled: tool.ackEnabled,
     ackMessage: tool.ackMessage ?? "",
     ...outputSchemaForm(tool.outputSchema),
@@ -1402,6 +1406,7 @@ export function ToolEditModal({
 }) {
   const { t } = useTranslation();
   const ackId = useId();
+  const silenceClipId = useId();
   const apptAskConfirmId = useId();
   const { showToast } = useToast();
   const [form, setForm] = useState(emptyForm());
@@ -2758,6 +2763,37 @@ export function ToolEditModal({
                   placeholder={String(MODEL_RESPONSE_CHAR_LIMIT)}
                 />
               </FormField>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5">
+                  <label
+                    htmlFor={silenceClipId}
+                    data-clickable="true"
+                    className="text-sm text-text-primary"
+                  >
+                    {t(
+                      "tools.silenceTruncationAlert",
+                      "Don't alert when the response is cut",
+                    )}
+                  </label>
+                  <HelpPopover
+                    content={t(
+                      "tools.silenceTruncationAlertHelp",
+                      "Turn this on when the cut is expected, like a search that always returns only the first results.\n\nThe cut is still recorded in the logs, as information, and no longer reaches the alert channels.\n\nThe tool's other failures still alert.",
+                    )}
+                    label={t(
+                      "tools.silenceTruncationAlert",
+                      "Don't alert when the response is cut",
+                    )}
+                  />
+                </div>
+                <Switch
+                  id={silenceClipId}
+                  checked={form.silenceTruncationAlert}
+                  onCheckedChange={(v) =>
+                    setForm({ ...form, silenceTruncationAlert: v })
+                  }
+                />
+              </div>
             </div>
 
             <div className="flex flex-col gap-3 rounded-md border border-border p-3">

@@ -1224,10 +1224,11 @@ export async function buildToolset(
         phase: string;
         detail?: Record<string, unknown>;
         err: unknown;
+        level?: "warn" | "info";
       }) =>
         emitFlowEvent(flow, {
           stage: "tool",
-          level: "warn",
+          level: e.level ?? "warn",
           status: "error",
           // NOTE: Spread first — the canonical tool/phase discriminators must win over any
           // caller-supplied detail keys (the Logs page and alerting key on detail.phase).

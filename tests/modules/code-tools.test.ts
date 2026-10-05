@@ -580,6 +580,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
       name: "validar_cpf",
       label: "Validar CPF",
       enabled: true,
+      silenceTruncationAlert: false,
       inputFieldCount: 1,
     });
     expect(rows[1]?.before).toMatchObject({ undisclosedChanged: true });

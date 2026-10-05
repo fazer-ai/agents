@@ -227,6 +227,9 @@ const exportedHttpToolSchema = z.object({
   conversationRefIntegration: z.string().nullable().optional(),
   // This tool's ceiling on what the model receives; absent or null is the default.
   maxResponseChars: z.number().nullable().optional(),
+  // Whether a clip of this tool's response is logged at info instead of alerting. Absent or null, an
+  // older bundle's case, is false: a tool alerts until its operator says otherwise.
+  silenceTruncationAlert: z.boolean().nullable().optional(),
 });
 // An operator-authored code tool. The body is its wiring, the way an HTTP tool's request is, and it
 // travels so the grant points at something. No credential: the sandbox reaches nothing outside the
@@ -247,6 +250,8 @@ const exportedCodeToolSchema = z.object({
   // not a tool. There is no clamped body that is still the same tool.
   code: z.string().min(1).max(SANDBOX_CODE_MAX_CHARS),
   enabled: z.boolean().optional(),
+  // As on an HTTP tool: absent or null is false.
+  silenceTruncationAlert: z.boolean().nullable().optional(),
 });
 const exportedMcpServerSchema = z.object({
   name: z.string(),
@@ -899,6 +904,7 @@ export async function exportAgent(
                 ) ?? null)
               : null,
           maxResponseChars: r.maxResponseChars,
+          silenceTruncationAlert: r.silenceTruncationAlert,
         })),
         codeTools: codeRows.map((r) => ({
           name: r.name,
@@ -909,6 +915,7 @@ export async function exportAgent(
           // Carried for the reason a document template's is: a tool the operator turned OFF is
           // off for a reason, and the column default would turn it back on at the destination.
           enabled: r.enabled,
+          silenceTruncationAlert: r.silenceTruncationAlert,
         })),
         mcpServers: mcpRows.map((r) => ({
           name: r.name,
@@ -2132,6 +2139,7 @@ async function createMissingComponents(
             tdef.maxResponseChars == null
               ? null
               : effectiveMaxResponseChars(tdef.maxResponseChars),
+          silenceTruncationAlert: tdef.silenceTruncationAlert ?? false,
           credentialRef,
           enabled: true,
         },
@@ -2278,6 +2286,7 @@ async function createMissingComponents(
           inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
           code: tdef.code,
           enabled: tdef.enabled ?? true,
+          silenceTruncationAlert: tdef.silenceTruncationAlert ?? false,
         },
       ],
       skipDuplicates: true,

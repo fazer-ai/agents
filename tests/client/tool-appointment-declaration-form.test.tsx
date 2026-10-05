@@ -346,25 +346,25 @@ test("the confirmation switch carries its label", async () => {
     target: { value: "24" },
   });
 
-  const sw = await waitFor(() => {
-    const el = document.querySelector('[role="switch"]');
-    if (!el) throw new Error("no switch on screen");
-    return el as HTMLElement;
+  // Found by its label, not as the first switch: the form has others.
+  const labelled = await waitFor(() => {
+    const el = [...document.querySelectorAll("label")].find((l) =>
+      /(no último lembrete|on the last reminder)/i.test(l.textContent ?? ""),
+    );
+    if (!el) throw new Error("no confirmation label on screen");
+    return el;
   });
-  const labelled = document.querySelector(
-    `label[for="${sw.getAttribute("id")}"]`,
-  );
-  expect(sw.getAttribute("id")).toBeTruthy();
-  expect(labelled?.textContent ?? "").toMatch(
-    /(no último lembrete|on the last reminder)/i,
-  );
+  const swId = labelled.getAttribute("for");
+  expect(swId).toBeTruthy();
+  const sw = document.getElementById(swId as string) as HTMLElement;
+  expect(sw?.getAttribute("role")).toBe("switch");
 
   // And the name is wired, not decorative: clicking the label flips the switch.
   const before = sw.getAttribute("aria-checked");
-  fireEvent.click(labelled as Element);
+  fireEvent.click(labelled);
   await waitFor(() =>
     expect(
-      document.querySelector('[role="switch"]')?.getAttribute("aria-checked"),
+      document.getElementById(swId as string)?.getAttribute("aria-checked"),
     ).not.toBe(before),
   );
 });

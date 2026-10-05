@@ -121,6 +121,9 @@ export type SideEffectErrorReporter = (e: {
   phase: string;
   detail?: Record<string, unknown>;
   err: unknown;
+  // Absent is `warn`, which pages an alert channel. `info` keeps the line on the Logs page and pages
+  // only a channel set to info: the level a tool's own "do not alert me about this" asks for.
+  level?: "warn" | "info";
 }) => void;
 
 // A single tool argument, projected for the UI (mirrors how MCP tool args are shown): the name, the

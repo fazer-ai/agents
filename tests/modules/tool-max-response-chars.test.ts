@@ -244,6 +244,7 @@ describe("the turn's builder", () => {
             inputSchema: {},
             expectedStatuses: [],
             maxResponseChars: 20_000,
+            silenceTruncationAlert: false,
             appointment: null,
             conversationRefIntegrationId: null,
             outputSchema: { mode: "template", template: TEMPLATE },

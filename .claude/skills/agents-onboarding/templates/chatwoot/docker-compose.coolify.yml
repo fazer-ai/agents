@@ -33,8 +33,8 @@ services:
       - 'SECRET_KEY_BASE=${SERVICE_PASSWORD_64_SECRETKEYBASE}'
       - 'REDIS_URL=redis://redis:6379'
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
-      - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL}'
-      - 'RESEND_API_KEY=${RESEND_API_KEY}'
+      - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL:-}'
+      - 'RESEND_API_KEY=${RESEND_API_KEY:-}'
     entrypoint: docker/entrypoints/rails.sh
     command:
       - sh
@@ -70,8 +70,8 @@ services:
       - 'SECRET_KEY_BASE=${SERVICE_PASSWORD_64_SECRETKEYBASE}'
       - 'REDIS_URL=redis://redis:6379'
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
-      - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL}'
-      - 'RESEND_API_KEY=${RESEND_API_KEY}'
+      - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL:-}'
+      - 'RESEND_API_KEY=${RESEND_API_KEY:-}'
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
     # Sidekiq and the embedded WhatsApp connector both drain on SIGTERM: the connector hands its
     # sessions back before exiting. Docker's default of 10 s cuts that short.

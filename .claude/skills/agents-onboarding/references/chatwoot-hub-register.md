@@ -4,7 +4,7 @@ Habilita as features **Pro** (Kanban etc.) numa instância Chatwoot **Pro já de
 necessárias e **distintas**:
 
 - A **imagem Pro** (`harbor.fazer.ai/chatwoot/fazer-ai/chatwoot-pro`) traz o **código** do **Kanban**. (O
-  Baileys já vem no fork OSS público, então não é o que distingue o Pro.) Sem a imagem Pro, não há Kanban.
+  WhatsApp nativo já vem no fork OSS público, então não é o que distingue o Pro.) Sem a imagem Pro, não há Kanban.
   A edição é escolhida no deploy (ver [`03-chatwoot-pro.md`](03-chatwoot-pro.md)).
 - A **assinatura no hub** dá a habilitação em runtime: **imagem Pro sem assinatura ativa = features
   travadas.** Por isso existe o passo do Refresh (não é restart de container).

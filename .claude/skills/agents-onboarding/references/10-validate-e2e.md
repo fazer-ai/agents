@@ -34,7 +34,7 @@ Pareie a inbox real com um número que o usuário controle e mande uma mensagem:
 
 **O pareamento muda com o provider, e o número exigido também:**
 
-- **Baileys (ponte não oficial):** QR na tela da inbox, lido pelo app do WhatsApp do número. É o caminho curto pra confirmar o transporte.
+- **WhatsApp (nativo):** crie a inbox em **Configurações > Caixas de entrada > Adicionar > WhatsApp > WhatsApp (nativo)** e pareie pelo QR na tela, lido pelo app do WhatsApp do número, ou pelo código digitado no celular. É o caminho curto pra confirmar o transporte, e roda dentro do `sidekiq` do próprio Chatwoot (sem serviço de terceiros). Se a opção não aparecer, o Chatwoot é anterior à `v4.18.0-fazer-ai.124` ou foi subido com `WHATSAPP_CONNECTOR_ENABLED=false`.
 - **API oficial (Cloud API):** não tem QR. O número é verificado na Meta e **não pode estar ativo no app do WhatsApp**, então raramente é o celular pessoal do usuário: provisionar isso no meio do onboarding costuma travar a etapa. O passo a passo gratuito da comunidade cobre da criação do app na Meta até a inbox no Chatwoot: [WhatsApp com API Oficial no Chatwoot (fluxo manual)](https://www.lucasmoreira.ai/c/conteudos-exclusivos/whatsapp-com-api-oficial-no-chatwoot-fluxo-manual-9ae92651-f21b-40dc-a7b1-2ff7d680e0e5?utm_source=agents&utm_medium=skill&utm_campaign=agents-onboarding). Se o usuário for por aí, trate como trilha paralela e **não** segure o aceite: o passo 2 já provou a integração.
 
 ## 3. Traces no Langfuse

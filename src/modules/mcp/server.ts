@@ -1759,6 +1759,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .describe(
               "Characters of the response the model gets: 500-20000; null is the default, 4000.",
             ),
+          silence_truncation_alert: z
+            .boolean()
+            .optional()
+            .describe(
+              "true: an expected cut of the response logs at info and stops alerting. Default false.",
+            ),
           conversation_ref_integration_id: z
             .union([z.string(), z.number().int()])
             .nullable()
@@ -1788,6 +1794,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           ack_enabled?: boolean;
           ack_message?: string | null;
           max_response_chars?: number | null;
+          silence_truncation_alert?: boolean;
           conversation_ref_integration_id?: string | number | null;
           dry_run?: boolean;
         },
@@ -1837,6 +1844,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .describe(
               "Characters of the response the model gets: 500-20000; null is the default, 4000.",
             ),
+          silence_truncation_alert: z
+            .boolean()
+            .optional()
+            .describe(
+              "true: an expected cut of the response logs at info and stops alerting. Default false.",
+            ),
           conversation_ref_integration_id: z
             .union([z.string(), z.number().int()])
             .nullable()
@@ -1867,6 +1880,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           ack_enabled?: boolean;
           ack_message?: string | null;
           max_response_chars?: number | null;
+          silence_truncation_alert?: boolean;
           conversation_ref_integration_id?: string | number | null;
           dry_run?: boolean;
         },
@@ -1901,6 +1915,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           input_schema: inputSchemaArg,
           code: z.string(),
           enabled: z.boolean().optional(),
+          silence_truncation_alert: z
+            .boolean()
+            .optional()
+            .describe(
+              "true: an expected cut of the result logs at info and stops alerting. Default false.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },
@@ -1923,6 +1943,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           input_schema: inputSchemaArg,
           code: z.string().optional(),
           enabled: z.boolean().optional(),
+          silence_truncation_alert: z
+            .boolean()
+            .optional()
+            .describe(
+              "true: an expected cut of the result logs at info and stops alerting. Default false.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },

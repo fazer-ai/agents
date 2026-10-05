@@ -1,6 +1,6 @@
 import type { TFunction } from "i18next";
 import { AlertTriangle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -12,6 +12,7 @@ import {
   ModalCancelButton,
   type ModalController,
   Skeleton,
+  Switch,
   scopeKeyLabel,
   Textarea,
   useModalController,
@@ -81,6 +82,7 @@ function emptyForm(t: TFunction) {
     description: "",
     aiFields: [] as AiFieldRow[],
     code: starterCode(t),
+    silenceTruncationAlert: false,
   };
 }
 
@@ -95,6 +97,7 @@ export function formFromCodeTool(tool: CodeTool): CodeToolForm {
       (tool.inputSchema ?? {}) as Record<string, unknown>,
     ),
     code: tool.code,
+    silenceTruncationAlert: tool.silenceTruncationAlert,
   };
 }
 
@@ -109,6 +112,7 @@ export function payloadOfCodeTool(form: CodeToolForm) {
     description: form.description.trim(),
     inputSchema: schemaFromAiFields(form.aiFields),
     code: form.code,
+    silenceTruncationAlert: form.silenceTruncationAlert,
     // No `enabled` here, and its absence is the point. Which agents may call the tool is decided by
     // the GRANT, on the agent, which is the whole control the console offers for the HTTP tool this
     // kind is the sibling of (`payloadOf` in ToolEditModal sends no `enabled` either). Sending the
@@ -167,6 +171,7 @@ export function CodeToolEditModal({
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [form, setForm] = useState(() => emptyForm(t));
+  const silenceClipId = useId();
   // The CURRENT form, readable from inside a request that started before it: the operator can type
   // during the save, and a refusal about a value they have already replaced belongs in the banner
   // rather than under a box that no longer holds it.
@@ -550,6 +555,38 @@ export function CodeToolEditModal({
                   "Runs it once with arguments you supply, and shows what the agent would receive.",
                 )}
               </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+              <div className="flex items-center gap-1.5">
+                <label
+                  htmlFor={silenceClipId}
+                  data-clickable="true"
+                  className="text-sm text-text-primary"
+                >
+                  {t(
+                    "codeTools.silenceTruncationAlert",
+                    "Don't alert when the result is cut",
+                  )}
+                </label>
+                <HelpPopover
+                  content={t(
+                    "codeTools.silenceTruncationAlertHelp",
+                    "Turn this on when the cut is expected, like a list that always returns more than the agent reads.\n\nThe cut is still recorded in the logs, as information, and no longer reaches the alert channels.\n\nAn error thrown by the code, or a limit, still alerts.",
+                  )}
+                  label={t(
+                    "codeTools.silenceTruncationAlert",
+                    "Don't alert when the result is cut",
+                  )}
+                />
+              </div>
+              <Switch
+                id={silenceClipId}
+                checked={form.silenceTruncationAlert}
+                onCheckedChange={(v) =>
+                  setForm((f) => ({ ...f, silenceTruncationAlert: v }))
+                }
+              />
             </div>
           </div>
         )}

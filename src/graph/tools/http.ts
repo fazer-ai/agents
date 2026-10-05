@@ -83,6 +83,9 @@ export interface HttpToolDef {
   // This tool's ceiling on what the model receives (raw or rendered). Read through
   // `effectiveMaxResponseChars`: absent is the default, and a value outside the band is clamped.
   maxResponseChars?: number | null;
+  // The operator expects this tool's response to be cut (a search that always returns the first N
+  // results), so a clip is written to the flow log at `info` instead of paging at `warn`.
+  silenceTruncationAlert?: boolean;
 }
 
 // The context variable an HTTP tool uses to hand the operator's system a handle to THIS
@@ -177,6 +180,7 @@ export interface HttpToolDeps {
     phase: string;
     detail?: Record<string, unknown>;
     err: unknown;
+    level?: "warn" | "info";
   }) => void;
 }
 
@@ -955,6 +959,15 @@ export function buildHttpTool(
       // body under it, so the clip below never fires and the model still lost the tail; the header
       // is how it says so. Its value is the original size in characters, when it gives one.
       const declared = declaredTrim(res.headers);
+      const reportClip = (detail: Record<string, unknown>, err: Error) =>
+        deps.onSideEffectError?.({
+          tool: def.name,
+          phase: "response_clipped",
+          ...(def.silenceTruncationAlert
+            ? { level: "info" as const, detail: { ...detail, silenced: true } }
+            : { detail }),
+          err,
+        });
       // NOTE: The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an
       // end, the operator a plausible answer. Reported for a TEMPLATED response too (same lost
       // tail), with different ADVICE: "did not render" splits into no template versus a template
@@ -975,10 +988,8 @@ export function buildHttpTool(
                 : capped
                   ? `only the first ${text.length} characters of the body were read, so it could not be parsed as JSON and this tool's response template was not applied`
                   : "this tool's response template could not be applied because the body is not JSON";
-        deps.onSideEffectError?.({
-          tool: def.name,
-          phase: "response_clipped",
-          detail: {
+        reportClip(
+          {
             chars: templated ? modelBody.length : responseBody.chars,
             limit: maxChars,
             templated,
@@ -993,33 +1004,31 @@ export function buildHttpTool(
                 }
               : {}),
           },
-          err: new Error(
+          new Error(
             `${
               templated
                 ? `the response template rendered ${modelBody.length} characters`
                 : `the response was ${responseBody.chars} characters`
             } and the model was given the first ${maxChars}; ${advice}`,
           ),
-        });
+        );
       } else if (declared) {
         // NOTE: One line per call: when the platform cut too, the line above carries the declaration.
-        deps.onSideEffectError?.({
-          tool: def.name,
-          phase: "response_clipped",
-          detail: {
+        reportClip(
+          {
             declared: true,
             ...(declared.chars !== undefined ? { chars: declared.chars } : {}),
             limit: maxChars,
             templated: rendered.text !== null,
           },
-          err: new Error(
+          new Error(
             `the tool's server reported that it trimmed its response${
               declared.chars !== undefined
                 ? ` from ${declared.chars} characters`
                 : ""
             } to fit this tool's limit of ${maxChars}; raise the tool's response limit or have the server return less`,
           ),
-        });
+        );
       }
       // By default every non-2xx is an integration failure worth alerting on (a broken
       // credential, an outage, a rejected payload) unless the operator declared this status a result

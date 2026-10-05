@@ -1663,6 +1663,10 @@ model ToolDefinition {
   // default, MODEL_RESPONSE_CHAR_LIMIT; writers refuse a value outside 500-20000 and the runtime
   // clamps whatever it reads (`effectiveMaxResponseChars` in tool-definitions/response-template.ts).
   maxResponseChars             Int?     @map("max_response_chars")
+  // A clip of this tool's response is expected (a search that always returns the first N results):
+  // the `response_clipped` line is written at info instead of warn, so it stops paging alert
+  // channels. Off by default; every other warning of the tool still alerts.
+  silenceTruncationAlert       Boolean  @default(false) @map("silence_truncation_alert")
   createdAt                    DateTime @default(now()) @map("created_at")
   updatedAt                    DateTime @updatedAt @map("updated_at")
 
@@ -1692,6 +1696,8 @@ model CodeToolDefinition {
   inputSchema Json     @default("{}") @map("input_schema")
   code        String
   enabled     Boolean  @default(true)
+  // The same switch as ToolDefinition.silenceTruncationAlert, for a clip of what the body returns.
+  silenceTruncationAlert Boolean @default(false) @map("silence_truncation_alert")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

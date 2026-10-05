@@ -42,6 +42,8 @@ export interface CodeToolDto {
   inputSchema: Record<string, unknown>;
   code: string;
   enabled: boolean;
+  // A clip of what the body returns is logged at info instead of paging; false is the default.
+  silenceTruncationAlert: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,6 +64,7 @@ const SELECT = {
   inputSchema: true,
   code: true,
   enabled: true,
+  silenceTruncationAlert: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -80,6 +83,7 @@ interface Row {
   inputSchema: unknown;
   code: string;
   enabled: boolean;
+  silenceTruncationAlert: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -92,6 +96,7 @@ function toListDto(r: Omit<Row, "code">): CodeToolListDto {
     description: r.description,
     inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
     enabled: r.enabled,
+    silenceTruncationAlert: r.silenceTruncationAlert,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -106,6 +111,7 @@ function toDto(r: Row): CodeToolDto {
     inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
     code: r.code,
     enabled: r.enabled,
+    silenceTruncationAlert: r.silenceTruncationAlert,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -124,12 +130,14 @@ function auditProjection(r: {
   inputSchema: unknown;
   code: string;
   enabled: boolean;
+  silenceTruncationAlert: boolean;
 }) {
   const schema = r.inputSchema;
   return {
     name: r.name,
     label: r.label,
     enabled: r.enabled,
+    silenceTruncationAlert: r.silenceTruncationAlert,
     inputFieldCount:
       schema && typeof schema === "object" ? Object.keys(schema).length : 0,
   };
@@ -158,6 +166,7 @@ export const codeToolCreateSchema = z
     // something is there.
     code: z.string().min(1).max(SANDBOX_CODE_MAX_CHARS),
     enabled: z.boolean().optional(),
+    silenceTruncationAlert: z.boolean().optional(),
   })
   .strict();
 export type CodeToolCreate = z.infer<typeof codeToolCreateSchema>;
@@ -327,6 +336,7 @@ export async function createCodeTool(
         inputSchema: canonicalSchema(data.inputSchema),
         code: data.code,
         enabled: data.enabled ?? true,
+        silenceTruncationAlert: data.silenceTruncationAlert ?? false,
       },
       select: SELECT,
     });
@@ -373,6 +383,8 @@ export async function updateCodeTool(
       patchData.inputSchema = canonicalSchema(data.inputSchema);
     if (data.code !== undefined) patchData.code = data.code;
     if (data.enabled !== undefined) patchData.enabled = data.enabled;
+    if (data.silenceTruncationAlert !== undefined)
+      patchData.silenceTruncationAlert = data.silenceTruncationAlert;
     await db.codeToolDefinition.update({ where: { id }, data: patchData });
     const row = await db.codeToolDefinition.findUniqueOrThrow({
       where: { id },

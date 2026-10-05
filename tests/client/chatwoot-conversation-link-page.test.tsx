@@ -1,7 +1,8 @@
 /// <reference lib="dom" />
 
-// The page a Chatwoot conversation links to: one match goes straight to the conversation (through
-// `switchTenant` when it lives in another tenant), none says so, several are listed to choose from.
+// The page a Chatwoot conversation links to: one match goes straight to the conversation, naming its
+// tenant through `switchTenant` (the shell's gate decides whether that is a switch), none says so,
+// several are listed to choose from.
 
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
@@ -72,11 +73,13 @@ const matches = (...m: { id: string; tenantId: string }[]) => ({
   body: { matches: m },
 });
 
-test("one match in the active tenant opens the conversation, and the inbox reaches the query", async () => {
+test("one match opens the conversation naming its tenant, and the inbox reaches the query", async () => {
   answer = matches({ id: "55", tenantId: "1" });
   const view = open("/chatwoot/accounts/3/conversations/42?inbox=9");
   await waitFor(() =>
-    expect(view.getByTestId("landed").textContent).toBe("/conversations/55"),
+    expect(view.getByTestId("landed").textContent).toBe(
+      "/conversations/55?switchTenant=1",
+    ),
   );
   const q = new URL(requested).searchParams;
   expect([
@@ -118,7 +121,7 @@ test("several matches are listed, each linking to its own tenant", async () => {
   await waitFor(() => expect(view.getAllByRole("link")).toHaveLength(2));
   const hrefs = view.getAllByRole("link").map((a) => a.getAttribute("href"));
   expect(hrefs).toEqual([
-    "/conversations/55",
+    "/conversations/55?switchTenant=1",
     "/conversations/56?switchTenant=2",
   ]);
   expect(view.container.textContent).toContain("Loja");

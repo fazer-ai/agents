@@ -383,7 +383,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   )
   // Same gate as the list above, on purpose: whoever can read the conversations can see what the

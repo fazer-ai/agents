@@ -4,19 +4,18 @@ import { useTranslation } from "react-i18next";
 import { Link, Navigate, useParams, useSearchParams } from "react-router";
 import { DataBoundary, EmptyState, PageContainer } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
-import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 type Match = { id: string; tenantId: string };
 
 // The page a Chatwoot conversation links to (`/chatwoot/accounts/:accountId/conversations/:conversationId`,
-// `?inbox=` optional): finds the conversation among the tenants the person can open and goes to it,
-// switching the console's tenant through the same `switchTenant` a console link uses.
-export function conversationHref(match: Match, activeTenantId: string | null) {
-  return match.tenantId === activeTenantId
-    ? `/conversations/${match.id}`
-    : `/conversations/${match.id}?${SWITCH_TENANT_PARAM}=${match.tenantId}`;
+// `?inbox=` optional): finds the conversation among the tenants the person can open and goes to it.
+// The destination always names its tenant through `switchTenant`, and `TenantDeepLink` decides
+// whether that is a switch: it compares against the selector the requests actually carry and waits
+// for the membership list a fresh login has not brought yet, which this page cannot know.
+export function conversationHref(match: Match) {
+  return `/conversations/${match.id}?${SWITCH_TENANT_PARAM}=${match.tenantId}`;
 }
 
 export function ChatwootConversationLinkPage() {
@@ -64,15 +63,8 @@ export function ChatwootConversationLinkPage() {
     void load();
   }, [load]);
 
-  const activeTenantId = user?.tenantId ?? getActiveTenantId();
-
   if (matches?.length === 1) {
-    return (
-      <Navigate
-        to={conversationHref(matches[0] as Match, activeTenantId)}
-        replace
-      />
-    );
+    return <Navigate to={conversationHref(matches[0] as Match)} replace />;
   }
 
   const tenantName = (id: string) =>
@@ -127,7 +119,7 @@ export function ChatwootConversationLinkPage() {
               {matches.map((m) => (
                 <li key={`${m.tenantId}-${m.id}`}>
                   <Link
-                    to={conversationHref(m, activeTenantId)}
+                    to={conversationHref(m)}
                     className="text-accent text-sm"
                   >
                     {t(

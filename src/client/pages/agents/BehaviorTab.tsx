@@ -1153,14 +1153,24 @@ function FollowUpStepsEditor({
               </div>
             )}
             {isLast && (
-              <SwitchField
-                checked={step.resolve}
-                onCheckedChange={(v) => updateStep(index, { resolve: v })}
-                label={t(
-                  "editor.followUpResolve",
-                  "Resolve the conversation on this step",
+              <div className="flex flex-col gap-1.5">
+                <SwitchField
+                  checked={step.resolve}
+                  onCheckedChange={(v) => updateStep(index, { resolve: v })}
+                  label={t(
+                    "editor.followUpResolve",
+                    "Resolve the conversation on this step",
+                  )}
+                />
+                {step.resolve && !step.instructions.trim() && (
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.followUpResolveSilentHint",
+                      "With no instructions, this step sends no message: it only applies the labels and resolves the conversation.",
+                    )}
+                  </p>
                 )}
-              />
+              </div>
             )}
           </div>
         );

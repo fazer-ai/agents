@@ -1284,6 +1284,7 @@
     "followUpRedirectSuppressed": "O Redirecionamento está ligado, então este Follow-up não roda na caixa de entrada inicial do WhatsApp nem na do chat do site. O Redirecionamento cuida desses contatos; o Follow-up continua nos outros canais.",
     "followUpRemoveStep": "Remover etapa",
     "followUpResolve": "Resolver a conversa nesta etapa",
+    "followUpResolveSilentHint": "Sem instruções, esta etapa não envia mensagem: só aplica as etiquetas e resolve a conversa.",
     "followUpScheduleHint": "Aplica-se à sequência inteira. As etapas só disparam dentro deste horário.",
     "followUpSectionHint": "Reengaja proativamente conversas que ficam em silêncio após a última mensagem do agente.",
     "followUpStep": "Etapa {{n}}",

@@ -768,6 +768,8 @@ export async function followUpHandler(
   const idleMin = lastEventAt
     ? Math.round((Date.now() - lastEventAt.getTime()) / 60_000)
     : stepDelayMinutes(step);
+  // resolve is honored only on the LAST step (settings already strips it from earlier ones).
+  const resolve = isLast && step.resolve === true;
   const nudgeOutcome = await runAgentNudge({
     signal: run?.signal,
     tenantId,
@@ -778,15 +780,17 @@ export async function followUpHandler(
       step: stepIndex + 1,
       episodeStartedAt: silenceStartedAt(lastInboundAt, ctx.conv.lastRepliedAt),
     }),
-    // Deterministic, system-applied actions for this step (fire even if the agent stays silent);
-    // resolve is honored only on the LAST step (settings already strips it from earlier ones).
+    // Deterministic, system-applied actions for this step (fire even if the agent stays silent).
     postActions: {
       assignLabels:
         step.assignLabels && step.assignLabels.length > 0
           ? step.assignLabels
           : undefined,
-      resolve: isLast && step.resolve === true,
+      resolve,
     },
+    // NOTE: An empty closing step is the operator saying "close it": with no instructions the model
+    // would only get the generic follow-up directive, which leans toward writing one more message.
+    postActionsOnly: resolve && !step.instructions,
     // NOTE: An inactivity follow-up must verify the LIVE conversation state before posting: the mirror can
     // be stale forever (a lost resolve webhook has no reconciliation), and following up a resolved
     // conversation was the community-reported incident this gate exists for.

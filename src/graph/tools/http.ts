@@ -951,6 +951,10 @@ export function buildHttpTool(
       const rendered = projectResponse(def, deps, res.status, text, maxChars);
       const modelBody = rendered.text ?? text;
       const trimmed = clipToModelLimit(modelBody, maxChars).text;
+      // A TRIM THE TOOL'S SERVER MADE. An integration that fits its answer to the limit returns a
+      // body under it, so the clip below never fires and the model still lost the tail; the header
+      // is how it says so. Its value is the original size in characters, when it gives one.
+      const declared = declaredTrim(res.headers);
       // NOTE: The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an
       // end, the operator a plausible answer. Reported for a TEMPLATED response too (same lost
       // tail), with different ADVICE: "did not render" splits into no template versus a template
@@ -980,6 +984,14 @@ export function buildHttpTool(
             templated,
             ...(capped ? { readCap: text.length } : {}),
             ...(rendered.skipped ? { skipped: rendered.skipped } : {}),
+            ...(declared
+              ? {
+                  declared: true,
+                  ...(declared.chars !== undefined
+                    ? { declaredChars: declared.chars }
+                    : {}),
+                }
+              : {}),
           },
           err: new Error(
             `${
@@ -987,6 +999,25 @@ export function buildHttpTool(
                 ? `the response template rendered ${modelBody.length} characters`
                 : `the response was ${responseBody.chars} characters`
             } and the model was given the first ${maxChars}; ${advice}`,
+          ),
+        });
+      } else if (declared) {
+        // NOTE: One line per call: when the platform cut too, the line above carries the declaration.
+        deps.onSideEffectError?.({
+          tool: def.name,
+          phase: "response_clipped",
+          detail: {
+            declared: true,
+            ...(declared.chars !== undefined ? { chars: declared.chars } : {}),
+            limit: maxChars,
+            templated: rendered.text !== null,
+          },
+          err: new Error(
+            `the tool's server reported that it trimmed its response${
+              declared.chars !== undefined
+                ? ` from ${declared.chars} characters`
+                : ""
+            } to fit this tool's limit of ${maxChars}; raise the tool's response limit or have the server return less`,
           ),
         });
       }
@@ -1010,4 +1041,15 @@ export function buildHttpTool(
       schema,
     },
   );
+}
+
+// The header a tool's server sends when it trimmed its own response to fit. Present at all declares
+// the trim; a positive integer value is the size the response had before it.
+export const TRUNCATED_HEADER = "X-Tool-Truncated";
+
+export function declaredTrim(headers: Headers): { chars?: number } | null {
+  const raw = headers.get(TRUNCATED_HEADER);
+  if (raw === null) return null;
+  // `Headers` already strips the value's surrounding whitespace.
+  return /^[1-9]\d{0,15}$/.test(raw) ? { chars: Number(raw) } : {};
 }

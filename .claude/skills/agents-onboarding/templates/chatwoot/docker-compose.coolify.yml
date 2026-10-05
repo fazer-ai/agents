@@ -35,6 +35,8 @@ services:
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
       - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL:-}'
       - 'RESEND_API_KEY=${RESEND_API_KEY:-}'
+      - 'WHATSAPP_CONNECTOR_ENABLED=${WHATSAPP_CONNECTOR_ENABLED:-true}'
+      - 'WHATSAPP_CONNECTOR_EMBEDDED=${WHATSAPP_CONNECTOR_EMBEDDED:-true}'
     entrypoint: docker/entrypoints/rails.sh
     command:
       - sh
@@ -72,6 +74,8 @@ services:
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
       - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL:-}'
       - 'RESEND_API_KEY=${RESEND_API_KEY:-}'
+      - 'WHATSAPP_CONNECTOR_ENABLED=${WHATSAPP_CONNECTOR_ENABLED:-true}'
+      - 'WHATSAPP_CONNECTOR_EMBEDDED=${WHATSAPP_CONNECTOR_EMBEDDED:-true}'
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
     # Sidekiq and the embedded WhatsApp connector both drain on SIGTERM: the connector hands its
     # sessions back before exiting. Docker's default of 10 s cuts that short.

@@ -35,6 +35,9 @@ x-chatwoot-env: &chatwoot-env
   SECRET_KEY_BASE: '${SECRET_KEY_BASE}'
   REDIS_URL: 'redis://redis:6379'
   REDIS_PASSWORD: '${REDIS_PASSWORD}'
+  # WhatsApp (native): false turns the channel off; EMBEDDED=false keeps a separate connector instead.
+  WHATSAPP_CONNECTOR_ENABLED: '${WHATSAPP_CONNECTOR_ENABLED:-true}'
+  WHATSAPP_CONNECTOR_EMBEDDED: '${WHATSAPP_CONNECTOR_EMBEDDED:-true}'
 
 services:
   chatwoot:

@@ -1,7 +1,8 @@
 # Chatwoot for fazer.ai: COOLIFY flavor (magic vars; Coolify auto-generates the SERVICE_* secrets).
 # Edition by CHATWOOT_IMAGE: default = Pro (private Harbor image); for OSS set
-# CHATWOOT_IMAGE=ghcr.io/fazer-ai/chatwoot:latest (our public fork). Baileys (baileys-api) runs in
-# BOTH editions — its image is public, so OSS keeps it.
+# CHATWOOT_IMAGE=ghcr.io/fazer-ai/chatwoot:latest (our public fork). WhatsApp (native) runs in
+# BOTH editions inside the sidekiq container (on by default, no extra service; it creates a
+# database of its own on this PostgreSQL on first start). WHATSAPP_CONNECTOR_ENABLED=false turns it off.
 # Pro pull needs the Harbor registry credential configured in Coolify (hub: per-user credential); OSS needs none.
 # Set the service Domain in Coolify to your Chatwoot FQDN (fills SERVICE_URL_CHATWOOT).
 # This is the compose validated in the RUN 2 Coolify deploy; the generic/Portainer flavor is ./docker-compose.yml.
@@ -32,10 +33,6 @@ services:
       - 'SECRET_KEY_BASE=${SERVICE_PASSWORD_64_SECRETKEYBASE}'
       - 'REDIS_URL=redis://redis:6379'
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
-      - 'BAILEYS_PROVIDER_DEFAULT_CLIENT_NAME=${BAILEYS_PROVIDER_DEFAULT_CLIENT_NAME:-Chatwoot}'
-      - 'BAILEYS_PROVIDER_DEFAULT_URL=http://baileys-api:3025'
-      - 'BAILEYS_PROVIDER_DEFAULT_API_KEY=${SERVICE_PASSWORD_64_DEFAULTAPIKEY}'
-      - BAILEYS_PROVIDER_USE_INTERNAL_HOST_URL=true
       - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL}'
       - 'RESEND_API_KEY=${RESEND_API_KEY}'
     entrypoint: docker/entrypoints/rails.sh
@@ -73,15 +70,16 @@ services:
       - 'SECRET_KEY_BASE=${SERVICE_PASSWORD_64_SECRETKEYBASE}'
       - 'REDIS_URL=redis://redis:6379'
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
-      - 'BAILEYS_PROVIDER_DEFAULT_URL=http://baileys-api:3025'
-      - 'BAILEYS_PROVIDER_DEFAULT_API_KEY=${SERVICE_PASSWORD_64_DEFAULTAPIKEY}'
-      - BAILEYS_PROVIDER_USE_INTERNAL_HOST_URL=true
       - 'MAILER_SENDER_EMAIL=${MAILER_SENDER_EMAIL}'
       - 'RESEND_API_KEY=${RESEND_API_KEY}'
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    # Sidekiq and the embedded WhatsApp connector both drain on SIGTERM: the connector hands its
+    # sessions back before exiting. Docker's default of 10 s cuts that short.
+    stop_grace_period: 30s
     restart: always
     healthcheck:
-      test: ['CMD-SHELL', 'ps aux | grep [s]idekiq']
+      # The entrypoint scripts carry the word sidekiq in their argv too; drop them from the match.
+      test: ['CMD-SHELL', 'ps aux | grep "[s]idekiq" | grep -qv entrypoints']
       interval: 20s
       timeout: 10s
       retries: 5
@@ -109,24 +107,6 @@ services:
       - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
     healthcheck:
       test: ['CMD-SHELL', 'redis-cli -h localhost -p 6379 -a $${REDIS_PASSWORD} ping']
-      interval: 20s
-      timeout: 20s
-      retries: 10
-  baileys-api:
-    image: 'ghcr.io/fazer-ai/baileys-api:latest'
-    pull_policy: always
-    volumes:
-      - 'storage:/app/storage'
-    environment:
-      - NODE_ENV=production
-      - 'REDIS_URL=redis://redis:6379'
-      - 'REDIS_PASSWORD=${SERVICE_PASSWORD_REDIS}'
-      - 'LOG_LEVEL=${BAILEYS_API_LOG_LEVEL:-info}'
-      - 'BAILEYS_PROVIDER_DEFAULT_API_KEY=${SERVICE_PASSWORD_64_DEFAULTAPIKEY}'
-    command: ['sh', '-c', 'bun manage-api-keys create user ${SERVICE_PASSWORD_64_DEFAULTAPIKEY} && bun start']
-    restart: always
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3025/status']
       interval: 20s
       timeout: 20s
       retries: 10

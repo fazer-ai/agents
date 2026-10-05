@@ -1,11 +1,14 @@
 # Chatwoot for fazer.ai: GENERIC flavor (Portainer / EasyPanel / Dokploy / plain Docker).
 #
 # ONE file, BOTH editions, selected by env (see ./README.md):
-#   - OSS (no hub subscription): defaults, our public `ghcr.io/fazer-ai/chatwoot` fork, WITH the
-#     Baileys WhatsApp provider (public `baileys-api` image, so OSS needs no Harbor login).
+#   - OSS (no hub subscription): defaults, our public `ghcr.io/fazer-ai/chatwoot` fork.
 #   - Pro (hub subscription): set CHATWOOT_IMAGE to the Harbor image (adds Kanban + other Pro
 #     features). Requires `docker login harbor.fazer.ai` with the license registry credential
-#     (hub: generate_install_script). Baileys ships in BOTH editions.
+#     (hub: generate_install_script).
+# WhatsApp (native) ships in BOTH editions with no extra service: the image runs the connector
+# inside the sidekiq container, on by default, with a database of its own that it creates on
+# this PostgreSQL on first start (so POSTGRES_USER must be able to create databases; the
+# postgres image's own user can). WHATSAPP_CONNECTOR_ENABLED=false turns it off.
 #
 # Secrets come from a .env you fill in (see ./.env.example); Coolify generates those automatically,
 # so it has its own file (./docker-compose.coolify.yml). TLS + reverse proxy are EXTERNAL: this stack
@@ -13,7 +16,7 @@
 # (the fazer.ai agents bundled Caddy can front chatwoot.<domain> at it; see the agents-onboarding skill).
 #
 #   cp .env.example .env   # fill every CHANGE_ME, then:
-#   docker compose up -d   # OSS (Baileys included). For Pro: docker login harbor.fazer.ai, then set
+#   docker compose up -d   # OSS. For Pro: docker login harbor.fazer.ai, then set
 #                          # CHATWOOT_IMAGE to the chatwoot-pro image and run docker compose up -d.
 
 x-chatwoot-env: &chatwoot-env
@@ -32,11 +35,6 @@ x-chatwoot-env: &chatwoot-env
   SECRET_KEY_BASE: '${SECRET_KEY_BASE}'
   REDIS_URL: 'redis://redis:6379'
   REDIS_PASSWORD: '${REDIS_PASSWORD}'
-  # Baileys WhatsApp provider config (BOTH editions — the baileys-api service below runs in both).
-  BAILEYS_PROVIDER_DEFAULT_CLIENT_NAME: '${BAILEYS_CLIENT_NAME:-Chatwoot}'
-  BAILEYS_PROVIDER_DEFAULT_URL: 'http://baileys-api:3025'
-  BAILEYS_PROVIDER_DEFAULT_API_KEY: '${BAILEYS_DEFAULT_API_KEY:-}'
-  BAILEYS_PROVIDER_USE_INTERNAL_HOST_URL: 'true'
 
 services:
   chatwoot:
@@ -74,9 +72,13 @@ services:
       redis: { condition: service_healthy }
     environment: *chatwoot-env
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    # Sidekiq and the embedded WhatsApp connector both drain on SIGTERM: the connector hands its
+    # sessions back before exiting. Docker's default of 10 s cuts that short.
+    stop_grace_period: 30s
     restart: always
     healthcheck:
-      test: ['CMD-SHELL', 'ps aux | grep "[s]idekiq" || exit 1']
+      # The entrypoint scripts carry the word sidekiq in their argv too; drop them from the match.
+      test: ['CMD-SHELL', 'ps aux | grep "[s]idekiq" | grep -qv entrypoints']
       interval: 20s
       timeout: 10s
       retries: 5
@@ -107,28 +109,6 @@ services:
       REDIS_PASSWORD: '${REDIS_PASSWORD}'
     healthcheck:
       test: ['CMD-SHELL', 'redis-cli -h localhost -p 6379 -a $${REDIS_PASSWORD} ping | grep -q PONG']
-      interval: 20s
-      timeout: 20s
-      retries: 10
-
-  # The Baileys WhatsApp provider (BOTH editions). Public image, so OSS needs no Harbor login.
-  baileys-api:
-    image: '${BAILEYS_IMAGE:-ghcr.io/fazer-ai/baileys-api:latest}'
-    pull_policy: always
-    volumes:
-      - 'storage:/app/storage'
-    environment:
-      NODE_ENV: production
-      REDIS_URL: 'redis://redis:6379'
-      REDIS_PASSWORD: '${REDIS_PASSWORD}'
-      LOG_LEVEL: '${BAILEYS_API_LOG_LEVEL:-info}'
-      BAILEYS_PROVIDER_DEFAULT_API_KEY: '${BAILEYS_DEFAULT_API_KEY}'
-    command: ['sh', '-c', 'bun manage-api-keys create user $${BAILEYS_DEFAULT_API_KEY} && bun start']
-    depends_on:
-      redis: { condition: service_healthy }
-    restart: always
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3025/status || exit 1']
       interval: 20s
       timeout: 20s
       retries: 10

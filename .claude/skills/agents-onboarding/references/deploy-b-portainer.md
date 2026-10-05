@@ -29,7 +29,7 @@ Caddyfile a partir do env no boot (`CADDY_DOMAIN` → o app; `PORTAINER_DOMAIN` 
 - **DNS**: A-records pro FQDN do app (ex. `agents.<domínio>`) e, se quiser o painel num domínio limpo,
   `portainer.<domínio>` → o IP do VPS. O ACME valida contra eles, então têm que resolver **antes** do deploy.
 - **Credenciais de registry** pras imagens privadas (configure uma vez no Portainer, passe `Registries:[id]`).
-  Só o Harbor precisa: `ghcr.io/fazer-ai/agents` (Free), `pgvector` e `baileys-api` são **públicas**, puxam sem login.
+  Só o Harbor precisa: `ghcr.io/fazer-ai/agents` (Free), `ghcr.io/fazer-ai/chatwoot` (OSS) e `pgvector` são **públicas**, puxam sem login.
   - `harbor.fazer.ai` pro Chatwoot **Pro** (e fazer.ai agents Pro): a registry credential **per-user**, provisionada
     pelo proxy do CLI (`bunx @fazer-ai/agents hub registry-credential --apply --out harbor.secret`; imprime o
     `username`, grava o secret em `harbor.secret`). Chatwoot OSS não precisa de registry privado.

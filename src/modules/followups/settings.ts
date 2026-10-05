@@ -177,6 +177,16 @@ function readStep(raw: unknown): FollowUpStep | null {
   return step;
 }
 
+// A closing step the operator left without instructions: it only applies its post-actions, and no
+// model is reached, since an empty step would hand the model the generic follow-up directive, which
+// leans toward writing one more message. One rule for the scheduler and the playground preview.
+export function closesWithoutModel(
+  step: FollowUpStep,
+  isLast: boolean,
+): boolean {
+  return isLast && step.resolve === true && !step.instructions;
+}
+
 export function readFollowUpConfig(settings: unknown): FollowUpConfig {
   const raw =
     settings && typeof settings === "object"

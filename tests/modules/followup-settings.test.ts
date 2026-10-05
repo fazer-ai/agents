@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  closesWithoutModel,
   FOLLOW_UP_DEFAULTS,
   FOLLOW_UP_MAX_STEPS,
   isNewFollowUpEpisode,
@@ -246,5 +247,24 @@ describe("stepDelayMinutes", () => {
         instructions: "",
       }),
     ).toBe(43200);
+  });
+});
+
+describe("closesWithoutModel", () => {
+  const closer = {
+    delayValue: 1,
+    delayUnit: "minutes" as const,
+    instructions: "",
+    resolve: true,
+  };
+  test("an empty last step that resolves closes without the model", () => {
+    expect(closesWithoutModel(closer, true)).toBe(true);
+  });
+  test("instructions, no resolve, or not the last step keep the model", () => {
+    expect(
+      closesWithoutModel({ ...closer, instructions: "Pergunte." }, true),
+    ).toBe(false);
+    expect(closesWithoutModel({ ...closer, resolve: false }, true)).toBe(false);
+    expect(closesWithoutModel(closer, false)).toBe(false);
   });
 });

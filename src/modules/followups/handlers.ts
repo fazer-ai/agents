@@ -40,6 +40,7 @@ import {
   registerJobHandler,
 } from "@/modules/scheduler/worker";
 import {
+  closesWithoutModel,
   type FollowUpStep,
   isNewFollowUpEpisode,
   lastActivityAt,
@@ -787,6 +788,7 @@ export async function followUpHandler(
           : undefined,
       resolve: isLast && step.resolve === true,
     },
+    postActionsOnly: closesWithoutModel(step, isLast),
     // NOTE: An inactivity follow-up must verify the LIVE conversation state before posting: the mirror can
     // be stale forever (a lost resolve webhook has no reconciliation), and following up a resolved
     // conversation was the community-reported incident this gate exists for.

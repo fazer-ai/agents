@@ -253,6 +253,12 @@ export interface RunAgentNudgeParams {
   threadId: string;
   nudge: AgentNudge;
   postActions?: NudgePostActions;
+  // Nothing for the model to do: the occasion is only its post-actions (a follow-up's closing step
+  // left without instructions). They run under the same gates and the model is never reached, so
+  // the turn spends nothing and writes nothing to the customer. Honored only with
+  // `requireLiveBotOwnership`, the one mode whose probe vouches for the close; elsewhere it closes
+  // nothing.
+  postActionsOnly?: boolean;
   // Opt-in live-state gate: before ANY proactive work (model invoke included), fetch the REAL
   // conversation from Chatwoot and abort ("stale") unless the bot still owns it, reconciling the
   // mirror with what came back. The mirror alone is not trustworthy for proactive sends: a lost
@@ -927,33 +933,37 @@ async function runAgentNudgeBody(
   // spend. A proactive nudge has nobody waiting on the other end, so there is no copy and no handoff
   // to arrange — it simply does not go out, and the caller reschedules it rather than burning the
   // occasion, because a month that turns over repairs this by itself.
-  const ceiling = await spendCeilingVerdict({
-    tenantId,
-    source: "inbox",
-    base,
-  });
-  // ASKED AGAIN, because the verdict above is two database reads deep and a `/reset` landing inside
-  // them retires this nudge. Everything below is a report about work that will not happen: the flow
-  // line is `error` severity for `over`, so it pages the alert channels, and the announcement CLAIMS
-  // the occasion window as it decides — a line written about a retired job would also swallow the
-  // window the next attempt's real refusal needs. Nothing was refused, so nothing is reported.
-  if (!(await stillWanted())) return standDown();
-  // ONE LINE PER OCCASION, not per attempt. A refused nudge is repairable, so the caller reschedules
-  // it every fifteen minutes for two hours (`nudge-retry.ts`) — and the ceiling it walks into is one
-  // unchanging fact, not eight refusals. Windowed to the ladder it has to outlast, and keyed by the
-  // occasion itself rather than by the conversation, which two independent jobs share.
-  announceSpendCeiling(flow, ceiling, "inbox", tenantId, {
-    key: nudgeOccasionKey(instanceId, conversationId, params.nudge),
-    windowMs: NUDGE_RETRY_BACKOFF_MS * NUDGE_RETRY_LIMIT,
-  });
-  if (ceiling.state === "over") {
-    logger.info(
-      "nudge: spend ceiling reached (conv=%s used=%s ceiling=%s) — nothing was sent",
-      String(conversationId),
-      String(ceiling.usedUsd),
-      String(ceiling.ceilingUsd),
-    );
-    return "over-ceiling";
+  // NOTE: a turn that is only post-actions spends nothing, so the ceiling has nothing to refuse, and
+  // refusing it would retry a close for two hours and then abandon it open.
+  if (!params.postActionsOnly) {
+    const ceiling = await spendCeilingVerdict({
+      tenantId,
+      source: "inbox",
+      base,
+    });
+    // ASKED AGAIN, because the verdict above is two database reads deep and a `/reset` landing inside
+    // them retires this nudge. Everything below is a report about work that will not happen: the flow
+    // line is `error` severity for `over`, so it pages the alert channels, and the announcement CLAIMS
+    // the occasion window as it decides — a line written about a retired job would also swallow the
+    // window the next attempt's real refusal needs. Nothing was refused, so nothing is reported.
+    if (!(await stillWanted())) return standDown();
+    // ONE LINE PER OCCASION, not per attempt. A refused nudge is repairable, so the caller reschedules
+    // it every fifteen minutes for two hours (`nudge-retry.ts`) — and the ceiling it walks into is one
+    // unchanging fact, not eight refusals. Windowed to the ladder it has to outlast, and keyed by the
+    // occasion itself rather than by the conversation, which two independent jobs share.
+    announceSpendCeiling(flow, ceiling, "inbox", tenantId, {
+      key: nudgeOccasionKey(instanceId, conversationId, params.nudge),
+      windowMs: NUDGE_RETRY_BACKOFF_MS * NUDGE_RETRY_LIMIT,
+    });
+    if (ceiling.state === "over") {
+      logger.info(
+        "nudge: spend ceiling reached (conv=%s used=%s ceiling=%s) — nothing was sent",
+        String(conversationId),
+        String(ceiling.usedUsd),
+        String(ceiling.ceilingUsd),
+      );
+      return "over-ceiling";
+    }
   }
 
   // Pre-invoke gate: may we message the customer (bot owns it), or only note (human owns it)?
@@ -1219,6 +1229,16 @@ async function runAgentNudgeBody(
     }
     return "applied";
   };
+  // NOTE: Before the contact authorization below, which guards reaching the contact: a close reaches
+  // nobody.
+  if (params.postActionsOnly) {
+    const applied = await applyPostActions({
+      canMessage: params.requireLiveBotOwnership === true,
+    });
+    if (applied === "stale") return standDown();
+    markFollowUp("silent");
+    return "silent";
+  }
   // NOTE: the contact authorization gate applies to proactive sends too (docs/contact-auth.md): a
   // contact the reactive gate would refuse must not be reached out to either. Denied and cannot-tell
   // both end in silence, with no "note instead" downgrade, since the nudge's text was written FOR the

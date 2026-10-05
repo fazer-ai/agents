@@ -1255,6 +1255,7 @@
     "followUpRedirectSuppressed": "Redirect is on, so this Follow-up does not run for the WhatsApp entry inbox or the website chat inbox. Redirect handles those contacts; Follow-up still runs on other channels.",
     "followUpRemoveStep": "Remove step",
     "followUpResolve": "Resolve the conversation on this step",
+    "followUpResolveSilentHint": "With no instructions, this step sends no message: it only applies the labels and resolves the conversation.",
     "followUpScheduleHint": "Applies to the whole sequence. Steps only fire inside this schedule.",
     "followUpSectionHint": "Proactively re-engage conversations that go silent after the agent's last message.",
     "followUpStep": "Step {{n}}",
@@ -2452,6 +2453,7 @@
     "followup": {
       "badge": "Simulated follow-up",
       "button": "Simulate follow-up",
+      "closesOnly": "Follow-up: this step sends no message; it only applies the labels and resolves the conversation.",
       "hint": "Trigger the proactive follow-up now, without waiting for the inactivity window.",
       "silent": "Follow-up: the agent chose not to send anything."
     },

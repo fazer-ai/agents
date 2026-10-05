@@ -461,6 +461,82 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(await ceilingRows(CONV)).toHaveLength(2);
   });
 
+  // A closing step left without instructions reaches no model and spends nothing, so the ceiling has
+  // nothing to refuse: the conversation is closed, and nothing about the ceiling is announced.
+  test("an empty closing step over the ceiling still closes, and announces nothing", async () => {
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
+    await spend("inbox", 1200);
+    const CONV = 9440;
+    await seedConversation(CONV);
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        followUpArmedAt: new Date(Date.now() - 10 * 3_600_000),
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          followUp: {
+            enabled: true,
+            steps: [
+              { delayValue: 60, delayUnit: "minutes", instructions: "" },
+              {
+                delayValue: 60,
+                delayUnit: "minutes",
+                instructions: "",
+                resolve: true,
+              },
+            ],
+          },
+        },
+      },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: CONV },
+      data: {
+        lastEventAt: new Date(Date.now() - 5 * 3_600_000),
+        lastInboundAt: new Date(Date.now() - 5 * 3_600_000),
+        lastRepliedMessageId: 1,
+        lastFollowUpAt: new Date(Date.now() - 2 * 3_600_000),
+      },
+    });
+    const s = stubChatwoot();
+    const makeClientComSonda = async (cfg: { botToken: string }) => {
+      const c = (await s.makeClient(cfg)) as unknown as Record<string, unknown>;
+      c.getConversation = async () => ({
+        id: CONV,
+        status: "pending",
+        meta: {},
+      });
+      return c as unknown as ChatwootClient;
+    };
+    const result = await followUpHandler(
+      {
+        id: -1n,
+        tenantId,
+        kind: "FOLLOWUP",
+        payload: {
+          threadId: `${tenantId}:${instanceId}:${CONV}`,
+          stepIndex: 1,
+        },
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+      {
+        makeClient: makeClientComSonda as never,
+        makeModel: () => {
+          throw new Error("an empty closing step must not reach the model");
+        },
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.statusToggles).toEqual([[CONV, "resolved"]]);
+    expect(s.sent.filter((m) => m.conversationId === CONV)).toEqual([]);
+    expect(await ceilingRows(CONV)).toHaveLength(0);
+  });
+
   // ONE LINE PER REFUSED OCCASION, and for a proactive nudge the occasion is the JOB, not the
   // attempt. `over-ceiling` is a repairable refusal, so its caller reschedules it every fifteen
   // minutes for two hours (`nudge-retry.ts`): announcing per attempt paged the alert channels eight

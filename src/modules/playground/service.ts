@@ -62,6 +62,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import {
+  closesWithoutModel,
   readFollowUpConfig,
   stepDelayMinutes,
 } from "@/modules/followups/settings";
@@ -1132,6 +1133,8 @@ export interface PlaygroundFollowupResult {
   // The agent DID write a follow-up and the guardrail removed it. Mutually exclusive with `silent`:
   // both mean nothing is sent, and only this one has a verdict behind it.
   suppressed: boolean;
+  // The step only applies its labels and resolves, with no model call (see closesWithoutModel).
+  closesOnly: boolean;
   // What the simulated follow-up spent, and how long it took (see PlaygroundTurnResult).
   usage: TurnUsage;
   timing: TurnTiming;
@@ -1200,6 +1203,29 @@ async function runPlaygroundFollowupOnce(
       overrides: params.overrides,
     }),
   );
+  // Draft settings (if present) drive the follow-up instructions/delay so the simulation matches
+  // what the operator is editing live; otherwise the saved settings.
+  const agent = await runScopedOn(base, ctx, (db) =>
+    db.agent.findUnique({ where: { id: agentId }, select: { settings: true } }),
+  );
+  const settings = params.overrides?.settings ?? agent?.settings;
+  const followUp = readFollowUpConfig(settings);
+  // The playground previews the FIRST step's message (the simulation has no real schedule). Post
+  // actions (label/resolve) are NOT applied here — there is no real conversation to act on.
+  const firstStep = followUp.steps[0];
+  // A sequence whose only step is an empty closer reaches no model in production, so the preview
+  // does not either: it says what the step does instead of showing a message nobody would get.
+  if (firstStep && closesWithoutModel(firstStep, followUp.steps.length === 1)) {
+    return {
+      reply: "",
+      threadId,
+      trace: [],
+      sources: [],
+      silent: false,
+      suppressed: false,
+      closesOnly: true,
+    };
+  }
   // The playground's token ceiling, before the graph is built and before a single provider call.
   // Its own number, never the inbox one: an operator burning the month testing must not be able to
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
@@ -1276,16 +1302,6 @@ async function runPlaygroundFollowupOnce(
   // Same reason as the turn path above: set after the settings read, before any callback can emit.
   flow.fullDetail = loaded.fullDetail;
 
-  // Draft settings (if present) drive the follow-up instructions/delay so the simulation matches
-  // what the operator is editing live; otherwise the saved settings.
-  const agent = await runScopedOn(base, ctx, (db) =>
-    db.agent.findUnique({ where: { id: agentId }, select: { settings: true } }),
-  );
-  const settings = params.overrides?.settings ?? agent?.settings;
-  const followUp = readFollowUpConfig(settings);
-  // The playground previews the FIRST step's message (the simulation has no real schedule). Post
-  // actions (label/resolve) are NOT applied here — there is no real conversation to act on.
-  const firstStep = followUp.steps[0];
   const summary = params.context?.trim()
     ? clipText(params.context.trim(), 500)
     : `The customer has been inactive for about ${
@@ -1441,6 +1457,7 @@ async function runPlaygroundFollowupOnce(
     sources: collectTraceSources(trace),
     silent,
     suppressed,
+    closesOnly: false,
   };
 }
 

@@ -551,6 +551,135 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.resolved).toContain(1008);
   });
 
+  // The last rung an operator leaves empty with resolve on is a closer, and closing is the system's
+  // own action: the model is never reached, so it cannot write one more paid message or hand a quiet
+  // customer to the team. A day-long cadence on purpose, since the 24h window being shut is the case
+  // where the old path parked a note and left the conversation open.
+  const FIRST: StepFixture = {
+    delayValue: 1,
+    delayUnit: "minutes",
+    instructions: "first",
+  };
+  const EMPTY_CLOSER: StepFixture = {
+    delayValue: 1,
+    delayUnit: "days",
+    instructions: "",
+    assignLabel: "sem-resposta",
+    resolve: true,
+  };
+  const CLOSER: StepFixture[] = [FIRST, EMPTY_CLOSER];
+  const countingModel = (responses: string[]) => {
+    const made = { calls: 0 };
+    return {
+      made,
+      makeModel: () => {
+        made.calls++;
+        return new FakeListChatModel({ responses });
+      },
+    };
+  };
+  async function seedAfterFirstStep(
+    convId: number,
+    over: Parameters<typeof seedConversation>[1] = {},
+  ) {
+    const day = 24 * 60 * 60_000;
+    await seedConversation(convId, {
+      lastEventAt: new Date(Date.now() - 3 * day),
+      lastFollowUpAt: new Date(Date.now() - 2 * day),
+      lastInboundAt: new Date(Date.now() - 3 * day),
+      ...over,
+    });
+  }
+
+  test("(h2) an empty last step with resolve closes without reaching the model", async () => {
+    await setAgentSteps(CLOSER);
+    await seedAfterFirstStep(1130);
+    const s = stubClient();
+    const m = countingModel([REPLY]);
+    const result = await followUpHandler(jobFor(1130, 1), appDb, {
+      makeModel: m.makeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result).toEqual({ outcome: "done" });
+    expect(m.made.calls).toBe(0);
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(s.labelSets).toContainEqual(["sem-resposta"]);
+    expect(s.resolved).toEqual([1130]);
+    expect(await lastFollowUpOf(1130)).not.toBeNull();
+  });
+
+  test("(h3) the same last step WITH instructions still reaches the model", async () => {
+    await setAgentSteps([
+      FIRST,
+      { ...EMPTY_CLOSER, instructions: "Pergunte se ainda pode ajudar." },
+    ]);
+    await seedAfterFirstStep(1131);
+    const s = stubClient();
+    const m = countingModel([""]);
+    await followUpHandler(jobFor(1131, 1), appDb, {
+      makeModel: m.makeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(m.made.calls).toBeGreaterThan(0);
+    expect(s.resolved).toEqual([1131]);
+  });
+
+  test("(h4) an empty last step WITHOUT resolve is still a follow-up the model writes", async () => {
+    await setAgentSteps([FIRST, { ...EMPTY_CLOSER, resolve: false }]);
+    await seedAfterFirstStep(1132);
+    const s = stubClient();
+    const m = countingModel([REPLY]);
+    await followUpHandler(jobFor(1132, 1), appDb, {
+      makeModel: m.makeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(m.made.calls).toBeGreaterThan(0);
+    expect(s.resolved).toEqual([]);
+  });
+
+  test("(h5) an empty middle step is still a follow-up the model writes", async () => {
+    await setAgentSteps([{ ...FIRST, instructions: "" }, EMPTY_CLOSER]);
+    await seedConversation(1133, { lastFollowUpAt: null });
+    const s = stubClient();
+    const m = countingModel([REPLY]);
+    const result = await followUpHandler(jobFor(1133, 0), appDb, {
+      makeModel: m.makeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(m.made.calls).toBeGreaterThan(0);
+    expect(s.sent.map(([, t]) => t)).toEqual([REPLY]);
+    expect(s.resolved).toEqual([]);
+    expect(result.outcome).toBe("reschedule");
+  });
+
+  test("(h6) the closer leaves a conversation a person holds in Chatwoot untouched", async () => {
+    await setAgentSteps(CLOSER);
+    await seedAfterFirstStep(1134);
+    const s = stubClient({
+      liveMeta: { assignee_type: "User", assignee: { id: 9, name: "Ana" } },
+    });
+    const m = countingModel([REPLY]);
+    const result = await followUpHandler(jobFor(1134, 1), appDb, {
+      makeModel: m.makeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result).toEqual({ outcome: "done" });
+    expect(m.made.calls).toBe(0);
+    expect(s.labelSets).toEqual([]);
+    expect(s.resolved).toEqual([]);
+  });
+
   test("(i) a test-mode agent does NOT follow up until /teste activates the conversation", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },

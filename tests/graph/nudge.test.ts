@@ -6595,4 +6595,97 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(prompt).not.toContain("{{idade_ultima_mensagem}}");
     });
   });
+
+  // A follow-up's closing step left without instructions: its post-actions are the whole occasion.
+  const liveClient = async (s: ReturnType<typeof stub>) =>
+    ({
+      ...(await s.makeClient()),
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "pending",
+        meta: {},
+        last_activity_at: Math.floor(Date.now() / 1000),
+      }),
+    }) as unknown as ChatwootClient;
+  const noModel = () => {
+    throw new Error("a post-actions-only turn must not reach the model");
+  };
+
+  test("a post-actions-only turn closes without the model and still closes on its line", async () => {
+    await seedConv(10230, null);
+    const s = stub();
+    const client = await liveClient(s);
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:10230`,
+      nudge: { source: "followup", kind: "inactivity", step: 2 },
+      postActions: { assignLabels: ["sem-resposta"], resolve: true },
+      postActionsOnly: true,
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: noModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(s.order).toEqual(["label", "resolve"]);
+    const line = await closingLine(10230);
+    expect(line).toMatchObject({
+      trigger: "followup",
+      outcome: "silent",
+      step: 2,
+    });
+  });
+
+  test("a post-actions-only turn outside the live gate closes nothing", async () => {
+    await seedConv(10231, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:10231`,
+      nudge: { source: "followup", kind: "inactivity", step: 2 },
+      postActions: { assignLabels: ["sem-resposta"], resolve: true },
+      postActionsOnly: true,
+      base: appDb,
+      deps: {
+        makeModel: noModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.order).toEqual([]);
+  });
+
+  test("a post-actions-only turn retired before its close stands down", async () => {
+    await seedConv(10232, null);
+    const s = stub();
+    const client = await liveClient(s);
+    let asks = 0;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:10232`,
+      nudge: { source: "followup", kind: "inactivity", step: 2 },
+      postActions: { assignLabels: ["sem-resposta"], resolve: true },
+      postActionsOnly: true,
+      requireLiveBotOwnership: true,
+      // The entry ask says yes; the retire lands before the close asks again.
+      stillWanted: async () => ++asks === 1,
+      base: appDb,
+      deps: {
+        makeModel: noModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("stale");
+    expect(s.order).toEqual([]);
+  });
 });

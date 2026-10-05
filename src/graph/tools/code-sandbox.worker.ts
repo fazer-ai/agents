@@ -45,13 +45,21 @@ export type SandboxReply =
   // failed before the snippet ran). Ours, not the snippet's: reported as unavailable, since reading
   // it as the snippet's abort would tell the model to simplify and retry on every turn.
   | { kind: "unavailable"; reason: string }
-  | { kind: "value"; value: string; logs: string[]; ms: number }
+  // `clippedFrom` is set only when the value or the message was cut to the budget: the length it had.
+  | {
+      kind: "value";
+      value: string;
+      logs: string[];
+      ms: number;
+      clippedFrom?: number;
+    }
   | {
       kind: "error";
       name: string;
       message: string;
       logs: string[];
       ms: number;
+      clippedFrom?: number;
       // Set when the error is the interpreter's own limit rather than the snippet's, classified
       // HERE from the raw message, before the source line is appended to it.
       limit?: SandboxLimit;
@@ -125,10 +133,13 @@ const RENDER_SOURCE = `(function () {
   }
   // One past the budget when a budget is given, so the host still sees the overflow and writes its
   // marker; the console passes none and cuts on its own side of the same boundary.
-  return function (root, max, strict) {
+  // The whole length is left on the function for the host to read, since only the cut crosses.
+  function render(root, max, strict) {
     var s = text(root, strict);
+    render.fullLength = s.length;
     return typeof max === "number" && s.length > max ? s.slice(0, max + 1) : s;
-  };
+  }
+  return render;
 })()`;
 
 const UNCUT_RESULT =
@@ -138,7 +149,8 @@ const UNCUT_RESULT =
 // (a getter, a proxy trap). The second is not a rendering detail — it is the body failing after it
 // returned, and the caller turns it into the same failure a `throw` gives.
 type Rendered =
-  | { ok: true; text: string }
+  // `chars` is the length before the cut, which the text alone cannot say once it is cut.
+  | { ok: true; text: string; chars: number }
   | { ok: false; error: QuickJSHandle };
 
 function makeRenderer(vm: QuickJSContext): {
@@ -166,11 +178,18 @@ function makeRenderer(vm: QuickJSContext): {
       lengthHandle.dispose();
       if (length > max + 1) {
         r.value.dispose();
-        return { ok: true, text: UNCUT_RESULT };
+        return { ok: true, text: UNCUT_RESULT, chars: UNCUT_RESULT.length };
       }
       const s = vm.getString(r.value);
       r.value.dispose();
-      return { ok: true, text: s };
+      const fullHandle = vm.getProp(fn, "fullLength");
+      const full = vm.getNumber(fullHandle);
+      fullHandle.dispose();
+      return {
+        ok: true,
+        text: s,
+        chars: Number.isFinite(full) ? full : s.length,
+      };
     },
     // NOTE: a handle still alive when the context goes trips an assertion inside JS_FreeRuntime.
     // The renderer's function handle outlives the snippet, so it is released by hand, first.
@@ -185,6 +204,21 @@ const storable = makeStorable;
 
 function clip(s: string, max: number): string {
   return s.length <= max ? s : `${clipText(s, max)}…[truncated]`;
+}
+
+// The length a text had before it was cut to `max`, on the reply, only when it was cut.
+function clippedFrom(chars: number, max: number): { clippedFrom?: number } {
+  return chars > max ? { clippedFrom: chars } : {};
+}
+
+// The length of a thrown value's message as composed (the line number appended to it), counting
+// what the interpreter cut off before the message crossed: past `max + 1` it arrives cut there.
+function messageLength(e: ThrownValue, max: number): number {
+  const lost =
+    typeof e.messageChars === "number" && e.messageChars > max + 1
+      ? e.messageChars - (max + 1)
+      : 0;
+  return String(e.message).length + lost;
 }
 
 // `console` with the five methods a snippet reaches for, all writing to the same captured list.
@@ -581,15 +615,19 @@ const DESCRIBE_ERROR_SOURCE = `(function () {
     var out = {};
     if (e === null || typeof e !== "object") {
       out.name = "Error";
-      out.message = cut(read(function () { return Str(e); }, "[unreadable]"));
+      var whole = read(function () { return Str(e); }, "[unreadable]");
+      out.message = cut(whole);
+      out.messageChars = whole.length;
       return stringify(out);
     }
     var name = read(function () { return e.name; }, undefined);
     var message = read(function () { return e.message; }, undefined);
     out.name = typeof name === "string" ? cut(name) : "Error";
-    out.message = typeof message === "string"
-      ? cut(message)
-      : cut(read(function () { var s = stringify(e); return s === undefined ? Str(e) : s; }, "[unreadable]"));
+    var whole = typeof message === "string"
+      ? message
+      : read(function () { var s = stringify(e); return s === undefined ? Str(e) : s; }, "[unreadable]");
+    out.message = cut(whole);
+    out.messageChars = whole.length;
     var line = read(function () { return e.lineNumber; }, undefined);
     if (typeof line === "number") out.lineNumber = line;
     var stack = read(function () { return e.stack; }, undefined);
@@ -644,6 +682,8 @@ function makeThenableProbe(vm: QuickJSContext): {
 interface ThrownValue {
   name: string;
   message: string;
+  // The message's length before the interpreter cut it to the budget.
+  messageChars?: number;
   lineNumber?: number;
   stack?: string;
 }
@@ -809,6 +849,7 @@ function run(req: SandboxRequest): SandboxReply {
           kind: "error",
           name: storable(clip(thrown.name, ERROR_NAME_MAX_CHARS)),
           message: storable(clip(thrown.message, req.maxChars)),
+          ...clippedFrom(messageLength(thrown, req.maxChars), req.maxChars),
           logs: logs.map(storable),
           ms,
         };
@@ -816,6 +857,7 @@ function run(req: SandboxRequest): SandboxReply {
       return {
         kind: "value",
         value: storable(clip(rendered.text, req.maxChars)),
+        ...clippedFrom(rendered.chars, req.maxChars),
         logs: logs.map(storable),
         ms,
       };
@@ -830,6 +872,7 @@ function run(req: SandboxRequest): SandboxReply {
       kind: "error",
       name: storable(name),
       message: storable(clip(message, req.maxChars)),
+      ...clippedFrom(messageLength(e, req.maxChars), req.maxChars),
       logs: logs.map(storable),
       ms,
       ...(out.limit ? { limit: out.limit } : {}),

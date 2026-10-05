@@ -1,12 +1,15 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import logger from "@/api/lib/logger";
 import type { PreconditionState } from "@/modules/agents/tool-preconditions";
+import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks/types";
+import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
 import { DEFAULT_TIMEZONE } from "../time";
 import {
   CODE_TOOL_CONTEXT_MAX_CHARS,
   CODE_TOOL_INPUT_MAX_CHARS,
-  formatSandboxResult,
+  renderSandboxResult,
   runSandboxedCode,
+  type SandboxCut,
   type SandboxOutcome,
 } from "./code-sandbox";
 import { markEffectFree } from "./effect-free";
@@ -38,6 +41,9 @@ export interface CodeToolDeps {
   loadState?: () => Promise<PreconditionState>;
   // Injectable for tests: the sandbox itself.
   run?: typeof runSandboxedCode;
+  // The turn's side-effect line (prepare.ts): a clip of what the model reads is reported through
+  // it, as an HTTP tool reports its own.
+  onSideEffectError?: SideEffectErrorReporter;
 }
 
 export interface CodeToolRun {
@@ -45,6 +51,9 @@ export interface CodeToolRun {
   // The text the model reads, for a value; the failure sentence, otherwise.
   text: string;
   failed: boolean;
+  // What was cut from `text` on its way to the model, and the length of the value or message cut.
+  cut?: SandboxCut[];
+  chars?: number;
 }
 
 // The sentence every failure ends with: what the model should do about a tool it cannot use. The
@@ -119,18 +128,55 @@ export async function runCodeToolDefinition(
       failed: true,
     };
   }
+  const rendered = renderSandboxResult(outcome);
+  const clip = {
+    cut: rendered.cut,
+    ...(rendered.chars !== undefined ? { chars: rendered.chars } : {}),
+  };
   if (outcome.kind === "value") {
-    return { outcome, text: formatSandboxResult(outcome), failed: false };
+    return { outcome, text: rendered.text, failed: false, ...clip };
   }
   // The reason on the first line (the flow log keeps it as the cause), the body's own console
   // output after it, for the operator reading the trace.
-  const [reason, ...rest] = formatSandboxResult(outcome).split("\n");
+  const [reason, ...rest] = rendered.text.split("\n");
   const tail = rest.length > 0 ? `\n${rest.join("\n")}` : "";
   return {
     outcome,
     text: `${def.name} failed: ${reason} This is the tool's own code, which its author has to fix. ${WITHOUT_IT}${tail}`,
     failed: true,
+    ...clip,
   };
+}
+
+// The line an HTTP tool writes when it clips (`response_clipped`), so alert channels hear a code
+// tool's cut the same way: the model reads `…[truncated]` as the end of the data, and a dropped
+// console block leaves no mark in its text at all.
+function reportClip(name: string, r: CodeToolRun, deps: CodeToolDeps): void {
+  const cut = r.cut ?? [];
+  const what = cut
+    .map((c) =>
+      c === "value"
+        ? `the returned value was ${r.chars} characters`
+        : c === "message"
+          ? `the error message was ${r.chars} characters`
+          : c === "output"
+            ? "the console output was cut to the room the result left"
+            : "the console output was left out, with no room after the result",
+    )
+    .join("; ");
+  deps.onSideEffectError?.({
+    tool: name,
+    phase: "response_clipped",
+    detail: {
+      kind: "code",
+      limit: MODEL_RESPONSE_CHAR_LIMIT,
+      cut,
+      ...(r.chars !== undefined ? { chars: r.chars } : {}),
+    },
+    err: new Error(
+      `${what}, past the model's limit of ${MODEL_RESPONSE_CHAR_LIMIT}; return a summary of what the agent needs instead of the whole payload`,
+    ),
+  });
 }
 
 export function buildCodeTool(
@@ -140,6 +186,7 @@ export function buildCodeTool(
   return failableTool(
     async (input: Record<string, unknown>) => {
       const r = await runCodeToolDefinition(def, input ?? {}, deps);
+      if (r.cut && r.cut.length > 0) reportClip(def.name, r, deps);
       return r.failed ? toolFailure(r.text) : r.text;
     },
     {

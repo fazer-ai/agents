@@ -1704,6 +1704,7 @@ export async function buildToolset(
           conversationDbId: cfg.conversationDbId ?? null,
           contactDbId: cfg.contactDbId ?? null,
         }),
+        onSideEffectError,
       }),
       ...mcpTools,
       ...toolpackTools,

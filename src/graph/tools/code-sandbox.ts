@@ -42,9 +42,24 @@ const HARD_KILL_GRACE_MS = 1500;
 
 export type SandboxOutcome =
   // The code finished; `value` is the rendered return value (JSON where possible).
-  | { kind: "value"; value: string; logs: string[]; ms: number }
+  // `clippedFrom`, on this and on an error, is the length the value or the message had when it was
+  // cut to the budget, and is absent when nothing was cut.
+  | {
+      kind: "value";
+      value: string;
+      logs: string[];
+      ms: number;
+      clippedFrom?: number;
+    }
   // The code threw, or did not parse. The code's own fault, reported as such.
-  | { kind: "error"; name: string; message: string; logs: string[]; ms: number }
+  | {
+      kind: "error";
+      name: string;
+      message: string;
+      logs: string[];
+      ms: number;
+      clippedFrom?: number;
+    }
   // A limit stopped it. `aborted` is the interpreter giving up in a way its own error path did not
   // catch (the thread died); the code is still the cause.
   | {
@@ -265,6 +280,11 @@ function asJsonText(value: unknown): string {
   return JSON.stringify(value === undefined ? null : value) ?? "null";
 }
 
+// What a result lost on its way to the model. `value` and `message` are cut by the thread at the
+// budget; `output` is the console block cut to what the main line leaves, and `output_dropped` is
+// that block left out entirely, the one cut nothing in the text marks.
+export type SandboxCut = "value" | "message" | "output" | "output_dropped";
+
 // The text the model reads for a value, and the text the operator reads for a failure. A value
 // puts the output first and `Result:` last, where the model reads it; a failure puts the reason
 // FIRST, because the flow log keeps a failure's first line as its cause. The result or reason is
@@ -274,18 +294,37 @@ export function formatSandboxResult(
   out: Exclude<SandboxOutcome, { kind: "unavailable" }>,
   opts: { timeoutMs?: number; memoryBytes?: number; maxChars?: number } = {},
 ): string {
+  return renderSandboxResult(out, opts).text;
+}
+
+// The same text, with what was cut from it on the way: the caller reports the cuts, since the model
+// reads `…[truncated]` as the end of the data.
+export function renderSandboxResult(
+  out: Exclude<SandboxOutcome, { kind: "unavailable" }>,
+  opts: { timeoutMs?: number; memoryBytes?: number; maxChars?: number } = {},
+): { text: string; cut: SandboxCut[]; chars?: number } {
   const timeoutMs = opts.timeoutMs ?? SANDBOX_TIMEOUT_MS;
   const memoryMb = Math.round(
     (opts.memoryBytes ?? SANDBOX_MEMORY_BYTES) / (1024 * 1024),
   );
   const maxChars = opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT;
+  const cut: SandboxCut[] = [];
+  let chars: number | undefined;
   let main: string;
   switch (out.kind) {
     case "value":
       main = `Result: ${clipToModelLimit(out.value, maxChars).text}`;
+      if (out.clippedFrom !== undefined) {
+        cut.push("value");
+        chars = out.clippedFrom;
+      }
       break;
     case "error":
       main = `Error: ${clipText(out.name, 100)}: ${clipToModelLimit(out.message, maxChars).text}`;
+      if (out.clippedFrom !== undefined) {
+        cut.push("message");
+        chars = out.clippedFrom;
+      }
       break;
     case "limit":
       switch (out.limit) {
@@ -303,18 +342,29 @@ export function formatSandboxResult(
           break;
       }
   }
-  if (out.logs.length === 0) return main;
+  const done = (text: string) => ({
+    text,
+    cut,
+    ...(chars !== undefined ? { chars } : {}),
+  });
+  if (out.logs.length === 0) return done(main);
   const joined = out.logs.join("\n");
   const frame = "Output:\n\n\n".length + OUTPUT_TRUNCATED.length;
   const budget = maxChars - main.length - frame;
-  if (budget < 40) return main;
-  const body =
-    joined.length <= budget
-      ? joined
-      : `${clipText(joined, budget)}${OUTPUT_TRUNCATED}`;
-  return out.kind === "value"
-    ? `Output:\n${body}\n\n${main}`
-    : `${main}\n\nOutput:\n${body}`;
+  if (budget < 40) {
+    cut.push("output_dropped");
+    return done(main);
+  }
+  let body = joined;
+  if (joined.length > budget) {
+    cut.push("output");
+    body = `${clipText(joined, budget)}${OUTPUT_TRUNCATED}`;
+  }
+  return done(
+    out.kind === "value"
+      ? `Output:\n${body}\n\n${main}`
+      : `${main}\n\nOutput:\n${body}`,
+  );
 }
 
 const OUTPUT_TRUNCATED = "…[output truncated]";

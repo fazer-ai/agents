@@ -435,6 +435,15 @@
     "unobserved": "Observador removido.",
     "unobserveError": "Não foi possível remover o observador."
   },
+  "chatwootLink": {
+    "choose": "Dois servidores do Chatwoot conectados usam a conta {{accountId}}. Abra a que você queria:",
+    "chooseTitle": "Mais de uma conversa corresponde",
+    "error": "Não foi possível localizar esta conversa do Chatwoot.",
+    "notFound": "O fazer.ai agents não tem registro da conversa {{conversationId}} da conta {{accountId}} do Chatwoot nas organizações que você pode abrir. Um agente registra a conversa quando a primeira mensagem dela chega até ele.",
+    "notFoundTitle": "Esta conversa não está aqui",
+    "option": "Conversa {{id}} em {{tenant}}",
+    "toList": "Ir para as conversas"
+  },
   "codeTools": {
     "addTitle": "Nova ferramenta de código",
     "code": "Código",

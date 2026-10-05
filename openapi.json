@@ -14339,7 +14339,7 @@
                     ]
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
                     "type": "boolean"
                   },
                   "ackMessage": {
@@ -14521,7 +14521,7 @@
                     ]
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
                     "type": "boolean"
                   },
                   "ackMessage": {
@@ -14703,7 +14703,7 @@
                     ]
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
                     "type": "boolean"
                   },
                   "ackMessage": {
@@ -15242,7 +15242,7 @@
                     ]
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
                     "type": "boolean"
                   },
                   "ackMessage": {
@@ -15418,7 +15418,7 @@
                     ]
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
                     "type": "boolean"
                   },
                   "ackMessage": {
@@ -15594,7 +15594,7 @@
                     ]
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+                    "description": "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
                     "type": "boolean"
                   },
                   "ackMessage": {
@@ -16692,7 +16692,7 @@
                     "type": "boolean"
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. A `throw` or a limit still alerts. Default false.",
                     "type": "boolean"
                   },
                   "name": {
@@ -16732,7 +16732,7 @@
                     "type": "boolean"
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. A `throw` or a limit still alerts. Default false.",
                     "type": "boolean"
                   },
                   "name": {
@@ -16772,7 +16772,7 @@
                     "type": "boolean"
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. A `throw` or a limit still alerts. Default false.",
                     "type": "boolean"
                   },
                   "name": {
@@ -17166,7 +17166,7 @@
                     "type": "boolean"
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. A `throw` or a limit still alerts. Default false.",
                     "type": "boolean"
                   }
                 }
@@ -17200,7 +17200,7 @@
                     "type": "boolean"
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. A `throw` or a limit still alerts. Default false.",
                     "type": "boolean"
                   }
                 }
@@ -17234,7 +17234,7 @@
                     "type": "boolean"
                   },
                   "silenceTruncationAlert": {
-                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. A `throw` or a limit still alerts. Default false.",
+                    "description": "Whether a clip of what the body returns stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. A `throw` or a limit still alerts. Default false.",
                     "type": "boolean"
                   }
                 }

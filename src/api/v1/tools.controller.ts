@@ -166,7 +166,7 @@ export const writeBody = t.Object({
   silenceTruncationAlert: t.Optional(
     t.Boolean({
       description:
-        "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so an alert channel at the default warn level is not paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
+        "Whether a clip of this tool's response stops alerting. A clip is always written to the flow log as `response_clipped`; on, that line is `info` instead of `warn`, so no alert channel is paged for it. For a tool whose response is expected to be cut (a search that returns the first N results). Every other warning of the tool still alerts. Default false.",
     }),
   ),
   ackMessage: t.Optional(

@@ -30,6 +30,16 @@ O STT roda **antes** do turno (na chegada da mensagem), então tem um `turnId` s
 
 `GET /v1/logs` filtra por `source` (default `inbox`). Erros do **playground** ficam em `source=playground` e **não** disparam alerta (só `inbox` paga alerta). Se você reproduziu no playground e não vê no feed padrão, troque o filtro `source`.
 
+## Silêncio do agente
+
+### "Não responde mais depois que um atendente pegou"
+
+É o gate, não bug: o agente só fala em conversa pendente e sem atendente. Resolver no Chatwoot **não** tira o atendente, e reabrir atribui a quem reabriu. O motivo de cada mensagem não respondida está numa linha `handoff` do `/logs` (`taken_over` = atendente atribuído). A volta é **Devolver para a IA** (MCP `conversation_return`). Detalhe em `01-diagnose.md`, seção 6.
+
+### `/teste` e `/reset` só existem em modo teste
+
+Com o agente em produção, os comandos chegam ao agente como texto do cliente, e a linha `command` do log sai `skipped`. Um "o /teste não funcionou" costuma ser o agente já em produção.
+
 ## Memória do agente (checkpointer)
 
 ### Duas chaves diferentes: memória (por contato+canal) vs correlação (por conversa)

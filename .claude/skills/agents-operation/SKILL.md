@@ -1,6 +1,6 @@
 ---
 name: agents-operation
-description: "Modo operação do fazer.ai agents: debugar conversas em produção e corrigir comportamentos inesperados do agente. Investiga (conversa no Chatwoot + ExecutionLog/flowlog + traces no Langfuse), reproduz no playground, ajusta o agente (prompt/ferramentas/behavior/KB) e re-valida, com toda mutação aprovada. Use quando uma instância JÁ em produção se comporta de forma inesperada e precisa de diagnóstico/ajuste, não é onboarding (subir do zero) nem desenvolvimento de código."
+description: "Modo operação do fazer.ai agents: debugar conversas em produção e corrigir comportamentos inesperados do agente. Investiga (conversa no Chatwoot + ExecutionLog/flowlog + traces no Langfuse), reproduz no playground, ajusta o agente (prompt/ferramentas/behavior/KB) e re-valida, com toda mutação aprovada; quando o problema é do produto, redige a issue para o GitHub com o log e o agente exportados. Use quando uma instância JÁ em produção se comporta de forma inesperada (o agente não responde, a ferramenta dá erro, a resposta foge do configurado) e precisa de diagnóstico/ajuste, quando o usuário quer testar o agente antes de liberar para clientes, ou quando quer relatar um bug ou pedir uma melhoria do fazer.ai agents. Não é onboarding (subir do zero) nem desenvolvimento de código."
 ---
 
 # Modo operação do fazer.ai agents
@@ -29,6 +29,7 @@ Siga em ordem; cada etapa é uma reference. Leia a da etapa antes de executá-la
 
 Fora do fluxo, manutenção:
 
+- [`references/07-report-issue.md`](references/07-report-issue.md): relatar um bug ou pedir uma melhoria: separar configuração de produto, conferir a versão, procurar issues abertas e fechadas, redigir título e descrição, exportar o log e o agente para anexar (revisados, o repositório é público) e entregar o link da nova issue preenchida, sem criá-la em nome do usuário. Vulnerabilidade vai para support@fazer.ai.
 - [`references/06-reprice.md`](references/06-reprice.md): recalcular o custo em dólar das chamadas já gravadas quando uma release corrige o preço de um modelo (`scripts/reprice-usage.ts`, simulação por padrão, `--apply` só com OK).
 
 Fronteiras duras em [`guardrails.md`](guardrails.md); armadilhas de diagnóstico em [`gotchas.md`](gotchas.md).

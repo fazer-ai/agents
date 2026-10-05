@@ -16,7 +16,16 @@ Mande a mesma mensagem (ou a sequência) que disparou o problema. Para multimoda
 
 ## Limites a ter em mente
 
-- **Não é simulação pura:** as tools de HTTP/integração do agente **executam de verdade** (uma write tool escreve). Se o agente tem tool que muda estado externo, reproduzir pode causar efeito colateral real. Avalie antes.
+- **Não é simulação pura:** as tools de HTTP/MCP/integração do agente **executam de verdade** (uma write tool escreve; um agendamento cria o evento real na agenda). Se o agente tem tool que muda estado externo, reproduzir pode causar efeito colateral real. Avalie antes. O que **não** roda de verdade, e o `trace` marca como simulado ou mockado:
+  - as ferramentas nativas **de conversa** (etiqueta, atributo, nota privada, transferir, resolver, mover card);
+  - as ferramentas de **documento** (gerar e emitir documento a partir de template): o playground devolve uma resposta simulada sem emitir nem renderizar nada. Para validar a geração de documento (ou confirmar que uma falha nela foi corrigida), use uma conversa de teste controlada (`04-validate-and-apply.md`), não o playground;
+  - as ferramentas que o operador mockou no próprio teste (o mock tem precedência).
+- Se acabou de editar uma ferramenta, salve antes de testar: o playground usa a configuração salva.
 - Sem mirror/conversa, as vars de contato/prompt vêm vazias (`instanceId`/`conversationId` dummy). Comportamento que depende de dados da conversa real (nome do contato, atributos, histórico daquela conversa) não reproduz idêntico aqui: o playground isola o **agente**, não o **estado da conversa**.
 - A thread do playground é **fenced** (`tenant:playground:agentId:uuid`): um `threadId` só é aceito se casar essa forma exata; qualquer outra (ex.: a thread de uma conversa real) é rejeitada. Não dá para "abrir" a conversa do cliente pelo playground.
 - Memória multi-turno: o cliente segura o `threadId` retornado entre turnos; Reset começa nova sessão.
+
+## Testar no número real: modo teste
+
+O playground isola o agente; para testar a ponta real (o canal, o Chatwoot) sem atender cliente nenhum, use o **modo teste** do agente (é o modo de um agente recém-criado). Nele, o agente fica quieto em todas as conversas e deixa uma nota privada avisando; o contato de teste manda `/teste` na conversa dele para liberar só aquela conversa, e `/reset` para apagar a memória e recomeçar. Teste as conversas que espera receber (cada turno custa) e só então passe o agente para **produção**. Comandos só valem em modo teste: em produção, `/teste` é texto comum do cliente.
+

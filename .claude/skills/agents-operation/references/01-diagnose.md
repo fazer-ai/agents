@@ -33,3 +33,37 @@ Editor do agente (abas General/Tools/Knowledge/Behavior) ou MCP read: `agent_get
 ## 5. (Se preciso) estado do checkpointer
 
 O grafo persiste o histórico por thread de memória. Se o agente "lembra" algo que não deveria (ou perdeu contexto), a causa pode estar no histórico acumulado naquela thread. Leitura para diagnóstico; **não** edite o checkpointer direto.
+
+## 6. O agente ficou em silêncio
+
+O agente só responde quando a conversa está **pendente** (`pending`) e **sem atendente humano atribuído** (e sem outro Agent Bot). Ele nunca fala junto com uma pessoa. Para cada mensagem do cliente que ele deixou sem resposta por isso, o `/logs` tem uma linha no estágio `handoff` (**Transferência**) com o motivo no `detail`:
+
+- `taken_over`: a conversa está atribuída a um atendente.
+- `ownership_lost` (com o `status`): a conversa não está pendente (aberta ou resolvida) ou saiu da posse do agente.
+
+Armadilhas do Chatwoot que mantêm o silêncio:
+
+- **Resolver não tira o atendente.** Se o cliente escreve de novo e a conversa reabre (caixa de API, ou caixa com conversa única por contato ligada), ela volta pendente mas com o mesmo atendente, e o agente continua quieto. Numa caixa de WhatsApp com conversa única desligada, a mensagem nova abre outra conversa, e ali o agente responde.
+- **Reabrir pelo Chatwoot atribui a conversa a quem reabriu.**
+
+Correção: **Devolver para a IA** na tela de Conversas do painel (ou MCP `conversation_return`, dry-run primeiro), que tira o atendente e põe a conversa em pendente. É mutação numa conversa viva: só com OK.
+
+Agente em **modo teste** é outro silêncio, por desenho: ele não responde nenhuma conversa até o contato mandar `/teste` nela, e deixa uma nota privada "🧪 Este agente está em modo teste…" na primeira mensagem. Um `/teste` ou `/reset` que o agente ignorou (porque ele não está em modo teste, por exemplo) aparece como linha `command` com status `skipped` e o motivo no `detail`. Ver `gotchas.md`.
+
+## 7. Ver mais do que o log mostra por padrão
+
+Por padrão o log não guarda texto de mensagem nem PII, corta textos longos e mostra os argumentos das ferramentas só como tipo e tamanho. Duas chaves no editor do agente, **Comportamento → Logs**, mudam isso (MCP: `agent_settings_set` com o bloco `observability`, dry-run e OK, porque é mutação):
+
+- **Registrar os valores enviados às ferramentas** (`logToolValues`): grava argumentos e resultados inteiros. Liga para investigar uma ferramenta e **desliga em seguida**, porque passa a guardar dados do cliente. Lembre o usuário de desligar.
+- **Guardar o detalhe do log inteiro** (`fullDetailUntil`): grava o texto longo até o fim (o prompt completo do turno, por exemplo). Tem prazo de no máximo 24h e desliga sozinha.
+
+O prompt exato que o modelo recebeu, com os valores das variáveis, está no **Langfuse** (seção 3).
+
+## 8. A ferramenta deu erro
+
+Filtre o estágio `tool` (**Chamada de ferramenta**) **sem filtro de nível**, ou com nível **Aviso** (`warn`), e abra a linha do turno. Falha de ferramenta (HTTP fora de 2xx, exceção, falha de integração) sai com nível `warn` e status `error`; filtrar por nível **Erro** esconde justamente essas linhas. Na linha: nome da ferramenta, status, duração e o erro **padronizado** (`HTTP 404`, timeout). Para saber o que o agente mandou (um CNPJ vazio, um CPF com pontuação no lugar errado), ligue `logToolValues` e repita no playground. Numa ferramenta HTTP, confira também o endereço, a credencial e se a API do outro lado mudou.
+
+A resposta do provedor (status e corpo) não vai para o log do contêiner: a ferramenta a devolve ao modelo. Para lê-la, ou abra os **Detalhes da execução** do playground, que mostram o que a ferramenta devolveu, ou ligue `logToolValues`, que faz a mensagem de erro da linha guardar a resposta inteira (sem a chave, só a primeira linha, `HTTP 404`).
+
+**Erro que não aparece como erro:** status listado em **Status que significam "sem resultado"** (`expectedStatuses`, tipicamente 404 para "não encontrado") conta como resultado, não como falha. Com isso, um endereço errado que devolve 404 sai no log como `ok`, e o agente diz ao cliente que o registro não existe. Quando o agente insiste que "não encontrou" algo que existe, teste o endereço da ferramenta antes de culpar o dado.
+

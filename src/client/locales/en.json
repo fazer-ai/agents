@@ -2453,6 +2453,7 @@
     "followup": {
       "badge": "Simulated follow-up",
       "button": "Simulate follow-up",
+      "closesOnly": "Follow-up: this step sends no message; it only applies the labels and resolves the conversation.",
       "hint": "Trigger the proactive follow-up now, without waiting for the inactivity window.",
       "silent": "Follow-up: the agent chose not to send anything."
     },

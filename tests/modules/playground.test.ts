@@ -903,6 +903,67 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(after.filter((m) => m.getType() === "ai")).toHaveLength(1);
   });
 
+  // The preview follows production's closing-step rule: a sequence whose only step is an empty closer
+  // reaches no model, and says what the step does instead.
+  test("a simulated follow-up whose only step is an empty closer reaches no model", async () => {
+    let calls = 0;
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      base: appDb,
+      overrides: {
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [
+              {
+                delayValue: 1,
+                delayUnit: "hours",
+                instructions: "  ",
+                resolve: true,
+              },
+            ],
+          },
+        },
+      },
+      deps: {
+        makeModel: () => {
+          calls++;
+          return fakeModel();
+        },
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls).toBe(0);
+    expect(r).toMatchObject({ reply: "", closesOnly: true, silent: false });
+  });
+
+  test("a simulated follow-up previews the first step when the empty closer comes after it", async () => {
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      base: appDb,
+      overrides: {
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [
+              { delayValue: 1, delayUnit: "hours", instructions: "" },
+              {
+                delayValue: 1,
+                delayUnit: "hours",
+                instructions: "",
+                resolve: true,
+              },
+            ],
+          },
+        },
+      },
+      deps: { makeModel: fakeModel, checkpointer: new MemorySaver() },
+    });
+    expect(r).toMatchObject({ reply: REPLY, closesOnly: false });
+  });
+
   // Positive control: a follow-up that really answered keeps its turn, or the assertion above would
   // pass on a rollback that eats every simulated follow-up.
   test("a simulated follow-up that answered keeps its turn in the thread", async () => {

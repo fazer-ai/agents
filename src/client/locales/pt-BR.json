@@ -2519,6 +2519,7 @@
     "followup": {
       "badge": "Follow-up simulado",
       "button": "Simular follow-up",
+      "closesOnly": "Follow-up: esta etapa não envia mensagem; só aplica as etiquetas e resolve a conversa.",
       "hint": "Dispara o follow-up proativo agora, sem esperar a janela de inatividade.",
       "silent": "Follow-up: o agente optou por não enviar nada."
     },

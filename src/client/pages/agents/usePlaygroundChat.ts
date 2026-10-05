@@ -262,6 +262,8 @@ export function agentTurn(
     suppressed?: boolean;
     // The agent itself chose to send nothing (follow-up only; no verdict to show).
     silent?: boolean;
+    // A closing step that only labels and resolves: no model was reached (follow-up only).
+    closesOnly?: boolean;
     followup?: boolean;
     audioUrl?: string;
     trace: PlaygroundData["trace"];
@@ -294,6 +296,16 @@ export function agentTurn(
             "Nothing would be sent: the guardrail acted on this turn.",
           ),
       trace: r.trace,
+    };
+  }
+  if (r.closesOnly) {
+    return {
+      role: "note",
+      ...usage,
+      text: t(
+        "playground.followup.closesOnly",
+        "Follow-up: this step sends no message; it only applies the labels and resolves the conversation.",
+      ),
     };
   }
   if (r.silent) {
@@ -710,6 +722,7 @@ export function usePlaygroundChat(
           text: data.reply,
           suppressed: data.suppressed,
           silent: data.silent,
+          closesOnly: data.closesOnly,
           followup: true,
           trace: data.trace,
           sources: data.sources,

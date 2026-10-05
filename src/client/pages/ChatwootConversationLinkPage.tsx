@@ -90,7 +90,7 @@ export function ChatwootConversationLinkPage() {
             )}
             description={t(
               "chatwootLink.notFound",
-              "fazer.ai agents has no record of conversation {{conversationId}} of Chatwoot account {{accountId}} in the organizations you can open. An agent records a conversation when its first message reaches it.",
+              "fazer.ai agents has no record of conversation {{conversationId}} of Chatwoot account {{accountId}} in the organizations you can open. A conversation is recorded the first time Chatwoot tells the inbox's agent bot about it (a message, a status change), so conversations from before the inbox was connected are not here.",
               { conversationId, accountId },
             )}
             action={

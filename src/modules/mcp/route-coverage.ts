@@ -10,6 +10,8 @@ type Coverage = { tool: string } | { none: string } | { gap: string };
 
 const BINARY =
   "a binary body (file upload, PDF, image, audio); the MCP transport carries JSON";
+const CHATWOOT_LINK =
+  "the landing of a link a person follows from Chatwoot's contact panel, answered in console ids for a page to navigate";
 const CONV_AGENTS =
   "options for the console's agent filter to non-admin users; agent_list has them";
 const EMBEDDING_BLOCK =
@@ -258,6 +260,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/tenants": { tool: "tenant_create" },
   "GET /v1/conversations": { tool: "list_conversations" },
   "GET /v1/conversations/agents": { none: CONV_AGENTS },
+  "GET /v1/conversations/chatwoot-link": { none: CHATWOOT_LINK },
   "GET /v1/conversations/:id": { tool: "conversation_get" },
   "GET /v1/conversations/:id/messages": { tool: "conversation_messages" },
   "GET /v1/conversations/:id/media": { none: BINARY },

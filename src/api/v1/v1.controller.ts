@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { createInvite } from "@/api/features/invitations/invitation.service";
 import { doc, errors } from "@/api/lib/openapi";
 import {
+  badQueryParam,
   parseQueryCount,
   parseQueryId,
   parseQueryInstant,
@@ -20,6 +21,10 @@ import {
   getKpis,
   getTimeseries,
 } from "@/modules/analytics/service";
+import {
+  linkSearchFor,
+  resolveChatwootConversation,
+} from "@/modules/conversations/chatwoot-link";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import {
   getConversationDetail,
@@ -61,6 +66,21 @@ import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
   return ctx;
+}
+
+// Chatwoot's ids are Postgres `integer`s on both sides, so anything past that range names nothing and
+// is refused as malformed rather than sent to a query that would fail on the bind.
+const CHATWOOT_ID_MAX = 2_147_483_647;
+function chatwootIdParam(s: string, param: string): number {
+  const n = parseQueryCount(s, param) as number;
+  if (n < 1 || n > CHATWOOT_ID_MAX) badQueryParam(param);
+  return n;
+}
+
+// The `bot` of a Chatwoot conversation link: a SHA-256 in lowercase hex, as `hashRouteToken` writes it.
+function botHashParam(s: string): string {
+  if (!/^[0-9a-f]{64}$/.test(s)) badQueryParam("bot");
+  return s;
 }
 
 // Builds the one-time accept link the operator copies/sends (there is no mailer).
@@ -323,6 +343,62 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         tags: ["Conversations"],
       },
       response: errors(400, 401, 404),
+    },
+  )
+  // Searches only the tenants the caller can open (`linkSearchFor`); nothing outside them is read.
+  .get(
+    "/conversations/chatwoot-link",
+    async ({ tenantContext, getAuthUser, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const ref = {
+        accountId: chatwootIdParam(query.accountId, "accountId"),
+        conversationId: chatwootIdParam(query.conversationId, "conversationId"),
+        ...(query.inboxId !== undefined
+          ? { inboxId: chatwootIdParam(query.inboxId, "inboxId") }
+          : {}),
+        ...(query.bot !== undefined
+          ? { botHash: botHashParam(query.bot) }
+          : {}),
+      };
+      return {
+        instance: instanceIdentity,
+        matches: await resolveChatwootConversation(
+          linkSearchFor(ctx, await getAuthUser()),
+          ref,
+        ),
+      };
+    },
+    {
+      query: t.Object({
+        accountId: t.String({
+          description: "The Chatwoot account id the conversation belongs to.",
+        }),
+        conversationId: t.String({
+          description:
+            "The conversation number Chatwoot shows in its own URL (its display id), not this platform's id.",
+        }),
+        inboxId: t.Optional(
+          t.String({
+            description:
+              "The Chatwoot inbox id, to tell apart two connected Chatwoot servers that reuse an account id.",
+          }),
+        ),
+        bot: t.Optional(
+          t.String({
+            description:
+              "SHA-256 (hex) of the route token in the outgoing URL of the Agent Bot the link came through. Names the Chatwoot server the conversation belongs to, which account and inbox ids alone do not.",
+          }),
+        ),
+      }),
+      requireAuth: true,
+      detail: {
+        ...doc(
+          "Find a Chatwoot conversation",
+          "Resolves a Chatwoot conversation (account, display id, optional inbox) to this platform's conversation id and its tenant, among the tenants the caller can open. Empty when none of them has it; more than one entry only when the account id is ambiguous and no inbox was given.",
+        ),
+        tags: ["Conversations"],
+      },
+      response: errors(400, 401, 404, 422),
     },
   )
   // Same gate as the list above, on purpose: whoever can read the conversations can see what the

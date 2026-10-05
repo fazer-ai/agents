@@ -28,6 +28,7 @@ import { AdminTenantsPage } from "@/client/pages/admin/AdminTenantsPage";
 import { AdminUsersPage } from "@/client/pages/admin/AdminUsersPage";
 import { AgentEditorPage } from "@/client/pages/agents/AgentEditorPage";
 import { ChannelsPage } from "@/client/pages/ChannelsPage";
+import { ChatwootConversationLinkPage } from "@/client/pages/ChatwootConversationLinkPage";
 import { ConversationDetailPage } from "@/client/pages/ConversationDetailPage";
 import { ConversationsPage } from "@/client/pages/ConversationsPage";
 import { DashboardPage } from "@/client/pages/DashboardPage";
@@ -82,6 +83,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute>
                                       <ConversationsPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/chatwoot/accounts/:accountId/conversations/:conversationId"
+                                  element={
+                                    <ProtectedRoute>
+                                      <ChatwootConversationLinkPage />
                                     </ProtectedRoute>
                                   }
                                 />

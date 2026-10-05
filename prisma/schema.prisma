@@ -1688,18 +1688,18 @@ model ToolDefinition {
 // run in the sandbox (graph/tools/code.ts). Invalid code is stored as written — the console and the
 // service WARN, never refuse — and fails at call time, as the operator's failure.
 model CodeToolDefinition {
-  id                     BigInt   @id @default(autoincrement())
-  tenantId               BigInt   @map("tenant_id")
-  name                   String
-  label                  String
-  description            String
-  inputSchema            Json     @default("{}") @map("input_schema")
-  code                   String
-  enabled                Boolean  @default(true)
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  name        String
+  label       String
+  description String
+  inputSchema Json     @default("{}") @map("input_schema")
+  code        String
+  enabled     Boolean  @default(true)
   // The same switch as ToolDefinition.silenceTruncationAlert, for a clip of what the body returns.
-  silenceTruncationAlert Boolean  @default(false) @map("silence_truncation_alert")
-  createdAt              DateTime @default(now()) @map("created_at")
-  updatedAt              DateTime @updatedAt @map("updated_at")
+  silenceTruncationAlert Boolean @default(false) @map("silence_truncation_alert")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   toolSelections AgentToolSelection[]

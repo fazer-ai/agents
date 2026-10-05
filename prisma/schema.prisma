@@ -1562,13 +1562,18 @@ model ApprovalQueueItem {
   proposedTitle   String?        @map("proposed_title")
   proposedContent String         @map("proposed_content")
   rationale       String?
+  // sha256 of `proposedContent` as proposed, never rewritten by an edit: the key a conversation's
+  // repeated proposal of the same entry collapses on. A row with no thread never collides,
+  // NULLs being distinct in the key; NULL here only on the later copies of a duplicate written
+  // before the key existed.
+  contentHash     String?        @map("content_hash")
   status          ApprovalStatus @default(PENDING)
   createdAt       DateTime       @default(now()) @map("created_at")
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId])
+  @@unique([tenantId, threadId, contentHash])
   @@map("approval_queue_items")
 }
 

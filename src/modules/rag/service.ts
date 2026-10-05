@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
@@ -242,7 +243,7 @@ export interface SuggestParams {
 // a model, which reads a tool failure and can write the fact again, so the answer is still a refusal.
 export async function createSuggestion(
   params: SuggestParams,
-): Promise<{ id: bigint }> {
+): Promise<{ id: bigint; created: boolean }> {
   const base = params.base ?? basePrisma;
   // NOTE: Labelled by the names the CALLER sends (`title` / `content` / `rationale` on both the REST
   // body and the suggestion tool), not by the columns they land in.
@@ -257,7 +258,14 @@ export async function createSuggestion(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
-    const item = await db.approvalQueueItem.create({
+    // The same content from the same thread is the row already there, whatever became of it:
+    // pending, approved or rejected, a human has it. `skipDuplicates` rather than a lookup first, so
+    // two ticks racing on one burst cannot both insert, and rather than catching P2002, which would
+    // abort this scoped transaction.
+    const contentHash = createHash("sha256")
+      .update(params.proposedContent, "utf8")
+      .digest("hex");
+    const [item] = await db.approvalQueueItem.createManyAndReturn({
       data: {
         tenantId: params.ctx.tenantId as bigint,
         knowledgeBaseId: params.knowledgeBaseId,
@@ -265,12 +273,25 @@ export async function createSuggestion(
         proposedTitle: params.proposedTitle,
         rationale: params.rationale,
         threadId: params.threadId,
+        contentHash,
         interruptKey: params.interruptKey,
         status: "PENDING",
       },
+      skipDuplicates: true,
       select: { id: true },
     });
-    return { id: item.id };
+    if (item) return { id: item.id, created: true };
+    const existing = await db.approvalQueueItem.findUniqueOrThrow({
+      where: {
+        tenantId_threadId_contentHash: {
+          tenantId: params.ctx.tenantId as bigint,
+          threadId: params.threadId as string,
+          contentHash,
+        },
+      },
+      select: { id: true },
+    });
+    return { id: existing.id, created: false };
   });
 }
 

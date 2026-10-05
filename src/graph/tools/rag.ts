@@ -291,7 +291,7 @@ function suggestTool(ctx: RagToolCtx) {
       if (targetId == null) {
         return "No knowledge base is configured for suggestions.";
       }
-      await createSuggestion({
+      const { created } = await createSuggestion({
         ctx: sysCtx(ctx.tenantId),
         knowledgeBaseId: targetId,
         proposedContent: args.content,
@@ -300,6 +300,9 @@ function suggestTool(ctx: RagToolCtx) {
         threadId: ctx.threadId,
         base: ctx.base,
       });
+      if (!created) {
+        return "This entry was already suggested from this conversation and a human has it. Nothing new was queued; do not suggest it again.";
+      }
       return "Suggestion queued for human review. It will NOT be used until a human approves it.";
     },
     {

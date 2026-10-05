@@ -46,6 +46,7 @@ const RULE = "Reembolsos são aceitos em até 7 dias após a compra.";
 
 let tenantId = 0n;
 let kbId = 0n;
+let otherKbId = 0n;
 let threadSeq = 0;
 // A fresh conversation per test, so no test sees another's row.
 const nextThread = () => `${tenantId}:41:${++threadSeq}`;
@@ -64,16 +65,25 @@ async function seed() {
     },
   });
   kbId = kb.id;
+  const other = await suDb.knowledgeBase.create({
+    data: {
+      tenantId,
+      name: "DEDUP-KB-2",
+      embeddingModel: "text-embedding-3-small",
+    },
+  });
+  otherKbId = other.id;
 }
 
 function suggest(
   threadId: string | undefined,
   content: string,
   title = "Prazo",
+  knowledgeBaseId = kbId,
 ) {
   return createSuggestion({
     ctx: ctxOf(tenantId),
-    knowledgeBaseId: kbId,
+    knowledgeBaseId,
     proposedContent: content,
     proposedTitle: title,
     threadId,
@@ -187,6 +197,19 @@ describe.skipIf(!dbUp)("a repeated suggestion from one conversation", () => {
         FROM approval_queue_items WHERE thread_id = ${thread}`;
     expect(row?.same).toBe(true);
     expect((await suggest(thread, RULE)).created).toBe(true);
+  });
+
+  test("the same text for another base is another entry", async () => {
+    await seed();
+    const thread = nextThread();
+    const a = await suggest(thread, RULE, "Prazo", kbId);
+    const b = await suggest(thread, RULE, "Prazo", otherKbId);
+    expect([a.created, b.created]).toEqual([true, true]);
+    expect(await suggest(thread, RULE, "Outro", otherKbId)).toEqual({
+      id: b.id,
+      created: false,
+    });
+    expect(await rowsOf(thread)).toHaveLength(2);
   });
 
   test("a suggestion with no conversation is never collapsed", async () => {

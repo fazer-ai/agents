@@ -1,9 +1,10 @@
 -- A conversation that proposes the same knowledge entry again lands on the row it already has
 -- (issue #578): the observer's tick is stateless and rereads the whole conversation, so every burst
--- proposed the same rule anew. The key is tenant, thread and the sha256 of the proposed content; the
--- title is out of it because the model rewords it between proposals.
+-- proposed the same rule anew. The key is tenant, thread, target base and the sha256 of the proposed
+-- content; the title is out of it because the model rewords it between proposals, and the base is in
+-- it because the same text proposed for two bases is two entries.
 --
--- Rows written before the key: the first of each (tenant, thread, content) gets its hash, so a new
+-- Rows written before the key: the first of each (tenant, thread, base, content) gets its hash, so a new
 -- proposal collapses onto it, and the later copies keep NULL, which never collides, so the index
 -- builds over a queue that already holds duplicates. A row with no thread (the REST route) gets its
 -- hash and never collides either.
@@ -23,7 +24,7 @@ UPDATE "approval_queue_items" AS a
     SELECT "id", "thread_id",
            encode(sha256(convert_to("proposed_content", 'UTF8')), 'hex') AS hash,
            row_number() OVER (
-             PARTITION BY "tenant_id", "thread_id",
+             PARTITION BY "tenant_id", "thread_id", "knowledge_base_id",
                           encode(sha256(convert_to("proposed_content", 'UTF8')), 'hex')
              ORDER BY "id"
            ) AS rn
@@ -34,8 +35,8 @@ UPDATE "approval_queue_items" AS a
 
 ALTER TABLE "approval_queue_items" FORCE ROW LEVEL SECURITY;
 
-CREATE UNIQUE INDEX "approval_queue_items_tenant_id_thread_id_content_hash_key"
-    ON "approval_queue_items"("tenant_id", "thread_id", "content_hash");
+CREATE UNIQUE INDEX "approval_queue_items_suggestion_key"
+    ON "approval_queue_items"("tenant_id", "thread_id", "knowledge_base_id", "content_hash");
 
 -- The key leads with tenant_id, so it serves every lookup the bare index answered.
 DROP INDEX "approval_queue_items_tenant_id_idx";

@@ -258,7 +258,7 @@ export async function createSuggestion(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
-    // The same content from the same thread is the row already there, whatever became of it:
+    // The same content from the same thread for the same base is the row already there, whatever became of it:
     // pending, approved or rejected, a human has it. `skipDuplicates` rather than a lookup first, so
     // two ticks racing on one burst cannot both insert, and rather than catching P2002, which would
     // abort this scoped transaction.
@@ -283,9 +283,10 @@ export async function createSuggestion(
     if (item) return { id: item.id, created: true };
     const existing = await db.approvalQueueItem.findUniqueOrThrow({
       where: {
-        tenantId_threadId_contentHash: {
+        tenantId_threadId_knowledgeBaseId_contentHash: {
           tenantId: params.ctx.tenantId as bigint,
           threadId: params.threadId as string,
+          knowledgeBaseId: params.knowledgeBaseId,
           contentHash,
         },
       },

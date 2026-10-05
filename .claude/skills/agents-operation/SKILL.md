@@ -29,7 +29,7 @@ Siga em ordem; cada etapa é uma reference. Leia a da etapa antes de executá-la
 
 Fora do fluxo, manutenção:
 
-- [`references/07-report-issue.md`](references/07-report-issue.md): relatar um bug ou pedir uma melhoria: separar configuração de produto, conferir a versão, procurar issues abertas e fechadas, redigir título e descrição, exportar o log e o agente para anexar (revisados, o repositório é público) e entregar o texto com o link da página de nova issue, para o usuário colar e enviar (o agente nunca cria a issue). Vulnerabilidade vai para support@fazer.ai.
+- [`references/07-report-issue.md`](references/07-report-issue.md): relatar um bug ou pedir uma melhoria: separar configuração de produto, conferir a versão, procurar issues abertas e fechadas, redigir título e descrição, exportar o log e o agente para anexar (revisados, o repositório é público) e entregar o link da nova issue já preenchida, para o usuário revisar e enviar (o agente nunca cria a issue). Vulnerabilidade vai para support@fazer.ai.
 - [`references/06-reprice.md`](references/06-reprice.md): recalcular o custo em dólar das chamadas já gravadas quando uma release corrige o preço de um modelo (`scripts/reprice-usage.ts`, simulação por padrão, `--apply` só com OK).
 
 Fronteiras duras em [`guardrails.md`](guardrails.md); armadilhas de diagnóstico em [`gotchas.md`](gotchas.md).

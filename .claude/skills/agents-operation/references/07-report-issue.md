@@ -36,12 +36,12 @@ Escreva no idioma do usuário. Sem segredo, sem dado de cliente (nome, telefone,
 - **Configuração do agente:** editor do agente → **Exportar** → **Exportar agente**; ou MCP `agent_export`. Sai sem segredos (credenciais, ferramentas e bases aparecem pelo nome).
 - **Revise os dois antes de anexar**, porque o repositório é público. O log por padrão não guarda texto de mensagem nem PII, mas se a chave **Registrar os valores enviados às ferramentas** esteve ligada durante o caso, os argumentos e resultados das ferramentas estão inteiros no log: limpe-os. O prompt exportado também pode citar dados do negócio do cliente.
 
-## 6. Entregar o link, não criar a issue
+## 6. Entregar o texto e o link, nunca criar a issue
 
-Não crie a issue em nome do usuário (é publicação, e ele precisa revisar). Entregue:
+Quem abre a issue é o usuário: é publicação num repositório público, e ele precisa ler o que vai sair com o nome dele. Entregue:
 
-1. O título e a descrição prontos, em bloco de texto para copiar.
-2. Um link para a página de nova issue já preenchida: `https://github.com/fazer-ai/agents/issues/new?title=<título URL-encoded>&body=<descrição URL-encoded>`. Se a URL passar de uns 6.000 caracteres, mande só com o título e peça para colar a descrição.
-3. A lembrança de arrastar os dois anexos revisados para o campo da descrição.
+1. O **título** num bloco de texto e a **descrição** em outro, prontos para copiar.
+2. O link da página de nova issue, sem nada preenchido: `https://github.com/fazer-ai/agents/issues/new`.
+3. A lembrança de arrastar os dois anexos revisados (seção 5) para o campo da descrição.
 
-Só crie com `gh issue create` se o usuário pedir explicitamente, e mostrando o texto final antes.
+Não crie a issue (`gh issue create`, API, MCP do GitHub) e não ofereça criar, mesmo com o `gh` autenticado na máquina. Também não monte link com título e descrição na URL: o usuário cola o texto que acabou de revisar.

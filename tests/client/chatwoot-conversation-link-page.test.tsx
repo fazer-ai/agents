@@ -73,9 +73,11 @@ const matches = (...m: { id: string; tenantId: string }[]) => ({
   body: { matches: m },
 });
 
-test("one match opens the conversation naming its tenant, and the inbox reaches the query", async () => {
+test("one match opens the conversation naming its tenant, and the inbox and bot reach the query", async () => {
   answer = matches({ id: "55", tenantId: "1" });
-  const view = open("/chatwoot/accounts/3/conversations/42?inbox=9");
+  const view = open(
+    `/chatwoot/accounts/3/conversations/42?inbox=9&bot=${"b".repeat(64)}`,
+  );
   await waitFor(() =>
     expect(view.getByTestId("landed").textContent).toBe(
       "/conversations/55?switchTenant=1",
@@ -86,7 +88,8 @@ test("one match opens the conversation naming its tenant, and the inbox reaches 
     q.get("accountId"),
     q.get("conversationId"),
     q.get("inboxId"),
-  ]).toEqual(["3", "42", "9"]);
+    q.get("bot"),
+  ]).toEqual(["3", "42", "9", "b".repeat(64)]);
 });
 
 test("one match in another tenant of the person opens it there", async () => {

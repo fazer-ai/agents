@@ -77,6 +77,12 @@ function chatwootIdParam(s: string, param: string): number {
   return n;
 }
 
+// The `bot` of a Chatwoot conversation link: a SHA-256 in lowercase hex, as `hashRouteToken` writes it.
+function botHashParam(s: string): string {
+  if (!/^[0-9a-f]{64}$/.test(s)) badQueryParam("bot");
+  return s;
+}
+
 // Builds the one-time accept link the operator copies/sends (there is no mailer).
 function acceptUrl(token: string): string {
   return `${config.publicUrl.replace(/\/$/, "")}/accept-invite?token=${token}`;
@@ -350,6 +356,9 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ...(query.inboxId !== undefined
           ? { inboxId: chatwootIdParam(query.inboxId, "inboxId") }
           : {}),
+        ...(query.bot !== undefined
+          ? { botHash: botHashParam(query.bot) }
+          : {}),
       };
       return {
         instance: instanceIdentity,
@@ -372,6 +381,12 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
           t.String({
             description:
               "The Chatwoot inbox id, to tell apart two connected Chatwoot servers that reuse an account id.",
+          }),
+        ),
+        bot: t.Optional(
+          t.String({
+            description:
+              "SHA-256 (hex) of the route token in the outgoing URL of the Agent Bot the link came through. Names the Chatwoot server the conversation belongs to, which account and inbox ids alone do not.",
           }),
         ),
       }),

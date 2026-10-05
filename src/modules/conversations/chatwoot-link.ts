@@ -8,17 +8,19 @@ import {
 } from "@/lib/tenancy";
 import type { Membership } from "@/lib/tenancy/membership";
 
-// A conversation as Chatwoot names it, resolved to the page that shows it here: the link the Chatwoot
-// fork puts in its contact panel. Chatwoot knows the account, the number in its
-// own URL (`display_id`) and the inbox; the platform keys the same conversation by its instance.
-// The account alone is not unique across the tenants of a fleet (two Chatwoot servers both have an
-// account 1), so the inbox is taken when given, and anything still ambiguous is returned whole for
-// the caller to choose from, never guessed.
+// A conversation as Chatwoot names it (account, the `display_id` in its URL, inbox), resolved to the
+// page that shows it here: the link the Chatwoot fork puts in its contact panel. Account and inbox
+// ids repeat across the servers of a fleet, so the link also names its server through the Agent Bot
+// it came from (`botHash`, the key `webhookRouteTokenHash` already stores; the token never travels).
+// Without it a number recorded only on another server would be a false single match. Whatever is
+// still ambiguous is returned whole for the caller to choose from, never guessed. See docs/chatwoot.md.
 
 export interface ChatwootConversationRef {
   accountId: number;
   conversationId: number;
   inboxId?: number;
+  // SHA-256 (hex) of the route token of the Agent Bot the link came through.
+  botHash?: string;
 }
 
 export interface ChatwootConversationMatch {
@@ -33,7 +35,12 @@ function findIn(db: ScopedDb, ref: ChatwootConversationRef) {
   return db.conversation.findMany({
     where: {
       chatwootConversationId: ref.conversationId,
-      instance: { accountId: ref.accountId },
+      instance: {
+        accountId: ref.accountId,
+        ...(ref.botHash !== undefined
+          ? { agentBots: { some: { webhookRouteTokenHash: ref.botHash } } }
+          : {}),
+      },
       ...(ref.inboxId !== undefined
         ? { inbox: { chatwootInboxId: ref.inboxId } }
         : {}),

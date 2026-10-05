@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
@@ -85,14 +86,46 @@ describe.skipIf(!dbUp)("resolving a Chatwoot conversation", () => {
   let tenantB = 0n;
   let convA = "";
   let convB = "";
+  let onlyB = "";
+  const botA = createHash("sha256")
+    .update(`link-bot-a-${process.pid}`)
+    .digest("hex");
+  const botB = createHash("sha256")
+    .update(`link-bot-b-${process.pid}`)
+    .digest("hex");
   const INBOX_A = 501;
   const INBOX_B = 502;
 
-  async function seed(tenantId: bigint, baseUrl: string, inbox: number) {
+  async function seed(
+    tenantId: bigint,
+    baseUrl: string,
+    inbox: number,
+    botHash: string,
+  ) {
     const inst = await seedChatwootInstance(suDb, {
       tenantId,
       accountId: ACCOUNT,
       baseUrl,
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Link",
+        systemPrompt: "-",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        agentId: agent.id,
+        chatwootAgentBotId: inbox,
+        accessToken: "-",
+        webhookSecret: "-",
+        webhookRouteTokenHash: botHash,
+        name: "Link",
+      },
     });
     const ib = await suDb.inbox.create({
       data: {
@@ -124,7 +157,7 @@ describe.skipIf(!dbUp)("resolving a Chatwoot conversation", () => {
         status: "open",
       },
     });
-    return String(conv.id);
+    return { conv: String(conv.id), inst, inbox: ib };
   }
 
   beforeAll(async () => {
@@ -138,8 +171,26 @@ describe.skipIf(!dbUp)("resolving a Chatwoot conversation", () => {
         data: { name: "Link B", slug: `link-b-${process.pid}` },
       })
     ).id;
-    convA = await seed(tenantA, "https://chat-a.test.local", INBOX_A);
-    convB = await seed(tenantB, "https://chat-b.test.local", INBOX_B);
+    convA = (await seed(tenantA, "https://chat-a.test.local", INBOX_A, botA))
+      .conv;
+    const b = await seed(tenantB, "https://chat-b.test.local", INBOX_B, botB);
+    convB = b.conv;
+    // Recorded on B's server only: the same numbers on A's server name a conversation this platform
+    // never heard of.
+    onlyB = String(
+      (
+        await suDb.conversation.create({
+          data: {
+            tenantId: tenantB,
+            chatwootInstanceId: b.inst.id,
+            inboxId: b.inbox.id,
+            chatwootConversationId: DISPLAY + 2,
+            threadId: `${tenantB}:${b.inst.id}:${DISPLAY + 2}`,
+            status: "open",
+          },
+        })
+      ).id,
+    );
   });
 
   afterAll(async () => {
@@ -200,6 +251,27 @@ describe.skipIf(!dbUp)("resolving a Chatwoot conversation", () => {
         await resolveChatwootConversation(scopes(tenantA, tenantB), ref, appDb),
       ).toEqual([]);
     }
+  });
+
+  test("the bot names the server: a number only the other server recorded is not found", async () => {
+    const at = { accountId: ACCOUNT, conversationId: DISPLAY + 2 };
+    expect(
+      await resolveChatwootConversation(scopes(tenantA, tenantB), at, appDb),
+    ).toEqual([{ id: onlyB, tenantId: String(tenantB) }]);
+    expect(
+      await resolveChatwootConversation(
+        scopes(tenantA, tenantB),
+        { ...at, botHash: botA },
+        appDb,
+      ),
+    ).toEqual([]);
+    expect(
+      await resolveChatwootConversation(
+        scopes(tenantA, tenantB),
+        { accountId: ACCOUNT, conversationId: DISPLAY, botHash: botB },
+        appDb,
+      ),
+    ).toEqual([{ id: convB, tenantId: String(tenantB) }]);
   });
 
   test("the fleet sees every tenant", async () => {

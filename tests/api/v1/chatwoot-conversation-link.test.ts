@@ -149,6 +149,8 @@ describe.skipIf(!dbUp)("GET /v1/conversations/chatwoot-link", () => {
       ["conversationId", "2147483648"],
       ["accountId", "-1"],
       ["inboxId", "1e3"],
+      ["bot", "not-a-hash"],
+      ["bot", "A".repeat(64)],
     ] as const) {
       const q = new URLSearchParams({
         accountId: String(ACCOUNT),

@@ -5063,6 +5063,15 @@
             }
           },
           {
+            "name": "bot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "SHA-256 (hex) of the route token in the outgoing URL of the Agent Bot the link came through. Names the Chatwoot server the conversation belongs to, which account and inbox ids alone do not.",
+              "type": "string"
+            }
+          },
+          {
             "name": "x-tenant-id",
             "in": "header",
             "required": true,

@@ -10,7 +10,7 @@ import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 type Match = { id: string; tenantId: string };
 
 // The page a Chatwoot conversation links to (`/chatwoot/accounts/:accountId/conversations/:conversationId`,
-// `?inbox=` optional): finds the conversation among the tenants the person can open and goes to it.
+// `?inbox=` and `?bot=` optional): finds the conversation among the tenants the person can open and goes to it.
 // The destination always names its tenant through `switchTenant`, and `TenantDeepLink` decides
 // whether that is a switch: it compares against the selector the requests actually carry and waits
 // for the membership list a fresh login has not brought yet, which this page cannot know.
@@ -24,6 +24,7 @@ export function ChatwootConversationLinkPage() {
   const { accountId = "", conversationId = "" } = useParams();
   const [searchParams] = useSearchParams();
   const inboxId = searchParams.get("inbox") ?? undefined;
+  const bot = searchParams.get("bot") ?? undefined;
   const [matches, setMatches] = useState<Match[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -39,6 +40,7 @@ export function ChatwootConversationLinkPage() {
           accountId,
           conversationId,
           ...(inboxId !== undefined ? { inboxId } : {}),
+          ...(bot !== undefined ? { bot } : {}),
         },
       });
       // A link nobody could have produced (a non-numeric id) is the same answer as one that names no
@@ -57,7 +59,7 @@ export function ChatwootConversationLinkPage() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, conversationId, inboxId]);
+  }, [accountId, conversationId, inboxId, bot]);
 
   useEffect(() => {
     void load();

@@ -17,7 +17,7 @@ CREATE TABLE "unpriced_model_announcements" (
     CONSTRAINT "unpriced_model_announcements_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "unpriced_model_announcements_tenant_id_source_month_start_model_key" ON "unpriced_model_announcements"("tenant_id", "source", "month_start", "model");
+CREATE UNIQUE INDEX "unpriced_model_announcements_claim_key" ON "unpriced_model_announcements"("tenant_id", "source", "month_start", "model");
 
 ALTER TABLE "unpriced_model_announcements" ADD CONSTRAINT "unpriced_model_announcements_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

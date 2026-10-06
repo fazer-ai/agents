@@ -2190,7 +2190,7 @@ model UnpricedModelAnnouncement {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, source, monthStart, model])
+  @@unique([tenantId, source, monthStart, model], map: "unpriced_model_announcements_claim_key")
   @@map("unpriced_model_announcements")
 }
 

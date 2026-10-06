@@ -185,6 +185,13 @@ function useScrollSpy(ids: string[]): {
     // for where the page is now instead of waiting for the next scroll.
     const box = scrollBoxOf(last);
     if (box) decide(box);
+    // The layout can move with no scroll at all (the window resized, a card grew), so a resize of the
+    // container or of any section decides again.
+    const resizes = new ResizeObserver(() => {
+      if (box) decide(box);
+    });
+    if (box) resizes.observe(box);
+    for (const el of els) resizes.observe(el);
     // A gesture of the operator's ends the hold at once: taking over mid-animation, their scroll events
     // come back to back with the animation's, and waiting for a pause would hold through the gesture.
     const release = () => {
@@ -198,6 +205,7 @@ function useScrollSpy(ids: string[]): {
       });
     }
     return () => {
+      resizes.disconnect();
       document.removeEventListener("scroll", onScroll, { capture: true });
       for (const type of GESTURES) {
         document.removeEventListener(type, release, { capture: true });

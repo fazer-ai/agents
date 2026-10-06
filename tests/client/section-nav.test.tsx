@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
   act,
   cleanup,
@@ -17,8 +17,32 @@ import { Section, SectionNav } from "@/client/pages/agents/SectionNav";
 // bottom, which a short last section never reaches the line for), and an entry clicked stays
 // highlighted where its scroll lands until the operator takes the scroll back.
 
+// The layout can move without a scroll (the window resized, a card grew): the index listens for
+// that through a ResizeObserver, faked here so the test can say when the layout changed.
+const realResizeObserver = globalThis.ResizeObserver;
+const resized: ResizeObserverCallback[] = [];
+globalThis.ResizeObserver = class {
+  constructor(cb: ResizeObserverCallback) {
+    resized.push(cb);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver;
+
+function layoutChanged() {
+  act(() => {
+    for (const cb of resized) cb([], {} as ResizeObserver);
+  });
+}
+
 afterEach(() => {
   cleanup();
+  resized.length = 0;
+});
+
+afterAll(() => {
+  globalThis.ResizeObserver = realResizeObserver;
 });
 
 const SECTIONS = [
@@ -206,6 +230,25 @@ describe("the section index", () => {
         {sections}
       </div>,
     );
+    expect(current()).toEqual(["Two"]);
+  });
+
+  test("a layout that moves without a scroll moves the highlight with it", () => {
+    const { scroller } = renderNav();
+    scrollTo(scroller, 600, { one: -500, two: 100, three: 900 });
+    expect(current()).toEqual(["Two"]);
+    // A card above grew: section two is pushed below the line with no scroll event.
+    place({ one: -500, two: 400, three: 1200 });
+    layoutChanged();
+    expect(current()).toEqual(["One"]);
+  });
+
+  test("a layout change does not take the highlight from an entry just clicked", () => {
+    const { scroller } = renderNav();
+    clickEntry("Two", () =>
+      scrollTo(scroller, 1200, { one: -1100, two: 400, three: 900 }),
+    );
+    layoutChanged();
     expect(current()).toEqual(["Two"]);
   });
 

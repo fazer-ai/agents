@@ -97,6 +97,8 @@ const SCROLL_SETTLE_MS = 150;
 
 type Pin = { settled: boolean; timer?: Timer };
 
+const GESTURES = ["wheel", "touchstart", "keydown"] as const;
+
 // The hold ends SCROLL_SETTLE_MS after the last scroll event, or after the click when the section
 // was already in place and nothing scrolled: without its own clock the operator's next scroll would
 // be read as the click's.
@@ -169,9 +171,24 @@ function useScrollSpy(ids: string[]): {
       capture: true,
       passive: true,
     });
+    // A gesture of the operator's ends the hold at once: taking over mid-animation, their scroll events
+    // come back to back with the animation's, and waiting for a pause would hold through the gesture.
+    const release = () => {
+      clearTimeout(pinned.current?.timer);
+      pinned.current = null;
+    };
+    for (const type of GESTURES) {
+      document.addEventListener(type, release, {
+        capture: true,
+        passive: true,
+      });
+    }
     return () => {
       obs.disconnect();
       document.removeEventListener("scroll", onScroll, { capture: true });
+      for (const type of GESTURES) {
+        document.removeEventListener(type, release, { capture: true });
+      }
       clearTimeout(pinned.current?.timer);
     };
   }, [key]);

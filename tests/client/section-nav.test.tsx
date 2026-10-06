@@ -155,6 +155,29 @@ describe("the section index", () => {
     expect(current()).toEqual(["One"]);
   });
 
+  // The operator taking over mid-animation ends the hold at once: their scroll events arrive back to
+  // back with the animation's, so waiting for the scroll to settle would hold through the whole gesture.
+  for (const gesture of ["wheel", "touchstart", "keydown"] as const) {
+    test(`a ${gesture} during the click's scroll gives the highlight back immediately`, () => {
+      const { scroller } = renderNav();
+      const target = document.getElementById("two") as HTMLElement;
+      target.scrollIntoView = () => scrollTo(scroller, 900);
+      act(() => {
+        fireEvent.click(screen.getByRole("link", { name: "Two" }));
+      });
+      expect(current()).toEqual(["Two"]);
+      act(() => {
+        if (gesture === "keydown")
+          fireEvent.keyDown(scroller, { key: "PageUp" });
+        else if (gesture === "touchstart") fireEvent.touchStart(scroller);
+        else fireEvent.wheel(scroller);
+      });
+      crossing("one", true);
+      scrollTo(scroller, 100);
+      expect(current()).toEqual(["One"]);
+    });
+  }
+
   test("a box scrolling to its end inside a section is not the page reaching its bottom", () => {
     renderNav();
     crossing("one", true);

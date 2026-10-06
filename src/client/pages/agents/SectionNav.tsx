@@ -109,6 +109,15 @@ function armSettle(pin: Pin): void {
   }, SCROLL_SETTLE_MS);
 }
 
+// The nearest ancestor that scrolls (the app's <main>), or the document when none does.
+function scrollBoxOf(el: HTMLElement): Element | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const { overflowY } = getComputedStyle(p);
+    if (overflowY === "auto" || overflowY === "scroll") return p;
+  }
+  return document.scrollingElement;
+}
+
 // Where the operator is reading: the section whose top has passed a line this far down the scroll
 // container is the current one. A line and not a band, because a tall section covering a band kept
 // the highlight until the page ended, and the section under it was never lit.
@@ -133,13 +142,13 @@ function useScrollSpy(ids: string[]): {
     const first = els[0] as HTMLElement;
     const last = els[els.length - 1] as HTMLElement;
     // The ends of the page decide on their own: at the top the first section is current though a
-    // short one leaves the line in the next, and at the bottom the last one is, though a last section
-    // shorter than the screen never reaches the line.
+    // short one leaves the line in the next (a page that does not scroll is at its top), and at the
+    // bottom the last one is, though a last section shorter than the screen never reaches the line.
     const decide = (box: Element) => {
       if (pinned.current) return;
       const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
       let next = first;
-      if (atBottom) next = last;
+      if (box.scrollTop > 1 && atBottom) next = last;
       else if (box.scrollTop > 1) {
         const top =
           box === document.scrollingElement
@@ -172,6 +181,10 @@ function useScrollSpy(ids: string[]): {
       capture: true,
       passive: true,
     });
+    // Mounted into a page already scrolled (Back and Forward between the editor's tabs), it answers
+    // for where the page is now instead of waiting for the next scroll.
+    const box = scrollBoxOf(last);
+    if (box) decide(box);
     // A gesture of the operator's ends the hold at once: taking over mid-animation, their scroll events
     // come back to back with the animation's, and waiting for a pause would hold through the gesture.
     const release = () => {

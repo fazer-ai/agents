@@ -179,6 +179,36 @@ describe("the section index", () => {
     });
   }
 
+  // Back and Forward between the editor's tabs mount the index into a <main> that is already
+  // scrolled: it answers for where the page is now, not for the top, before any scroll comes.
+  test("an index mounted into a scrolled page highlights where the page already is", () => {
+    const sections = SECTIONS.map((s) => (
+      <Section key={s.id} id={s.id} icon={s.icon} title={s.label}>
+        <p>{s.label} body</p>
+      </Section>
+    ));
+    // The null holds the index's slot, so adding it later keeps the sections (and their rects).
+    const view = render(
+      <div data-testid="scroller" style={{ overflowY: "auto" }}>
+        {null}
+        {sections}
+      </div>,
+    );
+    const scroller = screen.getByTestId("scroller");
+    Object.defineProperty(scroller, "clientHeight", { value: 800 });
+    Object.defineProperty(scroller, "scrollHeight", { value: 2000 });
+    scroller.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+    scroller.scrollTop = 600;
+    place({ one: -500, two: 100, three: 900 });
+    view.rerender(
+      <div data-testid="scroller" style={{ overflowY: "auto" }}>
+        <SectionNav sections={SECTIONS} />
+        {sections}
+      </div>,
+    );
+    expect(current()).toEqual(["Two"]);
+  });
+
   test("a box scrolling to its end inside a section is not the page reaching its bottom", () => {
     renderNav();
     const box = document.createElement("textarea");

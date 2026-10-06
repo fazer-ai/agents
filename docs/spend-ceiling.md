@@ -74,10 +74,11 @@ ceiling or not, Langfuse or not: the row being written with a null `cost_usd` em
 line at `warn` naming the model and the fix that exists in this app (the account's own price for it in
 Advanced > Model prices, then re-pricing the calls already made). Once per model per month per tenant
 and per source, since only the inbox's line reaches the alert channels and a playground line must not
-use up the inbox's. "Once" is the announcement's own record rather than process memory: the model is
-announced unless this month's flow log already holds its line for that source (`detail.unpricedModel`), so a restart does not repeat
-it, and unpriced rows written before the alert existed do not count as a warning anyone received. Two
-first calls in separate processes may both announce, which is the direction to err in.
+use up the inbox's. "Once" is a claim row in `unpriced_model_announcements`, unique per tenant,
+source, month and model and inserted with ON CONFLICT DO NOTHING: whoever inserts it announces, so a
+restart, a second process or the flow log's retention sweep cannot repeat the line, and unpriced rows
+written before the alert existed claim nothing. A line that did not land deletes its claim, so the next
+call tries again.
 
 The snapshot's eight Langfuse-era columns (the reconciliation counters, the unpriced list and the
 project-switch carry) stay in the table with `@ignore` for one release, so the previous image keeps

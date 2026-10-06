@@ -18,7 +18,7 @@ import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 // A MODEL THE LEDGER COULD NOT PRICE IS SAID OUT LOUD, once per model per month per
 // tenant, from the capture itself: no ceiling and no Langfuse are needed for it, which is the point,
 // since every call to that model is left out of the cost and of the ceiling until someone sets a
-// price. "Once" survives a restart because it is the announcement's own record in the flow log.
+// price. "Once" survives a restart and the log's retention because it is a claim row of its own.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -97,6 +97,9 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     resetUnpricedAnnouncements();
     for (const id of [tenantA, tenantB]) {
       await suDb.llmUsage.deleteMany({ where: { tenantId: id } });
+      await suDb.unpricedModelAnnouncement.deleteMany({
+        where: { tenantId: id },
+      });
       await clearFlowLog(suDb, { tenantId: id });
     }
   });
@@ -105,7 +108,11 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     for (const id of [tenantA, tenantB]) {
       if (!id) continue;
       await clearFlowLog(suDb, { tenantId: id });
-      for (const table of ["llm_usage", "execution_logs"]) {
+      for (const table of [
+        "llm_usage",
+        "execution_logs",
+        "unpriced_model_announcements",
+      ]) {
         await suDb.$executeRawUnsafe(
           `DELETE FROM ${table} WHERE tenant_id = ${id}`,
         );
@@ -204,23 +211,26 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
   });
 
   test("a new month announces the model again", async () => {
-    const at = (iso: string) =>
-      announceUnpricedModel({
+    for (const iso of ["2026-08-20T00:00:00Z", "2026-09-02T00:00:00Z"]) {
+      await announceUnpricedModel({
         tenantId: tenantA,
         model: "mystery-1",
         source: "inbox",
         now: new Date(iso),
         base: appDb,
       });
-    await at("2026-08-20T00:00:00Z");
-    // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
-    await alerts(tenantA);
-    // Settled to land the line, then backdated: the lookup reads the log's own month.
-    await suDb.executionLog.updateMany({
-      where: { tenantId: tenantA, stage: "spend_ceiling" },
-      data: { createdAt: new Date("2026-08-20T00:00:00Z") },
-    });
-    await at("2026-09-02T00:00:00Z");
+    }
     expect(await alerts(tenantA)).toHaveLength(2);
+  });
+
+  // The flow log is pruned by retention, possibly before the month ends; the claim is not in it, so
+  // a restart after the sweep does not page the channels a second time.
+  test("a flow log pruned by retention does not re-announce the month's model", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+    await clearFlowLog(suDb, { tenantId: tenantA });
+    resetUnpricedAnnouncements();
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
   });
 });

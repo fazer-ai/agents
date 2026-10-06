@@ -163,6 +163,7 @@ model Tenant {
   promptVariantAssignments      PromptVariantAssignment[]
   llmUsages                     LlmUsage[]
   spendCostSnapshots            SpendCostSnapshot[]
+  unpricedModelAnnouncements    UnpricedModelAnnouncement[]
   executionLogs                 ExecutionLog[]
   alertChannels                 AlertChannel[]
   alertDeliveries               AlertDelivery[]
@@ -2174,6 +2175,23 @@ model SpendCostSnapshot {
 
   @@unique([tenantId, source, monthStart])
   @@map("spend_cost_snapshots")
+}
+
+// ONE ANNOUNCEMENT PER MODEL, MONTH AND SOURCE for a model the usage ledger could not price
+// (src/modules/pricing/unpriced-alert.ts). The row is the claim: inserting it is what entitles the
+// caller to announce, and a line that did not land deletes it so the next call tries again.
+model UnpricedModelAnnouncement {
+  id         BigInt   @id @default(autoincrement())
+  tenantId   BigInt   @map("tenant_id")
+  source     String
+  monthStart DateTime @map("month_start")
+  model      String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, source, monthStart, model])
+  @@map("unpriced_model_announcements")
 }
 
 model LlmUsage {

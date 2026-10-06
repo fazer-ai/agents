@@ -1,11 +1,16 @@
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Avatar, Badge, Button, Input, useToast } from "@/client/components";
+import {
+  Avatar,
+  Button,
+  Input,
+  RoleBadge,
+  useToast,
+} from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
-import { isAdminRole } from "@/client/lib/roles";
 import { SettingsRow, SettingsSection } from "./SettingsSection";
 
 const NAME_MAX_LENGTH = 100;
@@ -51,17 +56,6 @@ export function SettingsProfilePage() {
   useNavGuard(isDirty);
 
   if (!user) return null;
-
-  const roleLabel = (() => {
-    switch (user.role) {
-      case "SUPER_ADMIN":
-        return t("role.superAdmin", "Super admin");
-      case "TENANT_ADMIN":
-        return t("role.tenantAdmin", "Tenant admin");
-      default:
-        return t("role.agent", "Agent");
-    }
-  })();
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -164,9 +158,7 @@ export function SettingsProfilePage() {
             label={t("common.role", "Role")}
             description={t("settings.roleHint", "Set by an administrator.")}
           >
-            <Badge variant={isAdminRole(user.role) ? "primary" : "secondary"}>
-              {roleLabel}
-            </Badge>
+            <RoleBadge role={user.role} />
           </SettingsRow>
           {user.createdAt && (
             <SettingsRow label={t("settings.memberSince", "Member since")}>

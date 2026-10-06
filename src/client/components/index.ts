@@ -56,6 +56,7 @@ export { Popover } from "./Popover";
 export { type ProFeature, ProGate } from "./ProGate";
 export { ProtectedRoute } from "./ProtectedRoute";
 export { type AgentRef, AgentReferences } from "./ResourceReferences";
+export { RoleBadge, useRoleLabel } from "./RoleBadge";
 export {
   type ScheduleOption,
   SchedulePicker,

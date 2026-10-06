@@ -116,6 +116,7 @@ describe("the routes that refuse an API-key principal declare the 403", () => {
       "POST /api/v1/mcp/oauth/consent/:req",
       "PATCH /api/auth/me",
       "PATCH /api/auth/password",
+      "POST /api/admin/super-admins",
     ];
     const sites = Object.entries(await countInSrc(/\brequireSession\(/g))
       .filter(([file]) => file !== "src/api/lib/step-up.ts")

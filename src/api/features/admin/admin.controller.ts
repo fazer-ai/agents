@@ -12,6 +12,7 @@ import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
 import {
   confirmStepUp,
+  requireSession,
   STEP_UP_PASSWORD_DESCRIPTION,
   stepUpPrincipalOf,
 } from "@/api/lib/step-up";
@@ -20,6 +21,8 @@ import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { UnauthorizedError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
+  AlreadySuperAdminError,
+  addSuperAdmin,
   CannotDeleteSelfError,
   ConcurrentMoveError,
   deleteUser,
@@ -27,6 +30,7 @@ import {
   getUsers,
   LastAdminError,
   listTenantsWithUserCounts,
+  previewSuperAdmin,
   TenantNotChangeableError,
   TenantNotFoundError,
   TenantRequiredError,
@@ -139,6 +143,10 @@ export const adminController = new Elysia({
           ...u,
           id: u.id.toString(),
           tenantId: u.tenantId?.toString() ?? null,
+          memberships: u.memberships.map((m) => ({
+            tenantId: m.tenantId.toString(),
+            role: m.role,
+          })),
         })),
         total: result.total,
         page: result.page,
@@ -281,13 +289,13 @@ export const adminController = new Elysia({
         demoteFleet: t.Optional(
           t.Boolean({
             description:
-              "SUPER_ADMIN only: take the fleet role away and give the person the named tenant's membership with `role`. Without it, the write re-roles a membership and never touches the fleet role.",
+              "SUPER_ADMIN only: take the fleet role away. A person who already belongs to a tenant keeps every membership as it is and names no tenant; a person with none must name the tenant they join, with `role`. Without it, the write re-roles a membership and never touches the fleet role.",
           }),
         ),
       }),
       detail: doc(
         "Update user role",
-        "Change the role a user holds in a tenant. A tenant administrator re-roles members of their own tenant; the fleet names the tenant (or the user's only one). Demoting a fleet administrator is explicit (`demoteFleet`) and must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
+        "Change the role a user holds in a tenant. A tenant administrator re-roles members of their own tenant; the fleet names the tenant (or the user's only one). Demoting a fleet administrator is explicit (`demoteFleet`): a person with memberships keeps them and names no tenant, a person with none must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },
@@ -347,6 +355,95 @@ export const adminController = new Elysia({
         "Remove a user. A tenant administrator removes the user from their own tenant (the account is deleted only when it was the user's last tenant); the fleet deletes the account. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
+    },
+  )
+  // What "Add super admin" would do for an email, by exact match, so the confirmation step can say
+  // it before asking for the password.
+  .get(
+    "/super-admins/preview",
+    async ({ query, getAuthUser }) => {
+      const user = await getAuthUser();
+      if (!user) throw new UnauthorizedError();
+      return { outcome: await previewSuperAdmin(actorOf(user), query.email) };
+    },
+    {
+      requireRole: "SUPER_ADMIN",
+      query: t.Object({
+        email: t.String({
+          format: "email",
+          maxLength: 254,
+          description: "Email of the person to make a super admin.",
+        }),
+      }),
+      detail: doc(
+        "Preview adding a super admin",
+        "Say what adding this email as a super admin would do right now: `promote` (an account exists), `invite` (no account; a fleet invitation would be minted), `verify` (an account exists, but public signup is open and it has no Google identity, so it gets the invitation and must accept it signed in) or `already` (the person is already a super admin). Exact, case-insensitive match. A preview only; the write decides again.",
+      ),
+      response: errors(400, 401, 403, 422),
+    },
+  )
+  // Make another person a SUPER_ADMIN, by email: an existing account is promoted at once, an email
+  // with no account (or an account nothing proved, under open signup) gets a one-day fleet invitation link. A person grants it, never a key (a key
+  // would leave nobody behind the grant), and confirms with their password.
+  .post(
+    "/super-admins",
+    async ({ body, set, getAuthUser }) => {
+      const user = await getAuthUser();
+      if (!user) throw new UnauthorizedError();
+      requireSession(user);
+      await confirmStepUp(stepUpPrincipalOf(user), body.password);
+      try {
+        const result = await addSuperAdmin(actorOf(user), body.email);
+        if (result.kind === "promoted") {
+          return {
+            result: "promoted" as const,
+            user: {
+              id: result.user.id.toString(),
+              email: result.user.email,
+              name: result.user.name,
+            },
+          };
+        }
+        return {
+          result: "invited" as const,
+          invite: {
+            id: result.invite.id.toString(),
+            email: result.invite.email,
+            acceptUrl: acceptUrl(result.invite.token),
+            expiresAt: result.invite.expiresAt,
+          },
+        };
+      } catch (error) {
+        if (error instanceof AlreadySuperAdminError) {
+          set.status = 409;
+          return {
+            error: translate(
+              "errors.alreadySuperAdmin",
+              "This person is already a super admin",
+            ),
+            field: "email",
+          };
+        }
+        throw error;
+      }
+    },
+    {
+      requireRole: "SUPER_ADMIN",
+      body: t.Object({
+        email: t.String({
+          format: "email",
+          maxLength: 254,
+          description: "Email of the person to make a super admin.",
+        }),
+        password: t.Optional(
+          t.String({ minLength: 1, description: STEP_UP_PASSWORD_DESCRIPTION }),
+        ),
+      }),
+      detail: doc(
+        "Add a super admin",
+        "Make a person a fleet super admin. An email that already has an account is promoted immediately and keeps its tenant memberships (`result: promoted`), unless public signup is open and the account has no Google identity, since then nothing proved the address is its owner's; that account, and an email with no account, get a single-use fleet invitation valid for 24 hours (`result: invited`, with the accept link). Requires a signed-in SUPER_ADMIN session and its password; refuses an API key. Returns 409 when the person is already a super admin.",
+      ),
+      response: errors(400, 401, 403, 409, 422),
     },
   )
   // Invite a user into a tenant. A SUPER_ADMIN targets one explicitly via body.tenantId (400 if

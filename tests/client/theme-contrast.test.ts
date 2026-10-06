@@ -718,14 +718,12 @@ const TEXT_TOKENS: { token: string; surfaces: string[]; min: number }[] = [
   // <Badge variant="success|warning"> renders these as text.
   { token: "success", surfaces: STATUS_SURFACES, min: 4.5 },
   { token: "warning", surfaces: STATUS_SURFACES, min: 4.5 },
+  // <Badge variant="purple"> (the super admin role) renders it as text.
+  { token: "purple", surfaces: STATUS_SURFACES, min: 4.5 },
 ];
 
-// 3:1 is the WCAG minimum for graphical objects. `purple` is icon-only: the
-// AdminPage stats card's Shield icon, aria-hidden. Promote it to 4.5 here the
-// day it becomes text, as `success` and `warning` were when <Badge> started
-// rendering them as text.
+// 3:1 is the WCAG minimum for graphical objects.
 const GRAPHIC_TOKENS: { token: string; surfaces: string[]; min: number }[] = [
-  { token: "purple", surfaces: STATUS_SURFACES, min: 3 },
   { token: "border-focus", surfaces: SURFACES, min: 3 },
 ];
 
@@ -742,8 +740,8 @@ const ON_FILL: { token: string; fill: string; min: number }[] = [
 // text-X (or icon-X) over X-soft's tint, measured against what the browser paints: the soft token's
 // declared RGBA composited over the surface behind it, so a tint that drifts in hue or alpha is
 // caught here. Every token with a `*-soft` counterpart gets a row at its plain color's threshold:
-// 4.5 for accent/error/success/warning on STATUS_SURFACES (a <Badge> renders each as text on its
-// tint), 3 for purple (graphical only, see GRAPHIC_TOKENS), and info mirrors accent.
+// 4.5 for accent/error/success/warning/purple on STATUS_SURFACES (a <Badge> renders each as text on
+// its tint), and info mirrors accent.
 const SOFT_ON_SURFACE: {
   text: string;
   soft: string;
@@ -753,7 +751,12 @@ const SOFT_ON_SURFACE: {
   { text: "accent", soft: "accent-soft", surfaces: STATUS_SURFACES, min: 4.5 },
   { text: "info", soft: "info-soft", surfaces: STATUS_SURFACES, min: 4.5 },
   { text: "error", soft: "error-soft", surfaces: STATUS_SURFACES, min: 4.5 },
-  { text: "purple", soft: "purple-soft", surfaces: STATUS_SURFACES, min: 3 },
+  {
+    text: "purple",
+    soft: "purple-soft",
+    surfaces: STATUS_SURFACES,
+    min: 4.5,
+  },
   {
     text: "success",
     soft: "success-soft",

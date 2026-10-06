@@ -1,17 +1,26 @@
-import { Search, Shield, ShieldOff, Trash2, UserPlus } from "lucide-react";
+import {
+  Search,
+  Shield,
+  ShieldOff,
+  ShieldPlus,
+  Trash2,
+  UserPlus,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
-  Badge,
   Button,
   Card,
+  RoleBadge,
   Skeleton,
   StrongConfirmModal,
   type StrongConfirmPayload,
   useModalController,
+  useRoleLabel,
   useToast,
 } from "@/client/components";
+import { AddSuperAdminModal } from "@/client/components/admin/AddSuperAdminModal";
 import {
   DemoteFleetAdminModal,
   type DemoteTarget,
@@ -36,8 +45,6 @@ type AdminUser = NonNullable<UsersResponse>["users"][number];
 type AdminStats = NonNullable<StatsResponse>["stats"];
 
 // t('admin.noUsers', 'No users found')
-// t('admin.demoteTooltip', 'Demote to User')
-// t('admin.promoteTooltip', 'Promote to Admin')
 const SEARCH_DEBOUNCE_MS = 300;
 const selectCls =
   "rounded-md border border-border-hover bg-bg-tertiary h-8 px-2.5 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft";
@@ -55,16 +62,7 @@ const USER_SKELETON_KEYS = [
 
 export function AdminUsersPage() {
   const { t } = useTranslation();
-  const roleLabel = (role: string) => {
-    switch (role) {
-      case "SUPER_ADMIN":
-        return t("role.superAdmin", "Super admin");
-      case "TENANT_ADMIN":
-        return t("role.tenantAdmin", "Tenant admin");
-      default:
-        return t("role.agent", "Agent");
-    }
-  };
+  const roleLabel = useRoleLabel();
   const { showToast } = useToast();
   const { user: currentUser } = useAuth();
   const isSuperAdmin = currentUser?.role === "SUPER_ADMIN";
@@ -88,6 +86,7 @@ export function AdminUsersPage() {
   const [invitesReloadToken, setInvitesReloadToken] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inviteModal = useModalController();
+  const addSuperAdminModal = useModalController();
   const deleteUserModal = useModalController<StrongConfirmPayload>();
   const demoteFleetModal = useModalController<DemoteTarget>();
 
@@ -177,7 +176,11 @@ export function AdminUsersPage() {
     // exist without one, so this demote is a question before it is a write. Everyone else keeps the
     // tenant they already have, and stays one click.
     if (user.role === "SUPER_ADMIN") {
-      demoteFleetModal.open({ id: user.id, email: user.email });
+      demoteFleetModal.open({
+        id: user.id,
+        email: user.email,
+        memberships: user.memberships,
+      });
       return;
     }
     const newRole = isAdminRole(user.role) ? "AGENT" : "TENANT_ADMIN";
@@ -208,8 +211,9 @@ export function AdminUsersPage() {
         ),
       );
       showToast(
-        t("admin.roleUpdated", "Role updated to {{role}}", {
-          role: newRole,
+        t("admin.roleUpdated", "{{email}} is now {{role}}", {
+          email: user.email,
+          role: roleLabel(newRole),
         }),
         "success",
       );
@@ -292,11 +296,34 @@ export function AdminUsersPage() {
         ) : (
           <span />
         )}
-        <Button size="sm" onClick={() => inviteModal.open()}>
-          <UserPlus className="h-4 w-4" aria-hidden="true" />
-          {t("admin.inviteUser", "Invite user")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {isSuperAdmin && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => addSuperAdminModal.open()}
+            >
+              <ShieldPlus className="h-4 w-4" aria-hidden="true" />
+              {t("superAdmin.title", "Add super admin")}
+            </Button>
+          )}
+          <Button size="sm" onClick={() => inviteModal.open()}>
+            <UserPlus className="h-4 w-4" aria-hidden="true" />
+            {t("admin.inviteUser", "Invite user")}
+          </Button>
+        </div>
       </div>
+
+      {isSuperAdmin && (
+        <AddSuperAdminModal
+          modal={addSuperAdminModal}
+          onDone={() => {
+            setInvitesReloadToken((n) => n + 1);
+            void fetchUsers(page, search);
+            fetchStats();
+          }}
+        />
+      )}
 
       <InviteUserModal
         modal={inviteModal}
@@ -444,9 +471,14 @@ export function AdminUsersPage() {
                       const isAdmin = isAdminRole(user.role);
                       const tooltip = disabled
                         ? t("admin.cannotDemoteSelf", "Cannot demote yourself")
-                        : isAdmin
-                          ? t("admin.demoteTooltip", "Demote to User")
-                          : t("admin.promoteTooltip", "Promote to Admin");
+                        : user.role === "SUPER_ADMIN"
+                          ? t("admin.removeSuperAdmin", "Remove super admin")
+                          : isAdmin
+                            ? t("admin.demoteTooltip", "Demote to agent")
+                            : t(
+                                "admin.promoteTooltip",
+                                "Promote to tenant admin",
+                              );
                       return (
                         <tr
                           key={`${user.id}:${user.tenantId ?? "fleet"}`}
@@ -463,13 +495,11 @@ export function AdminUsersPage() {
                               {user.tenantId
                                 ? (tenantsById.get(user.tenantId) ??
                                   user.tenantId)
-                                : "—"}
+                                : t("admin.allTenantsShort", "All")}
                             </td>
                           )}
                           <td className="px-2 py-3">
-                            <Badge variant={isAdmin ? "warning" : "secondary"}>
-                              {roleLabel(user.role)}
-                            </Badge>
+                            <RoleBadge role={user.role} />
                           </td>
                           <td className="px-2 py-3 text-text-secondary">
                             {formatDate(user.createdAt)}
@@ -485,7 +515,7 @@ export function AdminUsersPage() {
                                   onClick={() => handleToggleRole(user)}
                                   disabled={disabled}
                                   className={cn(
-                                    "inline-flex items-center gap-1 rounded border border-border px-2 py-1 font-medium text-xs transition-colors",
+                                    "inline-flex items-center gap-1 whitespace-nowrap rounded border border-border px-2 py-1 font-medium text-xs transition-colors",
                                     {
                                       "bg-bg-tertiary text-text-secondary hover:bg-bg-hover hover:text-text-primary":
                                         !disabled,
@@ -535,7 +565,7 @@ export function AdminUsersPage() {
                                   onClick={() => openDeleteUser(user)}
                                   disabled={isSelf}
                                   className={cn(
-                                    "inline-flex items-center gap-1 rounded border border-border px-2 py-1 font-medium text-xs transition-colors",
+                                    "inline-flex items-center gap-1 whitespace-nowrap rounded border border-border px-2 py-1 font-medium text-xs transition-colors",
                                     {
                                       "bg-bg-tertiary text-text-secondary hover:bg-error/10 hover:text-error":
                                         !isSelf,

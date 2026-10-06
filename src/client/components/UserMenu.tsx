@@ -14,6 +14,7 @@ import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { Avatar } from "@/client/components/Avatar";
+import { RoleBadge } from "@/client/components/RoleBadge";
 import { useToast } from "@/client/components/Toast";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
@@ -129,12 +130,8 @@ export function UserMenu() {
                     <p className="truncate text-text-muted text-xs">{email}</p>
                   )}
                 </div>
-                {isAdminRole(user?.role) && (
-                  <span className="shrink-0 rounded-sm bg-accent-soft px-1.5 py-0.5 font-medium text-accent text-xs leading-none">
-                    {user?.role === "SUPER_ADMIN"
-                      ? t("role.superAdmin", "Super admin")
-                      : t("role.tenantAdmin", "Tenant admin")}
-                  </span>
+                {user && isAdminRole(user.role) && (
+                  <RoleBadge role={user.role} className="shrink-0" />
                 )}
               </div>
               <DropdownMenuPrimitive.Separator className={separatorCls} />

@@ -657,7 +657,8 @@ const baseAuthController = new Elysia({
         },
         // The tenant the invitation joined, which the console opens on. Separate from
         // `user.tenantId`, which is null for a fleet administrator.
-        joinedTenantId: user.joinedTenantId.toString(),
+        joinedTenantId:
+          user.joinedTenantId === null ? null : user.joinedTenantId.toString(),
       };
     },
     {

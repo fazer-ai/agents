@@ -9,7 +9,12 @@ import {
 import type { AuthUser, SessionIdentity } from "@/api/lib/auth";
 import basePrisma from "@/api/lib/prisma";
 import { emailEquals } from "@/lib/email-match";
-import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asPrincipalOn,
+  asSuperAdminOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
 
 // User-invitation flow. Security invariants:
@@ -17,12 +22,14 @@ import { auditMutationOn } from "@/modules/audit/service";
 //     pastes the link), so a DB dump never yields a usable token.
 //   - `invitations` is GLOBAL (no RLS): every read/write MUST carry tenantScope, like admin.service
 //     does for `users`. A forgotten filter leaks cross-tenant invites with no DB backstop.
-//   - role is bound to the invite ROW; SUPER_ADMIN is never invitable (ManageableRole + a DB CHECK).
+//   - role is bound to the invite ROW; a DB CHECK ties SUPER_ADMIN to a FLEET invite (no tenant).
 //   - acceptInvite binds tenantId + role from the persisted invite, NEVER the request; single-use (CAS).
 // `base` is injectable so integration tests pass their own (real) client instead of the singleton.
 
 const INVITE_TTL_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// A fleet invitation hands over the whole installation, so its link lives a day instead of a week.
+const FLEET_INVITE_TTL_MS = DAY_MS;
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -113,14 +120,14 @@ export interface CreateInviteParams {
 // grants membership of the tenant, and a trail its own admins read is the last place it belongs.
 function inviteAuditProjection(row: {
   id: bigint;
-  tenantId: bigint;
+  tenantId: bigint | null;
   email: string;
   role: string;
   expiresAt: Date;
 }) {
   return {
     invitationId: row.id.toString(),
-    tenantId: row.tenantId.toString(),
+    tenantId: row.tenantId === null ? null : row.tenantId.toString(),
     email: row.email,
     role: row.role,
     expiresAt: row.expiresAt.toISOString(),
@@ -202,11 +209,76 @@ export async function createInvite(
   return { id: row.id, email: row.email, role: row.role, token, expiresAt };
 }
 
+// Only a SUPER_ADMIN mints a fleet invitation, since it makes the invitee one.
+export class FleetInviteForbiddenError extends Error {
+  constructor() {
+    super("Only a super admin can invite a super admin");
+    this.name = "FleetInviteForbiddenError";
+  }
+}
+
+// Mints (or rotates) the FLEET invitation for `email`: accepting it makes the invitee a SUPER_ADMIN.
+// It names no tenant, lives a day, and is single-use like any other. Rotation replaces the row, so
+// the previous link stops working the moment a new one exists.
+export async function createFleetInvite(
+  ctx: TenantContext,
+  rawEmail: string,
+  base: PrismaClient = basePrisma,
+): Promise<CreatedInvite> {
+  if (ctx.role !== "SUPER_ADMIN") throw new FleetInviteForbiddenError();
+  const email = rawEmail.trim().toLowerCase();
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + FLEET_INVITE_TTL_MS);
+  const row = await asPrincipalOn(base, ctx, async (db) => {
+    // NOTE: per-email lock, since two rotations would otherwise both delete before either inserts,
+    // and the second insert would hit `invitations_fleet_email_key`.
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`fleet-invite:${email}`})::bigint)`;
+    await db.invitation.deleteMany({ where: { tenantId: null, email } });
+    const created = await db.invitation.create({
+      data: {
+        tenantId: null,
+        email,
+        role: "SUPER_ADMIN",
+        tokenHash: hashToken(token),
+        invitedById: ctx.userId,
+        expiresAt,
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        expiresAt: true,
+      },
+    });
+    await auditMutationOn(db, ctx, null, {
+      action: "invitation.create",
+      target: `invitation:${created.id}`,
+      after: inviteAuditProjection(created),
+    });
+    return created;
+  });
+  return { id: row.id, email: row.email, role: row.role, token, expiresAt };
+}
+
+// A fleet invitation must not outlive the person reaching or leaving the fleet by another route: one
+// left pending would let them take the fleet role back with their own credentials after a demotion.
+// Called inside the write that changes `is_super_admin`.
+export async function dropFleetInvites(
+  db: Pick<ScopedDb, "invitation">,
+  email: string,
+): Promise<void> {
+  await db.invitation.deleteMany({
+    where: { tenantId: null, email: email.trim().toLowerCase() },
+  });
+}
+
 export interface InviteListItem {
   id: string;
   email: string;
   role: UserRole;
-  tenantId: string;
+  // Null for a fleet invitation.
+  tenantId: string | null;
   status: InviteStatus;
   expiresAt: Date;
   createdAt: Date;
@@ -233,7 +305,7 @@ export async function listInvites(
     id: r.id.toString(),
     email: r.email,
     role: r.role,
-    tenantId: r.tenantId.toString(),
+    tenantId: r.tenantId === null ? null : r.tenantId.toString(),
     status: inviteStatus(r),
     expiresAt: r.expiresAt,
     createdAt: r.createdAt,
@@ -337,7 +409,10 @@ export async function acceptInvite(
   params: AcceptInviteParams,
   base: PrismaClient = basePrisma,
 ): Promise<
-  AuthUser & { joinedTenantId: bigint; sessionPasswordHash: string | null }
+  AuthUser & {
+    joinedTenantId: bigint | null;
+    sessionPasswordHash: string | null;
+  }
 > {
   const tokenHash = hashToken(params.token);
   const invite = await base.invitation.findUnique({
@@ -355,13 +430,20 @@ export async function acceptInvite(
   if (!invite || inviteStatus(invite) !== "pending") {
     throw new InviteInvalidError();
   }
-  if (await emailExistsInTenant(base, invite.email, invite.tenantId)) {
+  const fleetTenantId = invite.tenantId;
+  if (
+    fleetTenantId !== null &&
+    (await emailExistsInTenant(base, invite.email, fleetTenantId))
+  ) {
     throw new InviteEmailInUseError();
   }
   const account = await base.user.findFirst({
     where: { email: emailEquals(invite.email) },
-    select: { id: true, passwordHash: true },
+    select: { id: true, passwordHash: true, isSuperAdmin: true },
   });
+  if (fleetTenantId === null && account?.isSuperAdmin) {
+    throw new InviteEmailInUseError();
+  }
   if (account) {
     // A session verified under a password the account no longer holds is no proof: a change
     // landing between that check and this read would otherwise sign a revoked session back in.
@@ -381,6 +463,20 @@ export async function acceptInvite(
   }
   const passwordHash =
     account || !params.password ? null : await hashPassword(params.password);
+  // The hash the new session is signed under: the one this request proved or created.
+  const sessionPasswordHash = account ? account.passwordHash : passwordHash;
+
+  if (invite.tenantId === null) {
+    const row = await acceptFleetInvite(base, invite, account, {
+      email: invite.email,
+      passwordHash,
+      name: params.name?.trim() || null,
+    });
+    const session = sessionUserOf(row);
+    if (!session) throw new InviteInvalidError();
+    return { ...session, joinedTenantId: null, sessionPasswordHash };
+  }
+  const tenantId = invite.tenantId;
 
   const row = await base.$transaction(async (tx) => {
     // CAS consume: a concurrent/replayed accept sees count 0 and is rejected (single-use).
@@ -390,7 +486,7 @@ export async function acceptInvite(
     });
     if (consumed.count === 0) throw new InviteInvalidError();
     const membership = {
-      tenantId: invite.tenantId,
+      tenantId,
       role: invite.role,
       invitedById: invite.invitedById,
     };
@@ -419,19 +515,69 @@ export async function acceptInvite(
   });
   const session = sessionUserOf(row);
   if (!session) throw new InviteInvalidError();
-  // The hash the new session is signed under: the one this request proved or created.
-  const sessionPasswordHash = account ? account.passwordHash : passwordHash;
   // NOTE: `joinedTenantId` is where the invitation LEADS, apart from the session's own scope: a fleet
   // administrator's session has no tenant (null), and the console still has to open on the one they
   // just joined.
   if (session.role === "SUPER_ADMIN") {
-    return { ...session, joinedTenantId: invite.tenantId, sessionPasswordHash };
+    return { ...session, joinedTenantId: tenantId, sessionPasswordHash };
   }
   return {
     ...session,
-    tenantId: invite.tenantId,
+    tenantId,
     role: invite.role,
-    joinedTenantId: invite.tenantId,
+    joinedTenantId: tenantId,
     sessionPasswordHash,
   };
+}
+
+// The fleet half of `acceptInvite`, already proven: consume the invitation and make the person a
+// SUPER_ADMIN, the existing account (its memberships kept) or a new one with none. Under the fleet
+// role, because the grant is recorded on the fleet's trail, which only that role writes.
+async function acceptFleetInvite(
+  base: PrismaClient,
+  invite: { id: bigint; email: string },
+  account: { id: bigint } | null,
+  fresh: { email: string; passwordHash: string | null; name: string | null },
+) {
+  return asSuperAdminOn(base, async (db) => {
+    // NOTE: the person before the invitation, the order every fleet-role write takes (`addSuperAdmin`
+    // and the demotions lock the person, then drop this email's fleet invitations).
+    if (account) {
+      await db.$queryRaw`SELECT id FROM users WHERE id = ${account.id} FOR UPDATE`;
+    }
+    const consumed = await db.invitation.updateMany({
+      where: { id: invite.id, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    if (consumed.count === 0) throw new InviteInvalidError();
+    const row = account
+      ? await db.user.update({
+          where: { id: account.id },
+          data: { isSuperAdmin: true, lastLoginAt: new Date() },
+          select: AUTH_USER_SELECT,
+        })
+      : await db.user.create({
+          data: { ...fresh, isSuperAdmin: true, lastLoginAt: new Date() },
+          select: AUTH_USER_SELECT,
+        });
+    const actor: TenantContext = {
+      tenantId: null,
+      userId: row.id,
+      role: "SUPER_ADMIN",
+      actorType: "user",
+    };
+    await auditMutationOn(db, actor, null, {
+      action: "user.role_set",
+      target: `user:${row.id}`,
+      after: {
+        userId: row.id.toString(),
+        tenantId: null,
+        email: row.email,
+        name: row.name,
+        role: "SUPER_ADMIN",
+        invitationId: invite.id.toString(),
+      },
+    });
+    return row;
+  });
 }

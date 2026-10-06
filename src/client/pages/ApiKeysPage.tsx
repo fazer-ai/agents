@@ -63,7 +63,7 @@ export function ApiKeysPage() {
           title={t("apiKeys.fleetTitle", "Fleet keys")}
           subtitle={t(
             "apiKeys.fleetSubtitle",
-            "SUPER_ADMIN authority with no home tenant, for automation that operates the whole fleet: the key selects a tenant per request with X-Tenant-Id (REST) or the tenant argument (MCP), like your own session. Only a SUPER_ADMIN sees this list.",
+            "Super admin authority with no home tenant, for automation that operates the whole fleet: the key selects a tenant per request with X-Tenant-Id (REST) or the tenant argument (MCP), like your own session. Only a SUPER_ADMIN sees this list.",
           )}
           emptyTitle={t("apiKeys.fleetEmptyTitle", "No fleet keys")}
           emptyDescription={t(

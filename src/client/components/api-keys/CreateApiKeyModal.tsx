@@ -183,7 +183,7 @@ export function CreateApiKeyModal({
               fleet
                 ? t(
                     "apiKeys.fleetPasswordHint",
-                    "This key will hold SUPER_ADMIN authority over every tenant. Confirm with your password.",
+                    "This key will act as a super admin over every tenant. Confirm with your password.",
                   )
                 : t(
                     "apiKeys.passwordHint",

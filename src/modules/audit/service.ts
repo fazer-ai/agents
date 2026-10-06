@@ -193,7 +193,7 @@ export function auditTrailFor(
 ): Prisma.AuditLogWhereInput {
   if (scope !== "tenant" && ctx.role !== "SUPER_ADMIN") {
     throw new ForbiddenError(
-      "Reading the fleet trail requires SUPER_ADMIN",
+      "Reading the fleet trail requires a super admin",
       "errors.auditScopeForbidden",
     );
   }

@@ -239,6 +239,46 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     expect(await alerts(tenantA)).toHaveLength(1);
   });
 
+  // The database gone between the claim and the line: neither the line nor the release lands, and
+  // the claim left behind is taken over once its lease ends instead of silencing the month.
+  const ageClaims = (tenantId: bigint) =>
+    suDb.unpricedModelAnnouncement.updateMany({
+      where: { tenantId },
+      data: { claimedAt: new Date(Date.now() - 10 * 60 * 1000) },
+    });
+
+  test("a claim neither delivered nor released is taken over after its lease", async () => {
+    const down = appDb.$extends({
+      query: {
+        executionLog: {
+          async create() {
+            throw new Error("connection lost");
+          },
+        },
+        unpricedModelAnnouncement: {
+          async deleteMany() {
+            throw new Error("connection lost");
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await defaultUsagePersist(down)(row(tenantA, "mystery-1", null));
+    // Within the lease the claim may still be a call in flight.
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+    await ageClaims(tenantA);
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  test("a delivered claim is never taken over, however old", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    await ageClaims(tenantA);
+    resetUnpricedAnnouncements();
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
   test("a new month announces the model again", async () => {
     for (const iso of ["2026-08-20T00:00:00Z", "2026-09-02T00:00:00Z"]) {
       await announceUnpricedModel({

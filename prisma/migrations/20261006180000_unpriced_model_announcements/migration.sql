@@ -1,6 +1,7 @@
 -- ONE ANNOUNCEMENT PER MODEL, MONTH AND SOURCE for a model the usage ledger could not price. The row is
--- the claim: whoever inserts it announces, a conflict means someone already did. Kept apart from the
--- flow log, whose retention would delete the marker before the month ends.
+-- the claim: whoever inserts it announces, and `delivered_at` says the line landed. A claim left
+-- undelivered past a few minutes can be taken over, so a failure between the claim and the line never
+-- silences the month. Kept apart from the flow log, whose retention would delete the marker.
 --
 -- Wrapped in a transaction so a failure between the CREATE TABLE and the FORCE ROW LEVEL SECURITY
 -- cannot leave a tenant-scoped table that does not bind its own owner.
@@ -12,7 +13,8 @@ CREATE TABLE "unpriced_model_announcements" (
     "source" TEXT NOT NULL,
     "month_start" TIMESTAMP(3) NOT NULL,
     "model" TEXT NOT NULL,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "claimed_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "delivered_at" TIMESTAMP(3),
 
     CONSTRAINT "unpriced_model_announcements_pkey" PRIMARY KEY ("id")
 );

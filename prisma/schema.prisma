@@ -2185,8 +2185,9 @@ model UnpricedModelAnnouncement {
   tenantId   BigInt   @map("tenant_id")
   source     String
   monthStart DateTime @map("month_start")
-  model      String
-  createdAt  DateTime @default(now()) @map("created_at")
+  model       String
+  claimedAt   DateTime  @default(now()) @map("claimed_at")
+  deliveredAt DateTime? @map("delivered_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

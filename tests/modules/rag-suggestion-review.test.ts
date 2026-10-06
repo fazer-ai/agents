@@ -799,6 +799,21 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     });
   });
 
+  test("a document whose chunks are older than its text is not a candidate", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Parcelamos em 10x.", 20);
+    await suDb.knowledgeDocument.update({
+      where: { id: doc },
+      data: { content: "Parcelamos em 12x.", status: "PENDING" },
+    });
+    const a = await propose(kb, "Dividimos em até 10 vezes.");
+    await review(a.id, NEVER, axis(20));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: "Nothing similar in this knowledge base or its queue.",
+    });
+  });
+
   test("only a discarded proposal can be requeued", async () => {
     const kb = await newKb();
     const a = await propose(kb, "Atendemos aos sábados até o meio-dia.");

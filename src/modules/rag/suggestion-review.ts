@@ -294,21 +294,24 @@ async function loadCandidates(
     queryEmbedding,
     limit: CANDIDATES_PER_KIND * 3,
   });
+  // Only a READY document's chunks are its current text: after an edit the old chunks stay
+  // until ingestion succeeds, and a passage the document no longer says must not make a duplicate.
+  const rowsById = new Map(
+    (
+      await db.knowledgeDocument.findMany({
+        where: { id: { in: [...new Set(chunks.map((c) => c.documentId))] } },
+        select: { id: true, externalId: true, updatedAt: true, status: true },
+      })
+    ).map((d) => [d.id, d]),
+  );
   const byDoc = new Map<bigint, { title: string; parts: string[] }>();
   for (const c of chunks) {
+    if (rowsById.get(c.documentId)?.status !== "READY") continue;
     const entry = byDoc.get(c.documentId);
     if (entry) entry.parts.push(c.content);
     else if (byDoc.size < CANDIDATES_PER_KIND)
       byDoc.set(c.documentId, { title: c.documentTitle, parts: [c.content] });
   }
-  const rowsById = new Map(
-    (
-      await db.knowledgeDocument.findMany({
-        where: { id: { in: [...byDoc.keys()] } },
-        select: { id: true, externalId: true, updatedAt: true },
-      })
-    ).map((d) => [d.id, d]),
-  );
   const documents = [...byDoc.entries()].map(([documentId, d]) => ({
     documentId,
     title: d.title,

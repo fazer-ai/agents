@@ -25,7 +25,7 @@ A floor hit creates nothing and calls no model. The tool tells the model the ent
 A proposal from an agent enters `SCREENING`, and a `SUGGESTION_REVIEW` job is armed in the same transaction (deduped by item id). The job:
 
 1. embeds the proposal with the base's embedding model and stores the vector on the item;
-2. gathers candidates: the closest chunks of the base, grouped to at most 5 documents, and the 5 closest items of the same base in `PENDING`, `EDITED` or `REJECTED` (with the rejection reason when one was given), plus `SCREENING` items proposed before this one, so two rewordings reviewed at the same time are compared in one direction and never discard each other. A residual window remains when the earlier one has not stored its vector yet, and then both reach a person;
+2. gathers candidates: the closest chunks of the base's `READY` documents (a document being reindexed still has its old chunks, which no longer say what it says), grouped to at most 5 documents, and the 5 closest items of the same base in `PENDING`, `EDITED` or `REJECTED` (with the rejection reason when one was given), plus `SCREENING` items proposed before this one, so two rewordings reviewed at the same time are compared in one direction and never discard each other. A residual window remains when the earlier one has not stored its vector yet, and then both reach a person;
 3. with no candidate, moves the item to `PENDING` with a fixed comment and calls no model;
 4. otherwise checks the spend ceiling and asks the model for one JSON verdict: `new`, `duplicate` (naming the matched item or document) or `replace` (naming the document).
 

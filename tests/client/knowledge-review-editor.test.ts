@@ -41,6 +41,19 @@ describe("the reviewer model in the agent editor", () => {
     expect(all).not.toMatch(/dirty\.tools \|\| dirty\.knowledge/);
   });
 
+  test("the reviewer fields are locked while the Knowledge save runs", () => {
+    const tab = readFileSync(
+      "src/client/pages/agents/KnowledgeTab.tsx",
+      "utf8",
+    );
+    const section = between(tab, 'id="kb-review"', "</Section>");
+    expect(section).toContain("<fieldset disabled={saving}");
+    expect(section.indexOf("<fieldset")).toBeLessThan(
+      section.indexOf('label={t("editor.provider"'),
+    );
+    expect(section).toContain("</fieldset>");
+  });
+
   test("the stored block round-trips through the form, and an empty form inherits the agent's model", () => {
     const form = suggestionReviewToForm({
       knowledge: {

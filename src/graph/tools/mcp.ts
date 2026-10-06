@@ -6,9 +6,11 @@ import {
   loadMcpTools,
   MultiServerMCPClient,
 } from "@langchain/mcp-adapters";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  Client,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import {
@@ -71,6 +73,12 @@ function normalizeTransport(t: string): "http" | "sse" | "stdio" {
   return "http"; // streamablehttp | http | anything else
 }
 
+// The protocol the app's own SDK client speaks (an SDK 2 `Client` negotiates only the legacy one by
+// default), pinned for the adapter too. Its default "auto" mode probes the modern protocol, falls back
+// to SSE only on 404/405 and drops `reconnect`, and on a modern server turns an elicitation request
+// into a LangGraph interrupt that no turn here resumes.
+const LEGACY = "legacy" as const;
+
 // Builds the MultiServerMCPClient connection config for one selection. Throws (caller skips the
 // connection) on a disabled stdio transport, a missing url/command, or an SSRF-blocked url.
 export async function buildConnConfig(
@@ -109,6 +117,7 @@ export async function buildConnConfig(
         : undefined;
     return {
       transport: "stdio",
+      mode: LEGACY,
       command: command as string,
       args,
       env,
@@ -140,7 +149,7 @@ export async function buildConnConfig(
       headers = { Authorization: `Bearer ${sel.secret}` };
     }
   }
-  return { url, transport, headers } as Connection;
+  return { url, transport, mode: LEGACY, headers } as Connection;
 }
 
 export function filterAllowed(
@@ -357,8 +366,15 @@ function fetchWithCallHeaders(key: string): typeof fetch {
 
 export const __callHeadersForTest = { callHeaders, fetchWithCallHeaders };
 
+// The SDK's HTTP error carries the status in `data.status` (its `code` is a string category), and
+// older errors carry it as a numeric `code` or in the message.
 function httpErrorCode(err: unknown): number | null {
-  const e = err as { code?: unknown; message?: unknown };
+  const e = err as {
+    code?: unknown;
+    message?: unknown;
+    data?: { status?: unknown };
+  };
+  if (typeof e?.data?.status === "number") return e.data.status;
   if (typeof e?.code === "number") return e.code;
   const m = String(e?.message ?? "").match(/\(HTTP (\d\d\d)\)/);
   return m ? Number(m[1]) : null;
@@ -401,7 +417,6 @@ async function connectWithCallHeaders(
         throwOnLoadError: true,
         prefixToolNameWithServerName: false,
         additionalToolNamePrefix: "",
-        useStandardContentBlocks: true,
       });
       return { client, tools };
     } catch (err) {
@@ -483,7 +498,6 @@ async function defaultConnect(
         throwOnLoadError: true,
         prefixToolNameWithServerName: false,
         additionalToolNamePrefix: "",
-        useStandardContentBlocks: true,
         mcpServers: { [sel.name]: connConfig },
       });
       created.tools = () => client.getTools();

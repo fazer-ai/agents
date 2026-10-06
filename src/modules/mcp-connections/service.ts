@@ -669,7 +669,6 @@ export async function discoverMcpTools(
     throwOnLoadError: true,
     prefixToolNameWithServerName: false,
     additionalToolNamePrefix: "",
-    useStandardContentBlocks: true,
     mcpServers: { [sel.name]: connConfig },
   });
   try {

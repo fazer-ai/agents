@@ -1,5 +1,7 @@
 import { openapi } from "@elysiajs/openapi";
 import Elysia from "elysia";
+import { FormatRegistry } from "elysia/type-system";
+import { fullFormats } from "elysia/type-system/format";
 import { adminController } from "@/api/features/admin/admin.controller";
 import { authController } from "@/api/features/auth/auth.controller";
 import { brandingController } from "@/api/features/branding/branding.controller";
@@ -42,6 +44,12 @@ import { v1Controller } from "@/api/v1/v1.controller";
 import { vaultController } from "@/api/v1/vault.controller";
 import { webhooksController } from "@/api/v1/webhooks.controller";
 import config from "@/config";
+
+// NOTE: @elysiajs/openapi replaces the "email" format on the TypeBox registry the whole app shares
+// when it is imported, with a stricter check that refuses valid addresses such as `a%b@x.com` and
+// accepts `a@x-.com`. Every `format: "email"` body (login, invites, tenant creation) is checked by
+// Elysia's own pattern instead, so a docs plugin never decides who can log in.
+FormatRegistry.Set("email", (value) => fullFormats.email.test(value));
 
 // DEV docs (Scalar): x-tenant-id, the SUPER_ADMIN tenant selector, lives in no route schema, so it is
 // injected into every authenticated operation of the dev spec, prefilled with "1", to show in

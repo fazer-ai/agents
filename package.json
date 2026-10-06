@@ -48,7 +48,7 @@
     "@elysiajs/cors": "^1.4.2",
     "@elysiajs/eden": "^1.4.9",
     "@elysiajs/jwt": "^1.4.2",
-    "@elysiajs/openapi": "^1.4.15",
+    "@elysiajs/openapi": "^1.4.16",
     "@elysiajs/static": "^1.4.10",
     "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
     "@langchain/anthropic": "1.5.12",

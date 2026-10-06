@@ -1,5 +1,4 @@
 {
-  "openapi": "3.1.0",
   "info": {
     "title": "agents API",
     "description": "REST surface for the fazer.ai agents operator console. Dev-only documentation, auto-generated from the route schemas.",
@@ -108,6 +107,7 @@
       "description": "Health, i18n & realtime."
     }
   ],
+  "openapi": "3.1.0",
   "paths": {
     "/auth/setup": {
       "post": {
@@ -3157,14 +3157,10 @@
                 "properties": {
                   "brandName": {
                     "description": "Display brand name, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "maxLength": 128,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 128,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "colorMode": {
@@ -3176,14 +3172,10 @@
                   },
                   "brandColor": {
                     "description": "Primary brand color (CSS color string), or null to clear it.",
-                    "anyOf": [
-                      {
-                        "maxLength": 64,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 64,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "tokensLight": {
@@ -3202,26 +3194,18 @@
                   },
                   "siteUrl": {
                     "description": "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
-                    "anyOf": [
-                      {
-                        "maxLength": 512,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 512,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "supportEmail": {
                     "description": "Support e-mail shown in the sidebar support modal, or null to use the default.",
-                    "anyOf": [
-                      {
-                        "maxLength": 254,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 254,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "hideGithubLink": {
@@ -3237,14 +3221,10 @@
                 "properties": {
                   "brandName": {
                     "description": "Display brand name, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "maxLength": 128,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 128,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "colorMode": {
@@ -3256,14 +3236,10 @@
                   },
                   "brandColor": {
                     "description": "Primary brand color (CSS color string), or null to clear it.",
-                    "anyOf": [
-                      {
-                        "maxLength": 64,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 64,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "tokensLight": {
@@ -3282,26 +3258,18 @@
                   },
                   "siteUrl": {
                     "description": "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
-                    "anyOf": [
-                      {
-                        "maxLength": 512,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 512,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "supportEmail": {
                     "description": "Support e-mail shown in the sidebar support modal, or null to use the default.",
-                    "anyOf": [
-                      {
-                        "maxLength": 254,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 254,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "hideGithubLink": {
@@ -3317,14 +3285,10 @@
                 "properties": {
                   "brandName": {
                     "description": "Display brand name, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "maxLength": 128,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 128,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "colorMode": {
@@ -3336,14 +3300,10 @@
                   },
                   "brandColor": {
                     "description": "Primary brand color (CSS color string), or null to clear it.",
-                    "anyOf": [
-                      {
-                        "maxLength": 64,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 64,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "tokensLight": {
@@ -3362,26 +3322,18 @@
                   },
                   "siteUrl": {
                     "description": "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
-                    "anyOf": [
-                      {
-                        "maxLength": 512,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 512,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "supportEmail": {
                     "description": "Support e-mail shown in the sidebar support modal, or null to use the default.",
-                    "anyOf": [
-                      {
-                        "maxLength": 254,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 254,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "hideGithubLink": {
@@ -7198,24 +7150,16 @@
                   },
                   "businessHoursId": {
                     "description": "Business-hours schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "followUpHoursId": {
                     "description": "Follow-up schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -7270,24 +7214,16 @@
                   },
                   "businessHoursId": {
                     "description": "Business-hours schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "followUpHoursId": {
                     "description": "Follow-up schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -7342,24 +7278,16 @@
                   },
                   "businessHoursId": {
                     "description": "Business-hours schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "followUpHoursId": {
                     "description": "Follow-up schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -7729,24 +7657,16 @@
                   },
                   "businessHoursId": {
                     "description": "Business-hours schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "followUpHoursId": {
                     "description": "Follow-up schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "expectedUpdatedAt": {
@@ -7807,24 +7727,16 @@
                   },
                   "businessHoursId": {
                     "description": "Business-hours schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "followUpHoursId": {
                     "description": "Follow-up schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "expectedUpdatedAt": {
@@ -7885,24 +7797,16 @@
                   },
                   "businessHoursId": {
                     "description": "Business-hours schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "followUpHoursId": {
                     "description": "Follow-up schedule id (BigInt string), or null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "expectedUpdatedAt": {
@@ -9475,57 +9379,37 @@
                         },
                         "toolDefinitionId": {
                           "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "mcpServerConnectionId": {
                           "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "integrationInstanceId": {
                           "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "documentTemplateId": {
                           "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "codeToolDefinitionId": {
                           "description": "Code tool id (BigInt string) for CODE grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "knowledgeBaseIds": {
@@ -9581,57 +9465,37 @@
                         },
                         "toolDefinitionId": {
                           "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "mcpServerConnectionId": {
                           "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "integrationInstanceId": {
                           "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "documentTemplateId": {
                           "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "codeToolDefinitionId": {
                           "description": "Code tool id (BigInt string) for CODE grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "knowledgeBaseIds": {
@@ -9687,57 +9551,37 @@
                         },
                         "toolDefinitionId": {
                           "description": "Tool definition id (BigInt string) for NATIVE or HTTP grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "mcpServerConnectionId": {
                           "description": "MCP server connection id (BigInt string) for MCP grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "integrationInstanceId": {
                           "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "documentTemplateId": {
                           "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "codeToolDefinitionId": {
                           "description": "Code tool id (BigInt string) for CODE grants, or null.",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
+                          "type": [
+                            "string",
+                            "null"
                           ]
                         },
                         "knowledgeBaseIds": {
@@ -14370,13 +14214,9 @@
                 "properties": {
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "method": {
@@ -14422,13 +14262,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -14453,17 +14289,13 @@
                   },
                   "appointment": {
                     "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   },
                   "conversationRefIntegrationId": {
                     "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
@@ -14494,13 +14326,9 @@
                   },
                   "maxResponseChars": {
                     "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "number",
+                      "null"
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -14509,13 +14337,9 @@
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "name": {
@@ -14552,13 +14376,9 @@
                 "properties": {
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "method": {
@@ -14604,13 +14424,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -14635,17 +14451,13 @@
                   },
                   "appointment": {
                     "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   },
                   "conversationRefIntegrationId": {
                     "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
@@ -14676,13 +14488,9 @@
                   },
                   "maxResponseChars": {
                     "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "number",
+                      "null"
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -14691,13 +14499,9 @@
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "name": {
@@ -14734,13 +14538,9 @@
                 "properties": {
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "method": {
@@ -14786,13 +14586,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -14817,17 +14613,13 @@
                   },
                   "appointment": {
                     "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   },
                   "conversationRefIntegrationId": {
                     "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
@@ -14858,13 +14650,9 @@
                   },
                   "maxResponseChars": {
                     "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "number",
+                      "null"
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -14873,13 +14661,9 @@
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "name": {
@@ -15262,13 +15046,9 @@
                   },
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "method": {
@@ -15325,13 +15105,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -15356,17 +15132,13 @@
                   },
                   "appointment": {
                     "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   },
                   "conversationRefIntegrationId": {
                     "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
@@ -15397,13 +15169,9 @@
                   },
                   "maxResponseChars": {
                     "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "number",
+                      "null"
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -15412,13 +15180,9 @@
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -15438,13 +15202,9 @@
                   },
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "method": {
@@ -15501,13 +15261,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -15532,17 +15288,13 @@
                   },
                   "appointment": {
                     "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   },
                   "conversationRefIntegrationId": {
                     "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
@@ -15573,13 +15325,9 @@
                   },
                   "maxResponseChars": {
                     "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "number",
+                      "null"
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -15588,13 +15336,9 @@
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -15614,13 +15358,9 @@
                   },
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "method": {
@@ -15677,13 +15417,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -15708,17 +15444,13 @@
                   },
                   "appointment": {
                     "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
                   },
                   "conversationRefIntegrationId": {
                     "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
@@ -15749,13 +15481,9 @@
                   },
                   "maxResponseChars": {
                     "description": "How many characters of this tool's response the model receives: the raw body, or the rendered response template, is cut there with `…[truncated]`, and one value inside a template may take all but 2000 of it. An integer from 500 to 20000; anything else is refused with 400. Null or absent is the default, 4000.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "number",
+                      "null"
                     ]
                   },
                   "silenceTruncationAlert": {
@@ -15764,13 +15492,9 @@
                   },
                   "ackMessage": {
                     "description": "Acknowledgement message shown before the call, or null for the default.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -16272,13 +15996,9 @@
                         }
                       },
                       "credentialRef": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
+                        "type": [
+                          "string",
+                          "null"
                         ]
                       },
                       "expectedStatuses": {
@@ -16294,13 +16014,9 @@
                         }
                       },
                       "maxResponseChars": {
-                        "anyOf": [
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "type": "null"
-                          }
+                        "type": [
+                          "number",
+                          "null"
                         ]
                       }
                     }
@@ -16373,13 +16089,9 @@
                         }
                       },
                       "credentialRef": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
+                        "type": [
+                          "string",
+                          "null"
                         ]
                       },
                       "expectedStatuses": {
@@ -16395,13 +16107,9 @@
                         }
                       },
                       "maxResponseChars": {
-                        "anyOf": [
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "type": "null"
-                          }
+                        "type": [
+                          "number",
+                          "null"
                         ]
                       }
                     }
@@ -16474,13 +16182,9 @@
                         }
                       },
                       "credentialRef": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
+                        "type": [
+                          "string",
+                          "null"
                         ]
                       },
                       "expectedStatuses": {
@@ -16496,13 +16200,9 @@
                         }
                       },
                       "maxResponseChars": {
-                        "anyOf": [
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "type": "null"
-                          }
+                        "type": [
+                          "number",
+                          "null"
                         ]
                       }
                     }
@@ -18261,35 +17961,23 @@
                 "properties": {
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "command": {
                     "description": "Launch command for the stdio transport; null otherwise.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "headers": {
@@ -18329,35 +18017,23 @@
                 "properties": {
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "command": {
                     "description": "Launch command for the stdio transport; null otherwise.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "headers": {
@@ -18397,35 +18073,23 @@
                 "properties": {
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "command": {
                     "description": "Launch command for the stdio transport; null otherwise.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "headers": {
@@ -18791,35 +18455,23 @@
                   },
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "command": {
                     "description": "Launch command for the stdio transport; null otherwise.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "headers": {
@@ -18855,35 +18507,23 @@
                   },
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "command": {
                     "description": "Launch command for the stdio transport; null otherwise.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "headers": {
@@ -18919,35 +18559,23 @@
                   },
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "command": {
                     "description": "Launch command for the stdio transport; null otherwise.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "headers": {
@@ -22140,13 +21768,9 @@
                   },
                   "kind": {
                     "description": "Credential kind that drives auto-injection (see secret-types). Immutable after creation.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "baseUrl": {
@@ -22191,13 +21815,9 @@
                   },
                   "kind": {
                     "description": "Credential kind that drives auto-injection (see secret-types). Immutable after creation.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "baseUrl": {
@@ -22242,13 +21862,9 @@
                   },
                   "kind": {
                     "description": "Credential kind that drives auto-injection (see secret-types). Immutable after creation.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "baseUrl": {
@@ -22496,14 +22112,10 @@
                     ]
                   },
                   "baseUrl": {
-                    "anyOf": [
-                      {
-                        "description": "New base http(s) URL; null clears it where the kind allows.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "description": "New base http(s) URL; null clears it where the kind allows.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "paramName": {
@@ -22539,14 +22151,10 @@
                     ]
                   },
                   "baseUrl": {
-                    "anyOf": [
-                      {
-                        "description": "New base http(s) URL; null clears it where the kind allows.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "description": "New base http(s) URL; null clears it where the kind allows.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "paramName": {
@@ -22582,14 +22190,10 @@
                     ]
                   },
                   "baseUrl": {
-                    "anyOf": [
-                      {
-                        "description": "New base http(s) URL; null clears it where the kind allows.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "description": "New base http(s) URL; null clears it where the kind allows.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "paramName": {
@@ -23065,24 +22669,16 @@
                   },
                   "baseURL": {
                     "description": "Base http(s) URL to probe, for host-targeted kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "paramName": {
                     "description": "Parameter name for named-field credential kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -23107,24 +22703,16 @@
                   },
                   "baseURL": {
                     "description": "Base http(s) URL to probe, for host-targeted kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "paramName": {
                     "description": "Parameter name for named-field credential kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -23149,24 +22737,16 @@
                   },
                   "baseURL": {
                     "description": "Base http(s) URL to probe, for host-targeted kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "paramName": {
                     "description": "Parameter name for named-field credential kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -23334,13 +22914,9 @@
                 "properties": {
                   "baseURL": {
                     "description": "Override base http(s) URL to probe, for host-targeted kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -23352,13 +22928,9 @@
                 "properties": {
                   "baseURL": {
                     "description": "Override base http(s) URL to probe, for host-targeted kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -23370,13 +22942,9 @@
                 "properties": {
                   "baseURL": {
                     "description": "Override base http(s) URL to probe, for host-targeted kinds.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -24770,24 +24338,16 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "baseURL": {
                     "description": "Base URL for openai_compatible providers (null clears it).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -24812,24 +24372,16 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "baseURL": {
                     "description": "Base URL for openai_compatible providers (null clears it).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -24854,24 +24406,16 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "baseURL": {
                     "description": "Base URL for openai_compatible providers (null clears it).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -25046,14 +24590,10 @@
                     "type": "boolean"
                   },
                   "credentialRef": {
-                    "anyOf": [
-                      {
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "sendContent": {
@@ -25076,14 +24616,10 @@
                     "type": "boolean"
                   },
                   "credentialRef": {
-                    "anyOf": [
-                      {
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "sendContent": {
@@ -25106,14 +24642,10 @@
                     "type": "boolean"
                   },
                   "credentialRef": {
-                    "anyOf": [
-                      {
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "sendContent": {
@@ -25412,14 +24944,10 @@
                   },
                   "overCeilingMessage": {
                     "description": "What the customer is told when a turn is refused. null says nothing.",
-                    "anyOf": [
-                      {
-                        "maxLength": 2000,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 2000,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "handoffEnabled": {
@@ -25487,14 +25015,10 @@
                   },
                   "overCeilingMessage": {
                     "description": "What the customer is told when a turn is refused. null says nothing.",
-                    "anyOf": [
-                      {
-                        "maxLength": 2000,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 2000,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "handoffEnabled": {
@@ -25562,14 +25086,10 @@
                   },
                   "overCeilingMessage": {
                     "description": "What the customer is told when a turn is refused. null says nothing.",
-                    "anyOf": [
-                      {
-                        "maxLength": 2000,
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "maxLength": 2000,
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "handoffEnabled": {
@@ -26156,13 +25676,9 @@
                   },
                   "baseUrl": {
                     "description": "Instance base URL (defaults to Langfuse Cloud).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -26188,13 +25704,9 @@
                   },
                   "baseUrl": {
                     "description": "Instance base URL (defaults to Langfuse Cloud).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -26220,13 +25732,9 @@
                   },
                   "baseUrl": {
                     "description": "Instance base URL (defaults to Langfuse Cloud).",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -27248,16 +26756,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -27290,16 +26794,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -27332,16 +26832,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -27552,16 +27048,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -27590,16 +27082,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -27628,16 +27116,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -30518,16 +30002,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -30588,16 +30068,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -30658,16 +30134,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -30905,16 +30377,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -30970,16 +30438,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -31035,16 +30499,12 @@
                     }
                   },
                   "secretRef": {
-                    "anyOf": [
-                      {
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -32133,13 +31593,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "inboundAuthStrategy": {
@@ -32152,13 +31608,9 @@
                   },
                   "inboundSecretRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -32195,13 +31647,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "inboundAuthStrategy": {
@@ -32214,13 +31662,9 @@
                   },
                   "inboundSecretRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -32257,13 +31701,9 @@
                   },
                   "credentialRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "inboundAuthStrategy": {
@@ -32276,13 +31716,9 @@
                   },
                   "inboundSecretRef": {
                     "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -32633,13 +32069,9 @@
                   },
                   "credentialRef": {
                     "description": "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "inboundAuthStrategy": {
@@ -32652,13 +32084,9 @@
                   },
                   "inboundSecretRef": {
                     "description": "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -32687,13 +32115,9 @@
                   },
                   "credentialRef": {
                     "description": "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "inboundAuthStrategy": {
@@ -32706,13 +32130,9 @@
                   },
                   "inboundSecretRef": {
                     "description": "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -32741,13 +32161,9 @@
                   },
                   "credentialRef": {
                     "description": "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "inboundAuthStrategy": {
@@ -32760,13 +32176,9 @@
                   },
                   "inboundSecretRef": {
                     "description": "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -33708,13 +33120,9 @@
                   },
                   "description": {
                     "description": "New description, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "chunkSize": {
@@ -33772,13 +33180,9 @@
                   },
                   "description": {
                     "description": "New description, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "chunkSize": {
@@ -33836,13 +33240,9 @@
                   },
                   "description": {
                     "description": "New description, or null to clear it.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "chunkSize": {
@@ -37770,13 +37170,9 @@
                   },
                   "description": {
                     "description": "What this template is for, for the operator.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "blocks": {
@@ -37817,13 +37213,9 @@
                   },
                   "numberPrefix": {
                     "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -37849,13 +37241,9 @@
                   },
                   "description": {
                     "description": "What this template is for, for the operator.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "blocks": {
@@ -37896,13 +37284,9 @@
                   },
                   "numberPrefix": {
                     "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -37928,13 +37312,9 @@
                   },
                   "description": {
                     "description": "What this template is for, for the operator.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "blocks": {
@@ -37975,13 +37355,9 @@
                   },
                   "numberPrefix": {
                     "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -38313,13 +37689,9 @@
                     }
                   },
                   "numberPrefix": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "values": {
@@ -38382,13 +37754,9 @@
                     }
                   },
                   "numberPrefix": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "values": {
@@ -38451,13 +37819,9 @@
                     }
                   },
                   "numberPrefix": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "values": {
@@ -38830,13 +38194,9 @@
                   },
                   "description": {
                     "description": "What this template is for, for the operator.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "blocks": {
@@ -38877,13 +38237,9 @@
                   },
                   "numberPrefix": {
                     "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -38909,13 +38265,9 @@
                   },
                   "description": {
                     "description": "What this template is for, for the operator.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "blocks": {
@@ -38956,13 +38308,9 @@
                   },
                   "numberPrefix": {
                     "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -38988,13 +38336,9 @@
                   },
                   "description": {
                     "description": "What this template is for, for the operator.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "blocks": {
@@ -39035,13 +38379,9 @@
                   },
                   "numberPrefix": {
                     "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "enabled": {
@@ -45743,13 +45083,9 @@
                 "properties": {
                   "agentId": {
                     "description": "Agent id (BigInt string) to bind, or null to unbind the inbox.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -45764,13 +45100,9 @@
                 "properties": {
                   "agentId": {
                     "description": "Agent id (BigInt string) to bind, or null to unbind the inbox.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }
@@ -45785,13 +45117,9 @@
                 "properties": {
                   "agentId": {
                     "description": "Agent id (BigInt string) to bind, or null to unbind the inbox.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   }
                 }

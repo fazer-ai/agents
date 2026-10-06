@@ -557,33 +557,77 @@ function jsonSchemaTypeLabel(p: {
   return null;
 }
 
+// A local `$ref` (a JSON pointer into the root schema, e.g. `#/$defs/item`) resolved against the
+// root; anything else, or a chain past a few hops, stays as is.
+function resolveLocalRef(node: unknown, root: unknown, hops = 0): unknown {
+  const ref = (node as { $ref?: unknown } | null)?.$ref;
+  if (typeof ref !== "string" || !ref.startsWith("#") || hops > 8) return node;
+  let cur: unknown = root;
+  for (const seg of ref.slice(1).split("/").filter(Boolean)) {
+    if (!cur || typeof cur !== "object") return node;
+    const key = decodeURIComponent(seg).replace(/~1/g, "/").replace(/~0/g, "~");
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur && typeof cur === "object"
+    ? resolveLocalRef(cur, root, hops + 1)
+    : node;
+}
+
+// An object schema's properties and required names, through a local `$ref` and `allOf` (branches
+// merged, required names united). The schema itself is not rewritten: this only feeds the summary.
+function objectShape(
+  node: unknown,
+  root: unknown,
+  depth = 0,
+): { properties: Record<string, unknown>; required: Set<string> } {
+  const out = {
+    properties: {} as Record<string, unknown>,
+    required: new Set<string>(),
+  };
+  const s = resolveLocalRef(node, root) as {
+    properties?: unknown;
+    required?: unknown;
+    allOf?: unknown;
+  } | null;
+  if (!s || typeof s !== "object" || depth > 8) return out;
+  if (Array.isArray(s.allOf)) {
+    for (const branch of s.allOf) {
+      const sub = objectShape(branch, root, depth + 1);
+      Object.assign(out.properties, sub.properties);
+      for (const r of sub.required) out.required.add(r);
+    }
+  }
+  if (s.properties && typeof s.properties === "object")
+    Object.assign(out.properties, s.properties);
+  if (Array.isArray(s.required))
+    for (const r of s.required) if (typeof r === "string") out.required.add(r);
+  return out;
+}
+
 // Summarizes an MCP tool's JSON Schema (DynamicStructuredTool.schema is the raw JSON Schema here,
-// not Zod) into a flat arg list for the UI. Non-object / property-less schemas yield no args.
+// not Zod, with `$ref` and `allOf` as the server declared them) into a flat arg list for the UI.
+// Non-object / property-less schemas yield no args.
 export function summarizeToolArgs(schema: unknown): DiscoveredMcpToolArg[] {
   if (!schema || typeof schema !== "object") return [];
-  const s = schema as { properties?: unknown; required?: unknown };
-  if (!s.properties || typeof s.properties !== "object") return [];
-  const required = new Set(
-    Array.isArray(s.required)
-      ? s.required.filter((r): r is string => typeof r === "string")
-      : [],
-  );
-  return Object.entries(s.properties as Record<string, unknown>).map(
-    ([name, raw]) => {
-      const p = (raw && typeof raw === "object" ? raw : {}) as {
-        type?: unknown;
-        description?: unknown;
-        enum?: unknown;
-        items?: unknown;
-      };
-      return {
-        name,
-        type: jsonSchemaTypeLabel(p),
-        description: typeof p.description === "string" ? p.description : null,
-        required: required.has(name),
-      };
-    },
-  );
+  const { properties, required } = objectShape(schema, schema);
+  return Object.entries(properties).map(([name, raw]) => {
+    const own = (raw && typeof raw === "object" ? raw : {}) as {
+      description?: unknown;
+    };
+    const p = (resolveLocalRef(raw, schema) ?? {}) as {
+      type?: unknown;
+      description?: unknown;
+      enum?: unknown;
+      items?: unknown;
+    };
+    const description = own.description ?? p.description;
+    return {
+      name,
+      type: jsonSchemaTypeLabel(p),
+      description: typeof description === "string" ? description : null,
+      required: required.has(name),
+    };
+  });
 }
 
 // Connects to the server and returns its tools — name, description and argument summary — for the

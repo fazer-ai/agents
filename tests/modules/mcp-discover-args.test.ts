@@ -41,6 +41,67 @@ describe("summarizeToolArgs", () => {
     expect(byName.loose).toBe("array");
   });
 
+  // The adapter hands the schema over as the server declared it, so arguments behind a root `$ref`
+  // or `allOf`, and a property that is a `$ref`, are resolved for the summary.
+  test("resolves local $ref and allOf", () => {
+    const args = summarizeToolArgs({
+      $defs: {
+        base: {
+          type: "object",
+          properties: { id: { type: "string", description: "the id" } },
+          required: ["id"],
+        },
+        item: { type: "object", description: "an item" },
+      },
+      allOf: [
+        { $ref: "#/$defs/base" },
+        {
+          type: "object",
+          properties: {
+            item: { $ref: "#/$defs/item" },
+            note: { $ref: "#/$defs/item", description: "own words" },
+          },
+          required: ["item"],
+        },
+      ],
+    });
+    expect(args).toEqual([
+      { name: "id", type: "string", description: "the id", required: true },
+      { name: "item", type: "object", description: "an item", required: true },
+      {
+        name: "note",
+        type: "object",
+        description: "own words",
+        required: false,
+      },
+    ]);
+    expect(
+      summarizeToolArgs({
+        $ref: "#/definitions/root",
+        definitions: {
+          root: { type: "object", properties: { q: { type: "string" } } },
+        },
+      }),
+    ).toEqual([
+      { name: "q", type: "string", description: null, required: false },
+    ]);
+  });
+
+  test("a $ref cycle or a dangling $ref does not hang or throw", () => {
+    expect(
+      summarizeToolArgs({
+        $ref: "#/$defs/a",
+        $defs: { a: { $ref: "#/$defs/a" } },
+      }),
+    ).toEqual([]);
+    expect(
+      summarizeToolArgs({
+        type: "object",
+        properties: { x: { $ref: "#/nope" } },
+      }),
+    ).toEqual([{ name: "x", type: null, description: null, required: false }]);
+  });
+
   test("non-object schema or no properties → no args", () => {
     expect(summarizeToolArgs(null)).toEqual([]);
     expect(summarizeToolArgs({ type: "object" })).toEqual([]);

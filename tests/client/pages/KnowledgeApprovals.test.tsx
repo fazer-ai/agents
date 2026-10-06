@@ -32,7 +32,11 @@ interface PatchCall {
 }
 
 const patchCalls: PatchCall[] = [];
+const postCalls: { url: string; body: Record<string, unknown> }[] = [];
 let approvalsPayload: Record<string, unknown>[] = [];
+let discardedPayload: Record<string, unknown>[] = [];
+// What an approve, reject or requeue POST answers inside its 200.
+let postResult: unknown = "approved";
 // What the PATCH reports back. The endpoint answers "not-pending" INSIDE a 200 when someone else
 // already approved or rejected the item, so the result is data, not an error.
 let patchResult = "updated";
@@ -65,7 +69,13 @@ function installFetchStub() {
       });
       return json({ result: patchResult });
     }
-    if (approval && method === "POST") return json({});
+    if (approval && method === "POST") {
+      postCalls.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+      return json({ result: postResult });
+    }
+    if (url.includes("/knowledge/approvals/discarded")) {
+      return json({ approvals: discardedPayload });
+    }
     if (url.includes("/knowledge/approvals")) {
       return json({ approvals: approvalsPayload });
     }
@@ -121,6 +131,9 @@ function renderQueue() {
 describe("KnowledgeApprovals — reviewing before approving", () => {
   beforeEach(() => {
     patchCalls.length = 0;
+    postCalls.length = 0;
+    discardedPayload = [];
+    postResult = "approved";
     patchResult = "updated";
     patchGate = null;
     seed();
@@ -292,5 +305,157 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     await screen.findByText(HEDGED);
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
     expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+  });
+});
+
+const DOC_TEXT = "O prazo de entrega é de 3 dias úteis.";
+
+describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
+  beforeEach(() => {
+    patchCalls.length = 0;
+    postCalls.length = 0;
+    discardedPayload = [];
+    postResult = "approved";
+    patchResult = "updated";
+    patchGate = null;
+    seed();
+    installFetchStub();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("the reviewer's comment shows on the card, apart from the agent's rationale", async () => {
+    seed({ reviewerComment: "Corrige o prazo do documento atual." });
+    renderQueue();
+    await screen.findByText(HEDGED);
+    expect(
+      screen.getByText(/Corrige o prazo do documento atual/),
+    ).toBeDefined();
+    expect(screen.getByText(/Não consegui confirmar/)).toBeDefined();
+  });
+
+  test("a proposed replacement shows the current text and approves either way", async () => {
+    seed({
+      replacesDocument: {
+        id: "31",
+        title: "Prazos",
+        content: DOC_TEXT,
+        synced: false,
+      },
+    });
+    renderQueue();
+    await screen.findByText(DOC_TEXT);
+    fireEvent.click(
+      screen.getByRole("button", { name: /approve as a new document/i }),
+    );
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0]?.url).toContain("/approvals/7/approve");
+    expect(postCalls[0]?.body).toEqual({ asNew: true });
+  });
+
+  test("approve and replace sends no asNew", async () => {
+    seed({
+      replacesDocument: {
+        id: "31",
+        title: "Prazos",
+        content: DOC_TEXT,
+        synced: false,
+      },
+    });
+    renderQueue();
+    await screen.findByText(DOC_TEXT);
+    fireEvent.click(
+      screen.getByRole("button", { name: /approve and replace/i }),
+    );
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0]?.body).toEqual({});
+  });
+
+  // NOTE: nothing was claimed when the document is gone, so the card stays and offers only a plain
+  // approval, which the server stores as a new document.
+  test("a replacement target that vanished keeps the card and drops the replace offer", async () => {
+    seed({
+      replacesDocument: {
+        id: "31",
+        title: "Prazos",
+        content: DOC_TEXT,
+        synced: false,
+      },
+    });
+    postResult = { outcome: "replace-unavailable" };
+    renderQueue();
+    await screen.findByText(DOC_TEXT);
+    fireEvent.click(
+      screen.getByRole("button", { name: /approve and replace/i }),
+    );
+    await waitFor(() => expect(screen.queryByText(DOC_TEXT)).toBeNull());
+    expect(screen.getByText(HEDGED)).toBeDefined();
+    expect(screen.getByRole("button", { name: /^approve$/i })).toBeDefined();
+  });
+
+  test("rejecting asks for an optional reason and sends it trimmed", async () => {
+    postResult = "rejected";
+    renderQueue();
+    await screen.findByText(HEDGED);
+    fireEvent.click(screen.getByRole("button", { name: /reject/i }));
+    const box = await screen.findByLabelText(/reason/i);
+    fireEvent.change(box, {
+      target: { value: "  prazo errado, são 3 dias  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0]?.url).toContain("/approvals/7/reject");
+    expect(postCalls[0]?.body).toEqual({ reason: "prazo errado, são 3 dias" });
+  });
+
+  test("rejecting with no reason sends an empty body", async () => {
+    postResult = "rejected";
+    renderQueue();
+    await screen.findByText(HEDGED);
+    fireEvent.click(screen.getByRole("button", { name: /reject/i }));
+    await screen.findByLabelText(/reason/i);
+    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0]?.body).toEqual({});
+  });
+
+  test("the discarded tab shows what it matched and sends it back to the queue", async () => {
+    approvalsPayload = [];
+    discardedPayload = [
+      {
+        id: "9",
+        status: "DISCARDED",
+        proposedTitle: "Prazo repetido",
+        proposedContent: CLEAN,
+        rationale: null,
+        knowledgeBaseName: "Base",
+        source: null,
+        reviewerComment: "Já está na base.",
+        replacesDocument: null,
+        match: {
+          kind: "document",
+          document: {
+            id: "31",
+            title: "Prazos",
+            content: DOC_TEXT,
+            synced: false,
+          },
+        },
+      },
+    ];
+    postResult = "requeued";
+    renderQueue();
+    fireEvent.click(await screen.findByRole("tab", { name: /discarded/i }));
+    await screen.findByText(DOC_TEXT);
+    expect(screen.getByText(/Já está na base/)).toBeDefined();
+    fireEvent.click(
+      screen.getByRole("button", { name: /send to the pending list/i }),
+    );
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0]?.url).toContain("/approvals/9/requeue");
+    await screen.findByText("Prazo repetido");
+    expect(screen.queryByRole("tab", { name: /discarded/i })).toBeNull();
   });
 });

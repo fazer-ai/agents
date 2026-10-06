@@ -27,7 +27,8 @@ export type EditorTab =
   | "behavior"
   | "guardrails"
   | "channelRedirect"
-  | "tools";
+  | "tools"
+  | "knowledge";
 
 export interface EditorTarget {
   tab: EditorTab;

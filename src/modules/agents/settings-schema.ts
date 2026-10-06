@@ -596,6 +596,24 @@ const memory = z.looseObject({
     .optional(),
 });
 
+const knowledge = z.looseObject({
+  // The model that reviews the agent's knowledge suggestions before they reach the queue, as an
+  // override of the agent's. Resolved at READ time like memory.compaction: a half-named override is
+  // stored without complaint and the review falls back to queueing the proposal unreviewed. All
+  // four absent (the default) reviews on the agent's model.
+  suggestionReview: z
+    .looseObject({
+      provider: oneOf(MODEL_PROVIDERS)
+        .nullable()
+        .optional()
+        .describe("reviewer model PROVIDER; null inherits the agent's"),
+      model: z.string().nullable().optional(),
+      credentialRef: credentialRef(),
+      baseURL: baseURL(),
+    })
+    .optional(),
+});
+
 const modelFallback = z.looseObject({
   // Where the turn goes when the agent's own provider cannot take it (`resolveModelOverride`). Unlike
   // its siblings, absent does NOT mean the agent's model (that is the provider that just failed): a
@@ -875,6 +893,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   crossInboxCase: crossInboxCase.optional(),
   observability: observability.optional(),
   memory: memory.optional(),
+  knowledge: knowledge.optional(),
   modelFallback: modelFallback.optional(),
   guardrails: guardrails.optional(),
   kanban: kanban.optional(),

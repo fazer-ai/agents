@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
+import { upsertJobRow } from "@/modules/scheduler/service";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { passageOf } from "./contact-footer";
 import {
@@ -12,6 +15,7 @@ import {
   createDocument,
   refuseUnstorable,
   resolveEmbeddingConfig,
+  updateDocument,
 } from "./documents";
 import { embedQuery } from "./embeddings";
 import { type ChunkHit, searchChunks } from "./sql";
@@ -235,14 +239,28 @@ export interface SuggestParams {
   rationale?: string;
   threadId?: string;
   interruptKey?: string;
+  // The agent whose tool proposed it. Present, the proposal waits for the reviewer (SCREENING);
+  // absent (the REST route), it goes straight to the pending list.
+  agentId?: bigint;
   base?: PrismaClient;
+}
+
+// The proposal as the key compares it: case, punctuation and runs of whitespace carry no claim, so
+// "Prazo: 7 dias." and "prazo 7 dias" are one entry. Letters keep their accents.
+export function normalizedSuggestionHash(content: string): string {
+  const folded = content
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  return createHash("sha256").update(folded, "utf8").digest("hex");
 }
 
 // The same storable-text rule as the document write. Here the writer is the agent's suggestion tool,
 // a model, which reads a tool failure and can write the fact again, so the answer is still a refusal.
 export async function createSuggestion(
   params: SuggestParams,
-): Promise<{ id: bigint }> {
+): Promise<{ id: bigint; created: boolean }> {
   const base = params.base ?? basePrisma;
   // NOTE: Labelled by the names the CALLER sends (`title` / `content` / `rationale` on both the REST
   // body and the suggestion tool), not by the columns they land in.
@@ -257,20 +275,54 @@ export async function createSuggestion(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
-    const item = await db.approvalQueueItem.create({
+    const tenantId = params.ctx.tenantId as bigint;
+    const normalizedHash = normalizedSuggestionHash(params.proposedContent);
+    const reviewed = params.agentId !== undefined;
+    // The same entry for the same base is the row already there, whatever became of it: a
+    // person has it, or decided it. `skipDuplicates` rather than a lookup first, so two proposals
+    // racing cannot both insert, and rather than catching P2002, which would abort this transaction.
+    const [item] = await db.approvalQueueItem.createManyAndReturn({
       data: {
-        tenantId: params.ctx.tenantId as bigint,
+        tenantId,
         knowledgeBaseId: params.knowledgeBaseId,
         proposedContent: params.proposedContent,
         proposedTitle: params.proposedTitle,
         rationale: params.rationale,
         threadId: params.threadId,
         interruptKey: params.interruptKey,
-        status: "PENDING",
+        normalizedHash,
+        agentId: params.agentId,
+        status: reviewed ? "SCREENING" : "PENDING",
       },
+      skipDuplicates: true,
       select: { id: true },
     });
-    return { id: item.id };
+    if (!item) {
+      const existing = await db.approvalQueueItem.findUniqueOrThrow({
+        where: {
+          tenantId_knowledgeBaseId_normalizedHash: {
+            tenantId,
+            knowledgeBaseId: params.knowledgeBaseId,
+            normalizedHash,
+          },
+        },
+        select: { id: true },
+      });
+      return { id: existing.id, created: false };
+    }
+    // NOTE: Armed in the same transaction as the row, so a SCREENING item always has the job that
+    // takes it out of SCREENING.
+    if (reviewed) {
+      await upsertJobRow(db, {
+        tenantId,
+        kind: "SUGGESTION_REVIEW",
+        dedupeKey: String(item.id),
+        runAt: new Date(),
+        rearm: "once",
+        payload: { itemId: String(item.id) },
+      });
+    }
+    return { id: item.id, created: true };
   });
 }
 
@@ -312,13 +364,45 @@ export function parseThreadOrigin(
   return null;
 }
 
-export async function listPendingApprovals(
+export function listPendingApprovals(
   ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+) {
+  return listApprovals(ctx, "pending", base);
+}
+
+// What the suggestion reviewer left on an item, resolved for display: the document it would
+// replace (pending) or what it matched (discarded). A target deleted since reads as null.
+export interface ReviewedDocumentRef {
+  id: string;
+  title: string;
+  content: string;
+  // Owned by a source sync, which a replacement would be undone by: only "approve as new" applies.
+  synced: boolean;
+}
+export type ReviewerMatch =
+  | { kind: "document"; document: ReviewedDocumentRef }
+  | {
+      kind: "suggestion";
+      id: string;
+      status: string;
+      title: string | null;
+      content: string;
+    }
+  | null;
+
+// "pending" is what a person decides on (PENDING, EDITED); "discarded" is what the reviewer held back.
+export async function listApprovals(
+  ctx: TenantContext,
+  view: "pending" | "discarded",
   base: PrismaClient = basePrisma,
 ) {
   return runScopedOn(base, ctx, async (db) => {
     const items = await db.approvalQueueItem.findMany({
-      where: { status: { in: ["PENDING", "EDITED"] } },
+      where: {
+        status:
+          view === "pending" ? { in: ["PENDING", "EDITED"] } : "DISCARDED",
+      },
       orderBy: { createdAt: "asc" },
       select: {
         id: true,
@@ -329,8 +413,72 @@ export async function listPendingApprovals(
         rationale: true,
         status: true,
         createdAt: true,
+        reviewerComment: true,
+        replacesDocumentId: true,
+        matchedItemId: true,
+        matchedDocumentId: true,
       },
     });
+    const docIds = [
+      ...new Set(
+        items.flatMap((i) =>
+          [i.replacesDocumentId, i.matchedDocumentId].filter(
+            (d): d is bigint => d !== null,
+          ),
+        ),
+      ),
+    ];
+    const matchedIds = [
+      ...new Set(
+        items.flatMap((i) =>
+          i.matchedItemId === null ? [] : [i.matchedItemId],
+        ),
+      ),
+    ];
+    const [docs, matchedItems] = await Promise.all([
+      docIds.length
+        ? db.knowledgeDocument.findMany({
+            where: { id: { in: docIds } },
+            select: { id: true, title: true, content: true, externalId: true },
+          })
+        : [],
+      matchedIds.length
+        ? db.approvalQueueItem.findMany({
+            where: { id: { in: matchedIds } },
+            select: {
+              id: true,
+              status: true,
+              proposedTitle: true,
+              proposedContent: true,
+            },
+          })
+        : [],
+    ]);
+    const docRef = (id: bigint | null): ReviewedDocumentRef | null => {
+      const d = id === null ? undefined : docs.find((x) => x.id === id);
+      return d
+        ? {
+            id: String(d.id),
+            title: d.title,
+            content: d.content,
+            synced: d.externalId !== null,
+          }
+        : null;
+    };
+    const matchOf = (i: (typeof items)[number]): ReviewerMatch => {
+      const doc = docRef(i.matchedDocumentId);
+      if (doc) return { kind: "document", document: doc };
+      const m = matchedItems.find((x) => x.id === i.matchedItemId);
+      return m
+        ? {
+            kind: "suggestion",
+            id: String(m.id),
+            status: m.status,
+            title: m.proposedTitle,
+            content: m.proposedContent,
+          }
+        : null;
+    };
 
     // Batch-resolve display data (the queue is small): the target base name, and the originating
     // conversation/agent for the "go to source" link. RLS scopes every read to this tenant.
@@ -412,6 +560,9 @@ export async function listPendingApprovals(
       status: i.status,
       createdAt: i.createdAt,
       source: resolveSource(origins[idx] ?? null),
+      reviewerComment: i.reviewerComment,
+      replacesDocument: docRef(i.replacesDocumentId),
+      match: view === "discarded" ? matchOf(i) : null,
     }));
   });
 }
@@ -490,7 +641,10 @@ export async function editApprovalItem(
 }
 
 export type ApproveResult =
-  | { outcome: "approved"; chunks: number }
+  | { outcome: "approved"; chunks: number; replacedDocumentId?: string }
+  // The reviewer named a document to replace and it can no longer be replaced (deleted, or owned by
+  // a source sync); nothing was claimed, so the person can approve it as a new document instead.
+  | { outcome: "replace-unavailable" }
   | { outcome: "not-pending" }
   | { outcome: "not-found" };
 
@@ -504,6 +658,7 @@ export interface ClaimedApproval {
   knowledgeBaseId: bigint;
   proposedTitle: string | null;
   proposedContent: string;
+  replacesDocumentId: bigint | null;
 }
 
 export async function claimApprovalForStorage(
@@ -517,13 +672,14 @@ export async function claimApprovalForStorage(
         knowledge_base_id: bigint;
         proposed_title: string | null;
         proposed_content: string;
+        replaces_document_id: bigint | null;
       }[]
     >`
       UPDATE approval_queue_items
          SET status = 'APPROVED', updated_at = now()
        WHERE id = ${id}
          AND status IN ('PENDING', 'EDITED')
-      RETURNING knowledge_base_id, proposed_title, proposed_content
+      RETURNING knowledge_base_id, proposed_title, proposed_content, replaces_document_id
     `;
     // NOTE: In the claim's own transaction, and only when the claim WON: the statement above is what
     // makes an approval exclusive, so a second operator racing it gets no row and records nothing.
@@ -548,6 +704,7 @@ export async function claimApprovalForStorage(
     knowledgeBaseId: row.knowledge_base_id,
     proposedTitle: row.proposed_title,
     proposedContent: row.proposed_content,
+    replacesDocumentId: row.replaces_document_id,
   };
 }
 
@@ -555,6 +712,8 @@ export async function approveApprovalItem(params: {
   ctx: TenantContext;
   id: bigint;
   demoMode?: boolean;
+  // Ignore the reviewer's replacement and store the proposal as a document of its own.
+  asNew?: boolean;
   base?: PrismaClient;
 }): Promise<ApproveResult> {
   const base = params.base ?? basePrisma;
@@ -571,7 +730,12 @@ export async function approveApprovalItem(params: {
   const loaded = await runScopedOn(base, ctx, async (db) => {
     const item = await db.approvalQueueItem.findUnique({
       where: { id: params.id },
-      select: { id: true, status: true, knowledgeBaseId: true },
+      select: {
+        id: true,
+        status: true,
+        knowledgeBaseId: true,
+        replacesDocumentId: true,
+      },
     });
     if (!item) return { kind: "not-found" as const };
     if (item.status !== "PENDING" && item.status !== "EDITED") {
@@ -582,10 +746,24 @@ export async function approveApprovalItem(params: {
       select: { id: true },
     });
     if (!kb) return { kind: "not-found" as const };
+    if (item.replacesDocumentId !== null && !params.asNew) {
+      const target = await db.knowledgeDocument.findFirst({
+        where: {
+          id: item.replacesDocumentId,
+          knowledgeBaseId: item.knowledgeBaseId,
+          externalId: null,
+        },
+        select: { id: true },
+      });
+      if (!target) return { kind: "replace-unavailable" as const };
+    }
     return { kind: "ok" as const, item };
   });
   if (loaded.kind === "not-found") return { outcome: "not-found" };
   if (loaded.kind === "not-pending") return { outcome: "not-pending" };
+  if (loaded.kind === "replace-unavailable") {
+    return { outcome: "replace-unavailable" };
+  }
 
   // Phase 2: CAS-claim the approval (exactly-once) AND read the text in the same statement.
   //
@@ -598,8 +776,32 @@ export async function approveApprovalItem(params: {
   const claimed = await claimApprovalForStorage(ctx, params.id, base);
   if (!claimed) return { outcome: "not-pending" };
 
-  // Phase 3: Create a KnowledgeDocument and enqueue RAG_INGEST (or skip in demo mode).
-  const doc = await createDocument({
+  // Phase 3: replace the document the reviewer named, or create one; either enqueues RAG_INGEST
+  // (or skips it in demo mode). A replacement target that vanished between the check above and here
+  // falls back to a new document: the claim already won, and the text must land somewhere.
+  const replaceId = params.asNew ? null : claimed.replacesDocumentId;
+  let doc: { id: bigint } | null = null;
+  if (replaceId !== null) {
+    try {
+      doc = await updateDocument(
+        ctx,
+        replaceId,
+        {
+          ...(claimed.proposedTitle ? { title: claimed.proposedTitle } : {}),
+          text: claimed.proposedContent,
+        },
+        base,
+      );
+    } catch (err) {
+      logger.warn(
+        { err },
+        "approval %s: the document to replace is gone, storing it as a new one",
+        String(params.id),
+      );
+    }
+  }
+  const replaced = doc !== null;
+  doc ??= await createDocument({
     ctx,
     knowledgeBaseId: claimed.knowledgeBaseId,
     title: claimed.proposedTitle ?? "Conteúdo aprovado",
@@ -624,19 +826,34 @@ export async function approveApprovalItem(params: {
     );
   }
 
-  return { outcome: "approved", chunks: 0 };
+  return replaced
+    ? { outcome: "approved", chunks: 0, replacedDocumentId: String(doc.id) }
+    : { outcome: "approved", chunks: 0 };
 }
+
+export const REJECTION_REASON_MAX = 1_000;
 
 export async function rejectApprovalItem(params: {
   ctx: TenantContext;
   id: bigint;
+  // Why, in the person's words. Optional; the suggestion reviewer reads it beside the rejected text
+  // so a corrected claim is not held back by the refusal of a wrong one.
+  reason?: string;
   base?: PrismaClient;
 }): Promise<"rejected" | "not-pending"> {
   const base = params.base ?? basePrisma;
+  const reason = params.reason?.trim() || null;
+  refuseUnstorable([["reason", reason ?? undefined]]);
+  if (reason !== null && reason.length > REJECTION_REASON_MAX) {
+    throw new AppError(
+      `reason is longer than ${REJECTION_REASON_MAX} characters`,
+      422,
+    );
+  }
   return runScopedOn(base, params.ctx, async (db) => {
     const res = await db.approvalQueueItem.updateMany({
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
-      data: { status: "REJECTED" },
+      data: { status: "REJECTED", rejectionReason: reason },
     });
     // NOTE: The condition IS the test, so a retry on an item somebody else already decided records
     // nothing. What the row carries is the DECISION and never the proposal's text: the body is what
@@ -649,6 +866,24 @@ export async function rejectApprovalItem(params: {
       });
     }
     return res.count > 0 ? "rejected" : "not-pending";
+  });
+}
+
+// A proposal the reviewer discarded, sent to the pending list by a person who disagrees. No audit
+// line, like the proposal itself: nothing in the base changed, and the decision on it is still
+// ahead. The status in the WHERE makes a second click, or a stale screen, a no-op.
+export async function requeueDiscardedItem(params: {
+  ctx: TenantContext;
+  id: bigint;
+  base?: PrismaClient;
+}): Promise<"requeued" | "not-discarded"> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, params.ctx, async (db) => {
+    const res = await db.approvalQueueItem.updateMany({
+      where: { id: params.id, status: "DISCARDED" },
+      data: { status: "PENDING" },
+    });
+    return res.count > 0 ? "requeued" : "not-discarded";
   });
 }
 

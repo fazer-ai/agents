@@ -25,6 +25,7 @@ const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   tts: "degraded",
   ttsNormalize: "degraded",
   memoryModel: "degraded",
+  suggestionReviewModel: "degraded",
   modelFallback: "degraded",
   vision: "degraded",
   knowledge: "degraded",

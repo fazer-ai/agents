@@ -371,6 +371,10 @@ const TABLE: Record<string, Row> = {
     args: { approval_id: "abc" },
     why: "approval_id is not a number",
   },
+  knowledge_requeue: {
+    args: { approval_id: "abc" },
+    why: "approval_id is not a number",
+  },
   knowledge_source_remove: {
     args: { knowledge_base_id: NOPE },
     why: "base does not exist",

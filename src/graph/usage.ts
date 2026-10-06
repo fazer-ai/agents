@@ -281,6 +281,8 @@ export const USAGE_NODE_IS_AGENT_TURN: Readonly<Record<string, boolean>> =
     // The OBSERVE job classifying a conversation the agent watches: a model call on a
     // conversation nobody of ours answers, so it is involvement in nothing the agent said.
     observer: false,
+    // The SUGGESTION_REVIEW job judging a proposed knowledge entry: nothing the agent said.
+    suggestion_review: false,
   });
 
 // Consumed as an EXCLUSION, with `node: null` kept beside it: a row with no node is an agent turn,

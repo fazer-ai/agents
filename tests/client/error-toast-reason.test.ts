@@ -598,6 +598,10 @@ const WAIVED: Record<string, string> = {
     "settingsTextError is OUR OWN preflight over the bag, run after a re-read of the stored settings. There is no refusal: the request it would have made was never sent.",
   "pages/resources/KnowledgeApprovals.tsx :: approvals.editGone":
     "A lost race reported INSIDE a 200: another reviewer got there first. The server did not refuse anything, so there is no sentence of its to show.",
+  "pages/resources/KnowledgeApprovals.tsx :: approvals.replaceGone":
+    "An outcome INSIDE a 200: the document the reviewer named is gone or synced, nothing was claimed, and the server's answer is a code (`replace-unavailable`), not a sentence. Same class as `approvals.editGone`.",
+  "pages/resources/KnowledgeApprovals.tsx :: approvals.requeueGone":
+    "A lost race reported INSIDE a 200 (`not-discarded`): someone moved the item first. Same class as `approvals.editGone`.",
   "components/GoogleOAuthSection.tsx :: vault.googleOAuth.popupBlocked":
     "The browser refused to open the popup. Nothing was sent, so there is no answer to quote.",
   "components/GoogleOAuthSection.tsx :: vault.googleOAuth.authFailed":
@@ -1114,7 +1118,7 @@ describe("an error toast shows what the server said", () => {
   // like the `popupBlocked`/`authFailed`/`googleSignInFailed` pairs). Extracting the two pages'
   // shared handler would only relocate the `t(...)` sentences to the call sites.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 12);
+    expectWaiverLedger("WAIVED", WAIVED, 14);
   });
 
   test("every toast the scanner cannot ask about is named", () => {

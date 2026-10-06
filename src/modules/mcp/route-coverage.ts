@@ -192,6 +192,8 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /v1/knowledge/approvals/:id": { tool: "knowledge_edit" },
   "POST /v1/knowledge/approvals/:id/approve": { tool: "knowledge_approve" },
   "POST /v1/knowledge/approvals/:id/reject": { tool: "knowledge_reject" },
+  "GET /v1/knowledge/approvals/discarded": { tool: "knowledge_approvals_list" },
+  "POST /v1/knowledge/approvals/:id/requeue": { tool: "knowledge_requeue" },
   "GET /v1/logs/": { tool: "logs_query" },
   "GET /v1/logs/export": { tool: "logs_export" },
   "GET /v1/mcp/admin/connection": { none: MCP_ACCESS },

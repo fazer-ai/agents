@@ -22,8 +22,10 @@ import {
   deleteKnowledgeBase,
   editApprovalItem,
   getKnowledgeBase,
+  listApprovals,
   listPendingApprovals,
   rejectApprovalItem,
+  requeueDiscardedItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
 import {
@@ -509,7 +511,7 @@ async function findApproval(
 
 export async function knowledgeApprove(
   principal: VerifiedToken,
-  args: { approval_id: string; dry_run?: boolean },
+  args: { approval_id: string; as_new?: boolean; dry_run?: boolean },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
@@ -528,9 +530,21 @@ export async function knowledgeApprove(
         target,
         proposedTitle: item.proposedTitle,
         knowledgeBaseId: item.knowledgeBaseId,
+        replacesDocument:
+          args.as_new || !item.replacesDocument
+            ? null
+            : {
+                id: item.replacesDocument.id,
+                title: item.replacesDocument.title,
+              },
       });
     }
-    const result = await approveApprovalItem({ ctx, id, base });
+    const result = await approveApprovalItem({
+      ctx,
+      id,
+      asNew: args.as_new,
+      base,
+    });
     return ok({ dryRun: false, applied: true, target, result });
   } catch (e) {
     return failOf(e);
@@ -539,7 +553,7 @@ export async function knowledgeApprove(
 
 export async function knowledgeReject(
   principal: VerifiedToken,
-  args: { approval_id: string; dry_run?: boolean },
+  args: { approval_id: string; reason?: string; dry_run?: boolean },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
@@ -557,9 +571,45 @@ export async function knowledgeReject(
         action: "reject",
         target,
         proposedTitle: item.proposedTitle,
+        reason: args.reason?.trim() || null,
       });
     }
-    const outcome = await rejectApprovalItem({ ctx, id, base });
+    const outcome = await rejectApprovalItem({
+      ctx,
+      id,
+      reason: args.reason,
+      base,
+    });
+    return ok({ dryRun: false, applied: true, target, outcome });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function knowledgeRequeue(
+  principal: VerifiedToken,
+  args: { approval_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.approval_id, "approval_id");
+  if (typeof id !== "bigint") return id;
+  const target = `approval:${id}`;
+  try {
+    if (args.dry_run !== false) {
+      const all = await listApprovals(ctx, "discarded", base);
+      const item = all.find((a) => a.id === String(id));
+      if (!item) return err("approval not found or not discarded");
+      return ok({
+        dryRun: true,
+        action: "requeue",
+        target,
+        proposedTitle: item.proposedTitle,
+      });
+    }
+    const outcome = await requeueDiscardedItem({ ctx, id, base });
     return ok({ dryRun: false, applied: true, target, outcome });
   } catch (e) {
     return failOf(e);

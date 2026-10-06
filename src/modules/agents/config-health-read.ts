@@ -31,6 +31,7 @@ import {
 } from "@/modules/guardrails/health";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { readSttConfig } from "@/modules/stt/settings";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import { readTtsConfig } from "@/modules/tts/settings";
@@ -237,6 +238,9 @@ export async function readAgentConfigHealth(
     savedModelBaseURL: modelBaseURL,
     savedModelCredentialRef: modelCredentialRef,
     savedMemoryCredentialBaseURL: vaultBaseUrl(memory.compaction.credentialRef),
+    savedSuggestionReviewCredentialBaseURL: vaultBaseUrl(
+      readKnowledgeConfig(settings).suggestionReview.credentialRef,
+    ),
     savedModelFallbackCredentialBaseURL: vaultBaseUrl(
       readModelFallbackConfig(settings).credentialRef,
     ),

@@ -51,6 +51,12 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     use: "apiKey",
   },
   {
+    path: ["knowledge", "suggestionReview", "credentialRef"],
+    tab: "knowledge",
+    sectionId: "kb-review",
+    use: "apiKey",
+  },
+  {
     path: ["modelFallback", "credentialRef"],
     tab: "behavior",
     sectionId: "modelFallback",
@@ -58,7 +64,7 @@ export const SETTINGS_CREDENTIAL_PATHS = [
   },
 ] as const satisfies ReadonlyArray<{
   path: readonly [keyof BehaviorSettingsPatch, ...string[]];
-  tab: "behavior" | "guardrails";
+  tab: "behavior" | "guardrails" | "knowledge";
   sectionId: string;
   // What the field DOES with the entry, and therefore which kinds can serve it (secretTypeFits).
   // Required, so a credential field added to this list cannot be silently exempted from the check:

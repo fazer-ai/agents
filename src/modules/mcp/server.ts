@@ -172,6 +172,7 @@ import {
   knowledgeEdit,
   knowledgeReindex,
   knowledgeReject,
+  knowledgeRequeue,
   knowledgeSourceRemove,
   knowledgeSourceSet,
   knowledgeSourceSync,
@@ -909,10 +910,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_approvals_list",
       {
         description:
-          "List the tenant's PENDING knowledge-suggestion approvals (proposed title/content, rationale, source conversation/playground).",
-        inputSchema: {},
+          "List the tenant's knowledge-suggestion approvals (proposed title/content, rationale, source conversation/playground, reviewer comment). view 'pending' (default) awaits a person; 'discarded' is what the suggestion reviewer held back as a repeat.",
+        inputSchema: { view: z.enum(["pending", "discarded"]).optional() },
       },
-      async (_args, eff) => writeContent(await knowledgeApprovalsList(eff)),
+      async (args: { view?: "pending" | "discarded" }, eff) =>
+        writeContent(await knowledgeApprovalsList(eff, args)),
     );
 
     registerTenantTool(
@@ -2817,14 +2819,17 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_approve",
       {
         description:
-          "Approve a pending knowledge suggestion: creates a document and queues embedding. Previews the item and acts ONLY when dry_run is false.",
+          "Approve a pending knowledge suggestion: creates a document and queues embedding, or replaces the document the reviewer named unless as_new is true. Previews the item and acts ONLY when dry_run is false.",
         inputSchema: {
           approval_id: z.string(),
+          as_new: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
-      async (args: { approval_id: string; dry_run?: boolean }, eff) =>
-        writeContent(await knowledgeApprove(eff, args)),
+      async (
+        args: { approval_id: string; as_new?: boolean; dry_run?: boolean },
+        eff,
+      ) => writeContent(await knowledgeApprove(eff, args)),
     );
 
     registerTenantTool(
@@ -2833,14 +2838,33 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_reject",
       {
         description:
-          "Reject a pending knowledge suggestion. Previews the item and acts ONLY when dry_run is false.",
+          "Reject a pending knowledge suggestion, with an optional reason the reviewer of later suggestions reads. Previews the item and acts ONLY when dry_run is false.",
+        inputSchema: {
+          approval_id: z.string(),
+          reason: z.string().max(1000).optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { approval_id: string; reason?: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await knowledgeReject(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_requeue",
+      {
+        description:
+          "Send a suggestion the reviewer discarded to the pending list. Previews the item and acts ONLY when dry_run is false.",
         inputSchema: {
           approval_id: z.string(),
           dry_run: z.boolean().optional(),
         },
       },
       async (args: { approval_id: string; dry_run?: boolean }, eff) =>
-        writeContent(await knowledgeReject(eff, args)),
+        writeContent(await knowledgeRequeue(eff, args)),
     );
 
     registerTenantTool(

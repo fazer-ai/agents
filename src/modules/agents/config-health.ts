@@ -17,6 +17,7 @@ import {
   scheduleCanClose,
 } from "@/modules/business-hours/hours";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import {
   type CredentialUse,
@@ -57,6 +58,9 @@ export type ConfigIssueKey =
   | "tts"
   | "ttsNormalize"
   | "memoryModel"
+  // The knowledge suggestion reviewer's own model is set and cannot run: suggestions reach the
+  // queue unreviewed, with nothing else saying so.
+  | "suggestionReviewModel"
   | "modelFallback"
   | "vision"
   | "guardrails"
@@ -86,7 +90,13 @@ export interface ConfigIssue {
   // Deep-link target for credential issues (tab + section anchor). Absent for "knowledge" issues,
   // which open the knowledge-base documents modal instead of scrolling to a section, and for a
   // "textCap" issue on a field the editor has no control for.
-  tab?: "general" | "behavior" | "guardrails" | "channelRedirect" | "tools";
+  tab?:
+    | "general"
+    | "behavior"
+    | "guardrails"
+    | "channelRedirect"
+    | "tools"
+    | "knowledge";
   // The DOM anchor id of the section to scroll to (matches the section's `id`).
   sectionId?: string;
   // When true, the credential IS referenced but its secret has not been filled yet (a "pending"
@@ -191,6 +201,8 @@ export interface ConfigHealthInput {
   // answers, and misses the opposite case — a credential endpoint on a vendor that never sends one.
   // Null until the vault list lands, which is what the deferral below is for.
   savedMemoryCredentialBaseURL?: string | null;
+  // The same, for the saved suggestion reviewer credential.
+  savedSuggestionReviewCredentialBaseURL?: string | null;
   savedModelFallbackCredentialBaseURL?: string | null;
   sttEnabled: boolean;
   sttCredentialRef: string;
@@ -577,6 +589,59 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       credIssue(
         compactionResolution !== null && Boolean(compaction.credentialRef),
         compaction.credentialRef ?? "",
+        "apiKey",
+        vault,
+      ),
+    );
+  }
+  // The suggestion reviewer's own model, judged like the summariser. Unset is the agent's model and
+  // never an issue of its own.
+  const review = readKnowledgeConfig(input.settings).suggestionReview;
+  const reviewOverridden =
+    review.provider !== null ||
+    review.model !== null ||
+    review.credentialRef !== null ||
+    review.baseURL !== null;
+  const reviewResolution = reviewOverridden
+    ? resolveModelOverride(
+        review,
+        {
+          provider: input.savedModelProvider,
+          model: "",
+          baseURL: input.savedModelBaseURL ?? null,
+        },
+        {
+          ownCredentialBaseURL:
+            input.savedSuggestionReviewCredentialBaseURL ?? null,
+          isUsableBaseURL: isValidHttpUrl,
+        },
+      )
+    : null;
+  const reviewIssue: ConfigIssue = {
+    key: "suggestionReviewModel",
+    tab: "knowledge",
+    sectionId: "kb-review",
+  };
+  const reviewEndpointOwed = endpointCouldStillArrive(
+    endpointsKnown,
+    { provider: review.provider, credentialRef: review.credentialRef },
+    {
+      provider: input.savedModelProvider,
+      credentialRef: input.savedModelCredentialRef,
+    },
+  );
+  if (
+    reviewResolution !== null &&
+    !reviewResolution.runnable &&
+    !(reviewEndpointOwed && reviewResolution.reason === "endpoint_unusable")
+  ) {
+    issues.push(reviewIssue);
+  } else {
+    push(
+      reviewIssue,
+      credIssue(
+        reviewResolution !== null && Boolean(review.credentialRef),
+        review.credentialRef ?? "",
         "apiKey",
         vault,
       ),

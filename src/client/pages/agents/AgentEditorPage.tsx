@@ -140,6 +140,11 @@ import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
+import {
+  type SuggestionReviewState,
+  suggestionReviewToForm,
+  suggestionReviewToStored,
+} from "./knowledgeFormState";
 import { limitsToForm, limitsToStored } from "./limitsFormState";
 import { memoryToForm, memoryToStored } from "./memoryFormState";
 import {
@@ -890,6 +895,9 @@ function AgentEditor() {
   // the round-trip pair produces, so a field added to `compaction` cannot default differently here
   // than it does everywhere else.
   const [memory, setMemory] = useState<MemoryState>(() => memoryToForm({}));
+  const [review, setReview] = useState<SuggestionReviewState>(() =>
+    suggestionReviewToForm({}),
+  );
   const [observation, setObservation] = useState<ObservationState>(() =>
     observationToForm({}),
   );
@@ -1153,6 +1161,7 @@ function AgentEditor() {
     "settings.vision.credentialRef": vision.credentialRef,
     "settings.contactAuth.credentialRef": contactAuth.credentialRef,
     "settings.memory.compaction.credentialRef": memory.credentialRef,
+    "settings.knowledge.suggestionReview.credentialRef": review.credentialRef,
     "settings.modelFallback.credentialRef": modelFallback.credentialRef,
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
@@ -1499,6 +1508,7 @@ function AgentEditor() {
       }
       applyAgent(agentRes.data.agent);
       syncToolConfig(agentRes.data.agent);
+      setReview(suggestionReviewToForm(agentRes.data.agent.settings));
       syncedGrantsRef.current = tsRes.data.grants;
       setGrants(mapGrants(tsRes.data.grants));
       setCatalog(tsRes.data.catalog);
@@ -1827,7 +1837,11 @@ function AgentEditor() {
       sendImage,
       resolveConversation,
     }),
-    knowledge: canonicalGrants(grants.filter((g) => g.source === "RAG")),
+    // NOTE: The grant set and the reviewer model, the two halves the Knowledge save writes.
+    knowledge: JSON.stringify({
+      grants: canonicalGrants(grants.filter((g) => g.source === "RAG")),
+      review,
+    }),
   };
   const baselineRef = useRef<typeof sectionSnap | null>(null);
   const lastSyncRef = useRef<Record<SectionKey, number>>({
@@ -2006,6 +2020,10 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.ttsNormalize', 'The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.')
   // t('editor.configIssueUnresolved.memoryModel', 'The summary-model credential no longer exists, so attendances that end are not summarized.')
   // t('editor.configIssueUnresolved.modelFallback', 'The fallback-provider credential no longer exists, so the fallback cannot take a turn.')
+  // t('editor.configIssue.suggestionReviewModel', 'A separate model is set for the suggestion reviewer but its configuration cannot run, so the agent\'s knowledge suggestions reach the approval queue unreviewed. Check its provider, model, key and endpoint.')
+  // t('editor.configIssuePending.suggestionReviewModel', 'The suggestion-reviewer credential is referenced but not filled in yet, so knowledge suggestions reach the queue unreviewed.')
+  // t('editor.configIssueUnresolved.suggestionReviewModel', 'The suggestion-reviewer credential no longer exists, so knowledge suggestions reach the queue unreviewed.')
+  // t('editor.configIssueWrongKind.suggestionReviewModel', 'The suggestion-reviewer credential is a type that cannot be used as an API key, so knowledge suggestions reach the queue unreviewed. Pick a credential that holds a single key.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
   // NOTE: The fourth verdict: the entry is filled but its TYPE cannot serve the field. Each sentence names
@@ -2074,6 +2092,9 @@ function AgentEditor() {
     savedModelBaseURL: savedModelBaseUrl,
     savedModelCredentialRef: savedModel.credentialRef,
     savedMemoryCredentialBaseURL: savedMemoryCredBaseUrl,
+    savedSuggestionReviewCredentialBaseURL: vaultBaseUrl(
+      suggestionReviewToForm(syncedAgentRef.current?.settings).credentialRef,
+    ),
     savedModelFallbackCredentialBaseURL: savedModelFallbackCredBaseUrl,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
@@ -2822,6 +2843,7 @@ function AgentEditor() {
       ...synced.filter((g) => g.source === "RAG"),
       ...cur.filter((g) => g.source !== "RAG"),
     ]);
+    setReview(suggestionReviewToForm(syncedAgentRef.current?.settings));
   };
 
   // Discard everything back to the last synced state in one shot (confirmed,
@@ -2845,6 +2867,7 @@ function AgentEditor() {
         if (a) {
           applyAgent(a);
           syncToolConfig(a);
+          setReview(suggestionReviewToForm(a.settings));
         }
         setGrants(mapGrants(syncedGrantsRef.current));
         bumpSync(...SECTION_KEYS);
@@ -2945,7 +2968,23 @@ function AgentEditor() {
   async function saveGrants(force = false) {
     savingRef.current += 1;
     setSavingGrants(true);
+    let sent: Record<string, unknown> = {};
     try {
+      // The reviewer model rides in the settings bag, merged onto the LAST-SYNCED one like the Tools
+      // save does, and only when it changed: a grants-only save keeps writing the grants alone.
+      const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const reviewChanged =
+        JSON.stringify(review) !==
+        JSON.stringify(suggestionReviewToForm(syncedSettings));
+      const knowledgeJson = {
+        ...((syncedSettings.knowledge ?? {}) as Record<string, unknown>),
+        ...suggestionReviewToStored(review),
+      };
+      const knowledgeSettings = { ...syncedSettings, knowledge: knowledgeJson };
+      if (reviewChanged) sent = sentFor({ settings: knowledgeSettings });
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1
         .agents({ id })
@@ -2958,12 +2997,29 @@ function AgentEditor() {
       syncedGrantsRef.current = data.grants;
       setGrants(mapGrants(data.grants));
       setCatalog(data.catalog);
-      markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
+      const afterGrants = data.agentUpdatedAt
+        ? String(data.agentUpdatedAt)
+        : null;
+      markSynced(afterGrants);
+      if (reviewChanged) {
+        const agentRes = await api.api.v1.agents({ id }).patch({
+          settings: knowledgeSettings,
+          ...(!force && afterGrants ? { expectedUpdatedAt: afterGrants } : {}),
+          ...replaceFor(force),
+        });
+        if (handleConflict(agentRes.error, () => void saveGrants(true))) return;
+        if (agentRes.error || !agentRes.data) {
+          throw agentRes.error ?? new Error("no data");
+        }
+        syncedAgentRef.current = agentRes.data.agent;
+        setReview(suggestionReviewToForm(agentRes.data.agent.settings));
+        // NOTE: The SAME block that was just written, so a later Behavior save, which spreads the
+        // shared bag, does not put the previous reviewer model back.
+        setSettings((cur) => ({ ...cur, knowledge: knowledgeJson }));
+        markSynced(String(agentRes.data.agent.updatedAt));
+      }
       toolGrantsOnlyRef.current = true;
       bumpSync("tools", "knowledge");
-      // NOTE: This is the KNOWLEDGE tab's save (it is the only caller), and it carries the grant set and
-      // none of the Tools tab's notes. Both halves matter: the empty snapshot says it answers for no
-      // field, and the section says whose banner it may take down.
       settleRefusalFor("knowledge");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
@@ -2971,7 +3027,7 @@ function AgentEditor() {
         e,
         t("editor.grantsError", "Could not update tools."),
         "knowledge",
-        {},
+        sent,
       );
     } finally {
       savingRef.current -= 1;
@@ -3856,6 +3912,23 @@ function AgentEditor() {
                 grants={grants}
                 onChange={setGrants}
                 onCatalogChange={refreshCatalog}
+                review={review}
+                setReview={setReview}
+                // NOTE: The SAVED model and its effective endpoint, as Behavior's overrides read it.
+                agentModel={{
+                  provider: savedModel.provider,
+                  credentialRef: savedModel.credentialRef,
+                  baseURL: savedModelBaseUrl,
+                }}
+                reviewCredBaseUrl={vaultBaseUrl(review.credentialRef)}
+                reviewCredentialError={
+                  refusal.at(
+                    "settings.knowledge.suggestionReview.credentialRef",
+                    currentRef.current[
+                      "settings.knowledge.suggestionReview.credentialRef"
+                    ],
+                  ) ?? undefined
+                }
                 dirty={dirty.knowledge}
                 saving={savingGrants}
                 onSave={() => saveGrants()}

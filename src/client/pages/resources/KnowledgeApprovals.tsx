@@ -2,9 +2,12 @@ import {
   Check,
   ClipboardCheck,
   Database,
+  FilePen,
   FlaskConical,
   MessageSquare,
   Pencil,
+  ShieldCheck,
+  Undo2,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -23,12 +26,17 @@ import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { approvalEditPatch } from "@/client/lib/approvalEdit";
+import { cn } from "@/client/lib/utils";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
 type ApprovalsData = Awaited<
   ReturnType<typeof api.api.v1.knowledge.approvals.get>
 >["data"];
 type Approval = NonNullable<ApprovalsData>["approvals"][number];
+type DiscardedData = Awaited<
+  ReturnType<typeof api.api.v1.knowledge.approvals.discarded.get>
+>["data"];
+type Discarded = NonNullable<DiscardedData>["approvals"][number];
 
 // The knowledge-suggestion approval queue, rendered as a SECTION inside the Knowledge panel. Reports the pending count up so the Components → Knowledge tab can show a
 // badge. Renders nothing once the queue is empty (the badge disappears too), so a clean knowledge
@@ -44,6 +52,12 @@ export function KnowledgeApprovals({
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  // What the suggestion reviewer held back as a repeat, on a tab of its own.
+  const [discarded, setDiscarded] = useState<Discarded[]>([]);
+  const [view, setView] = useState<"pending" | "discarded">("pending");
+  // The card whose rejection is being written, with its optional reason.
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   // Holds the card whose request is open, and there is only ever one: every action that mutates is
@@ -67,16 +81,20 @@ export function KnowledgeApprovals({
 
   useEffect(() => {
     let active = true;
-    api.api.v1.knowledge.approvals
-      .get()
-      .then(({ data, error: err }) => {
+    Promise.all([
+      api.api.v1.knowledge.approvals.get(),
+      api.api.v1.knowledge.approvals.discarded.get(),
+    ])
+      .then(([pending, held]) => {
         if (!active) return;
-        if (err || !data) {
+        if (pending.error || !pending.data) {
           setError(true);
           return;
         }
-        setApprovals(data.approvals);
-        onCountChange?.(data.approvals.length);
+        setApprovals(pending.data.approvals);
+        onCountChange?.(pending.data.approvals.length);
+        // NOTE: The discarded tab is secondary: failing to read it hides the tab, not the queue.
+        setDiscarded(held.data?.approvals ?? []);
       })
       .catch(() => {
         if (active) setError(true);
@@ -89,14 +107,20 @@ export function KnowledgeApprovals({
     };
   }, [onCountChange]);
 
-  async function act(id: string, action: "approve" | "reject") {
+  async function act(
+    id: string,
+    action: "approve" | "reject",
+    opts: { asNew?: boolean; reason?: string } = {},
+  ) {
     setBusyId(id);
     try {
       const endpoint = api.api.v1.knowledge.approvals({ id });
-      const { error: err } =
+      const { data, error: err } =
         action === "approve"
-          ? await endpoint.approve.post()
-          : await endpoint.reject.post();
+          ? await endpoint.approve.post(opts.asNew ? { asNew: true } : {})
+          : await endpoint.reject.post(
+              opts.reason?.trim() ? { reason: opts.reason.trim() } : {},
+            );
       if (err) {
         showToast(
           apiErrorMessage(err) || t("approvals.actionError", "Action failed."),
@@ -104,6 +128,29 @@ export function KnowledgeApprovals({
         );
         return;
       }
+      // NOTE: The document the reviewer named is gone or now synced; nothing was claimed, so the card
+      // stays and offers only the approval as a new document.
+      if (
+        data &&
+        typeof data.result === "object" &&
+        data.result.outcome === "replace-unavailable"
+      ) {
+        setApprovals((prev) =>
+          prev.map((it) =>
+            it.id === id ? { ...it, replacesDocument: null } : it,
+          ),
+        );
+        showToast(
+          t(
+            "approvals.replaceGone",
+            "The document to replace no longer exists. Approve it as a new document instead.",
+          ),
+          "error",
+        );
+        return;
+      }
+      setRejectingId(null);
+      setReason("");
       setApprovals((prev) => {
         const next = prev.filter((a) => a.id !== id);
         onCountChange?.(next.length);
@@ -115,6 +162,47 @@ export function KnowledgeApprovals({
           : t("approvals.rejected", "Suggestion rejected."),
         "success",
       );
+    } catch {
+      showToast(t("approvals.actionError", "Action failed."), "error");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function requeue(id: string) {
+    setBusyId(id);
+    try {
+      const { data, error: err } = await api.api.v1.knowledge
+        .approvals({ id })
+        .requeue.post();
+      if (err) {
+        showToast(
+          apiErrorMessage(err) || t("approvals.actionError", "Action failed."),
+          "error",
+        );
+        return;
+      }
+      const item = discarded.find((d) => d.id === id);
+      setDiscarded((prev) => prev.filter((d) => d.id !== id));
+      if (data?.result === "requeued" && item) {
+        const next = [...approvals, { ...item, status: "PENDING" as const }];
+        setApprovals(next);
+        onCountChange?.(next.length);
+      }
+      if (data?.result === "requeued") {
+        showToast(
+          t("approvals.requeued", "Suggestion sent to the pending list."),
+          "success",
+        );
+      } else {
+        showToast(
+          t(
+            "approvals.requeueGone",
+            "Someone already moved this suggestion; reload to see where it is.",
+          ),
+          "error",
+        );
+      }
     } catch {
       showToast(t("approvals.actionError", "Action failed."), "error");
     } finally {
@@ -212,7 +300,7 @@ export function KnowledgeApprovals({
       </Card>
     );
   }
-  if (approvals.length === 0) return null;
+  if (approvals.length === 0 && discarded.length === 0) return null;
 
   return (
     <section className="flex flex-col gap-3">
@@ -229,170 +317,364 @@ export function KnowledgeApprovals({
           "Review suggestions before they enter a knowledge base. Nothing is added without approval.",
         )}
       </p>
-      <div className="flex flex-col gap-3">
-        {approvals.map((a) => (
-          <Card key={a.id} className="flex flex-col gap-3">
-            <div className="flex items-start justify-between gap-3">
+      {discarded.length > 0 ? (
+        <div
+          role="tablist"
+          aria-label={t("approvals.views", "Suggestion lists")}
+          className="flex gap-2"
+        >
+          {(["pending", "discarded"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-sm",
+                view === v
+                  ? "bg-accent-soft text-accent"
+                  : "text-text-muted hover:bg-bg-hover",
+              )}
+            >
+              {v === "pending"
+                ? t("approvals.viewPending", "Pending ({{n}})", {
+                    n: approvals.length,
+                  })
+                : t(
+                    "approvals.viewDiscarded",
+                    "Discarded by the reviewer ({{n}})",
+                    {
+                      n: discarded.length,
+                    },
+                  )}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {view === "discarded" && discarded.length > 0 ? (
+        <div className="flex flex-col gap-3">
+          {discarded.map((d) => (
+            <Card key={d.id} className="flex flex-col gap-3">
               <h4 className="font-medium text-text-primary">
-                {a.proposedTitle ?? t("approvals.untitled", "Untitled")}
+                {d.proposedTitle ?? t("approvals.untitled", "Untitled")}
               </h4>
-              <Badge variant={a.status === "EDITED" ? "info" : "warning"}>
-                {/* biome-ignore lint/plugin/no-dynamic-i18n-key: status keys extracted via magic comments below */}
-                {t(`approvals.status.${a.status}`, a.status)}
-              </Badge>
-            </div>
-            {editingId === a.id ? (
-              <div className="flex flex-col gap-3">
-                {/* Disabled while the save is in flight: `saveEdit` captured the draft when it was
+              <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                {d.proposedContent}
+              </p>
+              {d.reviewerComment ? (
+                <ReviewerComment text={d.reviewerComment} />
+              ) : null}
+              {d.match ? (
+                <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                  <p className="text-text-muted text-xs">
+                    {d.match.kind === "document"
+                      ? t(
+                          "approvals.matchedDocument",
+                          "Matched the document “{{title}}”",
+                          {
+                            title: d.match.document.title,
+                          },
+                        )
+                      : t(
+                          "approvals.matchedSuggestion",
+                          "Matched an earlier suggestion ({{status}})",
+                          {
+                            status: t(
+                              // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments
+                              `approvals.status.${d.match.status}`,
+                              d.match.status,
+                            ),
+                          },
+                        )}
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                    {d.match.kind === "document"
+                      ? d.match.document.content
+                      : d.match.content}
+                  </p>
+                </div>
+              ) : null}
+              <div className="flex justify-end">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  loading={busyId === d.id}
+                  onClick={() => void requeue(d.id)}
+                >
+                  <Undo2 className="h-4 w-4" aria-hidden="true" />
+                  {t("approvals.requeue", "Send to the pending list")}
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {approvals.map((a) => (
+            <Card key={a.id} className="flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-3">
+                <h4 className="font-medium text-text-primary">
+                  {a.proposedTitle ?? t("approvals.untitled", "Untitled")}
+                </h4>
+                <Badge variant={a.status === "EDITED" ? "info" : "warning"}>
+                  {/* biome-ignore lint/plugin/no-dynamic-i18n-key: status keys extracted via magic comments below */}
+                  {t(`approvals.status.${a.status}`, a.status)}
+                </Badge>
+              </div>
+              {editingId === a.id ? (
+                <div className="flex flex-col gap-3">
+                  {/* Disabled while the save is in flight: `saveEdit` captured the draft when it was
                     clicked, so anything typed after that would be dropped by the response that
                     closes the editor. */}
-                <FormField
-                  label={t("approvals.editTitle", "Title")}
-                  error={refusal.at("title", draft.title.trim())}
-                >
-                  <Input
-                    value={draft.title}
-                    disabled={busyId === a.id}
-                    onChange={(e) =>
-                      setDraft({ ...draft, title: e.target.value })
-                    }
-                  />
-                </FormField>
-                <FormField
-                  label={t("approvals.editContent", "Content")}
-                  description={t(
-                    "approvals.editContentHint",
-                    "This text is stored in the knowledge base exactly as written. Make it a standalone statement, with no caveats about checking it.",
-                  )}
-                  error={refusal.at("content", draft.content.trim())}
-                >
-                  <Textarea
-                    rows={6}
-                    value={draft.content}
-                    disabled={busyId === a.id}
-                    onChange={(e) =>
-                      setDraft({ ...draft, content: e.target.value })
-                    }
-                  />
-                </FormField>
-              </div>
-            ) : (
-              <p className="whitespace-pre-wrap text-sm text-text-secondary">
-                {a.proposedContent}
-              </p>
-            )}
-            {a.rationale ? (
-              <p className="text-text-muted text-xs italic">
-                {t("approvals.rationale", "Rationale: {{text}}", {
-                  text: a.rationale,
-                })}
-              </p>
-            ) : null}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-text-muted text-xs">
-              {a.knowledgeBaseName ? (
-                <span className="inline-flex items-center gap-1">
-                  <Database className="h-3.5 w-3.5" aria-hidden="true" />
-                  {t("approvals.targetBase", "Knowledge base: {{name}}", {
-                    name: a.knowledgeBaseName,
+                  <FormField
+                    label={t("approvals.editTitle", "Title")}
+                    error={refusal.at("title", draft.title.trim())}
+                  >
+                    <Input
+                      value={draft.title}
+                      disabled={busyId === a.id}
+                      onChange={(e) =>
+                        setDraft({ ...draft, title: e.target.value })
+                      }
+                    />
+                  </FormField>
+                  <FormField
+                    label={t("approvals.editContent", "Content")}
+                    description={t(
+                      "approvals.editContentHint",
+                      "This text is stored in the knowledge base exactly as written. Make it a standalone statement, with no caveats about checking it.",
+                    )}
+                    error={refusal.at("content", draft.content.trim())}
+                  >
+                    <Textarea
+                      rows={6}
+                      value={draft.content}
+                      disabled={busyId === a.id}
+                      onChange={(e) =>
+                        setDraft({ ...draft, content: e.target.value })
+                      }
+                    />
+                  </FormField>
+                </div>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                  {a.proposedContent}
+                </p>
+              )}
+              {a.rationale ? (
+                <p className="text-text-muted text-xs italic">
+                  {t("approvals.rationale", "Rationale: {{text}}", {
+                    text: a.rationale,
                   })}
-                </span>
+                </p>
               ) : null}
-              {a.source?.kind === "conversation" ? (
-                <Link
-                  to={`/conversations/${a.source.conversationId}`}
-                  className="inline-flex items-center gap-1 text-accent hover:underline"
-                >
-                  <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                  {t(
-                    "approvals.fromConversation",
-                    "From the conversation: {{label}}",
-                    { label: a.source.label },
-                  )}
-                </Link>
-              ) : a.source?.kind === "playground" ? (
-                <Link
-                  to={`/agents/${a.source.agentId}/playground`}
-                  className="inline-flex items-center gap-1 text-accent hover:underline"
-                >
-                  <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
-                  {a.source.agentName
-                    ? t(
-                        "approvals.fromPlayground",
-                        "From the playground of {{name}}",
-                        { name: a.source.agentName },
-                      )
-                    : t(
-                        "approvals.fromPlaygroundGeneric",
-                        "From an agent's playground",
-                      )}
-                </Link>
+              {a.reviewerComment ? (
+                <ReviewerComment text={a.reviewerComment} />
               ) : null}
-            </div>
-            {/* Approve copies the text verbatim into the base, so it is deliberately absent while
+              {a.replacesDocument ? (
+                <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                  <p className="inline-flex items-center gap-1 text-text-muted text-xs">
+                    <FilePen className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t(
+                      "approvals.replaces",
+                      "Approving replaces the document “{{title}}”, which says today:",
+                      { title: a.replacesDocument.title },
+                    )}
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                    {a.replacesDocument.content}
+                  </p>
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-text-muted text-xs">
+                {a.knowledgeBaseName ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Database className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t("approvals.targetBase", "Knowledge base: {{name}}", {
+                      name: a.knowledgeBaseName,
+                    })}
+                  </span>
+                ) : null}
+                {a.source?.kind === "conversation" ? (
+                  <Link
+                    to={`/conversations/${a.source.conversationId}`}
+                    className="inline-flex items-center gap-1 text-accent hover:underline"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t(
+                      "approvals.fromConversation",
+                      "From the conversation: {{label}}",
+                      { label: a.source.label },
+                    )}
+                  </Link>
+                ) : a.source?.kind === "playground" ? (
+                  <Link
+                    to={`/agents/${a.source.agentId}/playground`}
+                    className="inline-flex items-center gap-1 text-accent hover:underline"
+                  >
+                    <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
+                    {a.source.agentName
+                      ? t(
+                          "approvals.fromPlayground",
+                          "From the playground of {{name}}",
+                          { name: a.source.agentName },
+                        )
+                      : t(
+                          "approvals.fromPlaygroundGeneric",
+                          "From an agent's playground",
+                        )}
+                  </Link>
+                ) : null}
+              </div>
+              {/* Approve copies the text verbatim into the base, so it is deliberately absent while
                 the editor is open: the reviewer decides on the text in front of them, and an approve
                 that fired mid-revision would publish the version they were replacing. */}
-            <div className="flex justify-end gap-2">
-              {editingId === a.id ? (
-                <>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={busyId === a.id}
-                    onClick={() => setEditingId(null)}
-                  >
-                    <X className="h-4 w-4" aria-hidden="true" />
-                    {t("common.cancel", "Cancel")}
-                  </Button>
-                  <Button
-                    size="sm"
-                    loading={busyId === a.id}
-                    disabled={busy || !draft.content.trim()}
-                    onClick={() => void saveEdit(a)}
-                  >
-                    <Check className="h-4 w-4" aria-hidden="true" />
-                    {t("common.save", "Save")}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => act(a.id, "reject")}
-                  >
-                    <X className="h-4 w-4" aria-hidden="true" />
-                    {t("approvals.reject", "Reject")}
-                  </Button>
-                  {/* Disabled while ANOTHER card is being revised: the draft is single, so a
+              <div className="flex justify-end gap-2">
+                {editingId === a.id ? (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busyId === a.id}
+                      onClick={() => setEditingId(null)}
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                      {t("common.cancel", "Cancel")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      loading={busyId === a.id}
+                      disabled={busy || !draft.content.trim()}
+                      onClick={() => void saveEdit(a)}
+                    >
+                      <Check className="h-4 w-4" aria-hidden="true" />
+                      {t("common.save", "Save")}
+                    </Button>
+                  </>
+                ) : rejectingId === a.id ? (
+                  <div className="flex w-full flex-col gap-2">
+                    <FormField
+                      label={t("approvals.rejectReason", "Reason (optional)")}
+                      description={t(
+                        "approvals.rejectReasonHint",
+                        "The reviewer reads it next time, so a corrected suggestion is not held back by this one.",
+                      )}
+                    >
+                      <Textarea
+                        rows={2}
+                        maxLength={1000}
+                        value={reason}
+                        disabled={busyId === a.id}
+                        onChange={(e) => setReason(e.target.value)}
+                      />
+                    </FormField>
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={busyId === a.id}
+                        onClick={() => {
+                          setRejectingId(null);
+                          setReason("");
+                        }}
+                      >
+                        {t("common.cancel", "Cancel")}
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        loading={busyId === a.id}
+                        disabled={busy}
+                        onClick={() => act(a.id, "reject", { reason })}
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                        {t("approvals.confirmReject", "Reject")}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy || editingId !== null}
+                      onClick={() => {
+                        setRejectingId(a.id);
+                        setReason("");
+                      }}
+                    >
+                      <X className="h-4 w-4" aria-hidden="true" />
+                      {t("approvals.reject", "Reject")}
+                    </Button>
+                    {/* Disabled while ANOTHER card is being revised: the draft is single, so a
                       second Edit would replace it and the first card's unsaved rewrite would
                       vanish with no warning. */}
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={busy || editingId !== null}
-                    onClick={() => startEdit(a)}
-                  >
-                    <Pencil className="h-4 w-4" aria-hidden="true" />
-                    {t("approvals.edit", "Edit")}
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => act(a.id, "approve")}
-                  >
-                    <Check className="h-4 w-4" aria-hidden="true" />
-                    {t("approvals.approve", "Approve")}
-                  </Button>
-                </>
-              )}
-            </div>
-          </Card>
-        ))}
-      </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy || editingId !== null}
+                      onClick={() => startEdit(a)}
+                    >
+                      <Pencil className="h-4 w-4" aria-hidden="true" />
+                      {t("approvals.edit", "Edit")}
+                    </Button>
+                    {a.replacesDocument ? (
+                      <>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => act(a.id, "approve", { asNew: true })}
+                        >
+                          {t(
+                            "approvals.approveAsNew",
+                            "Approve as a new document",
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => act(a.id, "approve")}
+                        >
+                          <Check className="h-4 w-4" aria-hidden="true" />
+                          {t("approvals.approveReplace", "Approve and replace")}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => act(a.id, "approve")}
+                      >
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                        {t("approvals.approve", "Approve")}
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </section>
+  );
+}
+
+// What the suggestion reviewer said about an item, kept apart from the agent's own rationale.
+function ReviewerComment({ text }: { text: string }) {
+  const { t } = useTranslation();
+  return (
+    <p className="inline-flex items-start gap-1 text-text-muted text-xs">
+      <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {t("approvals.reviewerComment", "Reviewer: {{text}}", { text })}
+    </p>
   );
 }
 
 // t('approvals.status.PENDING', 'Pending')
 // t('approvals.status.EDITED', 'Edited')
+// t('approvals.status.REJECTED', 'Rejected')
+// t('approvals.status.APPROVED', 'Approved')

@@ -157,7 +157,13 @@ async function makeDoc(text = BODY, title = `Doc ${uniq()}`) {
   return doc;
 }
 
-async function makeSuggestion(content = PROPOSAL) {
+// A proposal repeated for the same base lands on the row already there, so each test proposes its own
+// text: the agent's words plus a suffix of fixed width, so the length below is known.
+let proposalSeq = 0;
+const nextProposal = () =>
+  `${PROPOSAL}-${String(++proposalSeq).padStart(4, "0")}`;
+
+async function makeSuggestion(content = nextProposal()) {
   return createSuggestion({
     ctx: ctx(),
     knowledgeBaseId: kbId,
@@ -617,7 +623,7 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     });
     expect(all[1]?.after).toMatchObject({
       sourceType: "approval",
-      chars: PROPOSAL.length,
+      chars: PROPOSAL.length + 5,
     });
     expect(dump(all)).not.toContain(PROPOSAL);
     await collect();

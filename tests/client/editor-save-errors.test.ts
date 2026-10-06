@@ -288,6 +288,7 @@ describe("agent editor save errors", () => {
       "doClone",
       "saveAgent",
       "saveChannelRedirect",
+      "saveGrants",
       "saveGuardrails",
       "saveTools",
     ]);

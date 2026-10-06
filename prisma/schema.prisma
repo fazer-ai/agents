@@ -77,6 +77,7 @@ enum SchedulerJobKind {
   INBOUND_SWEEP
   INBOUND_REDISPATCH
   NOTHING_TO_ANSWER
+  SUGGESTION_REVIEW
 }
 
 enum SchedulerJobStatus {
@@ -92,6 +93,10 @@ enum ApprovalStatus {
   EDITED
   APPROVED
   REJECTED
+  // Waiting for the suggestion reviewer; not in the pending list yet.
+  SCREENING
+  // The reviewer judged it the same claim as something the base, the queue or a rejection holds.
+  DISCARDED
 }
 
 enum AgentToolSource {
@@ -1554,21 +1559,39 @@ model PlaygroundMedia {
 }
 
 model ApprovalQueueItem {
-  id              BigInt         @id @default(autoincrement())
-  tenantId        BigInt         @map("tenant_id")
-  knowledgeBaseId BigInt         @map("knowledge_base_id")
-  threadId        String?        @map("thread_id")
-  interruptKey    String?        @map("interrupt_key")
-  proposedTitle   String?        @map("proposed_title")
-  proposedContent String         @map("proposed_content")
-  rationale       String?
-  status          ApprovalStatus @default(PENDING)
-  createdAt       DateTime       @default(now()) @map("created_at")
-  updatedAt       DateTime       @updatedAt @map("updated_at")
+  id                 BigInt                       @id @default(autoincrement())
+  tenantId           BigInt                       @map("tenant_id")
+  knowledgeBaseId    BigInt                       @map("knowledge_base_id")
+  threadId           String?                      @map("thread_id")
+  interruptKey       String?                      @map("interrupt_key")
+  proposedTitle      String?                      @map("proposed_title")
+  proposedContent    String                       @map("proposed_content")
+  rationale          String?
+  status             ApprovalStatus               @default(PENDING)
+  // sha256 of the proposal with case, punctuation and runs of whitespace folded away, as proposed
+  // and never rewritten by an edit: the same entry proposed again for the same base lands here.
+  // NULL on rows written before the key, which never collide.
+  normalizedHash     String?                      @map("normalized_hash")
+  // The proposal's embedding, written by the reviewer job: what makes this row a candidate for
+  // the reviews of later proposals. NULL until reviewed, and on rows written before the reviewer.
+  embedding          Unsupported("vector(1536)")?
+  // The agent whose tool proposed it; its model (or its override) runs the review. NULL for a
+  // proposal through the REST route, which is never reviewed.
+  agentId            BigInt?                      @map("agent_id")
+  reviewerComment    String?                      @map("reviewer_comment")
+  // A document of the same base the reviewer says this proposal should replace on approval.
+  replacesDocumentId BigInt?                      @map("replaces_document_id")
+  // What a DISCARDED proposal matched: another queue item, or a document of the base.
+  matchedItemId      BigInt?                      @map("matched_item_id")
+  matchedDocumentId  BigInt?                      @map("matched_document_id")
+  // Why a person rejected it, optional; shown to the reviewer of later proposals, never audited.
+  rejectionReason    String?                      @map("rejection_reason")
+  createdAt          DateTime                     @default(now()) @map("created_at")
+  updatedAt          DateTime                     @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId])
+  @@unique([tenantId, knowledgeBaseId, normalizedHash], map: "approval_queue_items_suggestion_key")
   @@map("approval_queue_items")
 }
 
@@ -1688,18 +1711,18 @@ model ToolDefinition {
 // run in the sandbox (graph/tools/code.ts). Invalid code is stored as written — the console and the
 // service WARN, never refuse — and fails at call time, as the operator's failure.
 model CodeToolDefinition {
-  id          BigInt   @id @default(autoincrement())
-  tenantId    BigInt   @map("tenant_id")
-  name        String
-  label       String
-  description String
-  inputSchema Json     @default("{}") @map("input_schema")
-  code        String
-  enabled     Boolean  @default(true)
+  id                     BigInt   @id @default(autoincrement())
+  tenantId               BigInt   @map("tenant_id")
+  name                   String
+  label                  String
+  description            String
+  inputSchema            Json     @default("{}") @map("input_schema")
+  code                   String
+  enabled                Boolean  @default(true)
   // The same switch as ToolDefinition.silenceTruncationAlert, for a clip of what the body returns.
-  silenceTruncationAlert Boolean @default(false) @map("silence_truncation_alert")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  silenceTruncationAlert Boolean  @default(false) @map("silence_truncation_alert")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
 
   tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   toolSelections AgentToolSelection[]

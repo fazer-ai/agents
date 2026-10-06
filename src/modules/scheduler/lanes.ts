@@ -74,6 +74,10 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   INBOUND_REDISPATCH: "shared",
   // Shared: a delayed judgement of one conversation, a handful of Chatwoot reads and no model.
   NOTHING_TO_ANSWER: "shared",
+  // Shared, and neither reason applies. Cadence: the proposal waits in SCREENING for a person who
+  // reads the queue in minutes, not seconds. Budget: one model call per proposal, under the shared
+  // lane's provider concurrency like any other recovery-shaped call.
+  SUGGESTION_REVIEW: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -125,6 +129,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // flag is about what ONE job may do.
   INBOUND_REDISPATCH: true,
   NOTHING_TO_ANSWER: false,
+  SUGGESTION_REVIEW: true,
 };
 
 // How many OBSERVE rows one shared tick claims: enough to keep the provider bound busy for about one
@@ -200,6 +205,10 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // (`retireNothingToAnswer`); only a row retired mid-run stays, as a DONE tombstone the next arm
   // reuses.
   NOTHING_TO_ANSWER: true,
+  // KEPT on DONE, because the kind registers a dead-letter hook (it releases a SCREENING item) and the
+  // revoke's generic death line is reserved for kinds without one. One row per proposal the agent
+  // made, which is far below traffic.
+  SUGGESTION_REVIEW: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the
@@ -260,6 +269,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INBOUND_REDISPATCH: true,
   // One per conversation that received a blank message.
   NOTHING_TO_ANSWER: true,
+  // One per proposal, and proposals follow the conversations the agent and the observer read.
+  SUGGESTION_REVIEW: true,
 };
 
 // What one kind's death means to the operator, read by the generic dead-letter announcement in
@@ -340,6 +351,9 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // The conversation stays pending with nobody on it, exactly as before this job existed, and
   // nobody else will notice: this is the alert.
   NOTHING_TO_ANSWER: "warn",
+  // `warn`: the dead-letter hook releases the item to the pending list unreviewed, so nothing is
+  // lost; what died is the dedup a person now does by eye.
+  SUGGESTION_REVIEW: "warn",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -376,6 +390,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   INBOUND_REDISPATCH: 60_000,
   // The judgement is already half an hour late by design; a minute between retries changes nothing.
   NOTHING_TO_ANSWER: 60_000,
+  SUGGESTION_REVIEW: 2_000,
 };
 
 export function kindsInLane(

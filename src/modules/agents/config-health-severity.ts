@@ -34,6 +34,8 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   ttsNormalize: "degraded",
   // The attendance is never summarized, and nothing goes back for it later.
   memoryModel: "degraded",
+  // Suggestions still reach the queue, unreviewed.
+  suggestionReviewModel: "degraded",
   // The one override whose whole purpose is the day the primary fails.
   modelFallback: "degraded",
   vision: "degraded",

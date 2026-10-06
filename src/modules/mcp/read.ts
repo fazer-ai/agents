@@ -65,8 +65,8 @@ import {
 import { listMcpConnections } from "@/modules/mcp-connections/service";
 import { getDocument, listDocuments } from "@/modules/rag/documents";
 import {
+  listApprovals,
   listKnowledgeBases,
-  listPendingApprovals,
   searchKnowledge,
 } from "@/modules/rag/service";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
@@ -580,13 +580,16 @@ export async function knowledgeDocumentGet(
 
 export async function knowledgeApprovalsList(
   principal: VerifiedToken,
+  args: { view?: "pending" | "discarded" } = {},
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   try {
-    return ok({ approvals: await listPendingApprovals(ctx, base) });
+    return ok({
+      approvals: await listApprovals(ctx, args.view ?? "pending", base),
+    });
   } catch (e) {
     return failOf(e);
   }

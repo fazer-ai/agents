@@ -82,7 +82,7 @@
     "libheif-js": "^1.23.2",
     "lucide-react": "^1.50.0",
     "mammoth": "^1.13.0",
-    "mermaid": "^11.17.0",
+    "mermaid": "^12.1.0",
     "pg": "8.23.1",
     "pino": "^10.4.0",
     "pino-pretty": "^13.1.3",

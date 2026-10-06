@@ -16,7 +16,7 @@ Code: `src/modules/rag/service.ts` (create, list, approve, reject, requeue), `sr
 
 ## The floor: a normalized hash, before any model
 
-`normalizedSuggestionHash` lowercases, applies NFC, collapses every run of non-letter, non-digit characters to one space, trims, and hashes. Accents are kept: they change meaning in Portuguese. The unique key is `(tenant_id, knowledge_base_id, normalized_hash)`, across conversations and against an item in **any** status, so a text a person already rejected is not queued again, and a rewording that only changes punctuation or case lands on the existing row.
+`normalizedSuggestionHash` applies NFC and lowercases, turns ordinary punctuation into spaces, collapses whitespace, trims, and hashes. What can change a number is kept: a sign (`-`, `−`) before a digit, `.` or `,` between digits, `%` or `‰` after a digit, and every Unicode symbol (`°`, `$`, `±`, `<`), so "-10 °C" and "+10 °C" are two entries while "Prazo: 7 dias." and "prazo 7 dias" are one. Accents are kept: they change meaning in Portuguese. The unique key is `(tenant_id, knowledge_base_id, normalized_hash)`, across conversations and against an item in **any** status, so a text a person already rejected is not queued again, and a rewording that only changes punctuation or case lands on the existing row.
 
 A floor hit creates nothing and calls no model. The tool tells the model the entry is already with a human, so it stops proposing it. The insert is `createManyAndReturn` with `skipDuplicates` followed by a lookup on the key: catching `P2002` inside a scoped transaction would abort the transaction.
 
@@ -49,6 +49,6 @@ The call is the billed ledger node `suggestion_review`, gated by the spend ceili
 
 ## What a person can do
 
-- **Approve.** When the item carries `replacesDocumentId`, approving updates that document in place (`updateDocument`, reindexed). If the document is gone or became synced, the call returns `replace-unavailable` without claiming the item, and the UI drops the replace offer. `asNew` (REST `{asNew: true}`, MCP `as_new`) skips the replacement and creates a new document.
+- **Approve.** When the item carries `replacesDocumentId`, approving updates that document in place (`updateDocument`, reindexed). If the document is gone, moved to another base or became synced, the call returns `replace-unavailable` without claiming the item. The listing reports this as `replaceUnavailable`, the screen then offers only "Approve as a new document", and the MCP `knowledge_approve` refuses in both preview and apply until `as_new` is passed. `asNew` (REST `{asNew: true}`, MCP `as_new`) skips the replacement and creates a new document.
 - **Reject**, with an optional reason (at most 1000 characters). The reason is stored on the item and shown to the reviewer for later proposals; it is never written to the audit row.
 - **Requeue** a discarded item: `DISCARDED` to `PENDING`, no audit row.

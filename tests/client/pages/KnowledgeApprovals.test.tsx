@@ -392,7 +392,29 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     );
     await waitFor(() => expect(screen.queryByText(DOC_TEXT)).toBeNull());
     expect(screen.getByText(HEDGED)).toBeDefined();
-    expect(screen.getByRole("button", { name: /^approve$/i })).toBeDefined();
+    // NOTE: a plain Approve would send `{}` and be answered `replace-unavailable` again, forever.
+    expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+    postResult = "approved";
+    fireEvent.click(
+      screen.getByRole("button", { name: /approve as a new document/i }),
+    );
+    await waitFor(() => expect(postCalls.length).toBe(2));
+    expect(postCalls[1]?.body).toEqual({ asNew: true });
+  });
+
+  test("a replacement the queue already knows is unavailable offers only approval as new", async () => {
+    seed({ replacesDocument: null, replaceUnavailable: true });
+    renderQueue();
+    await screen.findByText(HEDGED);
+    expect(screen.queryByRole("button", { name: /^approve$/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /approve and replace/i }),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: /approve as a new document/i }),
+    );
+    await waitFor(() => expect(postCalls.length).toBe(1));
+    expect(postCalls[0]?.body).toEqual({ asNew: true });
   });
 
   test("rejecting asks for an optional reason and sends it trimmed", async () => {

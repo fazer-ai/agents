@@ -137,13 +137,15 @@ export function KnowledgeApprovals({
       ) {
         setApprovals((prev) =>
           prev.map((it) =>
-            it.id === id ? { ...it, replacesDocument: null } : it,
+            it.id === id
+              ? { ...it, replacesDocument: null, replaceUnavailable: true }
+              : it,
           ),
         );
         showToast(
           t(
             "approvals.replaceGone",
-            "The document to replace no longer exists. Approve it as a new document instead.",
+            "The document to replace can no longer be replaced. Approve it as a new document instead.",
           ),
           "error",
         );
@@ -473,7 +475,18 @@ export function KnowledgeApprovals({
               {a.reviewerComment ? (
                 <ReviewerComment text={a.reviewerComment} />
               ) : null}
-              {a.replacesDocument ? (
+              {a.replaceUnavailable ? (
+                <p className="inline-flex items-start gap-1 text-text-muted text-xs">
+                  <FilePen
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  {t(
+                    "approvals.replaceUnavailable",
+                    "The reviewer suggested replacing a document that can no longer be replaced (deleted, or kept in sync with its source). Approving adds this as a new document.",
+                  )}
+                </p>
+              ) : a.replacesDocument ? (
                 <div className="flex flex-col gap-1 rounded-md border border-border p-3">
                   <p className="inline-flex items-center gap-1 text-text-muted text-xs">
                     <FilePen className="h-3.5 w-3.5" aria-hidden="true" />
@@ -620,7 +633,19 @@ export function KnowledgeApprovals({
                       <Pencil className="h-4 w-4" aria-hidden="true" />
                       {t("approvals.edit", "Edit")}
                     </Button>
-                    {a.replacesDocument ? (
+                    {a.replaceUnavailable ? (
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => act(a.id, "approve", { asNew: true })}
+                      >
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                        {t(
+                          "approvals.approveAsNew",
+                          "Approve as a new document",
+                        )}
+                      </Button>
+                    ) : a.replacesDocument ? (
                       <>
                         <Button
                           variant="secondary"

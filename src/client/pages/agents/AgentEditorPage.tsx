@@ -3198,7 +3198,13 @@ function AgentEditor() {
         resolveConversation: resolveConversationJson,
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
-      bumpSync("tools", "knowledge");
+      // The grant PUT carries the knowledge grants too, but not the reviewer model: while that
+      // is still unsaved, the Knowledge section stays dirty instead of rebasing over it.
+      const reviewPending =
+        JSON.stringify(review) !==
+        JSON.stringify(suggestionReviewToForm(agentRes.data.agent.settings));
+      if (reviewPending) bumpSync("tools");
+      else bumpSync("tools", "knowledge");
       settleRefusalFor("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
@@ -3397,8 +3403,11 @@ function AgentEditor() {
     if (dirty.guardrails) {
       await saveGuardrails();
     }
-    if (dirty.tools || dirty.knowledge) {
+    if (dirty.tools) {
       await saveTools();
+    }
+    if (dirty.knowledge) {
+      await saveGrants();
     }
   }
 

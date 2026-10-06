@@ -5,6 +5,8 @@ import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { knowledgeApprove } from "@/modules/mcp/write-knowledge";
 import {
   approveApprovalItem,
   createSuggestion,
@@ -233,6 +235,25 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
     expect([a.created, b.created, c.created]).toEqual([true, true, true]);
   });
 
+  test("a sign, a decimal separator, a percent or a symbol keeps two facts apart", async () => {
+    const kb = await newKb();
+    // Each pair differs by ONE kept character, so each rule is proved on its own.
+    const pairs = [
+      ["Saldo mínimo de -10 reais.", "Saldo mínimo de 10 reais."],
+      ["Desconto de 10% no boleto.", "Desconto de 10 no boleto."],
+      ["O frete custa 1,5 real.", "O frete custa 1 5 real."],
+      ["Mantenha a 10 °C.", "Mantenha a 10 C."],
+    ];
+    for (const [x, y] of pairs) {
+      const a = await propose(kb, x as string);
+      const b = await propose(kb, y as string);
+      expect([a.created, b.created]).toEqual([true, true]);
+    }
+    // The kept characters do not undo the floor: case and the final period still fold.
+    const same = await propose(kb, "SALDO MÍNIMO DE -10 REAIS");
+    expect(same.created).toBe(false);
+  });
+
   test("a rejected entry is not proposed again", async () => {
     const kb = await newKb();
     const a = await propose(kb, "Entrega grátis acima de 100 reais.", {
@@ -368,6 +389,9 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       id: String(doc),
       synced: false,
     });
+    expect(pending.find((p) => p.id === String(a.id))?.replaceUnavailable).toBe(
+      false,
+    );
     const before = await suDb.knowledgeDocument.count({
       where: { knowledgeBaseId: kb },
     });
@@ -431,6 +455,10 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     );
     await review(a.id, model, axis(6));
     await suDb.knowledgeDocument.delete({ where: { id: doc } });
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
+      true,
+    );
     expect(
       await approveApprovalItem({
         ctx: ctxOf(tenantId),
@@ -451,6 +479,45 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     ).toEqual({ outcome: "approved", chunks: 0 });
   });
 
+  test("over MCP, the preview refuses a replacement that is gone just as the apply does", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Retirada na loja em 2 dias.", 9);
+    const a = await propose(kb, "Retirada na loja em 1 dia.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(9));
+    await suDb.knowledgeDocument.delete({ where: { id: doc } });
+    const principal = {
+      userId: 1n,
+      tenantId,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    const args = { approval_id: String(a.id) };
+    const preview = await knowledgeApprove(principal, args, { base: appDb });
+    const applied = await knowledgeApprove(
+      principal,
+      { ...args, dry_run: false },
+      { base: appDb },
+    );
+    expect([preview.ok, applied.ok]).toEqual([false, false]);
+    expect(JSON.stringify(preview)).toContain("as_new");
+    expect((await item(a.id)).status).toBe("PENDING");
+    const asNew = await knowledgeApprove(
+      principal,
+      { ...args, as_new: true },
+      { base: appDb },
+    );
+    expect(asNew.ok).toBe(true);
+  });
+
   test("a document a source sync took over after the review is not replaced on approval", async () => {
     const kb = await newKb();
     const doc = await seedDocument(kb, "Entregamos em 10 dias.", 7);
@@ -467,6 +534,10 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       where: { id: doc },
       data: { externalId: "portal:42" },
     });
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
+      true,
+    );
     expect(
       await approveApprovalItem({
         ctx: ctxOf(tenantId),

@@ -509,6 +509,11 @@ async function findApproval(
   return all.find((a) => a.id === String(id)) ?? null;
 }
 
+// The document the reviewer named can no longer be replaced (deleted, moved, or now synced), so
+// approval stores nothing until it is asked for as a new document.
+const REPLACE_GONE =
+  "the document this suggestion would replace no longer exists or is kept in sync with its source; approve with as_new: true to add it as a new document";
+
 export async function knowledgeApprove(
   principal: VerifiedToken,
   args: { approval_id: string; as_new?: boolean; dry_run?: boolean },
@@ -524,6 +529,7 @@ export async function knowledgeApprove(
     if (args.dry_run !== false) {
       const item = await findApproval(ctx, id, base);
       if (!item) return err("approval not found or not pending");
+      if (item.replaceUnavailable && !args.as_new) return err(REPLACE_GONE);
       return ok({
         dryRun: true,
         action: "approve",
@@ -545,6 +551,7 @@ export async function knowledgeApprove(
       asNew: args.as_new,
       base,
     });
+    if (result.outcome === "replace-unavailable") return err(REPLACE_GONE);
     return ok({ dryRun: false, applied: true, target, result });
   } catch (e) {
     return failOf(e);

@@ -245,14 +245,27 @@ export interface SuggestParams {
   base?: PrismaClient;
 }
 
-// The proposal as the key compares it: case, punctuation and runs of whitespace carry no claim, so
-// "Prazo: 7 dias." and "prazo 7 dias" are one entry. Letters keep their accents.
+// The proposal as the key compares it: case, whitespace and ordinary punctuation carry no claim, so
+// "Prazo: 7 dias." and "prazo 7 dias" are one entry. What can change a number stays: a sign before a
+// digit, a separator between digits, a percent after one, and every symbol (°, $, ±, <), so "-10 °C"
+// and "+10 °C" are two entries. Letters keep their accents.
 export function normalizedSuggestionHash(content: string): string {
-  const folded = content
-    .normalize("NFC")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
+  const text = content.normalize("NFC").toLowerCase();
+  const isDigit = (ch: string | undefined) =>
+    ch !== undefined && /\p{N}/u.test(ch);
+  let folded = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string;
+    const prev = text[i - 1];
+    const next = text[i + 1];
+    const keep =
+      /[\p{L}\p{N}\p{S}]/u.test(ch) ||
+      (/[-\u2212]/u.test(ch) && isDigit(next)) ||
+      (/[.,]/.test(ch) && isDigit(prev) && isDigit(next)) ||
+      (/[%\u2030]/u.test(ch) && isDigit(prev));
+    folded += keep ? ch : " ";
+  }
+  folded = folded.replace(/\s+/g, " ").trim();
   return createHash("sha256").update(folded, "utf8").digest("hex");
 }
 
@@ -439,7 +452,13 @@ export async function listApprovals(
       docIds.length
         ? db.knowledgeDocument.findMany({
             where: { id: { in: docIds } },
-            select: { id: true, title: true, content: true, externalId: true },
+            select: {
+              id: true,
+              title: true,
+              content: true,
+              externalId: true,
+              knowledgeBaseId: true,
+            },
           })
         : [],
       matchedIds.length
@@ -464,6 +483,16 @@ export async function listApprovals(
             synced: d.externalId !== null,
           }
         : null;
+    };
+    // The reviewer named a document that approval can no longer replace (deleted, moved to another
+    // base, or taken over by a source sync): the same check `approveApprovalItem` makes before
+    // claiming, so the only approval left to offer is "as new".
+    const replaceUnavailable = (i: (typeof items)[number]): boolean => {
+      if (i.replacesDocumentId === null) return false;
+      const d = docs.find((x) => x.id === i.replacesDocumentId);
+      return (
+        !d || d.externalId !== null || d.knowledgeBaseId !== i.knowledgeBaseId
+      );
     };
     const matchOf = (i: (typeof items)[number]): ReviewerMatch => {
       const doc = docRef(i.matchedDocumentId);
@@ -562,6 +591,7 @@ export async function listApprovals(
       source: resolveSource(origins[idx] ?? null),
       reviewerComment: i.reviewerComment,
       replacesDocument: docRef(i.replacesDocumentId),
+      replaceUnavailable: replaceUnavailable(i),
       match: view === "discarded" ? matchOf(i) : null,
     }));
   });

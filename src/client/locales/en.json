@@ -242,6 +242,7 @@
     "rejectReasonHint": "The reviewer reads it next time, so a corrected suggestion is not held back by this one.",
     "replaceGone": "The document to replace no longer exists. Approve it as a new document instead.",
     "replaces": "Approving replaces the document “{{title}}”, which says today:",
+    "replaceUnavailable": "The reviewer suggested replacing a document that can no longer be replaced (deleted, or kept in sync with its source). Approving adds this as a new document.",
     "requeue": "Send to the pending list",
     "requeued": "Suggestion sent to the pending list.",
     "requeueGone": "Someone already moved this suggestion; reload to see where it is.",

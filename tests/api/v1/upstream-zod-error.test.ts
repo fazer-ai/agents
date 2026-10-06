@@ -8,10 +8,9 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// A ZodError is not always the caller's fault. `discoverMcpTools` calls
-// `MultiServerMCPClient.getTools()`, and the MCP SDK validates the REMOTE server's JSON-RPC results
-// with the same deduped zod (shared/protocol.js rejects with the `safeParse` error), so that error
-// IS `instanceof ZodError` here. Answering it 422 with `field` would name a value the caller never
+// A ZodError is not always the caller's fault. `discoverMcpTools` lists the REMOTE server's tools,
+// and the MCP SDK and the adapter validate what comes back with zod, so that error IS
+// `instanceof ZodError` here. Answering it 422 with `field` would name a value the caller never
 // sent and log a server fault as a warning.
 //
 // So the refusal is raised where the input is KNOWN to be the caller's (`parseInput`), not by a

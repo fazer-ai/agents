@@ -1,9 +1,8 @@
-import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { buildConnConfig } from "@/graph/tools/mcp";
+import { buildConnConfig, discoverMcpServer } from "@/graph/tools/mcp";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import {
   hasSafeStdioCommandChars,
@@ -650,49 +649,31 @@ export async function discoverMcpTools(
     }
   }
 
-  const connConfig = await buildConnConfig(
-    {
-      connId: id,
-      name: sel.name,
-      transport: sel.transport,
-      url: sel.url,
-      command: sel.command,
-      secret,
-      credentialBaseUrl: sel.credentialBaseUrl,
-      credentialKind: sel.kind,
-      credentialParamName: sel.paramName,
-      enabledTools: [],
-    },
-    { stdioEnabled: config.mcpStdioEnabled },
-  );
-  const client = new MultiServerMCPClient({
-    throwOnLoadError: true,
-    prefixToolNameWithServerName: false,
-    additionalToolNamePrefix: "",
-    mcpServers: { [sel.name]: connConfig },
+  const target = {
+    connId: id,
+    name: sel.name,
+    transport: sel.transport,
+    url: sel.url,
+    command: sel.command,
+    secret,
+    credentialBaseUrl: sel.credentialBaseUrl,
+    credentialKind: sel.kind,
+    credentialParamName: sel.paramName,
+    enabledTools: [],
+  };
+  const connConfig = await buildConnConfig(target, {
+    stdioEnabled: config.mcpStdioEnabled,
   });
-  try {
-    const tools = await client.getTools();
-    // Best-effort: the server's native `instructions` (MCP initialize result) for the UI scope hint.
-    let instructions: string | null = null;
-    try {
-      const raw = (await client.getClient(sel.name))?.getInstructions();
-      instructions = typeof raw === "string" && raw.trim() ? raw.trim() : null;
-    } catch {
-      instructions = null;
-    }
-    return {
-      instructions,
-      tools: tools.map((t) => ({
-        name: t.name,
-        description:
-          typeof t.description === "string" && t.description.length > 0
-            ? t.description
-            : null,
-        args: summarizeToolArgs((t as { schema?: unknown }).schema),
-      })),
-    };
-  } finally {
-    await client.close().catch(() => {});
-  }
+  const { tools, instructions } = await discoverMcpServer(target, connConfig);
+  return {
+    instructions,
+    tools: tools.map((t) => ({
+      name: t.name,
+      description:
+        typeof t.description === "string" && t.description.length > 0
+          ? t.description
+          : null,
+      args: summarizeToolArgs((t as { schema?: unknown }).schema),
+    })),
+  };
 }

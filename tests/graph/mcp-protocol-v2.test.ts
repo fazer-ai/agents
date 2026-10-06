@@ -2,7 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import config from "@/config";
-import { loadMcpToolsForAgent, type McpSelection } from "@/graph/tools/mcp";
+import {
+  buildConnConfig,
+  discoverMcpServer,
+  loadMcpToolsForAgent,
+  type McpSelection,
+} from "@/graph/tools/mcp";
 
 // The MCP client against a legacy-protocol server (SDK v1) in its own process, through both
 // connection paths: the adapter's own client (no declared headers) and the app's SDK client
@@ -72,7 +77,7 @@ function sel(f: Fixture, over: Partial<McpSelection> = {}): McpSelection {
     credentialBaseUrl: null,
     credentialKind: null,
     credentialParamName: null,
-    enabledTools: ["echo", "refuse", "price"],
+    enabledTools: ["echo", "refuse", "price", "pair"],
     headers: {},
     ...over,
   };
@@ -117,7 +122,12 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     "a connection %s declared headers lists and calls over streamable HTTP",
     async (_label, headers) => {
       const t = await tools(sel(open, { headers }));
-      expect(Object.keys(t).sort()).toEqual(["echo", "price", "refuse"]);
+      expect(Object.keys(t).sort()).toEqual([
+        "echo",
+        "pair",
+        "price",
+        "refuse",
+      ]);
       expect(textOf(await t.echo?.invoke({ q: "olá" }))).toBe('{"q":"olá"}');
     },
   );
@@ -183,5 +193,37 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     expect(JSON.stringify(schema)).toContain('"$ref":"#/$defs/item"');
     const args = { item: { sku: "ÁÇ-1", qty: 2 }, extra: 3 };
     expect(JSON.parse(textOf(await t.price?.invoke(args)))).toEqual(args);
+  });
+
+  // A legacy server's draft-07 tuple (`items` as an array) is still callable: the SDK validates the
+  // arguments with a 2020-12 validator, which refuses that form before the server is reached.
+  test.each([
+    ["without", {}],
+    ["with", DECLARED],
+  ])(
+    "a draft-07 tuple argument %s declared headers reaches the server",
+    async (_label, headers) => {
+      const t = await tools(sel(open, { headers }));
+      expect(textOf(await t.pair?.invoke({ pair: ["a", 1] }))).toBe(
+        '{"pair":["a",1]}',
+      );
+    },
+  );
+
+  // The console's discovery goes through the same client as a turn: a server it can list is one a
+  // turn can call, the SSE fallback included.
+  test("discovery lists a server that refuses streamable HTTP, with its instructions", async () => {
+    const s = sel(refusing);
+    const found = await discoverMcpServer(
+      s,
+      await buildConnConfig(s, { stdioEnabled: false, allowHttp: true }),
+    );
+    expect(found.tools.map((t) => t.name).sort()).toEqual([
+      "echo",
+      "pair",
+      "price",
+      "refuse",
+    ]);
+    expect(found.instructions).toBe("Fixture instructions.");
   });
 });

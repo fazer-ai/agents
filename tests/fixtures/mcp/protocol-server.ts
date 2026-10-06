@@ -47,6 +47,19 @@ function server() {
         inputSchema: { type: "object", properties: {} },
       },
       {
+        name: "pair",
+        description: "Takes a draft-07 tuple",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pair: {
+              type: "array",
+              items: [{ type: "string" }, { type: "number" }],
+            },
+          },
+        },
+      },
+      {
         name: "price",
         description: "Price an item",
         inputSchema: PRICE_SCHEMA,

@@ -50,6 +50,9 @@ export interface DocumentCandidate {
   synced: boolean;
   // The row's `updatedAt` when it was read, so a verdict about it can tell the text moved since.
   revision?: Date;
+  // The whole document is in `content`, not just its nearest passages. Only such a document may be
+  // replaced: approving a replacement stores the proposal as the document's ENTIRE text.
+  complete?: boolean;
 }
 
 export interface ItemCandidate {
@@ -91,9 +94,12 @@ You receive the proposal and, as candidates, the closest passages of documents a
 Answer with ONE JSON object and nothing else:
 {"verdict": "new" | "duplicate" | "replace", "comment": string, "matched_item": string | null, "matched_document": string | null, "replaces_document": string | null}
 
-- "duplicate": the proposal states the SAME claim as a candidate, even reworded. Put that candidate's id in matched_item (a proposal) or matched_document (a document). A proposal that repeats a REJECTED one is a duplicate only when it repeats what the person refused; when the rejection was about a wrong fact and the proposal states a corrected fact (another number, another condition), it is not a duplicate.
-- "replace": the proposal states what a document of the base states, but corrected or more complete, so the document should be replaced by it. Put that document's id in replaces_document.
-- "new": anything else, including a claim close to a candidate but different in a number, a condition or a scope.
+Decide in this order:
+
+1. "duplicate" of a REJECTED proposal: the proposal makes the claim a person already refused, in any wording. Put the rejected proposal's id in matched_item, so the refusal stands. Exception: when the rejection reason says the fact was wrong and the proposal states a corrected fact (another number, another condition), it is not a duplicate; go on to the next rules.
+2. "duplicate" of anything else: the proposal states the SAME facts as one candidate, only reworded, reordered, shortened or made clearer, adding no fact and changing no value. Put that candidate's id in matched_item (a proposal) or matched_document (a document). Better wording alone is never a reason to replace.
+3. "replace": the proposal states a different value for something a document states (another time, price, deadline, address, condition), so the two cannot both be true, AND the proposal could stand as that document's entire new text: approving stores the proposal as the whole document, so every other fact the document states must also be in the proposal. Only a document with "complete": true can be replaced, since only then is its whole text shown; a document with "complete": false shows passages only. Put that document's id in replaces_document. A proposal that only adds a fact the document lacks, or that would drop facts the document states, is "new", not "replace". Proposals are never replaced: a different value against a PENDING, EDITED or SCREENING proposal is "new".
+4. "new": anything else, including a claim about a different subject that happens to look close (a monthly price beside an annual one, Saturday hours beside weekday hours).
 
 comment: one or two sentences for the person reviewing the queue, in the language of the proposal, saying what you compared it with and why you decided so. When in doubt, answer "new": a person still reviews it, while a wrong "duplicate" hides it.
 
@@ -109,6 +115,7 @@ export function buildReviewMessages(input: ReviewInput) {
   const docs = input.documents.map((d) => ({
     id: `doc:${d.documentId}`,
     title: d.title,
+    complete: d.complete === true,
     text: clip(d.content),
   }));
   const items = input.items.map((i) => ({
@@ -181,7 +188,8 @@ export function readReviewVerdict(
   if (v.verdict === "replace") {
     const doc = refId(v.replaces_document, "doc");
     const target = input.documents.find((d) => d.documentId === doc);
-    if (!target || target.synced) return { verdict: "new", comment: v.comment };
+    if (!target || target.synced || !target.complete)
+      return { verdict: "new", comment: v.comment };
     return {
       verdict: "replace",
       comment: v.comment,
@@ -264,21 +272,21 @@ async function matchStillHolds(
     const read = shown?.documents.find(
       (d) => d.documentId === v.matchedDocumentId,
     );
-    const doc = await db.knowledgeDocument.findUnique({
-      where: { id: v.matchedDocumentId },
-      select: { updatedAt: true },
-    });
+    // FOR UPDATE, so an edit or delete racing the discard either commits first and is seen here, or
+    // waits until the discard has committed.
+    const [doc] = await db.$queryRaw<{ updated_at: Date }[]>`
+      SELECT updated_at FROM knowledge_documents
+       WHERE id = ${v.matchedDocumentId} FOR UPDATE`;
     if (!doc) return false;
-    if (read?.revision && doc.updatedAt.getTime() !== read.revision.getTime())
+    if (read?.revision && doc.updated_at.getTime() !== read.revision.getTime())
       return false;
   }
   if (v.matchedItemId !== null) {
     const read = shown?.items.find((i) => i.itemId === v.matchedItemId);
-    const now = await db.approvalQueueItem.findUnique({
-      where: { id: v.matchedItemId },
-      select: { proposedContent: true },
-    });
-    if (!now || !read || now.proposedContent !== read.content) return false;
+    const [now] = await db.$queryRaw<{ proposed_content: string }[]>`
+      SELECT proposed_content FROM approval_queue_items
+       WHERE id = ${v.matchedItemId} FOR UPDATE`;
+    if (!now || !read || now.proposed_content !== read.content) return false;
   }
   return true;
 }
@@ -305,6 +313,7 @@ async function loadCandidates(
           externalId: true,
           updatedAt: true,
           status: true,
+          content: true,
           kb: { select: { source: { select: { id: true } } } },
         },
       })
@@ -318,15 +327,20 @@ async function loadCandidates(
     else if (byDoc.size < CANDIDATES_PER_KIND)
       byDoc.set(c.documentId, { title: c.documentTitle, parts: [c.content] });
   }
-  const documents = [...byDoc.entries()].map(([documentId, d]) => ({
-    documentId,
-    title: d.title,
-    content: d.parts.join("\n…\n"),
-    synced: isSyncedDocument(
-      rowsById.get(documentId) ?? { externalId: null, kb: null },
-    ),
-    revision: rowsById.get(documentId)?.updatedAt,
-  }));
+  const documents = [...byDoc.entries()].map(([documentId, d]) => {
+    const full = rowsById.get(documentId)?.content ?? "";
+    const complete = full.length > 0 && full.length <= CANDIDATE_CHARS;
+    return {
+      documentId,
+      title: d.title,
+      content: complete ? full : d.parts.join("\n…\n"),
+      complete,
+      synced: isSyncedDocument(
+        rowsById.get(documentId) ?? { externalId: null, kb: null },
+      ),
+      revision: rowsById.get(documentId)?.updatedAt,
+    };
+  });
   const rows = await db.$queryRaw<
     {
       id: bigint;

@@ -914,6 +914,116 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     );
   });
 
+  test("a document the reviewer saw only in passages is never replaced", async () => {
+    const kb = await newKb();
+    const long = `Troca em 7 dias. ${"Outras regras da loja. ".repeat(80)}`;
+    const doc = await seedDocument(kb, long, 23);
+    const a = await propose(kb, "Troca em 30 dias.");
+    const { model, seen } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(23));
+    expect(JSON.stringify(seen[0]?.map((m) => m.content))).toContain(
+      '\\"complete\\":false',
+    );
+    const row = await item(a.id);
+    expect(row.status).toBe("PENDING");
+    expect(row.replacesDocumentId).toBeNull();
+  });
+
+  test("an edit to the matched document that is still committing holds the discard and wins", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Entregamos em todo o Brasil.", 24);
+    const a = await propose(kb, "Fazemos entregas para todo o país.");
+    let release: () => void = () => undefined;
+    let editing: Promise<unknown> = Promise.resolve();
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: `doc:${doc}`,
+      }),
+    );
+    const invoke = model.invoke.bind(model);
+    model.invoke = (async (...args: Parameters<typeof invoke>) => {
+      let started: () => void = () => undefined;
+      const updated = new Promise<void>((r) => {
+        started = r;
+      });
+      editing = suDb.$transaction(
+        async (tx) => {
+          await tx.knowledgeDocument.update({
+            where: { id: doc },
+            data: { content: "Entregamos só no Sudeste." },
+          });
+          started();
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        },
+        { timeout: 20_000 },
+      );
+      await updated;
+      setTimeout(() => release(), 400);
+      return invoke(...args);
+    }) as typeof invoke;
+    await review(a.id, model, axis(24));
+    await editing;
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  }, 20000);
+
+  test("an edit to the matched proposal that is still committing holds the discard and wins", async () => {
+    const kb = await newKb();
+    const b = await propose(kb, "Aceitamos vale-refeição.");
+    await review(b.id, NEVER, axis(25));
+    const a = await propose(kb, "Pode pagar com vale refeição.");
+    let release: () => void = () => undefined;
+    let editing: Promise<unknown> = Promise.resolve();
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_item: `item:${b.id}`,
+      }),
+    );
+    const invoke = model.invoke.bind(model);
+    model.invoke = (async (...args: Parameters<typeof invoke>) => {
+      let started: () => void = () => undefined;
+      const updated = new Promise<void>((r) => {
+        started = r;
+      });
+      editing = suDb.$transaction(
+        async (tx) => {
+          await tx.approvalQueueItem.update({
+            where: { id: b.id },
+            data: { proposedContent: "Não aceitamos vale-refeição." },
+          });
+          started();
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        },
+        { timeout: 20_000 },
+      );
+      await updated;
+      setTimeout(() => release(), 400);
+      return invoke(...args);
+    }) as typeof invoke;
+    await review(a.id, model, axis(25));
+    await editing;
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  }, 20000);
+
   test("a duplicate that names nothing it was shown is queued unreviewed", async () => {
     const kb = await newKb();
     await seedDocument(kb, "Aceitamos boleto.", 8);

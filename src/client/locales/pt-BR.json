@@ -909,7 +909,7 @@
     "deleteTitle": "Excluir modelo de documento",
     "description": "Descrição",
     "editTitle": "Editar modelo de documento",
-    "emptyDesc": "Comece por um orçamento, proposta ou recibo pronto e edite o texto.",
+    "emptyDesc": "Comece por um orçamento, proposta ou recibo pronto, ou por um em branco, e edite o texto.",
     "emptyTitle": "Nenhum modelo de documento ainda",
     "enabled": "Agentes podem emitir este documento",
     "fields": "Campos que o agente preenche",

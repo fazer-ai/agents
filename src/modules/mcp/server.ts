@@ -1388,7 +1388,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "document_starters_list",
       {
         description:
-          "List the ready-made document templates (quote, proposal, receipt) that document_template_create can start from with `starter`.",
+          "Ready-made document templates (quote, proposal, receipt, blank) that document_template_create can start from with `starter`.",
         inputSchema: { locale: z.enum(["pt-BR", "en-US"]).optional() },
       },
       async (args: { locale?: "pt-BR" | "en-US" }, eff) =>

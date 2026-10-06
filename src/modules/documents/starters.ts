@@ -54,6 +54,9 @@ const STRINGS: Record<DocumentStyle["locale"], Strings> = {
     reference: "Referência",
     paidAt: "Data do pagamento",
     investment: "Investimento",
+    blankName: "Em branco",
+    blankDescription:
+      "Só o cabeçalho com título e número, sem campos, para configurar do zero.",
   },
   "en-US": {
     quoteName: "Quote",
@@ -87,6 +90,9 @@ const STRINGS: Record<DocumentStyle["locale"], Strings> = {
     reference: "Reference",
     paidAt: "Payment date",
     investment: "Investment",
+    blankName: "Blank",
+    blankDescription:
+      "Only the header with the title and number, no fields, to set up from scratch.",
   },
 };
 
@@ -269,6 +275,23 @@ function starters(locale: DocumentStyle["locale"]): DocumentStarter[] {
           ],
           columns: 2,
         },
+      ],
+    },
+    // Carries only what validation requires: one block that prints, so an issued document is never
+    // a numbered blank page. Everything else is the author's, so there is nothing to delete.
+    {
+      key: "blank",
+      name: s.blankName as string,
+      description: s.blankDescription as string,
+      numberPrefix: "",
+      style: {
+        ...DOCUMENT_STYLE_DEFAULTS,
+        locale,
+        currency: locale === "pt-BR" ? "BRL" : "USD",
+      },
+      fields: [],
+      blocks: [
+        { id: "header", type: "header", title: "{{doc_title}} {{doc_number}}" },
       ],
     },
   ];

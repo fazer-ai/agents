@@ -12,7 +12,10 @@ import {
 } from "@/modules/documents/blocks";
 import { printedDate } from "@/modules/documents/issue";
 import { sampleValues } from "@/modules/documents/sample";
-import { documentStarter } from "@/modules/documents/starters";
+import {
+  documentStarter,
+  documentStarters,
+} from "@/modules/documents/starters";
 import { computeTotals } from "@/modules/documents/totals";
 import {
   authoredStyleProblem,
@@ -1182,9 +1185,7 @@ describe("printedDate", () => {
 // blank after it — a document asking a question of its own reader.
 describe("starters promise only what they require", () => {
   test("every field a starter's text prints is required", () => {
-    for (const key of ["quote", "proposal", "receipt"] as const) {
-      const starter = documentStarter(key, "pt-BR");
-      if (!starter) throw new Error(`no starter: ${key}`);
+    for (const starter of documentStarters("pt-BR")) {
       const printed = new Set(
         JSON.stringify(starter.blocks)
           .match(/\{\{\s*[a-z][a-z0-9_]*\s*\}\}/g)

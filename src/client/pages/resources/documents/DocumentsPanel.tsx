@@ -524,7 +524,7 @@ export function DocumentsPanel() {
                 title={t("documents.emptyTitle", "No document templates yet")}
                 description={t(
                   "documents.emptyDesc",
-                  "Start from a ready-made quote, proposal or receipt, then edit the wording.",
+                  "Start from a ready-made quote, proposal or receipt, or from a blank one, then edit the wording.",
                 )}
                 action={
                   <Button size="sm" onClick={() => starterModal.open()}>

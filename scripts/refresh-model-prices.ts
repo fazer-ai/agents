@@ -51,7 +51,7 @@ function rates(e: Record<string, unknown>, suffix: string): Rates | null {
 }
 
 // Unauthenticated, the commits API allows 60 requests an hour per IP, and a CI runner shares its IP
-// with strangers; the weekly job (.github/workflows/refresh-model-prices.yml) hands its token in.
+// with strangers; the scheduled job (.github/workflows/refresh-model-prices.yml) hands its token in.
 const token = process.env.GITHUB_TOKEN;
 const commitsRes = await fetch(
   `https://api.github.com/repos/${REPO}/commits?path=${FILE}&per_page=1`,
@@ -105,7 +105,7 @@ for (const [key, e] of Object.entries(table)) {
 }
 
 // A source that answers 200 with a truncated or empty file would otherwise write a table with most
-// models gone, and the weekly job would propose removing them. A real refresh moves a handful of
+// models gone, and the scheduled job would propose removing them. A real refresh moves a handful of
 // rows; losing more than half of them is a broken read, not a price change.
 const previous = Object.keys(
   (

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// What a refresh of the price table changed, as the Markdown body of the weekly refresh's pull
+// What a refresh of the price table changed, as the Markdown body of the scheduled refresh's pull
 // request; by hand, run it against the table as it was before a refresh:
 //
 //   git show HEAD:src/modules/pricing/model-prices.json > old.json

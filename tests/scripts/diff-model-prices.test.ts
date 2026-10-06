@@ -6,7 +6,7 @@ import {
 } from "@/../scripts/diff-model-prices";
 import { plausibleRefresh } from "@/../scripts/refresh-guard";
 
-// The body of the pull request the weekly price refresh opens. A reviewer has to see which rates
+// The body of the pull request the scheduled price refresh opens. A reviewer has to see which rates
 // moved, which rows appeared and which went away, with the provider defaults first, and a refresh
 // that only moved the source commit must not count as a change at all.
 

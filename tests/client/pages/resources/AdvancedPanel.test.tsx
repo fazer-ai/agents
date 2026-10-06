@@ -9,19 +9,6 @@ import { AdvancedPanel } from "@/client/pages/resources/AdvancedPanel";
 // in the order they are drawn, and each entry pointing at an anchor its card carries.
 
 const realFetch = globalThis.fetch;
-const realObserver = globalThis.IntersectionObserver;
-
-class NoopObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-}
-globalThis.IntersectionObserver =
-  NoopObserver as unknown as typeof IntersectionObserver;
-
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -62,7 +49,6 @@ afterEach(() => {
 
 afterAll(() => {
   globalThis.fetch = realFetch;
-  globalThis.IntersectionObserver = realObserver;
 });
 
 describe("the Advanced screen's index", () => {

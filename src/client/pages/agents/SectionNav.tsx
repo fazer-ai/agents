@@ -109,11 +109,14 @@ function armSettle(pin: Pin): void {
   }, SCROLL_SETTLE_MS);
 }
 
-// Tracks which section id is currently near the top of the viewport. IntersectionObserver against the
-// viewport fires as the inner scroll container (the app's <main>) scrolls, because the observed
-// section elements translate within the viewport. The rootMargin biases "active" to the upper band so
-// the highlight matches what the operator is reading. Keyed on the joined id list so it re-binds only
-// when the section set changes (the effect reads the ids from `key`, never the array identity).
+// Where the operator is reading: the section whose top has passed a line this far down the scroll
+// container is the current one. A line and not a band, because a tall section covering a band kept
+// the highlight until the page ended, and the section under it was never lit.
+const ACTIVATION_LINE = 0.35;
+
+// Tracks which section is current as the scroll container (the app's <main>) scrolls. Keyed on the
+// joined id list so it re-binds only when the section set changes (the effect reads the ids from
+// `key`, never the array identity).
 function useScrollSpy(ids: string[]): {
   active: string | null;
   pin: (id: string) => void;
@@ -127,29 +130,28 @@ function useScrollSpy(ids: string[]): {
       .map((id) => document.getElementById(id))
       .filter((el): el is HTMLElement => el !== null);
     if (els.length === 0) return;
-    // Two cases the band cannot see. A last section shorter than the screen never reaches it, the
-    // page ends first, so at the bottom of the container holding the sections the last one is
-    // active. And an entry clicked holds the highlight until the operator scrolls again, since its
-    // section may be too low to reach the band where the smooth scroll stops.
+    const first = els[0] as HTMLElement;
     const last = els[els.length - 1] as HTMLElement;
-    const visible = new Set<string>();
-    let atBottom = false;
-    const decide = () => {
+    // The ends of the page decide on their own: at the top the first section is current though a
+    // short one leaves the line in the next, and at the bottom the last one is, though a last section
+    // shorter than the screen never reaches the line.
+    const decide = (box: Element) => {
       if (pinned.current) return;
-      const next = atBottom ? last.id : order.find((id) => visible.has(id));
-      if (next) setActive(next);
-    };
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) visible.add(e.target.id);
-          else visible.delete(e.target.id);
+      const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+      let next = first;
+      if (atBottom) next = last;
+      else if (box.scrollTop > 1) {
+        const top =
+          box === document.scrollingElement
+            ? 0
+            : box.getBoundingClientRect().top;
+        const line = top + box.clientHeight * ACTIVATION_LINE;
+        for (const el of els) {
+          if (el.getBoundingClientRect().top <= line) next = el;
         }
-        decide();
-      },
-      { rootMargin: "-80px 0px -55% 0px", threshold: [0, 0.1] },
-    );
-    for (const el of els) obs.observe(el);
+      }
+      setActive(next.id);
+    };
     // Scroll does not bubble, so it is caught on the way down; only the container holding the
     // sections counts, not a textarea scrolling inside one of them.
     const onScroll = (event: Event) => {
@@ -164,8 +166,7 @@ function useScrollSpy(ids: string[]): {
         return;
       }
       pinned.current = null;
-      atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
-      decide();
+      decide(box);
     };
     document.addEventListener("scroll", onScroll, {
       capture: true,
@@ -184,7 +185,6 @@ function useScrollSpy(ids: string[]): {
       });
     }
     return () => {
-      obs.disconnect();
       document.removeEventListener("scroll", onScroll, { capture: true });
       for (const type of GESTURES) {
         document.removeEventListener(type, release, { capture: true });
@@ -192,6 +192,8 @@ function useScrollSpy(ids: string[]): {
       clearTimeout(pinned.current?.timer);
     };
   }, [key]);
+  // An entry clicked holds the highlight until the operator scrolls again: its section may stop too
+  // low to reach the line where the smooth scroll ends.
   const pin = useCallback((id: string) => {
     clearTimeout(pinned.current?.timer);
     const pin: Pin = { settled: false };

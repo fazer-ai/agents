@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   act,
   cleanup,
@@ -11,35 +11,14 @@ import {
 import { Activity, Gauge, Tags } from "lucide-react";
 import { Section, SectionNav } from "@/client/pages/agents/SectionNav";
 
-// THE INDEX SAYS WHERE THE OPERATOR IS, the last section included. The scroll-spy marks the section
-// that crosses the upper band of the viewport, and a last section shorter than the screen never gets
-// there: the page ends first. At the bottom of its scroll container the last entry is the one
-// highlighted, and an entry clicked stays highlighted where the scroll lands.
-
-const realObserver = globalThis.IntersectionObserver;
-let observed: IntersectionObserverCallback | null = null;
-
-class FakeObserver {
-  constructor(cb: IntersectionObserverCallback) {
-    observed = cb;
-  }
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-  takeRecords() {
-    return [];
-  }
-}
-globalThis.IntersectionObserver =
-  FakeObserver as unknown as typeof IntersectionObserver;
+// THE INDEX SAYS WHERE THE OPERATOR IS. The current section is the one whose top has passed a line
+// at 35% of the scroll container, so a tall section above does not keep the highlight from the one
+// under it. The ends of the page decide on their own (the first section at the top, the last at the
+// bottom, which a short last section never reaches the line for), and an entry clicked stays
+// highlighted where its scroll lands until the operator takes the scroll back.
 
 afterEach(() => {
   cleanup();
-  observed = null;
-});
-
-afterAll(() => {
-  globalThis.IntersectionObserver = realObserver;
 });
 
 const SECTIONS = [
@@ -48,6 +27,8 @@ const SECTIONS = [
   { id: "three", icon: Activity, label: "Three" },
 ];
 
+// happy-dom lays nothing out: the container is 800px tall from y=0, so the line sits at y=280, and
+// each section's top is set by hand for the scroll position under test.
 function renderNav() {
   const view = render(
     <div data-testid="scroller" style={{ overflowY: "auto" }}>
@@ -60,10 +41,29 @@ function renderNav() {
     </div>,
   );
   const scroller = screen.getByTestId("scroller");
-  // happy-dom lays nothing out: the geometry a real scroll container would have is set by hand.
   Object.defineProperty(scroller, "clientHeight", { value: 800 });
   Object.defineProperty(scroller, "scrollHeight", { value: 2000 });
+  scroller.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
   return { ...view, scroller };
+}
+
+function place(tops: Record<string, number>) {
+  for (const [id, top] of Object.entries(tops)) {
+    const el = document.getElementById(id) as HTMLElement;
+    el.getBoundingClientRect = () => ({ top, height: 300 }) as DOMRect;
+  }
+}
+
+function scrollTo(
+  scroller: HTMLElement,
+  top: number,
+  tops: Record<string, number> = {},
+) {
+  place(tops);
+  scroller.scrollTop = top;
+  act(() => {
+    fireEvent.scroll(scroller);
+  });
 }
 
 const current = () =>
@@ -72,70 +72,79 @@ const current = () =>
     .filter((a) => a.getAttribute("aria-current") === "true")
     .map((a) => a.textContent);
 
-function crossing(id: string, isIntersecting: boolean) {
-  const target = document.getElementById(id) as Element;
+function clickEntry(name: string, scroll: () => void) {
+  const target = document.getElementById(name.toLowerCase()) as HTMLElement;
+  target.scrollIntoView = scroll;
   act(() => {
-    observed?.(
-      [{ target, isIntersecting } as IntersectionObserverEntry],
-      {} as IntersectionObserver,
-    );
+    fireEvent.click(screen.getByRole("link", { name }));
   });
 }
 
-function scrollTo(scroller: HTMLElement, top: number) {
-  scroller.scrollTop = top;
-  act(() => {
-    fireEvent.scroll(scroller);
-  });
-}
+const settle = () => act(() => new Promise((r) => setTimeout(r, 250)));
 
 describe("the section index", () => {
-  test("highlights the section crossing the upper band as the page scrolls", () => {
+  test("highlights the section whose top has passed the line", () => {
     const { scroller } = renderNav();
     expect(current()).toEqual(["One"]);
-    crossing("one", false);
-    crossing("two", true);
-    scrollTo(scroller, 600);
+    scrollTo(scroller, 600, { one: -500, two: 100, three: 900 });
+    expect(current()).toEqual(["Two"]);
+    scrollTo(scroller, 400, { one: -300, two: 300, three: 1100 });
+    expect(current()).toEqual(["One"]);
+  });
+
+  // The defect the band had: a tall section still covering the upper part of the screen kept the
+  // highlight from the one whose top was already well inside it.
+  test("a tall section above does not keep the highlight from the one under it", () => {
+    const { scroller } = renderNav();
+    scrollTo(scroller, 900, { one: -900, two: 250, three: 1200 });
     expect(current()).toEqual(["Two"]);
   });
 
-  test("at the bottom of the page the last section is highlighted, though it never reached the band", () => {
+  // The app scrolls <main>, which starts below the header: the line is measured from the
+  // container's own top, not the viewport's.
+  test("the line sits 35% down the scroll container, wherever the container starts", () => {
     const { scroller } = renderNav();
-    crossing("two", true);
-    scrollTo(scroller, 1200);
+    scroller.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
+    // The line is at 100 + 280 = 380: a section whose top is at 350 has passed it.
+    scrollTo(scroller, 600, { one: -500, two: 350, three: 900 });
+    expect(current()).toEqual(["Two"]);
+    // At 400 it has not.
+    scrollTo(scroller, 550, { one: -450, two: 400, three: 950 });
+    expect(current()).toEqual(["One"]);
+  });
+
+  test("at the top of the page the first section is highlighted, though a short one leaves the line in the next", () => {
+    const { scroller } = renderNav();
+    scrollTo(scroller, 600, { one: -500, two: 100, three: 900 });
+    scrollTo(scroller, 0, { one: 0, two: 150, three: 900 });
+    expect(current()).toEqual(["One"]);
+  });
+
+  test("at the bottom of the page the last section is highlighted, though it never reached the line", () => {
+    const { scroller } = renderNav();
+    scrollTo(scroller, 1200, { one: -1100, two: 100, three: 500 });
     expect(current()).toEqual(["Three"]);
-    // Scrolling back up leaves the bottom, and the band decides again.
-    scrollTo(scroller, 900);
-    crossing("two", true);
+    // Scrolling back up leaves the bottom, and the line decides again.
+    scrollTo(scroller, 900, { one: -800, two: 200, three: 800 });
     expect(current()).toEqual(["Two"]);
   });
 
   test("an entry clicked stays highlighted where its scroll lands", () => {
     const { scroller } = renderNav();
-    const target = document.getElementById("two") as HTMLElement;
-    target.scrollIntoView = () => {
-      // The smooth scroll runs to the bottom: the clicked section is too low to reach the band, and
-      // the sections it passes cross the band on the way.
-      crossing("three", true);
-      scrollTo(scroller, 1200);
-    };
-    act(() => {
-      fireEvent.click(screen.getByRole("link", { name: "Two" }));
-    });
+    // The smooth scroll runs to the bottom: the clicked section stops too low for the line.
+    clickEntry("Two", () =>
+      scrollTo(scroller, 1200, { one: -1100, two: 400, three: 900 }),
+    );
     expect(current()).toEqual(["Two"]);
   });
 
-  test("after a click, the next scroll of the operator gives the highlight back to the band", async () => {
+  test("after a click, the next scroll of the operator gives the highlight back to the line", async () => {
     const { scroller } = renderNav();
-    const target = document.getElementById("two") as HTMLElement;
-    target.scrollIntoView = () => scrollTo(scroller, 1200);
-    act(() => {
-      fireEvent.click(screen.getByRole("link", { name: "Two" }));
-    });
-    // The smooth scroll has stopped; the operator scrolls up on their own.
-    await act(() => new Promise((r) => setTimeout(r, 250)));
-    crossing("one", true);
-    scrollTo(scroller, 100);
+    clickEntry("Two", () =>
+      scrollTo(scroller, 1200, { one: -1100, two: 400, three: 900 }),
+    );
+    await settle();
+    scrollTo(scroller, 100, { one: -50, two: 500, three: 1100 });
     expect(current()).toEqual(["One"]);
   });
 
@@ -143,15 +152,10 @@ describe("the section index", () => {
   // to end on its own clock, or the operator's next scroll would be read as the click's.
   test("a click that scrolls nothing still gives the highlight back on the next scroll", async () => {
     const { scroller } = renderNav();
-    const target = document.getElementById("two") as HTMLElement;
-    target.scrollIntoView = () => {};
-    act(() => {
-      fireEvent.click(screen.getByRole("link", { name: "Two" }));
-    });
+    clickEntry("Two", () => {});
     expect(current()).toEqual(["Two"]);
-    await act(() => new Promise((r) => setTimeout(r, 250)));
-    crossing("one", true);
-    scrollTo(scroller, 100);
+    await settle();
+    scrollTo(scroller, 100, { one: -50, two: 500, three: 1100 });
     expect(current()).toEqual(["One"]);
   });
 
@@ -160,11 +164,9 @@ describe("the section index", () => {
   for (const gesture of ["wheel", "touchstart", "keydown"] as const) {
     test(`a ${gesture} during the click's scroll gives the highlight back immediately`, () => {
       const { scroller } = renderNav();
-      const target = document.getElementById("two") as HTMLElement;
-      target.scrollIntoView = () => scrollTo(scroller, 900);
-      act(() => {
-        fireEvent.click(screen.getByRole("link", { name: "Two" }));
-      });
+      clickEntry("Two", () =>
+        scrollTo(scroller, 900, { one: -800, two: 200, three: 800 }),
+      );
       expect(current()).toEqual(["Two"]);
       act(() => {
         if (gesture === "keydown")
@@ -172,15 +174,13 @@ describe("the section index", () => {
         else if (gesture === "touchstart") fireEvent.touchStart(scroller);
         else fireEvent.wheel(scroller);
       });
-      crossing("one", true);
-      scrollTo(scroller, 100);
+      scrollTo(scroller, 100, { one: -50, two: 500, three: 1100 });
       expect(current()).toEqual(["One"]);
     });
   }
 
   test("a box scrolling to its end inside a section is not the page reaching its bottom", () => {
     renderNav();
-    crossing("one", true);
     const box = document.createElement("textarea");
     document.getElementById("one")?.appendChild(box);
     Object.defineProperty(box, "clientHeight", { value: 100 });

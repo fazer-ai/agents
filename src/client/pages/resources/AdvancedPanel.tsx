@@ -1,3 +1,4 @@
+import { Binary, Gauge, ScrollText, Tags } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -13,6 +14,7 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
+import { SectionNav } from "@/client/pages/agents/SectionNav";
 import { PriceOverridesCard } from "./PriceOverridesCard";
 import { SpendCeilingCard } from "./SpendCeilingCard";
 
@@ -153,193 +155,231 @@ export function AdvancedPanel() {
     }
   }
 
+  // The left-rail index of the Behavior tab, one entry per card in the order they are drawn. The two
+  // cards that render their own Card are anchored by a wrapper.
+  const sections = [
+    {
+      id: "spend-ceiling",
+      icon: Gauge,
+      label: t("spendCeiling.title", "Spend ceiling"),
+    },
+    {
+      id: "model-prices",
+      icon: Tags,
+      label: t("priceOverrides.title", "Model prices"),
+    },
+    {
+      id: "embedding",
+      icon: Binary,
+      label: t("advanced.embedding.title", "Embedding"),
+    },
+    {
+      id: "observability",
+      icon: ScrollText,
+      label: t("advanced.observability.title", "Observability (Langfuse)"),
+    },
+  ];
+
   return (
     <DataBoundary loading={loading} error={error} onRetry={load}>
-      <div className="flex flex-col gap-4">
-        {spendCeiling && (
-          <SpendCeilingCard value={spendCeiling} onSaved={setSpendCeiling} />
-        )}
-        {priceOverrides && (
-          <PriceOverridesCard
-            value={priceOverrides}
-            onSaved={setPriceOverrides}
-          />
-        )}
-        <Card className="flex flex-col gap-4">
-          <div>
-            <h2 className="font-medium text-text-primary">
-              {t("advanced.embedding.title", "Embedding")}
-            </h2>
-            <p className="mt-0.5 text-sm text-text-muted">
-              {t(
-                "advanced.embedding.desc",
-                "Provider and credential used to vectorize and search your knowledge bases.",
-              )}
-            </p>
-          </div>
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <ServiceLogo
-                service="openai"
-                className="h-5 w-5 shrink-0 text-text-secondary"
+      <div className="flex gap-6">
+        <SectionNav sections={sections} />
+        <div className="flex min-w-0 grow flex-col gap-4">
+          {spendCeiling && (
+            <div id="spend-ceiling" className="scroll-mt-4">
+              <SpendCeilingCard
+                value={spendCeiling}
+                onSaved={setSpendCeiling}
               />
-              <div className="min-w-0">
-                <p className="font-medium text-sm text-text-primary">
-                  {t("vault.secretType.openai", "OpenAI")}
-                </p>
-                <p className="truncate text-text-muted text-xs">
-                  {EMBEDDING_MODEL}
-                </p>
-              </div>
             </div>
-            <span className="shrink-0 rounded-full bg-bg-tertiary px-2 py-0.5 text-text-muted text-xs">
-              {t(
-                "advanced.embedding.comingSoon",
-                "More embedding providers and models coming soon.",
-              )}
-            </span>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <span className="font-medium text-sm text-text-secondary">
-              {t("advanced.embedding.credential", "Credential")}
-            </span>
-            <div className="flex items-start gap-2">
-              <div className="flex-1">
-                <CredentialPicker
-                  value={embCredential}
-                  onChange={setEmbCredential}
-                  compatibleTypes={["openai"]}
-                  ariaLabel={t("advanced.embedding.credential", "Credential")}
-                />
-                {embRefusal.at(
-                  "embedding.credentialRef",
-                  embCredential || null,
-                ) && (
-                  <p className="mt-1 text-error text-xs">
-                    {embRefusal.at(
-                      "embedding.credentialRef",
-                      embCredential || null,
-                    )}
-                  </p>
+          )}
+          {priceOverrides && (
+            <div id="model-prices" className="scroll-mt-4">
+              <PriceOverridesCard
+                value={priceOverrides}
+                onSaved={setPriceOverrides}
+              />
+            </div>
+          )}
+          <Card id="embedding" className="flex scroll-mt-4 flex-col gap-4">
+            <div>
+              <h2 className="font-medium text-text-primary">
+                {t("advanced.embedding.title", "Embedding")}
+              </h2>
+              <p className="mt-0.5 text-sm text-text-muted">
+                {t(
+                  "advanced.embedding.desc",
+                  "Provider and credential used to vectorize and search your knowledge bases.",
                 )}
-              </div>
-              <Button size="sm" onClick={saveEmbedding} loading={embSaving}>
-                {t("common.save", "Save")}
-              </Button>
+              </p>
             </div>
-          </div>
-        </Card>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <ServiceLogo
+                  service="openai"
+                  className="h-5 w-5 shrink-0 text-text-secondary"
+                />
+                <div className="min-w-0">
+                  <p className="font-medium text-sm text-text-primary">
+                    {t("vault.secretType.openai", "OpenAI")}
+                  </p>
+                  <p className="truncate text-text-muted text-xs">
+                    {EMBEDDING_MODEL}
+                  </p>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-full bg-bg-tertiary px-2 py-0.5 text-text-muted text-xs">
+                {t(
+                  "advanced.embedding.comingSoon",
+                  "More embedding providers and models coming soon.",
+                )}
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="font-medium text-sm text-text-secondary">
+                {t("advanced.embedding.credential", "Credential")}
+              </span>
+              <div className="flex items-start gap-2">
+                <div className="flex-1">
+                  <CredentialPicker
+                    value={embCredential}
+                    onChange={setEmbCredential}
+                    compatibleTypes={["openai"]}
+                    ariaLabel={t("advanced.embedding.credential", "Credential")}
+                  />
+                  {embRefusal.at(
+                    "embedding.credentialRef",
+                    embCredential || null,
+                  ) && (
+                    <p className="mt-1 text-error text-xs">
+                      {embRefusal.at(
+                        "embedding.credentialRef",
+                        embCredential || null,
+                      )}
+                    </p>
+                  )}
+                </div>
+                <Button size="sm" onClick={saveEmbedding} loading={embSaving}>
+                  {t("common.save", "Save")}
+                </Button>
+              </div>
+            </div>
+          </Card>
 
-        <Card className="flex flex-col gap-4">
-          <div>
-            <h2 className="font-medium text-text-primary">
-              {t("advanced.observability.title", "Observability (Langfuse)")}
-            </h2>
-            <p className="mt-0.5 text-sm text-text-muted">
-              {t(
-                "advanced.observability.desc",
-                "Send agent traces to Langfuse. Content is redacted unless you opt in.",
-              )}
-            </p>
-          </div>
-          <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <label
-              htmlFor={tracingId}
-              data-clickable="true"
-              className="font-medium text-sm text-text-primary"
-            >
-              {t("advanced.observability.enabled", "Enable tracing")}
-            </label>
-            <Switch
-              id={tracingId}
-              checked={lfEnabled}
-              onCheckedChange={setLfEnabled}
-            />
-          </div>
-          <FormField
-            label={t(
-              "advanced.observability.credential",
-              "Langfuse credential",
-            )}
-            group
-            description={t(
-              "advanced.observability.credentialHint",
-              "Public key, secret key and host are stored in the credential. Use the Vault tab to create or update it.",
-            )}
-            error={lfRefusal.at("langfuse.credentialRef", lfCredentialRef)}
-          >
-            <CredentialPicker
-              value={lfCredentialRef ?? ""}
-              onChange={(v) => setLfCredentialRef(v || null)}
-              compatibleTypes={["langfuse"]}
-              allowNone
-              ariaLabel={t(
+          <Card id="observability" className="flex scroll-mt-4 flex-col gap-4">
+            <div>
+              <h2 className="font-medium text-text-primary">
+                {t("advanced.observability.title", "Observability (Langfuse)")}
+              </h2>
+              <p className="mt-0.5 text-sm text-text-muted">
+                {t(
+                  "advanced.observability.desc",
+                  "Send agent traces to Langfuse. Content is redacted unless you opt in.",
+                )}
+              </p>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <label
+                htmlFor={tracingId}
+                data-clickable="true"
+                className="font-medium text-sm text-text-primary"
+              >
+                {t("advanced.observability.enabled", "Enable tracing")}
+              </label>
+              <Switch
+                id={tracingId}
+                checked={lfEnabled}
+                onCheckedChange={setLfEnabled}
+              />
+            </div>
+            <FormField
+              label={t(
                 "advanced.observability.credential",
                 "Langfuse credential",
               )}
-            />
-          </FormField>
-          <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <div className="flex items-center gap-1.5 pr-4">
-              <label
-                htmlFor={sendContentId}
-                data-clickable="true"
-                className="text-sm text-text-secondary"
-              >
-                {t(
-                  "advanced.observability.sendContent",
-                  "Send conversation content",
-                )}
-              </label>
-              <HelpPopover
-                content={t(
-                  "advanced.observability.sendContentHelp",
-                  "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs.",
-                )}
-                label={t(
-                  "advanced.observability.sendContent",
-                  "Send conversation content",
+              group
+              description={t(
+                "advanced.observability.credentialHint",
+                "Public key, secret key and host are stored in the credential. Use the Vault tab to create or update it.",
+              )}
+              error={lfRefusal.at("langfuse.credentialRef", lfCredentialRef)}
+            >
+              <CredentialPicker
+                value={lfCredentialRef ?? ""}
+                onChange={(v) => setLfCredentialRef(v || null)}
+                compatibleTypes={["langfuse"]}
+                allowNone
+                ariaLabel={t(
+                  "advanced.observability.credential",
+                  "Langfuse credential",
                 )}
               />
-            </div>
-            <Switch
-              id={sendContentId}
-              checked={lfSendContent}
-              onCheckedChange={setLfSendContent}
-            />
-          </div>
-          <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <div className="flex items-center gap-1.5 pr-4">
-              <label
-                htmlFor={debugId}
-                data-clickable="true"
-                className="text-sm text-text-secondary"
-              >
-                {t("advanced.observability.debug", "Debug mode (tool schemas)")}
-              </label>
-              <HelpPopover
-                content={t(
-                  "advanced.observability.debugHelp",
-                  "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
-                )}
-                label={t(
-                  "advanced.observability.debug",
-                  "Debug mode (tool schemas)",
-                )}
+            </FormField>
+            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div className="flex items-center gap-1.5 pr-4">
+                <label
+                  htmlFor={sendContentId}
+                  data-clickable="true"
+                  className="text-sm text-text-secondary"
+                >
+                  {t(
+                    "advanced.observability.sendContent",
+                    "Send conversation content",
+                  )}
+                </label>
+                <HelpPopover
+                  content={t(
+                    "advanced.observability.sendContentHelp",
+                    "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs.",
+                  )}
+                  label={t(
+                    "advanced.observability.sendContent",
+                    "Send conversation content",
+                  )}
+                />
+              </div>
+              <Switch
+                id={sendContentId}
+                checked={lfSendContent}
+                onCheckedChange={setLfSendContent}
               />
             </div>
-            <Switch
-              id={debugId}
-              checked={lfDebug}
-              onCheckedChange={setLfDebug}
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button onClick={saveLangfuse} loading={lfSaving}>
-              {t("common.save", "Save")}
-            </Button>
-          </div>
-        </Card>
+            <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div className="flex items-center gap-1.5 pr-4">
+                <label
+                  htmlFor={debugId}
+                  data-clickable="true"
+                  className="text-sm text-text-secondary"
+                >
+                  {t(
+                    "advanced.observability.debug",
+                    "Debug mode (tool schemas)",
+                  )}
+                </label>
+                <HelpPopover
+                  content={t(
+                    "advanced.observability.debugHelp",
+                    "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
+                  )}
+                  label={t(
+                    "advanced.observability.debug",
+                    "Debug mode (tool schemas)",
+                  )}
+                />
+              </div>
+              <Switch
+                id={debugId}
+                checked={lfDebug}
+                onCheckedChange={setLfDebug}
+              />
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={saveLangfuse} loading={lfSaving}>
+                {t("common.save", "Save")}
+              </Button>
+            </div>
+          </Card>
+        </div>
       </div>
     </DataBoundary>
   );

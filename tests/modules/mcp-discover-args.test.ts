@@ -132,6 +132,48 @@ describe("summarizeToolArgs", () => {
     ]);
   });
 
+  test("a property's own keywords beside a $ref win over the target's", () => {
+    expect(
+      summarizeToolArgs({
+        $defs: { empty: {}, word: { type: "number", description: "far" } },
+        properties: {
+          a: { $ref: "#/$defs/empty", type: "string" },
+          b: { $ref: "#/$defs/word", type: "string" },
+        },
+      }),
+    ).toEqual([
+      { name: "a", type: "string", description: null, required: false },
+      { name: "b", type: "string", description: "far", required: false },
+    ]);
+  });
+
+  // NOTE: unbounded, this shape is exponential in the depth limit and never returns.
+  test("repeated recursive $refs stay bounded", () => {
+    const started = performance.now();
+    const args = summarizeToolArgs({
+      properties: { q: { type: "string" } },
+      allOf: Array.from({ length: 40 }, () => ({ $ref: "#" })),
+    });
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(args.map((a) => a.name)).toEqual(["q"]);
+    const fanOut: Record<string, unknown> = {
+      d9: { properties: { leaf: { type: "string" } } },
+    };
+    for (let i = 0; i < 9; i++)
+      fanOut[`d${i}`] = {
+        allOf: Array.from({ length: 10 }, () => ({
+          $ref: `#/$defs/d${i + 1}`,
+        })),
+      };
+    const wide = performance.now();
+    expect(
+      summarizeToolArgs({ $defs: fanOut, $ref: "#/$defs/d0" }).map(
+        (a) => a.name,
+      ),
+    ).toEqual(["leaf"]);
+    expect(performance.now() - wide).toBeLessThan(2000);
+  });
+
   test("a $ref cycle or a dangling $ref does not hang or throw", () => {
     expect(
       summarizeToolArgs({

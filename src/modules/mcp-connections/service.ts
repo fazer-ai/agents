@@ -570,15 +570,20 @@ function lookupLocalRef(ref: unknown, root: unknown): object | undefined {
   return cur && typeof cur === "object" ? cur : undefined;
 }
 
-// A property's schema with a chain of local `$ref`s followed, for its type label; anything else,
-// or a chain past a few hops, stays as is.
-function resolveLocalRef(node: unknown, root: unknown, hops = 0): unknown {
-  if (hops > 8) return node;
-  const target = lookupLocalRef(
-    (node as { $ref?: unknown } | null)?.$ref,
-    root,
-  );
-  return target ? resolveLocalRef(target, root, hops + 1) : node;
+// A property's schema with a chain of local `$ref`s followed for its type label: each target's
+// keywords sit under the ones declared closer to the property, so a sibling `type` beside a `$ref`
+// wins. The chain stops after a few hops.
+function resolveLocalRef(node: unknown, root: unknown): unknown {
+  if (!node || typeof node !== "object") return node;
+  let merged: Record<string, unknown> = { ...node };
+  let cur: unknown = node;
+  for (let hops = 0; hops < 8; hops++) {
+    const target = lookupLocalRef((cur as { $ref?: unknown }).$ref, root);
+    if (!target) break;
+    merged = { ...target, ...merged };
+    cur = target;
+  }
+  return merged;
 }
 
 type ObjectShape = {
@@ -586,27 +591,37 @@ type ObjectShape = {
   required: Set<string>;
 };
 
+// Nodes one summary may visit: a server's schema can repeat a recursive `$ref` (`allOf` of many
+// `{"$ref":"#"}`) or fan out through shared definitions, and either grows exponentially on the
+// shared event loop without a total bound.
+const SHAPE_BUDGET = 512;
+
 // An object schema's properties and required names, for the summary only (the schema itself is
 // not rewritten). A local `$ref` adds its target's shape to the keywords beside it, `allOf`
 // branches are merged with their required names, and `anyOf`/`oneOf` branches add their
-// properties, required only when every branch requires them.
-function objectShape(node: unknown, root: unknown, depth = 0): ObjectShape {
+// properties, required only when every branch requires them. The walk stops once the budget is
+// spent.
+function objectShape(
+  node: unknown,
+  root: unknown,
+  walk: { budget: number } = { budget: SHAPE_BUDGET },
+): ObjectShape {
   const out: ObjectShape = { properties: {}, required: new Set() };
-  if (!node || typeof node !== "object" || depth > 8) return out;
+  if (!node || typeof node !== "object" || walk.budget <= 0) return out;
+  walk.budget -= 1;
   const s = node as Record<string, unknown>;
   const merge = (sub: ObjectShape, withRequired: boolean) => {
     Object.assign(out.properties, sub.properties);
     if (withRequired) for (const r of sub.required) out.required.add(r);
   };
   const target = lookupLocalRef(s.$ref, root);
-  if (target) merge(objectShape(target, root, depth + 1), true);
+  if (target) merge(objectShape(target, root, walk), true);
   if (Array.isArray(s.allOf))
-    for (const branch of s.allOf)
-      merge(objectShape(branch, root, depth + 1), true);
+    for (const branch of s.allOf) merge(objectShape(branch, root, walk), true);
   for (const key of ["anyOf", "oneOf"]) {
     const branches = s[key];
     if (!Array.isArray(branches) || branches.length === 0) continue;
-    const subs = branches.map((b) => objectShape(b, root, depth + 1));
+    const subs = branches.map((b) => objectShape(b, root, walk));
     for (const sub of subs) merge(sub, false);
     for (const name of Object.keys(out.properties))
       if (subs.every((sub) => sub.required.has(name))) out.required.add(name);
@@ -625,16 +640,13 @@ export function summarizeToolArgs(schema: unknown): DiscoveredMcpToolArg[] {
   if (!schema || typeof schema !== "object") return [];
   const { properties, required } = objectShape(schema, schema);
   return Object.entries(properties).map(([name, raw]) => {
-    const own = (raw && typeof raw === "object" ? raw : {}) as {
-      description?: unknown;
-    };
     const p = (resolveLocalRef(raw, schema) ?? {}) as {
       type?: unknown;
       description?: unknown;
       enum?: unknown;
       items?: unknown;
     };
-    const description = own.description ?? p.description;
+    const description = p.description;
     return {
       name,
       type: jsonSchemaTypeLabel(p),

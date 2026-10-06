@@ -72,9 +72,10 @@ source and calendar month), and the gate reads the row.
 **A model with no price is announced from the capture** (`src/modules/pricing/unpriced-alert.ts`),
 ceiling or not, Langfuse or not: the row being written with a null `cost_usd` emits a `spend_ceiling`
 line at `warn` naming the model and the fix that exists in this app (the account's own price for it in
-Advanced > Model prices, then re-pricing the calls already made). Once per model per month per tenant,
-and "once" is the announcement's own record rather than process memory: the model is announced unless
-this month's flow log already holds its line (`detail.unpricedModel`), so a restart does not repeat
+Advanced > Model prices, then re-pricing the calls already made). Once per model per month per tenant
+and per source, since only the inbox's line reaches the alert channels and a playground line must not
+use up the inbox's. "Once" is the announcement's own record rather than process memory: the model is
+announced unless this month's flow log already holds its line for that source (`detail.unpricedModel`), so a restart does not repeat
 it, and unpriced rows written before the alert existed do not count as a warning anyone received. Two
 first calls in separate processes may both announce, which is the direction to err in.
 

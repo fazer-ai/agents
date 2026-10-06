@@ -132,16 +132,26 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     expect(rows[0]?.errorMessage).not.toContain("Langfuse");
   });
 
-  test("the same model again, in either source, is not news; another model is", async () => {
+  test("the same model again in the same source is not news; another model is", async () => {
     await persist()(row(tenantA, "mystery-1", null));
     await persist()(row(tenantA, "mystery-1", null));
-    await persist()(row(tenantA, "mystery-1", null, "playground"));
-    await persist()(row(tenantA, "mystery-2", null, "playground"));
+    await persist()(row(tenantA, "mystery-2", null));
     const rows = await alerts(tenantA);
     expect(rows.map((r) => (r.detail as { models: string[] }).models)).toEqual([
       ["mystery-1"],
       ["mystery-2"],
     ]);
+  });
+
+  // Only the inbox's line reaches the alert channels, so a model first tried in the playground is
+  // still announced when customer traffic reaches it, and each source says it once.
+  test("a playground announcement does not use up the inbox's", async () => {
+    await persist()(row(tenantA, "mystery-1", null, "playground"));
+    await persist()(row(tenantA, "mystery-1", null, "playground"));
+    await persist()(row(tenantA, "mystery-1", null));
+    await persist()(row(tenantA, "mystery-1", null));
+    const rows = await alerts(tenantA);
+    expect(rows.map((r) => r.source)).toEqual(["playground", "inbox"]);
   });
 
   test("a priced call announces nothing", async () => {

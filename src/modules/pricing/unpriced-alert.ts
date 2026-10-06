@@ -7,8 +7,9 @@ import { writeFlowEvent } from "@/modules/flowlog/service";
 import { monthStart } from "@/modules/spend-ceiling/decide";
 
 // A MODEL THE LEDGER COULD NOT PRICE is announced on the `spend_ceiling` stage at warn, once per
-// model per month per tenant, ceiling or not, Langfuse or not: every call to it is left out of the
-// cost and of the ceiling's figure until someone acts.
+// model per month per tenant and per source, ceiling or not, Langfuse or not: every call to it is
+// left out of the cost and of the ceiling's figure until someone acts. Per source because only the
+// inbox's line reaches the alert channels, so a playground line must not use up the inbox's.
 
 // "Once" is the announcement's own record: a model is announced unless this month's flow log already
 // holds the line for it, so a restart does not repeat it and an upgrade does not count unpriced rows
@@ -31,7 +32,7 @@ export async function announceUnpricedModel(params: {
 }): Promise<void> {
   const base = params.base ?? basePrisma;
   const month = monthStart(params.now ?? new Date());
-  const key = `${params.tenantId}:${month.toISOString()}:${params.model}`;
+  const key = `${params.tenantId}:${params.source}:${month.toISOString()}:${params.model}`;
   if (settled.has(key)) return;
   settled.add(key);
   try {
@@ -40,6 +41,7 @@ export async function announceUnpricedModel(params: {
         where: {
           tenantId: params.tenantId,
           stage: "spend_ceiling",
+          source: params.source,
           createdAt: { gte: month },
           detail: { path: ["unpricedModel"], equals: params.model },
         },

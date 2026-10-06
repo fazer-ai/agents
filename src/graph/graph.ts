@@ -59,8 +59,8 @@ export interface BuildAgentGraphParams {
   checkpointer?: BaseCheckpointSaver;
   tools?: StructuredToolInterface[];
   // Soft+hard cap on tool executions within ONE turn (default 10). At maxToolCalls-2 the agent gets
-  // a "wrap up now" instruction; at maxToolCalls it is invoked WITHOUT tools, forcing a text answer
-  // instead of LangGraph's GraphRecursionError. See src/modules/agents/limits.ts.
+  // a "wrap up now" instruction; at maxToolCalls it is invoked WITHOUT tools and told so, forcing a
+  // text answer instead of LangGraph's GraphRecursionError. See src/modules/agents/limits.ts.
   maxToolCalls?: number;
   // Fired once when the hard limit forces a no-tools answer (runtime emits a flow warn so it shows
   // up in the turn trail / Logs). Best-effort; never throws.
@@ -629,11 +629,23 @@ export function buildAgentGraph({
     const wrapUpText = noReplyChannel
       ? `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: se ainda falta registrar algo, use a última ferramenta; se não, encerre sem escrever nada.`
       : `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
+    // The hard-limit round runs with no tools, so the wrap-up's "use another tool if imprescindible"
+    // is no longer true there; without its own instruction a model mid-plan writes its next step as
+    // text, and that text is the reply. No handoff is offered: no tool can perform it on this call.
+    // A turn that just chose silence keeps `skip_reply` on this round and is left as it was.
+    const capText = noReplyChannel
+      ? `[Sistema] Você usou as ${max} ferramentas permitidas neste turno e não há mais ferramentas disponíveis. Encerre sem escrever nada.`
+      : `[Sistema] Você usou as ${max} ferramentas permitidas neste turno e não há mais ferramentas disponíveis. Sua próxima mensagem vai ao cliente exatamente como você escrever: responda com as informações que já tem e, se faltar algo, diga ao cliente o que falta.`;
+    const toldOfCap = hardLimit && !staySilent;
     // The spoken-reply notice rides with the wrap-up, first. Only the callers that deliver a reply
     // which can be spoken pass one, so an observation never carries it.
     const noticeText = spokenNotice?.()?.trim();
     const notice = noticeText ? [noticeText] : [];
-    const lateTexts = [...notice, ...(softLimit ? [wrapUpText] : [])];
+    const lateTexts = [
+      ...notice,
+      ...(softLimit ? [wrapUpText] : []),
+      ...(toldOfCap ? [capText] : []),
+    ];
     // The wrap-up travels after the history where every destination takes a system message
     // there, inside the system prompt elsewhere, and in a human message never. After the history keeps
     // the cached prefix: a line appended to the system prompt changes the prefix at the first message,

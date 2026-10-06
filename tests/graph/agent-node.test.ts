@@ -86,10 +86,12 @@ describe("agentNode system-message normalization", () => {
 // (the hard-limit path invokes the raw model). Records the system prompt seen on each bound invoke.
 class ToolLoopModel {
   boundRounds: BaseMessage[][] = [];
+  rawRounds: BaseMessage[][] = [];
   rawInvokes = 0;
   // Hard-limit path: raw model, no tools → a plain text answer ends the turn.
-  async invoke(_messages: BaseMessage[]): Promise<AIMessage> {
+  async invoke(messages: BaseMessage[]): Promise<AIMessage> {
     this.rawInvokes++;
+    this.rawRounds.push(messages);
     return new AIMessage("resposta final");
   }
   bindTools(_tools: unknown) {
@@ -112,6 +114,11 @@ class ToolLoopModel {
 const WRAP_UP = "[Sistema] Você já usou";
 const carriesWrapUp = (round: BaseMessage[]) =>
   round.some((m) => contentToText(m.content).includes(WRAP_UP));
+// The hard limit's own instruction: the round runs with no tools, and the model is told so.
+const CAP_NOTICE = "não há mais ferramentas disponíveis";
+const capNoticeCount = (round: BaseMessage[]) =>
+  round.filter((m) => contentToText(m.content).includes(CAP_NOTICE)).length;
+const carriesCapNotice = (round: BaseMessage[]) => capNoticeCount(round) > 0;
 
 const noopTool = tool(async () => "feito", {
   name: "noop",
@@ -555,6 +562,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       schema: z.object({}),
     });
     const boundAtLimit: string[][] = [];
+    const sentAtLimit: BaseMessage[][] = [];
     class ReaffirmsSilence {
       rawInvokes = 0;
       rounds = 0;
@@ -567,7 +575,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         const self = this;
         const names = (tls as { name: string }[]).map((t) => t.name);
         return {
-          async invoke(): Promise<AIMessage> {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
             self.rounds++;
             if (self.rounds === 1) {
               return new AIMessage({
@@ -584,6 +592,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             }
             // The round the hard limit runs: only the inert tool is on offer, and the model takes it.
             boundAtLimit.push(names);
+            sentAtLimit.push(messages);
             return new AIMessage({
               content: "",
               tool_calls: [
@@ -616,6 +625,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
     expect(model.rawInvokes).toBe(0);
     expect(boundAtLimit).toEqual([[SKIP_REPLY_TOOL]]);
+    // NOTE: `skip_reply` is still bound on this round, so "no tools are left" would be false here.
+    expect(sentAtLimit.some(carriesCapNotice)).toBe(false);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
     // NOTE: ONCE. The cap is one event (the turn ran out of budget) and its handlers write an
     // operator line and can page. Two rounds cross the limit here (the batch, then the
@@ -2460,7 +2471,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("faça muitas coisas")] },
       { configurable: { thread_id: threadId } },
     );
-    return { rounds: model.boundRounds, result };
+    return { rounds: model.boundRounds, raw: model.rawRounds, result };
   };
 
   // An observation turn has nobody to answer: its frame says any text it writes reaches
@@ -2504,6 +2515,51 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const prompt = contentToText(rounds[1]?.[0]?.content ?? "");
     expect(prompt).toContain(WRAP_UP);
     expect(prompt).not.toContain(REPLY_SENTENCE);
+  });
+
+  // The hard-limit round runs with no tools. Told nothing, a model mid-plan writes its next step as
+  // text, and that text is what the customer receives.
+  test("the hard-limit round is told the tools are gone and that its text goes to the customer", async () => {
+    const { rounds, raw, result } = await runToTheCap("cap-reply", "openai");
+    expect(raw).toHaveLength(1);
+    const capRound = raw[0] ?? [];
+    expect(capNoticeCount(capRound)).toBe(1);
+    // NOTE: the wrap-up's "use another tool if imprescindible" is false on this round, so it is
+    // replaced, not repeated beside the notice.
+    expect(carriesWrapUp(capRound)).toBe(false);
+    const last = capRound.at(-1);
+    expect(last?.getType()).toBe("system");
+    const sent = contentToText(last?.content ?? "");
+    expect(sent).toContain("3 ferramentas");
+    expect(sent).toContain("vai ao cliente");
+    expect(sent).toContain("diga ao cliente o que falta");
+    expect(humanCarriesWrapUp(capRound)).toBe(false);
+    expect(
+      capNoticeCount(capRound.filter((m) => m.getType() === "human")),
+    ).toBe(0);
+    // Only that round: the rounds with tools still bound are never told the tools are gone.
+    expect(rounds.some(carriesCapNotice)).toBe(false);
+    // Sent, not persisted.
+    expect(carriesCapNotice(result.messages)).toBe(false);
+  });
+
+  test("an observation at the hard limit is told to stop without writing", async () => {
+    const { raw } = await runToTheCap("cap-noreply", "openai", undefined, true);
+    const sent = (raw[0] ?? []).map((m) => contentToText(m.content)).join("\n");
+    expect(capNoticeCount(raw[0] ?? [])).toBe(1);
+    expect(sent).toContain("Encerre sem escrever nada");
+    expect(sent).not.toContain("vai ao cliente");
+    expect(sent).not.toContain(REPLY_SENTENCE);
+    // NOTE: the observation's wrap-up says to use the last tool; on this round there is none.
+    expect(sent).not.toContain("use a última ferramenta");
+  });
+
+  test("where a late system message is refused, the hard-limit notice is inside the system prompt", async () => {
+    const { raw } = await runToTheCap("cap-anthropic", "anthropic");
+    const capRound = raw[0] ?? [];
+    expect(capRound.filter((m) => m.getType() === "system")).toHaveLength(1);
+    expect(contentToText(capRound[0]?.content ?? "")).toContain(CAP_NOTICE);
+    expect(capNoticeCount(capRound)).toBe(1);
   });
 
   // Where every destination takes a system message after the history, the instruction goes there,

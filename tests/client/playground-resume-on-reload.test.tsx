@@ -59,11 +59,20 @@ function server() {
   }) as typeof fetch;
 }
 
-function mark(agentId: string, threadId: string) {
+function mark(agentId: string, threadId: string, href = location.href) {
   sessionStorage.setItem(
     PLAYGROUND_RESUME_KEY,
-    JSON.stringify({ agentId, threadId }),
+    JSON.stringify({ agentId, threadId, href }),
   );
+}
+
+// How this document was loaded, as the browser's navigation entry reports it.
+const realEntries = performance.getEntriesByType.bind(performance);
+function loadedAs(type: "reload" | "navigate", name = location.href) {
+  performance.getEntriesByType = ((t: string) =>
+    t === "navigation"
+      ? [{ type, name }]
+      : realEntries(t)) as typeof performance.getEntriesByType;
 }
 
 async function mount(opts: { strict?: boolean } = {}) {
@@ -83,11 +92,13 @@ function shownText(hook: Awaited<ReturnType<typeof mount>>) {
 
 beforeEach(() => {
   sessionStorage.clear();
+  loadedAs("reload");
   server();
 });
 afterEach(() => {
   cleanup();
   globalThis.fetch = realFetch;
+  performance.getEntriesByType = realEntries;
   // NOTE: Restored here and not in the test's finally: a rejection from the mount ends the test
   // before its finally runs, and a throwing store would leak into every file after this one.
   if (realSessionStorage)
@@ -124,6 +135,25 @@ describe("which session the agent screen opens on", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(opened).toEqual([]);
     expect(second.result.current.currentThreadId).toBeUndefined();
+  });
+
+  test("a document reached by typing a URL is not a reload: new session, marker dropped", async () => {
+    mark(AGENT, OLDER);
+    loadedAs("navigate");
+    const hook = await mount();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(opened).toEqual([]);
+    expect(hook.result.current.currentThreadId).toBeUndefined();
+    expect(sessionStorage.getItem(PLAYGROUND_RESUME_KEY)).toBeNull();
+  });
+
+  test("a reload of another page, after the editor left for it, opens a new session", async () => {
+    mark(AGENT, OLDER, "http://localhost:3000/agents/7/playground");
+    loadedAs("reload", "http://localhost:3000/agents");
+    const hook = await mount();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(opened).toEqual([]);
+    expect(hook.result.current.currentThreadId).toBeUndefined();
   });
 
   test("a marker left by another agent opens a new session and is dropped", async () => {
@@ -174,7 +204,7 @@ describe("what pagehide leaves for the reload", () => {
     });
     expect(
       JSON.parse(sessionStorage.getItem(PLAYGROUND_RESUME_KEY) ?? "null"),
-    ).toEqual({ agentId: AGENT, threadId: OLDER });
+    ).toEqual({ agentId: AGENT, threadId: OLDER, href: location.href });
   });
 
   test("a new session that never sent leaves nothing", async () => {

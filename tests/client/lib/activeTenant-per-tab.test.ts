@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   adoptSessionTenant,
   dropRejectedSelection,
@@ -90,6 +90,13 @@ describe("the selected tenant is the tab's", () => {
 // Every API call reads the selection for its X-Tenant-Id header, so a browser that refuses storage
 // (site data blocked) must get "nothing selected", not a request that throws before it is sent.
 describe("storage the browser refuses", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+  // A selection the tab store refused is kept in memory; a write the store accepts clears it.
+  afterEach(() => setActiveTenantId(null));
+
   const blocked = () => {
     throw new DOMException("blocked", "SecurityError");
   };
@@ -150,6 +157,26 @@ describe("storage the browser refuses", () => {
     const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     withStores({ value: refusingWrites }, l ?? {}, () => {
       expect(getActiveTenantId()).toBe("3");
+    });
+  });
+
+  test("a tab whose own store refuses writes keeps its tenant when another tab chooses", () => {
+    const tabRefusingWrites = {
+      getItem: () => null,
+      setItem: blocked,
+      removeItem: blocked,
+    } as unknown as Storage;
+    localStorage.setItem(KEY, "3");
+    const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    withStores({ value: tabRefusingWrites }, l ?? {}, () => {
+      expect(getActiveTenantId()).toBe("3");
+      localStorage.setItem(KEY, "9");
+      expect(getActiveTenantId()).toBe("3");
+      setActiveTenantId("5");
+      localStorage.setItem(KEY, "9");
+      expect(getActiveTenantId()).toBe("5");
+      pinTabTenantId("1");
+      expect(getActiveTenantId()).toBe("5");
     });
   });
 });

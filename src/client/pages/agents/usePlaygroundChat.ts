@@ -330,15 +330,16 @@ export function agentTurn(
 }
 
 // Opening an agent's screen starts a new session; a reload of a tab that had a saved session open
-// brings that one back. A reload fires `pagehide` and in-app navigation never does, so the marker
-// it writes (per tab) is only there for the mount that follows a reload. docs/playground.md.
+// brings that one back. `pagehide` writes the marker, and the next mount takes it only when this
+// document is a reload of the URL that wrote it: `pagehide` also fires when the tab leaves for
+// another document, and in-app navigation never fires it. docs/playground.md.
 export const PLAYGROUND_RESUME_KEY = "@app:playground-resume";
 
 function writeResumeMarker(agentId: string, threadId: string): void {
   try {
     sessionStorage.setItem(
       PLAYGROUND_RESUME_KEY,
-      JSON.stringify({ agentId, threadId }),
+      JSON.stringify({ agentId, threadId, href: location.href }),
     );
   } catch {
     // storage unavailable → the reload opens a new session
@@ -353,13 +354,23 @@ function dropResumeMarker(): void {
   }
 }
 
-// Reads and removes the marker, returning the thread only when it was left by this agent.
+function documentIsReloadOf(href: unknown): boolean {
+  const nav = performance.getEntriesByType("navigation")[0] as
+    | PerformanceNavigationTiming
+    | undefined;
+  return nav?.type === "reload" && nav.name === href;
+}
+
+// Reads and removes the marker, returning the thread only when it was left by this agent in the
+// document this one reloaded.
 function takeResumeMarker(agentId: string): string | undefined {
   try {
     const raw = sessionStorage.getItem(PLAYGROUND_RESUME_KEY);
     sessionStorage.removeItem(PLAYGROUND_RESUME_KEY);
     const m = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-    return m?.agentId === agentId && typeof m.threadId === "string"
+    return m?.agentId === agentId &&
+      typeof m.threadId === "string" &&
+      documentIsReloadOf(m.href)
       ? m.threadId
       : undefined;
   } catch {

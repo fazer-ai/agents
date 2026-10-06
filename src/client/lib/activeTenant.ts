@@ -33,23 +33,36 @@ function read(store: Storage | null): string | null {
   }
 }
 
-function write(store: Storage | null, id: string | null): void {
+function write(store: Storage | null, id: string | null): boolean {
   try {
-    if (id) store?.setItem(KEY, id);
-    else store?.removeItem(KEY);
+    if (!store) return false;
+    if (id) store.setItem(KEY, id);
+    else store.removeItem(KEY);
+    return true;
   } catch {
-    // storage refused → the selection lives as long as this read
+    return false;
   }
 }
 
+// The tab's selection when the tab store refuses it, so this tab keeps its tenant instead of falling
+// back to the shared default that another tab moves. Lives as long as the document.
+let tabFallback: string | null = null;
+
+function pinToTab(id: string | null): void {
+  tabFallback = write(tabStore(), id) ? null : id;
+}
+
+function tabSelection(): string | null {
+  return read(tabStore()) ?? tabFallback;
+}
+
 export function getActiveTenantId(): string | null {
-  const tab = tabStore();
-  const own = read(tab);
+  const own = tabSelection();
   if (own !== null) return own;
   // A tab that has not chosen starts from the last choice and KEEPS it: pinned to the tab on first
   // read, so a later choice in another tab does not move this one.
   const inherited = read(sharedStore());
-  if (inherited !== null) write(tab, inherited);
+  if (inherited !== null) pinToTab(inherited);
   return inherited;
 }
 
@@ -58,8 +71,7 @@ export function getActiveTenantId(): string | null {
 // id, it keeps inheriting the shared default, and a choice made in another tab would move this tab's
 // next request to another tenant under a page built for the first one.
 export function pinTabTenantId(id: string): void {
-  const tab = tabStore();
-  if (read(tab) === null) write(tab, id);
+  if (tabSelection() === null) pinToTab(id);
 }
 
 // What the tab does with the tenant a fresh session reports, a function rather than inline in the
@@ -82,7 +94,8 @@ export function adoptSessionTenant(
 }
 
 export function setActiveTenantId(id: string | null): void {
-  for (const store of [tabStore(), sharedStore()]) write(store, id);
+  pinToTab(id);
+  write(sharedStore(), id);
 }
 
 // The set of selectable tenants changed (a tenant was created). Components that cache the list

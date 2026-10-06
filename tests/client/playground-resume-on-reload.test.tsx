@@ -23,9 +23,13 @@ const realSessionStorage = Object.getOwnPropertyDescriptor(
   "sessionStorage",
 );
 let opened: string[] = [];
+let listDelayMs = 0;
+let sessionDelayMs = 0;
 
 function server() {
   opened = [];
+  listDelayMs = 0;
+  sessionDelayMs = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : null;
     const url = String(req ? req.url : input);
@@ -34,17 +38,21 @@ function server() {
       new Response(JSON.stringify(body), {
         headers: { "content-type": "application/json" },
       });
-    if (url.endsWith("/playground/sessions") && method === "GET")
+    if (url.endsWith("/playground/sessions") && method === "GET") {
+      if (listDelayMs) await new Promise((r) => setTimeout(r, listDelayMs));
       return json({
         sessions: [
           { threadId: LATEST, title: "latest", updatedAt: "2026-10-06" },
           { threadId: OLDER, title: "older", updatedAt: "2026-10-01" },
         ],
       });
+    }
     const one = url.match(/\/playground\/sessions\/([^/]+)$/);
     if (one && method === "GET") {
       const tid = decodeURIComponent(one[1] ?? "");
       opened.push(tid);
+      if (sessionDelayMs)
+        await new Promise((r) => setTimeout(r, sessionDelayMs));
       return json({
         threadId: tid,
         usage: NO_USAGE,
@@ -156,6 +164,33 @@ describe("which session the agent screen opens on", () => {
     expect(hook.result.current.currentThreadId).toBeUndefined();
   });
 
+  test("leaving before the list returns spends the reload: the next in-app mount opens a new session", async () => {
+    mark(AGENT, OLDER);
+    listDelayMs = 50;
+    const left = renderHook(() => usePlaygroundChat(AGENT, false));
+    left.unmount();
+    await new Promise((r) => setTimeout(r, 80));
+    listDelayMs = 0;
+    const back = await mount();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(opened).toEqual([]);
+    expect(back.result.current.currentThreadId).toBeUndefined();
+  });
+
+  test("the hook switched to another agent in place does not carry the reload over", async () => {
+    mark(AGENT, OLDER);
+    const hook = renderHook(({ id }) => usePlaygroundChat(id, false), {
+      initialProps: { id: AGENT },
+    });
+    await waitFor(() =>
+      expect(hook.result.current.currentThreadId).toBe(OLDER),
+    );
+    opened = [];
+    hook.rerender({ id: "8" });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(opened).toEqual([]);
+  });
+
   test("a marker left by another agent opens a new session and is dropped", async () => {
     mark("8", "1:playground:8:x");
     const hook = await mount();
@@ -206,6 +241,28 @@ describe("what pagehide leaves for the reload", () => {
       JSON.parse(sessionStorage.getItem(PLAYGROUND_RESUME_KEY) ?? "null"),
     ).toEqual({ agentId: AGENT, threadId: OLDER, href: location.href });
   });
+
+  test.each([
+    ["the session list", "list"],
+    ["the transcript", "session"],
+  ])(
+    "a reload while %s is still loading keeps the session for the next reload",
+    async (_, which) => {
+      mark(AGENT, OLDER);
+      if (which === "list") listDelayMs = 60;
+      else sessionDelayMs = 60;
+      renderHook(() => usePlaygroundChat(AGENT, false));
+      await new Promise((r) => setTimeout(r, which === "list" ? 10 : 30));
+      expect(sessionStorage.getItem(PLAYGROUND_RESUME_KEY)).toBeNull();
+      act(() => {
+        window.dispatchEvent(new Event("pagehide"));
+      });
+      expect(
+        JSON.parse(sessionStorage.getItem(PLAYGROUND_RESUME_KEY) ?? "null"),
+      ).toMatchObject({ agentId: AGENT, threadId: OLDER });
+      await new Promise((r) => setTimeout(r, 100));
+    },
+  );
 
   test("a new session that never sent leaves nothing", async () => {
     await mount();

@@ -657,21 +657,31 @@ export function usePlaygroundChat(
     [agentId, newSession],
   );
 
+  // The session a reload brought this mount back to (PLAYGROUND_RESUME_KEY), taken out of storage
+  // when the mount happens, so leaving before it opens leaves nothing for the next mount. Held until
+  // the session is open, so a reload before then writes it back. A ref, because StrictMode's
+  // replayed effect keeps it and a real unmount does not.
+  const resumeRef = useRef<{ threadId: string | undefined } | null>(null);
+
   // On mount (per agent), load the history list, and reopen a session only when this mount follows
-  // a reload that had one open (PLAYGROUND_RESUME_KEY). The marker is taken after the list returns,
-  // so StrictMode's cancelled first run never spends it.
+  // a reload that had one open.
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once per agent mount
   useEffect(() => {
+    resumeRef.current ??= { threadId: takeResumeMarker(agentId) };
     let cancelled = false;
     void (async () => {
       const { data } = await api.api.v1
         .agents({ id: agentId })
         .playground.sessions.get();
       if (cancelled) return;
-      const resume = takeResumeMarker(agentId);
-      if (!data) return;
-      setSessions(data.sessions);
-      if (resume) await loadSession(resume);
+      const resume = resumeRef.current?.threadId;
+      try {
+        if (!data) return;
+        setSessions(data.sessions);
+        if (resume) await loadSession(resume);
+      } finally {
+        resumeRef.current = { threadId: undefined };
+      }
     })();
     return () => {
       cancelled = true;
@@ -680,8 +690,10 @@ export function usePlaygroundChat(
 
   useEffect(() => {
     const onPageHide = () => {
-      const tid = threadId.current;
-      if (tid && sessionSaved.current) writeResumeMarker(agentId, tid);
+      const tid = sessionSaved.current
+        ? threadId.current
+        : resumeRef.current?.threadId;
+      if (tid) writeResumeMarker(agentId, tid);
     };
     // A page restored from the back-forward cache never remounts, so the marker its pagehide
     // wrote would otherwise be taken by the next in-app visit to this agent.

@@ -260,6 +260,8 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
       ["O frete custa 1,5 real.", "O frete custa 1 5 real."],
       ["Mantenha a 10 °C.", "Mantenha a 10 C."],
       ["A taxa é 10 %.", "A taxa é 10 ‰."],
+      ["A fórmula é 2*3.", "A fórmula é 2/3."],
+      ["Use C# no backend.", "Use C no backend."],
     ];
     for (const [x, y] of pairs) {
       const a = await propose(kb, x as string);
@@ -722,6 +724,53 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     });
     expect(await listedIds()).toContain(String(a.id));
     expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  });
+
+  test("a duplicate whose match changed while the model ran goes to a person", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Aceitamos cartão de crédito.", 17);
+    const a = await propose(kb, "Pagamento com cartão de crédito é aceito.");
+    const byDoc = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: `doc:${doc}`,
+      }),
+    );
+    const invokeDoc = byDoc.model.invoke.bind(byDoc.model);
+    byDoc.model.invoke = (async (...args: Parameters<typeof invokeDoc>) => {
+      await suDb.knowledgeDocument.delete({ where: { id: doc } });
+      return invokeDoc(...args);
+    }) as typeof invokeDoc;
+    await review(a.id, byDoc.model, axis(17));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+
+    const b = await propose(kb, "Emitimos nota fiscal eletrônica.");
+    await review(b.id, NEVER, axis(18));
+    const c = await propose(kb, "A nota fiscal é emitida eletronicamente.");
+    const byItem = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_item: `item:${b.id}`,
+      }),
+    );
+    const invokeItem = byItem.model.invoke.bind(byItem.model);
+    byItem.model.invoke = (async (...args: Parameters<typeof invokeItem>) => {
+      await suDb.approvalQueueItem.update({
+        where: { id: b.id },
+        data: { proposedContent: "Emitimos nota fiscal em papel." },
+      });
+      return invokeItem(...args);
+    }) as typeof invokeItem;
+    await review(c.id, byItem.model, axis(18));
+    expect(await item(c.id)).toMatchObject({
       status: "PENDING",
       reviewerComment: null,
     });

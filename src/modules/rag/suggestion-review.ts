@@ -218,6 +218,7 @@ async function applyVerdict(
   tenantId: bigint,
   itemId: bigint,
   v: ReviewVerdict,
+  shown?: ReviewInput,
 ): Promise<void> {
   const data =
     v.verdict === "duplicate"
@@ -234,12 +235,45 @@ async function applyVerdict(
             replacesDocumentId: v.replacesDocumentId,
           }
         : { status: "PENDING" as const, reviewerComment: v.comment };
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.approvalQueueItem.updateMany({
+  await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    // NOTE: A duplicate discards the proposal on the strength of what the model read, so that has to
+    // still be there: a matched document deleted, or a matched proposal edited, while the model ran
+    // leaves nothing to be a duplicate of, and the proposal goes to a person instead.
+    if (v.verdict === "duplicate" && !(await matchStillHolds(db, v, shown))) {
+      await db.approvalQueueItem.updateMany({
+        where: { id: itemId, status: "SCREENING" },
+        data: { status: "PENDING" },
+      });
+      return;
+    }
+    await db.approvalQueueItem.updateMany({
       where: { id: itemId, status: "SCREENING" },
       data,
-    }),
-  );
+    });
+  });
+}
+
+async function matchStillHolds(
+  db: ScopedDb,
+  v: Extract<ReviewVerdict, { verdict: "duplicate" }>,
+  shown: ReviewInput | undefined,
+): Promise<boolean> {
+  if (v.matchedDocumentId !== null) {
+    const doc = await db.knowledgeDocument.findUnique({
+      where: { id: v.matchedDocumentId },
+      select: { id: true },
+    });
+    if (!doc) return false;
+  }
+  if (v.matchedItemId !== null) {
+    const read = shown?.items.find((i) => i.itemId === v.matchedItemId);
+    const now = await db.approvalQueueItem.findUnique({
+      where: { id: v.matchedItemId },
+      select: { proposedContent: true },
+    });
+    if (!now || !read || now.proposedContent !== read.content) return false;
+  }
+  return true;
 }
 
 async function loadCandidates(
@@ -461,7 +495,7 @@ export async function runSuggestionReview(
   }
   const verdict = readReviewVerdict(text, input);
   if (!verdict) return release("unreadable verdict");
-  await applyVerdict(base, tenantId, item.id, verdict);
+  await applyVerdict(base, tenantId, item.id, verdict, input);
   return { outcome: "done" };
 }
 

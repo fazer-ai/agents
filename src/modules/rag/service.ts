@@ -249,13 +249,16 @@ export interface SuggestParams {
   base?: PrismaClient;
 }
 
-// The proposal as the key compares it: case, whitespace and ordinary punctuation carry no claim, so
-// "Prazo: 7 dias." and "prazo 7 dias" are one entry. What can change a number stays: a sign before a
-// digit, a separator between digits, a percent or per-mille sign, and every symbol (°, $, ±, <), so "-10 °C"
-// and "+10 °C" are two entries. Letters keep their accents.
+// The proposal as the key compares it: case, whitespace and sentence punctuation (. , ; : ! ? …,
+// quotes, brackets, dashes) carry no claim, so "Prazo: 7 dias." and "prazo 7 dias" are one entry.
+// Everything else stays, since any other character may be the claim ("2*3" and "2/3", "C#" and "C",
+// "10 %" and "10 ‰"), and so do a sign before a digit and a separator between digits ("-10", "1,5").
+// Letters keep their accents.
+const SENTENCE_PUNCTUATION =
+  /[\s.,;:!?\u2026"'\u2018\u2019\u201C\u201D\u00AB\u00BB()[\]{}\-\u2010-\u2015\u2212]/u;
+
 export function normalizedSuggestionHash(content: string): string {
-  // Code points, not UTF-16 units: an emoji is a symbol only as a whole, and its surrogate halves
-  // match no category, so "🟢" and "🔴" would fold to the same blank.
+  // Code points, not UTF-16 units: an emoji is one character, never two halves.
   const chars = Array.from(content.normalize("NFC").toLowerCase());
   const isDigit = (ch: string | undefined) =>
     ch !== undefined && /\p{N}/u.test(ch);
@@ -265,10 +268,9 @@ export function normalizedSuggestionHash(content: string): string {
     const prev = chars[i - 1];
     const next = chars[i + 1];
     const keep =
-      /[\p{L}\p{N}\p{S}]/u.test(ch) ||
+      !SENTENCE_PUNCTUATION.test(ch) ||
       (/[-\u2212]/u.test(ch) && isDigit(next)) ||
-      (/[.,]/.test(ch) && isDigit(prev) && isDigit(next)) ||
-      /[%\u2030]/u.test(ch);
+      (/[.,]/.test(ch) && isDigit(prev) && isDigit(next));
     folded += keep ? ch : " ";
   }
   folded = folded.replace(/\s+/g, " ").trim();

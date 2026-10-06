@@ -18,7 +18,7 @@ import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 // A MODEL THE LEDGER COULD NOT PRICE IS SAID OUT LOUD, once per model per month per
 // tenant, from the capture itself: no ceiling and no Langfuse are needed for it, which is the point,
 // since every call to that model is left out of the cost and of the ceiling until someone sets a
-// price. "Once" survives a restart because it is the ledger's answer, not process memory.
+// price. "Once" survives a restart because it is the announcement's own record in the flow log.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -160,44 +160,41 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
   // model is not announced a second time this month.
   test("a restart does not announce the month's model again", async () => {
     await persist()(row(tenantA, "mystery-1", null));
+    // The first line has landed before the process "restarts".
+    expect(await alerts(tenantA)).toHaveLength(1);
     resetUnpricedAnnouncements();
     await persist()(row(tenantA, "mystery-1", null));
     expect(await alerts(tenantA)).toHaveLength(1);
   });
 
+  // An upgrade finds unpriced rows written before the alert existed. They are not a warning anyone
+  // received, so the first call after the upgrade still announces the model.
+  test("unpriced rows from before the alert existed do not silence it", async () => {
+    await suDb.llmUsage.create({
+      data: { tenantId: tenantA, model: "mystery-1" },
+    });
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
   test("a new month announces the model again", async () => {
-    const aug = await suDb.llmUsage.create({
-      data: {
+    const at = (iso: string) =>
+      announceUnpricedModel({
         tenantId: tenantA,
         model: "mystery-1",
-        createdAt: new Date("2026-08-20T00:00:00Z"),
-      },
-      select: { id: true },
+        source: "inbox",
+        now: new Date(iso),
+        base: appDb,
+      });
+    await at("2026-08-20T00:00:00Z");
+    // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+    await alerts(tenantA);
+    // Settled to land the line, then backdated: the lookup reads the log's own month.
+    await suDb.executionLog.updateMany({
+      where: { tenantId: tenantA, stage: "spend_ceiling" },
+      data: { createdAt: new Date("2026-08-20T00:00:00Z") },
     });
-    const sept = await suDb.llmUsage.create({
-      data: {
-        tenantId: tenantA,
-        model: "mystery-1",
-        createdAt: new Date("2026-09-02T00:00:00Z"),
-      },
-      select: { id: true },
-    });
-    await announceUnpricedModel({
-      tenantId: tenantA,
-      model: "mystery-1",
-      source: "inbox",
-      rowId: aug.id,
-      now: new Date("2026-08-20T00:00:00Z"),
-      base: appDb,
-    });
-    await announceUnpricedModel({
-      tenantId: tenantA,
-      model: "mystery-1",
-      source: "inbox",
-      rowId: sept.id,
-      now: new Date("2026-09-02T00:00:00Z"),
-      base: appDb,
-    });
+    await at("2026-09-02T00:00:00Z");
     expect(await alerts(tenantA)).toHaveLength(2);
   });
 });

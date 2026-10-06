@@ -10,9 +10,11 @@ import { monthStart } from "@/modules/spend-ceiling/decide";
 // model per month per tenant, ceiling or not, Langfuse or not: every call to it is left out of the
 // cost and of the ceiling's figure until someone acts.
 
-// "Once" is the ledger's own answer, so it survives a restart: the row being written announces only
-// when no EARLIER unpriced row of the model exists this month. Two first calls racing in separate
-// transactions may both announce, the direction to err in. The set only spares repeated lookups.
+// "Once" is the announcement's own record: a model is announced unless this month's flow log already
+// holds the line for it, so a restart does not repeat it and an upgrade does not count unpriced rows
+// written before the alert existed as a warning someone received. Two first calls in separate
+// processes may both announce, the direction to err in; within a process the set holds the key from
+// the first lookup on.
 
 const settled = new Set<string>();
 
@@ -24,7 +26,6 @@ export async function announceUnpricedModel(params: {
   tenantId: bigint;
   model: string;
   source: UsageSource;
-  rowId: bigint;
   now?: Date;
   base?: PrismaClient;
 }): Promise<void> {
@@ -32,22 +33,22 @@ export async function announceUnpricedModel(params: {
   const month = monthStart(params.now ?? new Date());
   const key = `${params.tenantId}:${month.toISOString()}:${params.model}`;
   if (settled.has(key)) return;
+  settled.add(key);
   try {
-    const earlier = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-      db.llmUsage.findFirst({
+    const said = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.executionLog.findFirst({
         where: {
           tenantId: params.tenantId,
-          model: params.model,
-          costUsd: null,
+          stage: "spend_ceiling",
           createdAt: { gte: month },
-          id: { lt: params.rowId },
+          detail: { path: ["unpricedModel"], equals: params.model },
         },
         select: { id: true },
       }),
     );
-    settled.add(key);
-    if (earlier) return;
+    if (said) return;
   } catch (err) {
+    settled.delete(key);
     logger.warn(
       { err, tenantId: String(params.tenantId) },
       "unpriced model: could not check for an earlier announcement",
@@ -66,7 +67,11 @@ export async function announceUnpricedModel(params: {
       stage: "spend_ceiling",
       level: "warn",
       status: "ok",
-      detail: { subject: "unpriced", models: [params.model] },
+      detail: {
+        subject: "unpriced",
+        models: [params.model],
+        unpricedModel: params.model,
+      },
       errorMessage: `No price for ${model}: its calls are left out of the cost and the spend ceiling. Set this account's own price for it (Advanced > Model prices), then re-price the calls already made (scripts/reprice-usage.ts).`,
     },
   );

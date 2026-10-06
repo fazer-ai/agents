@@ -73,9 +73,14 @@ source and calendar month), and the gate reads the row.
 ceiling or not, Langfuse or not: the row being written with a null `cost_usd` emits a `spend_ceiling`
 line at `warn` naming the model and the fix that exists in this app (the account's own price for it in
 Advanced > Model prices, then re-pricing the calls already made). Once per model per month per tenant,
-and "once" is the ledger's answer rather than process memory: the row announces only when no earlier
-unpriced row of that model exists this month, so a restart does not repeat it. Two first calls racing
-in separate transactions may both announce, which is the direction to err in.
+and "once" is the announcement's own record rather than process memory: the model is announced unless
+this month's flow log already holds its line (`detail.unpricedModel`), so a restart does not repeat
+it, and unpriced rows written before the alert existed do not count as a warning anyone received. Two
+first calls in separate processes may both announce, which is the direction to err in.
+
+The snapshot's eight Langfuse-era columns (the reconciliation counters, the unpriced list and the
+project-switch carry) stay in the table with `@ignore` for one release, so the previous image keeps
+querying them through a rolling deploy and a rollback; the next release drops them.
 
 **The dashboard's cost reads the same ledger** (`src/modules/analytics/costs.ts`), under the same
 filters as the requests beside it (period, segment, and the operator's timezone for day buckets), and

@@ -14,6 +14,7 @@ import {
 import {
   approveApprovalItem,
   createSuggestion,
+  editApprovalItem,
   listApprovals,
   listPendingApprovals,
   normalizedSuggestionHash,
@@ -576,6 +577,100 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     // NOTE: anything else may come after the update committed, so a new document would repeat it.
     expect(replacementTargetGone(new AppError("queue down", 500))).toBe(false);
     expect(replacementTargetGone(new Error("enqueue failed"))).toBe(false);
+  });
+
+  test("a proposal still in review is a candidate for the ones after it, never for the ones before", async () => {
+    const kb = await newKb();
+    const first = await propose(kb, "Trocas só com nota fiscal.");
+    const second = await propose(kb, "Para trocar, precisa apresentar a nota.");
+    // Each review stores its vector first; here both are stored and neither verdict is in yet.
+    for (const [id, at] of [
+      [first.id, 10],
+      [second.id, 10],
+    ] as const) {
+      await suDb.$executeRawUnsafe(
+        `UPDATE approval_queue_items SET embedding = $1::vector WHERE id = $2`,
+        `[${axis(at).join(",")}]`,
+        id,
+      );
+    }
+    const { model, seen } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "Mesma regra da sugestão anterior.",
+        matched_item: `item:${first.id}`,
+      }),
+    );
+    await review(second.id, model, axis(10));
+    expect(JSON.stringify(seen[0]?.map((m) => m.content))).toContain(
+      "SCREENING",
+    );
+    expect(await item(second.id)).toMatchObject({
+      status: "DISCARDED",
+      matchedItemId: first.id,
+    });
+    // The other direction, on a pair of its own: reviewed while the LATER one is still in review.
+    const kb2 = await newKb();
+    const early = await propose(kb2, "Devoluções em até 30 dias.");
+    const late = await propose(kb2, "Pode devolver dentro de 30 dias.");
+    for (const id of [early.id, late.id]) {
+      await suDb.$executeRawUnsafe(
+        `UPDATE approval_queue_items SET embedding = $1::vector WHERE id = $2`,
+        `[${axis(14).join(",")}]`,
+        id,
+      );
+    }
+    await review(early.id, NEVER, axis(14));
+    expect(await item(early.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: "Nothing similar in this knowledge base or its queue.",
+    });
+  });
+
+  test("an edit ranks the item by the text it now holds, and an embedding failure only drops it", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Aceitamos pix.");
+    await review(a.id, NEVER, axis(11));
+    const vectorOf = async () =>
+      (
+        await suDb.$queryRawUnsafe<{ v: string | null }[]>(
+          `SELECT embedding::text AS v FROM approval_queue_items WHERE id = $1`,
+          a.id,
+        )
+      )[0]?.v ?? null;
+    expect(
+      await editApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        proposedContent: "Aceitamos pix e boleto.",
+        embedText: async () => axis(13),
+        base: appDb,
+      }),
+    ).toBe("updated");
+    expect(await vectorOf()).toBe(`[${axis(13).join(",")}]`);
+    expect(
+      await editApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        proposedTitle: "Só o título",
+        embedText: async () => axis(15),
+        base: appDb,
+      }),
+    ).toBe("updated");
+    // A title-only edit leaves the text, and so the vector, as it was.
+    expect(await vectorOf()).toBe(`[${axis(13).join(",")}]`);
+    expect(
+      await editApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        proposedContent: "Aceitamos pix, boleto e cartão.",
+        embedText: async () => {
+          throw new Error("provider down");
+        },
+        base: appDb,
+      }),
+    ).toBe("updated");
+    expect(await vectorOf()).toBeNull();
   });
 
   test("only a discarded proposal can be requeued", async () => {

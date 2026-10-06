@@ -25,10 +25,12 @@ import {
   registerJobHandler,
 } from "@/modules/scheduler/worker";
 import { spendCeilingVerdict } from "@/modules/spend-ceiling/service";
-import { resolveEmbeddingConfig } from "./documents";
-import { embedQuery } from "./embeddings";
 import { parseThreadOrigin } from "./service";
 import { searchChunks, toVectorLiteral } from "./sql";
+import {
+  type EmbedSuggestionText,
+  suggestionEmbedder,
+} from "./suggestion-embedding";
 
 // How many neighbours of each kind the reviewer reads: enough for a rewording to meet its original,
 // few enough that the prompt stays a few thousand characters.
@@ -50,7 +52,7 @@ export interface DocumentCandidate {
 
 export interface ItemCandidate {
   itemId: bigint;
-  status: "PENDING" | "EDITED" | "REJECTED";
+  status: "PENDING" | "EDITED" | "REJECTED" | "SCREENING";
   title: string | null;
   content: string;
   rejectionReason: string | null;
@@ -82,7 +84,7 @@ const RAW_VERDICT = z.object({
 
 const SYSTEM_PROMPT = `You review a proposed knowledge-base entry before a person sees it in the approval queue.
 
-You receive the proposal and, as candidates, the closest passages of documents already in the base, and the closest earlier proposals for the same base: PENDING or EDITED (waiting for a person) and REJECTED (a person refused it, with the reason when they gave one).
+You receive the proposal and, as candidates, the closest passages of documents already in the base, and the closest earlier proposals for the same base: PENDING or EDITED (waiting for a person), SCREENING (proposed just before this one and not reviewed yet, so treat it like a pending one) and REJECTED (a person refused it, with the reason when they gave one).
 
 Answer with ONE JSON object and nothing else:
 {"verdict": "new" | "duplicate" | "replace", "comment": string, "matched_item": string | null, "matched_document": string | null, "replaces_document": string | null}
@@ -286,7 +288,8 @@ async function loadCandidates(
      WHERE knowledge_base_id = ${item.knowledgeBaseId}
        AND id <> ${item.id}
        AND embedding IS NOT NULL
-       AND status IN ('PENDING', 'EDITED', 'REJECTED')
+       AND (status IN ('PENDING', 'EDITED', 'REJECTED')
+            OR (status = 'SCREENING' AND id < ${item.id}))
      ORDER BY embedding <=> ${vector}::vector
      LIMIT ${CANDIDATES_PER_KIND}`;
   const items = rows.map((r) => ({
@@ -303,7 +306,7 @@ export interface ReviewDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
   // The proposal's embedding in its base's vector space. Defaults to the base's embedding model and
   // the tenant's embedding credential, the same pair the search uses.
-  embedText?: (knowledgeBaseId: bigint, text: string) => Promise<number[]>;
+  embedText?: EmbedSuggestionText;
 }
 
 function parsePayload(raw: Record<string, unknown>): bigint | null {
@@ -398,19 +401,7 @@ export async function runSuggestionReview(
     );
   }
 
-  const embedText =
-    deps.embedText ??
-    (async (knowledgeBaseId: bigint, text: string) => {
-      const embCfg = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-        const kb = await db.knowledgeBase.findUnique({
-          where: { id: knowledgeBaseId },
-          select: { embeddingModel: true },
-        });
-        if (!kb) throw new Error("knowledge base gone");
-        return resolveEmbeddingConfig(db, tenantId, kb.embeddingModel);
-      });
-      return embedQuery(text, embCfg);
-    });
+  const embedText = deps.embedText ?? suggestionEmbedder(base, tenantId);
   let queryEmbedding: number[];
   try {
     queryEmbedding = await embedText(

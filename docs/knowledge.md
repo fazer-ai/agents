@@ -25,7 +25,7 @@ A floor hit creates nothing and calls no model. The tool tells the model the ent
 A proposal from an agent enters `SCREENING`, and a `SUGGESTION_REVIEW` job is armed in the same transaction (deduped by item id). The job:
 
 1. embeds the proposal with the base's embedding model and stores the vector on the item;
-2. gathers candidates: the closest chunks of the base, grouped to at most 5 documents, and the 5 closest items of the same base in `PENDING`, `EDITED` or `REJECTED` (with the rejection reason when one was given);
+2. gathers candidates: the closest chunks of the base, grouped to at most 5 documents, and the 5 closest items of the same base in `PENDING`, `EDITED` or `REJECTED` (with the rejection reason when one was given), plus `SCREENING` items proposed before this one, so two rewordings reviewed at the same time are compared in one direction and never discard each other. A residual window remains when the earlier one has not stored its vector yet, and then both reach a person;
 3. with no candidate, moves the item to `PENDING` with a fixed comment and calls no model;
 4. otherwise checks the spend ceiling and asks the model for one JSON verdict: `new`, `duplicate` (naming the matched item or document) or `replace` (naming the document).
 
@@ -34,6 +34,8 @@ A proposal from an agent enters `SCREENING`, and a `SUGGESTION_REVIEW` job is ar
 **Every failure releases the item to `PENDING` with no comment**: no agent, unreadable agent config, override not runnable or missing its key, model or embedding error, unreadable verdict, spend ceiling over, and the job's dead letter. Losing a suggestion is worse than a person seeing a duplicate.
 
 The prompt tells the model that a repeat of a rejected item is a duplicate only when it repeats what was refused, so a corrected fact after a "wrong number" rejection still reaches a person.
+
+An edit that changes the text drops the item's vector in the edit's transaction and embeds the new text right after, outside it; if that fails, the item stays without a vector and is not a candidate until edited again, and the edit itself still succeeds.
 
 Items written before the reviewer existed have no embedding and are never candidates. There is no backfill.
 

@@ -708,3 +708,5 @@ function ReviewerComment({ text }: { text: string }) {
 // t('approvals.status.EDITED', 'Edited')
 // t('approvals.status.REJECTED', 'Rejected')
 // t('approvals.status.APPROVED', 'Approved')
+// t('approvals.status.SCREENING', 'Being reviewed')
+// t('approvals.status.DISCARDED', 'Discarded')

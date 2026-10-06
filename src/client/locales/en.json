@@ -249,9 +249,11 @@
     "reviewerComment": "Reviewer: {{text}}",
     "status": {
       "APPROVED": "Approved",
+      "DISCARDED": "Discarded",
       "EDITED": "Edited",
       "PENDING": "Pending",
-      "REJECTED": "Rejected"
+      "REJECTED": "Rejected",
+      "SCREENING": "Being reviewed"
     },
     "subtitle": "Review suggestions before they enter a knowledge base. Nothing is added without approval.",
     "targetBase": "Knowledge base: {{name}}",

@@ -253,9 +253,11 @@
     "reviewerComment": "Avaliador: {{text}}",
     "status": {
       "APPROVED": "Aprovada",
+      "DISCARDED": "Descartada",
       "EDITED": "Editada",
       "PENDING": "Pendente",
-      "REJECTED": "Rejeitada"
+      "REJECTED": "Rejeitada",
+      "SCREENING": "Em avaliação"
     },
     "subtitle": "Revise as sugestões antes de entrarem em uma base de conhecimento. Nada entra sem aprovação.",
     "targetBase": "Base de conhecimento: {{name}}",

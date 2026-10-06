@@ -18,7 +18,11 @@ import {
   updateDocument,
 } from "./documents";
 import { embedQuery } from "./embeddings";
-import { type ChunkHit, searchChunks } from "./sql";
+import { type ChunkHit, searchChunks, toVectorLiteral } from "./sql";
+import {
+  type EmbedSuggestionText,
+  suggestionEmbedder,
+} from "./suggestion-embedding";
 
 // RAG service (transport-agnostic): knowledge base CRUD, search, and the human-approval queue.
 // Document ingest (chunk → embed → pgvector) is handled by src/modules/rag/documents.ts via the
@@ -606,6 +610,7 @@ export interface EditApprovalParams {
   proposedContent?: string;
   rationale?: string;
   base?: PrismaClient;
+  embedText?: EmbedSuggestionText;
 }
 
 // Allowlisted fields only — never threadId/interruptKey/knowledgeBaseId/tenantId. CAS keeps it to
@@ -631,7 +636,7 @@ export async function editApprovalItem(
   if (Object.keys(patch).length === 0) {
     throw new AppError("nothing to update", 400);
   }
-  return runScopedOn(base, params.ctx, async (db) => {
+  const edited = await runScopedOn(base, params.ctx, async (db) => {
     // NOTE: LOCKED and read before the write, because WHICH fields moved is what the row carries and
     // two reviewers editing the same proposal would otherwise each report the other's change as
     // their own.
@@ -640,12 +645,13 @@ export async function editApprovalItem(
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
       select: {
         status: true,
+        knowledgeBaseId: true,
         proposedTitle: true,
         proposedContent: true,
         rationale: true,
       },
     });
-    if (!current) return "not-pending";
+    if (!current) return { result: "not-pending" as const, reembed: null };
     const before = current as unknown as Record<string, unknown>;
     const fields = Object.keys(patch)
       .filter((k) => patch[k] !== before[k])
@@ -653,11 +659,19 @@ export async function editApprovalItem(
     // A form re-submitted unchanged reaches here with every field equal, and the status is not a
     // change of its own: an item marked EDITED because somebody opened it and saved it back says a
     // human rewrote a proposal they did not touch.
-    if (fields.length === 0) return "updated";
+    if (fields.length === 0)
+      return { result: "updated" as const, reembed: null };
     const res = await db.approvalQueueItem.updateMany({
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
       data: { ...patch, status: "EDITED" },
     });
+    const contentMoved = res.count > 0 && fields.includes("proposedContent");
+    // NOTE: The vector of the old text goes with it, so until the new one is stored the item is
+    // simply not a candidate, never one ranked by text the reviewer will not read.
+    if (contentMoved) {
+      await db.$executeRaw`
+        UPDATE approval_queue_items SET embedding = NULL WHERE id = ${params.id}`;
+    }
     // NOTE: WHICH fields the operator rewrote, never what they wrote. An edit before approval is the
     // operator putting their words into what the agent proposed, and the trail's business is that it
     // happened; the text lands in the knowledge base, which is where it is read.
@@ -668,8 +682,55 @@ export async function editApprovalItem(
         after: { id: String(params.id), status: "EDITED", fields },
       });
     }
-    return res.count > 0 ? "updated" : "not-pending";
+    return {
+      result: res.count > 0 ? ("updated" as const) : ("not-pending" as const),
+      reembed: contentMoved
+        ? {
+            knowledgeBaseId: current.knowledgeBaseId,
+            content: params.proposedContent as string,
+          }
+        : null,
+    };
   });
+  if (edited.reembed) {
+    await reembedEditedSuggestion(
+      params,
+      base,
+      edited.reembed.knowledgeBaseId,
+      edited.reembed.content,
+    );
+  }
+  return edited.result;
+}
+
+// Best effort and outside the edit's transaction: a provider call must not hold the row lock, and a
+// failure leaves the item without a vector (not a candidate) rather than failing the person's edit.
+// Guarded on the text, so an edit that landed meanwhile is not given this one's vector.
+async function reembedEditedSuggestion(
+  params: EditApprovalParams,
+  base: PrismaClient,
+  knowledgeBaseId: bigint,
+  content: string,
+): Promise<void> {
+  const tenantId = params.ctx.tenantId as bigint;
+  try {
+    const embed = params.embedText ?? suggestionEmbedder(base, tenantId);
+    const vector = toVectorLiteral(await embed(knowledgeBaseId, content));
+    await runScopedOn(
+      base,
+      params.ctx,
+      (db) =>
+        db.$executeRaw`
+        UPDATE approval_queue_items SET embedding = ${vector}::vector
+         WHERE id = ${params.id} AND proposed_content = ${content}`,
+    );
+  } catch (err) {
+    logger.warn(
+      { err },
+      "approval %s: the edited text could not be embedded; it is not a review candidate",
+      String(params.id),
+    );
+  }
 }
 
 export type ApproveResult =

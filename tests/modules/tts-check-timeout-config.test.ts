@@ -19,6 +19,8 @@ async function timeoutIn(
   const proc = Bun.spawn(
     [
       "bun",
+      // NOTE: Bun loads `.env` by itself, which would put back a value deleted from `env` here.
+      "--no-env-file",
       "-e",
       `import config from "@/config"; console.log(String(config.ttsCheck.timeoutMs));`,
     ],

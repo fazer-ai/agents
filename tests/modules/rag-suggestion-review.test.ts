@@ -4,15 +4,21 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
-import { knowledgeApprove } from "@/modules/mcp/write-knowledge";
+import {
+  knowledgeApprove,
+  knowledgeReject,
+} from "@/modules/mcp/write-knowledge";
 import {
   approveApprovalItem,
   createSuggestion,
   listApprovals,
   listPendingApprovals,
+  normalizedSuggestionHash,
   rejectApprovalItem,
+  replacementTargetGone,
   requeueDiscardedItem,
 } from "@/modules/rag/service";
 import {
@@ -233,6 +239,15 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
     const b = await propose(kb, "Prazo de reembolso: 30 dias.");
     const c = await propose(other, "Prazo de reembolso: 7 dias.");
     expect([a.created, b.created, c.created]).toEqual([true, true, true]);
+  });
+
+  test("a symbol outside the basic plane is a whole character, not two blanks", () => {
+    expect(normalizedSuggestionHash("Status 🟢")).not.toBe(
+      normalizedSuggestionHash("Status 🔴"),
+    );
+    expect(normalizedSuggestionHash("Status 🟢.")).toBe(
+      normalizedSuggestionHash("status 🟢"),
+    );
   });
 
   test("a sign, a decimal separator, a percent or a symbol keeps two facts apart", async () => {
@@ -553,6 +568,16 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     expect(kept.content).toBe("Entregamos em 10 dias.");
   });
 
+  test("only a target that is gone or synced falls back to a new document", () => {
+    expect(replacementTargetGone(new NotFoundError("document not found"))).toBe(
+      true,
+    );
+    expect(replacementTargetGone(new ConflictError("synced"))).toBe(true);
+    // NOTE: anything else may come after the update committed, so a new document would repeat it.
+    expect(replacementTargetGone(new AppError("queue down", 500))).toBe(false);
+    expect(replacementTargetGone(new Error("enqueue failed"))).toBe(false);
+  });
+
   test("only a discarded proposal can be requeued", async () => {
     const kb = await newKb();
     const a = await propose(kb, "Atendemos aos sábados até o meio-dia.");
@@ -692,6 +717,30 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       }),
     ).rejects.toThrow("1000");
     expect((await item(b.id)).status).toBe("PENDING");
+  });
+
+  test("over MCP, the reject preview refuses the reason the apply would refuse", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Abrimos às segundas.", { agent: false });
+    const principal = {
+      userId: 1n,
+      tenantId,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    for (const reason of ["a\u0000b", "x".repeat(1001)]) {
+      const args = { approval_id: String(a.id), reason };
+      const preview = await knowledgeReject(principal, args, { base: appDb });
+      const applied = await knowledgeReject(
+        principal,
+        { ...args, dry_run: false },
+        { base: appDb },
+      );
+      expect([preview.ok, applied.ok]).toEqual([false, false]);
+    }
+    expect((await item(a.id)).status).toBe("PENDING");
   });
 
   test("over the spend ceiling the proposal is queued unreviewed, without calling the model", async () => {

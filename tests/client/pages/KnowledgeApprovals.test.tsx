@@ -432,6 +432,34 @@ describe("KnowledgeApprovals — what the suggestion reviewer decided", () => {
     expect(postCalls[0]?.body).toEqual({ reason: "prazo errado, são 3 dias" });
   });
 
+  // NOTE: the draft is single, so acting on another card would close it and drop what was typed.
+  test("with a rejection reason open, the other cards wait", async () => {
+    approvalsPayload = [
+      { ...approvalsPayload[0], id: "7" },
+      { ...approvalsPayload[0], id: "8", proposedTitle: "Outro" },
+    ];
+    renderQueue();
+    await screen.findByText("Outro");
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /reject/i })[0] as HTMLElement,
+    );
+    const box = await screen.findByLabelText(/reason/i);
+    fireEvent.change(box, { target: { value: "prazo errado" } });
+    const others = [
+      ...screen.getAllByRole("button", { name: /^approve$/i }),
+      ...screen.getAllByRole("button", { name: /^edit$/i }),
+    ];
+    expect(others.length).toBeGreaterThan(0);
+    expect(
+      others.filter((b) => !(b as HTMLButtonElement).disabled).length,
+    ).toBe(0);
+    for (const b of others) fireEvent.click(b);
+    expect(postCalls.length).toBe(0);
+    expect(
+      (screen.getByLabelText(/reason/i) as HTMLTextAreaElement).value,
+    ).toBe("prazo errado");
+  });
+
   test("rejecting with no reason sends an empty body", async () => {
     postResult = "rejected";
     renderQueue();

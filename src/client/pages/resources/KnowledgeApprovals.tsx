@@ -55,7 +55,8 @@ export function KnowledgeApprovals({
   // What the suggestion reviewer held back as a repeat, on a tab of its own.
   const [discarded, setDiscarded] = useState<Discarded[]>([]);
   const [view, setView] = useState<"pending" | "discarded">("pending");
-  // The card whose rejection is being written, with its optional reason.
+  // The card whose rejection is being written, with its optional reason. One at a time, and every
+  // other card waits: acting elsewhere would close this one and lose what was typed.
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [loading, setLoading] = useState(true);
@@ -612,7 +613,9 @@ export function KnowledgeApprovals({
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={busy || editingId !== null}
+                      disabled={
+                        busy || editingId !== null || rejectingId !== null
+                      }
                       onClick={() => {
                         setRejectingId(a.id);
                         setReason("");
@@ -627,7 +630,9 @@ export function KnowledgeApprovals({
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={busy || editingId !== null}
+                      disabled={
+                        busy || editingId !== null || rejectingId !== null
+                      }
                       onClick={() => startEdit(a)}
                     >
                       <Pencil className="h-4 w-4" aria-hidden="true" />
@@ -636,7 +641,7 @@ export function KnowledgeApprovals({
                     {a.replaceUnavailable ? (
                       <Button
                         size="sm"
-                        disabled={busy}
+                        disabled={busy || rejectingId !== null}
                         onClick={() => act(a.id, "approve", { asNew: true })}
                       >
                         <Check className="h-4 w-4" aria-hidden="true" />
@@ -650,7 +655,7 @@ export function KnowledgeApprovals({
                         <Button
                           variant="secondary"
                           size="sm"
-                          disabled={busy}
+                          disabled={busy || rejectingId !== null}
                           onClick={() => act(a.id, "approve", { asNew: true })}
                         >
                           {t(
@@ -660,7 +665,7 @@ export function KnowledgeApprovals({
                         </Button>
                         <Button
                           size="sm"
-                          disabled={busy}
+                          disabled={busy || rejectingId !== null}
                           onClick={() => act(a.id, "approve")}
                         >
                           <Check className="h-4 w-4" aria-hidden="true" />
@@ -670,7 +675,7 @@ export function KnowledgeApprovals({
                     ) : (
                       <Button
                         size="sm"
-                        disabled={busy}
+                        disabled={busy || rejectingId !== null}
                         onClick={() => act(a.id, "approve")}
                       >
                         <Check className="h-4 w-4" aria-hidden="true" />

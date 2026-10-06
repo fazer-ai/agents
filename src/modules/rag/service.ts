@@ -3,7 +3,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
-import { AppError, NotFoundError } from "@/lib/errors";
+import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { upsertJobRow } from "@/modules/scheduler/service";
@@ -250,14 +250,16 @@ export interface SuggestParams {
 // digit, a separator between digits, a percent after one, and every symbol (°, $, ±, <), so "-10 °C"
 // and "+10 °C" are two entries. Letters keep their accents.
 export function normalizedSuggestionHash(content: string): string {
-  const text = content.normalize("NFC").toLowerCase();
+  // Code points, not UTF-16 units: an emoji is a symbol only as a whole, and its surrogate halves
+  // match no category, so "🟢" and "🔴" would fold to the same blank.
+  const chars = Array.from(content.normalize("NFC").toLowerCase());
   const isDigit = (ch: string | undefined) =>
     ch !== undefined && /\p{N}/u.test(ch);
   let folded = "";
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i] as string;
-    const prev = text[i - 1];
-    const next = text[i + 1];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i] as string;
+    const prev = chars[i - 1];
+    const next = chars[i + 1];
     const keep =
       /[\p{L}\p{N}\p{S}]/u.test(ch) ||
       (/[-\u2212]/u.test(ch) && isDigit(next)) ||
@@ -823,6 +825,7 @@ export async function approveApprovalItem(params: {
         base,
       );
     } catch (err) {
+      if (!replacementTargetGone(err)) throw err;
       logger.warn(
         { err },
         "approval %s: the document to replace is gone, storing it as a new one",
@@ -861,7 +864,29 @@ export async function approveApprovalItem(params: {
     : { outcome: "approved", chunks: 0 };
 }
 
+// Whether an `updateDocument` failure means the document can no longer be replaced: deleted
+// (NotFound) or taken over by a source sync (Conflict), both refused before anything is written.
+// Any other failure may come after the update committed (the reindex enqueue), and falling back to
+// a new document then would store the same text twice.
+export function replacementTargetGone(err: unknown): boolean {
+  return err instanceof NotFoundError || err instanceof ConflictError;
+}
+
 export const REJECTION_REASON_MAX = 1_000;
+
+// The reason as it will be stored, or a refusal: trimmed, empty as none, storable, and within the
+// cap. Shared with the MCP preview, which must refuse what the apply would.
+export function checkedRejectionReason(raw: string | undefined): string | null {
+  const reason = raw?.trim() || null;
+  refuseUnstorable([["reason", reason ?? undefined]]);
+  if (reason !== null && reason.length > REJECTION_REASON_MAX) {
+    throw new AppError(
+      `reason is longer than ${REJECTION_REASON_MAX} characters`,
+      422,
+    );
+  }
+  return reason;
+}
 
 export async function rejectApprovalItem(params: {
   ctx: TenantContext;
@@ -872,14 +897,7 @@ export async function rejectApprovalItem(params: {
   base?: PrismaClient;
 }): Promise<"rejected" | "not-pending"> {
   const base = params.base ?? basePrisma;
-  const reason = params.reason?.trim() || null;
-  refuseUnstorable([["reason", reason ?? undefined]]);
-  if (reason !== null && reason.length > REJECTION_REASON_MAX) {
-    throw new AppError(
-      `reason is longer than ${REJECTION_REASON_MAX} characters`,
-      422,
-    );
-  }
+  const reason = checkedRejectionReason(params.reason);
   return runScopedOn(base, params.ctx, async (db) => {
     const res = await db.approvalQueueItem.updateMany({
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },

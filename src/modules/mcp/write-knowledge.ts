@@ -18,6 +18,7 @@ import {
 import {
   approveApprovalItem,
   assertKnowledgeBaseNameUsable,
+  checkedRejectionReason,
   createKnowledgeBase,
   deleteKnowledgeBase,
   editApprovalItem,
@@ -571,6 +572,7 @@ export async function knowledgeReject(
   const target = `approval:${id}`;
   try {
     if (args.dry_run !== false) {
+      const reason = checkedRejectionReason(args.reason);
       const item = await findApproval(ctx, id, base);
       if (!item) return err("approval not found or not pending");
       return ok({
@@ -578,7 +580,7 @@ export async function knowledgeReject(
         action: "reject",
         target,
         proposedTitle: item.proposedTitle,
-        reason: args.reason?.trim() || null,
+        reason,
       });
     }
     const outcome = await rejectApprovalItem({

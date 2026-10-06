@@ -48,6 +48,8 @@ export interface DocumentCandidate {
   content: string;
   // A document a source sync owns cannot be replaced from the queue: the next sync would undo it.
   synced: boolean;
+  // The row's `updatedAt` when it was read, so a verdict about it can tell the text moved since.
+  revision?: Date;
 }
 
 export interface ItemCandidate {
@@ -259,11 +261,16 @@ async function matchStillHolds(
   shown: ReviewInput | undefined,
 ): Promise<boolean> {
   if (v.matchedDocumentId !== null) {
+    const read = shown?.documents.find(
+      (d) => d.documentId === v.matchedDocumentId,
+    );
     const doc = await db.knowledgeDocument.findUnique({
       where: { id: v.matchedDocumentId },
-      select: { id: true },
+      select: { updatedAt: true },
     });
     if (!doc) return false;
+    if (read?.revision && doc.updatedAt.getTime() !== read.revision.getTime())
+      return false;
   }
   if (v.matchedItemId !== null) {
     const read = shown?.items.find((i) => i.itemId === v.matchedItemId);
@@ -294,19 +301,20 @@ async function loadCandidates(
     else if (byDoc.size < CANDIDATES_PER_KIND)
       byDoc.set(c.documentId, { title: c.documentTitle, parts: [c.content] });
   }
-  const synced = new Set(
+  const rowsById = new Map(
     (
       await db.knowledgeDocument.findMany({
-        where: { id: { in: [...byDoc.keys()] }, externalId: { not: null } },
-        select: { id: true },
+        where: { id: { in: [...byDoc.keys()] } },
+        select: { id: true, externalId: true, updatedAt: true },
       })
-    ).map((d) => d.id),
+    ).map((d) => [d.id, d]),
   );
   const documents = [...byDoc.entries()].map(([documentId, d]) => ({
     documentId,
     title: d.title,
     content: d.parts.join("\n…\n"),
-    synced: synced.has(documentId),
+    synced: rowsById.get(documentId)?.externalId != null,
+    revision: rowsById.get(documentId)?.updatedAt,
   }));
   const rows = await db.$queryRaw<
     {

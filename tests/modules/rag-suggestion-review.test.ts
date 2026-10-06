@@ -751,6 +751,29 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       reviewerComment: null,
     });
 
+    const edited = await seedDocument(kb, "Entregamos aos sábados.", 19);
+    const d = await propose(kb, "Fazemos entregas no sábado.");
+    const byEdit = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: `doc:${edited}`,
+      }),
+    );
+    const invokeEdit = byEdit.model.invoke.bind(byEdit.model);
+    byEdit.model.invoke = (async (...args: Parameters<typeof invokeEdit>) => {
+      await suDb.knowledgeDocument.update({
+        where: { id: edited },
+        data: { content: "Não entregamos aos sábados." },
+      });
+      return invokeEdit(...args);
+    }) as typeof invokeEdit;
+    await review(d.id, byEdit.model, axis(19));
+    expect(await item(d.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+
     const b = await propose(kb, "Emitimos nota fiscal eletrônica.");
     await review(b.id, NEVER, axis(18));
     const c = await propose(kb, "A nota fiscal é emitida eletronicamente.");

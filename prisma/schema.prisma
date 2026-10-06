@@ -258,9 +258,12 @@ model TenantUser {
 // token is hashed at rest (sha256); the plaintext is returned ONCE as a copyable link. A CHECK
 // (in the migration) forbids role=SUPER_ADMIN (never invitable). One live invite per (tenant,
 // email) — re-invite rotates via upsert.
+// `tenantId` null is a FLEET invitation: it makes the invitee a SUPER_ADMIN and names no tenant. A
+// CHECK ties the two (`role = SUPER_ADMIN` ⟺ `tenant_id IS NULL`), and a partial unique index keeps
+// one fleet invitation per email, since the composite unique below treats every null as distinct.
 model Invitation {
   id          BigInt    @id @default(autoincrement())
-  tenantId    BigInt    @map("tenant_id")
+  tenantId    BigInt?   @map("tenant_id")
   email       String
   role        UserRole
   tokenHash   String    @unique @map("token_hash")
@@ -270,7 +273,7 @@ model Invitation {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, email])
   @@index([tenantId, createdAt])

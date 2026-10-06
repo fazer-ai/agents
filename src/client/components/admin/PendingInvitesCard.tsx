@@ -1,7 +1,7 @@
 import { Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Badge, Button, Card, Skeleton } from "@/client/components";
+import { Badge, Button, Card, RoleBadge, Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { formatDate } from "@/client/lib/utils";
 
@@ -129,13 +129,14 @@ export function PendingInvitesCard({
                   </td>
                   {showTenant && (
                     <td className="px-2 py-3 text-text-secondary">
-                      {tenantNameById.get(invite.tenantId) ?? invite.tenantId}
+                      {invite.tenantId === null
+                        ? t("invite.fleet", "Fleet")
+                        : (tenantNameById.get(invite.tenantId) ??
+                          invite.tenantId)}
                     </td>
                   )}
-                  <td className="px-2 py-3 text-text-secondary">
-                    {invite.role === "TENANT_ADMIN"
-                      ? t("role.tenantAdmin", "Tenant admin")
-                      : t("role.agent", "Agent")}
+                  <td className="px-2 py-3">
+                    <RoleBadge role={invite.role} />
                   </td>
                   <td className="px-2 py-3">
                     <Badge

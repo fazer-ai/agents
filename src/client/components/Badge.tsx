@@ -6,6 +6,7 @@ type BadgeVariant =
   | "success"
   | "warning"
   | "info"
+  | "purple"
   | "error";
 
 // Each tone is its status color over its own soft tint, the pair
@@ -17,6 +18,7 @@ const VARIANT_COLORS: Record<BadgeVariant, string> = {
   success: "bg-success-soft text-success",
   warning: "bg-warning-soft text-warning",
   info: "bg-info-soft text-info",
+  purple: "bg-purple-soft text-purple",
   error: "bg-error-soft text-error",
 };
 

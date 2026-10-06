@@ -60,6 +60,7 @@ export function AcceptInvitePage() {
   const [state, setState] = useState<ValidationState>("validating");
   const [email, setEmail] = useState("");
   const [existingAccount, setExistingAccount] = useState(false);
+  const [fleet, setFleet] = useState(false);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -90,6 +91,7 @@ export function AcceptInvitePage() {
         }
         setEmail(data.invite.email);
         setExistingAccount(data.invite.existingAccount);
+        setFleet(data.invite.role === "SUPER_ADMIN");
         setState("valid");
       })
       .catch(() => {
@@ -133,7 +135,9 @@ export function AcceptInvitePage() {
         clearParkedInvite();
         // Open the console on the tenant just joined, which for a person with other tenants is not
         // necessarily their default.
-        setActiveTenantId(data.joinedTenantId);
+        // NOTE: a fleet invitation joins no tenant; the session picks the fleet's default.
+        if (data.joinedTenantId !== null)
+          setActiveTenantId(data.joinedTenantId);
         if (user) {
           // A session was already running, built for another tenant: reload onto the new one.
           window.location.assign("/");
@@ -208,21 +212,34 @@ export function AcceptInvitePage() {
               <h1 className="font-semibold text-2xl text-text-primary">
                 {t("acceptInvite.title", "Accept your invitation")}
               </h1>
+              {fleet && (
+                <p className="mt-2 text-sm text-text-primary">
+                  {t(
+                    "acceptInvite.fleetNotice",
+                    "You are invited as a super admin: you will administer the whole installation.",
+                  )}
+                </p>
+              )}
               <p className="mt-1 text-sm text-text-secondary">
-                {signedInAsInvitee
+                {fleet && joinsExisting
                   ? t(
-                      "acceptInvite.signedInSubtitle",
-                      "You are signed in with this email. Join to add this tenant to your account.",
+                      "acceptInvite.fleetExistingSubtitle",
+                      "This email already has an account. Confirm it to make it a super admin.",
                     )
-                  : existingAccount
+                  : signedInAsInvitee
                     ? t(
-                        "acceptInvite.existingSubtitle",
-                        "This email already has an account. Enter its password to add this tenant to it.",
+                        "acceptInvite.signedInSubtitle",
+                        "You are signed in with this email. Join to add this tenant to your account.",
                       )
-                    : t(
-                        "acceptInvite.subtitle",
-                        "Set a password to activate your account.",
-                      )}
+                    : existingAccount
+                      ? t(
+                          "acceptInvite.existingSubtitle",
+                          "This email already has an account. Enter its password to add this tenant to it.",
+                        )
+                      : t(
+                          "acceptInvite.subtitle",
+                          "Set a password to activate your account.",
+                        )}
               </p>
             </div>
 

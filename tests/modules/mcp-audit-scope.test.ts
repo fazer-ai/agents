@@ -310,7 +310,7 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
         { limit: 1, scope },
         { base: appDb },
       );
-      expect(JSON.stringify(none)).toContain("SUPER_ADMIN");
+      expect(JSON.stringify(none)).toContain("requires a super admin");
       expect(JSON.stringify(bare)).toContain("nextCursor` from a previous");
     }
   });

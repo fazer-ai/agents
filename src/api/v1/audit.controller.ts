@@ -27,7 +27,7 @@ import { listAudit } from "@/modules/audit/service";
 // operating fleet-wide (a fleet-scoped API key, say) has no tenant selected. Demanding a target there
 // would refuse the caller the scope exists for. The key below is thrown from modules/audit, outside
 // the API extractor's glob, so without this line the extract prunes it and the 403 goes untranslated.
-// translate('errors.auditScopeForbidden', 'Reading the fleet trail requires SUPER_ADMIN')
+// translate('errors.auditScopeForbidden', 'Reading the fleet trail requires a super admin')
 
 function ctxOrThrow(
   ctx: TenantContext | null,

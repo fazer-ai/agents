@@ -3,7 +3,13 @@ import {
   type PrismaClient,
   type UserRole,
 } from "@/../generated/prisma/client";
+import {
+  type CreatedInvite,
+  createFleetInvite,
+  FleetInviteForbiddenError,
+} from "@/api/features/invitations/invitation.service";
 import prisma from "@/api/lib/prisma";
+import { emailEquals } from "@/lib/email-match";
 import { badQueryParam } from "@/lib/query-param";
 import {
   asPrincipalOn,
@@ -13,7 +19,8 @@ import {
 } from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
 
-// Roles a tenant admin may assign: never SUPER_ADMIN, which only /setup or `bun set-admin` mint.
+// Roles a tenant admin may assign: never SUPER_ADMIN, which /setup, `bun set-admin` and a fleet
+// administrator's `addSuperAdmin` mint.
 export type ManageableRole = "AGENT" | "TENANT_ADMIN";
 
 // A person seen through ONE membership. In the fleet view every membership is a row of its own and
@@ -142,6 +149,7 @@ export async function getUsers(
   tenantId: bigint | null,
   page = 1,
   search?: string,
+  base: PrismaClient = prisma,
 ) {
   // NOTE: checked here rather than in the query parser, so a caller without a query string is held
   // to it too; a negative page would reach Prisma as a negative `skip` and answer 500.
@@ -149,7 +157,9 @@ export async function getUsers(
   const pageSize = 20;
   const skip = (page - 1) * pageSize;
 
-  // A SQL UNION because the page is cut across memberships and fleet administrators at once.
+  // A SQL UNION because the page is cut across memberships and fleet administrators at once. The
+  // fleet view shows a fleet administrator once: their memberships do nothing while they reach every
+  // tenant, so they ride on that row (`memberships`) instead of being rows of their own.
   // The search is a case-insensitive `contains` on the email, with `%`/`_` escaped.
   const pattern = search
     ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
@@ -160,7 +170,8 @@ export async function getUsers(
   const members = Prisma.sql`
     SELECT u.id, m.tenant_id, u.email, u.name, m.role::text AS role, u.created_at, u.last_login_at
       FROM tenant_users m JOIN users u ON u.id = m.user_id
-     WHERE (${tenantId}::bigint IS NULL OR m.tenant_id = ${tenantId}::bigint) ${emailFilter}`;
+     WHERE (${tenantId}::bigint IS NULL OR m.tenant_id = ${tenantId}::bigint)
+       AND (${tenantId}::bigint IS NOT NULL OR NOT u.is_super_admin) ${emailFilter}`;
   const rows = Prisma.sql`
     ${members}
     ${
@@ -172,7 +183,7 @@ export async function getUsers(
     }`;
 
   const [page_, counted] = await Promise.all([
-    prisma.$queryRaw<
+    base.$queryRaw<
       Array<{
         id: bigint;
         tenant_id: bigint | null;
@@ -185,24 +196,39 @@ export async function getUsers(
     >`SELECT * FROM (${rows}) r
        ORDER BY created_at DESC, id DESC, tenant_id NULLS FIRST
        LIMIT ${pageSize} OFFSET ${skip}`,
-    prisma.$queryRaw<
+    base.$queryRaw<
       Array<{ n: bigint }>
     >`SELECT count(*)::bigint AS n FROM (${rows}) r`,
   ]);
   const total = Number(counted[0]?.n ?? 0n);
+  const fleetIds = page_
+    .filter((r) => r.role === "SUPER_ADMIN")
+    .map((r) => r.id);
+  const held =
+    fleetIds.length === 0
+      ? []
+      : await base.tenantUser.findMany({
+          where: { userId: { in: fleetIds } },
+          select: { userId: true, tenantId: true, role: true },
+          orderBy: { tenantId: "asc" },
+        });
 
   return {
-    users: page_.map(
-      (r): UserRow => ({
-        id: r.id,
-        tenantId: r.tenant_id,
-        email: r.email,
-        name: r.name,
-        role: r.role,
-        createdAt: r.created_at,
-        lastLoginAt: r.last_login_at,
-      }),
-    ),
+    users: page_.map((r) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      email: r.email,
+      name: r.name,
+      role: r.role,
+      createdAt: r.created_at,
+      lastLoginAt: r.last_login_at,
+      memberships:
+        r.role === "SUPER_ADMIN"
+          ? held
+              .filter((m) => m.userId === r.id)
+              .map((m) => ({ tenantId: m.tenantId, role: m.role }))
+          : [],
+    })),
     total,
     page,
     totalPages: Math.ceil(total / pageSize),
@@ -529,6 +555,12 @@ export async function updateUserRole(
       if (!peek.isSuperAdmin) {
         throw new UserNotInScopeError();
       }
+      // NOTE: the fleet grant and the tenant grants are separate, so a person who already belongs
+      // somewhere just loses the first and keeps the rest. Only a person with no membership needs a
+      // tenant named, since an account with none has nowhere to sign in to.
+      if (params.tenantId == null && peek.memberships.length > 0) {
+        return removeFleetGrant(db, ctx, userId);
+      }
       const joining = await tenantToJoin(db, params);
       await lockAdminScopes(db, [null, joining]);
       await lockPerson(db, userId);
@@ -562,6 +594,39 @@ export async function updateUserRole(
       return user;
     }),
   );
+}
+
+// Takes the fleet role away from a person who keeps their memberships, which stay as they were. The
+// answer is the person through their first membership, the row the fleet view keeps showing.
+async function removeFleetGrant(
+  db: ScopedDb,
+  ctx: TenantContext,
+  userId: bigint,
+): Promise<UserRow> {
+  await lockAdminScopes(db, [null]);
+  await lockPerson(db, userId);
+  const before = await superRow(db, userId);
+  if (!before) throw new ScopeMovedError();
+  const first = await db.tenantUser.findFirst({
+    where: { userId },
+    orderBy: { tenantId: "asc" },
+    select: { tenantId: true },
+  });
+  if (!first) throw new ScopeMovedError();
+  await assertScopeKeepsAnAdmin(db, null, userId);
+  await db.user.update({
+    where: { id: userId },
+    data: { isSuperAdmin: false },
+  });
+  const after = await memberRow(db, first.tenantId, userId);
+  if (!after) throw new ScopeMovedError();
+  await auditMutationOn(db, ctx, null, {
+    action: "user.role_set",
+    target: `user:${userId}`,
+    before: userAuditProjection(before),
+    after: userAuditProjection(after),
+  });
+  return after;
 }
 
 // A tenant administrator removes the person from THEIR tenant: the membership, and the account only
@@ -653,4 +718,59 @@ export async function deleteUser(
       }
     }),
   );
+}
+
+export class AlreadySuperAdminError extends Error {
+  constructor() {
+    super("This person is already a super admin");
+    this.name = "AlreadySuperAdminError";
+  }
+}
+
+export type AddSuperAdminResult =
+  | { kind: "promoted"; user: UserRow }
+  | { kind: "invited"; invite: CreatedInvite };
+
+// A fleet administrator makes another person one, by email. An account that already exists becomes
+// SUPER_ADMIN at once, keeping its memberships; an email with no account gets a fleet invitation,
+// and whoever accepts it is created a SUPER_ADMIN. The caller confirms with their password first.
+export async function addSuperAdmin(
+  ctx: TenantContext,
+  rawEmail: string,
+  base: PrismaClient = prisma,
+): Promise<AddSuperAdminResult> {
+  if (ctx.role !== "SUPER_ADMIN") throw new FleetInviteForbiddenError();
+  const email = rawEmail.trim();
+  const account = await base.user.findFirst({
+    where: { email: emailEquals(email) },
+    select: { id: true },
+  });
+  if (!account) {
+    return {
+      kind: "invited",
+      invite: await createFleetInvite(ctx, email, base),
+    };
+  }
+  const user = await asPrincipalOn(base, ctx, async (db) => {
+    await lockPerson(db, account.id);
+    const person = await db.user.findUnique({
+      where: { id: account.id },
+      select: { ...PERSON_SELECT, isSuperAdmin: true },
+    });
+    if (!person) throw new UserNotInScopeError();
+    if (person.isSuperAdmin) throw new AlreadySuperAdminError();
+    await db.user.update({
+      where: { id: account.id },
+      data: { isSuperAdmin: true },
+    });
+    const { isSuperAdmin: _, ...rest } = person;
+    const row: UserRow = { ...rest, tenantId: null, role: "SUPER_ADMIN" };
+    await auditMutationOn(db, ctx, null, {
+      action: "user.role_set",
+      target: `user:${account.id}`,
+      after: userAuditProjection(row),
+    });
+    return row;
+  });
+  return { kind: "promoted", user };
 }

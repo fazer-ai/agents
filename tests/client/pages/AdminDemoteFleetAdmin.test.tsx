@@ -50,7 +50,7 @@ const json = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-const USERS = [
+const BASE_USERS = [
   {
     id: "10",
     email: "fleet@fazer.ai",
@@ -70,6 +70,8 @@ const USERS = [
     lastLoginAt: null,
   },
 ];
+
+let USERS: Array<Record<string, unknown>> = BASE_USERS;
 
 function installFetchStub() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -125,12 +127,16 @@ function mount() {
   );
 }
 
-async function clickDemote(email: string) {
-  const row = (await screen.findByText(email)).closest("tr") as HTMLElement;
-  fireEvent.click(within(row).getByLabelText("Demote to User"));
+async function clickDemote(email: string, label: string) {
+  const rows = (await screen.findAllByText(email)).map(
+    (cell) => cell.closest("tr") as HTMLElement,
+  );
+  const row = rows.find((r) => within(r).queryAllByLabelText(label).length > 0);
+  fireEvent.click(within(row as HTMLElement).getByLabelText(label));
 }
 
 beforeEach(() => {
+  USERS = BASE_USERS;
   patches = [];
   installFetchStub();
 });
@@ -146,16 +152,18 @@ afterAll(() => {
 describe("demoting from the users tab", () => {
   test("a fleet administrator is asked for a tenant, and the write carries it", async () => {
     mount();
-    await clickDemote("fleet@fazer.ai");
+    await clickDemote("fleet@fazer.ai", "Remove super admin");
     const dialog = await screen.findByRole("dialog");
     expect(patches.length).toBe(0);
 
     const scope = within(dialog);
-    const submit = scope.getByRole("button", { name: "Demote" });
+    const submit = scope.getByRole("button", { name: "Remove super admin" });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.change(scope.getByRole("combobox"), { target: { value: "42" } });
-    fireEvent.click(scope.getByRole("button", { name: "Demote" }));
+    fireEvent.change(await scope.findByLabelText("Tenant"), {
+      target: { value: "42" },
+    });
+    fireEvent.click(scope.getByRole("button", { name: "Remove super admin" }));
     await waitFor(() => {
       expect(patches.length).toBe(1);
     });
@@ -167,11 +175,56 @@ describe("demoting from the users tab", () => {
     );
   });
 
+  test("with no membership, the role they land with can be tenant admin", async () => {
+    mount();
+    await clickDemote("fleet@fazer.ai", "Remove super admin");
+    const scope = within(await screen.findByRole("dialog"));
+    fireEvent.change(await scope.findByLabelText("Tenant"), {
+      target: { value: "42" },
+    });
+    fireEvent.change(scope.getByLabelText("Role"), {
+      target: { value: "TENANT_ADMIN" },
+    });
+    fireEvent.click(scope.getByRole("button", { name: "Remove super admin" }));
+    await waitFor(() => {
+      expect(patches.length).toBe(1);
+    });
+    expect(JSON.stringify(patches[0])).toBe(
+      JSON.stringify({
+        id: "10",
+        body: { role: "TENANT_ADMIN", tenantId: "42", demoteFleet: true },
+      }),
+    );
+  });
+
+  test("a super admin who already belongs to a tenant keeps it, and the write names none", async () => {
+    USERS = [
+      {
+        ...(BASE_USERS[0] as (typeof BASE_USERS)[number]),
+        memberships: [{ tenantId: "42", role: "TENANT_ADMIN" }],
+      },
+      ...BASE_USERS.slice(1),
+    ];
+    mount();
+    await clickDemote("fleet@fazer.ai", "Remove super admin");
+    const scope = within(await screen.findByRole("dialog"));
+    await scope.findByText(/keeps the access they already have/);
+    expect(scope.queryAllByLabelText("Tenant").length).toBe(0);
+    expect(scope.getByText("Acme").textContent).toBe("Acme");
+    fireEvent.click(scope.getByRole("button", { name: "Remove super admin" }));
+    await waitFor(() => {
+      expect(patches.length).toBe(1);
+    });
+    expect(JSON.stringify(patches[0])).toBe(
+      JSON.stringify({ id: "10", body: { role: "AGENT", demoteFleet: true } }),
+    );
+  });
+
   // NOTE: one click, and the write names the membership this row IS: a person holds a role per
   // tenant, so the fleet view re-roles the one on screen and not whichever the server guesses.
   test("a tenant administrator is demoted in one click, naming the membership on the row", async () => {
     mount();
-    await clickDemote("boss@acme.test");
+    await clickDemote("boss@acme.test", "Demote to agent");
     await waitFor(() => {
       expect(patches.length).toBe(1);
     });

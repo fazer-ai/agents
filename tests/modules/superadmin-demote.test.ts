@@ -120,9 +120,9 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     await appDb.$disconnect();
   });
 
-  // NOTE: not an edge case: a fleet administrator ALWAYS has a null tenant, so without this every
-  // demotion of every super admin would come back as a 500.
-  test("a demotion that names no tenant is refused, and the row is untouched", async () => {
+  // NOTE: not an edge case: a fleet administrator from `/setup` or a fleet invitation has no
+  // membership at all, so without this their demotion would come back as a 500.
+  test("a demotion that names no tenant, of a person with no membership, is refused and the row is untouched", async () => {
     const keep = await fleetAdmin("keep");
     const target = await fleetAdmin("target");
     await expect(

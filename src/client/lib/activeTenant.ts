@@ -7,62 +7,42 @@
 
 const KEY = "@app:active-tenant";
 
-// Every API call reads this, so storage the browser refuses (site data blocked, where touching
-// `sessionStorage` throws) degrades to "nothing selected" instead of failing the request.
 function tabStore(): Storage | null {
-  try {
-    return typeof sessionStorage === "undefined" ? null : sessionStorage;
-  } catch {
-    return null;
-  }
+  return typeof sessionStorage === "undefined" ? null : sessionStorage;
 }
 
 function sharedStore(): Storage | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
+// A browser that blocks site data throws on touching either store. Every API call reads the
+// selection, so there it reads as "nothing selected" and the request still goes out; with both stores
+// gone there is no shared default for another tab to move. A write to a store that exists still
+// throws, and so does an explicit choice: the switch persists and then reloads, and a choice that
+// cannot be kept has to fail where it is made.
+function available(store: () => Storage | null): Storage | null {
   try {
-    return typeof localStorage === "undefined" ? null : localStorage;
+    return store();
   } catch {
     return null;
   }
 }
 
-function read(store: Storage | null): string | null {
+function read(store: () => Storage | null): string | null {
   try {
-    return store?.getItem(KEY) ?? null;
+    return store()?.getItem(KEY) ?? null;
   } catch {
     return null;
   }
-}
-
-function write(store: Storage | null, id: string | null): boolean {
-  try {
-    if (!store) return false;
-    if (id) store.setItem(KEY, id);
-    else store.removeItem(KEY);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// The tab's selection when the tab store refuses it, so this tab keeps its tenant instead of falling
-// back to the shared default that another tab moves. Lives as long as the document.
-let tabFallback: string | null = null;
-
-function pinToTab(id: string | null): void {
-  tabFallback = write(tabStore(), id) ? null : id;
-}
-
-function tabSelection(): string | null {
-  return read(tabStore()) ?? tabFallback;
 }
 
 export function getActiveTenantId(): string | null {
-  const own = tabSelection();
+  const own = read(tabStore);
   if (own !== null) return own;
   // A tab that has not chosen starts from the last choice and KEEPS it: pinned to the tab on first
   // read, so a later choice in another tab does not move this one.
-  const inherited = read(sharedStore());
-  if (inherited !== null) pinToTab(inherited);
+  const inherited = read(sharedStore);
+  if (inherited !== null) tabStore()?.setItem(KEY, inherited);
   return inherited;
 }
 
@@ -71,7 +51,7 @@ export function getActiveTenantId(): string | null {
 // id, it keeps inheriting the shared default, and a choice made in another tab would move this tab's
 // next request to another tenant under a page built for the first one.
 export function pinTabTenantId(id: string): void {
-  if (tabSelection() === null) pinToTab(id);
+  if (read(tabStore) === null) available(tabStore)?.setItem(KEY, id);
 }
 
 // What the tab does with the tenant a fresh session reports, a function rather than inline in the
@@ -85,7 +65,11 @@ export function adoptSessionTenant(
 ): void {
   if (!user) return;
   if (user.role === "SUPER_ADMIN") {
-    if (defaultTenantId && getActiveTenantId() === null) {
+    if (
+      defaultTenantId &&
+      getActiveTenantId() === null &&
+      available(tabStore)
+    ) {
       setActiveTenantId(defaultTenantId);
     }
     return;
@@ -94,8 +78,11 @@ export function adoptSessionTenant(
 }
 
 export function setActiveTenantId(id: string | null): void {
-  pinToTab(id);
-  write(sharedStore(), id);
+  for (const store of [tabStore(), sharedStore()]) {
+    if (!store) continue;
+    if (id) store.setItem(KEY, id);
+    else store.removeItem(KEY);
+  }
 }
 
 // The set of selectable tenants changed (a tenant was created). Components that cache the list

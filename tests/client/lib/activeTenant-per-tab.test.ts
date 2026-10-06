@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import {
   adoptSessionTenant,
   dropRejectedSelection,
@@ -87,15 +87,16 @@ describe("the selected tenant is the tab's", () => {
   });
 });
 
-// Every API call reads the selection for its X-Tenant-Id header, so a browser that refuses storage
-// (site data blocked) must get "nothing selected", not a request that throws before it is sent.
+// Every API call reads the selection for its X-Tenant-Id header, so a browser that blocks site data
+// (touching either store throws) must read as "nothing selected", not fail every request. A store
+// that exists but refuses a write still fails loudly, and so does an explicit choice: a selection
+// that silently is not kept would leave this tab on the shared default another tab moves, or reload
+// a tenant switch forever.
 describe("storage the browser refuses", () => {
   beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
   });
-  // A selection the tab store refused is kept in memory; a write the store accepts clears it.
-  afterEach(() => setActiveTenantId(null));
 
   const blocked = () => {
     throw new DOMException("blocked", "SecurityError");
@@ -124,16 +125,22 @@ describe("storage the browser refuses", () => {
     }
   }
 
-  test("touching the store throws: reads say nothing is selected, writes are dropped", () => {
+  test("site data blocked: nothing is selected, the session's pins are skipped, a choice throws", () => {
     withStores({ get: blocked }, { get: blocked }, () => {
       expect(getActiveTenantId()).toBeNull();
-      expect(() => setActiveTenantId("7")).not.toThrow();
       expect(() => pinTabTenantId("7")).not.toThrow();
-      expect(dropRejectedSelection("7")).toBe(true);
+      expect(() =>
+        adoptSessionTenant({ role: "SUPER_ADMIN", tenantId: null }, "7"),
+      ).not.toThrow();
+      expect(() =>
+        adoptSessionTenant({ role: "TENANT_ADMIN", tenantId: "7" }, null),
+      ).not.toThrow();
+      expect(getActiveTenantId()).toBeNull();
+      expect(() => setActiveTenantId("7")).toThrow();
     });
   });
 
-  test("the store's methods throw: the same", () => {
+  test("a store whose reads throw reads as nothing selected; its writes still throw", () => {
     const refusing = {
       getItem: blocked,
       setItem: blocked,
@@ -141,26 +148,12 @@ describe("storage the browser refuses", () => {
     } as unknown as Storage;
     withStores({ value: refusing }, { value: refusing }, () => {
       expect(getActiveTenantId()).toBeNull();
-      expect(() => setActiveTenantId("7")).not.toThrow();
-      expect(() => setActiveTenantId(null)).not.toThrow();
-      expect(() => pinTabTenantId("7")).not.toThrow();
+      expect(() => pinTabTenantId("7")).toThrow();
+      expect(() => setActiveTenantId("7")).toThrow();
     });
   });
 
-  test("a shared default that cannot be pinned to the tab is still the answer", () => {
-    const refusingWrites = {
-      getItem: () => null,
-      setItem: blocked,
-      removeItem: blocked,
-    } as unknown as Storage;
-    localStorage.setItem(KEY, "3");
-    const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-    withStores({ value: refusingWrites }, l ?? {}, () => {
-      expect(getActiveTenantId()).toBe("3");
-    });
-  });
-
-  test("a tab whose own store refuses writes keeps its tenant when another tab chooses", () => {
+  test("a tab store that refuses the pin fails loudly instead of following the shared default", () => {
     const tabRefusingWrites = {
       getItem: () => null,
       setItem: blocked,
@@ -169,14 +162,7 @@ describe("storage the browser refuses", () => {
     localStorage.setItem(KEY, "3");
     const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     withStores({ value: tabRefusingWrites }, l ?? {}, () => {
-      expect(getActiveTenantId()).toBe("3");
-      localStorage.setItem(KEY, "9");
-      expect(getActiveTenantId()).toBe("3");
-      setActiveTenantId("5");
-      localStorage.setItem(KEY, "9");
-      expect(getActiveTenantId()).toBe("5");
-      pinTabTenantId("1");
-      expect(getActiveTenantId()).toBe("5");
+      expect(() => getActiveTenantId()).toThrow();
     });
   });
 });

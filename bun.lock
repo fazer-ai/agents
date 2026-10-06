@@ -19,15 +19,15 @@
         "@elysiajs/openapi": "^1.4.15",
         "@elysiajs/static": "^1.4.10",
         "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
-        "@langchain/anthropic": "1.5.8",
-        "@langchain/core": "1.2.9",
+        "@langchain/anthropic": "1.5.12",
+        "@langchain/core": "1.2.14",
         "@langchain/deepseek": "1.1.10",
-        "@langchain/google-genai": "2.3.0",
-        "@langchain/langgraph": "1.4.12",
+        "@langchain/google-genai": "2.3.2",
+        "@langchain/langgraph": "1.4.18",
         "@langchain/langgraph-checkpoint-postgres": "1.0.5",
         "@langchain/mcp-adapters": "1.1.4",
         "@langchain/openai": "1.5.10",
-        "@langchain/textsplitters": "1.0.1",
+        "@langchain/textsplitters": "1.0.2",
         "@lezer/highlight": "^1.2.5",
         "@modelcontextprotocol/sdk": "^1",
         "@prisma/adapter-pg": "^7.10.0",
@@ -46,7 +46,7 @@
         "i18next": "^26.4.2",
         "jose": "^6.2.12",
         "jpeg-js": "^0.4.4",
-        "langfuse-langchain": "3.38.20",
+        "langfuse-langchain": "3.39.2",
         "libheif-js": "^1.23.2",
         "lucide-react": "^1.50.0",
         "mammoth": "^1.13.0",
@@ -99,7 +99,7 @@
 
     "@antfu/install-pkg": ["@antfu/install-pkg@1.1.0", "", { "dependencies": { "package-manager-detector": "^1.3.0", "tinyexec": "^1.0.1" } }, "sha512-MGQsmw10ZyI+EJo45CdSER4zEb+p31LpDAFp2Z3gkSd1yqVZGi0Ebx++YTEMonJy4oChEMLsxZ64j8FH6sSqtQ=="],
 
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.115.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-BJrFIVyjNuU8lfDyIJTvlRYzgQg+zEl78BxE7fq8esULsGz9IRQvGtW5spq3tydmtjQb/GFdooKGdGsetpx+lQ=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.122.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-GGPNftt0caaz9MDlmNQGHX8855Ojaduyy5pm9Sm1h7HalCn0cWNb5/bweadJF+4yzbal+QL6ztBa09WAAOzLmQ=="],
 
     "@babel/code-frame": ["@babel/code-frame@7.29.7", "", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
 
@@ -245,29 +245,29 @@
 
     "@jitl/quickjs-wasmfile-release-sync": ["@jitl/quickjs-wasmfile-release-sync@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-BKNDI/TPBfGlLNGYpLrhcDGXmIk4xHm4MRAisOBnOzpXVn9HZWsfmMAc9WMBrAHjvvds6HOikKeaOBKdPdpVrg=="],
 
-    "@langchain/anthropic": ["@langchain/anthropic@1.5.8", "", { "dependencies": { "@anthropic-ai/sdk": "^0.115.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.2.9" } }, "sha512-KZWgIf+04M9XZHhgH1rVJkqw/C26DM4a4jKk4Qc4HaSbRawN2Dw5nDffna+IoaU/50ohTdyB3HOz9g8XFQYF2A=="],
+    "@langchain/anthropic": ["@langchain/anthropic@1.5.12", "", { "dependencies": { "@anthropic-ai/sdk": "^0.122.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.2.14" } }, "sha512-tVvI94zAtG6isYxBzL7hlbxfbqjmvx/BqBWAov7v+bABKYz3fZHFI2Io1UI5UzU+h/5SuC1qXUV+JxnaqylJJw=="],
 
-    "@langchain/core": ["@langchain/core@1.2.9", "", { "dependencies": { "@cfworker/json-schema": "^4.0.2", "@standard-schema/spec": "^1.1.0", "js-tiktoken": "^1.0.12", "langsmith": ">=0.5.0 <1.0.0", "mustache": "^4.2.0", "p-queue": "^6.6.2", "zod": "^3.25.76 || ^4" } }, "sha512-conzSEj9Zu1AyXJLXsSbgrtxtxinmI1yGqQ5CIJZSoV5rvv+yvQE/vgBnoySpBQ/bl3YPgj2FL/gbDjWykLSfg=="],
+    "@langchain/core": ["@langchain/core@1.2.14", "", { "dependencies": { "@cfworker/json-schema": "^4.0.2", "@standard-schema/spec": "^1.1.0", "js-tiktoken": "^1.0.12", "langsmith": ">=0.5.0 <1.0.0", "mustache": "^4.2.0", "p-queue": "^6.6.2", "zod": "^3.25.76 || ^4" } }, "sha512-NP+FZMDO8kzVf79kiVHByveErVbTc1kUm0OvJuASxy5dt2xo/m7mi4O0npskU71A9h0vke3YUDYEciiAsXdCoA=="],
 
     "@langchain/deepseek": ["@langchain/deepseek@1.1.10", "", { "dependencies": { "@langchain/openai": "1.5.10" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-4zNSFCO7WmbaVP36wVgTfDvqKV9j3LVp2r4z73KZ925+MuBemC4pHDqgowAxmPBhPkYOxaqg2nMFQGbec2OqZQ=="],
 
-    "@langchain/google-genai": ["@langchain/google-genai@2.3.0", "", { "dependencies": { "@google/generative-ai": "^0.24.1" }, "peerDependencies": { "@langchain/core": "^1.2.9" } }, "sha512-i797N4UToqFZHaXLR24mhLrlODwiEIxq/pnjHDvfQcrrm/qn+YIPBoIlefN6BVUua96rxumZ4m2iQ7FG6Aa2ww=="],
+    "@langchain/google-genai": ["@langchain/google-genai@2.3.2", "", { "dependencies": { "@google/generative-ai": "^0.24.1" }, "peerDependencies": { "@langchain/core": "^1.2.11" } }, "sha512-wiiHx3aBJmWJcKmYs/4xZo5KNRICYjdbwegtmH8ega7liYFKBY6e1F4ocMNL+ylApaRIYeO54ceAHNbKmRVHeQ=="],
 
-    "@langchain/langgraph": ["@langchain/langgraph@1.4.12", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.1.5", "@langchain/langgraph-sdk": "~1.9.30", "@langchain/protocol": "^0.0.18", "@standard-schema/spec": "1.1.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0" } }, "sha512-63iH/igH5Fh5fHqmWp09YYWaDKKB9v4RCmYNJBrnQ224rFRbjebgyYW6o5RCczN5FZxIhQj+xT51rrNmG0zi5A=="],
+    "@langchain/langgraph": ["@langchain/langgraph@1.4.18", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.1.5", "@langchain/langgraph-sdk": "~1.12.0", "@langchain/protocol": "^0.0.19", "@standard-schema/spec": "1.1.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0" } }, "sha512-yrMMJ9hk2NVMD2xU2WoVrgFawAU6s/RzEl/dX9BhlyxZHazo1wHY35z4K2BIBzTUh4z3giCzrUoqRAqW2CWpWg=="],
 
     "@langchain/langgraph-checkpoint": ["@langchain/langgraph-checkpoint@1.1.5", "", { "peerDependencies": { "@langchain/core": "^1.1.48" } }, "sha512-BwDwl5VeTOh6CVuiIPgsUgfK51vTJDMSbFcSCUfjJWsl8/DPdK/mbv+ejxJstkSk/BlSPMP4JfXWcN6jD2ea2Q=="],
 
     "@langchain/langgraph-checkpoint-postgres": ["@langchain/langgraph-checkpoint-postgres@1.0.5", "", { "dependencies": { "pg": "^8.12.0" }, "peerDependencies": { "@langchain/core": "^1.1.44", "@langchain/langgraph-checkpoint": "^1.1.4" } }, "sha512-kCpp9pOidYDexhOvpWN4Z6G4npr4+OH8Qe/2oo38NLbRa+AzMcuZDiEI8y9bh4v5fcMy/dhlJClCSQzl86ddUw=="],
 
-    "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.9.31", "", { "dependencies": { "@langchain/protocol": "^0.0.18", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19", "svelte": "^4.0.0 || ^5.0.0", "vue": "^3.0.0" }, "optionalPeers": ["react", "react-dom", "svelte", "vue"] }, "sha512-y1sSdq39IPb6mOX43+JiSezVbUdA8EBEJ1gvn91GP0jrLG0EcSApeRDCjRouyDpPXZ51bQXEQhA8CiHM0mzcAw=="],
+    "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.12.1", "", { "dependencies": { "@langchain/protocol": "^0.0.19", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19" }, "optionalPeers": ["react", "react-dom"] }, "sha512-V/XSE7auTpfS5p3ByggDM6bKvRLeEjImb7/H+ng9qHkwCrYCGrZpVcuve2lH9pHQVOQlEtnHUsRZKQTWumcdhw=="],
 
     "@langchain/mcp-adapters": ["@langchain/mcp-adapters@1.1.4", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "debug": "^4.4.3", "zod": "^3.25.76 || ^4" }, "optionalDependencies": { "extended-eventsource": "^1.7.0" }, "peerDependencies": { "@langchain/core": "^1.0.0", "@langchain/langgraph": "^1.4.10" } }, "sha512-6E8ULWoI9w+lxydeb8yHILyEluonZ4JS42OwSLL1k/RvG/trjGuLYm7P9gE+/pFOxLuNk9wHZ7BLfGju4tcJEQ=="],
 
     "@langchain/openai": ["@langchain/openai@1.5.10", "", { "dependencies": { "js-tiktoken": "^1.0.12", "openai": "^7.5.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.2.9" } }, "sha512-4cxdgolkkXwnAiGEkNrue+ba7jUKjfBwleLCX5DrRVcRGrCc4w5EceblYZOIaHMY6+nhwMqIOtSzBWgcBCLfmw=="],
 
-    "@langchain/protocol": ["@langchain/protocol@0.0.18", "", {}, "sha512-XW1egQtPfsGI41w2AMZNFZrUIwFSQHTjVMZs0OaTpCAvht/QLoaPN8FQcsysMVypOhupG28J29yOorrc70otBQ=="],
+    "@langchain/protocol": ["@langchain/protocol@0.0.19", "", {}, "sha512-9hKcRrH7cBX6gfutdfXPoft1OCchHe4FEpALoDJMl5Qu+n/YG5ynZmyu8+8cxORlPwHBoKTxggvXz+76M1yX1Q=="],
 
-    "@langchain/textsplitters": ["@langchain/textsplitters@1.0.1", "", { "dependencies": { "js-tiktoken": "^1.0.12" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-rheJlB01iVtrOUzttscutRgLybPH9qR79EyzBEbf1u97ljWyuxQfCwIWK+SjoQTM9O8M7GGLLRBSYE26Jmcoww=="],
+    "@langchain/textsplitters": ["@langchain/textsplitters@1.0.2", "", { "dependencies": { "js-tiktoken": "^1.0.12" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-UNCmlyFIRlRfVxqpmcRsp1jQrscnIVVqRKrrjFF2wHHq+VGTv+VDkGZLyEVUopJfHIdaiXfOKlSrROQui7VLFA=="],
 
     "@lezer/common": ["@lezer/common@1.5.2", "", {}, "sha512-sxQE460fPZyU3sdc8lafxiPwJHBzZRy/udNFynGQky1SePYBdhkBl1kOagA9uT3pxR8K09bOrmTUqA9wb/PjSQ=="],
 
@@ -1201,11 +1201,11 @@
 
     "langchain": ["langchain@0.3.37", "", { "dependencies": { "@langchain/openai": ">=0.1.0 <0.7.0", "@langchain/textsplitters": ">=0.0.0 <0.2.0", "js-tiktoken": "^1.0.12", "js-yaml": "^4.1.0", "jsonpointer": "^5.0.1", "langsmith": "^0.3.67", "openapi-types": "^12.1.3", "p-retry": "4", "uuid": "^10.0.0", "yaml": "^2.2.1", "zod": "^3.25.32" }, "peerDependencies": { "@langchain/anthropic": "*", "@langchain/aws": "*", "@langchain/cerebras": "*", "@langchain/cohere": "*", "@langchain/core": ">=0.3.58 <0.4.0", "@langchain/deepseek": "*", "@langchain/google-genai": "*", "@langchain/google-vertexai": "*", "@langchain/google-vertexai-web": "*", "@langchain/groq": "*", "@langchain/mistralai": "*", "@langchain/ollama": "*", "@langchain/xai": "*", "axios": "*", "cheerio": "*", "handlebars": "^4.7.8", "peggy": "^3.0.2", "typeorm": "*" }, "optionalPeers": ["@langchain/anthropic", "@langchain/aws", "@langchain/cerebras", "@langchain/cohere", "@langchain/deepseek", "@langchain/google-genai", "@langchain/google-vertexai", "@langchain/google-vertexai-web", "@langchain/groq", "@langchain/mistralai", "@langchain/ollama", "@langchain/xai", "axios", "cheerio", "handlebars", "peggy", "typeorm"] }, "sha512-1jPsZ6xsxkcQPUvqRjvfuOLwZLLyt49hzcOK7OYAJovIkkOxd5gzK4Yw6giPUQ8g4XHyvULNlWBz+subdkcokw=="],
 
-    "langfuse": ["langfuse@3.38.20", "", { "dependencies": { "langfuse-core": "^3.38.20" } }, "sha512-MAmBAASSzJtmK1O9HQegA1mFsQhT8Yf+OJRGvE7FXkyv3g/eiBE0glLD0Ohg3pkxhoPdggM5SejK7ue9ctlaMA=="],
+    "langfuse": ["langfuse@3.39.2", "", { "dependencies": { "langfuse-core": "^3.39.2" } }, "sha512-GEn2EFkLUkaf19wewu5TuMFoiiY5AZwhuWl7jvtXrf4JASa54c5ObTGTCG71XGIjNw3PhomD/xD4ZRi6JX8EcQ=="],
 
-    "langfuse-core": ["langfuse-core@3.38.20", "", { "dependencies": { "mustache": "^4.2.0" } }, "sha512-zBKVmQN/1oT5VWZUBYlWzvokIlkC/6mnpgr/2atMyTeAm+jR3ia7w2iJMjlrF5/oG8ukO1s8+LDRCzJpF1QeEA=="],
+    "langfuse-core": ["langfuse-core@3.39.2", "", { "dependencies": { "mustache": "^4.2.0" } }, "sha512-+NkjTBF6mX3Z1muFhevxdZPksh7ZF2XvW0LoeCzNgmLrwpLml6g9mZQQEO1GXTbtd5kqB2PmZnkTCziZVOpOBA=="],
 
-    "langfuse-langchain": ["langfuse-langchain@3.38.20", "", { "dependencies": { "langfuse": "^3.38.20", "langfuse-core": "^3.38.20" }, "peerDependencies": { "langchain": ">=0.0.157 <0.4.0" } }, "sha512-JocqAWSoJM8NFQ2nBcdEkkT+pZZwcruqMqcs8f3ctvttjVF+ZXrv9Zr+jL7HnZGJ14+T94Qf6bRfaocJpAEhXA=="],
+    "langfuse-langchain": ["langfuse-langchain@3.39.2", "", { "dependencies": { "langfuse": "^3.39.2", "langfuse-core": "^3.39.2" }, "peerDependencies": { "langchain": ">=0.0.157 <0.4.0" } }, "sha512-KS7PMmNsHsaS/CdlBg0wL3Rmc1NFRE4ne0CWiNglvp5VylTbwqv3Qaxq5+XoMe/GVaw5uLmBM6A4h+D5kdc/gg=="],
 
     "langsmith": ["langsmith@0.9.0", "", { "dependencies": { "p-queue": "6.6.2" }, "peerDependencies": { "@opentelemetry/api": "*", "@opentelemetry/exporter-trace-otlp-proto": "*", "@opentelemetry/sdk-trace-base": "*", "openai": "*", "ws": ">=7" }, "optionalPeers": ["@opentelemetry/api", "@opentelemetry/exporter-trace-otlp-proto", "@opentelemetry/sdk-trace-base", "openai", "ws"] }, "sha512-tlg/aG7qezAKY6G3fgADSX7PkRj+JKoF3z7QNkCMsAOvwvuzhiwP9Amn1Z+zAIxuKoWuXQdIjtFN0LVmUC1oUQ=="],
 

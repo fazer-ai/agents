@@ -246,7 +246,8 @@ export function DocumentsPanel() {
         style: starter.style as unknown as Record<string, unknown>,
         numberPrefix: starter.numberPrefix,
       };
-      const { error: err } = await api.api.v1["document-templates"].post(sent);
+      const { data, error: err } =
+        await api.api.v1["document-templates"].post(sent);
       if (err) {
         // The server's own words, and the input they are about. It says which template already has
         // the name, which a generic "could not create" cannot — and the operator is three characters
@@ -266,6 +267,9 @@ export function DocumentsPanel() {
       refusal.clear();
       starterModal.close();
       showToast(t("documents.created", "Template created."), "success");
+      // NOTE: a template is created to be edited, so the editor opens on the row the POST answered,
+      // without waiting on the list refresh (which can fail without costing the operator the editor).
+      if (data?.template) editModal.open({ template: data.template });
       void load();
     } catch (e) {
       // NOTE: Eden REJECTS on a transport failure instead of answering `{ error }`, so an offline

@@ -9,10 +9,9 @@ import {
   type McpSelection,
 } from "@/graph/tools/mcp";
 
-// The MCP client against a legacy-protocol server (SDK v1) in its own process, through both
-// connection paths: the adapter's own client (no declared headers) and the app's SDK client
-// (declared headers). One server answers streamable HTTP; the other answers it with 400, so a
-// connection there only works by falling back to SSE.
+// The MCP client against a legacy-protocol server (SDK v1) in its own process, with and without
+// declared headers (which change the fetch each request goes through). One server answers streamable
+// HTTP; the other answers it with 400, so a connection there only works by falling back to SSE.
 
 const FIXTURE = new URL("../fixtures/mcp/protocol-server.ts", import.meta.url)
   .pathname;
@@ -230,6 +229,33 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     ]);
     expect(found.instructions).toBe("Fixture instructions.");
   });
+
+  // When the SSE fallback fails too, the error still names the streamable HTTP attempt and its
+  // status, so a wrong credential reads as an authentication failure and not as an SSE problem.
+  test.each([
+    ["without", {}],
+    ["with", DECLARED],
+  ])(
+    "a refused credential %s declared headers reports both attempts and the 401",
+    async (_label, headers) => {
+      const locked = await start({ MCP_REQUIRE_TOKEN: "certo" });
+      const s = sel(locked, {
+        headers: { ...headers, Authorization: "Bearer errado" },
+      });
+      const err = await discoverMcpServer(
+        s,
+        await buildConnConfig(s, { stdioEnabled: false, allowHttp: true }),
+      ).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err?.message).toContain(
+        "failed with HTTP 401 (authentication failed)",
+      );
+      expect(err?.message).toContain("The SSE fallback at");
+      expect(err?.message).not.toContain("errado");
+    },
+  );
 
   // A schema that declares draft-07 is validated by the SDK's draft-07 engine, so its tuple stays as
   // written: rewritten to `prefixItems`, `additionalItems: false` would refuse every element.

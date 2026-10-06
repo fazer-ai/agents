@@ -371,6 +371,10 @@ function httpErrorCode(err: unknown): number | null {
   return m ? Number(m[1]) : null;
 }
 
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 // The adapter's fallback for a server that answers streamable HTTP with a 4xx: SSE at the same URL,
 // then at `/sse` in place of a trailing `/mcp`. Kept so a connection behaves the same with or
 // without declared headers.
@@ -465,15 +469,19 @@ async function connectClient(
   } catch (err) {
     const code = httpErrorCode(err);
     if (code === null || code < 400 || code >= 500) throw err;
+    const fallbacks = sseFallbackUrls(url);
     let last: unknown = err;
-    for (const sseUrl of sseFallbackUrls(url)) {
+    for (const sseUrl of fallbacks) {
       try {
         return await open(new SSEClientTransport(new URL(sseUrl), opts));
       } catch (e) {
         last = e;
       }
     }
-    throw last;
+    throw new Error(
+      `streamable HTTP at ${url} failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}: ${errorText(err)}. The SSE fallback at ${fallbacks.join(" and ")} failed too: ${errorText(last)}`,
+      { cause: last },
+    );
   }
 }
 

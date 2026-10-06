@@ -10,7 +10,8 @@ import {
 
 // A legacy-protocol MCP server (SDK v1) on an ephemeral port, in its own process. `/mcp` speaks
 // streamable HTTP, or answers 400 to every request when started with `MCP_HTTP_REFUSES=1`; `/sse`
-// plus `/messages` speak the SSE transport. Its tools are declared with raw JSON Schema, so a
+// plus `/messages` speak the SSE transport. With `MCP_REQUIRE_TOKEN=<t>`, every path answers 401 to a
+// request without `Authorization: Bearer <t>`. Its tools are declared with raw JSON Schema, so a
 // schema reaches the client exactly as written here. It prints one JSON line per HTTP request.
 
 const PRICE_SCHEMA = {
@@ -118,6 +119,7 @@ function server() {
 }
 
 const refuses = process.env.MCP_HTTP_REFUSES === "1";
+const token = process.env.MCP_REQUIRE_TOKEN;
 const sessions = new Map<string, StreamableHTTPServerTransport>();
 const sse = new Map<string, SSEServerTransport>();
 
@@ -133,6 +135,12 @@ const http = createServer((req, res: ServerResponse) => {
     const raw = Buffer.concat(chunks).toString();
     const body = raw ? JSON.parse(raw) : undefined;
     log({ path: url.pathname, request: req.method, method: body?.method });
+    if (token && req.headers.authorization !== `Bearer ${token}`) {
+      res
+        .writeHead(401, { "content-type": "application/json" })
+        .end('{"error":"unauthorized"}');
+      return;
+    }
     if (url.pathname === "/sse" && req.method === "GET") {
       const t = new SSEServerTransport("/messages", res);
       sse.set(t.sessionId, t);

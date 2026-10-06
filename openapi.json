@@ -2588,7 +2588,7 @@
           "Admin"
         ],
         "summary": "Preview adding a super admin",
-        "description": "Say what adding this email as a super admin would do right now: `promote` (an account exists), `invite` (no account; a fleet invitation would be minted) or `already` (the person is already a super admin). Exact, case-insensitive match. A preview only; the write decides again.",
+        "description": "Say what adding this email as a super admin would do right now: `promote` (an account exists), `invite` (no account; a fleet invitation would be minted), `verify` (an account exists, but public signup is open and it has no Google identity, so it gets the invitation and must accept it signed in) or `already` (the person is already a super admin). Exact, case-insensitive match. A preview only; the write decides again.",
         "parameters": [
           {
             "name": "email",
@@ -2728,7 +2728,7 @@
           "Admin"
         ],
         "summary": "Add a super admin",
-        "description": "Make a person a fleet super admin. An email that already has an account is promoted immediately and keeps its tenant memberships (`result: promoted`); an email with no account gets a single-use fleet invitation valid for 24 hours (`result: invited`, with the accept link). Requires a signed-in SUPER_ADMIN session and its password; refuses an API key. Returns 409 when the person is already a super admin.",
+        "description": "Make a person a fleet super admin. An email that already has an account is promoted immediately and keeps its tenant memberships (`result: promoted`), unless public signup is open and the account has no Google identity, since then nothing proved the address is its owner's; that account, and an email with no account, get a single-use fleet invitation valid for 24 hours (`result: invited`, with the accept link). Requires a signed-in SUPER_ADMIN session and its password; refuses an API key. Returns 409 when the person is already a super admin.",
         "requestBody": {
           "required": true,
           "content": {

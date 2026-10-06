@@ -26,7 +26,7 @@ const FIELDS = ["password"] as const;
 
 type Step =
   | { kind: "email"; already?: string }
-  | { kind: "confirm"; email: string; existing: boolean }
+  | { kind: "confirm"; email: string; outcome: "promote" | "invite" | "verify" }
   | { kind: "promoted"; email: string }
   | { kind: "invited"; email: string; link: string };
 
@@ -95,7 +95,7 @@ export function AddSuperAdminModal({
       setStep({
         kind: "confirm",
         email: wanted,
-        existing: data.outcome === "promote",
+        outcome: data.outcome,
       });
     } finally {
       if (session === sessionRef.current) setLoading(false);
@@ -226,17 +226,23 @@ export function AddSuperAdminModal({
           }}
         >
           <p className="text-sm text-text-primary">
-            {step.existing
+            {step.outcome === "promote"
               ? t(
                   "superAdmin.confirmExisting",
                   "{{email}} already has an account and gets access to every tenant, as a super admin, as soon as you confirm.",
                   { email: step.email },
                 )
-              : t(
-                  "superAdmin.confirmInvite",
-                  "{{email}} has no account yet. When you confirm, you get a single-use invitation link, valid for 24 hours, to send them.",
-                  { email: step.email },
-                )}
+              : step.outcome === "verify"
+                ? t(
+                    "superAdmin.confirmVerify",
+                    "{{email}} already has an account, but public sign-up is open and nothing proved that address belongs to whoever created it. When you confirm, you get a single-use link, valid for 24 hours, to send to the person; they accept it signed in to that account.",
+                    { email: step.email },
+                  )
+                : t(
+                    "superAdmin.confirmInvite",
+                    "{{email}} has no account yet. When you confirm, you get a single-use invitation link, valid for 24 hours, to send them.",
+                    { email: step.email },
+                  )}
           </p>
           {errorBox}
           <div>
@@ -283,7 +289,7 @@ export function AddSuperAdminModal({
               loading={loading}
               disabled={loading || !password}
             >
-              {step.existing
+              {step.outcome === "promote"
                 ? t("superAdmin.promoteNow", "Promote now")
                 : t("superAdmin.createInvite", "Create invitation")}
             </Button>

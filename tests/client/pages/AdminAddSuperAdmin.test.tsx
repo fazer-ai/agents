@@ -44,7 +44,7 @@ const { AdminUsersPage } = await import("@/client/pages/admin/AdminUsersPage");
 const realFetch = globalThis.fetch;
 let posts: unknown[] = [];
 let answer: { status: number; body: unknown } = { status: 200, body: {} };
-let listed: Array<{ email: string; role: string }> = [];
+let listed: Array<{ email: string; role: string; unproved?: boolean }> = [];
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -71,7 +71,9 @@ function installFetchStub() {
           ? "invite"
           : hit.role === "SUPER_ADMIN"
             ? "already"
-            : "promote",
+            : hit.unproved
+              ? "verify"
+              : "promote",
       });
     }
     if (path === "/api/admin/users") {
@@ -221,6 +223,19 @@ describe("adding a super admin from the users tab", () => {
     await dialog.findByText("Incorrect password");
     expect(
       dialog.queryAllByLabelText("Confirm with your password").length,
+    ).toBe(1);
+  });
+
+  test("an account nothing proved (open signup): the confirmation says a link is coming, not a promotion", async () => {
+    listed = [{ email: "maybe@acme.test", role: "AGENT", unproved: true }];
+    mount();
+    const dialog = await enterEmail("maybe@acme.test");
+    await dialog.findByText(/nothing proved that address belongs/);
+    expect(
+      dialog.queryAllByRole("button", { name: "Promote now" }).length,
+    ).toBe(0);
+    expect(
+      dialog.queryAllByRole("button", { name: "Create invitation" }).length,
     ).toBe(1);
   });
 });

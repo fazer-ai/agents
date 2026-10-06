@@ -21,6 +21,7 @@ import {
   listInvites,
   revokeInvite,
 } from "@/api/features/invitations/invitation.service";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { personData } from "@/tests/utils/person";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
@@ -675,5 +676,59 @@ describe.skipIf(!dbUp)("addSuperAdmin and the fleet invitation (DB)", () => {
       (await suDb.user.findUniqueOrThrow({ where: { id: person.id } }))
         .isSuperAdmin,
     ).toBe(true);
+  });
+
+  test("with public signup open, a password account is not promoted on its email: it gets the invitation", async () => {
+    const { hashPassword } = await import("@/api/features/auth/auth.service");
+    const person = await suDb.user.create({
+      data: {
+        email: mail("signed-up"),
+        passwordHash: await hashPassword("squatter pass"),
+        memberships: { create: { tenantId: tenantA, role: "AGENT" } },
+      },
+    });
+    const google = await suDb.user.create({
+      data: {
+        email: mail("google-proved"),
+        googleId: `g-${pid}`,
+        memberships: { create: { tenantId: tenantA, role: "AGENT" } },
+      },
+    });
+    const wasOpen = config.signupEnabled;
+    config.signupEnabled = true;
+    try {
+      expect(await previewSuperAdmin(fleet, mail("signed-up"), appDb)).toBe(
+        "verify",
+      );
+      const result = await addSuperAdmin(fleet, mail("signed-up"), appDb);
+      expect(result.kind).toBe("invited");
+      expect(
+        (await suDb.user.findUniqueOrThrow({ where: { id: person.id } }))
+          .isSuperAdmin,
+      ).toBe(false);
+      expect(await previewSuperAdmin(fleet, mail("google-proved"), appDb)).toBe(
+        "promote",
+      );
+      expect(
+        (await addSuperAdmin(fleet, mail("google-proved"), appDb)).kind,
+      ).toBe("promoted");
+      expect(
+        (await suDb.user.findUniqueOrThrow({ where: { id: google.id } }))
+          .isSuperAdmin,
+      ).toBe(true);
+      await expect(
+        addSuperAdmin(fleet, mail("google-proved"), appDb),
+      ).rejects.toBeInstanceOf(AlreadySuperAdminError);
+    } finally {
+      config.signupEnabled = wasOpen;
+    }
+    config.signupEnabled = false;
+    try {
+      expect(await previewSuperAdmin(fleet, mail("signed-up"), appDb)).toBe(
+        "promote",
+      );
+    } finally {
+      config.signupEnabled = wasOpen;
+    }
   });
 });

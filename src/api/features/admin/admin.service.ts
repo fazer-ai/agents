@@ -10,6 +10,7 @@ import {
   FleetInviteForbiddenError,
 } from "@/api/features/invitations/invitation.service";
 import prisma from "@/api/lib/prisma";
+import config from "@/config";
 import { emailEquals } from "@/lib/email-match";
 import { badQueryParam } from "@/lib/query-param";
 import {
@@ -746,9 +747,10 @@ export async function addSuperAdmin(
   const email = rawEmail.trim();
   const account = await base.user.findFirst({
     where: { email: emailEquals(email) },
-    select: { id: true },
+    select: { id: true, isSuperAdmin: true, googleId: true },
   });
-  if (!account) {
+  if (account?.isSuperAdmin) throw new AlreadySuperAdminError();
+  if (!account || !ownsItsEmail(account)) {
     return {
       kind: "invited",
       invite: await createFleetInvite(ctx, email, base),
@@ -779,7 +781,15 @@ export async function addSuperAdmin(
   return { kind: "promoted", user };
 }
 
-export type SuperAdminPreview = "promote" | "invite" | "already";
+// With public signup open, `/signup` creates a password account for any address without proving it
+// is the signer's, so such an account is not promoted on its email alone: it gets the invitation,
+// which only its owner, signed in to it, can accept. A Google identity proved the address
+// (`email_verified`); with signup closed, every account was made by an operator or an invitation.
+function ownsItsEmail(account: { googleId: string | null }): boolean {
+  return !config.signupEnabled || account.googleId !== null;
+}
+
+export type SuperAdminPreview = "promote" | "invite" | "verify" | "already";
 
 // What `addSuperAdmin` would do for this email right now, by exact (case-insensitive) match, so the
 // confirmation can say it before the password is asked for. Only a preview: the write decides again.
@@ -791,8 +801,9 @@ export async function previewSuperAdmin(
   if (ctx.role !== "SUPER_ADMIN") throw new FleetInviteForbiddenError();
   const account = await base.user.findFirst({
     where: { email: emailEquals(rawEmail.trim()) },
-    select: { isSuperAdmin: true },
+    select: { isSuperAdmin: true, googleId: true },
   });
   if (!account) return "invite";
-  return account.isSuperAdmin ? "already" : "promote";
+  if (account.isSuperAdmin) return "already";
+  return ownsItsEmail(account) ? "promote" : "verify";
 }

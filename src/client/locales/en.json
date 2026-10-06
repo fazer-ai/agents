@@ -2745,6 +2745,7 @@
     "confirmExisting": "{{email}} already has an account and gets access to every tenant, as a super admin, as soon as you confirm.",
     "confirmInvite": "{{email}} has no account yet. When you confirm, you get a single-use invitation link, valid for 24 hours, to send them.",
     "confirmPassword": "Confirm with your password",
+    "confirmVerify": "{{email}} already has an account, but public sign-up is open and nothing proved that address belongs to whoever created it. When you confirm, you get a single-use link, valid for 24 hours, to send to the person; they accept it signed in to that account.",
     "createInvite": "Create invitation",
     "email": "Email of the person",
     "failed": "Could not add the super admin",

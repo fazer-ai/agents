@@ -377,13 +377,13 @@ export const adminController = new Elysia({
       }),
       detail: doc(
         "Preview adding a super admin",
-        "Say what adding this email as a super admin would do right now: `promote` (an account exists), `invite` (no account; a fleet invitation would be minted) or `already` (the person is already a super admin). Exact, case-insensitive match. A preview only; the write decides again.",
+        "Say what adding this email as a super admin would do right now: `promote` (an account exists), `invite` (no account; a fleet invitation would be minted), `verify` (an account exists, but public signup is open and it has no Google identity, so it gets the invitation and must accept it signed in) or `already` (the person is already a super admin). Exact, case-insensitive match. A preview only; the write decides again.",
       ),
       response: errors(400, 401, 403, 422),
     },
   )
   // Make another person a SUPER_ADMIN, by email: an existing account is promoted at once, an email
-  // with no account gets a one-day fleet invitation link. A person grants it, never a key (a key
+  // with no account (or an account nothing proved, under open signup) gets a one-day fleet invitation link. A person grants it, never a key (a key
   // would leave nobody behind the grant), and confirms with their password.
   .post(
     "/super-admins",
@@ -441,7 +441,7 @@ export const adminController = new Elysia({
       }),
       detail: doc(
         "Add a super admin",
-        "Make a person a fleet super admin. An email that already has an account is promoted immediately and keeps its tenant memberships (`result: promoted`); an email with no account gets a single-use fleet invitation valid for 24 hours (`result: invited`, with the accept link). Requires a signed-in SUPER_ADMIN session and its password; refuses an API key. Returns 409 when the person is already a super admin.",
+        "Make a person a fleet super admin. An email that already has an account is promoted immediately and keeps its tenant memberships (`result: promoted`), unless public signup is open and the account has no Google identity, since then nothing proved the address is its owner's; that account, and an email with no account, get a single-use fleet invitation valid for 24 hours (`result: invited`, with the accept link). Requires a signed-in SUPER_ADMIN session and its password; refuses an API key. Returns 409 when the person is already a super admin.",
       ),
       response: errors(400, 401, 403, 409, 422),
     },

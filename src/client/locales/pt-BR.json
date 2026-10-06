@@ -2815,6 +2815,7 @@
     "confirmExisting": "{{email}} já tem conta e passa a acessar todos os tenants como super admin assim que você confirmar.",
     "confirmInvite": "{{email}} ainda não tem conta. Ao confirmar, você recebe um link de convite de uso único, válido por 24 horas, para enviar a essa pessoa.",
     "confirmPassword": "Confirme com a sua senha",
+    "confirmVerify": "{{email}} já tem conta, mas o cadastro público está aberto e nada provou que o endereço é de quem criou a conta. Ao confirmar, você recebe um link de uso único, válido por 24 horas, para enviar à pessoa; ela aceita logada nessa conta.",
     "createInvite": "Gerar convite",
     "email": "E-mail da pessoa",
     "failed": "Não foi possível adicionar o super admin",

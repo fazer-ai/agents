@@ -7,22 +7,49 @@
 
 const KEY = "@app:active-tenant";
 
+// Every API call reads this, so storage the browser refuses (site data blocked, where touching
+// `sessionStorage` throws) degrades to "nothing selected" instead of failing the request.
 function tabStore(): Storage | null {
-  return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 function sharedStore(): Storage | null {
-  return typeof localStorage === "undefined" ? null : localStorage;
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function read(store: Storage | null): string | null {
+  try {
+    return store?.getItem(KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function write(store: Storage | null, id: string | null): void {
+  try {
+    if (id) store?.setItem(KEY, id);
+    else store?.removeItem(KEY);
+  } catch {
+    // storage refused → the selection lives as long as this read
+  }
 }
 
 export function getActiveTenantId(): string | null {
   const tab = tabStore();
-  const own = tab?.getItem(KEY) ?? null;
+  const own = read(tab);
   if (own !== null) return own;
   // A tab that has not chosen starts from the last choice and KEEPS it: pinned to the tab on first
   // read, so a later choice in another tab does not move this one.
-  const inherited = sharedStore()?.getItem(KEY) ?? null;
-  if (inherited !== null) tab?.setItem(KEY, inherited);
+  const inherited = read(sharedStore());
+  if (inherited !== null) write(tab, inherited);
   return inherited;
 }
 
@@ -32,7 +59,7 @@ export function getActiveTenantId(): string | null {
 // next request to another tenant under a page built for the first one.
 export function pinTabTenantId(id: string): void {
   const tab = tabStore();
-  if (tab && tab.getItem(KEY) === null) tab.setItem(KEY, id);
+  if (read(tab) === null) write(tab, id);
 }
 
 // What the tab does with the tenant a fresh session reports, a function rather than inline in the
@@ -55,11 +82,7 @@ export function adoptSessionTenant(
 }
 
 export function setActiveTenantId(id: string | null): void {
-  for (const store of [tabStore(), sharedStore()]) {
-    if (!store) continue;
-    if (id) store.setItem(KEY, id);
-    else store.removeItem(KEY);
-  }
+  for (const store of [tabStore(), sharedStore()]) write(store, id);
 }
 
 // The set of selectable tenants changed (a tenant was created). Components that cache the list

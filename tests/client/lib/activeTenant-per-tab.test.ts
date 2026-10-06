@@ -86,3 +86,70 @@ describe("the selected tenant is the tab's", () => {
     expect(getActiveTenantId()).toBe("5");
   });
 });
+
+// Every API call reads the selection for its X-Tenant-Id header, so a browser that refuses storage
+// (site data blocked) must get "nothing selected", not a request that throws before it is sent.
+describe("storage the browser refuses", () => {
+  const blocked = () => {
+    throw new DOMException("blocked", "SecurityError");
+  };
+
+  function withStores(
+    session: PropertyDescriptor,
+    local: PropertyDescriptor,
+    run: () => void,
+  ) {
+    const s = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+    const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      ...session,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      ...local,
+    });
+    try {
+      run();
+    } finally {
+      if (s) Object.defineProperty(globalThis, "sessionStorage", s);
+      if (l) Object.defineProperty(globalThis, "localStorage", l);
+    }
+  }
+
+  test("touching the store throws: reads say nothing is selected, writes are dropped", () => {
+    withStores({ get: blocked }, { get: blocked }, () => {
+      expect(getActiveTenantId()).toBeNull();
+      expect(() => setActiveTenantId("7")).not.toThrow();
+      expect(() => pinTabTenantId("7")).not.toThrow();
+      expect(dropRejectedSelection("7")).toBe(true);
+    });
+  });
+
+  test("the store's methods throw: the same", () => {
+    const refusing = {
+      getItem: blocked,
+      setItem: blocked,
+      removeItem: blocked,
+    } as unknown as Storage;
+    withStores({ value: refusing }, { value: refusing }, () => {
+      expect(getActiveTenantId()).toBeNull();
+      expect(() => setActiveTenantId("7")).not.toThrow();
+      expect(() => setActiveTenantId(null)).not.toThrow();
+      expect(() => pinTabTenantId("7")).not.toThrow();
+    });
+  });
+
+  test("a shared default that cannot be pinned to the tab is still the answer", () => {
+    const refusingWrites = {
+      getItem: () => null,
+      setItem: blocked,
+      removeItem: blocked,
+    } as unknown as Storage;
+    localStorage.setItem(KEY, "3");
+    const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    withStores({ value: refusingWrites }, l ?? {}, () => {
+      expect(getActiveTenantId()).toBe("3");
+    });
+  });
+});

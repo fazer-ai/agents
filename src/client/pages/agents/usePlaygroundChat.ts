@@ -329,6 +329,44 @@ export function agentTurn(
   };
 }
 
+// Opening an agent's screen starts a new session; a reload of a tab that had a saved session open
+// brings that one back. A reload fires `pagehide` and in-app navigation never does, so the marker
+// it writes (per tab) is only there for the mount that follows a reload. docs/playground.md.
+export const PLAYGROUND_RESUME_KEY = "@app:playground-resume";
+
+function writeResumeMarker(agentId: string, threadId: string): void {
+  try {
+    sessionStorage.setItem(
+      PLAYGROUND_RESUME_KEY,
+      JSON.stringify({ agentId, threadId }),
+    );
+  } catch {
+    // storage unavailable → the reload opens a new session
+  }
+}
+
+function dropResumeMarker(): void {
+  try {
+    sessionStorage.removeItem(PLAYGROUND_RESUME_KEY);
+  } catch {
+    // storage unavailable → there is no marker to drop
+  }
+}
+
+// Reads and removes the marker, returning the thread only when it was left by this agent.
+function takeResumeMarker(agentId: string): string | undefined {
+  try {
+    const raw = sessionStorage.getItem(PLAYGROUND_RESUME_KEY);
+    sessionStorage.removeItem(PLAYGROUND_RESUME_KEY);
+    const m = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    return m?.agentId === agentId && typeof m.threadId === "string"
+      ? m.threadId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // All playground chat state + actions for ONE agent, in a single hook so the editor tab and the
 // floating popup can share the SAME conversation: lift this hook into the parent (AgentEditorPage)
 // and the state survives switching between them. `getDraft` (when provided) is read at send time so
@@ -608,8 +646,9 @@ export function usePlaygroundChat(
     [agentId, newSession],
   );
 
-  // On mount (per agent), load history and resume the most recent session so a tab switch / reload
-  // doesn't lose the conversation.
+  // On mount (per agent), load the history list, and reopen a session only when this mount follows
+  // a reload that had one open (PLAYGROUND_RESUME_KEY). The marker is taken after the list returns,
+  // so StrictMode's cancelled first run never spends it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once per agent mount
   useEffect(() => {
     let cancelled = false;
@@ -617,13 +656,32 @@ export function usePlaygroundChat(
       const { data } = await api.api.v1
         .agents({ id: agentId })
         .playground.sessions.get();
-      if (cancelled || !data) return;
+      if (cancelled) return;
+      const resume = takeResumeMarker(agentId);
+      if (!data) return;
       setSessions(data.sessions);
-      const latest = data.sessions[0];
-      if (latest && !cancelled) await loadSession(latest.threadId);
+      if (resume) await loadSession(resume);
     })();
     return () => {
       cancelled = true;
+    };
+  }, [agentId]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      const tid = threadId.current;
+      if (tid && sessionSaved.current) writeResumeMarker(agentId, tid);
+    };
+    // A page restored from the back-forward cache never remounts, so the marker its pagehide
+    // wrote would otherwise be taken by the next in-app visit to this agent.
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) dropResumeMarker();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
     };
   }, [agentId]);
 

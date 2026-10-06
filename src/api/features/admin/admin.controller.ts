@@ -30,6 +30,7 @@ import {
   getUsers,
   LastAdminError,
   listTenantsWithUserCounts,
+  previewSuperAdmin,
   TenantNotChangeableError,
   TenantNotFoundError,
   TenantRequiredError,
@@ -354,6 +355,31 @@ export const adminController = new Elysia({
         "Remove a user. A tenant administrator removes the user from their own tenant (the account is deleted only when it was the user's last tenant); the fleet deletes the account. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
+    },
+  )
+  // What "Add super admin" would do for an email, by exact match, so the confirmation step can say
+  // it before asking for the password.
+  .get(
+    "/super-admins/preview",
+    async ({ query, getAuthUser }) => {
+      const user = await getAuthUser();
+      if (!user) throw new UnauthorizedError();
+      return { outcome: await previewSuperAdmin(actorOf(user), query.email) };
+    },
+    {
+      requireRole: "SUPER_ADMIN",
+      query: t.Object({
+        email: t.String({
+          format: "email",
+          maxLength: 254,
+          description: "Email of the person to make a super admin.",
+        }),
+      }),
+      detail: doc(
+        "Preview adding a super admin",
+        "Say what adding this email as a super admin would do right now: `promote` (an account exists), `invite` (no account; a fleet invitation would be minted) or `already` (the person is already a super admin). Exact, case-insensitive match. A preview only; the write decides again.",
+      ),
+      response: errors(400, 401, 403, 422),
     },
   )
   // Make another person a SUPER_ADMIN, by email: an existing account is promoted at once, an email

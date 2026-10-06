@@ -5,6 +5,7 @@ import { Button } from "@/client/components/Button";
 import { Input } from "@/client/components/Input";
 import {
   Modal,
+  ModalCancelButton,
   type ModalController,
   useOnModalOpen,
 } from "@/client/components/Modal";
@@ -16,7 +17,9 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 // A fleet administrator makes another person one, in two steps so the password asked for is never
 // read as the other person's: first the email, then a confirmation that says what will happen
 // (promote an existing account now, or mint a one-day invitation link) and takes the ACTING admin's
-// password. The lookup between the steps is only a preview; the server decides on submit.
+// password. The lookup between the steps is only a preview; the server decides on submit. Every
+// response is dropped unless it belongs to the session that sent it, and closing is held while a
+// request is in flight, so a reopened dialog never receives the previous session's result.
 const labelCls = "mb-1 block font-medium text-sm text-text-primary";
 
 const FIELDS = ["password"] as const;
@@ -49,12 +52,15 @@ export function AddSuperAdminModal({
   const current = { email: email.trim(), password };
   const currentRef = useRef(current);
   currentRef.current = current;
+  const sessionRef = useRef(0);
 
   const isDirty =
     (step.kind === "email" || step.kind === "confirm") && email.trim() !== "";
 
   useOnModalOpen(modal, () => {
+    sessionRef.current += 1;
     refusal.clear();
+    setLoading(false);
     setStep({ kind: "email" });
     setEmail("");
     setPassword("");
@@ -62,16 +68,18 @@ export function AddSuperAdminModal({
     setError("");
   });
 
-  // The fleet's user list already answers whether the email has an account; an exact match only,
-  // since the search is a substring filter.
   const handleContinue = async () => {
     const wanted = email.trim().toLowerCase();
+    const session = sessionRef.current;
     setError("");
     setLoading(true);
     try {
-      const { data, error: apiError } = await api.api.admin.users.get({
-        query: { search: wanted },
+      const { data, error: apiError } = await api.api.admin[
+        "super-admins"
+      ].preview.get({
+        query: { email: wanted },
       });
+      if (session !== sessionRef.current) return;
       if (apiError || !data) {
         setError(
           apiErrorMessage(apiError) ||
@@ -79,20 +87,24 @@ export function AddSuperAdminModal({
         );
         return;
       }
-      const rows = data.users.filter((u) => u.email.toLowerCase() === wanted);
-      if (rows.some((u) => u.role === "SUPER_ADMIN")) {
+      if (data.outcome === "already") {
         setStep({ kind: "email", already: wanted });
         return;
       }
       setPassword("");
-      setStep({ kind: "confirm", email: wanted, existing: rows.length > 0 });
+      setStep({
+        kind: "confirm",
+        email: wanted,
+        existing: data.outcome === "promote",
+      });
     } finally {
-      setLoading(false);
+      if (session === sessionRef.current) setLoading(false);
     }
   };
 
   // The email the confirmation NAMED, not the raw field: the step shows the normalized one.
   const handleConfirm = async (confirmed: string) => {
+    const session = sessionRef.current;
     setError("");
     setLoading(true);
     const body = { email: confirmed, password };
@@ -106,6 +118,7 @@ export function AddSuperAdminModal({
     try {
       const { data, error: apiError } =
         await api.api.admin["super-admins"].post(body);
+      if (session !== sessionRef.current) return;
       if (apiError) {
         setError(held(apiError));
         return;
@@ -123,9 +136,9 @@ export function AddSuperAdminModal({
         onDone();
       }
     } catch (e) {
-      setError(held(e));
+      if (session === sessionRef.current) setError(held(e));
     } finally {
-      setLoading(false);
+      if (session === sessionRef.current) setLoading(false);
     }
   };
 
@@ -150,7 +163,8 @@ export function AddSuperAdminModal({
       modal={modal}
       title={t("superAdmin.title", "Add super admin")}
       size="md"
-      unsavedChanges={isDirty}
+      unsavedChanges={isDirty && !loading}
+      onCloseRequest={loading ? () => {} : undefined}
     >
       {step.kind === "email" && (
         <form
@@ -191,14 +205,7 @@ export function AddSuperAdminModal({
             />
           </div>
           <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={modal.close}
-              disabled={loading}
-            >
-              {t("common.cancel", "Cancel")}
-            </Button>
+            <ModalCancelButton disabled={loading} />
             <Button
               type="submit"
               loading={loading}

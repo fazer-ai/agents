@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components/Button";
 import {
   Modal,
+  ModalCancelButton,
   type ModalController,
   useOnModalOpen,
 } from "@/client/components/Modal";
@@ -45,8 +46,10 @@ export function DemoteFleetAdminModal({
   const tenantName = new Map(tenants.map((tn) => [tn.id, tn.name]));
 
   const memberships = target?.memberships ?? [];
+  const sessionRef = useRef(0);
 
   useOnModalOpen(modal, () => {
+    sessionRef.current += 1;
     setTenantId("");
     setRole("AGENT");
     setError("");
@@ -57,6 +60,7 @@ export function DemoteFleetAdminModal({
 
   const handleSubmit = async () => {
     if (!target || (needsTenant && !tenantId)) return;
+    const session = sessionRef.current;
     setError("");
     setLoading(true);
     try {
@@ -67,6 +71,7 @@ export function DemoteFleetAdminModal({
             ? { role, tenantId, demoteFleet: true }
             : { role: "AGENT", demoteFleet: true },
         );
+      if (session !== sessionRef.current) return;
       if (apiError) {
         setError(
           apiErrorMessage(apiError) ||
@@ -77,7 +82,7 @@ export function DemoteFleetAdminModal({
       onDemoted();
       modal.close();
     } finally {
-      setLoading(false);
+      if (session === sessionRef.current) setLoading(false);
     }
   };
 
@@ -86,6 +91,7 @@ export function DemoteFleetAdminModal({
       modal={modal}
       title={t("admin.removeSuperAdmin", "Remove super admin")}
       size="md"
+      onCloseRequest={loading ? () => {} : undefined}
     >
       <form
         className="space-y-4"
@@ -170,14 +176,7 @@ export function DemoteFleetAdminModal({
           </>
         )}
         <div className="flex justify-end gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={modal.close}
-            disabled={loading}
-          >
-            {t("common.cancel", "Cancel")}
-          </Button>
+          <ModalCancelButton disabled={loading} />
           <Button
             type="submit"
             variant="danger"

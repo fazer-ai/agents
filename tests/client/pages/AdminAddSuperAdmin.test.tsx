@@ -63,19 +63,19 @@ function installFetchStub() {
       posts.push(init?.body ? JSON.parse(String(init.body)) : {});
       return json(answer.body, answer.status);
     }
+    if (path === "/api/admin/super-admins/preview") {
+      const q = (url.searchParams.get("email") ?? "").toLowerCase();
+      const hit = listed.find((u) => u.email === q);
+      return json({
+        outcome: !hit
+          ? "invite"
+          : hit.role === "SUPER_ADMIN"
+            ? "already"
+            : "promote",
+      });
+    }
     if (path === "/api/admin/users") {
-      const q = (url.searchParams.get("search") ?? "").toLowerCase();
-      const users = listed
-        .filter((u) => u.email.includes(q))
-        .map((u, i) => ({
-          id: String(i + 10),
-          name: null,
-          tenantId: u.role === "SUPER_ADMIN" ? null : "1",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          lastLoginAt: null,
-          ...u,
-        }));
-      return json({ users, total: users.length, page: 1, totalPages: 1 });
+      return json({ users: [], total: 0, page: 1, totalPages: 1 });
     }
     if (path === "/api/admin/tenants") return json({ tenants: [] });
     if (path === "/api/admin/stats") {

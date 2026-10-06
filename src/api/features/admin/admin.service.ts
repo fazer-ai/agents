@@ -6,6 +6,7 @@ import {
 import {
   type CreatedInvite,
   createFleetInvite,
+  dropFleetInvites,
   FleetInviteForbiddenError,
 } from "@/api/features/invitations/invitation.service";
 import prisma from "@/api/lib/prisma";
@@ -577,6 +578,7 @@ export async function updateUserRole(
         where: { id: userId },
         data: { isSuperAdmin: false },
       });
+      await dropFleetInvites(db, before.email);
       await db.tenantUser.upsert({
         where: { tenantId_userId: { tenantId: joining, userId } },
         create: { tenantId: joining, userId, role },
@@ -618,6 +620,7 @@ async function removeFleetGrant(
     where: { id: userId },
     data: { isSuperAdmin: false },
   });
+  await dropFleetInvites(db, before.email);
   const after = await memberRow(db, first.tenantId, userId);
   if (!after) throw new ScopeMovedError();
   await auditMutationOn(db, ctx, null, {
@@ -763,6 +766,7 @@ export async function addSuperAdmin(
       where: { id: account.id },
       data: { isSuperAdmin: true },
     });
+    await dropFleetInvites(db, person.email);
     const { isSuperAdmin: _, ...rest } = person;
     const row: UserRow = { ...rest, tenantId: null, role: "SUPER_ADMIN" };
     await auditMutationOn(db, ctx, null, {
@@ -773,4 +777,22 @@ export async function addSuperAdmin(
     return row;
   });
   return { kind: "promoted", user };
+}
+
+export type SuperAdminPreview = "promote" | "invite" | "already";
+
+// What `addSuperAdmin` would do for this email right now, by exact (case-insensitive) match, so the
+// confirmation can say it before the password is asked for. Only a preview: the write decides again.
+export async function previewSuperAdmin(
+  ctx: TenantContext,
+  rawEmail: string,
+  base: PrismaClient = prisma,
+): Promise<SuperAdminPreview> {
+  if (ctx.role !== "SUPER_ADMIN") throw new FleetInviteForbiddenError();
+  const account = await base.user.findFirst({
+    where: { email: emailEquals(rawEmail.trim()) },
+    select: { isSuperAdmin: true },
+  });
+  if (!account) return "invite";
+  return account.isSuperAdmin ? "already" : "promote";
 }

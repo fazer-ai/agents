@@ -5,6 +5,7 @@ import {
   AlreadySuperAdminError,
   addSuperAdmin,
   getUsers,
+  previewSuperAdmin,
   updateUserRole,
 } from "@/api/features/admin/admin.service";
 import { verifyPassword } from "@/api/features/auth/auth.service";
@@ -517,5 +518,104 @@ describe.skipIf(!dbUp)("addSuperAdmin and the fleet invitation (DB)", () => {
     expect(tenantView.users.map((u) => [u.tenantId, u.role])).toEqual([
       [tenantB, "AGENT"],
     ]);
+  });
+
+  test("the preview answers by exact email, and only to a SUPER_ADMIN", async () => {
+    await suDb.user.create({
+      data: personData({
+        passwordHash: "unused",
+        email: mail("pv-member"),
+        role: "AGENT",
+        tenantId: tenantA,
+      }),
+    });
+    await suDb.user.create({
+      data: personData({
+        passwordHash: "unused",
+        email: mail("pv-fleet"),
+        role: "SUPER_ADMIN",
+      }),
+    });
+    expect(await previewSuperAdmin(fleet, mail("PV-member"), appDb)).toBe(
+      "promote",
+    );
+    expect(await previewSuperAdmin(fleet, mail("pv-fleet"), appDb)).toBe(
+      "already",
+    );
+    expect(await previewSuperAdmin(fleet, mail("pv-mem"), appDb)).toBe(
+      "invite",
+    );
+    await expect(
+      previewSuperAdmin(tenantAdmin, mail("pv-member"), appDb),
+    ).rejects.toBeInstanceOf(FleetInviteForbiddenError);
+  });
+
+  test("promoting an account drops the fleet invitation still pending for its email", async () => {
+    const issued = await addSuperAdmin(fleet, mail("stale-link"), appDb);
+    if (issued.kind !== "invited") throw new Error("expected an invitation");
+    await suDb.user.create({
+      data: personData({
+        passwordHash: "unused",
+        email: mail("stale-link"),
+        role: "AGENT",
+        tenantId: tenantA,
+      }),
+    });
+    const promoted = await addSuperAdmin(fleet, mail("stale-link"), appDb);
+    expect(promoted.kind).toBe("promoted");
+    expect(await findValidInviteByToken(issued.invite.token, appDb)).toBeNull();
+    expect(
+      await suDb.invitation.count({ where: { email: mail("stale-link") } }),
+    ).toBe(0);
+  });
+
+  test("removing the fleet grant drops a fleet invitation pending for that email", async () => {
+    const issued = await addSuperAdmin(fleet, mail("demoted-link"), appDb);
+    if (issued.kind !== "invited") throw new Error("expected an invitation");
+    const person = await suDb.user.create({
+      data: {
+        email: mail("demoted-link"),
+        passwordHash: "unused",
+        isSuperAdmin: true,
+        memberships: { create: { tenantId: tenantA, role: "AGENT" } },
+      },
+    });
+    await updateUserRole(
+      fleet,
+      person.id,
+      { role: "AGENT", demoteFleet: true },
+      appDb,
+    );
+    expect(await findValidInviteByToken(issued.invite.token, appDb)).toBeNull();
+  });
+
+  test("demoting a membership-less super admin into a tenant drops a fleet invitation pending for them", async () => {
+    const issued = await addSuperAdmin(fleet, mail("joined-link"), appDb);
+    if (issued.kind !== "invited") throw new Error("expected an invitation");
+    const person = await suDb.user.create({
+      data: personData({
+        passwordHash: "unused",
+        email: mail("joined-link"),
+        role: "SUPER_ADMIN",
+      }),
+    });
+    await updateUserRole(
+      fleet,
+      person.id,
+      { role: "TENANT_ADMIN", tenantId: tenantB, demoteFleet: true },
+      appDb,
+    );
+    expect(await findValidInviteByToken(issued.invite.token, appDb)).toBeNull();
+  });
+
+  test("two simultaneous fleet invitations for one new email: both answer, one row is left", async () => {
+    const results = await Promise.allSettled([
+      createFleetInvite(fleet, mail("racing-issue"), appDb),
+      createFleetInvite(fleet, mail("racing-issue"), appDb),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(
+      await suDb.invitation.count({ where: { email: mail("racing-issue") } }),
+    ).toBe(1);
   });
 });

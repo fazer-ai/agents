@@ -12,6 +12,7 @@ import { emailEquals } from "@/lib/email-match";
 import {
   asPrincipalOn,
   asSuperAdminOn,
+  type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
@@ -229,6 +230,9 @@ export async function createFleetInvite(
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + FLEET_INVITE_TTL_MS);
   const row = await asPrincipalOn(base, ctx, async (db) => {
+    // NOTE: per-email lock, since two rotations would otherwise both delete before either inserts,
+    // and the second insert would hit `invitations_fleet_email_key`.
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`fleet-invite:${email}`})::bigint)`;
     await db.invitation.deleteMany({ where: { tenantId: null, email } });
     const created = await db.invitation.create({
       data: {
@@ -255,6 +259,18 @@ export async function createFleetInvite(
     return created;
   });
   return { id: row.id, email: row.email, role: row.role, token, expiresAt };
+}
+
+// A fleet invitation must not outlive the person reaching or leaving the fleet by another route: one
+// left pending would let them take the fleet role back with their own credentials after a demotion.
+// Called inside the write that changes `is_super_admin`.
+export async function dropFleetInvites(
+  db: Pick<ScopedDb, "invitation">,
+  email: string,
+): Promise<void> {
+  await db.invitation.deleteMany({
+    where: { tenantId: null, email: email.trim().toLowerCase() },
+  });
 }
 
 export interface InviteListItem {

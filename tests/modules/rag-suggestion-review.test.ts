@@ -259,6 +259,7 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
       ["Desconto de 10% no boleto.", "Desconto de 10 no boleto."],
       ["O frete custa 1,5 real.", "O frete custa 1 5 real."],
       ["Mantenha a 10 °C.", "Mantenha a 10 C."],
+      ["A taxa é 10 %.", "A taxa é 10 ‰."],
     ];
     for (const [x, y] of pairs) {
       const a = await propose(kb, x as string);
@@ -671,6 +672,59 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       }),
     ).toBe("updated");
     expect(await vectorOf()).toBeNull();
+  });
+
+  test("a blank title does not strand a replacement approval", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Enviamos em 5 dias.", 16);
+    const a = await createSuggestion({
+      ctx: ctxOf(tenantId),
+      knowledgeBaseId: kb,
+      proposedContent: "Enviamos em 2 dias.",
+      proposedTitle: "   ",
+      threadId: `${tenantId}:7:${++seq}`,
+      agentId,
+      base: appDb,
+    });
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(16));
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toMatchObject({ outcome: "approved", replacedDocumentId: String(doc) });
+    const stored = await suDb.knowledgeDocument.findUniqueOrThrow({
+      where: { id: doc },
+    });
+    expect(stored.content).toBe("Enviamos em 2 dias.");
+    expect(stored.title).toBe("Doc 16");
+  });
+
+  test("a proposal whose review job is gone is released when the queue is opened", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Atendemos em libras.");
+    const listedIds = async () =>
+      (await listApprovals(ctxOf(tenantId), "pending", appDb)).map((l) => l.id);
+    expect(await listedIds()).not.toContain(String(a.id));
+    expect((await item(a.id)).status).toBe("SCREENING");
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, kind: "SUGGESTION_REVIEW", dedupeKey: String(a.id) },
+      data: { status: "DEAD" },
+    });
+    expect(await listedIds()).toContain(String(a.id));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
   });
 
   test("only a discarded proposal can be requeued", async () => {

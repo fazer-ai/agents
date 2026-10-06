@@ -4,7 +4,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { upsertJobRow } from "@/modules/scheduler/service";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -251,7 +251,7 @@ export interface SuggestParams {
 
 // The proposal as the key compares it: case, whitespace and ordinary punctuation carry no claim, so
 // "Prazo: 7 dias." and "prazo 7 dias" are one entry. What can change a number stays: a sign before a
-// digit, a separator between digits, a percent after one, and every symbol (°, $, ±, <), so "-10 °C"
+// digit, a separator between digits, a percent or per-mille sign, and every symbol (°, $, ±, <), so "-10 °C"
 // and "+10 °C" are two entries. Letters keep their accents.
 export function normalizedSuggestionHash(content: string): string {
   // Code points, not UTF-16 units: an emoji is a symbol only as a whole, and its surrogate halves
@@ -268,7 +268,7 @@ export function normalizedSuggestionHash(content: string): string {
       /[\p{L}\p{N}\p{S}]/u.test(ch) ||
       (/[-\u2212]/u.test(ch) && isDigit(next)) ||
       (/[.,]/.test(ch) && isDigit(prev) && isDigit(next)) ||
-      (/[%\u2030]/u.test(ch) && isDigit(prev));
+      /[%\u2030]/u.test(ch);
     folded += keep ? ch : " ";
   }
   folded = folded.replace(/\s+/g, " ").trim();
@@ -411,12 +411,30 @@ export type ReviewerMatch =
   | null;
 
 // "pending" is what a person decides on (PENDING, EDITED); "discarded" is what the reviewer held back.
+// A proposal in SCREENING whose review job is no longer waiting or running will never be moved by
+// it: the worker died after the job went DEAD, the dead-letter release failed, or the row is gone.
+// Released here, unreviewed and with no comment, the same as the dead letter would have, so it is
+// never invisible for longer than it takes someone to open the queue.
+async function releaseStrandedScreening(db: ScopedDb): Promise<void> {
+  await db.$executeRaw`
+    UPDATE approval_queue_items a
+       SET status = 'PENDING', updated_at = now()
+     WHERE a.status = 'SCREENING'
+       AND NOT EXISTS (
+         SELECT 1 FROM scheduler_jobs j
+          WHERE j.tenant_id = a.tenant_id
+            AND j.kind = 'SUGGESTION_REVIEW'
+            AND j.dedupe_key = a.id::text
+            AND j.status IN ('PENDING', 'CLAIMED'))`;
+}
+
 export async function listApprovals(
   ctx: TenantContext,
   view: "pending" | "discarded",
   base: PrismaClient = basePrisma,
 ) {
   return runScopedOn(base, ctx, async (db) => {
+    if (view === "pending") await releaseStrandedScreening(db);
     const items = await db.approvalQueueItem.findMany({
       where: {
         status:
@@ -880,7 +898,9 @@ export async function approveApprovalItem(params: {
         ctx,
         replaceId,
         {
-          ...(claimed.proposedTitle ? { title: claimed.proposedTitle } : {}),
+          ...(claimed.proposedTitle?.trim()
+            ? { title: claimed.proposedTitle }
+            : {}),
           text: claimed.proposedContent,
         },
         base,
@@ -898,7 +918,7 @@ export async function approveApprovalItem(params: {
   doc ??= await createDocument({
     ctx,
     knowledgeBaseId: claimed.knowledgeBaseId,
-    title: claimed.proposedTitle ?? "Conteúdo aprovado",
+    title: claimed.proposedTitle?.trim() || "Conteúdo aprovado",
     text: claimed.proposedContent,
     sourceType: "approval",
     base,

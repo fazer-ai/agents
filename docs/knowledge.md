@@ -16,7 +16,7 @@ Code: `src/modules/rag/service.ts` (create, list, approve, reject, requeue), `sr
 
 ## The floor: a normalized hash, before any model
 
-`normalizedSuggestionHash` applies NFC and lowercases, turns ordinary punctuation into spaces, collapses whitespace, trims, and hashes. What can change a number is kept: a sign (`-`, `−`) before a digit, `.` or `,` between digits, `%` or `‰` after a digit, and every Unicode symbol (`°`, `$`, `±`, `<`), so "-10 °C" and "+10 °C" are two entries while "Prazo: 7 dias." and "prazo 7 dias" are one. Accents are kept: they change meaning in Portuguese. The unique key is `(tenant_id, knowledge_base_id, normalized_hash)`, across conversations and against an item in **any** status, so a text a person already rejected is not queued again, and a rewording that only changes punctuation or case lands on the existing row.
+`normalizedSuggestionHash` applies NFC and lowercases, turns ordinary punctuation into spaces, collapses whitespace, trims, and hashes. What can change a number is kept: a sign (`-`, `−`) before a digit, `.` or `,` between digits, `%` and `‰` anywhere, and every Unicode symbol (`°`, `$`, `±`, `<`), so "-10 °C" and "+10 °C" are two entries while "Prazo: 7 dias." and "prazo 7 dias" are one. Accents are kept: they change meaning in Portuguese. The unique key is `(tenant_id, knowledge_base_id, normalized_hash)`, across conversations and against an item in **any** status, so a text a person already rejected is not queued again, and a rewording that only changes punctuation or case lands on the existing row.
 
 A floor hit creates nothing and calls no model. The tool tells the model the entry is already with a human, so it stops proposing it. The insert is `createManyAndReturn` with `skipDuplicates` followed by a lookup on the key: catching `P2002` inside a scoped transaction would abort the transaction.
 
@@ -31,7 +31,7 @@ A proposal from an agent enters `SCREENING`, and a `SUGGESTION_REVIEW` job is ar
 
 `duplicate` goes to `DISCARDED` with the match recorded; `new` and `replace` go to `PENDING` with the reviewer's comment, and `replace` also records `replacesDocumentId`. A replace naming a synced document (one with an `externalId`) or a document outside the candidates is downgraded to `new`; a duplicate naming nothing valid is treated as a failure. Every move is an `updateMany` guarded on `status = SCREENING`, so a review that lands after a person acted changes nothing.
 
-**Every failure releases the item to `PENDING` with no comment**: no agent, unreadable agent config, override not runnable or missing its key, model or embedding error, unreadable verdict, spend ceiling over, and the job's dead letter. Losing a suggestion is worse than a person seeing a duplicate.
+**Every failure releases the item to `PENDING` with no comment**: no agent, unreadable agent config, override not runnable or missing its key, model or embedding error, unreadable verdict, spend ceiling over, and the job's dead letter. The dead letter is best effort, so opening the pending list also releases any `SCREENING` item whose review job is no longer `PENDING` or `CLAIMED` (dead, finished or deleted). Losing a suggestion is worse than a person seeing a duplicate.
 
 The prompt tells the model that a repeat of a rejected item is a duplicate only when it repeats what was refused, so a corrected fact after a "wrong number" rejection still reaches a person.
 

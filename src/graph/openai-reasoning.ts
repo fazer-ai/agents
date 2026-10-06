@@ -32,10 +32,9 @@ export interface OpenAITransportPlan {
   effort?: ReasoningEffort;
   // Effort to pin ONLY on the tool-bound model. Reserved for the case where nobody asked for an
   // effort and the provider's own default is what breaks: pinning it on the constructor would
-  // switch reasoning off on the calls that never carried tools and never failed. This is the one
-  // effort still spelled for completions, so the factory drops it when the adapter is not taking
-  // the request there — which is a fact about a built instance, not a policy, and so is decided in
-  // ./models rather than guessed here.
+  // switch reasoning off on the calls that never carried tools and never failed. The adapter may
+  // still send the call to /v1/responses on its own, so ./models writes it in the spelling of the
+  // endpoint the built instance picks, which is a fact about that instance and not a policy here.
   toolEffort?: ReasoningEffort;
 }
 

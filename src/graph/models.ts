@@ -90,20 +90,22 @@ function usesResponsesEndpoint(chat: ChatOpenAI, options: unknown): boolean {
 }
 
 // Builds an OpenAI-shaped client from the transport plan (see ./openai-reasoning for why the
-// endpoint, not the model family, decides).
+// endpoint, not the model family, decides). The plan can send a call to /v1/responses but cannot keep
+// one off it: @langchain/openai also routes there on its own, by model id and by call options. So
+// what the plan owes is written for whichever endpoint the call lands on: `store: false` on every
+// instance (it only reaches /v1/responses, which stores for 30 days by default where completions
+// stores nothing), and the tool-effort pin in that endpoint's spelling.
 function makeOpenAIChat(
   fields: OpenAIChatFields,
   plan: OpenAITransportPlan,
 ): ChatOpenAI {
   const withPlan: OpenAIChatFields = {
     ...fields,
+    // NOTE: this only sends `store: false`; it does not enable zero data retention on the account.
+    zdrEnabled: true,
     ...(plan.responses
       ? {
           useResponsesApi: true,
-          // NOTE: this only sends `store: false`; it does not enable zero data retention on the
-          // account. The Responses API stores for 30 days by default and Chat Completions stores
-          // nothing, so without it choosing an effort would change what OpenAI keeps.
-          zdrEnabled: true,
           // NOTE: efforts travel via `modelKwargs`, not the typed fields, because @langchain/openai
           // sends those only for ids it recognises by NAME, which drops a routed or fine-tuned
           // reasoning model's effort in silence. modelKwargs is always sent and the typed path
@@ -120,24 +122,26 @@ function makeOpenAIChat(
   const chat = new ChatOpenAI(withPlan);
   if (!plan.toolEffort) return chat;
   // `toolEffort` (only set when nobody chose an effort and the provider's default breaks
-  // function tools) is pinned on a SECOND instance's bindTools, so it reaches only tool-bound calls.
-  // The raw instance (the final answer when the tool budget runs out, the guardrail pass, TTS
-  // normalization, an agent with no grants) works at the provider default, so pinning "none" on
-  // the constructor would switch reasoning off where nothing required it.
-  const withEffort = new ChatOpenAI({
-    ...withPlan,
-    modelKwargs: {
-      ...withPlan?.modelKwargs,
-      reasoning_effort: plan.toolEffort,
-    },
-  });
+  // function tools) is pinned on the bindTools of two more instances, one per spelling, so it
+  // reaches only tool-bound calls. The raw instance (the final answer when the tool budget runs out,
+  // the guardrail pass, TTS normalization, an agent with no grants) works at the provider default,
+  // so pinning it on the constructor would switch reasoning off where nothing required it.
+  const pinned = (modelKwargs: Record<string, unknown>) =>
+    new ChatOpenAI({
+      ...withPlan,
+      modelKwargs: { ...withPlan?.modelKwargs, ...modelKwargs },
+    });
   type BindTools = typeof chat.bindTools;
-  const bindPinned = withEffort.bindTools.bind(withEffort) as BindTools;
-  const bindPlain = chat.bindTools.bind(chat) as BindTools;
+  const onCompletions = pinned({ reasoning_effort: plan.toolEffort });
+  const onResponses = pinned({ reasoning: { effort: plan.toolEffort } });
+  const bindCompletions = onCompletions.bindTools.bind(
+    onCompletions,
+  ) as BindTools;
+  const bindResponses = onResponses.bindTools.bind(onResponses) as BindTools;
   chat.bindTools = ((tools, kwargs) =>
     usesResponsesEndpoint(chat, { ...kwargs, tools })
-      ? bindPlain(tools, kwargs)
-      : bindPinned(tools, kwargs)) as BindTools;
+      ? bindResponses(tools, kwargs)
+      : bindCompletions(tools, kwargs)) as BindTools;
   return chat;
 }
 

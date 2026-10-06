@@ -283,10 +283,18 @@ async function matchStillHolds(
   }
   if (v.matchedItemId !== null) {
     const read = shown?.items.find((i) => i.itemId === v.matchedItemId);
-    const [now] = await db.$queryRaw<{ proposed_content: string }[]>`
-      SELECT proposed_content FROM approval_queue_items
+    const [now] = await db.$queryRaw<
+      { proposed_content: string; proposed_title: string | null }[]
+    >`
+      SELECT proposed_content, proposed_title FROM approval_queue_items
        WHERE id = ${v.matchedItemId} FOR UPDATE`;
-    if (!now || !read || now.proposed_content !== read.content) return false;
+    if (
+      !now ||
+      !read ||
+      now.proposed_content !== read.content ||
+      now.proposed_title !== read.title
+    )
+      return false;
   }
   return true;
 }
@@ -296,18 +304,24 @@ async function loadCandidates(
   item: ScreeningItem,
   vector: string,
   queryEmbedding: number[],
+  searchPassages: typeof searchChunks,
 ): Promise<{ documents: DocumentCandidate[]; items: ItemCandidate[] }> {
-  const chunks = await searchChunks(db, {
-    knowledgeBaseIds: [item.knowledgeBaseId],
-    queryEmbedding,
-    limit: CANDIDATES_PER_KIND * 3,
-  });
+  const search = () =>
+    searchPassages(db, {
+      knowledgeBaseIds: [item.knowledgeBaseId],
+      queryEmbedding,
+      limit: CANDIDATES_PER_KIND * 3,
+    });
   // Only a READY document's chunks are its current text: after an edit the old chunks stay
   // until ingestion succeeds, and a passage the document no longer says must not make a duplicate.
+  // The rows (status, revision) are read BEFORE the passages that are shown: a reindex finishing in
+  // between then leaves an older revision beside newer passages, which the discard re-check reads as
+  // a change and releases, never newer metadata vouching for older passages.
+  const probe = await search();
   const rowsById = new Map(
     (
       await db.knowledgeDocument.findMany({
-        where: { id: { in: [...new Set(chunks.map((c) => c.documentId))] } },
+        where: { id: { in: [...new Set(probe.map((c) => c.documentId))] } },
         select: {
           id: true,
           externalId: true,
@@ -319,6 +333,7 @@ async function loadCandidates(
       })
     ).map((d) => [d.id, d]),
   );
+  const chunks = await search();
   const byDoc = new Map<bigint, { title: string; parts: string[] }>();
   for (const c of chunks) {
     if (rowsById.get(c.documentId)?.status !== "READY") continue;
@@ -374,6 +389,8 @@ export interface ReviewDeps {
   // The proposal's embedding in its base's vector space. Defaults to the base's embedding model and
   // the tenant's embedding credential, the same pair the search uses.
   embedText?: EmbedSuggestionText;
+  // The passage search over the base, which the reviewer runs twice (see loadCandidates).
+  searchChunks?: typeof searchChunks;
 }
 
 function parsePayload(raw: Record<string, unknown>): bigint | null {
@@ -488,7 +505,13 @@ export async function runSuggestionReview(
     await db.$executeRaw`
       UPDATE approval_queue_items SET embedding = ${vector}::vector
        WHERE id = ${item.id}`;
-    return loadCandidates(db, item, vector, queryEmbedding);
+    return loadCandidates(
+      db,
+      item,
+      vector,
+      queryEmbedding,
+      deps.searchChunks ?? searchChunks,
+    );
   });
   if (candidates.documents.length === 0 && candidates.items.length === 0) {
     await applyVerdict(base, tenantId, item.id, {

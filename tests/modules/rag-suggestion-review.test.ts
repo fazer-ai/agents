@@ -22,6 +22,7 @@ import {
   replacementTargetGone,
   requeueDiscardedItem,
 } from "@/modules/rag/service";
+import { searchChunks } from "@/modules/rag/sql";
 import {
   releaseDeadReview,
   runSuggestionReview,
@@ -1023,6 +1024,74 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       reviewerComment: null,
     });
   }, 20000);
+
+  test("a reindex finishing between the probe and the read shows the new passages", async () => {
+    const kb = await newKb();
+    // Longer than a candidate shows whole, so the reviewer reads its passages.
+    const filler = " Demais regras da loja.".repeat(80);
+    const doc = await seedDocument(
+      kb,
+      `Expediente antigo das 9h às 18h.${filler}`,
+      27,
+    );
+    const a = await propose(kb, "Abrimos de manhã cedo.");
+    let calls = 0;
+    const search: typeof searchChunks = async (db, params) => {
+      calls += 1;
+      const hits = await searchChunks(db, params);
+      if (calls === 1) {
+        // The reindex lands right after the probe: new text, new chunk, new revision.
+        await suDb.knowledgeDocument.update({
+          where: { id: doc },
+          data: { content: `Expediente novo das 10h às 16h.${filler}` },
+        });
+        await suDb.$executeRawUnsafe(
+          `UPDATE knowledge_chunks SET content = $1 WHERE document_id = $2`,
+          `Expediente novo das 10h às 16h.${filler}`,
+          doc,
+        );
+      }
+      return hits;
+    };
+    const { model, seen } = scripted(
+      JSON.stringify({ verdict: "new", comment: "c" }),
+    );
+    await runSuggestionReview(jobFor(a.id), appDb, {
+      makeModel: () => model,
+      embedText: async () => axis(27),
+      searchChunks: search,
+    });
+    const shown = JSON.stringify(seen[0]?.map((m) => m.content));
+    expect(shown).toContain("Expediente novo");
+    expect(shown).not.toContain("Expediente antigo");
+  });
+
+  test("a retitled matched proposal is a changed match", async () => {
+    const kb = await newKb();
+    const b = await propose(kb, "Abrimos às 8h.");
+    await review(b.id, NEVER, axis(26));
+    const a = await propose(kb, "A loja abre às oito da manhã.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_item: `item:${b.id}`,
+      }),
+    );
+    const invoke = model.invoke.bind(model);
+    model.invoke = (async (...args: Parameters<typeof invoke>) => {
+      await suDb.approvalQueueItem.update({
+        where: { id: b.id },
+        data: { proposedTitle: "Horário da filial Centro" },
+      });
+      return invoke(...args);
+    }) as typeof invoke;
+    await review(a.id, model, axis(26));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  });
 
   test("a duplicate that names nothing it was shown is queued unreviewed", async () => {
     const kb = await newKb();

@@ -383,9 +383,18 @@ function sseFallbackUrls(url: string): string[] {
   return [url, u.toString()];
 }
 
-// The server's tool list, with draft-07 tuples (`items` as an array) rewritten to 2020-12
-// `prefixItems`: the adapter validates a call's arguments against the listed schema with the SDK's
-// 2020-12 validator, which refuses the draft-07 form before the server is reached.
+// A schema in the dialect the SDK validates it with. One that declares `$schema` is compiled by that
+// dialect's engine and kept as is. One that declares none is compiled as 2020-12, which refuses a
+// draft-07 tuple (`items` as an array), so those are rewritten to `prefixItems`.
+function forSdkValidator<T>(schema: T): T {
+  if (!schema || typeof schema !== "object" || "$schema" in schema)
+    return schema;
+  return normalizeTupleItems(schema) as T;
+}
+
+// The server's tool list with each input and output schema in that dialect: the adapter validates a
+// call's arguments against the input schema, and the SDK compiles the output schema inside
+// `callTool`, both before the server is reached.
 function withDraft2020Tuples(client: Client): void {
   const listTools = client.listTools.bind(client);
   client.listTools = (async (...args: Parameters<Client["listTools"]>) => {
@@ -394,7 +403,10 @@ function withDraft2020Tuples(client: Client): void {
       ...listed,
       tools: listed.tools.map((t) => ({
         ...t,
-        inputSchema: normalizeTupleItems(t.inputSchema) as typeof t.inputSchema,
+        inputSchema: forSdkValidator(t.inputSchema),
+        ...(t.outputSchema
+          ? { outputSchema: forSdkValidator(t.outputSchema) }
+          : {}),
       })),
     };
   }) as Client["listTools"];

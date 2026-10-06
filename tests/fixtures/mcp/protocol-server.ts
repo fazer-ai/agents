@@ -60,6 +60,35 @@ function server() {
         },
       },
       {
+        name: "pair07",
+        description: "Takes a tuple under a declared draft-07",
+        inputSchema: {
+          $schema: "http://json-schema.org/draft-07/schema#",
+          type: "object",
+          properties: {
+            pair: {
+              type: "array",
+              items: [{ type: "string" }, { type: "number" }],
+              additionalItems: false,
+            },
+          },
+        },
+      },
+      {
+        name: "point",
+        description: "Answers a tuple as structured output",
+        inputSchema: { type: "object", properties: {} },
+        outputSchema: {
+          type: "object",
+          properties: {
+            at: {
+              type: "array",
+              items: [{ type: "number" }, { type: "number" }],
+            },
+          },
+        },
+      },
+      {
         name: "price",
         description: "Price an item",
         inputSchema: PRICE_SCHEMA,
@@ -67,6 +96,12 @@ function server() {
     ],
   }));
   s.setRequestHandler(CallToolRequestSchema, async (req) => {
+    if (req.params.name === "point") {
+      return {
+        content: [{ type: "text", text: '{"at":[1,2]}' }],
+        structuredContent: { at: [1, 2] },
+      };
+    }
     if (req.params.name === "refuse") {
       return {
         isError: true,

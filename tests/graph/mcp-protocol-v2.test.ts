@@ -77,7 +77,7 @@ function sel(f: Fixture, over: Partial<McpSelection> = {}): McpSelection {
     credentialBaseUrl: null,
     credentialKind: null,
     credentialParamName: null,
-    enabledTools: ["echo", "refuse", "price", "pair"],
+    enabledTools: ["echo", "refuse", "price", "pair", "pair07", "point"],
     headers: {},
     ...over,
   };
@@ -125,6 +125,8 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
       expect(Object.keys(t).sort()).toEqual([
         "echo",
         "pair",
+        "pair07",
+        "point",
         "price",
         "refuse",
       ]);
@@ -221,9 +223,39 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     expect(found.tools.map((t) => t.name).sort()).toEqual([
       "echo",
       "pair",
+      "pair07",
+      "point",
       "price",
       "refuse",
     ]);
     expect(found.instructions).toBe("Fixture instructions.");
   });
+
+  // A schema that declares draft-07 is validated by the SDK's draft-07 engine, so its tuple stays as
+  // written: rewritten to `prefixItems`, `additionalItems: false` would refuse every element.
+  test.each([
+    ["without", {}],
+    ["with", DECLARED],
+  ])(
+    "a tuple under a declared draft-07 %s declared headers reaches the server",
+    async (_label, headers) => {
+      const t = await tools(sel(open, { headers }));
+      expect(textOf(await t.pair07?.invoke({ pair: ["a", 1] }))).toBe(
+        '{"pair":["a",1]}',
+      );
+    },
+  );
+
+  // The SDK compiles a tool's output schema inside `callTool`, before the request is sent, so a
+  // legacy tuple there would make the tool uncallable.
+  test.each([
+    ["without", {}],
+    ["with", DECLARED],
+  ])(
+    "a tool whose output schema holds a draft-07 tuple %s declared headers is callable",
+    async (_label, headers) => {
+      const t = await tools(sel(open, { headers }));
+      expect(textOf(await t.point?.invoke({}))).toBe('{"at":[1,2]}');
+    },
+  );
 });

@@ -210,6 +210,35 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     expect(await alerts(tenantA)).toHaveLength(1);
   });
 
+  // A call arriving while the failed line's claim is being released must not settle the key on the
+  // claim it is about to lose: the month would then pass with no warning ever landing.
+  test("a call during the release of a failed line's claim does not silence the retry", async () => {
+    const racing = appDb.$extends({
+      query: {
+        executionLog: {
+          async create() {
+            throw new Error("pool exhausted");
+          },
+        },
+        unpricedModelAnnouncement: {
+          async deleteMany({ args, query }) {
+            await announceUnpricedModel({
+              tenantId: tenantA,
+              model: "mystery-1",
+              source: "inbox",
+              base: appDb,
+            });
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await defaultUsagePersist(racing)(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
   test("a new month announces the model again", async () => {
     for (const iso of ["2026-08-20T00:00:00Z", "2026-09-02T00:00:00Z"]) {
       await announceUnpricedModel({

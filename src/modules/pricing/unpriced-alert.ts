@@ -75,7 +75,8 @@ export async function announceUnpricedModel(params: {
     },
   );
   if (delivered) return;
-  settled.delete(key);
+  // The key stays settled until the claim is gone: a call in between would find the claim, settle
+  // the key on it and keep it settled after the release.
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.unpricedModelAnnouncement.deleteMany({ where: claim }),
   ).catch((err) =>
@@ -84,6 +85,7 @@ export async function announceUnpricedModel(params: {
       "unpriced model: could not release the claim of a line that did not land",
     ),
   );
+  settled.delete(key);
 }
 
 // Tests only: the set is process state, and a suite that reuses a model name across tenants or

@@ -2140,37 +2140,24 @@ model PromptVariantAssignment {
 
 // NOTE: captured at the source (LangChain callback / model wrapper), not mirrored from
 // Langfuse. Substrate for the per-agent/per-conversation cost dashboard.
-// The month's cost per tenant and source, as the Langfuse poll last saw it (issue #426). The spend
-// ceiling's gate reads THIS row, never Langfuse: `polledAt` is the last successful poll, the
-// `pollError` pair the last failure, and a failure never overwrites the figure. `tracedCalls`,
-// `costedCalls` and `unpricedModels` reconcile the figure against the local ledger, because Langfuse
-// prices a model it does not know at zero and a ceiling that undercounts has to say so.
+// The month's cost per tenant and source, as the poll last summed it from `llm_usage` (issues #426,
+// #1060). The spend ceiling's gate reads THIS row, never the ledger: `polledAt` is the last
+// successful poll, the `pollError` pair the last failure, and a failure never overwrites the figure.
 model SpendCostSnapshot {
-  id                    BigInt    @id @default(autoincrement())
-  tenantId              BigInt    @map("tenant_id")
-  // "inbox" | "playground": the same split `LlmUsage.source` carries, told apart on the Langfuse
-  // side by the trace's environment (`environmentForSource`).
-  source                String
+  id               BigInt    @id @default(autoincrement())
+  tenantId         BigInt    @map("tenant_id")
+  // "inbox" | "playground": the same split `LlmUsage.source` carries.
+  source           String
   // The calendar month, UTC, as `monthStart` derives it.
-  monthStart            DateTime  @map("month_start")
-  costUsd               Decimal   @default(0) @map("cost_usd") @db.Decimal(14, 6)
-  tracedCalls           Int       @default(0) @map("traced_calls")
-  costedCalls           Int       @default(0) @map("costed_calls")
-  unpricedModels        Json      @default("[]") @map("unpriced_models")
-  // Which Langfuse project the series belongs to (`<apiBase>#<projectId>`), null until the first
-  // successful poll, and what was carried over from the previous project when the tenant switched
-  // mid-month: the figure is the carry plus the current project's own total (poll.ts).
-  projectKey            String?   @map("project_key")
-  carriedUsd            Decimal   @default(0) @map("carried_usd") @db.Decimal(14, 6)
-  carriedTracedCalls    Int       @default(0) @map("carried_traced_calls")
-  carriedCostedCalls    Int       @default(0) @map("carried_costed_calls")
-  carriedUnpricedModels Json      @default("[]") @map("carried_unpriced_models")
-  polledAt              DateTime? @map("polled_at")
-  pollError             String?   @map("poll_error")
-  pollFailedAt          DateTime? @map("poll_failed_at")
-  pollLastFailedAt      DateTime? @map("poll_last_failed_at")
-  createdAt             DateTime  @default(now()) @map("created_at")
-  updatedAt             DateTime  @updatedAt @map("updated_at")
+  monthStart       DateTime  @map("month_start")
+  // The month's priced `llm_usage.cost_usd` for this source, as of `polledAt` (poll.ts).
+  costUsd          Decimal   @default(0) @map("cost_usd") @db.Decimal(14, 6)
+  polledAt         DateTime? @map("polled_at")
+  pollError        String?   @map("poll_error")
+  pollFailedAt     DateTime? @map("poll_failed_at")
+  pollLastFailedAt DateTime? @map("poll_last_failed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

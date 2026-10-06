@@ -150,9 +150,9 @@ function FunnelBar({
   );
 }
 
-// CostDay is derived from the costs response. The chart accepts either local
-// timeseries points (for calls) or cost-days from Langfuse (for cost).
-type CostDay = NonNullable<Extract<Costs, { status: "ok" }>["days"][number]>;
+// CostDay is derived from the costs response: the ledger's cost per local day, in the same buckets
+// as the calls series.
+type CostDay = Costs["days"][number];
 
 // The operator's IANA timezone. The daily buckets are computed in THIS zone, both here (the
 // zero-fill window) and on the backend (the SQL date_trunc gets `?tz=`), so a late-night turn lands
@@ -171,9 +171,9 @@ function localDayKey(d: Date): string {
 // Builds the continuous daily chart series spanning the SELECTED range: the backend returns only days
 // with data, but the chart should show every day in the window (0 where missing) so the bars reflect
 // the filter, not just what happened. Days are LOCAL — "today" is the operator's today, never
-// tomorrow-in-UTC. For "all" the span runs from the oldest data day to today. cost comes from Langfuse
-// (UTC day key, matched as a plain string — the documented day-boundary caveat); calls/conversations
-// come from our local-day timeseries; costPerConv = cost ÷ conversations (null when either is 0).
+// tomorrow-in-UTC. For "all" the span runs from the oldest data day to today. Cost, calls and
+// conversations all come from local-day buckets of the ledger; costPerConv = cost ÷ conversations
+// (null when either is 0).
 export function buildCostTrend(
   points: Point[],
   costDays: CostDay[],
@@ -435,10 +435,9 @@ export function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
-  const [costs, setCosts] = useState<Costs | null>(null);
-  // The cost's own pending state: it settles after the section's figures, and in that window
-  // `costs === null` would tell a configured tenant to connect Langfuse, while keeping the previous
-  // value would pair another segment's cost with these figures. The slot shows a skeleton instead.
+  const [costs, setCosts] = useState<Costs | "error" | null>(null);
+  // The cost's own pending state: keeping the previous value while it loads would pair another
+  // segment's cost with these figures. The slot shows a skeleton instead.
   const [costsLoading, setCostsLoading] = useState(true);
   const [ceiling, setCeiling] = useState<Ceiling | null>(null);
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
@@ -455,7 +454,7 @@ export function DashboardPage() {
   const [kpiMode, setKpiMode] = useState<"rate" | "count">("rate");
   const [chartMetric, setChartMetric] = useState<"cost" | "calls">("cost");
 
-  // Page-level (source-independent): funnel KPIs, Langfuse cost, agent-name map. Only re-runs on
+  // Page-level (source-independent): funnel KPIs, agent-name map. Only re-runs on
   // range change.
   const load = useCallback(async (r: Range) => {
     setLoading(true);
@@ -503,24 +502,20 @@ export function DashboardPage() {
       ...(src === "all" ? {} : { source: src }),
       tz: OPERATOR_TZ,
     };
-    // The cost follows the segment, the same query the ceiling's bar sits beside. The ceiling is
-    // read from our own snapshot, never from Langfuse. Neither failing blanks the section: each has
-    // a card that says so.
-    const costQuery = { ...query, ...(src === "all" ? {} : { source: src }) };
-    // NOTE: The cost does not gate the section: it is the only third-party call and can wait ten seconds
-    // on a slow Langfuse, which would hold the figures already in hand behind a skeleton. It settles on
-    // its own, and only the latest segment's answer is taken.
+    // The cost follows the segment and the timezone, summed from the same ledger as the calls
+    // beside it. Its failing does not blank the section: the cost slot says so on its own, and only
+    // the latest segment's answer is taken.
     setCostsLoading(true);
     void api.api.v1.metrics.costs
-      .get({ query: costQuery })
+      .get({ query: usageQuery })
       .then((res) => {
         if (seq !== usageSeq.current) return;
-        setCosts(res.data ? res.data.costs : { status: "error" as const });
+        setCosts(res.data ? res.data.costs : "error");
         setCostsLoading(false);
       })
       .catch(() => {
         if (seq !== usageSeq.current) return;
-        setCosts({ status: "error" as const });
+        setCosts("error");
         setCostsLoading(false);
       });
     // The ceiling's number is reserved when the request goes out, not when it commits: its answer
@@ -601,9 +596,9 @@ export function DashboardPage() {
   // cost itself follows the segment and shows in all three: playground spend is real money and the
   // ceiling refuses on it.
   const realView = source === "inbox";
-  const costsOk = costs?.status === "ok";
-  const showCost = costsOk;
-  const costsError = costs?.status === "error";
+  const costsOk = costs !== null && costs !== "error" ? costs : null;
+  const showCost = costsOk !== null;
+  const costsError = costs === "error";
   // The month the ceiling covers, formatted in UTC: `periodStart` is that month's UTC midnight, and
   // a browser west of UTC would otherwise print the month before it.
   const ceilingMonth = ceiling
@@ -624,28 +619,20 @@ export function DashboardPage() {
       dateStyle: "short",
       timeStyle: "short",
     });
-  // "Open in Langfuse" target: the tenant's project page when the project id could be resolved,
-  // else the instance root.
-  const langfuseUrl =
-    showCost && costs?.status === "ok"
-      ? (costs.projectUrl ?? costs.baseUrl)
-      : null;
-  const costDays = costsOk && costs.status === "ok" ? costs.days : [];
-  const totalCostUsd =
-    costsOk && costs.status === "ok" ? costs.totalCostUsd : 0;
-  // The card renders for Langfuse's models, and also when Langfuse answered with none but the
-  // ledger has usage: the models only this app recorded are then the check's finding.
+  // "Open in Langfuse" target, when the tenant has Langfuse: its project page once the project id
+  // is known, else the instance root. A link only; no figure on this page comes from there.
+  const langfuseUrl = costsOk?.langfuse
+    ? (costsOk.langfuse.projectUrl ?? costsOk.langfuse.baseUrl)
+    : null;
+  const costDays = costsOk?.days ?? [];
+  const totalCostUsd = costsOk?.totalCostUsd ?? 0;
   const costByModel =
-    showCost &&
-    costs.status === "ok" &&
-    (costs.byModel.length > 0 || (costs.costCheck?.onlyLocal.length ?? 0) > 0)
-      ? costs.byModel
-      : null;
+    costsOk && costsOk.byModel.length > 0 ? costsOk.byModel : null;
+  const unpriced =
+    costsOk && costsOk.unpriced.calls > 0 ? costsOk.unpriced : null;
 
-  // The chart shows cost only in the Real segment with Langfuse; otherwise call volume. Crucially,
-  // fall back to call volume when cost is selected but Langfuse has no NON-ZERO cost for the period
-  // (ingestion lag, or model pricing not configured → costUsd 0). Otherwise the cost bars render at
-  // height 0 and the panel looks blank even though there is real usage to show.
+  // Fall back to call volume when cost is selected but the period has no priced cost, so the panel
+  // does not draw bars of height 0 over real usage.
   const costHasData = costDays.some((d) => d.costUsd > 0);
   const effectiveChartMetric =
     showCost && (chartMetric === "calls" || costHasData)
@@ -659,10 +646,9 @@ export function DashboardPage() {
   // empty (no usage AND no cost) → the "no data" placeholder instead of an axes-only empty chart.
   const chartData = buildCostTrend(points, costDays, range, source);
   const hasChartData = points.length > 0 || costDays.length > 0;
-  // Cost per conversation across the whole window: total cost / total conversations, free of the
-  // per-day line's UTC/local day-boundary caveat. Real segment only, because the divisor
-  // `kpis.totalConversations` counts real traffic and is not re-read per segment; and not while cost
-  // is still $0 from ingestion lag.
+  // Cost per conversation across the whole window: total cost / total conversations. Real segment
+  // only, because the divisor `kpis.totalConversations` counts real traffic and is not re-read per
+  // segment.
   const costPerConversation =
     realView &&
     showCost &&
@@ -976,9 +962,9 @@ export function DashboardPage() {
                     )}
                   </Card>
 
-                  {/* Cost + token summary. The cost slot is ALWAYS present: the value with Langfuse, or a
-                      compact disabled/error state in the SAME slot, so switching tabs keeps the block height
-                      stable. It follows the segment, so the playground is priced too. */}
+                  {/* Cost + token summary. The cost slot is ALWAYS present: the value, or a compact error
+                      state in the SAME slot, so switching tabs keeps the block height stable. It follows
+                      the segment, so the playground is priced too. */}
                   <div
                     className={cn(
                       "grid gap-4",
@@ -1015,7 +1001,7 @@ export function DashboardPage() {
                           <Coins className="h-4 w-4" aria-hidden="true" />
                           {t("dashboard.totalCost", "LLM cost")}
                         </div>
-                        {costsError ? (
+                        {costsError && (
                           <p className="flex items-start gap-1.5 text-sm text-text-muted">
                             <TriangleAlert
                               className="mt-0.5 h-4 w-4 shrink-0"
@@ -1023,39 +1009,9 @@ export function DashboardPage() {
                             />
                             {t(
                               "dashboard.costsError",
-                              "Could not fetch costs from Langfuse.",
+                              "Could not read the cost.",
                             )}
                           </p>
-                        ) : (
-                          <>
-                            <p className="text-sm text-text-muted">
-                              {t(
-                                "dashboard.costsDisabledDesc",
-                                "Connect Langfuse to track actual LLM spend from your real usage.",
-                              )}
-                            </p>
-                            {/* The cost check needs Langfuse, and a screen without it must not read as a check that
-                                passed. */}
-                            <p
-                              className="text-text-muted text-xs"
-                              data-testid="cost-check-unavailable"
-                            >
-                              {t(
-                                "dashboard.costCheckUnavailable",
-                                "Until then, the costs this app records are not checked against Langfuse's.",
-                              )}
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => navigate("/resources/advanced")}
-                              className="self-start text-accent text-xs hover:underline"
-                            >
-                              {t(
-                                "dashboard.costsEnableCta",
-                                "Enable cost tracking",
-                              )}
-                            </button>
-                          </>
                         )}
                       </Card>
                     )}
@@ -1114,6 +1070,38 @@ export function DashboardPage() {
                     />
                   </div>
 
+                  {/* Calls the ledger could not price are in the request count and in no cost figure, so
+                      the page says how many and what fixes it rather than letting the cost read low. */}
+                  {unpriced && (
+                    <p
+                      className="flex items-start gap-1.5 text-warning text-xs"
+                      data-testid="cost-unpriced"
+                    >
+                      <TriangleAlert
+                        className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {t(
+                          "dashboard.unpriced",
+                          "{{n}} requests in this period have no price and are not in the cost: {{models}}. Set this account's own price for the model in Advanced > Model prices, then re-price the calls already made.",
+                          {
+                            count: unpriced.calls,
+                            n: nf.format(unpriced.calls),
+                            models: unpriced.models.join(", "),
+                          },
+                        )}{" "}
+                        <button
+                          type="button"
+                          onClick={() => navigate("/resources/advanced")}
+                          className="text-accent hover:underline"
+                        >
+                          {t("dashboard.unpricedCta", "Open model prices")}
+                        </button>
+                      </span>
+                    </p>
+                  )}
+
                   {/* The spend ceiling, on its own row: a progress bar reads by length and its caveats are
                       sentences. Under "All" both halves stack, since the ceiling is enforced per half. The bar
                       is the Advanced panel's component, coloured by the gate's own verdict, so this page cannot
@@ -1156,23 +1144,6 @@ export function DashboardPage() {
                       </p>
                     ) : (
                       <div className="flex flex-col gap-4">
-                        {/* Two things from two places, as the Advanced card says them: the flag is the
-                            credential's PRESENT, each bar its row's last reading. A removed credential leaves the
-                            gate refusing on that figure until the next poll, so hiding the bars would claim the
-                            ceiling stopped applying. */}
-                        {!ceiling.langfuseConfigured && (
-                          <p className="text-sm text-warning">
-                            {ceiling.enabled
-                              ? t(
-                                  "dashboard.ceiling.unenforceable",
-                                  "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
-                                )
-                              : t(
-                                  "spendCeiling.usage.langfuseMissing",
-                                  "Langfuse is not configured for this tenant, so the month's cost cannot be read. Configure it in the Langfuse card.",
-                                )}
-                          </p>
-                        )}
                         {ceilingSources.map((src) => (
                           <div key={src} className="flex flex-col gap-1">
                             <SpendBar
@@ -1191,7 +1162,6 @@ export function DashboardPage() {
                             <SpendHealthLines
                               entry={ceilingEntry(src)}
                               when={ceilingWhen}
-                              money={cf}
                               enabled={ceiling.enabled}
                             />
                           </div>
@@ -1320,13 +1290,7 @@ export function DashboardPage() {
                     </Card>
                   </div>
 
-                  {/* Cost by model, with the local price table checked against it: only when Langfuse answered */}
-                  {costByModel && costs?.status === "ok" && (
-                    <CostByModelCard
-                      byModel={costByModel}
-                      costCheck={costs.costCheck}
-                    />
-                  )}
+                  {costByModel && <CostByModelCard byModel={costByModel} />}
                 </>
               )}
             </DataBoundary>

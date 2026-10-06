@@ -191,9 +191,8 @@ describe("the refusal a malformed path id produces", () => {
     expect(await res.json()).toEqual({ error: "Não é um id válido" });
   });
 
-  // NOTE: The tenant selector is an id in a HEADER, and these three routes read a null target
-  // differently (one of them as a successful-looking 200 `{ status: "disabled" }`), so a malformed
-  // one is refused at the boundary rather than folded into "no target".
+  // NOTE: The tenant selector is an id in a HEADER, and a null target reads as "no target" on these
+  // routes, so a malformed one is refused at the boundary rather than folded into that.
   test("a malformed tenant selector is refused, not treated as no selector", async () => {
     const paths = [
       "/api/v1/agents",
@@ -219,15 +218,17 @@ describe("the refusal a malformed path id produces", () => {
     ]);
   });
 
-  // The control: omitting the selector is not malformed, and each route still answers it its own
-  // way. This is what stops the refusal above from being read as "the header became required".
-  test("omitting the selector is still not a refusal", async () => {
+  // The control: omitting the selector is not malformed, and the route answers it its own way, as a
+  // fleet caller with no target, not as a bad header. This is what stops the refusal above from being
+  // read as "the header became required".
+  test("omitting the selector is answered as no target, not as a malformed one", async () => {
     const res = await app.handle(
       new BunRequest("http://localhost/api/v1/metrics/costs", {
         headers: { cookie: `fazerai_auth_token=${token}` },
       }),
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "A target tenant is required" });
   });
 
   // NOTE: The other half of "a path segment is not an id", on the one route that COMPARES one: the

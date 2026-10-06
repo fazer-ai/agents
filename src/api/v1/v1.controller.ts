@@ -15,7 +15,7 @@ import { requireDbId } from "@/lib/db-id";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
-import { getLangfuseCosts } from "@/modules/analytics/langfuse-costs";
+import { getDashboardCosts } from "@/modules/analytics/costs";
 import {
   getInstanceMetrics,
   getKpis,
@@ -785,16 +785,16 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     "/metrics/costs",
     async ({ tenantContext, query }) => {
       const since = parseQueryInstant(query.since, "since");
-      const costs = await getLangfuseCosts(ctxOrThrow(tenantContext), {
+      const costs = await getDashboardCosts(ctxOrThrow(tenantContext), {
         since,
         source: query.source,
+        tz: query.tz,
       });
       return { instance: instanceIdentity, costs };
     },
     {
       query: t.Object({
-        // Usage segment: "inbox" (real) | "playground". Omitted: both of our environments, and
-        // never the project's other traffic.
+        // Usage segment: "inbox" (real) | "playground". Omitted: both.
         source: t.Optional(
           t.Union([t.Literal("inbox"), t.Literal("playground")], {
             description:
@@ -807,12 +807,18 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
               "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
           }),
         ),
+        tz: t.Optional(
+          t.String({
+            description:
+              "IANA timezone (e.g. America/Sao_Paulo) used to bucket days; an unknown zone is refused with a 400.",
+          }),
+        ),
       }),
       requireAuth: true,
       detail: {
         ...doc(
           "Cost metrics",
-          "Returns Langfuse-derived cost metrics for the tenant since an optional start time.",
+          "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured.",
         ),
         tags: ["Dashboard"],
       },

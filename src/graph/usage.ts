@@ -17,6 +17,7 @@ import {
 } from "@/modules/pricing/overrides";
 import { type PricedTokens, priceCall } from "@/modules/pricing/price";
 import { reportedCostFromUsage } from "@/modules/pricing/reported";
+import { announceUnpricedModel } from "@/modules/pricing/unpriced-alert";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
@@ -347,48 +348,63 @@ export function defaultUsagePersist(
   base: PrismaClient = basePrisma,
 ): UsagePersist {
   return async (row) => {
-    await runScopedOn(base, sysCtx(row.tenantId), async (db) => {
-      await db.llmUsage.create({
-        data: {
-          tenantId: row.tenantId,
-          agentId: row.agentId ?? undefined,
-          conversationId: row.conversationId ?? undefined,
-          inboxId: row.inboxId ?? undefined,
-          threadId: row.threadId ?? undefined,
-          turnId: row.turnId ?? undefined,
-          model: row.model,
-          node: row.node ?? undefined,
+    const created = await runScopedOn(
+      base,
+      sysCtx(row.tenantId),
+      async (db) => {
+        const created = await db.llmUsage.create({
+          data: {
+            tenantId: row.tenantId,
+            agentId: row.agentId ?? undefined,
+            conversationId: row.conversationId ?? undefined,
+            inboxId: row.inboxId ?? undefined,
+            threadId: row.threadId ?? undefined,
+            turnId: row.turnId ?? undefined,
+            model: row.model,
+            node: row.node ?? undefined,
+            source: row.source,
+            promptTokens: row.promptTokens,
+            completionTokens: row.completionTokens,
+            cachedReadTokens: row.cachedReadTokens,
+            cacheCreationTokens: row.cacheCreationTokens,
+            durationMs:
+              row.durationMs === null ? undefined : Math.round(row.durationMs),
+            costUsd: row.costUsd ?? undefined,
+            priceTable: row.priceTable,
+          },
+          select: { id: true },
+        });
+        // NOTE: Fleet event (the subscriber consolidates), in the same scoped tx as the row;
+        // allowlisted numerics/ids only. A fan-out failure never breaks usage capture: the caller
+        // wraps this whole persist in a try/catch.
+        await emitOutbound(db, row.tenantId, "llm.usage", {
+          agent_id: row.agentId != null ? String(row.agentId) : null,
+          conversation_id:
+            row.conversationId != null ? String(row.conversationId) : null,
+          inbox_id: row.inboxId != null ? String(row.inboxId) : null,
           source: row.source,
-          promptTokens: row.promptTokens,
-          completionTokens: row.completionTokens,
-          cachedReadTokens: row.cachedReadTokens,
-          cacheCreationTokens: row.cacheCreationTokens,
-          durationMs:
-            row.durationMs === null ? undefined : Math.round(row.durationMs),
-          costUsd: row.costUsd ?? undefined,
-          priceTable: row.priceTable,
-        },
-      });
-      // NOTE: Fleet event (the subscriber consolidates), in the same scoped tx as the row;
-      // allowlisted numerics/ids only. A fan-out failure never breaks usage capture: the caller
-      // wraps this whole persist in a try/catch.
-      await emitOutbound(db, row.tenantId, "llm.usage", {
-        agent_id: row.agentId != null ? String(row.agentId) : null,
-        conversation_id:
-          row.conversationId != null ? String(row.conversationId) : null,
-        inbox_id: row.inboxId != null ? String(row.inboxId) : null,
-        source: row.source,
+          model: row.model,
+          // NOTE: the call type ("agent", "nudge", "tts_normalize", …). A fleet subscriber that only
+          // sums tokens sees the same split the dashboard does, so a secondary call does not look
+          // like a second customer turn.
+          node: row.node,
+          prompt_tokens: row.promptTokens,
+          completion_tokens: row.completionTokens,
+          cached_read_tokens: row.cachedReadTokens,
+          cache_creation_tokens: row.cacheCreationTokens,
+        });
+        return created;
+      },
+    );
+    if (row.costUsd === null) {
+      await announceUnpricedModel({
+        tenantId: row.tenantId,
         model: row.model,
-        // NOTE: the call type ("agent", "nudge", "tts_normalize", …). A fleet subscriber that only
-        // sums tokens sees the same split the dashboard does, so a secondary call does not look
-        // like a second customer turn.
-        node: row.node,
-        prompt_tokens: row.promptTokens,
-        completion_tokens: row.completionTokens,
-        cached_read_tokens: row.cachedReadTokens,
-        cache_creation_tokens: row.cacheCreationTokens,
+        source: row.source,
+        rowId: created.id,
+        base,
       });
-    });
+    }
   };
 }
 
@@ -543,8 +559,8 @@ export function usageAttribution(flow: FlowContext): {
 
 // Records a billed call that did NOT go through LangChain, so no callback could have seen it: a
 // provider reached by raw fetch (vision). Best-effort: a ledger write never breaks its call. It
-// writes BOTH BOOKS, the ledger row and the Langfuse generation (`recordDirectGeneration`), because
-// the spend ceiling is costed by Langfuse, which only prices generations it was shown. The tenant's
+// writes the ledger row, which every cost figure reads, and a Langfuse generation
+// (`recordDirectGeneration`) so the call shows up in the turn's trace like any other. The tenant's
 // Langfuse is resolved here rather than carried in the `FlowContext`, so no call site has to thread
 // a credential. A tenant with no Langfuse keeps the row and skips the trace, as on the turn path.
 export async function recordDirectUsage(

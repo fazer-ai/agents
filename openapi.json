@@ -7067,7 +7067,7 @@
     "/v1/metrics/costs": {
       "get": {
         "summary": "Cost metrics",
-        "description": "Returns Langfuse-derived cost metrics for the tenant since an optional start time.",
+        "description": "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured.",
         "tags": [
           "Dashboard"
         ],
@@ -7090,6 +7090,15 @@
             "required": false,
             "schema": {
               "description": "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) used to bucket days; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -25178,7 +25187,7 @@
           "Settings"
         ],
         "summary": "Get spend-ceiling usage",
-        "description": "Dollars spent this calendar month per traffic source (as Langfuse last costed them), against the configured ceiling, with the snapshot's health (when it was last refreshed, whether the poll is failing) and the reconciliation against the local ledger (calls Langfuse priced at zero). Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
+        "description": "Dollars spent this calendar month per traffic source, as the usage ledger priced the calls, against the configured ceiling, with the figure's health (when it was last refreshed, whether the poll is failing) and the calls no price covered, by model. Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -25296,7 +25305,7 @@
                   "monthlyInboxUsd": {
                     "minimum": 0,
                     "maximum": 1000000,
-                    "description": "Dollars (USD, as Langfuse costs the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
+                    "description": "Dollars (USD, as the usage ledger prices the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
                     "type": "number"
                   },
                   "monthlyPlaygroundUsd": {
@@ -25367,7 +25376,7 @@
                   "monthlyInboxUsd": {
                     "minimum": 0,
                     "maximum": 1000000,
-                    "description": "Dollars (USD, as Langfuse costs the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
+                    "description": "Dollars (USD, as the usage ledger prices the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
                     "type": "number"
                   },
                   "monthlyPlaygroundUsd": {
@@ -25438,7 +25447,7 @@
                   "monthlyInboxUsd": {
                     "minimum": 0,
                     "maximum": 1000000,
-                    "description": "Dollars (USD, as Langfuse costs the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
+                    "description": "Dollars (USD, as the usage ledger prices the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
                     "type": "number"
                   },
                   "monthlyPlaygroundUsd": {

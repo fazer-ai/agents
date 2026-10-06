@@ -42,8 +42,7 @@ const stubFetch = (async (input: unknown) => {
   );
   if (url.includes("/metrics/kpis")) return json({ instance: "i", kpis });
   if (url.includes("/agents")) return json({ agents: [] });
-  if (url.includes("/metrics/costs"))
-    return json({ costs: { status: "error" } });
+  if (url.includes("/metrics/costs")) return json({ error: "x" }, 500);
   return json({ error: "nope" }, 500);
 }) as unknown as typeof globalThis.fetch;
 

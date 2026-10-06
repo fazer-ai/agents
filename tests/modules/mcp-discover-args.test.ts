@@ -87,6 +87,51 @@ describe("summarizeToolArgs", () => {
     ]);
   });
 
+  test("keeps the keywords declared beside a $ref", () => {
+    expect(
+      summarizeToolArgs({
+        $ref: "#/$defs/empty",
+        $defs: { empty: { type: "object" } },
+        properties: { q: { type: "string" } },
+        required: ["q"],
+      }),
+    ).toEqual([
+      { name: "q", type: "string", description: null, required: true },
+    ]);
+  });
+
+  test("anyOf and oneOf branches add their arguments, required only when every branch requires it", () => {
+    const args = summarizeToolArgs({
+      anyOf: [
+        {
+          type: "object",
+          properties: { a: { type: "string" } },
+          required: ["a"],
+        },
+        {
+          type: "object",
+          properties: { a: { type: "string" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+      ],
+    });
+    expect(args).toEqual([
+      { name: "a", type: "string", description: null, required: true },
+      { name: "b", type: "number", description: null, required: false },
+    ]);
+    expect(
+      summarizeToolArgs({
+        oneOf: [
+          { properties: { x: { type: "string" } }, required: ["x"] },
+          { properties: { y: { type: "string" } }, required: ["y"] },
+        ],
+      }).map((a) => [a.name, a.required]),
+    ).toEqual([
+      ["x", false],
+      ["y", false],
+    ]);
+  });
+
   test("a $ref cycle or a dangling $ref does not hang or throw", () => {
     expect(
       summarizeToolArgs({

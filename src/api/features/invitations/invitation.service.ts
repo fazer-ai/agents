@@ -540,6 +540,11 @@ async function acceptFleetInvite(
   fresh: { email: string; passwordHash: string | null; name: string | null },
 ) {
   return asSuperAdminOn(base, async (db) => {
+    // NOTE: the person before the invitation, the order every fleet-role write takes (`addSuperAdmin`
+    // and the demotions lock the person, then drop this email's fleet invitations).
+    if (account) {
+      await db.$queryRaw`SELECT id FROM users WHERE id = ${account.id} FOR UPDATE`;
+    }
     const consumed = await db.invitation.updateMany({
       where: { id: invite.id, consumedAt: null },
       data: { consumedAt: new Date() },

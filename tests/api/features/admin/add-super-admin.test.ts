@@ -23,6 +23,7 @@ import {
 } from "@/api/features/invitations/invitation.service";
 import type { TenantContext } from "@/lib/tenancy";
 import { personData } from "@/tests/utils/person";
+import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // A fleet administrator making another person one: an existing account is promoted on the spot, an
 // email with no account gets a fleet invitation (no tenant, a day long, single-use). Real Postgres,
@@ -617,5 +618,62 @@ describe.skipIf(!dbUp)("addSuperAdmin and the fleet invitation (DB)", () => {
     expect(
       await suDb.invitation.count({ where: { email: mail("racing-issue") } }),
     ).toBe(1);
+  });
+
+  test("accepting a fleet invitation while the same person is promoted queues instead of deadlocking", async () => {
+    const issued = await addSuperAdmin(fleet, mail("lock-order"), appDb);
+    if (issued.kind !== "invited") throw new Error("expected an invitation");
+    const { hashPassword } = await import("@/api/features/auth/auth.service");
+    const person = await suDb.user.create({
+      data: {
+        email: mail("lock-order"),
+        passwordHash: await hashPassword("lock order 1"),
+        memberships: { create: { tenantId: tenantA, role: "AGENT" } },
+      },
+    });
+    // A third session holds the person, so the promotion queues first and the accept second.
+    const conn = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl as string }),
+    });
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let ready: (pid: number) => void = () => {};
+    const got = new Promise<number>((r) => {
+      ready = r;
+    });
+    const held = conn
+      .$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT id FROM users WHERE id = ${person.id} FOR UPDATE`;
+          const [row] = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pg_backend_pid()::int AS pid`;
+          ready(row?.pid ?? 0);
+          await gate;
+        },
+        { timeout: 30_000, maxWait: 30_000 },
+      )
+      .then(() => conn.$disconnect());
+    const holder = await got;
+    const promote = addSuperAdmin(fleet, mail("lock-order"), appDb);
+    expect(await waitUntilBlocked(suDb, holder, 1)).toBeGreaterThanOrEqual(0);
+    const accept = acceptInvite(
+      { token: issued.invite.token, password: "lock order 1" },
+      appDb,
+    );
+    expect(await waitUntilBlocked(suDb, holder, 2)).toBeGreaterThanOrEqual(0);
+    release();
+    await held;
+    const [p, a] = await Promise.allSettled([promote, accept]);
+    expect(p.status).toBe("fulfilled");
+    expect(a.status).toBe("rejected");
+    expect((a as PromiseRejectedResult).reason).toBeInstanceOf(
+      InviteInvalidError,
+    );
+    expect(
+      (await suDb.user.findUniqueOrThrow({ where: { id: person.id } }))
+        .isSuperAdmin,
+    ).toBe(true);
   });
 });

@@ -260,6 +260,7 @@ red test.
 | `guardrail`, `tts_normalize` | covered by the unit above them |
 | `memory_compact` | **ungated, by decision** — see below |
 | `observer` | the `OBSERVE` job (`observe/job.ts`), asked after the agent is known to still want the tick and immediately before the turn's first model call; a refusal is a `skipped` line and a tick that writes nothing |
+| `suggestion_review` | the `SUGGESTION_REVIEW` job (`rag/suggestion-review.ts`), asked after the proposal is embedded and has candidates, immediately before the reviewer's model call; a refusal queues the proposal unreviewed |
 
 A refusal says that **spend** was what stood in the way, so it is asked only where spend was
 actually next: after everything that would have stopped the call anyway, and immediately before the

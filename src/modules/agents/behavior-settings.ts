@@ -29,6 +29,7 @@ import { readSendImageConfig } from "@/modules/images/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readMonitoringConfig } from "@/modules/observe/settings";
+import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
 import { readSignatureConfig } from "@/modules/signature/service";
 import { readSplitConfig } from "@/modules/split/service";
@@ -87,6 +88,8 @@ export interface BehaviorSettings {
   // NOTE: The one block in this bag whose default is ON (see modules/memory/settings), so a bag with
   // no `memory` key projects `enabled: true` rather than the usual "absent means off".
   memory: ReturnType<typeof readMemoryConfig>;
+  // NOTE: All four fields null is the agent's own model, as for the summariser.
+  knowledge: ReturnType<typeof readKnowledgeConfig>;
   // NOTE: All four fields null is the ordinary state and means NO fallback, not "the agent's own
   // model" the way the two sibling overrides read it (see graph/fallback-settings).
   modelFallback: ReturnType<typeof readModelFallbackConfig>;
@@ -127,6 +130,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "contactFields",
   "observability",
   "memory",
+  "knowledge",
   "modelFallback",
   "kanban",
   "toolGuidance",
@@ -167,6 +171,7 @@ export function readBehaviorSettings(
     contactFields: readContactFieldsConfig(settings),
     observability: readObservabilityConfig(settings, now),
     memory: readMemoryConfig(settings),
+    knowledge: readKnowledgeConfig(settings),
     modelFallback: readModelFallbackConfig(settings),
     kanban: readKanbanConfig(settings),
     toolGuidance: readToolGuidance(settings),
@@ -206,6 +211,7 @@ export interface BehaviorSettingsPatch {
   contactFields?: Record<string, unknown>;
   observability?: Record<string, unknown>;
   memory?: Record<string, unknown>;
+  knowledge?: Record<string, unknown>;
   modelFallback?: Record<string, unknown>;
   kanban?: Record<string, unknown>;
   toolGuidance?: Record<string, unknown>;

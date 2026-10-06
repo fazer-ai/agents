@@ -721,7 +721,11 @@ describe("every node the ledger writes is classified for the involvement KPI", (
       Object.keys(USAGE_NODE_IS_AGENT_TURN).sort(),
     );
     // The claim the KPI actually rests on, spelled out where it can go red.
-    expect([...NON_AGENT_TURN_NODES].sort()).toEqual(["observer", "vision"]);
+    expect([...NON_AGENT_TURN_NODES].sort()).toEqual([
+      "observer",
+      "suggestion_review",
+      "vision",
+    ]);
   });
 });
 

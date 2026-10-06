@@ -26,9 +26,12 @@ import {
   editApprovalItem,
   getKnowledgeBase,
   KB_NAME_MAX,
+  listApprovals,
   listKnowledgeBases,
   listPendingApprovals,
+  REJECTION_REASON_MAX,
   rejectApprovalItem,
+  requeueDiscardedItem,
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
@@ -775,6 +778,45 @@ export const knowledgeController = new Elysia({
       response: errors(401, 403, 404),
     },
   )
+  .get(
+    "/approvals/discarded",
+    async ({ tenantContext }) => {
+      const approvals = await listApprovals(
+        ctxOrThrow(tenantContext),
+        "discarded",
+      );
+      return { instance: instanceIdentity, approvals };
+    },
+    {
+      requireAuth: true,
+      detail: doc(
+        "List discarded suggestions",
+        "List knowledge-base suggestions the suggestion reviewer held back as the same claim as something the base, the queue or a rejection already holds, with what each matched.",
+      ),
+      response: errors(401, 403, 404),
+    },
+  )
+  .post(
+    "/approvals/:id/requeue",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      result: await requeueDiscardedItem({
+        ctx: ctxOrThrow(tenantContext),
+        id: requireDbId(params.id),
+      }),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Requeue discarded suggestion",
+        "Send a suggestion the reviewer discarded to the pending list, for a person to decide.",
+      ),
+      response: errors(400, 401, 403, 404),
+      params: t.Object({
+        id: t.String({ description: "Approval item id (BigInt as a string)." }),
+      }),
+    },
+  )
   .patch(
     "/approvals/:id",
     async ({ tenantContext, params, body }) => ({
@@ -812,43 +854,65 @@ export const knowledgeController = new Elysia({
   )
   .post(
     "/approvals/:id/approve",
-    async ({ tenantContext, params }) => ({
+    async ({ tenantContext, params, body }) => ({
       instance: instanceIdentity,
       result: await approveApprovalItem({
         ctx: ctxOrThrow(tenantContext),
         id: requireDbId(params.id),
+        asNew: body?.asNew,
       }),
     }),
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Approve suggestion",
-        "Approve a pending suggestion, committing the entry into its knowledge base.",
+        "Approve a pending suggestion, committing the entry into its knowledge base. When the suggestion reviewer named a document to replace, approving replaces that document unless asNew is true; a replacement that can no longer be made answers outcome replace-unavailable and claims nothing.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({ description: "Approval item id (BigInt as a string)." }),
       }),
+      body: t.Optional(
+        t.Object({
+          asNew: t.Optional(
+            t.Boolean({
+              description:
+                "Store the entry as a new document even when the reviewer named one to replace.",
+            }),
+          ),
+        }),
+      ),
     },
   )
   .post(
     "/approvals/:id/reject",
-    async ({ tenantContext, params }) => ({
+    async ({ tenantContext, params, body }) => ({
       instance: instanceIdentity,
       result: await rejectApprovalItem({
         ctx: ctxOrThrow(tenantContext),
         id: requireDbId(params.id),
+        reason: body?.reason,
       }),
     }),
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Reject suggestion",
-        "Reject a pending suggestion so it is not added to the knowledge base.",
+        "Reject a pending suggestion so it is not added to the knowledge base. An optional reason is kept on the item and shown to the suggestion reviewer of later proposals; the audit line records the decision only.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({ description: "Approval item id (BigInt as a string)." }),
       }),
+      body: t.Optional(
+        t.Object({
+          reason: t.Optional(
+            t.String({
+              maxLength: REJECTION_REASON_MAX,
+              description: "Why the suggestion was rejected.",
+            }),
+          ),
+        }),
+      ),
     },
   );

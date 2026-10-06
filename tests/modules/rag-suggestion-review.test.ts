@@ -1,0 +1,1284 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { BaseMessage } from "@langchain/core/messages";
+import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import {
+  knowledgeApprove,
+  knowledgeReject,
+} from "@/modules/mcp/write-knowledge";
+import {
+  approveApprovalItem,
+  createSuggestion,
+  editApprovalItem,
+  listApprovals,
+  listPendingApprovals,
+  normalizedSuggestionHash,
+  rejectApprovalItem,
+  replacementTargetGone,
+  requeueDiscardedItem,
+} from "@/modules/rag/service";
+import { searchChunks } from "@/modules/rag/sql";
+import {
+  releaseDeadReview,
+  runSuggestionReview,
+} from "@/modules/rag/suggestion-review";
+import type { ClaimedJob } from "@/modules/scheduler/service";
+
+// The suggestion reviewer and the floor in front of it: a proposal from the agent waits in SCREENING
+// until a model has compared it with what the base, the queue and earlier rejections hold; every way
+// the review can fail puts it in the pending list unreviewed, and nothing it discards is lost.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
+let tenantId = 0n;
+let agentId = 0n;
+let seq = 0;
+
+async function seedTenant() {
+  if (tenantId) return;
+  const t = await suDb.tenant.create({
+    data: { name: "SR", slug: `sr-${process.pid}` },
+  });
+  tenantId = t.id;
+  const agent = await suDb.agent.create({
+    data: {
+      tenantId,
+      name: "SR agent",
+      systemPrompt: "x",
+      modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+    },
+  });
+  agentId = agent.id;
+}
+
+async function newKb(): Promise<bigint> {
+  await seedTenant();
+  const kb = await suDb.knowledgeBase.create({
+    data: {
+      tenantId,
+      name: `SR-KB-${++seq}`,
+      embeddingModel: "text-embedding-3-small",
+    },
+  });
+  return kb.id;
+}
+
+// A unit vector on one axis: the same axis is distance 0, another is distance 1.
+function axis(i: number): number[] {
+  const v = new Array<number>(1536).fill(0);
+  v[i] = 1;
+  return v;
+}
+
+async function seedDocument(
+  kbId: bigint,
+  content: string,
+  at: number,
+  externalId: string | null = null,
+): Promise<bigint> {
+  const doc = await suDb.knowledgeDocument.create({
+    data: {
+      tenantId,
+      knowledgeBaseId: kbId,
+      title: `Doc ${at}`,
+      sourceType: "text",
+      content,
+      status: "READY",
+      externalId,
+    },
+  });
+  await suDb.$executeRawUnsafe(
+    `INSERT INTO knowledge_chunks (tenant_id, knowledge_base_id, document_id, content, embedding)
+     VALUES ($1, $2, $3, $4, $5::vector)`,
+    tenantId,
+    kbId,
+    doc.id,
+    content,
+    `[${axis(at).join(",")}]`,
+  );
+  return doc.id;
+}
+
+// A source on the base is what makes a document with an `externalId` the sync's: without one the
+// document is the operator's to edit again.
+async function attachSource(kbId: bigint) {
+  await suDb.knowledgeSource.create({
+    data: {
+      tenantId,
+      knowledgeBaseId: kbId,
+      kind: "chatwoot_portal",
+      config: {},
+    },
+  });
+}
+
+function propose(
+  kbId: bigint,
+  content: string,
+  opts: { thread?: string; agent?: boolean } = {},
+) {
+  return createSuggestion({
+    ctx: ctxOf(tenantId),
+    knowledgeBaseId: kbId,
+    proposedContent: content,
+    proposedTitle: "Título",
+    threadId: opts.thread ?? `${tenantId}:7:${++seq}`,
+    agentId: opts.agent === false ? undefined : agentId,
+    base: appDb,
+  });
+}
+
+function jobFor(itemId: bigint): ClaimedJob {
+  return {
+    id: 0n,
+    tenantId,
+    kind: "SUGGESTION_REVIEW",
+    payload: { itemId: String(itemId) },
+    dedupeKey: String(itemId),
+  } as unknown as ClaimedJob;
+}
+
+// The reviewer, scripted: answers with `reply` and keeps what it was shown.
+function scripted(reply: string) {
+  const seen: BaseMessage[][] = [];
+  const model = new FakeListChatModel({ responses: [reply] });
+  const original = model.invoke.bind(model);
+  model.invoke = ((messages: BaseMessage[], options?: unknown) => {
+    seen.push(messages);
+    return original(messages, options as never);
+  }) as typeof model.invoke;
+  return { model: model as unknown as BaseChatModel, seen };
+}
+
+function failing(): BaseChatModel {
+  return {
+    invoke: async () => {
+      throw new Error("provider down");
+    },
+  } as unknown as BaseChatModel;
+}
+
+async function review(itemId: bigint, model: BaseChatModel, vector: number[]) {
+  return runSuggestionReview(jobFor(itemId), appDb, {
+    makeModel: () => model,
+    embedText: async () => vector,
+  });
+}
+
+async function item(id: bigint) {
+  return suDb.approvalQueueItem.findUniqueOrThrow({
+    where: { id },
+    select: {
+      status: true,
+      reviewerComment: true,
+      replacesDocumentId: true,
+      matchedItemId: true,
+      matchedDocumentId: true,
+      rejectionReason: true,
+    },
+  });
+}
+
+const NEVER: BaseChatModel = failing();
+
+// TOP-LEVEL, so it runs after both describes and only once.
+afterAll(async () => {
+  if (!dbUp) return;
+  if (tenantId) {
+    for (const table of [
+      "knowledge_chunks",
+      "knowledge_documents",
+      "approval_queue_items",
+      "scheduler_jobs",
+      "audit_logs",
+      "knowledge_bases",
+      "agents",
+    ]) {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+      );
+    }
+    await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantId}`);
+  }
+  await suDb.$disconnect();
+  await appDb.$disconnect();
+});
+
+describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
+  test("case, punctuation and spacing do not make a new entry, in any conversation", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Prazo de reembolso: 7 dias.");
+    const b = await propose(kb, "prazo de reembolso   7 dias");
+    const c = await propose(kb, "PRAZO DE REEMBOLSO, 7 DIAS!");
+    expect(a.created).toBe(true);
+    expect(b).toEqual({ id: a.id, created: false });
+    expect(c).toEqual({ id: a.id, created: false });
+  });
+
+  test("a different word, number or base is a new entry", async () => {
+    const kb = await newKb();
+    const other = await newKb();
+    const a = await propose(kb, "Prazo de reembolso: 7 dias.");
+    const b = await propose(kb, "Prazo de reembolso: 30 dias.");
+    const c = await propose(other, "Prazo de reembolso: 7 dias.");
+    expect([a.created, b.created, c.created]).toEqual([true, true, true]);
+  });
+
+  test("a symbol outside the basic plane is a whole character, not two blanks", () => {
+    expect(normalizedSuggestionHash("Status 🟢")).not.toBe(
+      normalizedSuggestionHash("Status 🔴"),
+    );
+    expect(normalizedSuggestionHash("Status 🟢.")).toBe(
+      normalizedSuggestionHash("status 🟢"),
+    );
+  });
+
+  test("a sign, a decimal separator, a percent or a symbol keeps two facts apart", async () => {
+    const kb = await newKb();
+    // Each pair differs by ONE kept character, so each rule is proved on its own.
+    const pairs = [
+      ["Saldo mínimo de -10 reais.", "Saldo mínimo de 10 reais."],
+      ["Desconto de 10% no boleto.", "Desconto de 10 no boleto."],
+      ["O frete custa 1,5 real.", "O frete custa 1 5 real."],
+      ["Mantenha a 10 °C.", "Mantenha a 10 C."],
+      ["A taxa é 10 %.", "A taxa é 10 ‰."],
+      ["A fórmula é 2*3.", "A fórmula é 2/3."],
+      ["Use C# no backend.", "Use C no backend."],
+    ];
+    for (const [x, y] of pairs) {
+      const a = await propose(kb, x as string);
+      const b = await propose(kb, y as string);
+      expect([a.created, b.created]).toEqual([true, true]);
+    }
+    // The kept characters do not undo the floor: case and the final period still fold.
+    const same = await propose(kb, "SALDO MÍNIMO DE -10 REAIS");
+    expect(same.created).toBe(false);
+  });
+
+  test("a rejected entry is not proposed again", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Entrega grátis acima de 100 reais.", {
+      agent: false,
+    });
+    await rejectApprovalItem({ ctx: ctxOf(tenantId), id: a.id, base: appDb });
+    expect(await propose(kb, "entrega grátis acima de 100 reais")).toEqual({
+      id: a.id,
+      created: false,
+    });
+  });
+
+  test("proposals racing on one burst leave one row and no error", async () => {
+    const kb = await newKb();
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => propose(kb, "Horário: 9h às 18h.")),
+    );
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    expect(new Set(results.map((r) => r.id)).size).toBe(1);
+  });
+
+  test("the agent's proposal waits for the reviewer, with its job armed in the same write", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Aceitamos pix e cartão.");
+    expect((await item(a.id)).status).toBe("SCREENING");
+    const job = await suDb.schedulerJob.findFirst({
+      where: { tenantId, kind: "SUGGESTION_REVIEW", dedupeKey: String(a.id) },
+      select: { status: true },
+    });
+    expect(job?.status).toBe("PENDING");
+    const pending = await listPendingApprovals(ctxOf(tenantId), appDb);
+    expect(pending.map((p) => p.id)).not.toContain(String(a.id));
+  });
+
+  test("a proposal through the REST route skips the reviewer", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Atendemos aos sábados.", { agent: false });
+    expect((await item(a.id)).status).toBe("PENDING");
+    const job = await suDb.schedulerJob.findFirst({
+      where: { tenantId, kind: "SUGGESTION_REVIEW", dedupeKey: String(a.id) },
+    });
+    expect(job).toBeNull();
+  });
+});
+
+describe.skipIf(!dbUp)("the suggestion reviewer", () => {
+  test("nothing similar is new without calling the model", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Estacionamento gratuito para clientes.");
+    expect(await review(a.id, NEVER, axis(1))).toEqual({ outcome: "done" });
+    const row = await item(a.id);
+    expect(row.status).toBe("PENDING");
+    expect(row.reviewerComment).toContain("Nothing similar");
+  });
+
+  test("a reworded repeat of a pending proposal is discarded, shown with its match, and can be requeued", async () => {
+    const kb = await newKb();
+    const first = await propose(kb, "Reembolso em até 7 dias após a compra.");
+    await review(first.id, NEVER, axis(2));
+    const again = await propose(
+      kb,
+      "Aceitamos devolução do dinheiro até 7 dias depois da compra.",
+    );
+    const { model, seen } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "Mesma regra da sugestão pendente.",
+        matched_item: `item:${first.id}`,
+      }),
+    );
+    await review(again.id, model, axis(2));
+    expect(seen).toHaveLength(1);
+    const row = await item(again.id);
+    expect(row.status).toBe("DISCARDED");
+    expect(row.matchedItemId).toBe(first.id);
+    const discarded = await listApprovals(ctxOf(tenantId), "discarded", appDb);
+    const shown = discarded.find((d) => d.id === String(again.id));
+    expect(shown?.reviewerComment).toBe("Mesma regra da sugestão pendente.");
+    expect(shown?.match).toMatchObject({
+      kind: "suggestion",
+      id: String(first.id),
+    });
+    expect(
+      await requeueDiscardedItem({
+        ctx: ctxOf(tenantId),
+        id: again.id,
+        base: appDb,
+      }),
+    ).toBe("requeued");
+    expect((await item(again.id)).status).toBe("PENDING");
+  });
+
+  test("a repeat of a document already in the base is discarded against that document", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(
+      kb,
+      "Funcionamos de segunda a sexta, das 9h às 18h.",
+      3,
+    );
+    const a = await propose(kb, "O horário é de 9h às 18h em dias úteis.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "Já está no documento de horário.",
+        matched_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(3));
+    const row = await item(a.id);
+    expect(row.status).toBe("DISCARDED");
+    expect(row.matchedDocumentId).toBe(doc);
+  });
+
+  test("a correction of a document is pending with the document to replace, and approving replaces it", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Frete grátis acima de 150 reais.", 4);
+    const a = await propose(kb, "Frete grátis acima de 120 reais.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "Atualiza o valor mínimo do frete grátis.",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(4));
+    const row = await item(a.id);
+    expect(row.status).toBe("PENDING");
+    expect(row.replacesDocumentId).toBe(doc);
+    const pending = await listPendingApprovals(ctxOf(tenantId), appDb);
+    expect(
+      pending.find((p) => p.id === String(a.id))?.replacesDocument,
+    ).toMatchObject({
+      id: String(doc),
+      synced: false,
+    });
+    expect(pending.find((p) => p.id === String(a.id))?.replaceUnavailable).toBe(
+      false,
+    );
+    const before = await suDb.knowledgeDocument.count({
+      where: { knowledgeBaseId: kb },
+    });
+    const res = await approveApprovalItem({
+      ctx: ctxOf(tenantId),
+      id: a.id,
+      demoMode: true,
+      base: appDb,
+    });
+    expect(res).toMatchObject({
+      outcome: "approved",
+      replacedDocumentId: String(doc),
+    });
+    const stored = await suDb.knowledgeDocument.findUniqueOrThrow({
+      where: { id: doc },
+      select: { content: true },
+    });
+    expect(stored.content).toBe("Frete grátis acima de 120 reais.");
+    expect(
+      await suDb.knowledgeDocument.count({ where: { knowledgeBaseId: kb } }),
+    ).toBe(before);
+  });
+
+  test("approving as new leaves the document the reviewer named untouched", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Troca em até 30 dias.", 5);
+    const a = await propose(kb, "Troca em até 15 dias.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: String(doc),
+      }),
+    );
+    await review(a.id, model, axis(5));
+    const res = await approveApprovalItem({
+      ctx: ctxOf(tenantId),
+      id: a.id,
+      asNew: true,
+      demoMode: true,
+      base: appDb,
+    });
+    expect(res).toEqual({ outcome: "approved", chunks: 0 });
+    const stored = await suDb.knowledgeDocument.findUniqueOrThrow({
+      where: { id: doc },
+      select: { content: true },
+    });
+    expect(stored.content).toBe("Troca em até 30 dias.");
+  });
+
+  test("a replacement whose document is gone claims nothing and can be approved as new", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Parcelamos em 3x.", 6);
+    const a = await propose(kb, "Parcelamos em 6x.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(6));
+    await suDb.knowledgeDocument.delete({ where: { id: doc } });
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
+      true,
+    );
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toEqual({ outcome: "replace-unavailable" });
+    expect((await item(a.id)).status).toBe("PENDING");
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        asNew: true,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toEqual({ outcome: "approved", chunks: 0 });
+  });
+
+  test("over MCP, the preview refuses a replacement that is gone just as the apply does", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Retirada na loja em 2 dias.", 9);
+    const a = await propose(kb, "Retirada na loja em 1 dia.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(9));
+    await suDb.knowledgeDocument.delete({ where: { id: doc } });
+    const principal = {
+      userId: 1n,
+      tenantId,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    const args = { approval_id: String(a.id) };
+    const preview = await knowledgeApprove(principal, args, { base: appDb });
+    const applied = await knowledgeApprove(
+      principal,
+      { ...args, dry_run: false },
+      { base: appDb },
+    );
+    expect([preview.ok, applied.ok]).toEqual([false, false]);
+    expect(JSON.stringify(preview)).toContain("as_new");
+    expect((await item(a.id)).status).toBe("PENDING");
+    const asNew = await knowledgeApprove(
+      principal,
+      { ...args, as_new: true },
+      { base: appDb },
+    );
+    expect(asNew.ok).toBe(true);
+  });
+
+  test("a document a source sync took over after the review is not replaced on approval", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Entregamos em 10 dias.", 7);
+    const a = await propose(kb, "Entregamos em 5 dias.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(7));
+    await suDb.knowledgeDocument.update({
+      where: { id: doc },
+      data: { externalId: "portal:42" },
+    });
+    await attachSource(kb);
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
+      true,
+    );
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toEqual({ outcome: "replace-unavailable" });
+    expect((await item(a.id)).status).toBe("PENDING");
+    const kept = await suDb.knowledgeDocument.findUniqueOrThrow({
+      where: { id: doc },
+    });
+    expect(kept.content).toBe("Entregamos em 10 dias.");
+  });
+
+  test("only a target that is gone or synced falls back to a new document", () => {
+    expect(replacementTargetGone(new NotFoundError("document not found"))).toBe(
+      true,
+    );
+    expect(replacementTargetGone(new ConflictError("synced"))).toBe(true);
+    // NOTE: anything else may come after the update committed, so a new document would repeat it.
+    expect(replacementTargetGone(new AppError("queue down", 500))).toBe(false);
+    expect(replacementTargetGone(new Error("enqueue failed"))).toBe(false);
+  });
+
+  test("a proposal still in review is a candidate for the ones after it, never for the ones before", async () => {
+    const kb = await newKb();
+    const first = await propose(kb, "Trocas só com nota fiscal.");
+    const second = await propose(kb, "Para trocar, precisa apresentar a nota.");
+    // Each review stores its vector first; here both are stored and neither verdict is in yet.
+    for (const [id, at] of [
+      [first.id, 10],
+      [second.id, 10],
+    ] as const) {
+      await suDb.$executeRawUnsafe(
+        `UPDATE approval_queue_items SET embedding = $1::vector WHERE id = $2`,
+        `[${axis(at).join(",")}]`,
+        id,
+      );
+    }
+    const { model, seen } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "Mesma regra da sugestão anterior.",
+        matched_item: `item:${first.id}`,
+      }),
+    );
+    await review(second.id, model, axis(10));
+    expect(JSON.stringify(seen[0]?.map((m) => m.content))).toContain(
+      "SCREENING",
+    );
+    expect(await item(second.id)).toMatchObject({
+      status: "DISCARDED",
+      matchedItemId: first.id,
+    });
+    // The other direction, on a pair of its own: reviewed while the LATER one is still in review.
+    const kb2 = await newKb();
+    const early = await propose(kb2, "Devoluções em até 30 dias.");
+    const late = await propose(kb2, "Pode devolver dentro de 30 dias.");
+    for (const id of [early.id, late.id]) {
+      await suDb.$executeRawUnsafe(
+        `UPDATE approval_queue_items SET embedding = $1::vector WHERE id = $2`,
+        `[${axis(14).join(",")}]`,
+        id,
+      );
+    }
+    await review(early.id, NEVER, axis(14));
+    expect(await item(early.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: "Nothing similar in this knowledge base or its queue.",
+    });
+  });
+
+  test("an edit ranks the item by the text it now holds, and an embedding failure only drops it", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Aceitamos pix.");
+    await review(a.id, NEVER, axis(11));
+    const vectorOf = async () =>
+      (
+        await suDb.$queryRawUnsafe<{ v: string | null }[]>(
+          `SELECT embedding::text AS v FROM approval_queue_items WHERE id = $1`,
+          a.id,
+        )
+      )[0]?.v ?? null;
+    expect(
+      await editApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        proposedContent: "Aceitamos pix e boleto.",
+        embedText: async () => axis(13),
+        base: appDb,
+      }),
+    ).toBe("updated");
+    expect(await vectorOf()).toBe(`[${axis(13).join(",")}]`);
+    expect(
+      await editApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        proposedTitle: "Só o título",
+        embedText: async () => axis(15),
+        base: appDb,
+      }),
+    ).toBe("updated");
+    // A title-only edit leaves the text, and so the vector, as it was.
+    expect(await vectorOf()).toBe(`[${axis(13).join(",")}]`);
+    expect(
+      await editApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        proposedContent: "Aceitamos pix, boleto e cartão.",
+        embedText: async () => {
+          throw new Error("provider down");
+        },
+        base: appDb,
+      }),
+    ).toBe("updated");
+    expect(await vectorOf()).toBeNull();
+  });
+
+  test("a blank title does not strand a replacement approval", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Enviamos em 5 dias.", 16);
+    const a = await createSuggestion({
+      ctx: ctxOf(tenantId),
+      knowledgeBaseId: kb,
+      proposedContent: "Enviamos em 2 dias.",
+      proposedTitle: "   ",
+      threadId: `${tenantId}:7:${++seq}`,
+      agentId,
+      base: appDb,
+    });
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(16));
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toMatchObject({ outcome: "approved", replacedDocumentId: String(doc) });
+    const stored = await suDb.knowledgeDocument.findUniqueOrThrow({
+      where: { id: doc },
+    });
+    expect(stored.content).toBe("Enviamos em 2 dias.");
+    expect(stored.title).toBe("Doc 16");
+  });
+
+  test("a proposal whose review job is gone is released when the queue is opened", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Atendemos em libras.");
+    const listedIds = async () =>
+      (await listApprovals(ctxOf(tenantId), "pending", appDb)).map((l) => l.id);
+    expect(await listedIds()).not.toContain(String(a.id));
+    expect((await item(a.id)).status).toBe("SCREENING");
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, kind: "SUGGESTION_REVIEW", dedupeKey: String(a.id) },
+      data: { status: "DEAD" },
+    });
+    expect(await listedIds()).toContain(String(a.id));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  });
+
+  test("a duplicate whose match changed while the model ran goes to a person", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Aceitamos cartão de crédito.", 17);
+    const a = await propose(kb, "Pagamento com cartão de crédito é aceito.");
+    const byDoc = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: `doc:${doc}`,
+      }),
+    );
+    const invokeDoc = byDoc.model.invoke.bind(byDoc.model);
+    byDoc.model.invoke = (async (...args: Parameters<typeof invokeDoc>) => {
+      await suDb.knowledgeDocument.delete({ where: { id: doc } });
+      return invokeDoc(...args);
+    }) as typeof invokeDoc;
+    await review(a.id, byDoc.model, axis(17));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+
+    const edited = await seedDocument(kb, "Entregamos aos sábados.", 19);
+    const d = await propose(kb, "Fazemos entregas no sábado.");
+    const byEdit = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: `doc:${edited}`,
+      }),
+    );
+    const invokeEdit = byEdit.model.invoke.bind(byEdit.model);
+    byEdit.model.invoke = (async (...args: Parameters<typeof invokeEdit>) => {
+      await suDb.knowledgeDocument.update({
+        where: { id: edited },
+        data: { content: "Não entregamos aos sábados." },
+      });
+      return invokeEdit(...args);
+    }) as typeof invokeEdit;
+    await review(d.id, byEdit.model, axis(19));
+    expect(await item(d.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+
+    const b = await propose(kb, "Emitimos nota fiscal eletrônica.");
+    await review(b.id, NEVER, axis(18));
+    const c = await propose(kb, "A nota fiscal é emitida eletronicamente.");
+    const byItem = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_item: `item:${b.id}`,
+      }),
+    );
+    const invokeItem = byItem.model.invoke.bind(byItem.model);
+    byItem.model.invoke = (async (...args: Parameters<typeof invokeItem>) => {
+      await suDb.approvalQueueItem.update({
+        where: { id: b.id },
+        data: { proposedContent: "Emitimos nota fiscal em papel." },
+      });
+      return invokeItem(...args);
+    }) as typeof invokeItem;
+    await review(c.id, byItem.model, axis(18));
+    expect(await item(c.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  });
+
+  test("a document whose chunks are older than its text is not a candidate", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Parcelamos em 10x.", 20);
+    await suDb.knowledgeDocument.update({
+      where: { id: doc },
+      data: { content: "Parcelamos em 12x.", status: "PENDING" },
+    });
+    const a = await propose(kb, "Dividimos em até 10 vezes.");
+    await review(a.id, NEVER, axis(20));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: "Nothing similar in this knowledge base or its queue.",
+    });
+  });
+
+  test("only a discarded proposal can be requeued", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Atendemos aos sábados até o meio-dia.");
+    await review(a.id, NEVER, axis(8));
+    expect((await item(a.id)).status).toBe("PENDING");
+    await rejectApprovalItem({ ctx: ctxOf(tenantId), id: a.id, base: appDb });
+    expect(
+      await requeueDiscardedItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        base: appDb,
+      }),
+    ).toBe("not-discarded");
+    expect((await item(a.id)).status).toBe("REJECTED");
+  });
+
+  test("a document a source sync owns is never offered for replacement", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(
+      kb,
+      "Política de privacidade v1.",
+      7,
+      "art-1",
+    );
+    await attachSource(kb);
+    const a = await propose(kb, "Política de privacidade v2.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(7));
+    const row = await item(a.id);
+    expect(row.status).toBe("PENDING");
+    expect(row.replacesDocumentId).toBeNull();
+  });
+
+  test("a document left behind by a removed source can be replaced again", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Garantia de 3 meses.", 21, "art-9");
+    const a = await propose(kb, "Garantia de 6 meses.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(21));
+    expect((await item(a.id)).replacesDocumentId).toBe(doc);
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    const card = listed.find((l) => l.id === String(a.id));
+    expect(card?.replaceUnavailable).toBe(false);
+    expect(card?.replacesDocument?.synced).toBe(false);
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toMatchObject({ outcome: "approved", replacedDocumentId: String(doc) });
+  });
+
+  test("a document the operator wrote in a base that has a source can be replaced", async () => {
+    const kb = await newKb();
+    await attachSource(kb);
+    const doc = await seedDocument(kb, "Atendimento até 18h.", 22);
+    const a = await propose(kb, "Atendimento até 20h.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(22));
+    expect((await item(a.id)).replacesDocumentId).toBe(doc);
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
+      false,
+    );
+  });
+
+  test("a document the reviewer saw only in passages is never replaced", async () => {
+    const kb = await newKb();
+    const long = `Troca em 7 dias. ${"Outras regras da loja. ".repeat(80)}`;
+    const doc = await seedDocument(kb, long, 23);
+    const a = await propose(kb, "Troca em 30 dias.");
+    const { model, seen } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(23));
+    expect(JSON.stringify(seen[0]?.map((m) => m.content))).toContain(
+      '\\"complete\\":false',
+    );
+    const row = await item(a.id);
+    expect(row.status).toBe("PENDING");
+    expect(row.replacesDocumentId).toBeNull();
+  });
+
+  test("an edit to the matched document that is still committing holds the discard and wins", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Entregamos em todo o Brasil.", 24);
+    const a = await propose(kb, "Fazemos entregas para todo o país.");
+    let release: () => void = () => undefined;
+    let editing: Promise<unknown> = Promise.resolve();
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: `doc:${doc}`,
+      }),
+    );
+    const invoke = model.invoke.bind(model);
+    model.invoke = (async (...args: Parameters<typeof invoke>) => {
+      let started: () => void = () => undefined;
+      const updated = new Promise<void>((r) => {
+        started = r;
+      });
+      editing = suDb.$transaction(
+        async (tx) => {
+          await tx.knowledgeDocument.update({
+            where: { id: doc },
+            data: { content: "Entregamos só no Sudeste." },
+          });
+          started();
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        },
+        { timeout: 20_000 },
+      );
+      await updated;
+      setTimeout(() => release(), 400);
+      return invoke(...args);
+    }) as typeof invoke;
+    await review(a.id, model, axis(24));
+    await editing;
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  }, 20000);
+
+  test("an edit to the matched proposal that is still committing holds the discard and wins", async () => {
+    const kb = await newKb();
+    const b = await propose(kb, "Aceitamos vale-refeição.");
+    await review(b.id, NEVER, axis(25));
+    const a = await propose(kb, "Pode pagar com vale refeição.");
+    let release: () => void = () => undefined;
+    let editing: Promise<unknown> = Promise.resolve();
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_item: `item:${b.id}`,
+      }),
+    );
+    const invoke = model.invoke.bind(model);
+    model.invoke = (async (...args: Parameters<typeof invoke>) => {
+      let started: () => void = () => undefined;
+      const updated = new Promise<void>((r) => {
+        started = r;
+      });
+      editing = suDb.$transaction(
+        async (tx) => {
+          await tx.approvalQueueItem.update({
+            where: { id: b.id },
+            data: { proposedContent: "Não aceitamos vale-refeição." },
+          });
+          started();
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        },
+        { timeout: 20_000 },
+      );
+      await updated;
+      setTimeout(() => release(), 400);
+      return invoke(...args);
+    }) as typeof invoke;
+    await review(a.id, model, axis(25));
+    await editing;
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  }, 20000);
+
+  test("a reindex finishing between the probe and the read shows the new passages", async () => {
+    const kb = await newKb();
+    // Longer than a candidate shows whole, so the reviewer reads its passages.
+    const filler = " Demais regras da loja.".repeat(80);
+    const doc = await seedDocument(
+      kb,
+      `Expediente antigo das 9h às 18h.${filler}`,
+      27,
+    );
+    const a = await propose(kb, "Abrimos de manhã cedo.");
+    let calls = 0;
+    const search: typeof searchChunks = async (db, params) => {
+      calls += 1;
+      const hits = await searchChunks(db, params);
+      if (calls === 1) {
+        // The reindex lands right after the probe: new text, new chunk, new revision.
+        await suDb.knowledgeDocument.update({
+          where: { id: doc },
+          data: { content: `Expediente novo das 10h às 16h.${filler}` },
+        });
+        await suDb.$executeRawUnsafe(
+          `UPDATE knowledge_chunks SET content = $1 WHERE document_id = $2`,
+          `Expediente novo das 10h às 16h.${filler}`,
+          doc,
+        );
+      }
+      return hits;
+    };
+    const { model, seen } = scripted(
+      JSON.stringify({ verdict: "new", comment: "c" }),
+    );
+    await runSuggestionReview(jobFor(a.id), appDb, {
+      makeModel: () => model,
+      embedText: async () => axis(27),
+      searchChunks: search,
+    });
+    const shown = JSON.stringify(seen[0]?.map((m) => m.content));
+    expect(shown).toContain("Expediente novo");
+    expect(shown).not.toContain("Expediente antigo");
+  });
+
+  test("a retitled matched proposal is a changed match", async () => {
+    const kb = await newKb();
+    const b = await propose(kb, "Abrimos às 8h.");
+    await review(b.id, NEVER, axis(26));
+    const a = await propose(kb, "A loja abre às oito da manhã.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_item: `item:${b.id}`,
+      }),
+    );
+    const invoke = model.invoke.bind(model);
+    model.invoke = (async (...args: Parameters<typeof invoke>) => {
+      await suDb.approvalQueueItem.update({
+        where: { id: b.id },
+        data: { proposedTitle: "Horário da filial Centro" },
+      });
+      return invoke(...args);
+    }) as typeof invoke;
+    await review(a.id, model, axis(26));
+    expect(await item(a.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  });
+
+  test("a duplicate that names nothing it was shown is queued unreviewed", async () => {
+    const kb = await newKb();
+    await seedDocument(kb, "Aceitamos boleto.", 8);
+    const a = await propose(kb, "Pagamento por boleto bancário.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "duplicate",
+        comment: "c",
+        matched_document: "doc:999999999",
+      }),
+    );
+    await review(a.id, model, axis(8));
+    const row = await item(a.id);
+    expect(row.status).toBe("PENDING");
+    expect(row.reviewerComment).toBeNull();
+  });
+
+  test("a failing or unreadable reviewer queues the proposal unreviewed", async () => {
+    const kb = await newKb();
+    await seedDocument(kb, "Entregamos em todo o Brasil.", 9);
+    const a = await propose(kb, "Entrega para todo o país.");
+    await review(a.id, failing(), axis(9));
+    expect((await item(a.id)).status).toBe("PENDING");
+    const b = await propose(kb, "Enviamos para todos os estados.");
+    await review(b.id, scripted("acho que é repetida").model, axis(9));
+    expect(await item(b.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: null,
+    });
+  });
+
+  test("an embedding failure queues the proposal unreviewed", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Temos loja física em Curitiba.");
+    await runSuggestionReview(jobFor(a.id), appDb, {
+      makeModel: () => NEVER,
+      embedText: async () => {
+        throw new Error("embedding provider down");
+      },
+    });
+    expect((await item(a.id)).status).toBe("PENDING");
+  });
+
+  test("a review job that died releases its proposal", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Garantia de 90 dias.");
+    await releaseDeadReview(jobFor(a.id), "boom", appDb);
+    expect((await item(a.id)).status).toBe("PENDING");
+  });
+
+  test("the reviewer reads a rejection with the person's reason", async () => {
+    const kb = await newKb();
+    const wrong = await propose(kb, "Prazo de entrega: 7 dias.");
+    await review(wrong.id, NEVER, axis(10));
+    await rejectApprovalItem({
+      ctx: ctxOf(tenantId),
+      id: wrong.id,
+      reason: "O prazo certo é 30 dias.",
+      base: appDb,
+    });
+    expect((await item(wrong.id)).rejectionReason).toBe(
+      "O prazo certo é 30 dias.",
+    );
+    const fixed = await propose(kb, "Prazo de entrega: 30 dias.");
+    const { model, seen } = scripted(
+      JSON.stringify({ verdict: "new", comment: "Corrige o prazo." }),
+    );
+    await review(fixed.id, model, axis(10));
+    const shown = seen[0]?.map((m) => String(m.content)).join("\n") ?? "";
+    expect(shown).toContain("O prazo certo é 30 dias.");
+    expect(shown).toContain(`item:${wrong.id}`);
+    expect(await item(fixed.id)).toMatchObject({
+      status: "PENDING",
+      reviewerComment: "Corrige o prazo.",
+    });
+  });
+
+  test("a rejection reason stays out of the audit line, and an over-long one is refused", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Abrimos aos domingos.", { agent: false });
+    await rejectApprovalItem({
+      ctx: ctxOf(tenantId),
+      id: a.id,
+      reason: "motivo-sigiloso-4471",
+      base: appDb,
+    });
+    const audit = await suDb.auditLog.findMany({
+      where: { tenantId, target: `approval:${a.id}` },
+      select: { after: true },
+    });
+    expect(JSON.stringify(audit)).not.toContain("motivo-sigiloso-4471");
+    const b = await propose(kb, "Abrimos aos feriados.", { agent: false });
+    await expect(
+      rejectApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: b.id,
+        reason: "x".repeat(1001),
+        base: appDb,
+      }),
+    ).rejects.toThrow("1000");
+    expect((await item(b.id)).status).toBe("PENDING");
+  });
+
+  test("over MCP, the reject preview refuses the reason the apply would refuse", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Abrimos às segundas.", { agent: false });
+    const principal = {
+      userId: 1n,
+      tenantId,
+      clientId: "c",
+      jti: "j",
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+    } as unknown as VerifiedToken;
+    for (const reason of ["a\u0000b", "x".repeat(1001)]) {
+      const args = { approval_id: String(a.id), reason };
+      const preview = await knowledgeReject(principal, args, { base: appDb });
+      const applied = await knowledgeReject(
+        principal,
+        { ...args, dry_run: false },
+        { base: appDb },
+      );
+      expect([preview.ok, applied.ok]).toEqual([false, false]);
+    }
+    expect((await item(a.id)).status).toBe("PENDING");
+  });
+
+  test("over the spend ceiling the proposal is queued unreviewed, without calling the model", async () => {
+    const kb = await newKb();
+    await seedDocument(kb, "Cobramos taxa de entrega de 10 reais.", 12);
+    const a = await propose(kb, "A taxa de entrega é 10 reais.");
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 1000,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 1000, polledAt: new Date() },
+    });
+    try {
+      const { model, seen } = scripted(
+        JSON.stringify({
+          verdict: "duplicate",
+          comment: "c",
+          matched_document: "doc:1",
+        }),
+      );
+      await review(a.id, model, axis(12));
+      expect(seen).toHaveLength(0);
+      expect(await item(a.id)).toMatchObject({
+        status: "PENDING",
+        reviewerComment: null,
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+    }
+  });
+
+  test("a proposal another review already moved is left alone", async () => {
+    const kb = await newKb();
+    const a = await propose(kb, "Wi-fi gratuito na loja.");
+    await runScopedOn(appDb, ctxOf(tenantId), (db) =>
+      db.approvalQueueItem.update({
+        where: { id: a.id },
+        data: { status: "PENDING" },
+      }),
+    );
+    expect(await review(a.id, NEVER, axis(11))).toEqual({ outcome: "done" });
+    expect((await item(a.id)).reviewerComment).toBeNull();
+  });
+});

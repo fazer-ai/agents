@@ -18,12 +18,15 @@ import {
 import {
   approveApprovalItem,
   assertKnowledgeBaseNameUsable,
+  checkedRejectionReason,
   createKnowledgeBase,
   deleteKnowledgeBase,
   editApprovalItem,
   getKnowledgeBase,
+  listApprovals,
   listPendingApprovals,
   rejectApprovalItem,
+  requeueDiscardedItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
 import {
@@ -507,9 +510,14 @@ async function findApproval(
   return all.find((a) => a.id === String(id)) ?? null;
 }
 
+// The document the reviewer named can no longer be replaced (deleted, moved, or now synced), so
+// approval stores nothing until it is asked for as a new document.
+const REPLACE_GONE =
+  "the document this suggestion would replace no longer exists or is kept in sync with its source; approve with as_new: true to add it as a new document";
+
 export async function knowledgeApprove(
   principal: VerifiedToken,
-  args: { approval_id: string; dry_run?: boolean },
+  args: { approval_id: string; as_new?: boolean; dry_run?: boolean },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
@@ -522,15 +530,29 @@ export async function knowledgeApprove(
     if (args.dry_run !== false) {
       const item = await findApproval(ctx, id, base);
       if (!item) return err("approval not found or not pending");
+      if (item.replaceUnavailable && !args.as_new) return err(REPLACE_GONE);
       return ok({
         dryRun: true,
         action: "approve",
         target,
         proposedTitle: item.proposedTitle,
         knowledgeBaseId: item.knowledgeBaseId,
+        replacesDocument:
+          args.as_new || !item.replacesDocument
+            ? null
+            : {
+                id: item.replacesDocument.id,
+                title: item.replacesDocument.title,
+              },
       });
     }
-    const result = await approveApprovalItem({ ctx, id, base });
+    const result = await approveApprovalItem({
+      ctx,
+      id,
+      asNew: args.as_new,
+      base,
+    });
+    if (result.outcome === "replace-unavailable") return err(REPLACE_GONE);
     return ok({ dryRun: false, applied: true, target, result });
   } catch (e) {
     return failOf(e);
@@ -539,6 +561,42 @@ export async function knowledgeApprove(
 
 export async function knowledgeReject(
   principal: VerifiedToken,
+  args: { approval_id: string; reason?: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.approval_id, "approval_id");
+  if (typeof id !== "bigint") return id;
+  const target = `approval:${id}`;
+  try {
+    if (args.dry_run !== false) {
+      const reason = checkedRejectionReason(args.reason);
+      const item = await findApproval(ctx, id, base);
+      if (!item) return err("approval not found or not pending");
+      return ok({
+        dryRun: true,
+        action: "reject",
+        target,
+        proposedTitle: item.proposedTitle,
+        reason,
+      });
+    }
+    const outcome = await rejectApprovalItem({
+      ctx,
+      id,
+      reason: args.reason,
+      base,
+    });
+    return ok({ dryRun: false, applied: true, target, outcome });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function knowledgeRequeue(
+  principal: VerifiedToken,
   args: { approval_id: string; dry_run?: boolean },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
@@ -550,16 +608,17 @@ export async function knowledgeReject(
   const target = `approval:${id}`;
   try {
     if (args.dry_run !== false) {
-      const item = await findApproval(ctx, id, base);
-      if (!item) return err("approval not found or not pending");
+      const all = await listApprovals(ctx, "discarded", base);
+      const item = all.find((a) => a.id === String(id));
+      if (!item) return err("approval not found or not discarded");
       return ok({
         dryRun: true,
-        action: "reject",
+        action: "requeue",
         target,
         proposedTitle: item.proposedTitle,
       });
     }
-    const outcome = await rejectApprovalItem({ ctx, id, base });
+    const outcome = await requeueDiscardedItem({ ctx, id, base });
     return ok({ dryRun: false, applied: true, target, outcome });
   } catch (e) {
     return failOf(e);

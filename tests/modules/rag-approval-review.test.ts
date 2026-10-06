@@ -57,16 +57,20 @@ const RATIONALE = "Não consegui confirmar com o setor responsável.";
 let tenantId = 0n;
 let kbId = 0n;
 
+// A base of its own per test: a proposal repeated for the same base lands on the row already there,
+// and these tests propose the same two texts again and again.
+let kbSeq = 0;
 async function seed() {
-  if (tenantId) return;
-  const t = await suDb.tenant.create({
-    data: { name: "AR", slug: `ar-${process.pid}` },
-  });
-  tenantId = t.id;
+  if (!tenantId) {
+    const t = await suDb.tenant.create({
+      data: { name: "AR", slug: `ar-${process.pid}` },
+    });
+    tenantId = t.id;
+  }
   const kb = await suDb.knowledgeBase.create({
     data: {
       tenantId,
-      name: "AR-KB",
+      name: `AR-KB-${++kbSeq}`,
       embeddingModel: "text-embedding-3-small",
     },
   });

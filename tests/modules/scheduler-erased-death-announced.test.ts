@@ -88,7 +88,11 @@ describe("quem revoga uma ingestão anuncia as mortes que apagou", () => {
     }
     // Controle positivo da varredura: os dois hooks que existem têm que aparecer, senão a cerca
     // estaria passando sobre um conjunto vazio.
-    expect(comHook.sort()).toEqual(["DEBOUNCE", "MEMORY_COMPACT"]);
+    expect(comHook.sort()).toEqual([
+      "DEBOUNCE",
+      "MEMORY_COMPACT",
+      "SUGGESTION_REVIEW",
+    ]);
     const conflito = comHook.filter(
       (k) => JOB_DELETE_ON_DONE[k as keyof typeof JOB_DELETE_ON_DONE],
     );

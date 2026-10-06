@@ -36403,6 +36403,247 @@
         ]
       }
     },
+    "/v1/knowledge/approvals/discarded": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List discarded suggestions",
+        "description": "List knowledge-base suggestions the suggestion reviewer held back as the same claim as something the base, the queue or a rejection already holds, with what each matched.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1KnowledgeApprovalsDiscarded",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/knowledge/approvals/{id}/requeue": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Requeue discarded suggestion",
+        "description": "Send a suggestion the reviewer discarded to the pending list, for a person to decide.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Approval item id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1KnowledgeApprovalsByIdRequeue"
+      }
+    },
     "/v1/knowledge/approvals/{id}": {
       "patch": {
         "tags": [
@@ -36635,7 +36876,7 @@
           "Resources"
         ],
         "summary": "Approve suggestion",
-        "description": "Approve a pending suggestion, committing the entry into its knowledge base.",
+        "description": "Approve a pending suggestion, committing the entry into its knowledge base. When the suggestion reviewer named a document to replace, approving replaces that document unless asNew is true; a replacement that can no longer be made answers outcome replace-unavailable and claims nothing.",
         "parameters": [
           {
             "name": "id",
@@ -36658,6 +36899,44 @@
             "example": "1"
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "asNew": {
+                    "description": "Store the entry as a new document even when the reviewer named one to replace.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "asNew": {
+                    "description": "Store the entry as a new document even when the reviewer named one to replace.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "asNew": {
+                    "description": "Store the entry as a new document even when the reviewer named one to replace.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "400": {
             "description": "Bad request — validation failed or the input was malformed.",
@@ -36743,6 +37022,32 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -36773,7 +37078,7 @@
           "Resources"
         ],
         "summary": "Reject suggestion",
-        "description": "Reject a pending suggestion so it is not added to the knowledge base.",
+        "description": "Reject a pending suggestion so it is not added to the knowledge base. An optional reason is kept on the item and shown to the suggestion reviewer of later proposals; the audit line records the decision only.",
         "parameters": [
           {
             "name": "id",
@@ -36796,6 +37101,47 @@
             "example": "1"
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "maxLength": 1000,
+                    "description": "Why the suggestion was rejected.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "maxLength": 1000,
+                    "description": "Why the suggestion was rejected.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "maxLength": 1000,
+                    "description": "Why the suggestion was rejected.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "400": {
             "description": "Bad request — validation failed or the input was malformed.",
@@ -36881,6 +37227,32 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"

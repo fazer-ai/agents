@@ -326,7 +326,8 @@ describe.skipIf(!dbUp)("the Knowledge page names who wrote", () => {
         body: JSON.stringify({
           knowledgeBaseId: kbId,
           title: "Outra sugestão",
-          content: PROPOSAL,
+          // NOTE: Another text: the same one would land on the proposal approved above.
+          content: `${PROPOSAL} (outra)`,
         }),
       }),
     );

@@ -44,6 +44,7 @@ import {
   ensureAllKnowledgeSourceSyncs,
   registerKnowledgeSourceHandler,
 } from "@/modules/rag/source";
+import { registerSuggestionReviewHandler } from "@/modules/rag/suggestion-review";
 import { startScheduler, stopScheduler } from "@/modules/scheduler/worker";
 import { ensureAllSpendPolls } from "@/modules/spend-ceiling/arm";
 import { registerSpendPollHandler } from "@/modules/spend-ceiling/poll";
@@ -172,6 +173,7 @@ if (config.schedulerWorker.enabled) {
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
   registerObserveHandler();
+  registerSuggestionReviewHandler();
   registerDeliverySweepHandler();
   registerDeliveryRecoveryHandler();
   registerTakeoverRecoveryHandler();

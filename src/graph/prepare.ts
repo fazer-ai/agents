@@ -113,6 +113,7 @@ import {
 } from "@/modules/integrations/toolpacks";
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import {
   readServiceWindowConfig,
   type ServiceWindowConfig,
@@ -363,6 +364,11 @@ export interface AgentConfig {
   memoryCompactionOverride: ModelOverride;
   memoryCompactionApiKey: string;
   memoryCompactionCredentialBaseUrl: string | null;
+  // The knowledge suggestion reviewer's own model (agent.settings.knowledge.suggestionReview), with
+  // the credential it names. Same shape and resolver as the summariser's above.
+  suggestionReviewOverride: ModelOverride;
+  suggestionReviewApiKey: string;
+  suggestionReviewCredentialBaseUrl: string | null;
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
@@ -604,6 +610,24 @@ export async function loadAgentConfig(
         String(args.agentId),
         memoryCfg.credentialRef,
         mEntry.state === "unusable" ? mEntry.kind : "",
+      );
+    }
+  }
+  // The suggestion reviewer's own credential: an unresolvable ref leaves the key empty, and the
+  // review then queues the proposal unreviewed instead of borrowing the agent's key.
+  const reviewCfg = readKnowledgeConfig(effSettings).suggestionReview;
+  let suggestionReviewApiKey = "";
+  let suggestionReviewCredentialBaseUrl: string | null = null;
+  if (reviewCfg.credentialRef) {
+    const rEntry = await tryResolveApiKeyEntry(db, reviewCfg.credentialRef);
+    if (rEntry.state === "ok") {
+      suggestionReviewApiKey = rEntry.secret;
+      suggestionReviewCredentialBaseUrl = rEntry.baseUrl;
+    } else {
+      logger.warn(
+        "agent %s: suggestion review credentialRef %s did not resolve to an API key, so suggestions reach the queue unreviewed",
+        String(args.agentId),
+        reviewCfg.credentialRef,
       );
     }
   }
@@ -996,6 +1020,9 @@ export async function loadAgentConfig(
     },
     memoryCompactionApiKey,
     memoryCompactionCredentialBaseUrl,
+    suggestionReviewOverride: reviewCfg,
+    suggestionReviewApiKey,
+    suggestionReviewCredentialBaseUrl,
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
   };
@@ -1716,6 +1743,7 @@ export async function buildToolset(
           knowledgeBaseIds: cfg.ragConfig?.knowledgeBaseIds ?? [],
           knowledgeBases: cfg.ragConfig?.knowledgeBases,
           threadId: ctx.threadId,
+          agentId: cfg.agentId,
           maxDistance: cfg.ragConfig?.maxDistance,
         },
         cfg.ragConfig?.tools,

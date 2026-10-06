@@ -25,6 +25,8 @@ export interface RagToolCtx {
   // id backs the optional knowledge_base narrowing parameter (name -> id, names are not unique).
   knowledgeBases?: { id: bigint; name: string; description: string | null }[];
   threadId: string;
+  // The agent whose tool this is; its model reviews the suggestions it makes.
+  agentId?: bigint;
   // Optional grounding threshold: drop hits whose cosine distance exceeds this (lower = stricter;
   // 0 = identical). Undefined ⇒ no distance filtering (recall preserved). Tune empirically per agent.
   maxDistance?: number;
@@ -291,15 +293,19 @@ function suggestTool(ctx: RagToolCtx) {
       if (targetId == null) {
         return "No knowledge base is configured for suggestions.";
       }
-      await createSuggestion({
+      const { created } = await createSuggestion({
         ctx: sysCtx(ctx.tenantId),
         knowledgeBaseId: targetId,
         proposedContent: args.content,
         proposedTitle: args.title,
         rationale: args.rationale,
         threadId: ctx.threadId,
+        agentId: ctx.agentId,
         base: ctx.base,
       });
+      if (!created) {
+        return "This entry was already suggested for this knowledge base and a human has it. Nothing new was queued; do not suggest it again.";
+      }
       return "Suggestion queued for human review. It will NOT be used until a human approves it.";
     },
     {

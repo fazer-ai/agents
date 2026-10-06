@@ -218,7 +218,10 @@
   "approvals": {
     "actionError": "Action failed.",
     "approve": "Approve",
+    "approveAsNew": "Approve as a new document",
     "approved": "Suggestion approved and added.",
+    "approveReplace": "Approve and replace",
+    "confirmReject": "Reject",
     "edit": "Edit",
     "editContent": "Content",
     "editContentHint": "This text is stored in the knowledge base exactly as written. Make it a standalone statement, with no caveats about checking it.",
@@ -230,16 +233,34 @@
     "fromConversation": "From the conversation: {{label}}",
     "fromPlayground": "From the playground of {{name}}",
     "fromPlaygroundGeneric": "From an agent's playground",
+    "matchedDocument": "Matched the document “{{title}}”",
+    "matchedSuggestion": "Matched an earlier suggestion ({{status}})",
     "rationale": "Rationale: {{text}}",
     "reject": "Reject",
     "rejected": "Suggestion rejected.",
+    "rejectReason": "Reason (optional)",
+    "rejectReasonHint": "The reviewer reads it next time, so a corrected suggestion is not held back by this one.",
+    "replaceGone": "The document to replace no longer exists. Approve it as a new document instead.",
+    "replaces": "Approving replaces the document “{{title}}”, which says today:",
+    "replaceUnavailable": "The reviewer suggested replacing a document that can no longer be replaced (deleted, or kept in sync with its source). Approving adds this as a new document.",
+    "requeue": "Send to the pending list",
+    "requeued": "Suggestion sent to the pending list.",
+    "requeueGone": "Someone already moved this suggestion; reload to see where it is.",
+    "reviewerComment": "Reviewer: {{text}}",
     "status": {
+      "APPROVED": "Approved",
+      "DISCARDED": "Discarded",
       "EDITED": "Edited",
-      "PENDING": "Pending"
+      "PENDING": "Pending",
+      "REJECTED": "Rejected",
+      "SCREENING": "Being reviewed"
     },
     "subtitle": "Review suggestions before they enter a knowledge base. Nothing is added without approval.",
     "targetBase": "Knowledge base: {{name}}",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "viewDiscarded": "Discarded by the reviewer ({{n}})",
+    "viewPending": "Pending ({{n}})",
+    "views": "Suggestion lists"
   },
   "audit": {
     "actionPlaceholder": "Any action",
@@ -1077,6 +1098,7 @@
       "modelNotRunnable": "This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.",
       "redirect": "Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.",
       "stt": "Voice transcription is on but has no API key set.",
+      "suggestionReviewModel": "A separate model is set for the suggestion reviewer but its configuration cannot run, so the agent's knowledge suggestions reach the approval queue unreviewed. Check its provider, model, key and endpoint.",
       "tts": "Audio replies are on but have no API key set.",
       "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.",
       "vision": "Image/document reading is on but has no API key set."
@@ -1094,6 +1116,7 @@
       "model": "The model credential is referenced but not filled in yet.",
       "modelFallback": "The fallback-provider credential is referenced but not filled in yet, so the fallback cannot take a turn.",
       "stt": "The transcription credential is referenced but not filled in yet.",
+      "suggestionReviewModel": "The suggestion-reviewer credential is referenced but not filled in yet, so knowledge suggestions reach the queue unreviewed.",
       "tts": "The audio-reply credential is referenced but not filled in yet.",
       "ttsNormalize": "The speech-rewrite credential is referenced but not filled in yet.",
       "vision": "The image-reading credential is referenced but not filled in yet."
@@ -1109,6 +1132,7 @@
       "model": "The model credential no longer exists, so the agent cannot reply. Pick another one.",
       "modelFallback": "The fallback-provider credential no longer exists, so the fallback cannot take a turn.",
       "stt": "The transcription credential no longer exists, so voice messages are not transcribed.",
+      "suggestionReviewModel": "The suggestion-reviewer credential no longer exists, so knowledge suggestions reach the queue unreviewed.",
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",
       "ttsNormalize": "The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.",
       "vision": "The image-reading credential no longer exists, so images and documents are not read."
@@ -1121,6 +1145,7 @@
       "model": "The model credential is a type that cannot be used as an API key, so the agent cannot reply. Pick a credential that holds a single key.",
       "modelFallback": "The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.",
       "stt": "The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.",
+      "suggestionReviewModel": "The suggestion-reviewer credential is a type that cannot be used as an API key, so knowledge suggestions reach the queue unreviewed. Pick a credential that holds a single key.",
       "tts": "The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.",
       "ttsNormalize": "The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.",
       "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key."
@@ -1517,6 +1542,11 @@
     "resolveLabels": "Labels on close",
     "resolveLabelsHint": "Added before this tool closes a conversation, labelled by the agent or not. Held off while the contact waits on an open case. A label the account lacks is left off and reported.",
     "resolveLabelsProtected": "Labels on close cannot hold a label off limits to set_labels: {{labels}}.",
+    "reviewBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+    "reviewCredentialHint": "Required when the reviewer uses another provider; without its own key, suggestions reach the queue unreviewed.",
+    "reviewModel": "Suggestion reviewer",
+    "reviewModelHelp": "Before a suggestion from this agent reaches the approval queue, a model compares it with what the knowledge base, the queue and earlier rejections already hold.\n\nA repeat goes to the Discarded tab of Approvals, with what it matched; a correction of an existing document comes with that document to replace. Nothing is ever lost: if the review fails, the suggestion goes to the queue unreviewed.\n\nBy default it runs on the agent's own model.",
+    "reviewSameAsAgent": "Same as the agent",
     "roundingDate": "date",
     "roundingExact": "exact · changes every minute",
     "roundingNote": "Rounded values stay stable for {{minutes}} min, which improves prompt caching.",

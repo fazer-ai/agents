@@ -3712,10 +3712,10 @@ function AgentEditor() {
 
             {tab === "general" && (
               <GeneralTab
-                nameError={refusal.at("name", currentRef.current["name"])}
+                nameError={refusal.at("name", currentRef.current.name)}
                 promptError={refusal.at(
                   "systemPrompt",
-                  currentRef.current["systemPrompt"],
+                  currentRef.current.systemPrompt,
                 )}
                 modelCredentialError={refusal.at(
                   "modelConfig.credentialRef",

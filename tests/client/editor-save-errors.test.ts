@@ -226,7 +226,7 @@ describe("agent editor save errors", () => {
     }
     expect(readings.length).toBeGreaterThan(20);
     for (const call of readings) {
-      expect(call, call).toContain("currentRef.current[");
+      expect(call, call).toMatch(/currentRef\.current(\[|\.)/);
     }
   });
 

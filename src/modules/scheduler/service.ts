@@ -735,7 +735,7 @@ export async function revokeJobsByKeyPrefixOn(
                    substring(dedupe_key from char_length(${prefix}) + 1) ~ '^[0-9]{1,18}$'
                    AND (substring(dedupe_key from char_length(${prefix}) + 1))::bigint > ${atOrBelowMessageId}
                  )`
-}
+           }
         RETURNING id, tenant_id, dedupe_key, last_error,
                   pg_current_xact_id()::text AS xid,
                   (status = 'DEAD'

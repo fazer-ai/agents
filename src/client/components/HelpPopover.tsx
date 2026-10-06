@@ -76,7 +76,6 @@ export function HelpPopover({
           className,
         )}
       >
-        {/* biome-ignore lint/style/noJsxLiterals: decorative glyph, accessible name comes from aria-label */}
         ?
       </span>
     </Popover>

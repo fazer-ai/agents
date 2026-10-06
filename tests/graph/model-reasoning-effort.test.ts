@@ -191,6 +191,18 @@ async function turn(
   return { reply, sent: fake.requests[0] ?? {}, url: fake.urls[0] ?? "" };
 }
 
+// @langchain/openai picks the endpoint (by model id and by call options), so a test reads the effort
+// in the spelling of whichever endpoint the request went to, and that endpoint's storage flag.
+function effortOf(sent: Record<string, unknown>, url: string) {
+  return url.includes("/responses")
+    ? (sent.reasoning as { effort?: string } | undefined)?.effort
+    : sent.reasoning_effort;
+}
+
+function expectStoreOff(sent: Record<string, unknown>, url: string) {
+  if (url.includes("/responses")) expect(sent.store).toBe(false);
+}
+
 describe("the fake API rejects what OpenAI rejects", () => {
   test("a gpt-5.6 turn carrying tools and no effort", async () => {
     fake = fakeOpenAI();
@@ -222,15 +234,17 @@ describe("the fake API rejects what OpenAI rejects", () => {
 
 describe("createChatModel on the gpt-5.6 family", () => {
   test("a turn with tools is answered instead of rejected", async () => {
-    const { reply, sent } = await turn("gpt-5.6-luna");
-    expect(sent.reasoning_effort).toBe("none");
+    const { reply, sent, url } = await turn("gpt-5.6-luna");
+    expect(effortOf(sent, url)).toBe("none");
+    expectStoreOff(sent, url);
     expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
   });
 
   test("every model of the family carries it", async () => {
     for (const model of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
-      const { sent } = await turn(model);
-      expect(sent.reasoning_effort).toBe("none");
+      const { sent, url } = await turn(model);
+      expect(effortOf(sent, url)).toBe("none");
+      expectStoreOff(sent, url);
       fake?.restore();
     }
   });
@@ -238,8 +252,9 @@ describe("createChatModel on the gpt-5.6 family", () => {
   // The typed `reasoning` field would be dropped here: @langchain/openai gates it on its own
   // isReasoningModel(), which tests model.startsWith("gpt-5") and so misses a routed id.
   test("a routed OpenRouter id carries it too", async () => {
-    const { sent } = await turn("openai/gpt-5.6-luna", "openrouter");
-    expect(sent.reasoning_effort).toBe("none");
+    const { sent, url } = await turn("openai/gpt-5.6-luna", "openrouter");
+    expect(effortOf(sent, url)).toBe("none");
+    expectStoreOff(sent, url);
   });
 
   // Only the rejection's own precondition (tools) may disable reasoning. graph.ts invokes the RAW
@@ -256,6 +271,8 @@ describe("createChatModel on the gpt-5.6 family", () => {
     });
     await chat.invoke([{ role: "user", content: "oi" }]);
     expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+    expect(fake.requests[0]).not.toHaveProperty("reasoning");
+    expectStoreOff(fake.requests[0] ?? {}, fake.urls[0] ?? "");
   });
 
   test("binding tools does not contaminate the raw instance behind it", async () => {
@@ -269,8 +286,9 @@ describe("createChatModel on the gpt-5.6 family", () => {
     const bound = chat.bindTools?.([getCurrentTime]) ?? chat;
     await bound.invoke([{ role: "user", content: "oi" }]);
     await chat.invoke([{ role: "user", content: "oi" }]);
-    expect(fake.requests[0]?.reasoning_effort).toBe("none");
+    expect(effortOf(fake.requests[0] ?? {}, fake.urls[0] ?? "")).toBe("none");
     expect(fake.requests[1]).not.toHaveProperty("reasoning_effort");
+    expect(fake.requests[1]).not.toHaveProperty("reasoning");
   });
 });
 
@@ -660,12 +678,13 @@ describe("a fine-tuned id is read through to its base model", () => {
 // on those, and the ft: match above is what makes the overlap reachable, because the last
 // segments of "ft:<base>:<org>:<name>:<id>" are free text the operator writes: a support agent
 // fine-tuned as "codex-support" contains "codex" and gets routed away.
-describe("the completions-spelled pin follows the endpoint, not a guess about it", () => {
+describe("the pin follows the endpoint, not a guess about it", () => {
   // The endpoint is not settled at construction: @langchain/openai also switches to Responses when
-  // the CALL carries an OpenAI built-in tool or a Responses-only option. A gpt-5.6 model that stays
-  // on completions bare is routed away the moment such a tool is bound, so the pin has to be
-  // decided where the tools are, not where the client is built.
-  test("a built-in tool bound later moves the turn, and the pin does not follow", async () => {
+  // the CALL carries an OpenAI built-in tool or a Responses-only option, so the pin's spelling is
+  // decided where the tools are, not where the client is built. On the live API gpt-5.6 answers 200
+  // on /v1/responses with effort "none" and a function tool or web_search alike, and its default
+  // effort there is "medium": without the pin, a tool call would start reasoning where it did not.
+  test("a built-in tool bound later moves the turn, and the pin follows in its spelling", async () => {
     fake = fakeOpenAI();
     const chat = createChatModel({
       provider: "openai",
@@ -678,31 +697,20 @@ describe("the completions-spelled pin follows the endpoint, not a guess about it
       .catch(() => undefined);
     expect(fake.urls[0]).toContain("/responses");
     expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+    expect(fake.requests[0]?.reasoning).toEqual({ effort: "none" });
+    expect(fake.requests[0]?.store).toBe(false);
   });
 
-  test("and plain function tools on the same model keep it", async () => {
-    const { sent, url } = await turn("gpt-5.6-luna");
-    expect(url).toContain("/chat/completions");
-    expect(sent.reasoning_effort).toBe("none");
-  });
-
-  // Lowercase suffix: the adapter routes it away, so the pin must not travel.
-  test("a fine-tuned gpt-5.6 the adapter routes away carries no pin", async () => {
-    const { sent, url } = await turn("ft:gpt-5.6-luna:acme:codex-support:x1");
-    expect(url).toContain("/responses");
-    expect(sent).not.toHaveProperty("reasoning_effort");
-  });
-
-  // NOTE: Uppercase suffix: `_modelPrefersResponsesAPI` uses case-SENSITIVE `includes`, so the very
-  // same agent stays on completions, where dropping the pin brings back the tools 400.
   test.each([
+    "gpt-5.6-luna",
+    "ft:gpt-5.6-luna:acme:codex-support:x1",
     "ft:gpt-5.6-luna:acme:Codex-support:x1",
     "ft:gpt-5.6-luna:acme:GPT-5.4-PRO-migration:x1",
     "ft:gpt-5.6-luna:acme:suporte:x1",
-  ])("%s stays on completions and keeps the pin", async (model) => {
+  ])("%s with plain function tools carries it", async (model) => {
     const { sent, url } = await turn(model);
-    expect(url).toContain("/chat/completions");
-    expect(sent.reasoning_effort).toBe("none");
+    expect(effortOf(sent, url)).toBe("none");
+    expectStoreOff(sent, url);
   });
 });
 
@@ -746,16 +754,17 @@ describe("the completions spelling never leaves for the responses endpoint", () 
       .invoke([{ role: "user", content: "oi" }]);
     if (fake.urls[0]?.includes("/responses")) {
       expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+      expect(fake.requests[0]?.store).toBe(false);
+    } else {
+      expect(fake.requests[0]).not.toHaveProperty("reasoning");
     }
   });
 
-  // NOTE: The other half of the same seam, which a case-insensitive routing guess would break:
-  // whenever a gpt-5.6 model DOES leave for completions with tools attached, the "none" pin has to
-  // be on it. Stated as an invariant so neither direction is fixed at the other's expense:
-  // withholding the pin too eagerly brings back the tools 400, sending it too eagerly breaks the
-  // Responses route.
+  // NOTE: The other half of the same seam: whichever endpoint a gpt-5.6 tool call lands on, the
+  // "none" pin is on it, so neither the tools 400 on completions nor a default "medium" on
+  // responses can come back.
   test.each(IDS.filter((m) => m.includes("gpt-5.6")))(
-    "%s, when a gpt-5.6 stays on completions",
+    "%s, a gpt-5.6 tool call carries the pin on either endpoint",
     async (model) => {
       fake = fakeOpenAI();
       const chat = createChatModel({
@@ -766,9 +775,7 @@ describe("the completions spelling never leaves for the responses endpoint", () 
       await chat
         .bindTools?.([getCurrentTime])
         .invoke([{ role: "user", content: "oi" }]);
-      if (fake.urls[0]?.includes("/chat/completions")) {
-        expect(fake.requests[0]?.reasoning_effort).toBe("none");
-      }
+      expect(effortOf(fake.requests[0] ?? {}, fake.urls[0] ?? "")).toBe("none");
     },
   );
 

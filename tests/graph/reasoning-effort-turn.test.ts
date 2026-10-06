@@ -271,7 +271,7 @@ describe.skipIf(!dbUp)("a turn run at the effort the operator chose", () => {
     expect(sent).toEqual([[701, REPLY]]);
   });
 
-  test("an agent that never chose one is left on the endpoint it uses today", async () => {
+  test("an agent that never chose one keeps the tool pin on whichever endpoint, and OpenAI keeps nothing", async () => {
     await setEffort(null);
     await seedConversation(702);
     const fake = fakeOpenAI();
@@ -292,8 +292,16 @@ describe.skipIf(!dbUp)("a turn run at the effort the operator chose", () => {
     } finally {
       fake.restore();
     }
-    expect(fake.calls[0]?.url).toContain("/v1/chat/completions");
-    expect(fake.calls[0]?.body).not.toHaveProperty("reasoning");
+    // @langchain/openai picks the endpoint for gpt-5.6 itself. The turn binds tools, so the
+    // family's "none" pin rides in that endpoint's spelling, and /v1/responses is told not to store.
+    const call = fake.calls[0];
+    if (call?.url.includes("/v1/responses")) {
+      expect(call.body).not.toHaveProperty("reasoning_effort");
+      expect(call.body.reasoning).toEqual({ effort: "none" });
+      expect(call.body.store).toBe(false);
+    } else {
+      expect(call?.body.reasoning_effort).toBe("none");
+    }
     expect(sent).toEqual([[702, REPLY]]);
   });
 });

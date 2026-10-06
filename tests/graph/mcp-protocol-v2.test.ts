@@ -231,7 +231,8 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
   });
 
   // When the SSE fallback fails too, the error still names the streamable HTTP attempt and its
-  // status, so a wrong credential reads as an authentication failure and not as an SSE problem.
+  // status, so a wrong credential reads as an authentication failure and not as an SSE problem, and
+  // it carries no credential, not even one in the URL's query.
   test.each([
     ["without", {}],
     ["with", DECLARED],
@@ -240,6 +241,7 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     async (_label, headers) => {
       const locked = await start({ MCP_REQUIRE_TOKEN: "certo" });
       const s = sel(locked, {
+        url: `http://127.0.0.1:${locked.port}/mcp?key=segredo-na-query`,
         headers: { ...headers, Authorization: "Bearer errado" },
       });
       const err = await discoverMcpServer(
@@ -252,8 +254,9 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
       expect(err?.message).toContain(
         "failed with HTTP 401 (authentication failed)",
       );
-      expect(err?.message).toContain("The SSE fallback at");
+      expect(err?.message).toContain("The SSE fallback failed too: SSE error");
       expect(err?.message).not.toContain("errado");
+      expect(err?.message).not.toContain("segredo-na-query");
     },
   );
 

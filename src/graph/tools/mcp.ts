@@ -469,17 +469,18 @@ async function connectClient(
   } catch (err) {
     const code = httpErrorCode(err);
     if (code === null || code < 400 || code >= 500) throw err;
-    const fallbacks = sseFallbackUrls(url);
     let last: unknown = err;
-    for (const sseUrl of fallbacks) {
+    for (const sseUrl of sseFallbackUrls(url)) {
       try {
         return await open(new SSEClientTransport(new URL(sseUrl), opts));
       } catch (e) {
         last = e;
       }
     }
+    // NOTE: no URL in the message: a query-injected credential lives there, and this error reaches
+    // the logs and the alert channels.
     throw new Error(
-      `streamable HTTP at ${url} failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}: ${errorText(err)}. The SSE fallback at ${fallbacks.join(" and ")} failed too: ${errorText(last)}`,
+      `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}: ${errorText(err)}. The SSE fallback failed too: ${errorText(last)}`,
       { cause: last },
     );
   }

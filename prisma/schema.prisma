@@ -163,6 +163,7 @@ model Tenant {
   promptVariantAssignments      PromptVariantAssignment[]
   llmUsages                     LlmUsage[]
   spendCostSnapshots            SpendCostSnapshot[]
+  unpricedModelAnnouncements    UnpricedModelAnnouncement[]
   executionLogs                 ExecutionLog[]
   alertChannels                 AlertChannel[]
   alertDeliveries               AlertDelivery[]
@@ -2140,31 +2141,29 @@ model PromptVariantAssignment {
 
 // NOTE: captured at the source (LangChain callback / model wrapper), not mirrored from
 // Langfuse. Substrate for the per-agent/per-conversation cost dashboard.
-// The month's cost per tenant and source, as the Langfuse poll last saw it (issue #426). The spend
-// ceiling's gate reads THIS row, never Langfuse: `polledAt` is the last successful poll, the
-// `pollError` pair the last failure, and a failure never overwrites the figure. `tracedCalls`,
-// `costedCalls` and `unpricedModels` reconcile the figure against the local ledger, because Langfuse
-// prices a model it does not know at zero and a ceiling that undercounts has to say so.
+// The month's cost per tenant and source, as the poll last summed it from `llm_usage` (issues #426,
+// #1060). The spend ceiling's gate reads THIS row, never the ledger: `polledAt` is the last
+// successful poll, the `pollError` pair the last failure, and a failure never overwrites the figure.
 model SpendCostSnapshot {
   id                    BigInt    @id @default(autoincrement())
   tenantId              BigInt    @map("tenant_id")
-  // "inbox" | "playground": the same split `LlmUsage.source` carries, told apart on the Langfuse
-  // side by the trace's environment (`environmentForSource`).
+  // "inbox" | "playground": the same split `LlmUsage.source` carries.
   source                String
   // The calendar month, UTC, as `monthStart` derives it.
   monthStart            DateTime  @map("month_start")
+  // The month's priced `llm_usage.cost_usd` for this source, as of `polledAt` (poll.ts).
   costUsd               Decimal   @default(0) @map("cost_usd") @db.Decimal(14, 6)
-  tracedCalls           Int       @default(0) @map("traced_calls")
-  costedCalls           Int       @default(0) @map("costed_calls")
-  unpricedModels        Json      @default("[]") @map("unpriced_models")
-  // Which Langfuse project the series belongs to (`<apiBase>#<projectId>`), null until the first
-  // successful poll, and what was carried over from the previous project when the tenant switched
-  // mid-month: the figure is the carry plus the current project's own total (poll.ts).
-  projectKey            String?   @map("project_key")
-  carriedUsd            Decimal   @default(0) @map("carried_usd") @db.Decimal(14, 6)
-  carriedTracedCalls    Int       @default(0) @map("carried_traced_calls")
-  carriedCostedCalls    Int       @default(0) @map("carried_costed_calls")
-  carriedUnpricedModels Json      @default("[]") @map("carried_unpriced_models")
+  // The Langfuse reconciliation and project-switch carry, read by nothing since the poll sums the
+  // ledger. Ignored for one release so the previous image keeps querying them through a rolling
+  // deploy and a rollback; the next release drops them (.claude/rules/prisma.md, "Dropping a column").
+  tracedCalls           Int       @default(0) @map("traced_calls") @ignore
+  costedCalls           Int       @default(0) @map("costed_calls") @ignore
+  unpricedModels        Json      @default("[]") @map("unpriced_models") @ignore
+  projectKey            String?   @map("project_key") @ignore
+  carriedUsd            Decimal   @default(0) @map("carried_usd") @ignore @db.Decimal(14, 6)
+  carriedTracedCalls    Int       @default(0) @map("carried_traced_calls") @ignore
+  carriedCostedCalls    Int       @default(0) @map("carried_costed_calls") @ignore
+  carriedUnpricedModels Json      @default("[]") @map("carried_unpriced_models") @ignore
   polledAt              DateTime? @map("polled_at")
   pollError             String?   @map("poll_error")
   pollFailedAt          DateTime? @map("poll_failed_at")
@@ -2176,6 +2175,24 @@ model SpendCostSnapshot {
 
   @@unique([tenantId, source, monthStart])
   @@map("spend_cost_snapshots")
+}
+
+// ONE ANNOUNCEMENT PER MODEL, MONTH AND SOURCE for a model the usage ledger could not price
+// (src/modules/pricing/unpriced-alert.ts). The row is the claim: inserting it is what entitles the
+// caller to announce, and a line that did not land deletes it so the next call tries again.
+model UnpricedModelAnnouncement {
+  id         BigInt   @id @default(autoincrement())
+  tenantId   BigInt   @map("tenant_id")
+  source     String
+  monthStart DateTime @map("month_start")
+  model       String
+  claimedAt   DateTime  @default(now()) @map("claimed_at")
+  deliveredAt DateTime? @map("delivered_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, source, monthStart, model], map: "unpriced_model_announcements_claim_key")
+  @@map("unpriced_model_announcements")
 }
 
 model LlmUsage {

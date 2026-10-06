@@ -2,7 +2,6 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { resolveLangfuseConfig } from "@/graph/observability";
 import type { UsageSource } from "@/graph/usage";
 import { AppError, TenantTargetRequiredError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -32,13 +31,10 @@ function sysCtx(tenantId: bigint): TenantContext {
 }
 
 // WHAT THE POLL LAST KNEW about one (tenant, source, month): the figure the gate decides on, and its
-// health. `costUsd` is Langfuse's cost for the month, monotonic inside it; `polledAt` the last
-// successful poll; the `pollError` pair the last failure, which never overwrites the figure.
+// health. `costUsd` is the ledger's priced cost for the month at the last poll; `polledAt` that
+// poll; the `pollError` pair the last failure, which never overwrites the figure.
 export interface SpendSnapshot {
   costUsd: number;
-  tracedCalls: number;
-  costedCalls: number;
-  unpricedModels: string[];
   polledAt: Date | null;
   pollError: string | null;
   pollFailedAt: Date | null;
@@ -69,11 +65,6 @@ export async function readSpendSnapshot(
   if (!row) return null;
   return {
     costUsd: Number(row.costUsd),
-    tracedCalls: row.tracedCalls,
-    costedCalls: row.costedCalls,
-    unpricedModels: Array.isArray(row.unpricedModels)
-      ? row.unpricedModels.filter((m): m is string => typeof m === "string")
-      : [],
     polledAt: row.polledAt,
     pollError: row.pollError,
     pollFailedAt: row.pollFailedAt,
@@ -92,38 +83,14 @@ export async function spendUsedInMonth(
 }
 
 // WHEN A FIGURE STOPS BEING FRESH: three missed polls. Under that the gate keeps deciding on the
-// last good figure regardless — spend only grows inside a month, so it is a floor of the truth and
-// under-refuses by the lag, never the other way — but past it the console says so out loud and the
-// alert line has already fired. Derived from the cadence rather than fixed, so an operator who
-// polls every minute is told about a five-minute silence.
+// last good figure regardless, but past it the console says so out loud and the alert line has
+// already fired. Derived from the cadence rather than fixed, so an operator who polls every minute
+// is told about a three-minute silence.
 export const SPEND_SNAPSHOT_STALE_AFTER_MS =
   3 * config.spendCeiling.pollIntervalMs;
 
-// With the ceiling off the poll still runs wherever Langfuse is configured, so the console always
-// has the month's figure, but nothing is enforced on it: an hour is plenty, and it spares Langfuse
-// twelve queries an hour per tenant that never set a ceiling.
-export const SPEND_POLL_IDLE_INTERVAL_MS = 3_600_000;
-
-export function spendPollIntervalMs(enabled: boolean): number {
-  return enabled
-    ? config.spendCeiling.pollIntervalMs
-    : Math.max(config.spendCeiling.pollIntervalMs, SPEND_POLL_IDLE_INTERVAL_MS);
-}
-
-// WHAT THE POLL WRITES AS THE ERROR WHEN THE TENANT HAS NO USABLE LANGFUSE: the block is off, the
-// credential reference is dangling, or the keys do not parse. One string, shared with the poll that
-// writes it and the console that reads it, because three copies of a sentinel are three ways to
-// misspell it.
-export const LANGFUSE_NOT_CONFIGURED = "langfuse-not-configured";
-
-// A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE. The row keeps the
-// last figure (shown, and still the floor if Langfuse returns), but the gate must not refuse a
-// tenant for the rest of the month on a number nothing can refresh. Every OTHER failure is
-// staleness, and stale decides.
-export function snapshotUnenforceable(
-  row: { pollError: string | null } | null,
-): boolean {
-  return row?.pollError === LANGFUSE_NOT_CONFIGURED;
+export function spendPollIntervalMs(): number {
+  return config.spendCeiling.pollIntervalMs;
 }
 
 export interface SpendSnapshotHealth {
@@ -213,16 +180,6 @@ export async function spendCeilingVerdict(
       base,
     );
     const snapshot = row ? snapshotHealth(row, evaluatedAt) : null;
-    if (row && snapshotUnenforceable(row)) {
-      return {
-        state: "allowed",
-        usedUsd: row.costUsd,
-        ceilingUsd: ceilingFor(cfg, params.source),
-        cfg,
-        evaluatedAt,
-        snapshot,
-      };
-    }
     return {
       ...decideSpend({
         cfg,
@@ -438,22 +395,16 @@ export interface SpendCeilingUsageEntry {
   // null = no ceiling applies to this half (the block is off, or the number is 0).
   ceilingUsd: number | null;
   state: SpendVerdict["state"];
-  // The snapshot's health, ISO instants: when the figure was last refreshed, and the last failure
-  // if the poll is failing now. `stale` past three missed polls at this tenant's cadence.
+  // The figure's health, ISO instants: when it was last refreshed, and the last failure if the poll
+  // is failing now. `stale` past three missed polls. With the ceiling off the figure is summed at
+  // read time, so it is as fresh as the request.
   polledAt: string | null;
   pollError: string | null;
   pollFailedAt: string | null;
   stale: boolean;
-  // The reconciliation: generations Langfuse saw this month and how many of them carried a cost,
-  // the models it priced at zero, and the local ledger's own count of billed calls for the same
-  // window. A ceiling that undercounts has to say so on the screen that shows the bar.
-  tracedCalls: number;
-  costedCalls: number;
-  ledgerCalls: number;
+  // Calls this month the ledger could not price, which the figure leaves out, and their models.
+  unpricedCalls: number;
   unpricedModels: string[];
-  // What of `usedUsd` was carried over from a PREVIOUS Langfuse project (see the carry in poll.ts),
-  // so the console can explain a figure higher than the project's own cost card beside it.
-  carriedUsd: number;
 }
 
 export interface SpendCeilingUsageDto {
@@ -464,23 +415,19 @@ export interface SpendCeilingUsageDto {
   // instead of guessing it from the browser's own clock, which sits in another timezone often
   // enough that "this month" would silently mean a different window than the gate's.
   periodStart: string;
-  // Whether the tenant's Langfuse credential RESOLVES (switched on, the vault entry exists, the keys
-  // parse), asked the way the poll asks it, so the flag agrees with a `langfuse-not-configured` row.
-  // Without it the ceiling cannot be enforced, and the console says so.
-  langfuseConfigured: boolean;
   // A ceiling this block was given in tokens before the unit changed, never enforced: see
   // `SpendCeilingConfig.legacyTokens`.
   legacyTokens: SpendCeilingConfig["legacyTokens"];
-  // This tenant's poll cadence (slower with the ceiling off), so the console can say how old a
-  // figure may be at most.
+  // The poll cadence, so the console can say how old a figure may be at most.
   pollIntervalMs: number;
   entries: SpendCeilingUsageEntry[];
 }
 
 // WHAT THE CONSOLE SHOWS: both halves, always, with figures even when the block is off, so an
-// operator picking a ceiling sees last month's shape. Takes the REQUEST's context, never an id lifted
-// out of it, so a stale tenant selection is refused rather than read as an empty screen (see
-// tests/modules/tenant-selector-entry-points.test.ts).
+// operator picking a ceiling sees the month's shape. With the ceiling on the figure is the snapshot,
+// because the bar shows what the gate decides on; off, it is the ledger summed now, since no poll
+// runs. Takes the REQUEST's context, never an id lifted out of it, so a stale tenant selection is
+// refused rather than read as an empty screen (see tests/modules/tenant-selector-entry-points.test.ts).
 export async function spendCeilingUsage(params: {
   ctx: TenantContext;
   base?: PrismaClient;
@@ -499,75 +446,82 @@ export async function spendCeilingUsage(params: {
   const since = monthStart(at);
   const until = monthEnd(at);
   const sources: UsageSource[] = ["inbox", "playground"];
-  const pollIntervalMs = spendPollIntervalMs(cfg.enabled);
-  const { langfuse, entries } = await runScopedOn(
-    base,
-    params.ctx,
-    async (db) => {
-      const langfuse = await resolveLangfuseConfig(db, tenantId);
-      const entries = await Promise.all(
-        sources.map(async (source): Promise<SpendCeilingUsageEntry> => {
-          const row = await db.spendCostSnapshot.findUnique({
-            where: {
-              tenantId_source_monthStart: {
-                tenantId,
-                source,
-                monthStart: since,
-              },
-            },
+  const pollIntervalMs = spendPollIntervalMs();
+  const entries = await runScopedOn(base, params.ctx, (db) =>
+    Promise.all(
+      sources.map(async (source): Promise<SpendCeilingUsageEntry> => {
+        const month = {
+          tenantId,
+          source,
+          createdAt: { gte: since, lt: until },
+        };
+        const unpriced = await db.llmUsage.groupBy({
+          by: ["model"],
+          where: { ...month, costUsd: null },
+          _count: { _all: true },
+        });
+        const unpricedFields = {
+          unpricedCalls: unpriced.reduce((n, g) => n + g._count._all, 0),
+          unpricedModels: unpriced.map((g) => g.model).sort(),
+        };
+        if (!cfg.enabled) {
+          const live = await db.llmUsage.aggregate({
+            where: month,
+            _sum: { costUsd: true },
           });
-          const ledgerCalls = await db.llmUsage.count({
-            where: { tenantId, source, createdAt: { gte: since, lt: until } },
-          });
-          const snapshot: SpendSnapshot | null = row
-            ? {
-                costUsd: Number(row.costUsd),
-                tracedCalls: row.tracedCalls,
-                costedCalls: row.costedCalls,
-                unpricedModels: Array.isArray(row.unpricedModels)
-                  ? row.unpricedModels.filter(
-                      (m): m is string => typeof m === "string",
-                    )
-                  : [],
-                polledAt: row.polledAt,
-                pollError: row.pollError,
-                pollFailedAt: row.pollFailedAt,
-              }
-            : null;
-          const verdict = decideSpend({
-            cfg,
-            source,
-            usedUsd: snapshot?.costUsd ?? 0,
-          });
-          const health = snapshot
-            ? snapshotHealth(snapshot, at, 3 * pollIntervalMs)
-            : null;
+          const usedUsd = Number(live._sum.costUsd ?? 0);
           return {
             source,
-            usedUsd: snapshot?.costUsd ?? 0,
-            ceilingUsd: verdict.ceilingUsd,
-            // What the gate would answer, which is what the bar is for.
-            state: snapshotUnenforceable(snapshot) ? "allowed" : verdict.state,
-            polledAt: health?.polledAt?.toISOString() ?? null,
-            pollError: health?.pollError ?? null,
-            pollFailedAt: health?.pollFailedAt?.toISOString() ?? null,
-            // Nothing read is nothing fresh: a month with no row is one the gate lets through.
-            stale: health?.stale ?? true,
-            tracedCalls: snapshot?.tracedCalls ?? 0,
-            costedCalls: snapshot?.costedCalls ?? 0,
-            ledgerCalls,
-            unpricedModels: snapshot?.unpricedModels ?? [],
-            carriedUsd: row ? Number(row.carriedUsd) : 0,
+            usedUsd,
+            ceilingUsd: null,
+            state: "allowed",
+            polledAt: at.toISOString(),
+            pollError: null,
+            pollFailedAt: null,
+            stale: false,
+            ...unpricedFields,
           };
-        }),
-      );
-      return { langfuse, entries };
-    },
+        }
+        const row = await db.spendCostSnapshot.findUnique({
+          where: {
+            tenantId_source_monthStart: { tenantId, source, monthStart: since },
+          },
+        });
+        const snapshot: SpendSnapshot | null = row
+          ? {
+              costUsd: Number(row.costUsd),
+              polledAt: row.polledAt,
+              pollError: row.pollError,
+              pollFailedAt: row.pollFailedAt,
+            }
+          : null;
+        const verdict = decideSpend({
+          cfg,
+          source,
+          usedUsd: snapshot?.costUsd ?? 0,
+        });
+        const health = snapshot
+          ? snapshotHealth(snapshot, at, 3 * pollIntervalMs)
+          : null;
+        return {
+          source,
+          usedUsd: snapshot?.costUsd ?? 0,
+          ceilingUsd: verdict.ceilingUsd,
+          // What the gate would answer, which is what the bar is for.
+          state: verdict.state,
+          polledAt: health?.polledAt?.toISOString() ?? null,
+          pollError: health?.pollError ?? null,
+          pollFailedAt: health?.pollFailedAt?.toISOString() ?? null,
+          // Nothing read is nothing fresh: a month with no row is one the gate lets through.
+          stale: health?.stale ?? true,
+          ...unpricedFields,
+        };
+      }),
+    ),
   );
   return {
     enabled: cfg.enabled,
     periodStart: since.toISOString(),
-    langfuseConfigured: langfuse !== null,
     legacyTokens: cfg.legacyTokens,
     pollIntervalMs,
     entries,

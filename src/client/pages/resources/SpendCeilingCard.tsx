@@ -35,8 +35,8 @@ const USAGE_RETRY_MS = 60_000;
 // The measurement sits above the fields that set the ceiling: a monthly budget cannot be picked
 // without seeing what the month already cost. Both halves show even with no ceiling set, coloured by
 // the gate's own verdict so the screen and the runtime agree on "close to the ceiling". The figure is
-// DOLLARS from a Langfuse snapshot a job refreshes, so each bar carries the snapshot's health and the
-// reconciliation against the local ledger: an undercounting ceiling says so here or nowhere.
+// DOLLARS from the usage ledger, summed into a snapshot a job refreshes, so each bar carries the
+// snapshot's health and the calls no price covered: an undercounting ceiling says so here or nowhere.
 
 // The bar, the figure and every caveat under them are shared with the dashboard, which shows the
 // same ceiling on the page where spend is watched. Only the composition is local.
@@ -56,12 +56,7 @@ function BarRow({
   return (
     <div className="flex flex-col gap-1">
       <SpendBar label={label} entry={entry} money={money} enabled={enabled} />
-      <SpendHealthLines
-        entry={entry}
-        when={when}
-        money={money}
-        enabled={enabled}
-      />
+      <SpendHealthLines entry={entry} when={when} enabled={enabled} />
     </div>
   );
 }
@@ -69,13 +64,9 @@ function BarRow({
 export function SpendCeilingCard({
   value,
   onSaved,
-  reloadKey = 0,
 }: {
   value: SpendCeiling;
   onSaved: (next: SpendCeiling) => void;
-  // Bumped by the page when the Langfuse card beside this one saves: the flag above the bars is the
-  // credential's present, and it has to be re-read the moment that present changes.
-  reloadKey?: number;
 }) {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -121,9 +112,9 @@ export function SpendCeilingCard({
     });
   }, [value]);
 
-  // A read that settles after a newer one is dropped: the mount-time read and the one the
-  // Langfuse save asks for can overlap, and the older answer landing last would restore the pre-save
-  // flag. Only the latest sequence number's answer, or failure, reaches the state.
+  // A read that settles after a newer one is dropped: the mount-time read and a save's re-read can
+  // overlap, and the older answer landing last would restore the pre-save figures. Only the latest
+  // sequence number's answer, or failure, reaches the state.
   const readSeq = useRef(0);
   const loadUsage = useCallback(async () => {
     const seq = ++readSeq.current;
@@ -140,10 +131,9 @@ export function SpendCeilingCard({
     }
   }, []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is the page's signal to re-read, not a value the effect reads
   useEffect(() => {
     void loadUsage();
-  }, [loadUsage, reloadKey]);
+  }, [loadUsage]);
 
   // The card re-reads while it stays open: the health beside each bar is computed per read, so
   // a card left mounted would keep saying "refreshed" from its first read. The period is the poll's
@@ -228,11 +218,6 @@ export function SpendCeilingCard({
     value.legacyTokens === undefined
       ? (usage?.legacyTokens ?? null)
       : value.legacyTokens;
-  // Two reads can say "no Langfuse", as two sentences. The flag is the credential's PRESENT,
-  // resolved on this request, and says whether the cost can be read, above the bars. A row's
-  // sentinel is what the GATE acts on (it learns of a credential only at the next poll), so each bar
-  // says from its own row whether calls go through.
-  const langfuseMissing = usage !== null && !usage.langfuseConfigured;
 
   return (
     <Card className="flex flex-col gap-4">
@@ -243,7 +228,7 @@ export function SpendCeilingCard({
         <p className="mt-0.5 text-sm text-text-muted">
           {t(
             "spendCeiling.desc",
-            "Stop spending once a calendar month reaches a dollar budget, as Langfuse costs the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
+            "Stop spending once a calendar month reaches a dollar budget, as this app's usage records price the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
           )}
         </p>
       </div>
@@ -288,14 +273,6 @@ export function SpendCeilingCard({
           </div>
         ) : (
           <>
-            {langfuseMissing && (
-              <p className="text-sm text-warning">
-                {t(
-                  "spendCeiling.usage.langfuseMissing",
-                  "Langfuse is not configured for this tenant, so the month's cost cannot be read. Configure it in the Langfuse card.",
-                )}
-              </p>
-            )}
             <BarRow
               label={t("spendCeiling.source.inbox", "Customer conversations")}
               entry={entry("inbox")}
@@ -328,7 +305,7 @@ export function SpendCeilingCard({
           label={t("spendCeiling.inboxUsd", "Monthly ceiling: customers (USD)")}
           description={t(
             "spendCeiling.usdHint",
-            "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
+            "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
           )}
           error={usdInvalid.inbox ? usdError : null}
         >
@@ -347,7 +324,7 @@ export function SpendCeilingCard({
           )}
           description={t(
             "spendCeiling.usdHint",
-            "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
+            "US dollars per calendar month, as this app's usage records price the calls. 0 means no ceiling on this half.",
           )}
           error={usdInvalid.playground ? usdError : null}
         >

@@ -424,8 +424,6 @@ export async function updateLangfuse(
       });
     },
   );
-  // NOTE: a Langfuse save changes what the spend ceiling's poll would find, so it is resynced now.
-  await syncTenantSpendPoll(requireTenantId(ctx), base);
   return next;
 }
 

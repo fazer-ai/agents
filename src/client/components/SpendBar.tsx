@@ -11,8 +11,6 @@ type Usage = NonNullable<
 >;
 export type SpendUsageEntry = Usage["entries"][number];
 
-export const SPEND_NOT_CONFIGURED = "langfuse-not-configured";
-
 // THE BAR AND ITS CAVEATS, SHARED BY THE TWO SCREENS THAT SHOW THEM. The ceiling is set in the
 // Advanced panel and watched on the dashboard, and the two would drift the moment one of them
 // learned about a new snapshot state the other did not: the colour thresholds, the "of" phrasing
@@ -83,110 +81,59 @@ export function SpendBar({
 }
 
 // Everything the figure above cannot be trusted for, said beside it or said nowhere: when it was
-// last refreshed, whether the poll is failing, whether the row is a sentinel the gate lets through,
-// and how much of the month Langfuse actually priced. With the ceiling off only what is true of the
-// figure is said: every line about what the gate does with it would describe a gate that is not there.
+// last refreshed, whether the poll is failing, and which calls of the month it leaves out for want of
+// a price. With the ceiling off the figure is summed at read time, so only that last line applies.
 export function SpendHealthLines({
   entry,
   when,
-  money,
   enabled,
 }: {
   entry: SpendUsageEntry | undefined;
   when: (iso: string) => string;
-  money: Intl.NumberFormat;
   enabled: boolean;
 }) {
   const { t } = useTranslation();
   if (!entry) return null;
-  const failing =
-    entry.pollError && entry.pollError !== SPEND_NOT_CONFIGURED
-      ? entry.pollError
-      : null;
-  // Nothing read is not "Langfuse priced none of it".
-  const uncosted =
-    entry.polledAt !== null &&
-    entry.ledgerCalls > 0 &&
-    entry.costedCalls < entry.ledgerCalls;
   return (
     <div className="flex flex-col gap-0.5 text-text-muted text-xs">
-      {entry.polledAt && (
+      {enabled && entry.polledAt && (
         <span className={cn({ "text-warning": entry.stale })}>
           {entry.stale
-            ? enabled
-              ? t(
-                  "spendCeiling.usage.stale",
-                  "Not refreshed since {{when}}. The last figure stands, and it can only undercount.",
-                  { when: when(entry.polledAt) },
-                )
-              : t(
-                  "spendCeiling.usage.staleOff",
-                  "Not refreshed since {{when}}, so the figure can only undercount.",
-                  { when: when(entry.polledAt) },
-                )
+            ? t(
+                "spendCeiling.usage.stale",
+                "Not refreshed since {{when}}. The last figure stands.",
+                { when: when(entry.polledAt) },
+              )
             : t("spendCeiling.usage.updated", "Refreshed {{when}}", {
                 when: when(entry.polledAt),
               })}
         </span>
       )}
-      {enabled && entry.pollError === SPEND_NOT_CONFIGURED && (
+      {enabled && entry.polledAt === null && (
         <span className="text-warning">
           {t(
-            "spendCeiling.usage.unenforced",
-            "Not enforced on this half: the last reading found no Langfuse, so calls go through until it is configured and read again.",
+            "spendCeiling.usage.unpolled",
+            "The month's cost has not been read yet: calls go through until the first reading lands.",
           )}
         </span>
       )}
-      {/* With the ceiling off the not-configured row is not a verdict the card names, so an unread
-          month says so even over it: a credential filled since leaves exactly that row until the
-          next hourly read. */}
-      {entry.polledAt === null &&
-        (!enabled || entry.pollError !== SPEND_NOT_CONFIGURED) && (
-          <span className={cn({ "text-warning": enabled })}>
-            {enabled
-              ? t(
-                  "spendCeiling.usage.unpolled",
-                  "The month's cost has not been read yet: calls go through until the first reading lands.",
-                )
-              : t(
-                  "spendCeiling.usage.unpolledOff",
-                  "The month's cost has not been read yet.",
-                )}
-          </span>
-        )}
-      {failing && entry.pollFailedAt && (
+      {enabled && entry.pollError && entry.pollFailedAt && (
         <span className="text-warning">
           {t(
             "spendCeiling.usage.pollFailing",
-            "Reading the cost from Langfuse has been failing since {{when}}: {{error}}",
-            { when: when(entry.pollFailedAt), error: failing },
+            "Reading the month's cost has been failing since {{when}}: {{error}}",
+            { when: when(entry.pollFailedAt), error: entry.pollError },
           )}
         </span>
       )}
-      {uncosted && (
-        <span className="text-warning">
-          {t(
-            "spendCeiling.usage.coverage",
-            "Langfuse priced {{costed}} of the {{ledger}} calls this month, so the figure undercounts.",
-            { costed: entry.costedCalls, ledger: entry.ledgerCalls },
-          )}
-        </span>
-      )}
-      {entry.carriedUsd > 0 && (
-        <span>
-          {t(
-            "spendCeiling.usage.carried",
-            "Includes {{carried}} spent in a Langfuse project this tenant no longer points at, carried over when it switched mid-month, so the figure is higher than the current project's own total.",
-            { carried: money.format(entry.carriedUsd) },
-          )}
-        </span>
-      )}
-      {entry.unpricedModels.length > 0 && (
+      {entry.unpricedCalls > 0 && (
         <span className="text-warning">
           {t(
             "spendCeiling.usage.unpriced",
-            "No price in Langfuse for: {{models}}",
+            "{{n}} calls this month have no price and are not in the figure: {{models}}. Set this account's own price for the model, then re-price them.",
             {
+              count: entry.unpricedCalls,
+              n: entry.unpricedCalls,
               models: entry.unpricedModels.join(", "),
             },
           )}

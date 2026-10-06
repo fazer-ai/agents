@@ -2,7 +2,6 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
-  act,
   cleanup,
   fireEvent,
   render,
@@ -12,10 +11,10 @@ import {
 import { ToastProvider } from "@/client/components/Toast";
 import { SpendCeilingCard } from "@/client/pages/resources/SpendCeilingCard";
 
-// The spend ceiling's card shows DOLLARS as Langfuse costed them, and beside the bar the health of
-// the figure and the reconciliation against the ledger: a ceiling that undercounts, a snapshot
-// nobody refreshed, a block written in tokens, a tenant with no Langfuse, each has a
-// sentence on this screen, because this is the screen that shows the bar.
+// The spend ceiling's card shows DOLLARS as the usage ledger priced them, and beside the bar the
+// health of the figure and the calls no price covered: a ceiling that undercounts, a snapshot nobody
+// refreshed, a block written in tokens, each has a sentence on this screen, because this is the
+// screen that shows the bar.
 
 const realFetch = globalThis.fetch;
 const requests: Array<{ method: string; path: string; body: unknown }> = [];
@@ -29,9 +28,7 @@ type Entry = {
   pollError: string | null;
   pollFailedAt: string | null;
   stale: boolean;
-  tracedCalls: number;
-  costedCalls: number;
-  ledgerCalls: number;
+  unpricedCalls: number;
   unpricedModels: string[];
 };
 
@@ -43,9 +40,7 @@ const entry = (patch: Partial<Entry> & { source: string }): Entry => ({
   pollError: null,
   pollFailedAt: null,
   stale: false,
-  tracedCalls: 0,
-  costedCalls: 0,
-  ledgerCalls: 0,
+  unpricedCalls: 0,
   unpricedModels: [],
   ...patch,
 });
@@ -96,7 +91,6 @@ const settings = {
 const baseUsage = () => ({
   enabled: true,
   periodStart: "2026-08-01T00:00:00.000Z",
-  langfuseConfigured: true,
   legacyTokens: null,
   pollIntervalMs: 300_000,
   entries: [
@@ -105,9 +99,6 @@ const baseUsage = () => ({
       usedUsd: 22.5,
       ceilingUsd: 20,
       state: "over",
-      tracedCalls: 40,
-      costedCalls: 40,
-      ledgerCalls: 40,
     }),
     entry({ source: "playground", usedUsd: 9.9 }),
   ],
@@ -143,9 +134,8 @@ describe("the spend ceiling card", () => {
     expect(screen.queryAllByText(/Refreshed/).length).toBe(2);
     // Nothing is wrong, so nothing warns.
     expect(has("Not refreshed since")).toBe(false);
-    expect(has("undercounts")).toBe(false);
-    expect(has("No price in Langfuse")).toBe(false);
-    expect(has("Langfuse is not configured")).toBe(false);
+    expect(has("have no price")).toBe(false);
+    expect(has("Langfuse")).toBe(false);
   });
 
   test("a stale snapshot, a failing poll and a model with no price each get a sentence", async () => {
@@ -156,11 +146,9 @@ describe("the spend ceiling card", () => {
       ceilingUsd: 20,
       state: "over",
       stale: true,
-      pollError: "Langfuse metrics API responded with 502",
+      pollError: "statement timeout",
       pollFailedAt: "2026-08-15T12:20:00.000Z",
-      tracedCalls: 38,
-      costedCalls: 30,
-      ledgerCalls: 40,
+      unpricedCalls: 10,
       unpricedModels: ["openrouter/free-model"],
     });
     installFetchStub(usage);
@@ -169,87 +157,9 @@ describe("the spend ceiling card", () => {
       expect(has("Not refreshed since")).toBe(true);
     });
     expect(has("failing since")).toBe(true);
-    expect(has("responded with 502")).toBe(true);
-    expect(has("priced 30 of the 40 calls")).toBe(true);
+    expect(has("statement timeout")).toBe(true);
+    expect(has("10 calls this month have no price")).toBe(true);
     expect(has("openrouter/free-model")).toBe(true);
-  });
-
-  // NOTE: the flag is re-read when the Langfuse card saves: the page bumps `reloadKey`, and the
-  // card asks for the usage again instead of showing the pre-save state until an unrelated save or
-  // a reload.
-  test("a bumped reloadKey re-reads the usage", async () => {
-    installFetchStub(baseUsage());
-    const r = render(
-      <ToastProvider>
-        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={0} />
-      </ToastProvider>,
-    );
-    await waitFor(() => {
-      expect(has("$22.50 of $20.00")).toBe(true);
-    });
-    const reads = () =>
-      requests.filter((q) => q.method === "GET" && q.path.endsWith("/usage"))
-        .length;
-    expect(reads()).toBe(1);
-    r.rerender(
-      <ToastProvider>
-        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={1} />
-      </ToastProvider>,
-    );
-    await waitFor(() => {
-      expect(reads()).toBe(2);
-    });
-  });
-
-  // NOTE: an older read landing after a newer one is dropped. The mount-time read is still out
-  // when the Langfuse card saves and bumps `reloadKey`; the save's read answers first
-  // with the credential in place, and the mount-time answer, with no credential, lands last. The
-  // card keeps the newer answer.
-  test("an older usage read landing after a newer one is dropped", async () => {
-    const before = { ...baseUsage(), langfuseConfigured: false };
-    const after = baseUsage();
-    let releaseFirst: (() => void) | null = null;
-    let reads = 0;
-    requests.length = 0;
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      const url = new URL(String(input instanceof Request ? input.url : input));
-      if (!url.pathname.endsWith("/spend-ceiling/usage")) return json({}, 404);
-      reads += 1;
-      if (reads === 1) {
-        await new Promise<void>((resolve) => {
-          releaseFirst = resolve;
-        });
-        return json({ instance: {}, ...before });
-      }
-      return json({ instance: {}, ...after });
-    }) as typeof fetch;
-    const r = render(
-      <ToastProvider>
-        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={0} />
-      </ToastProvider>,
-    );
-    await waitFor(() => {
-      expect(releaseFirst).not.toBeNull();
-    });
-    r.rerender(
-      <ToastProvider>
-        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={1} />
-      </ToastProvider>,
-    );
-    await waitFor(() => {
-      expect(has("$22.50 of $20.00")).toBe(true);
-    });
-    expect(reads).toBe(2);
-    expect(has("Langfuse is not configured")).toBe(false);
-    // Let the older answer land, and settle every tick it needs to reach the state.
-    await act(async () => {
-      (releaseFirst as (() => void) | null)?.();
-      for (let i = 0; i < 5; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    });
-    expect(has("Langfuse is not configured")).toBe(false);
-    expect(has("$22.50 of $20.00")).toBe(true);
   });
 
   // NOTE: the card re-reads on the poll's own period while it stays open. The health beside the bar
@@ -318,46 +228,22 @@ describe("the spend ceiling card", () => {
     expect(has("failing since")).toBe(false);
   });
 
-  // An unread month claims no pricing coverage: nothing read is not "Langfuse priced none of it".
-  test("a month nobody has polled yet claims nothing about what Langfuse priced", async () => {
-    const usage = baseUsage();
-    usage.entries[0] = entry({
-      source: "inbox",
-      ceilingUsd: 20,
-      polledAt: null,
-      stale: true,
-      ledgerCalls: 83,
-    });
-    installFetchStub(usage);
-    renderCard();
-    await waitFor(() => {
-      expect(has("has not been read yet")).toBe(true);
-    });
-    expect(has("priced 0 of the 83 calls")).toBe(false);
-  });
-
-  // With the ceiling off the card keeps the figure and what is true of it, and says nothing about a
-  // gate that is not there.
+  // With the ceiling off the figure is the ledger summed on the read: it stands alone, says nothing
+  // about a gate that is not there, and still names the calls it leaves out.
   test("with the ceiling off the figure stands alone, with no sentence about enforcement", async () => {
+    const now = new Date().toISOString();
     const usage = {
       ...baseUsage(),
       enabled: false,
-      pollIntervalMs: 3_600_000,
       entries: [
         entry({
           source: "inbox",
           usedUsd: 3.97,
-          tracedCalls: 40,
-          costedCalls: 25,
-          ledgerCalls: 40,
+          polledAt: now,
+          unpricedCalls: 15,
           unpricedModels: ["gpt-6-luna"],
         }),
-        entry({
-          source: "playground",
-          polledAt: null,
-          stale: true,
-          ledgerCalls: 83,
-        }),
+        entry({ source: "playground", polledAt: now }),
       ],
     };
     installFetchStub(usage);
@@ -368,65 +254,10 @@ describe("the spend ceiling card", () => {
     expect(has("(no ceiling)")).toBe(false);
     expect(screen.queryAllByRole("progressbar")).toHaveLength(0);
     expect(has("calls go through")).toBe(false);
-    expect(has("has not been read yet")).toBe(true);
-    expect(has("priced 0 of the 83 calls")).toBe(false);
+    expect(has("Refreshed")).toBe(false);
     // What stays true without a ceiling is still said.
-    expect(has("priced 25 of the 40 calls")).toBe(true);
+    expect(has("15 calls this month have no price")).toBe(true);
     expect(has("gpt-6-luna")).toBe(true);
-  });
-
-  // A pending credential filled since the last read leaves the not-configured row in place, with a
-  // credential that now resolves: the card must not show a bare zero for the hour until the next read.
-  test("with the ceiling off an unread month says so even over the not-configured row", async () => {
-    const usage = {
-      ...baseUsage(),
-      enabled: false,
-      langfuseConfigured: true,
-      entries: [
-        entry({
-          source: "inbox",
-          polledAt: null,
-          stale: true,
-          pollError: "langfuse-not-configured",
-        }),
-        entry({
-          source: "playground",
-          polledAt: null,
-          stale: true,
-          pollError: "langfuse-not-configured",
-        }),
-      ],
-    };
-    installFetchStub(usage);
-    renderCard({ ...settings, enabled: false });
-    await waitFor(() => {
-      expect(screen.queryAllByText(/has not been read yet/)).toHaveLength(2);
-    });
-    expect(has("calls go through")).toBe(false);
-    expect(has("Not enforced on this half")).toBe(false);
-  });
-
-  test("with the ceiling off a stale figure and a missing Langfuse say nothing about the gate", async () => {
-    const usage = {
-      ...baseUsage(),
-      enabled: false,
-      langfuseConfigured: false,
-      entries: [
-        entry({ source: "inbox", usedUsd: 1, stale: true }),
-        entry({
-          source: "playground",
-          polledAt: null,
-          pollError: "langfuse-not-configured",
-        }),
-      ],
-    };
-    installFetchStub(usage);
-    renderCard({ ...settings, enabled: false });
-    await waitFor(() => {
-      expect(has("Not refreshed since")).toBe(true);
-    });
-    expect(has("The last figure stands")).toBe(false);
-    expect(has("Not enforced on this half")).toBe(false);
   });
 
   // NOTE: the settings' explicit null wins. After a save in dollars the settings say
@@ -441,67 +272,6 @@ describe("the spend ceiling card", () => {
       expect(has("$22.50 of $20.00")).toBe(true);
     });
     expect(has("set in tokens")).toBe(false);
-  });
-
-  test("a tenant with no Langfuse is told the ceiling cannot be enforced", async () => {
-    const usage = { ...baseUsage(), langfuseConfigured: false };
-    usage.entries = usage.entries.map((e) => ({
-      ...e,
-      polledAt: null,
-      pollError: "langfuse-not-configured",
-      pollFailedAt: "2026-08-15T12:00:00.000Z",
-    }));
-    installFetchStub(usage);
-    renderCard();
-    await waitFor(() => {
-      expect(has("Langfuse is not configured")).toBe(true);
-    });
-    // NOTE: the credential's state above the bars, the gate's state on each bar.
-    expect(
-      screen.queryAllByText("Not enforced on this half", { exact: false }),
-    ).toHaveLength(2);
-    expect(has("has not been read yet")).toBe(false);
-    // The reason is said once, above the bars, not as a "failing since" line per bar.
-    expect(has("failing since")).toBe(false);
-  });
-
-  // NOTE: the sentinel is what the gate acts on. The flag is the credential's present; the gate
-  // reads the row and learns of a credential only at the next
-  // poll. A sentinel row under a true flag is a half the gate lets through, and says so, while
-  // nothing says the credential is missing.
-  test("a row still carrying the sentinel under a true flag says the half is not enforced", async () => {
-    const usage = baseUsage();
-    usage.langfuseConfigured = true;
-    usage.entries[0] = entry({
-      source: "inbox",
-      ceilingUsd: 20,
-      polledAt: null,
-      pollError: "langfuse-not-configured",
-      pollFailedAt: "2026-08-15T12:20:00.000Z",
-      stale: true,
-    });
-    installFetchStub(usage);
-    renderCard();
-    await waitFor(() => {
-      expect(has("Not enforced on this half")).toBe(true);
-    });
-    expect(has("Langfuse is not configured")).toBe(false);
-    expect(has("has not been read yet")).toBe(false);
-    expect(has("failing since")).toBe(false);
-  });
-
-  // THE OTHER WINDOW: the credential removed, the row still carrying a figure. The gate keeps
-  // refusing on it until the next poll writes the sentinel, so the card must not say calls go
-  // through; it says the cost cannot be read, and the bar keeps its figure and its colour.
-  test("a figure on the row still decides after the credential is removed", async () => {
-    const usage = { ...baseUsage(), langfuseConfigured: false };
-    installFetchStub(usage);
-    renderCard();
-    await waitFor(() => {
-      expect(has("Langfuse is not configured")).toBe(true);
-    });
-    expect(has("$22.50 of $20.00")).toBe(true);
-    expect(has("go through")).toBe(false);
   });
 
   test("a block written in tokens says it is not enforced", async () => {

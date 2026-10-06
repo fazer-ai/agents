@@ -18,125 +18,76 @@ ignored it, so a token on a small model and a token on a frontier model, one to 
 magnitude apart in price, moved the ceiling by the same amount. The number the operator typed did
 not track the invoice it exists to bound, and no arithmetic on their side could recover it.
 
-The ceiling's cost comes from **Langfuse** (`src/modules/analytics/langfuse-costs.ts`), which
-keeps the price table. (The per-call `llm_usage.cost_usd` the usage popover shows is priced locally,
-see `docs/playground.md`; the ceiling does not read it.) The ceiling is therefore denominated in **USD as Langfuse costs the month's
-generations**, and the accepted trade is that it is enforceable only where Langfuse is configured
-for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid keys, see
-`resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. "Configured"
-means the credential RESOLVES, asked the way the poll asks it: a reference to a deleted or malformed
-vault entry is what the poll writes on the row as `langfuse-not-configured`, and the console's flag
-agrees with the row rather than with the reference. The flag is the present and the row's sentinel is the last poll's finding: once the operator configures Langfuse the flag is true at once while the sentinel stays on the row until the next poll, so the card says two things from two places (review rounds 9 and 10): the flag, above the bars, says whether the cost can be read, and each bar says from its own row whether calls go through, because the gate reads the row and learns of a credential only at the next poll; the card re-reads the flag the moment the Langfuse card beside it saves. The same bar and the same caveats are drawn on the DASHBOARD (issue #427), from the shared `SpendBar`/`SpendHealthLines` in `src/client/components/SpendBar.tsx`, so the page an operator opens to watch spend shows what the spend is allowed to reach; the card there follows the page's usage segment, shows both halves under "All", and names its own period because the page's selector says 7d/30d/90d/all while the ceiling is always the calendar month (formatted from `periodStart` in UTC, since that instant is the month's UTC midnight and a browser west of it would print the month before), re-reads the usage on the poll's own period while it stays open (the health beside each bar is the server's per read, so a card left mounted across three missed polls would otherwise keep saying "refreshed" from its first read), and drops a read that settles after a newer one, so the mount-time answer landing after the save's never puts the pre-save flag back (review round 16). A
-maintained external price table is worth more than a local one we would have to keep correct
-against six providers, OpenRouter and an operator-supplied `openai-compatible` base URL.
+The ceiling's cost is the **usage ledger's** (issue #1060): every billed call writes its
+`llm_usage` row synchronously, priced at capture into `cost_usd` (the tenant's own price for the
+model first, then what OpenRouter reported it charged, then the price table, see
+`docs/playground.md`), and `scripts/reprice-usage.ts` corrects the rows after a price changes. The
+ceiling is therefore denominated in **USD as this app priced the month's calls**, on every install,
+whether or not Langfuse is configured.
 
-**The gate never asks Langfuse.** That would put a scoped transaction, a vault decryption and an
-HTTP round trip with a ten-second timeout in front of every customer message, and the error branch
-has no good answer: failing open spends without limit, failing closed lets a third-party outage
-silence every agent of the tenant. Instead a periodic scheduler job, `SPEND_CEILING_POLL`
-(`src/modules/spend-ceiling/poll.ts`), reads the month's cost per source into a local row,
-`spend_cost_snapshots` (one per tenant, source and calendar month), and the gate reads the row. That
-moves the failure from **availability to staleness**, which is a failure the row can be honest about.
+Until #1060 the figure came from Langfuse's metrics API, and that was the wrong place to sum money.
+The Langfuse SDK drops traces on the client under `LANGFUSE_SAMPLE_RATE`, so on a sampled install the
+ceiling read a fraction of the spend and let the month run far past the number typed; Langfuse prices
+a generation at ingestion and never again, so a model registered late stayed at zero for good; its
+delivery is best-effort; and an install without it had no ceiling at all. What existed only to cope
+with a third-party figure went with it: the credential lookup, the project-switch carry, the
+"Langfuse not configured, so not enforced" state, the monotonic floor against ingestion lag, and the
+Langfuse-vs-ledger call count on the card.
 
-- **One job per tenant, armed while the ceiling is on or the Langfuse block is**
-  (`src/modules/spend-ceiling/arm.ts`): on every save of the ceiling or the Langfuse block, and once
-  at boot for every such tenant, so a row lost to a reset is not a ceiling deciding on a figure frozen
-  at its last poll. Self-re-arming like the heartbeat; the handler never throws, so a Langfuse down for
-  an hour never walks the scheduler's ladder to `DEAD`. The cadence is
-  `SPEND_CEILING_POLL_INTERVAL_MS` (default 5 min) with the ceiling on. **With the ceiling off the
-  poll still runs** wherever the Langfuse block is switched on with a credential named, hourly
-  (`SPEND_POLL_IDLE_INTERVAL_MS`, or the configured cadence if slower), so the console always has the
-  month's cost and the reconciliation below; nothing is enforced on that figure, so the failing-read
-  and project-switch announcements stay on the card. It is armed on the block's intent, not on a
-  credential that resolves: a pending vault entry filled later is not a save of either block, so the
-  hourly poll is what notices it. A tenant with neither ends the loop until the next save.
-- **The two sources are told apart by the trace's environment.** Every trace goes out under
-  `environmentForSource` (`<env>` for inbox, `<env>-playground` for the playground), which is a
-  filterable column of the Langfuse metrics API, so the poll runs one query per source: the
-  `observations` view, `sum(totalCost)` and `count` per `providedModelName`, generations only, from
-  `monthStart` to the instant of the poll. **And by the trace's `userId`, the tenant's slug**: the
-  environment is deployment-wide, not per tenant, so a Langfuse project two tenants point at, or one
-  carrying another generator's traces in the same environment, would otherwise be summed into every
-  tenant's month and refuse one tenant's customers over another's spend. `userId` is a filterable
-  column of the observations view (joined from the trace, measured on v3), and every trace of ours
-  carries the slug. A tenant whose slug cannot be read is a failed poll, never the project's total.
-- **The figure is monotonic inside a month.** Langfuse ingests asynchronously and the lag correlates
-  with load, so during the burst the ceiling exists for a total can read *lower* than the last one.
-  A lower answer is never written over a higher one, and a poll that errors touches only the failure
-  pair (`pollError`, `pollFailedAt`); the last good figure and its `polledAt` stand. `pollFailedAt`
-  is the instant the current failure streak began, which is what the console's "failing since"
-  means, and `pollLastFailedAt` is the latest attempt's, kept apart (review round 18) because it is what an older poll is measured against: a streak begun before an overlapping success and still failing after it is newer than that success, though its start is older, and comparing against the start let the success clear it. Both writes run under the row's advisory lock: a save re-arms the job, which resets a
-  claimed row to pending, so two polls of one tenant can overlap, and two read-then-writes that
-  each saw the previous figure would let the lower answer land last. A failure whose poll began before the row's last success writes nothing: the older of two overlapping polls finishing last would otherwise put its failure, or its not-configured sentinel, over the figure the newer one had just refreshed, and a failure older than the newest failure writes nothing either, so a slow poll that resolved its credential before the operator removed it never puts its own error over the not-configured sentinel a newer poll wrote. The mirror holds too: an older success landing after a newer failure keeps the newer failure and the later `polledAt`, its figure still landing as a floor, and a failure dropped as older is not announced, so a window that has already recovered never pages the channels or spends the warning's six hours. The poll also re-reads the tenant's credential under that same lock before writing, and drops its answer (`superseded`) when the credential is no longer the one it asked with: a poll asked under the old credential landing after the new project's would otherwise read that row as a switch and carry the combined figure on top of its own. The sentinel and the failure are rechecked the same way: a credential added while a poll was out gets no sentinel written over it, a credential gone meanwhile turns the failure into the sentinel, and a Langfuse save re-arms the poll so the row learns of the change now rather than at the next period.
-- **The figure follows the month, not the project.** A tenant that points its Langfuse at another
-  project mid-month starts a new series there, and the floor above would sit on the old project's
-  last figure while the new one climbed from zero underneath it: $40 there plus $20 here would be a
-  $40 row. So the poll asks Langfuse which project it is talking to (`GET /api/public/projects`, one
-  call per poll on the same credential) and keeps the answer on the row (`projectKey`, a hash of
-  the instance's base URL and the project id, opaque because a self-hosted base URL may carry userinfo or a secret path and the key lands on every row); when it changes, what the row stood at is carried (`carriedUsd` and the two
-  counters, taken once, at the switch), and the figure is the carry plus the current project's own
-  total. Identity is the project's id, never the credential: a key rotated inside a project carries
-  nothing. A project that cannot be named is a failed poll. Switching back to the first project in
-  the same month counts its spend twice, which is the over-refusing direction. The old credential is gone with the switch, so spend that reached the old project after its last reading (one poll period plus the ingestion lag, the bound every poll has) is not counted, in the under-refusing direction; the switch is announced once on the `spend_ceiling` stage at warn, carrying the instance's origin alone, because only the operator can act on it, by switching after a quiet period. The names of the
-  models the old project could not price travel with the figure (`carriedUnpricedModels`): it is
-  never asked again, and its calls stay in the carried counters.
-- **The overshoot bound is the poll period plus the ingestion lag, and the two add.** A tenant can
-  spend for up to that long past the number before the gate sees it. Lowering the period buys lead
-  time at one Langfuse query per tenant per period.
-- **A stale figure still decides.** Spend only grows inside a month, so the last good figure is a
-  floor of the truth: the gate keeps refusing on it (and keeps *allowing* on it, under-refusing by
-  exactly the lag), and past three missed polls (`SPEND_SNAPSHOT_STALE_AFTER_MS`) the console says so
-  beside the bar. The poll's failure is announced once per six hours on the `spend_ceiling` stage at
-  `warn`, so a channel widened to warnings hears about it. A ceiling that fails closed on staleness
-  was rejected for the same reason the direct call was: a third-party outage must not silence a
-  tenant.
-- **A row the poll could not refresh for want of a Langfuse is no ceiling.** When the tenant's
-  Langfuse stops resolving (the block switched off, the credential deleted or malformed), the poll
-  keeps the last figure on the row and marks it `langfuse-not-configured`. The console says the
-  ceiling cannot be enforced, and the gate agrees with that sentence (`snapshotUnenforceable`): the
-  call goes through, with the frozen figure still reported beside the ceiling so a reader sees what
-  stopped being enforced. Otherwise a tenant that removed Langfuse at $50 of a $10 ceiling would be
-  refused for the rest of the month on a number nothing can refresh. This is the one failure that
-  opens the gate; every other failure is staleness, and stale decides. The gate learns of it at the
-  next poll, so the window between the credential going away and the gate opening is at most one
-  poll period.
-- **The reconciliation ships with it.** Langfuse prices a model it does not know at zero, silently, so
-  a tenant on OpenRouter or a self-hosted endpoint would get a ceiling that never trips, which is worse
-  than none because the screen says it is enforcing. The same query counts generations per model, so
-  a model with calls and no cost is named on the row (`unpricedModels`), and the console compares
-  what Langfuse costed (`costedCalls`) against what the local ledger recorded (`ledgerCalls`) on the
-  same screen that shows the bar. **Priced is counted per generation, not per model**: a price
-  added mid-month leaves the earlier calls unpriced (Langfuse does not re-price, measured on v3),
-  and a call with no usage block is unpriced under a priced model. The metrics API cannot filter on
-  a measure, but `avg(totalCost)` skips NULL where `count` does not, so `sum / avg` is the number of
-  generations that carried a cost; a model with any call the price did not reach is named. The
-  names follow the counters: an answer behind the row (ingestion lag) leaves the counters standing
-  and keeps the names too, and an answer at or past the row re-reads the list, so a model priced
-  since drops off. **A model the month's row did not name before is announced** on the
-  `spend_ceiling` stage at `warn`, naming it and where it gets a price (a model definition in
-  Langfuse), ceiling or not: the card is read only by whoever opens it, and every call to that model
-  is left out of the figure until someone acts. The row keeps the name, and a name either half's row
-  already holds is not news, so it is said once per model per month, across both halves and across
-  restarts. A name leaves the row only when every call of that model is priced, and Langfuse does not
-  re-price (a model definition added mid-month, measured on 3.225.7, left the earlier calls unpriced
-  and the name on the row), so inside a month it can only be said twice if its unpriced calls are
-  deleted from Langfuse.
-- **A billed call no callback saw reaches Langfuse by hand.** Vision reaches its provider by raw
-  fetch, so the LangChain handler never observes it, and Langfuse only prices the generations it was
-  shown: the ledger had the row and the ceiling had nothing, which left an extraction-only playground
-  free to run under the ceiling indefinitely. `recordDirectUsage` (`src/graph/usage.ts`) now writes
-  both books: the ledger row, and a Langfuse generation (`recordDirectGeneration`) under the same
-  trace identity as a turn (id = turnId, `userId` = slug, the source's environment) with usage keyed
-  the way the handler keys it, so one model definition prices both paths and the poll's filters find
-  it. A tenant with no Langfuse keeps the row and skips the trace. **The guardrail's calls are the
-  same case from the other side** (review round 8): they go through LangChain, but the gate runs
-  outside the graph, so the turn's trace handler never saw them (measured: a screened turn reached
-  Langfuse with the agent's generation and not the guardrail's). `buildGuardrailGate` now takes the
-  tenant's Langfuse and traces each call as a secondary run under the turn's own trace.
+**The gate never sums the ledger.** A month's rows are a large aggregate, and a customer message must
+not wait on it. A periodic scheduler job, `SPEND_CEILING_POLL` (`src/modules/spend-ceiling/poll.ts`),
+sums the month's `cost_usd` per source into a local row, `spend_cost_snapshots` (one per tenant,
+source and calendar month), and the gate reads the row.
+
+- **One job per tenant, armed while the ceiling is on** (`src/modules/spend-ceiling/arm.ts`): on every
+  save of the ceiling, and once at boot for every such tenant, so a row lost to a reset is not a
+  ceiling deciding on a frozen figure. Self-re-arming like the heartbeat; the handler never throws, so
+  a struggling database never walks the scheduler's ladder to `DEAD`. The cadence is
+  `SPEND_CEILING_POLL_INTERVAL_MS` (default 1 min). With the ceiling off the loop ends: nothing is
+  enforced, and the console sums the ledger on its own read.
+- **The figure is the ledger's at the instant of the poll**, not a floor of it. A month re-priced
+  downwards lowers it on the next poll; there is no ingestion lag to guard against.
+- **Overlapping polls keep the newer reading.** A save re-arms the job, which resets a claimed row to
+  pending, so two polls of one tenant can overlap. Both writes run under the row's advisory lock; a
+  success that began before the row's last success writes nothing, a failure older than the row's last
+  success or newest failure writes nothing and is not announced, and an older success landing after a
+  newer failure keeps that failure on the row. `pollFailedAt` is the instant the current failure streak
+  began ("failing since"), `pollLastFailedAt` the latest attempt, which an older poll is measured
+  against.
+- **The overshoot bound is the poll period.** A tenant can spend for up to that long past the number
+  before the gate sees it.
+- **A stale figure still decides.** A poll that fails touches only the failure trio and the last good
+  figure stands: the gate keeps refusing on it (and keeps *allowing* on it), and past three missed
+  polls (`SPEND_SNAPSHOT_STALE_AFTER_MS`) the console says so beside the bar. The failure is announced
+  once per six hours on the `spend_ceiling` stage at `warn`. Every failure is staleness; none opens the
+  gate.
+- **A call the ledger could not price is in no figure.** `cost_usd` is null for a model the table does
+  not know and the tenant has not priced, never zero. The console counts those calls per half beside
+  the bar, with their models, and the capture announces each such model (below), because every call
+  to it is left out of the ceiling until someone sets a price.
 - **A month nobody has polled yet is nothing spent, and the console says so.** The first poll writes
-  the row; until then the ceiling cannot refuse on a figure it does not have, which is the same
-  direction the unreadable-ceiling rule takes, and the card says beside the bar that nothing has
-  been read yet rather than showing "$0 of $20" as if it were enforcing.
+  the row; until then the ceiling cannot refuse on a figure it does not have, and the card says beside
+  the bar that nothing has been read yet rather than showing "$0 of $20" as if it were enforcing.
+
+**A model with no price is announced from the capture** (`src/modules/pricing/unpriced-alert.ts`),
+ceiling or not, Langfuse or not: the row being written with a null `cost_usd` emits a `spend_ceiling`
+line at `warn` naming the model and the fix that exists in this app (the account's own price for it in
+Advanced > Model prices, then re-pricing the calls already made). Once per model per month per tenant
+and per source, since only the inbox's line reaches the alert channels and a playground line must not
+use up the inbox's. "Once" is a claim row in `unpriced_model_announcements`, unique per tenant,
+source, month and model and inserted with ON CONFLICT DO NOTHING: whoever inserts it announces, so a
+restart, a second process or the flow log's retention sweep cannot repeat the line, and unpriced rows
+written before the alert existed claim nothing. A line that did not land deletes its claim, so the next
+call tries again.
+
+The snapshot's eight Langfuse-era columns (the reconciliation counters, the unpriced list and the
+project-switch carry) stay in the table with `@ignore` for one release, so the previous image keeps
+querying them through a rolling deploy and a rollback; the next release drops them.
+
+**The dashboard's cost reads the same ledger** (`src/modules/analytics/costs.ts`), under the same
+filters as the requests beside it (period, segment, and the operator's timezone for day buckets), and
+says how many of the period's calls had no price. The Langfuse-vs-local comparison of #868 is gone
+with the second source; the "Open in Langfuse" link stays, and resolving it never holds a figure.
 
 **A block written in tokens is no ceiling, and says so.** A `spendCeiling` block saved before this
 change carries `monthlyInboxTokens` / `monthlyPlaygroundTokens`, and there is no price to convert
@@ -147,10 +98,6 @@ old keys). A patch that names none, such as the API changing only the customer's
 block in tokens: the operator has not seen the new unit, and merging against synthesized zeroes would
 drop the one warning that the old ceiling is no longer enforced. Deliberately not migrated: a ceiling
 nobody typed in the new unit is a ceiling that silences an agent on the strength of a guess.
-
-**The dashboard's own cost figure is fenced the same way the poll's is** (issue #427): a Langfuse project is shared by every tenant of the install and by anything else the operator points at it, so `getLangfuseCosts` filters by the tenant's slug (`userId`), by the segment's environment (or by both of ours under "All", which needs `any of` with `type: "stringOptions"`; asked as `"string"` Langfuse refuses the request) and by `type = GENERATION`, which is the ceiling's own filter set. Without the fence the two numbers on one screen were two different questions: measured on a local Langfuse, an unfenced 30-day total of $7.71 carried $2.70 belonging to two other tenants. A tenant whose slug cannot fence the query gets an error rather than an unfenced read.
-
-**The dashboard checks the local price table against Langfuse's, per model** (issue #868). `llm_usage.cost_usd` is priced from a pinned copy of a public table (`docs/playground.md`) that goes stale without anything noticing, and Langfuse prices the same calls from a table of its own, so two figures that part are the signal that one table is wrong or that the tenant pays a price neither knows. `getLangfuseCosts` sums the ledger per model (`cost_usd`, priced calls, all calls) over the Langfuse query's own tenant, window (`since` or its 90-day default, up to the query's `toTimestamp`) and sources (the segment's, or both of ours under "All", from the same `OUR_SOURCES` list the environment filter is built from), and `compareModelCosts` (`src/modules/analytics/cost-divergence.ts`) answers `costCheck` beside `byModel`. It runs at READ time on that path rather than in the ceiling's poll because the poll folds the models into totals and runs only where Langfuse is configured or a ceiling is on. A Langfuse name matches a ledger name exactly, or as that name plus a dated-snapshot suffix (`-YYYY-MM-DD`, `-YYYYMMDD`, `@...`), which is the common case: the LangChain handler overwrites the generation's model at the end of the call with the name the vendor answered with, and OpenAI answers with the dated snapshot; every Langfuse name that matches one ledger model is summed into it. A Langfuse name that could belong to two ledger models, because the period has calls configured with both an alias and its dated snapshot (`gpt-4o` and `gpt-4o-2024-08-06`), joins them into one group, transitively, and the group is compared as a whole (the sum of its ledger rows against the sum of its Langfuse names, `ledgerModels` naming every member): the alias's calls can reach Langfuse under the snapshot's name, so handing that figure to the exact match alone flagged a split as a divergence and listed the alias as local-only (review of #868). A name only one side has is listed as such and never flagged, since there is no second figure to disagree with. A matched model is flagged when the gap is MORE than `COST_DIVERGENCE_RELATIVE` (a fifth) of the larger figure AND at least `COST_DIVERGENCE_FLOOR_USD` (a dollar), compared in cents, so a model that cost two cents cannot raise an alarm; a model with any call the local table could not price is `incomplete`, neither flagged nor passed; and a model with any call priced by the tenant's own price (issue #865, `price_table` starting `tenant-override@`, counted per model beside the priced calls) is `own`, not judged either, because setting that price is what the popover tells the operator to do when the account pays what neither table knows, and judging it against Langfuse's table would keep the marker up after the operator did it. The "Cost by model" card puts a marker beside a flagged model, whose popover gives both figures and what to do (check the vendor's page, set the account's own price for the model, or re-price the calls once the table is corrected), with a count above the list. The card only renders where Langfuse answered, including an answer with no models while the ledger has usage, whose local-only models are then the finding; and a check the ledger could not be read for is left out of the answer, so nothing on screen says the check passed where it did not run; without Langfuse the cost slot says the costs this app records are not checked against anything. Nothing is corrected automatically. A call only one book recorded (a Langfuse ingestion lag, a call no trace reached) also moves the gap, which the floor absorbs at small figures and the operator reads at large ones.
 
 Money is compared in **cents** (`decideSpend`): `0.1 + 0.2` is not `0.3` to a double, and a ceiling
 of thirty cents met exactly by three dimes has to read as reached. The writer rounds a third decimal
@@ -170,10 +117,10 @@ every customer message to learn a fact the settings already carry.
 ## What the ceiling does not promise
 
 It is a gate, not a reservation. Each caller reads the month **as last polled** and decides; the
-cost of its own call reaches Langfuse after the provider answers and the snapshot on the next poll.
+cost of its own call reaches the ledger when the provider answers and the snapshot on the next poll.
 So turns that start while the figure sits just under the ceiling all read the same figure and all
-proceed, and the month can end above the number by whatever is spent inside the poll period plus the
-ingestion lag (see above). The overshoot is bounded by that window, not by the traffic that follows:
+proceed, and the month can end above the number by whatever is spent inside the poll period (see
+above). The overshoot is bounded by that window, not by the traffic that follows:
 the first poll to land past the line closes it for everyone after it.
 
 The alternative is a reservation — a counter written before the call and reconciled after — and it
@@ -205,8 +152,7 @@ The snapshot is keyed by `monthStart`, derived inside `readSpendSnapshot` from a
 naming the month, so no caller can name the wrong month. That instant is the verdict's own
 `evaluatedAt`: a verdict captured at 23:59:59.9 whose read runs at 00:00:00.1 would otherwise answer
 the new month's row for the month it was asked about, and refuse a tenant whose budget had just
-reset. The poll's own window is `[monthStart, now)`, and the console's ledger count is
-`[monthStart, monthEnd)`.
+reset. The poll's sum and the console's counts both read `[monthStart, monthEnd)`.
 
 ## What the customer and the operator get
 
@@ -551,7 +497,7 @@ the ceiling screen shows the zero.
 | `warnAtPercent` | `80` | fraction of a ceiling that raises the warning; `0` = none |
 | `legacyTokens` | `null` | read-only: the token ceilings a pre-#426 block carried, never enforced; cleared by the first save |
 
-The poll's cadence is an environment setting, `SPEND_CEILING_POLL_INTERVAL_MS` (default `300000`).
+The poll's cadence is an environment setting, `SPEND_CEILING_POLL_INTERVAL_MS` (default `60000`).
 
 The route's own body schema carries every maximum the service enforces, `overCeilingMessage`
 included. They are two schemas over one shape, and where they disagreed the longer message passed the
@@ -561,12 +507,11 @@ rather than the documented 422.
 REST: `GET /v1/tenant-settings` returns the block, `PUT /v1/tenant-settings/spend-ceiling` writes it,
 and `GET /v1/tenant-settings/spend-ceiling/usage` returns what the month has cost per source against
 the ceiling, with the snapshot's health (`polledAt`, `pollError`, `pollFailedAt`, `stale`), the
-reconciliation (`tracedCalls`, `costedCalls`, `ledgerCalls`, `unpricedModels`), whether Langfuse is
-configured, whether the ceiling is on (`enabled`), this tenant's poll cadence, and the legacy
-marker. With the ceiling off the console shows the figure alone, with the lines that stay true of it
-(when it was read, a failing read, partial pricing, models with no price) and none that speak of the
-gate: no bar, no "(no ceiling)", no "calls go through until…". A month not read yet claims no
-pricing coverage either way, since nothing read is not "Langfuse priced none of it". The console
+month's calls no price covered (`unpricedCalls`, `unpricedModels`), whether the ceiling is on
+(`enabled`), the poll cadence, and the legacy marker. With the ceiling off the figure is the ledger
+summed on that read (no poll runs), and the console shows it alone, with the one line that stays true
+of it (calls with no price) and none that speak of the gate: no bar, no "(no ceiling)", no "calls go
+through until…", no refresh time. The console
 renders all of that on **Resources → Advanced**
 (`src/client/pages/resources/SpendCeilingCard.tsx`): the two bars come first, because nobody can pick
 a monthly budget without seeing what the month has already cost, and every way the figure can be

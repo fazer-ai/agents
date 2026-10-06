@@ -17,6 +17,7 @@ import {
 } from "@/modules/pricing/overrides";
 import { type PricedTokens, priceCall } from "@/modules/pricing/price";
 import { reportedCostFromUsage } from "@/modules/pricing/reported";
+import { announceUnpricedModel } from "@/modules/pricing/unpriced-alert";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
@@ -389,6 +390,14 @@ export function defaultUsagePersist(
         cache_creation_tokens: row.cacheCreationTokens,
       });
     });
+    if (row.costUsd === null) {
+      await announceUnpricedModel({
+        tenantId: row.tenantId,
+        model: row.model,
+        source: row.source,
+        base,
+      });
+    }
   };
 }
 
@@ -543,8 +552,8 @@ export function usageAttribution(flow: FlowContext): {
 
 // Records a billed call that did NOT go through LangChain, so no callback could have seen it: a
 // provider reached by raw fetch (vision). Best-effort: a ledger write never breaks its call. It
-// writes BOTH BOOKS, the ledger row and the Langfuse generation (`recordDirectGeneration`), because
-// the spend ceiling is costed by Langfuse, which only prices generations it was shown. The tenant's
+// writes the ledger row, which every cost figure reads, and a Langfuse generation
+// (`recordDirectGeneration`) so the call shows up in the turn's trace like any other. The tenant's
 // Langfuse is resolved here rather than carried in the `FlowContext`, so no call site has to thread
 // a credential. A tenant with no Langfuse keeps the row and skips the trace, as on the turn path.
 export async function recordDirectUsage(

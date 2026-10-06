@@ -180,8 +180,8 @@ services:
 
 
   # OPTIONAL: the corrupted-audio detector (docs/tts.md "Checking the audio"). Uncomment only if this
-  # install sends audio replies. It is heavy: reserve about 4 GB of memory for it (measured, 2.2 GB
-  # and 5 to 7 s on 4 cores per check). No public image is published: point TTS_CHECK_IMAGE at a
+  # install sends audio replies. It is heavy: reserve about 3 GB of memory for it (measured in
+  # production, 1.5 to 2.3 GB in use, and about 5 s per check, up to 26 s, on 4 to 8 shared cores). No public image is published: point TTS_CHECK_IMAGE at a
   # detector that answers the contract in docs/tts.md, then set TTS_CHECK_URL=http://audio-check:<its
   # port> (and TTS_CHECK_TOKEN, if it takes one) on the agents service.
   # The thresholds of a detector are calibrated on one provider's audio: on another provider, keep
@@ -189,7 +189,7 @@ services:
   # audio-check:
   #   image: ${TTS_CHECK_IMAGE}
   #   restart: always
-  #   mem_limit: 5g
+  #   mem_limit: 3g
 
 volumes:
   storage:

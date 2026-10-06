@@ -523,7 +523,7 @@ const config = {
     timeoutMs: parseIntSetting(
       TTS_CHECK_TIMEOUT_MS,
       "TTS_CHECK_TIMEOUT_MS",
-      20_000,
+      30_000,
       "It bounds one call to the audio detector: in enforce mode the reply waits on it, so too high leaves the customer waiting and too low gives up on a detector that would have answered.",
       MAX_DURATION_MS,
     ),

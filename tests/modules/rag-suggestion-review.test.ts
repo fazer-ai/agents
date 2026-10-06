@@ -130,6 +130,19 @@ async function seedDocument(
   return doc.id;
 }
 
+// A source on the base is what makes a document with an `externalId` the sync's: without one the
+// document is the operator's to edit again.
+async function attachSource(kbId: bigint) {
+  await suDb.knowledgeSource.create({
+    data: {
+      tenantId,
+      knowledgeBaseId: kbId,
+      kind: "chatwoot_portal",
+      config: {},
+    },
+  });
+}
+
 function propose(
   kbId: bigint,
   content: string,
@@ -553,6 +566,7 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       where: { id: doc },
       data: { externalId: "portal:42" },
     });
+    await attachSource(kb);
     const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
     expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
       true,
@@ -838,6 +852,7 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
       7,
       "art-1",
     );
+    await attachSource(kb);
     const a = await propose(kb, "Política de privacidade v2.");
     const { model } = scripted(
       JSON.stringify({
@@ -850,6 +865,53 @@ describe.skipIf(!dbUp)("the suggestion reviewer", () => {
     const row = await item(a.id);
     expect(row.status).toBe("PENDING");
     expect(row.replacesDocumentId).toBeNull();
+  });
+
+  test("a document left behind by a removed source can be replaced again", async () => {
+    const kb = await newKb();
+    const doc = await seedDocument(kb, "Garantia de 3 meses.", 21, "art-9");
+    const a = await propose(kb, "Garantia de 6 meses.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(21));
+    expect((await item(a.id)).replacesDocumentId).toBe(doc);
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    const card = listed.find((l) => l.id === String(a.id));
+    expect(card?.replaceUnavailable).toBe(false);
+    expect(card?.replacesDocument?.synced).toBe(false);
+    expect(
+      await approveApprovalItem({
+        ctx: ctxOf(tenantId),
+        id: a.id,
+        demoMode: true,
+        base: appDb,
+      }),
+    ).toMatchObject({ outcome: "approved", replacedDocumentId: String(doc) });
+  });
+
+  test("a document the operator wrote in a base that has a source can be replaced", async () => {
+    const kb = await newKb();
+    await attachSource(kb);
+    const doc = await seedDocument(kb, "Atendimento até 18h.", 22);
+    const a = await propose(kb, "Atendimento até 20h.");
+    const { model } = scripted(
+      JSON.stringify({
+        verdict: "replace",
+        comment: "c",
+        replaces_document: `doc:${doc}`,
+      }),
+    );
+    await review(a.id, model, axis(22));
+    expect((await item(a.id)).replacesDocumentId).toBe(doc);
+    const listed = await listApprovals(ctxOf(tenantId), "pending", appDb);
+    expect(listed.find((l) => l.id === String(a.id))?.replaceUnavailable).toBe(
+      false,
+    );
   });
 
   test("a duplicate that names nothing it was shown is queued unreviewed", async () => {

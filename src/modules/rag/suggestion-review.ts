@@ -25,7 +25,7 @@ import {
   registerJobHandler,
 } from "@/modules/scheduler/worker";
 import { spendCeilingVerdict } from "@/modules/spend-ceiling/service";
-import { parseThreadOrigin } from "./service";
+import { isSyncedDocument, parseThreadOrigin } from "./service";
 import { searchChunks, toVectorLiteral } from "./sql";
 import {
   type EmbedSuggestionText,
@@ -300,7 +300,13 @@ async function loadCandidates(
     (
       await db.knowledgeDocument.findMany({
         where: { id: { in: [...new Set(chunks.map((c) => c.documentId))] } },
-        select: { id: true, externalId: true, updatedAt: true, status: true },
+        select: {
+          id: true,
+          externalId: true,
+          updatedAt: true,
+          status: true,
+          kb: { select: { source: { select: { id: true } } } },
+        },
       })
     ).map((d) => [d.id, d]),
   );
@@ -316,7 +322,9 @@ async function loadCandidates(
     documentId,
     title: d.title,
     content: d.parts.join("\n…\n"),
-    synced: rowsById.get(documentId)?.externalId != null,
+    synced: isSyncedDocument(
+      rowsById.get(documentId) ?? { externalId: null, kb: null },
+    ),
     revision: rowsById.get(documentId)?.updatedAt,
   }));
   const rows = await db.$queryRaw<

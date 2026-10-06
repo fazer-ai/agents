@@ -392,6 +392,16 @@ export function listPendingApprovals(
   return listApprovals(ctx, "pending", base);
 }
 
+// A document a source sync still owns: it carries an `externalId` AND its base still has a source.
+// The same test `refuseSyncedWrite` makes; once the source is removed the document keeps its
+// `externalId` but is the operator's to edit again, so a replacement may land on it.
+export function isSyncedDocument(doc: {
+  externalId: string | null;
+  kb: { source: { id: bigint } | null } | null;
+}): boolean {
+  return doc.externalId !== null && !!doc.kb?.source;
+}
+
 // What the suggestion reviewer left on an item, resolved for display: the document it would
 // replace (pending) or what it matched (discarded). A target deleted since reads as null.
 export interface ReviewedDocumentRef {
@@ -484,6 +494,7 @@ export async function listApprovals(
               content: true,
               externalId: true,
               knowledgeBaseId: true,
+              kb: { select: { source: { select: { id: true } } } },
             },
           })
         : [],
@@ -506,7 +517,7 @@ export async function listApprovals(
             id: String(d.id),
             title: d.title,
             content: d.content,
-            synced: d.externalId !== null,
+            synced: isSyncedDocument(d),
           }
         : null;
     };
@@ -517,7 +528,7 @@ export async function listApprovals(
       if (i.replacesDocumentId === null) return false;
       const d = docs.find((x) => x.id === i.replacesDocumentId);
       return (
-        !d || d.externalId !== null || d.knowledgeBaseId !== i.knowledgeBaseId
+        !d || isSyncedDocument(d) || d.knowledgeBaseId !== i.knowledgeBaseId
       );
     };
     const matchOf = (i: (typeof items)[number]): ReviewerMatch => {
@@ -864,11 +875,14 @@ export async function approveApprovalItem(params: {
         where: {
           id: item.replacesDocumentId,
           knowledgeBaseId: item.knowledgeBaseId,
-          externalId: null,
         },
-        select: { id: true },
+        select: {
+          externalId: true,
+          kb: { select: { source: { select: { id: true } } } },
+        },
       });
-      if (!target) return { kind: "replace-unavailable" as const };
+      if (!target || isSyncedDocument(target))
+        return { kind: "replace-unavailable" as const };
     }
     return { kind: "ok" as const, item };
   });

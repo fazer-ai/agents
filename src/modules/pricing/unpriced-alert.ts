@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import type { UsageSource } from "@/graph/usage";
 import { runScopedOn } from "@/lib/tenancy";
-import { emitFlowEvent } from "@/modules/flowlog/service";
+import { writeFlowEvent } from "@/modules/flowlog/service";
 import { monthStart } from "@/modules/spend-ceiling/decide";
 
 // A MODEL THE LEDGER COULD NOT PRICE is announced on the `spend_ceiling` stage at warn, once per
@@ -56,7 +56,8 @@ export async function announceUnpricedModel(params: {
     return;
   }
   const model = params.model === "" ? "(unnamed model)" : params.model;
-  emitFlowEvent(
+  // Awaited, so a line that did not land releases the key and the next call tries again.
+  const { delivered } = await writeFlowEvent(
     {
       tenantId: params.tenantId,
       turnId: crypto.randomUUID(),
@@ -75,6 +76,7 @@ export async function announceUnpricedModel(params: {
       errorMessage: `No price for ${model}: its calls are left out of the cost and the spend ceiling. Set this account's own price for it (Advanced > Model prices), then re-price the calls already made (scripts/reprice-usage.ts).`,
     },
   );
+  if (!delivered) settled.delete(key);
 }
 
 // Tests only: the set is process state, and a suite that reuses a model name across tenants or

@@ -177,6 +177,22 @@ describe.skipIf(!dbUp)("the unpriced-model alert", () => {
     expect(await alerts(tenantA)).toHaveLength(1);
   });
 
+  test("a line that did not land is tried again on the next call", async () => {
+    const refusing = appDb.$extends({
+      query: {
+        executionLog: {
+          async create() {
+            throw new Error("pool exhausted");
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await defaultUsagePersist(refusing)(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
   test("a new month announces the model again", async () => {
     const at = (iso: string) =>
       announceUnpricedModel({

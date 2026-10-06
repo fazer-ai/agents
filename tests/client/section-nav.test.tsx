@@ -139,6 +139,22 @@ describe("the section index", () => {
     expect(current()).toEqual(["One"]);
   });
 
+  // The section is already where the click would scroll it, so no scroll event comes: the hold has
+  // to end on its own clock, or the operator's next scroll would be read as the click's.
+  test("a click that scrolls nothing still gives the highlight back on the next scroll", async () => {
+    const { scroller } = renderNav();
+    const target = document.getElementById("two") as HTMLElement;
+    target.scrollIntoView = () => {};
+    act(() => {
+      fireEvent.click(screen.getByRole("link", { name: "Two" }));
+    });
+    expect(current()).toEqual(["Two"]);
+    await act(() => new Promise((r) => setTimeout(r, 250)));
+    crossing("one", true);
+    scrollTo(scroller, 100);
+    expect(current()).toEqual(["One"]);
+  });
+
   test("a box scrolling to its end inside a section is not the page reaching its bottom", () => {
     renderNav();
     crossing("one", true);

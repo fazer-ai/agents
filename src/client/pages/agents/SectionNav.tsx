@@ -95,6 +95,18 @@ export function Section({
 // How long the scroll must stay still before a clicked entry stops holding the highlight.
 const SCROLL_SETTLE_MS = 150;
 
+type Pin = { settled: boolean; timer?: Timer };
+
+// The hold ends SCROLL_SETTLE_MS after the last scroll event, or after the click when the section
+// was already in place and nothing scrolled: without its own clock the operator's next scroll would
+// be read as the click's.
+function armSettle(pin: Pin): void {
+  clearTimeout(pin.timer);
+  pin.timer = setTimeout(() => {
+    pin.settled = true;
+  }, SCROLL_SETTLE_MS);
+}
+
 // Tracks which section id is currently near the top of the viewport. IntersectionObserver against the
 // viewport fires as the inner scroll container (the app's <main>) scrolls, because the observed
 // section elements translate within the viewport. The rootMargin biases "active" to the upper band so
@@ -106,7 +118,7 @@ function useScrollSpy(ids: string[]): {
 } {
   const key = ids.join("|");
   const [active, setActive] = useState<string | null>(null);
-  const pinned = useRef<{ settled: boolean; timer?: Timer } | null>(null);
+  const pinned = useRef<Pin | null>(null);
   useEffect(() => {
     const order = key ? key.split("|") : [];
     const els = order
@@ -146,10 +158,7 @@ function useScrollSpy(ids: string[]): {
       if (!box?.contains(last)) return;
       const pin = pinned.current;
       if (pin && !pin.settled) {
-        clearTimeout(pin.timer);
-        pin.timer = setTimeout(() => {
-          pin.settled = true;
-        }, SCROLL_SETTLE_MS);
+        armSettle(pin);
         return;
       }
       pinned.current = null;
@@ -168,7 +177,9 @@ function useScrollSpy(ids: string[]): {
   }, [key]);
   const pin = useCallback((id: string) => {
     clearTimeout(pinned.current?.timer);
-    pinned.current = { settled: false };
+    const pin: Pin = { settled: false };
+    armSettle(pin);
+    pinned.current = pin;
     setActive(id);
   }, []);
   return { active: active ?? ids[0] ?? null, pin };

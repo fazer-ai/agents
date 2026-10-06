@@ -1,5 +1,11 @@
 import type { LucideIcon } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Card, HelpPopover } from "@/client/components";
 import { cn } from "@/client/lib/utils";
@@ -86,43 +92,93 @@ export function Section({
   );
 }
 
+// How long the scroll must stay still before a clicked entry stops holding the highlight.
+const SCROLL_SETTLE_MS = 150;
+
 // Tracks which section id is currently near the top of the viewport. IntersectionObserver against the
 // viewport fires as the inner scroll container (the app's <main>) scrolls, because the observed
 // section elements translate within the viewport. The rootMargin biases "active" to the upper band so
 // the highlight matches what the operator is reading. Keyed on the joined id list so it re-binds only
 // when the section set changes (the effect reads the ids from `key`, never the array identity).
-function useScrollSpy(ids: string[]): string | null {
+function useScrollSpy(ids: string[]): {
+  active: string | null;
+  pin: (id: string) => void;
+} {
   const key = ids.join("|");
   const [active, setActive] = useState<string | null>(null);
+  const pinned = useRef<{ settled: boolean; timer?: Timer } | null>(null);
   useEffect(() => {
     const order = key ? key.split("|") : [];
     const els = order
       .map((id) => document.getElementById(id))
       .filter((el): el is HTMLElement => el !== null);
     if (els.length === 0) return;
+    // Two cases the band cannot see. A last section shorter than the screen never reaches it, the
+    // page ends first, so at the bottom of the container holding the sections the last one is
+    // active. And an entry clicked holds the highlight until the operator scrolls again, since its
+    // section may be too low to reach the band where the smooth scroll stops.
+    const last = els[els.length - 1] as HTMLElement;
     const visible = new Set<string>();
+    let atBottom = false;
+    const decide = () => {
+      if (pinned.current) return;
+      const next = atBottom ? last.id : order.find((id) => visible.has(id));
+      if (next) setActive(next);
+    };
     const obs = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
           if (e.isIntersecting) visible.add(e.target.id);
           else visible.delete(e.target.id);
         }
-        const firstVisible = order.find((id) => visible.has(id));
-        if (firstVisible) setActive(firstVisible);
+        decide();
       },
       { rootMargin: "-80px 0px -55% 0px", threshold: [0, 0.1] },
     );
     for (const el of els) obs.observe(el);
-    return () => obs.disconnect();
+    // Scroll does not bubble, so it is caught on the way down; only the container holding the
+    // sections counts, not a textarea scrolling inside one of them.
+    const onScroll = (event: Event) => {
+      const box =
+        event.target instanceof Element
+          ? event.target
+          : document.scrollingElement;
+      if (!box?.contains(last)) return;
+      const pin = pinned.current;
+      if (pin && !pin.settled) {
+        clearTimeout(pin.timer);
+        pin.timer = setTimeout(() => {
+          pin.settled = true;
+        }, SCROLL_SETTLE_MS);
+        return;
+      }
+      pinned.current = null;
+      atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+      decide();
+    };
+    document.addEventListener("scroll", onScroll, {
+      capture: true,
+      passive: true,
+    });
+    return () => {
+      obs.disconnect();
+      document.removeEventListener("scroll", onScroll, { capture: true });
+      clearTimeout(pinned.current?.timer);
+    };
   }, [key]);
-  return active ?? ids[0] ?? null;
+  const pin = useCallback((id: string) => {
+    clearTimeout(pinned.current?.timer);
+    pinned.current = { settled: false };
+    setActive(id);
+  }, []);
+  return { active: active ?? ids[0] ?? null, pin };
 }
 
 // The left-rail index: desktop-only (the tab already stacks vertically on mobile), sticky within the
 // scroll container. Clicking an entry smooth-scrolls to its section; the active section is highlighted.
 export function SectionNav({ sections }: { sections: SectionDef[] }) {
   const { t } = useTranslation();
-  const active = useScrollSpy(sections.map((s) => s.id));
+  const { active, pin } = useScrollSpy(sections.map((s) => s.id));
   return (
     <nav
       className="hidden w-56 shrink-0 lg:block"
@@ -138,6 +194,7 @@ export function SectionNav({ sections }: { sections: SectionDef[] }) {
                 href={`#${s.id}`}
                 onClick={(e) => {
                   e.preventDefault();
+                  pin(s.id);
                   document
                     .getElementById(s.id)
                     ?.scrollIntoView({ behavior: "smooth", block: "start" });

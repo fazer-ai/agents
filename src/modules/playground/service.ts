@@ -905,6 +905,11 @@ async function runPlaygroundTurnOnce(
   });
 
   let result: Awaited<ReturnType<typeof graph.invoke>>;
+  // So playground tool calls land in the Logs page, as a real turn's do in runLoadedTurn.
+  const toolLogger = new ToolFlowLogger(flow, {
+    logValues: loaded.logToolValues,
+    tools,
+  });
   try {
     result = await withFlowStage(
       flow,
@@ -918,19 +923,15 @@ async function runPlaygroundTurnOnce(
             configurable: { thread_id: threadId },
             // ToolFlowLogger so playground tool calls land in the Logs page (item 3), same as a
             // real turn does in runLoadedTurn.
-            callbacks: [
-              ...callbacks,
-              new ToolFlowLogger(flow, {
-                logValues: loaded.logToolValues,
-                tools,
-              }),
-            ],
+            callbacks: [...callbacks, toolLogger],
           },
         ),
     );
   } catch (e) {
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
+  } finally {
+    toolLogger.settle();
   }
   // Screen the reply BEFORE anything renders it, so the TTS synthesizes what would be delivered.
   // Same sentinel rule as the inbox's reactive path, so a reproduced silence token is not rendered.
@@ -1319,6 +1320,13 @@ async function runPlaygroundFollowupOnce(
   };
 
   let result: Awaited<ReturnType<typeof graph.invoke>>;
+  // From the loaded config, which reads this block off the SAVED bag — never from `settings` here,
+  // which is the draft. Recording policy does not follow a draft (see `prepare.ts`), and this line
+  // reading it separately is how the follow-up path came to answer differently from the turn path.
+  const nudgeToolLogger = new ToolFlowLogger(flow, {
+    logValues: loaded.logToolValues,
+    tools,
+  });
   try {
     result = await graph.invoke(
       // HUMAN turn, not SystemMessage: the agent node prepends the only system prompt; a second
@@ -1344,22 +1352,14 @@ async function runPlaygroundFollowupOnce(
       {
         recursionLimit: recursionLimitFor(loadedConfig.maxToolCalls),
         configurable: { thread_id: threadId },
-        callbacks: [
-          ...callbacks,
-          new ToolFlowLogger(flow, {
-            // From the loaded config, which reads this block off the SAVED bag — never from
-            // `settings` here, which is the draft. Recording policy does not follow a draft (see
-            // `prepare.ts`), and this line reading it separately is how the follow-up path came to
-            // answer differently from the turn path for the same agent.
-            logValues: loaded.logToolValues,
-            tools,
-          }),
-        ],
+        callbacks: [...callbacks, nudgeToolLogger],
       },
     );
   } catch (e) {
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
+  } finally {
+    nudgeToolLogger.settle();
   }
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.

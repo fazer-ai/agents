@@ -155,7 +155,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // of one conversation (the text reply is in none), `replyRecovered` and the `silenceUnexplained` warn
   // that must not fire on it, `silenceRetry` and the warn's detail, and the lines of a turn whose
   // recovered reply a takeover refused, a guardrail replaced, or that was delivered.
-  "tests/graph/runtime.test.ts": 34,
+  "tests/graph/runtime.test.ts": 36,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 2,
   // NOTE: The helper that runs one tool call end to end, plus the case that asks WHEN the turn's delivery is
@@ -181,13 +181,13 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/chatwoot-inbox-remove.test.ts": 1,
   "tests/modules/chatwoot-monitoring-seam.test.ts": 4,
   "tests/modules/chatwoot-observer-route.test.ts": 1,
-  "tests/modules/chatwoot-recover-delivery.test.ts": 2,
+  "tests/modules/chatwoot-recover-delivery.test.ts": 5,
   "tests/modules/chatwoot-recover-takeover.test.ts": 1,
   "tests/modules/chatwoot-unbound-inbox.test.ts": 1,
   "tests/modules/contact-auth-gate-e2e.test.ts": 3,
   "tests/modules/debounce-late-visual.test.ts": 1,
   "tests/modules/debounce.test.ts": 10,
-  "tests/modules/delivery-sweep.test.ts": 5,
+  "tests/modules/delivery-sweep.test.ts": 6,
   "tests/modules/eager-media-flow-context.test.ts": 6,
   "tests/modules/failure-note.test.ts": 1,
   "tests/modules/flowlog-astral-detail.test.ts": 1,
@@ -210,7 +210,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/chatwoot-recover-human-reply.test.ts": 1,
   "tests/modules/memory-compaction.test.ts": 3,
   "tests/modules/memory-dead-letter.test.ts": 1,
-  "tests/modules/observe-job.test.ts": 1,
+  "tests/modules/observe-job.test.ts": 2,
   "tests/modules/playground-guardrails.test.ts": 1,
   // NOTE: The `vision` stage line of the reengage turn is the only proof the attachment was opened: the reply
   // text cannot tell "read and summarised" from "made up".

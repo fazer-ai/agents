@@ -1419,19 +1419,21 @@ async function runAgentNudgeBody(
     // NOTE: to the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
-    // NOTE: the same warn line the reactive turn leaves: a proactive send that only worked on the
-    // second attempt must not read like a clean one, and this path can page an alert channel.
+    // NOTE: the same line the reactive turn leaves: a proactive send that only worked on the second
+    // attempt must not read like a clean one in the Logs.
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         // NOTE: the retry can happen on either model, and the row names the one that made it. The
         // labels ride on the event rather than being defaulted here, so there is no default to get
         // wrong.
         provider,
         model,
-        detail: { retriedEmptyResponse: attempt },
+        // NOTE: written before the retry runs; a retry that also comes back empty fails the send,
+        // and that is the line that alerts.
+        detail: { retriedEmptyResponse: attempt, willRetry: true },
       }),
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the
     // primary was down: the reply went out, the customer was served, and the only trace would be a

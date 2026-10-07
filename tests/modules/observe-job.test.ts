@@ -15,11 +15,13 @@ import {
   armObserve,
   observeDedupeKey,
   runObserve,
+  runObserveJob,
 } from "@/modules/observe/job";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import {
+  EmptyThenReplyModel,
   ResolveAndHandoffModel,
   UsageReportingModel,
 } from "../utils/scripted-models";
@@ -3739,6 +3741,177 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(last.skipped).toBe("superseded");
     expect(last.labels).toEqual([
       { scope: "conversation", added: 1, removed: 0, after: 2 },
+    ]);
+  });
+
+  // A failed tick with nothing committed is run again by the scheduler while the job has attempts
+  // left, so its line is `info` with `willRetry` then, and `warn` on the last attempt: the observer
+  // answers nobody, so its failure is degraded labelling and never a lost message. Without a
+  // scheduler behind it, the line keeps `error`.
+  for (const [afterFailure, level, willRetry] of [
+    ["retry", "info", true],
+    ["dead_letter", "warn", false],
+    [undefined, "error", undefined],
+  ] as const) {
+    test(`a failed model call with nothing committed, ${afterFailure ?? "no scheduler"}: ${level}`, async () => {
+      await clearFlowLog(suDb, { tenantId });
+      __resetChatwootVocabCache();
+      const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClientWithVocab(
+              [message(1, "quero cancelar")],
+              ["compra-de-ingresso"],
+              log,
+              ["compra-de-ingresso", "cancelamento"],
+            ),
+          makeModel: () =>
+            ({
+              bindTools: () => ({
+                invoke: async () => {
+                  throw new Error("provider exploded");
+                },
+              }),
+              invoke: async () => new AIMessage(""),
+            }) as unknown as BaseChatModel,
+          ...(afterFailure ? { afterFailure } : {}),
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      const lines = await observeLines();
+      const last = lines.at(-1);
+      expect(last?.level).toBe(level);
+      expect(last?.status).toBe("error");
+      expect(detailOf(lines, -1).failed).toBe("model_call");
+      expect(detailOf(lines, -1).willRetry).toBe(willRetry);
+    });
+  }
+
+  // The scheduler's own entry point decides from the job's attempts, so a tick on its first attempt
+  // is run again and one on its last is not.
+  for (const [attempts, level, willRetry] of [
+    [0, "info", true],
+    [4, "warn", false],
+  ] as const) {
+    test(`the handler on attempt ${attempts + 1} writes its failure at ${level}`, async () => {
+      await clearFlowLog(suDb, { tenantId });
+      __resetChatwootVocabCache();
+      const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+      const payload = {
+        instanceId: String(instanceId),
+        conversationId: CONV,
+        agentId: String(agentId),
+        reason: "burst",
+        atMessageId: null,
+      };
+      const job = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "OBSERVE",
+          dedupeKey: `observe-handler-test:${attempts}`,
+          status: "CLAIMED",
+          runAt: new Date(),
+          attempts,
+          payload,
+        },
+        select: { id: true, claimSeq: true },
+      });
+      const res = await runObserveJob(
+        {
+          id: job.id,
+          tenantId,
+          kind: "OBSERVE",
+          payload,
+          attempts,
+          claimSeq: job.claimSeq,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClientWithVocab(
+              [message(1, "quero cancelar")],
+              ["compra-de-ingresso"],
+              log,
+              ["compra-de-ingresso", "cancelamento"],
+            ),
+          makeModel: () =>
+            ({
+              bindTools: () => ({
+                invoke: async () => {
+                  throw new Error("provider exploded");
+                },
+              }),
+              invoke: async () => new AIMessage(""),
+            }) as unknown as BaseChatModel,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      const lines = await observeLines();
+      expect(lines.at(-1)?.level).toBe(level);
+      expect(detailOf(lines, -1).willRetry).toBe(willRetry);
+      await suDb.schedulerJob.delete({ where: { id: job.id } });
+    });
+  }
+
+  // The empty-completion retry is written before the retry runs, so it is not the tick's outcome.
+  test("an empty completion retried by the observer is an info line", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class EmptyThenDone extends EmptyThenReplyModel {
+      override bindTools() {
+        return this;
+      }
+    }
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClientWithVocab(
+            [message(1, "quero cancelar")],
+            ["compra-de-ingresso"],
+            log,
+            ["compra-de-ingresso", "cancelamento"],
+          ),
+        makeModel: () => new EmptyThenDone("") as unknown as BaseChatModel,
+      },
+    );
+    let retries: Array<{ level: string; detail: unknown }> = [];
+    for (let i = 0; i < 30 && retries.length === 0; i++) {
+      retries = (
+        await flowLogRows(suDb, {
+          where: { conversationId: convRowId, stage: "generate" },
+          select: { level: true, detail: true },
+        })
+      ).filter(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.node === "observer",
+      );
+      if (retries.length === 0) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(retries).toEqual([
+      expect.objectContaining({
+        level: "info",
+        detail: expect.objectContaining({ retry: 1, willRetry: true }),
+      }),
     ]);
   });
 

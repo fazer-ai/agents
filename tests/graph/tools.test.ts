@@ -804,7 +804,8 @@ describe("native tools", () => {
   });
 
   test("what the close could not do with the labels reaches the operator, not the model", async () => {
-    const reported: Array<{ phase: string; detail?: unknown }> = [];
+    const reported: Array<{ phase: string; detail?: unknown; level?: string }> =
+      [];
     const client = {
       listLabels: async () => ["resolvido-pela-ia"],
       getConversation: async () => {
@@ -821,7 +822,7 @@ describe("native tools", () => {
         conversationId: 7,
         resolveLabels: labels,
         onSideEffectError: (e) =>
-          reported.push({ phase: e.phase, detail: e.detail }),
+          reported.push({ phase: e.phase, detail: e.detail, level: e.level }),
         ...(cic
           ? {
               resolveCaseHold: {
@@ -840,9 +841,27 @@ describe("native tools", () => {
       build(true, ["resolvido-pela-ia"]),
       "resolve_conversation",
     ).invoke({});
+    // NOTE: Labels held back because the case could not be read are `info` (the conversation
+    // closed, the customer was answered); a label write that failed keeps the default `warn`.
     expect(reported).toEqual([
-      { phase: "resolve_labels_unknown", detail: { labels: ["nao-existe"] } },
-      { phase: "resolve_labels", detail: undefined },
+      {
+        phase: "resolve_labels_unknown",
+        detail: { labels: ["nao-existe"] },
+        level: undefined,
+      },
+      { phase: "resolve_labels", detail: undefined, level: "info" },
+    ]);
+    reported.length = 0;
+    (client as unknown as Record<string, unknown>).setConversationLabels =
+      async () => {
+        throw new Error("Chatwoot answered 500");
+      };
+    await byName(
+      build(false, ["resolvido-pela-ia"]),
+      "resolve_conversation",
+    ).invoke({});
+    expect(reported).toEqual([
+      { phase: "resolve_labels", detail: undefined, level: undefined },
     ]);
   });
 

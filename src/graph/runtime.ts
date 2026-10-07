@@ -462,10 +462,15 @@ export async function answersTheReopen(
 // Same line the tool's side-effect reporter writes (prepare.ts onSideEffectError), so the Logs page
 // and the alert see the deferred close's label trouble where they see the immediate one's.
 function reportResolveLabels(flow: FlowContext, result: ResolveLabelsResult) {
-  const warn = (phase: string, detail: Record<string, unknown>, msg: string) =>
+  const warn = (
+    phase: string,
+    detail: Record<string, unknown>,
+    msg: string,
+    level: "warn" | "info" = "warn",
+  ) =>
     emitFlowEvent(flow, {
       stage: "tool",
-      level: "warn",
+      level,
       status: "error",
       detail: { ...detail, tool: "resolve_conversation", phase },
       errorMessage: msg,
@@ -483,6 +488,9 @@ function reportResolveLabels(flow: FlowContext, result: ResolveLabelsResult) {
       result.error instanceof Error
         ? result.error.message
         : String(result.error),
+      // NOTE: Held back on a contact whose open case could not be ruled out: the close went through,
+      // so `info`, the same split the immediate close makes.
+      result.outcome === "failed" ? "warn" : "info",
     );
 }
 
@@ -1091,18 +1099,20 @@ async function runTurnBody(
     // NOTE: To the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
-    // NOTE: A turn recovered from an empty provider response must not read like a clean one, or the
-    // fault's rate is invisible.
+    // NOTE: A turn recovered from an empty provider response must not read like a clean one in the
+    // Logs, or the fault's rate is invisible.
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         // NOTE: The retry can happen on either model; the labels ride on the event, so there is no
         // default here to get wrong.
         provider,
         model,
-        detail: { retriedEmptyResponse: attempt },
+        // NOTE: Written before the retry runs, so it is `info` with `willRetry`: a retry that also
+        // comes back empty fails the turn, and that failure is the line that alerts.
+        detail: { retriedEmptyResponse: attempt, willRetry: true },
       }),
     // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
     // that the primary provider is not taking their traffic.
@@ -2006,6 +2016,7 @@ async function runTurnBody(
           },
         ),
     ).catch(async (e) => {
+      toolLogger.settle();
       // NOTE: LangGraph checkpoints as it goes, so a graph that threw may still have written the
       // customer's message; asked of the channel by this invoke's id. A failed read leaves coverage
       // unstated, the safe side (a duplicate line over lost words). A throw still delivers the
@@ -2028,6 +2039,9 @@ async function runTurnBody(
       await deliverHandoffPromise();
       throw e;
     });
+    // NOTE: The model is done calling tools, so a tool that failed on every call is now the turn's
+    // outcome and gets its one `warn`.
+    toolLogger.settle();
     // NOTE: The customer's message is in the thread from here on, whatever outcome word follows:
     // every refusal below rolls back what the model produced, never what the customer said.
     await reportFoldedIn();

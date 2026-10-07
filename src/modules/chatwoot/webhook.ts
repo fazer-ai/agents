@@ -4620,7 +4620,7 @@ export async function processChatwootDelivery(
       !isNewIncoming &&
       watcherAdmission !== null &&
       n.conversationId !== null &&
-      watcherAdmissionStands(watcherAdmission, {
+      watcherAdmissionStands(watcherAdmission, rt.settings, {
         tenantId: params.tenantId,
         instanceId: params.instanceId,
         conversationId: n.conversationId,
@@ -4664,7 +4664,7 @@ export async function processChatwootDelivery(
         watcherPermit &&
         n.conversationId !== null
       ) {
-        rememberWatcherAdmission(watcherAdmission, watcherPermit.askedAt, {
+        rememberWatcherAdmission(watcherAdmission, watcherPermit, rt.settings, {
           tenantId: params.tenantId,
           instanceId: params.instanceId,
           conversationId: n.conversationId,

@@ -1141,6 +1141,23 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(providers.auth).toBe(3);
   });
 
+  // An allow given with no endpoint behind it (the gate off) is not one a late update may reuse
+  // once an endpoint guards the agent: the update asks it.
+  test("a late update asks an endpoint enabled after its message was let through ungated", async () => {
+    await setGate(null);
+    const messageId = await deliverMessage(
+      49,
+      "individual",
+      false,
+      BOUND_INBOX,
+    );
+    expect(providers.auth).toBe(0);
+    authAnswer = "deny";
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(49, "individual", false, BOUND_INBOX, { messageId });
+    expect(providers.auth).toBe(1);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

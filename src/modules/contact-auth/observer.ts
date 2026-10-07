@@ -47,6 +47,13 @@ export function observerAsk(
   return { messageText: null, requestKey: `observe:${conversationId}` };
 }
 
+// An allow, with when its question was asked; `endpointAsked` when an endpoint answered it rather
+// than a gate that had nothing to ask.
+export interface ObserverPermit {
+  askedAt: number;
+  endpointAsked?: true;
+}
+
 export interface ObserverRuleParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -174,15 +181,17 @@ export function observerRuleVerdict(
 // refusal needs no such step, the tick asks them again. A tick already running is not stopped.
 export async function observerArmPermit(
   p: ObserverRuleParams,
-): Promise<{ askedAt: number } | null> {
+): Promise<ObserverPermit | null> {
   // When the endpoint question was asked, the same for every caller of one flight; this call's own
   // time only for a verdict no endpoint question stands behind.
   let askedAt = Date.now();
+  let endpointAsked = false;
   const verdict = await observerGateVerdict(p, {
     emit: true,
     stage: "both",
     onAskedAt: (t) => {
       askedAt = t;
+      endpointAsked = true;
     },
   });
   if (verdict === "allowed") {
@@ -192,7 +201,7 @@ export async function observerArmPermit(
     if (refusedAt !== undefined && refusedAt < askedAt) {
       unretiredRefusals.delete(key);
     }
-    return { askedAt };
+    return { askedAt, ...(endpointAsked ? { endpointAsked: true } : {}) };
   }
   // A gate that could not be read on one that asks an endpoint is taken as the endpoint's no: the
   // tick will not ask it, so an earlier allow's observation would otherwise run on a verdict nobody
@@ -292,12 +301,27 @@ function noteRefusal(key: string, askedAt: number): void {
 const WATCHER_ADMISSION_TTL_MS = 15 * 60_000;
 const watcherAdmissions = new Map<
   string,
-  { askedAt: number; at: number; refusalKey: string }
+  { askedAt: number; at: number; refusalKey: string; policy: string }
 >();
 
+// The part of the gate an admission was given under: an endpoint switched on, or pointed elsewhere,
+// since then is a different question, and the late update asks it.
+function endpointPolicy(settings: unknown): string {
+  const cfg = readContactAuthConfig(settings);
+  return JSON.stringify([
+    cfg.enabled,
+    contactAuthHasEndpointStage(cfg),
+    cfg.url,
+    cfg.includeMessageText,
+  ]);
+}
+
+// Only an endpoint's allow is remembered: one given with nothing to ask (the gate off, or the
+// conditions alone) is no answer for a late update once an endpoint guards the agent.
 export function rememberWatcherAdmission(
   key: string,
-  askedAt: number,
+  permit: ObserverPermit,
+  settings: unknown,
   p: {
     tenantId: bigint;
     instanceId: bigint;
@@ -305,11 +329,13 @@ export function rememberWatcherAdmission(
     agentId: bigint;
   },
 ): void {
+  if (!permit.endpointAsked) return;
   watcherAdmissions.delete(key);
   watcherAdmissions.set(key, {
-    askedAt,
+    askedAt: permit.askedAt,
     at: Date.now(),
     refusalKey: refusalKey(p),
+    policy: endpointPolicy(settings),
   });
   if (watcherAdmissions.size > RECENT_ALLOWS_CAP) {
     const oldest = watcherAdmissions.keys().next().value;
@@ -319,6 +345,7 @@ export function rememberWatcherAdmission(
 
 export function watcherAdmissionStands(
   key: string,
+  settings: unknown,
   p: {
     tenantId: bigint;
     instanceId: bigint;
@@ -327,7 +354,11 @@ export function watcherAdmissionStands(
   },
 ): boolean {
   const admission = watcherAdmissions.get(key);
-  if (!admission || Date.now() - admission.at > WATCHER_ADMISSION_TTL_MS) {
+  if (
+    !admission ||
+    Date.now() - admission.at > WATCHER_ADMISSION_TTL_MS ||
+    admission.policy !== endpointPolicy(settings)
+  ) {
     return false;
   }
   return (recentRefusals.get(refusalKey(p)) ?? 0) < admission.askedAt;

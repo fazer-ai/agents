@@ -9,7 +9,7 @@ type Schema = Record<string, unknown>;
 
 // Nodes the inlining may visit: expanding shared definitions can repeat a subtree exponentially,
 // and this runs on the shared event loop for a schema the server controls. A spent budget only
-// stops expanding: a `$ref` met after it becomes an unconstrained schema, while the schema the server sent
+// stops expanding: a `$ref` met after it keeps only the keywords beside it, while the schema the server sent
 // is still copied around it. Folding is linear in what the inlining built, so it has no budget.
 const NODE_BUDGET = 4096;
 
@@ -34,9 +34,12 @@ function inlineRefs(schema: Schema, walk: Walk): unknown {
     if (typeof ref === "string") {
       const name = ref.match(/^#\/(?:\$defs|definitions)\/(.+)$/)?.[1];
       const target = name === undefined ? undefined : defs[name];
-      if (!isSchema(target)) return node;
-      if (seen.has(ref) || walk.budget <= 0) return {};
       const { $ref: _, ...siblings } = node;
+      // NOTE: a `$ref` not expanded here (a boolean or missing target, a non-local one, a
+      // recursive one, one past the budget) keeps only the keywords beside it, since the
+      // definitions are dropped and LangChain throws on a `$ref` it cannot resolve.
+      if (!isSchema(target) || seen.has(ref) || walk.budget <= 0)
+        return visit(siblings, seen);
       const resolved = visit(target, new Set(seen).add(ref));
       return {
         ...(isSchema(resolved) ? resolved : {}),

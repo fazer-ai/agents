@@ -267,6 +267,20 @@ describe("declarationSchema", () => {
     expect(
       await accepts(
         {
+          type: "object",
+          properties: {
+            any: { $ref: "#/$defs/any" },
+            gone: { $ref: "#/$defs/missing", description: "kept" },
+            far: { $ref: "https://example.com/schema.json" },
+          },
+          $defs: { any: true },
+        },
+        { any: 1, gone: "x", far: [1] },
+      ),
+    ).toBe("ok");
+    expect(
+      await accepts(
+        {
           anyOf: [
             {
               type: "object",

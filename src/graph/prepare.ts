@@ -1615,11 +1615,17 @@ export async function buildToolset(
               cfg.crossInboxCaseConfig.carryAttachments.mode === "attendance"
                 ? {
                     attendanceStartedAt: async () =>
-                      attendanceStartedAt(await getCheckpointer(), {
-                        tenantId: ctx.tenantId,
-                        instanceId: ctx.instanceId,
-                        contactInboxId: cfg.contactInboxId as number,
-                      }),
+                      attendanceStartedAt(
+                        {
+                          checkpointer: await getCheckpointer(),
+                          base: ctx.base,
+                        },
+                        {
+                          tenantId: ctx.tenantId,
+                          instanceId: ctx.instanceId,
+                          contactInboxId: cfg.contactInboxId as number,
+                        },
+                      ),
                   }
                 : {}),
               renderSubject: (summary: string | null) =>

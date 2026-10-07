@@ -4603,9 +4603,13 @@ export async function processChatwootDelivery(
     // Chatwoot follows a voice note with a `message_updated`: the bound watcher's allow for the
     // message already covers it, so the late update does not put the question to the endpoint again
     // (the pass still honours a refusal recorded since).
+    // Scoped to the watcher when it observes beside a responder: that admission is the watcher's
+    // own verdict, never the responder's media gate.
     const watcherAdmission =
-      observing && observer === null && n.message?.id != null
-        ? mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)
+      observing && n.message?.id != null
+        ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}${
+            observer === null ? "" : `:observer:${rt.agentId}`
+          }`
         : null;
     // The endpoint's answer is what is reused; the conditions are asked again, since a label
     // removed since then takes the conversation out of scope.

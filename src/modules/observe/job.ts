@@ -915,10 +915,11 @@ export async function runObserve(
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
   const turnId = crypto.randomUUID();
 
-  // NOTE: THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR: a claimed row can wait seconds for a
+  // THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR: a claimed row can wait seconds for a
   // provider permit, and a message in that wait re-arms it. The tool-boundary fence would refuse
   // the write only after the model was paid. Unreadable proceeds: that fence is still ahead.
-  if (deps.claim !== undefined) {
+  const claimLost = async (): Promise<boolean> => {
+    if (deps.claim === undefined) return false;
     const claim = deps.claim;
     const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.schedulerJob.findUnique({
@@ -926,13 +927,12 @@ export async function runObserve(
         select: { status: true, claimSeq: true },
       }),
     ).catch(() => "unreadable" as const);
-    if (
+    return (
       row !== "unreadable" &&
       !(row?.status === "CLAIMED" && row.claimSeq === claim.claimSeq)
-    ) {
-      return { outcome: "done" };
-    }
-  }
+    );
+  };
+  if (await claimLost()) return { outcome: "done" };
 
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const agent = await db.agent.findUnique({
@@ -1025,6 +1025,9 @@ export async function runObserve(
     },
     { emit: true },
   );
+  // The claim again, after the gate: an endpoint refusal at an arm retires this row
+  // (`retireRefusedObserve`), and one landing since the first look must still keep the model out.
+  if (ruled !== "unreadable" && (await claimLost())) return { outcome: "done" };
   if (ruled === "unreadable") {
     return {
       outcome: "fail",

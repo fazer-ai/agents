@@ -962,6 +962,58 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(providers.stt).toBe(1);
   });
 
+  // An observer beside the inbox's own agent: its allow for a voice note covers Chatwoot's late
+  // update of it too, without a second question to the endpoint.
+  test("a row-backed observer's late update of an allowed audio does not ask the endpoint again", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    const messageId = await deliverMessage(44, "individual");
+    expect(providers.auth).toBe(1);
+    await deliverMessage(44, "individual", false, OBSERVED_INBOX, {
+      messageId,
+    });
+    expect(providers.auth).toBe(1);
+    expect(await runnableObserveRows(44)).toHaveLength(1);
+  });
+
+  // A claimed tick whose row an endpoint refusal retired ends before the model.
+  test("a claimed tick retired by an endpoint refusal ends before the model", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(45, "individual");
+    const row = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: { startsWith: `observe:${tenantId}:${instanceId}:45:` },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    await suDb.schedulerJob.update({
+      where: { id: row?.id },
+      data: { status: "CLAIMED" },
+    });
+    authAnswer = "deny";
+    await deliverMessage(45, "individual");
+    const out = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: 45,
+        agentId: observerId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        claim: { jobId: row?.id as bigint, claimSeq: row?.claimSeq as number },
+        makeModel: () => {
+          throw new Error("a retired claim must not reach the model");
+        },
+        makeClient: stubClient() as never,
+      },
+    );
+    expect(out).toEqual({ outcome: "done" });
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

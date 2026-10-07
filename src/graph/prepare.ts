@@ -2021,6 +2021,7 @@ export interface GraphBuildDeps {
     provider: string;
     model: string;
     reason: string;
+    failure: string;
   }) => void;
   // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
   // `generate` stage is labelled with the primary by construction.
@@ -2028,6 +2029,7 @@ export interface GraphBuildDeps {
     provider: string;
     model: string;
     reason: string;
+    failure: string;
   }) => void;
   // The caller's own "is this run still wanted", carried down to the graph's TOOL BOUNDARY, which is
   // the one seam inside the invoke. The reactive turn and the nudge both pass one; the playground

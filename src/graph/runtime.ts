@@ -324,6 +324,13 @@ export interface RunLoadedTurnParams {
   conversationId: number;
   agentBotId: number | null;
   threadId: string;
+  // What happens to this turn if `graph.invoke` throws, from the caller that would run it again.
+  // `retry`: the debounce job has attempts left and runs the burst again. `dead_letter`: this is the
+  // job's last attempt, and its death writes the line that says the customer went unanswered
+  // (../modules/debounce/handler.ts, `announceDeadDebounceFlush`). Either way the `generate` failure
+  // line is `info`, so a turn the next run answers pages nobody and the lost one pages once. Absent
+  // (a direct turn, the re-engage): nothing runs the turn again, and the line stays `error`.
+  afterThrow?: "retry" | "dead_letter";
   // Optional turn correlation id. The debounce flush passes the same id it used for its own
   // `debounce` flow line, so the coalescing and the turn's stages group together in the logs.
   turnId?: string;
@@ -455,10 +462,15 @@ export async function answersTheReopen(
 // Same line the tool's side-effect reporter writes (prepare.ts onSideEffectError), so the Logs page
 // and the alert see the deferred close's label trouble where they see the immediate one's.
 function reportResolveLabels(flow: FlowContext, result: ResolveLabelsResult) {
-  const warn = (phase: string, detail: Record<string, unknown>, msg: string) =>
+  const warn = (
+    phase: string,
+    detail: Record<string, unknown>,
+    msg: string,
+    level: "warn" | "info" = "warn",
+  ) =>
     emitFlowEvent(flow, {
       stage: "tool",
-      level: "warn",
+      level,
       status: "error",
       detail: { ...detail, tool: "resolve_conversation", phase },
       errorMessage: msg,
@@ -476,6 +488,9 @@ function reportResolveLabels(flow: FlowContext, result: ResolveLabelsResult) {
       result.error instanceof Error
         ? result.error.message
         : String(result.error),
+      // NOTE: Held back on a contact whose open case could not be ruled out: the close went through,
+      // so `info`, the same split the immediate close makes.
+      result.outcome === "failed" ? "warn" : "info",
     );
 }
 
@@ -1084,42 +1099,49 @@ async function runTurnBody(
     // NOTE: To the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
-    // NOTE: A turn recovered from an empty provider response must not read like a clean one, or the
-    // fault's rate is invisible.
+    // NOTE: A turn recovered from an empty provider response must not read like a clean one in the
+    // Logs, or the fault's rate is invisible.
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         // NOTE: The retry can happen on either model; the labels ride on the event, so there is no
         // default here to get wrong.
         provider,
         model,
-        detail: { retriedEmptyResponse: attempt },
+        // NOTE: Written before the retry runs, so it is `info` with `willRetry`: a retry that also
+        // comes back empty fails the turn, and that failure is the line that alerts.
+        detail: { retriedEmptyResponse: attempt, willRetry: true },
       }),
     // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
     // that the primary provider is not taking their traffic.
-    onModelFallback: ({ provider, model, reason }) =>
+    onModelFallback: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
         provider,
         model,
-        detail: { fallbackFrom: loaded.mc.provider, fallbackReason: reason },
+        detail: {
+          fallbackFrom: loaded.mc.provider,
+          fallbackReason: reason,
+          primaryFailure: failure,
+        },
       }),
     // NOTE: The fallback failed too. Attribution, not a second alarm: the wrapping `generate` stage
     // already emits the error (labelled with the primary), and alert coalescing keys on (channel,
     // stage, level), so a second error would page twice. `info` names which model died; `status`
     // stays "error".
-    onModelFallbackFailed: ({ provider, model, reason }) =>
+    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "info",
         status: "error",
         provider,
         model,
-        detail: { fallbackFailed: reason },
+        detail: { fallbackFailed: reason, failure },
+        errorMessage: reason,
       }),
     // NOTE: A configured fallback that cannot be built, reported once per turn build rather than on
     // a failure, when it would be too late to warn.
@@ -1954,6 +1976,14 @@ async function runTurnBody(
         // NOTE: The resolved prompt of this turn is audited, since it is where the contact's data
         // entered (./prompt-audit.ts).
         detail: { systemPrompt: loaded.systemPromptAudit },
+        ...(params.afterThrow
+          ? {
+              failureOf: () => ({
+                level: "info" as const,
+                detail: { willRetry: params.afterThrow === "retry" },
+              }),
+            }
+          : {}),
       },
       () =>
         graph.invoke(
@@ -1986,6 +2016,7 @@ async function runTurnBody(
           },
         ),
     ).catch(async (e) => {
+      toolLogger.settle();
       // NOTE: LangGraph checkpoints as it goes, so a graph that threw may still have written the
       // customer's message; asked of the channel by this invoke's id. A failed read leaves coverage
       // unstated, the safe side (a duplicate line over lost words). A throw still delivers the
@@ -2008,6 +2039,9 @@ async function runTurnBody(
       await deliverHandoffPromise();
       throw e;
     });
+    // NOTE: The model is done calling tools, so a tool that failed on every call is now the turn's
+    // outcome and gets its one `warn`.
+    toolLogger.settle();
     // NOTE: The customer's message is in the thread from here on, whatever outcome word follows:
     // every refusal below rolls back what the model produced, never what the customer said.
     await reportFoldedIn();

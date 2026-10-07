@@ -445,17 +445,32 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       { toggleFailsTimes: 1 },
     );
     const cl = tools(c.rows)[0] as Row;
-    const dl = tools(d.rows)[0] as Row;
+    // The call's own line, not the one the turn writes once the model is done with a tool that
+    // failed on every call (`failedCalls`).
+    const dl = tools(d.rows).find(
+      (r) => det(r).failedCalls === undefined,
+    ) as Row;
     expect(det(cl).tool).toBe("handoff_to_human");
     expect(det(dl).tool).toBe("handoff_to_human");
     // The discriminator is the field.
     expect(det(cl).phase).toBe("schema_refusal");
     expect(det(dl).phase).toBeUndefined();
-    // The failure line is exactly what it was.
+    // The failure line keeps its status and message; it is `info`, because the model may call the
+    // tool again, and the turn's outcome is the one `warn` after it.
     expect([dl.status, dl.level, dl.errorMessage]).toEqual([
       "error",
-      "warn",
+      "info",
       "chatwoot 502",
+    ]);
+    expect(
+      tools(d.rows)
+        .filter((r) => det(r).failedCalls !== undefined)
+        .map((r) => [r.level, r.errorMessage]),
+    ).toEqual([
+      [
+        "warn",
+        "handoff_to_human failed on every call this turn (1): chatwoot 502",
+      ],
     ]);
     expect(det(dl).args).toEqual({
       reason: "string(12)",
@@ -585,7 +600,12 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       where: { tenantId },
       select: { stage: true, level: true },
     });
-    expect(tools(h.rows).map((r) => r.level)).toEqual(["warn"]);
+    // The failed call at `info`, and the turn's `warn` for a tool that failed on every call.
+    expect(
+      tools(h.rows)
+        .map((r) => r.level)
+        .sort(),
+    ).toEqual(["info", "warn"]);
     // NOTE: TWO deliveries, and the second is not a leak of this one: the transfer this turn owed
     // the customer FAILED, so nobody was answered. Turn `g` handed off on its fourth attempt and
     // produced no such line: a refusal the model recovers from is quiet, and a turn that ends with

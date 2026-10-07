@@ -170,3 +170,38 @@ describe("the fallback's flow lines carry their own model", () => {
     expect(unlabelled(fixed)).toEqual([]);
   });
 });
+
+// The fallback's failure is a provider failure like any other, so its line names the class an alert
+// keys a cause or a rate on (`detail.failure`), never only the redacted reason.
+describe("the fallback-failed line carries its failure class", () => {
+  for (const file of [...FILES, "src/modules/observe/job.ts"]) {
+    test(`${file} writes detail.failure on every fallback-failed line`, async () => {
+      const source = await Bun.file(file).text();
+      const bodies = allHandlerBodies(source, "onModelFallbackFailed").filter(
+        (b) => b.includes("emitFlowEvent"),
+      );
+      expect(bodies.length).toBeGreaterThanOrEqual(1);
+      for (const body of bodies) {
+        expect(body).toMatch(/detail:\s*\{[^}]*\bfailure\b/);
+        // And it says why: an account failure on the fallback is a cause alert, whose body is the
+        // message.
+        expect(body).toMatch(/errorMessage:/);
+      }
+    });
+  }
+});
+
+// The line a fallback writes when it takes the turn is labelled with the fallback, so the primary's
+// failure class rides on it as `primaryFailure`, which is how a degraded primary still counts.
+describe("the took-the-turn line carries the primary's failure class", () => {
+  for (const file of [...FILES, "src/modules/observe/job.ts"]) {
+    test(`${file} writes primaryFailure on every took-the-turn line`, async () => {
+      const source = await Bun.file(file).text();
+      const bodies = allHandlerBodies(source, "onModelFallback").filter((b) =>
+        b.includes("emitFlowEvent"),
+      );
+      expect(bodies.length).toBeGreaterThanOrEqual(1);
+      for (const body of bodies) expect(body).toMatch(/\bprimaryFailure\b/);
+    });
+  }
+});

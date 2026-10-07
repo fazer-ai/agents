@@ -8,6 +8,7 @@ import { processAlertBatch } from "@/modules/flowlog/alert-worker";
 import { dispatchAlertsForEvent } from "@/modules/flowlog/alerts";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { seedChatwootInstance } from "../utils/chatwoot";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
 
@@ -26,6 +27,7 @@ function body(over: Partial<Parameters<typeof buildAlertBody>[0]> = {}) {
     tenantId: 7n,
     turnId: "71b89fbe-turn",
     conversationId: 7697n,
+    causeKey: null,
     ...over,
   });
 }
@@ -37,13 +39,28 @@ function content(over: Partial<Parameters<typeof buildAlertBody>[0]> = {}) {
 describe("alert links", () => {
   test("a single event links to its turn and its conversation, on its own tenant", () => {
     const c = content();
-    expect(c).toContain(`<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>`);
-    expect(c).toContain(`<${host}/conversations/7697?switchTenant=7>`);
+    expect(c).toContain(
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+    );
+    expect(c).toContain(
+      `[View conversation](<${host}/conversations/7697?switchTenant=7>)`,
+    );
+  });
+
+  // A raw console URL runs to 80+ characters and wraps over several lines on a phone; the label is
+  // what tells the operator where the click goes. Every URL in the body sits inside a masked link.
+  test("no console URL is printed bare", () => {
+    for (const c of [content(), content({ stage: "delivery", count: 4 })]) {
+      const bare = c.replace(/\[[^\]]+\]\(<[^>]+>\)/g, "");
+      expect(bare).not.toContain(host);
+    }
   });
 
   test("a single event with no conversation still links to its turn", () => {
     const c = content({ conversationId: null });
-    expect(c).toContain(`<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>`);
+    expect(c).toContain(
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+    );
     expect(c).not.toContain("/conversations/");
   });
 
@@ -51,7 +68,7 @@ describe("alert links", () => {
   test("a burst links to the stage and level, never to the first event's turn or conversation", () => {
     const c = content({ stage: "delivery", count: 4 });
     expect(c).toContain(
-      `<${host}/logs?stage=delivery&level=error&switchTenant=7>`,
+      `[View all 4](<${host}/logs?stage=delivery&level=error&switchTenant=7>)`,
     );
     expect(c).not.toContain("turnId=");
     expect(c).not.toContain("/conversations/");
@@ -65,8 +82,13 @@ describe("alert links", () => {
   test("a summary long enough to be clipped does not cut the link", () => {
     const c = content({ summary: "x".repeat(5000) });
     expect(c.length).toBeLessThanOrEqual(1900);
-    expect(c.endsWith(`<${host}/conversations/7697?switchTenant=7>`)).toBe(
-      true,
+    expect(
+      c.endsWith(
+        `[View conversation](<${host}/conversations/7697?switchTenant=7>)`,
+      ),
+    ).toBe(true);
+    expect(c).toContain(
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
     );
   });
 
@@ -80,6 +102,74 @@ describe("alert links", () => {
     );
     expect(none.turnId).toBeNull();
     expect(none.conversationId).toBeNull();
+  });
+
+  // Where the alert came from, without opening it: the tenant in the header, then the agent, the
+  // inbox and the conversation's number in Chatwoot on a small line, and on a burst since when.
+  const context = {
+    tenantName: "Clínica Sol",
+    agentName: "Secretária",
+    inboxName: "WhatsApp",
+    chatwootConversationId: 4512,
+    firstAt: new Date(1_791_350_000_000),
+  };
+
+  test("the tenant heads the alert, and the agent, inbox and conversation follow it", () => {
+    const c = content({ context });
+    expect(c.split("\n")[0]).toBe("🔴 **Clínica Sol** · `generate` error");
+    expect(c).toContain(
+      "\n-# Agent: Secretária · Inbox: WhatsApp · Conversation #4512\n",
+    );
+    // A single event has its own time on the message; only a burst says since when.
+    expect(c).not.toContain("<t:");
+    expect(content({ context, count: 3 })).toContain(
+      "Conversation #4512 · since <t:1791350000:t>",
+    );
+  });
+
+  test("an inbox with no agent assigned still names the inbox", () => {
+    const c = content({ context: { ...context, agentName: null } });
+    expect(c).toContain("\n-# Inbox: WhatsApp · Conversation #4512\n");
+  });
+
+  test("without a context the alert reads as before", () => {
+    const c = content();
+    expect(c.split("\n")[0]).toBe("🔴 **fazer.ai agents** · `generate` error");
+    expect(c).not.toContain("-# ");
+  });
+
+  test("a name prints as written and pings nobody", () => {
+    const raw = JSON.parse(
+      body({
+        context: {
+          ...context,
+          tenantName: "Sol *VIP* @everyone",
+          agentName: "ana_bot",
+        },
+      }).rawBody,
+    );
+    expect(raw.content).toContain("**Sol \\*VIP\\* @everyone**");
+    expect(raw.content).toContain("Agent: ana\\_bot");
+    expect(raw.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  test("a rate alert's link names the list, not how many times it fired", () => {
+    const c = content({ causeKey: "rate:vision:openai", stage: "vision" });
+    expect(c).toContain("[View failures](<");
+    expect(c).not.toContain("View all");
+  });
+
+  test("the generic webhook gets the names as fields", () => {
+    const env = JSON.parse(
+      body({ type: "webhook", context, count: 2 }).rawBody,
+    );
+    expect(env.tenant).toEqual({ id: "7", name: "Clínica Sol" });
+    expect([env.agentName, env.inboxName, env.chatwootConversationId]).toEqual([
+      "Secretária",
+      "WhatsApp",
+      4512,
+    ]);
+    expect(env.firstAt).toBe(new Date(1_791_350_000_000).toISOString());
   });
 });
 
@@ -132,7 +222,15 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
 
   afterAll(async () => {
     if (tenantId) {
-      for (const tbl of ["alert_deliveries", "alert_channels"]) {
+      for (const tbl of [
+        "alert_deliveries",
+        "alert_channels",
+        "conversations",
+        "contacts",
+        "inboxes",
+        "agents",
+        "chatwoot_instances",
+      ]) {
         await suDb.$executeRawUnsafe(
           `DELETE FROM ${tbl} WHERE tenant_id = ${tenantId}`,
         );
@@ -184,6 +282,65 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     return BigInt(ch.id);
   }
 
+  // The worker reads the names when it sends: the inbox and number from the conversation the row
+  // names, the agent from the one the event ran as. An observer runs as another agent than the one
+  // the inbox answers with, and its failure names the observer.
+  test("the posted body names the tenant, the event's agent, inbox and conversation", async () => {
+    const inst = await seedChatwootInstance(suDb, {
+      tenantId,
+      accountId: 665,
+      adminToken: "enc",
+    });
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "Secretária", systemPrompt: "x" },
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        chatwootInboxId: 66,
+        name: "WhatsApp",
+        agentId: agent.id,
+      },
+    });
+    const contact = await suDb.contact.create({
+      data: {
+        chatwootInstanceId: inst.id,
+        tenantId,
+        chatwootContactId: 66,
+        name: "Alice",
+      },
+    });
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        chatwootConversationId: 4512,
+        inboxId: inbox.id,
+        contactId: contact.id,
+        status: "pending",
+        threadId: `${tenantId}:${inst.id}:4512`,
+        lastEventAt: new Date(),
+      },
+    });
+    const observer = await suDb.agent.create({
+      data: { tenantId, name: "Observador", systemPrompt: "x" },
+    });
+    const id = await channel("named", "vision");
+    await dispatchAlertsForEvent(
+      { ...flow("turn-665-named", conv.id), agentId: observer.id },
+      { stage: "vision", level: "error", errorMessage: "timeout" },
+      appDb,
+    );
+    const [c] = await deliver(id);
+    expect(c?.split("\n")[0]).toBe("🔴 **Links665** · `vision` error");
+    expect(c).toContain(
+      "-# Agent: Observador · Inbox: WhatsApp · Conversation #4512",
+    );
+    // And no customer's name.
+    expect(c).not.toContain("Alice");
+  });
+
   test("the event's turn and conversation reach the posted body", async () => {
     const id = await channel("single", "stt");
     await dispatchAlertsForEvent(
@@ -193,10 +350,10 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     );
     const [c] = await deliver(id);
     expect(c).toContain(
-      `<${host}/logs?turnId=turn-665-a&switchTenant=${tenantId}>`,
+      `[View log](<${host}/logs?turnId=turn-665-a&switchTenant=${tenantId}>)`,
     );
     expect(c).toContain(
-      `<${host}/conversations/4242?switchTenant=${tenantId}>`,
+      `[View conversation](<${host}/conversations/4242?switchTenant=${tenantId}>)`,
     );
   });
 
@@ -222,7 +379,7 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     expect(row.conversationId).toBe(1n);
     const [c] = await deliver(id);
     expect(c).toContain(
-      `<${host}/logs?stage=tts&level=error&switchTenant=${tenantId}>`,
+      `[View all 2](<${host}/logs?stage=tts&level=error&switchTenant=${tenantId}>)`,
     );
     expect(c).not.toContain("turn-665-");
   });

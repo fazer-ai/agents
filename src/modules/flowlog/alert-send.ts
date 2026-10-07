@@ -61,6 +61,76 @@ export interface AlertSendTarget {
   tenantId: bigint | null;
   turnId: string | null;
   conversationId: bigint | null;
+  // Set on a cause alert: its burst gathers every line of the cause, whatever level each was
+  // written at, so the list it links to is not narrowed by level.
+  causeKey: string | null;
+  // Where the alert came from, read when it is sent. Null on a send that resolved none.
+  context?: AlertContext | null;
+}
+
+// What an operator needs to place an alert without opening it: names the operator configured (the
+// tenant, the agent, the inbox) and the conversation's number in Chatwoot, never anything of the
+// customer's. `firstAt` is when the window's first event happened, shown on a burst.
+export interface AlertContext {
+  tenantName: string | null;
+  agentName: string | null;
+  inboxName: string | null;
+  chatwootConversationId: number | null;
+  firstAt: Date | null;
+}
+
+// Read under the alert's own tenant. Best-effort by the caller: a context that cannot be read leaves
+// the alert as it was, never undelivered.
+export async function loadAlertContext(
+  base: PrismaClient,
+  a: {
+    tenantId: bigint;
+    conversationId: bigint | null;
+    agentId: bigint | null;
+    firstAt?: Date | null;
+  },
+): Promise<AlertContext> {
+  const ctx: TenantContext = {
+    tenantId: a.tenantId,
+    userId: null,
+    role: "TENANT_ADMIN",
+  };
+  return runScopedOn(base, ctx, async (db) => {
+    const [tenant, conv, agent] = await Promise.all([
+      db.tenant.findUnique({
+        where: { id: a.tenantId },
+        select: { name: true },
+      }),
+      a.conversationId == null
+        ? null
+        : db.conversation.findUnique({
+            where: { id: a.conversationId },
+            select: {
+              chatwootConversationId: true,
+              inbox: { select: { name: true } },
+            },
+          }),
+      a.agentId == null
+        ? null
+        : db.agent.findUnique({
+            where: { id: a.agentId },
+            select: { name: true },
+          }),
+    ]);
+    return {
+      tenantName: tenant?.name ?? null,
+      agentName: agent?.name ?? null,
+      inboxName: conv?.inbox?.name ?? null,
+      chatwootConversationId: conv?.chatwootConversationId ?? null,
+      firstAt: a.firstAt ?? null,
+    };
+  });
+}
+
+// Discord reads markdown, and an operator-chosen name may carry `*`, `_` or a backtick; escaped so the
+// name prints as written instead of reformatting the line.
+function discordText(s: string): string {
+  return s.replace(/([\\*_~`|>[\]()#-])/g, "\\$1");
 }
 
 export interface AlertSendDeps {
@@ -105,26 +175,40 @@ type AlertBodyInput = Pick<
   | "tenantId"
   | "turnId"
   | "conversationId"
+  | "causeKey"
+  | "context"
 >;
 
 // Where the operator goes from the alert. The ids name the FIRST event of the window, and a burst's
 // members can be unrelated conversations, so a burst links to the stage+level list and a single
 // event links to its own turn (plus its conversation when the mirror knew one). No `source`: only
 // inbox traffic alerts, which is the page's default. `consoleUrl` names the tenant so an operator
-// of several tenants lands on the right one.
-export function alertLinks(a: AlertBodyInput): string[] {
+// of several tenants lands on the right one. Each link carries the label the body prints for it, so
+// the burst's says how many lines the list holds.
+export function alertLinks(
+  a: AlertBodyInput,
+): { label: string; url: string }[] {
   const opts = { tenantId: a.tenantId };
-  if (a.count > 1) {
+  // A rate alert is about many failures from the start, so its link is the list even at count 1.
+  if (a.count > 1 || a.causeKey?.startsWith("rate:")) {
     const q = new URLSearchParams();
     if (a.stage) q.set("stage", a.stage);
-    q.set("level", a.level);
-    return [consoleUrl(`/logs?${q}`, opts)];
+    if (a.causeKey === null) q.set("level", a.level);
+    // A rate's count is how many times it fired, not how many failures it counted (the summary
+    // says that), so its link names the list instead of a number.
+    const label = a.causeKey?.startsWith("rate:")
+      ? "View failures"
+      : `View all ${a.count}`;
+    return [{ label, url: consoleUrl(`/logs?${q}`, opts) }];
   }
   if (!a.turnId) return [];
   const q = new URLSearchParams({ turnId: a.turnId });
-  const links = [consoleUrl(`/logs?${q}`, opts)];
+  const links = [{ label: "View log", url: consoleUrl(`/logs?${q}`, opts) }];
   if (a.conversationId != null) {
-    links.push(consoleUrl(`/conversations/${a.conversationId}`, opts));
+    links.push({
+      label: "View conversation",
+      url: consoleUrl(`/conversations/${a.conversationId}`, opts),
+    });
   }
   return links;
 }
@@ -140,18 +224,39 @@ export function buildAlertBody(a: AlertBodyInput): {
   const times = a.count > 1 ? ` (×${a.count})` : "";
   if (a.type === "discord") {
     const icon = a.level === "error" ? "🔴" : "🟠";
-    const head = `${icon} **fazer.ai agents** \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}`;
-    // In angle brackets so Discord does not unfurl the console's login page under every alert.
-    // Appended AFTER the clip, which takes its room out of the summary: the link is the part an
-    // operator acts on, and a long summary must not cut it in half.
+    const c = a.context ?? null;
+    // The tenant first: one channel often serves several, and it is the first question an alert
+    // raises. Without one (a send that resolved no context), the product name as before.
+    const who = c?.tenantName
+      ? `**${discordText(c.tenantName)}**`
+      : "**fazer.ai agents**";
+    const facts = [
+      c?.agentName ? `Agent: ${discordText(c.agentName)}` : null,
+      c?.inboxName ? `Inbox: ${discordText(c.inboxName)}` : null,
+      c?.chatwootConversationId != null
+        ? `Conversation #${c.chatwootConversationId}`
+        : null,
+      // Discord renders `<t:…>` in each reader's own time zone.
+      a.count > 1 && c?.firstAt
+        ? `since <t:${Math.floor(c.firstAt.getTime() / 1000)}:t>`
+        : null,
+    ].filter((f): f is string => f !== null);
+    const head = `${icon} ${who} · \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}${
+      facts.length > 0 ? `\n-# ${facts.join(" · ")}` : ""
+    }`;
+    // Masked links, so the line reads as two words instead of two 80-character URLs, with the URL
+    // still in angle brackets so Discord does not unfurl the console's login page under every
+    // alert. Appended AFTER the clip, which takes its room out of the summary: the link is the part
+    // an operator acts on, and a long summary must not cut it in half.
     const links = alertLinks(a)
-      .map((u) => `<${u}>`)
+      .map((l) => `[${l.label}](<${l.url}>)`)
       .join(" · ");
     const content = links
       ? `${clipText(head, DISCORD_MAX - links.length - 1)}\n${links}`
       : clipText(head, DISCORD_MAX);
     return {
-      rawBody: JSON.stringify({ content }),
+      // No mention resolves: a name or a summary carrying `@everyone` must not ping the channel.
+      rawBody: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
       contentType: "application/json",
     };
   }
@@ -167,6 +272,15 @@ export function buildAlertBody(a: AlertBodyInput): {
       turnId: a.turnId,
       conversationId:
         a.conversationId == null ? null : String(a.conversationId),
+      // Additive to version 1: names for a reader that shows the alert to a person.
+      tenant: {
+        id: a.tenantId == null ? null : String(a.tenantId),
+        name: a.context?.tenantName ?? null,
+      },
+      agentName: a.context?.agentName ?? null,
+      inboxName: a.context?.inboxName ?? null,
+      chatwootConversationId: a.context?.chatwootConversationId ?? null,
+      firstAt: a.context?.firstAt?.toISOString() ?? null,
     }),
     contentType: "application/json",
   };

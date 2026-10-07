@@ -3145,6 +3145,7 @@ export function BehaviorTab({
             {contactAuth.enabled && (
               <>
                 <FormField
+                  group
                   label={t("editor.contactAuthConditions", "Conditions")}
                   help={t(
                     "editor.contactAuthConditionsHelp",

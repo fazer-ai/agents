@@ -98,6 +98,11 @@ describe("the gate's section is conditions and one endpoint switch", () => {
     renderGate({});
     expect(sourcePicker()).toBe(0);
     expect(conditionsField() > 0).toBe(true);
+    // Several controls under one title: a named group, not a label pointing at no control.
+    expect(
+      screen.queryAllByRole("group", { name: /^(Conditions|Condições)/ })
+        .length > 0,
+    ).toBe(true);
     expect(addCondition() > 0).toBe(true);
     expect(endpointSwitch() > 0).toBe(true);
   });

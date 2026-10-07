@@ -883,7 +883,7 @@ export async function runObserve(
     // NOTE: A CONFIG THAT DOES NOT BUILD IS NOT AN AGENT THAT STOPPED OBSERVING: the checks above
     // are operator states and end the job; this is a credential the vault cannot hand over, and it
     // retries. The CONV goes with it, so the stale-state fences below run before the retry.
-    if (!cfg) return { noModel: true as const, conv };
+    if (!cfg) return { noModel: true as const, conv, settings };
     return { mon, cfg, conv, settings };
   });
   if (loaded !== null && loaded.conv?.inboxId != null) {
@@ -923,6 +923,33 @@ export async function runObserve(
     );
     return { outcome: "done" };
   }
+  // THE CONTACT GATE'S RULE, asked again before anything is spent and before the model's own
+  // configuration is required: the arm asked it, but a label removed or a rule tightened since then
+  // leaves this row runnable, and an excluded conversation must complete even when no model could run.
+  const ruled = await observerRuleVerdict(
+    {
+      tenantId,
+      instanceId,
+      conversationId,
+      agentId,
+      settings: loaded.settings,
+      base,
+    },
+    { emit: true },
+  );
+  if (ruled === "unreadable") {
+    return {
+      outcome: "fail",
+      error: "observe: the contact gate's rule could not be evaluated",
+    };
+  }
+  if (ruled === "refused" && "noModel" in loaded) {
+    logger.info(
+      "observe: the contact gate's rule no longer covers this conversation (conv=%s); nothing to do",
+      String(conversationId),
+    );
+    return { outcome: "done" };
+  }
   if ("noModel" in loaded) {
     // NOTE: A MOOT JOB IS NOT RETRIED: a resolve tick on a conversation that reopened is asked
     // here, before a missing credential counts as retryable, so it does not dead-letter work nobody
@@ -948,7 +975,7 @@ export async function runObserve(
       error: "observe: the agent's model configuration could not be built",
     };
   }
-  const { mon, cfg, conv, settings } = loaded;
+  const { mon, cfg, conv } = loaded;
   const flow: FlowContext = {
     tenantId,
     turnId,
@@ -993,19 +1020,6 @@ export async function runObserve(
     return { outcome: "done" };
   }
 
-  // THE CONTACT GATE'S RULE, asked again before anything is spent: the arm asked it, but a
-  // label removed or a rule tightened since then leaves this row runnable, and the window read below
-  // would include the very messages the rule now keeps the watcher out of.
-  const ruled = await observerRuleVerdict(
-    { tenantId, instanceId, conversationId, agentId, settings, base },
-    { emit: true },
-  );
-  if (ruled === "unreadable") {
-    return {
-      outcome: "fail",
-      error: "observe: the contact gate's rule could not be evaluated",
-    };
-  }
   if (ruled === "refused") {
     line("skipped", { skipped: "contact_auth_refused" }, "info");
     return { outcome: "done" };

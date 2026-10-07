@@ -1445,7 +1445,7 @@ async function mediaAdmitted(
       const agent = inbox?.agentId
         ? await db.agent.findUnique({
             where: { id: inbox.agentId },
-            select: { settings: true },
+            select: { settings: true, mode: true },
           })
         : null;
       const conv = await db.conversation.findUnique({
@@ -1462,7 +1462,7 @@ async function mediaAdmitted(
           mediaRefusedThroughMessageId: true,
         },
       });
-      return { inbox, settings: agent?.settings, conv };
+      return { inbox, settings: agent?.settings, mode: agent?.mode, conv };
     });
     // The refusal mark wins over any yes, including the caller's and a gate switched off since:
     // a replayed delivery re-asks the gate, and a consent given since would answer for a file sent
@@ -1507,8 +1507,10 @@ async function mediaAdmitted(
       requestKey: cfg.includeMessageText
         ? `msg:${n.message?.id ?? "none"}`
         : "inbox",
-      // The media pass asks at one place, so it asks the whole gate.
-      stage: "both",
+      // The media pass asks at one place, so it asks the whole gate; a watcher, read fresh because
+      // the agent may have been flipped since the delivery began, only ever has the rule stage
+      // (docs/contact-auth.md, The observer path), so no pass reaches the endpoint for it.
+      stage: isMonitoring(ctx.mode ?? "") ? "rule" : "both",
       cfg,
       base,
       fetchImpl: owner.deps?.contactAuthFetch,

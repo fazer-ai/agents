@@ -11,7 +11,10 @@ import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  processChatwootDelivery,
+  runEagerMedia,
+} from "@/modules/chatwoot/webhook";
 import {
   observerRuleAllows,
   observerRuleVerdict,
@@ -161,11 +164,11 @@ function conversation(
   };
 }
 
-async function deliverMessage(
+function audioEvent(
   convId: number,
   groupType: "group" | "individual",
-  anonymous = false,
-  inboxId = OBSERVED_INBOX,
+  anonymous: boolean,
+  inboxId: number,
 ) {
   seq += 1;
   const messageId = 108_000 + seq;
@@ -192,6 +195,16 @@ async function deliverMessage(
     ),
   });
   if (!n) throw new Error("the fixture did not normalize");
+  return n;
+}
+
+async function deliverMessage(
+  convId: number,
+  groupType: "group" | "individual",
+  anonymous = false,
+  inboxId = OBSERVED_INBOX,
+) {
+  const n = audioEvent(convId, groupType, anonymous, inboxId);
   const delivery = await suDb.chatwootWebhookDelivery.create({
     data: {
       tenantId,
@@ -498,6 +511,26 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect((await gateLines(13)).length).toBe(1);
   });
 
+  // A pass that asks for itself (an agent flipped to monitoring while its gate waited, a hand-over)
+  // reads the inbox's agent fresh: a watcher has the rule stage only, so its endpoint is never asked.
+  test("a media pass that asks for itself under a watcher never asks the endpoint", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(15, "individual", false, BOUND_INBOX);
+    expect(providers.stt).toBe(1);
+    const n = audioEvent(15, "individual", false, BOUND_INBOX);
+    await runEagerMedia(tenantId, instanceId, n, appDb, {
+      conversationId: null,
+      agentId: null,
+      inboxId: null,
+      chatwootInboxId: BOUND_INBOX,
+      deliveryRowId: null,
+      deps: deps() as never,
+      admission: "unverified",
+    });
+    expect(providers.stt).toBe(2);
+    expect(providers.auth).toBe(0);
+  });
+
   // An observation armed while the rule allowed it is asked again when it runs: a label removed or a
   // rule tightened in between keeps the model out.
   test("a queued observation the rule now refuses ends before the model, with a skipped line", async () => {
@@ -540,6 +573,50 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(
       skipped.map((r) => (r.detail as { skipped?: string }).skipped),
     ).toEqual(["contact_auth_refused"]);
+  });
+
+  test("a queued observation the rule now refuses completes even when no model could run", async () => {
+    await setGate({ enabled: true, rule: GROUP_ONLY });
+    await deliverMessage(16, "group");
+    expect(await observeRows(16)).toHaveLength(1);
+    await setGate({ enabled: true, rule: { kind: "label", label: "suporte" } });
+    const modelConfig = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: observerId },
+        select: { modelConfig: true },
+      })
+    ).modelConfig as Prisma.InputJsonObject;
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        modelConfig: { ...modelConfig, credentialRef: "cred_absent_1088" },
+      },
+    });
+    try {
+      const out = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: 16,
+          agentId: observerId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeModel: () => {
+            throw new Error("the model must not be reached");
+          },
+          makeClient: stubClient() as never,
+        },
+      );
+      expect(out).toEqual({ outcome: "done" });
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { modelConfig },
+      });
+    }
   });
 
   test("a switched-off gate observes everything, with no line", async () => {

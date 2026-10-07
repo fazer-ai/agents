@@ -754,6 +754,29 @@ export class ChatwootClient {
     );
   }
 
+  // Hand the conversation to an Agent Bot: on the fork, one locked write removes the person, sets the
+  // bot as assignee and leaves the conversation `pending`. True only when the answer is that bot
+  // (`agent_bot_slim` carries `bot_type`); a Chatwoot that ignores `assignee_type` would read the id as
+  // a USER's, and a bot it cannot find answers null, so the caller falls back to unassigning.
+  async assignAgentBot(
+    conversationId: number,
+    agentBotId: number,
+    opts: { asAdmin?: boolean } = {},
+  ): Promise<boolean> {
+    const res = (await this.request(
+      opts.asAdmin ? this.config.adminToken : this.config.botToken,
+      "POST",
+      `/conversations/${conversationId}/assignments`,
+      { assignee_id: agentBotId, assignee_type: "AgentBot" },
+    )) as { id?: unknown; bot_type?: unknown } | null;
+    return (
+      typeof res === "object" &&
+      res !== null &&
+      res.id === agentBotId &&
+      res.bot_type !== undefined
+    );
+  }
+
   // `expectedStatus` is the status the caller read before deciding: the fork applies the change only while
   // the conversation still holds it, under a row lock, and otherwise answers 409 and changes nothing,
   // raised here as ChatwootStatusConflictError. A Chatwoot without that support ignores the field.

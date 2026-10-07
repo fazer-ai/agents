@@ -170,6 +170,38 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers["api-access-token"]).toBe("BOT_TOK");
   });
 
+  test("assignAgentBot names the bot by type and is true only when the bot comes back", async () => {
+    const answers: Array<[unknown, boolean]> = [
+      // The fork's `agent_bot_slim`: the bot it assigned.
+      [{ id: 501, name: "Bot", bot_type: "webhook" }, true],
+      // A Chatwoot that ignores `assignee_type` reads the id as a USER's.
+      [
+        { id: 501, name: "Ana", email: "ana@example.com", role: "agent" },
+        false,
+      ],
+      // A bot the fork cannot find renders null.
+      [null, false],
+      // Another bot is not this one.
+      [{ id: 502, name: "Other", bot_type: "webhook" }, false],
+    ];
+    for (const [payload, expected] of answers) {
+      const { fetchImpl, calls } = stub(200, payload);
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      expect(await client.assignAgentBot(42, 501, { asAdmin: true })).toBe(
+        expected,
+      );
+      expect(calls[0]?.url).toContain("/conversations/42/assignments");
+      expect(calls[0]?.body).toEqual({
+        assignee_id: 501,
+        assignee_type: "AgentBot",
+      });
+      expect(calls[0]?.headers["api-access-token"]).toBe("ADMIN_TOK");
+    }
+  });
+
   test("toggleTyping uses the bot token (toggle_typing_status is bot-accessible)", async () => {
     const { fetchImpl, calls } = stub();
     const client = await createChatwootClient(baseConfig, {

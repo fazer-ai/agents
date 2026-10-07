@@ -88,6 +88,10 @@ function stubClient(over: Partial<Record<string, unknown>> = {}) {
       calls.push("unassignConversation");
       return {};
     },
+    assignAgentBot: async () => {
+      calls.push("assignAgentBot");
+      return true;
+    },
     toggleStatus: async () => {
       calls.push("toggleStatus");
       return {};
@@ -379,8 +383,8 @@ describe.skipIf(!dbUp)(
       });
       expect(row?.after).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
         outcome,
       });
     });
@@ -516,8 +520,8 @@ describe.skipIf(!dbUp)(
       });
       expect(row?.after).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
         outcome: "returned",
       });
     });
@@ -565,7 +569,7 @@ describe.skipIf(!dbUp)(
       const stub = stubClient({
         getConversation: async () =>
           liveConversation({ status: "pending", assigneeId: 12 }),
-        unassignConversation: async () => {
+        assignAgentBot: async () => {
           throw new Error("Chatwoot API 502 for POST /assignments");
         },
       });
@@ -718,14 +722,14 @@ describe.skipIf(!dbUp)(
           mirrorFailingBase(appDb),
         ),
       ).rejects.toThrow();
-      expect(stub.calls).toContain("unassignConversation");
+      expect(stub.calls).toContain("assignAgentBot");
       const [row, ...rest] = await rows();
       expect(rest).toEqual([]);
       expect(row?.action).toBe("conversation.return");
       expect(row?.after).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
       });
     });
 

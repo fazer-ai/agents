@@ -1116,6 +1116,10 @@ describe.skipIf(!dbUp)(
             calls.push("unassignConversation");
             return {};
           },
+          assignAgentBot: async () => {
+            calls.push("assignAgentBot");
+            return true;
+          },
           toggleStatus: async () => {
             calls.push("toggleStatus");
             return {};

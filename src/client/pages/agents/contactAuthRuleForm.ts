@@ -8,11 +8,9 @@ import {
 // runtime reads, and validity is the runtime's own parse, so the editor can never accept a rule the
 // server refuses or the reader drops.
 
-// One condition, as the editor holds it. The rule itself is one of these, or (`ruleKind` "all" /
-// "any") a list of them in `ruleConditions`: the runtime allows one level, so this is every rule.
+// One condition, as the editor holds it.
 export interface ContactAuthConditionForm {
-  // "allowlist" | "attribute" | "conversation_type" | "label"; on the rule, also "" (no rule: the
-  // endpoint answers), "all" and "any".
+  // "allowlist" | "attribute" | "conversation_type" | "label".
   ruleKind: string;
   rulePhones: string;
   ruleIdentifiers: string;
@@ -23,12 +21,17 @@ export interface ContactAuthConditionForm {
   ruleLabel: string;
 }
 
-export interface ContactAuthRuleForm extends ContactAuthConditionForm {
+// The rule as the editor holds it: ONE list of conditions of any kind, and how they combine. A single
+// condition is a list of one, so the editor has no separate picker per kind; "all" / "any" matters
+// (and is shown) only from two conditions on. An empty list is no rule.
+export interface ContactAuthRuleForm {
+  // "all" | "any".
+  ruleMatch: string;
   ruleConditions: ContactAuthConditionForm[];
 }
 
 export const EMPTY_CONTACT_AUTH_CONDITION_FORM: ContactAuthConditionForm = {
-  ruleKind: "",
+  ruleKind: "conversation_type",
   rulePhones: "",
   ruleIdentifiers: "",
   ruleScope: "contact",
@@ -39,20 +42,13 @@ export const EMPTY_CONTACT_AUTH_CONDITION_FORM: ContactAuthConditionForm = {
 };
 
 export const EMPTY_CONTACT_AUTH_RULE_FORM: ContactAuthRuleForm = {
-  ...EMPTY_CONTACT_AUTH_CONDITION_FORM,
+  ruleMatch: "all",
   ruleConditions: [],
 };
 
-export function isCombinedRuleKind(kind: string): boolean {
-  return kind === "all" || kind === "any";
-}
-
-// What a new row of a combination starts as.
+// What a new row starts as.
 export function newContactAuthConditionForm(): ContactAuthConditionForm {
-  return {
-    ...EMPTY_CONTACT_AUTH_CONDITION_FORM,
-    ruleKind: "conversation_type",
-  };
+  return { ...EMPTY_CONTACT_AUTH_CONDITION_FORM };
 }
 
 function lines(text: string): string[] {
@@ -92,18 +88,69 @@ function conditionForm(c: ContactAuthCondition): ContactAuthConditionForm {
 }
 
 // From the stored bag. A stored rule the reader would drop reads as no rule, which is what the
-// runtime does with it too.
+// runtime does with it too. A plain rule is a list of one; a combination keeps its match.
 export function readContactAuthRuleForm(raw: unknown): ContactAuthRuleForm {
   const rule = parseContactAuthRule(raw);
-  if (!rule) return { ...EMPTY_CONTACT_AUTH_RULE_FORM };
+  if (!rule) return { ...EMPTY_CONTACT_AUTH_RULE_FORM, ruleConditions: [] };
   if (rule.kind === "all" || rule.kind === "any") {
     return {
-      ...EMPTY_CONTACT_AUTH_RULE_FORM,
-      ruleKind: rule.kind,
+      ruleMatch: rule.kind,
       ruleConditions: rule.conditions.map(conditionForm),
     };
   }
-  return { ...conditionForm(rule), ruleConditions: [] };
+  return { ruleMatch: "all", ruleConditions: [conditionForm(rule)] };
+}
+
+// Whether the editor's endpoint switch reads as on for a stored gate. With conditions, it is the
+// stored `askEndpointAfterRule` (strict, like the reader): a url left beside a rule with the flag off
+// stays unused, and the switch shows it off. With no conditions the endpoint is what decides, so the
+// switch is on when there is a url to ask; a gate with neither reads as off, which is also what an
+// enabled gate in that state does at runtime (fail-closed `not_configured`), and the save asks for
+// one of the two.
+export function readContactAuthEndpointEnabled(
+  form: ContactAuthRuleForm,
+  url: unknown,
+  askEndpointAfterRule: unknown,
+): boolean {
+  if (form.ruleConditions.length > 0) return askEndpointAfterRule === true;
+  return typeof url === "string" && url.trim() !== "";
+}
+
+// What the save writes for `askEndpointAfterRule`: the switch as shown, except on a monitoring agent
+// whose switch still holds the value inferred from the stored bag. Its editor draws no switch, so that
+// value was never chosen, and the stored flag is written back as it was: a later return to production
+// asks the endpoint after the conditions only if it already did. A switch that differs from the
+// inferred value was set by the operator (before the mode changed), and is written as set.
+export function contactAuthAskEndpointToSave(
+  endpointEnabled: boolean,
+  monitoring: boolean,
+  storedContactAuth: unknown,
+): boolean {
+  if (!monitoring) return endpointEnabled;
+  const bag =
+    storedContactAuth && typeof storedContactAuth === "object"
+      ? (storedContactAuth as Record<string, unknown>)
+      : {};
+  const inferred = readContactAuthEndpointEnabled(
+    readContactAuthRuleForm(bag.rule),
+    bag.url,
+    bag.askEndpointAfterRule,
+  );
+  return endpointEnabled === inferred
+    ? bag.askEndpointAfterRule === true
+    : endpointEnabled;
+}
+
+// An enabled gate with nothing to decide: no conditions and no endpoint asked. At runtime that is the
+// fail-closed `not_configured` (or, with a url kept behind a switched-off endpoint, an endpoint the
+// operator turned off), so no editor save writes it. A monitoring agent never asks the endpoint, but a
+// stored endpoint-only gate there observes everything and says so, so it is not "empty".
+export function contactAuthGateEmpty(f: {
+  enabled: boolean;
+  ruleConditions: readonly unknown[];
+  endpointEnabled: boolean;
+}): boolean {
+  return f.enabled && f.ruleConditions.length === 0 && !f.endpointEnabled;
 }
 
 function conditionPayload(
@@ -139,19 +186,22 @@ function conditionPayload(
 
 // What the save sends. `null` clears a stored rule; the Behavior save replaces the block wholesale,
 // so leaving the key out would ALSO clear it, and saying so explicitly is what keeps a rule written
-// over MCP from vanishing on the next unrelated save of this form.
+// over MCP from vanishing on the next unrelated save of this form. One condition saves as that plain
+// condition (an `all` / `any` of one means the same and loads back as the same list of one), so the
+// round trip is stable; two or more save as the combination.
 export function contactAuthRulePayload(
   f: ContactAuthRuleForm,
 ): Record<string, unknown> | null {
-  if (f.ruleKind === "all" || f.ruleKind === "any") {
-    // NOTE: An unknown row kind is kept as an empty object rather than dropped, so the parse refuses
-    // the whole rule instead of a combination quietly losing a condition.
-    return {
-      kind: f.ruleKind,
-      conditions: f.ruleConditions.map((c) => conditionPayload(c) ?? {}),
-    };
-  }
-  return conditionPayload(f);
+  const rows = f.ruleConditions;
+  if (rows.length === 0) return null;
+  const [only] = rows;
+  // NOTE: An unknown row kind is kept as an empty object rather than dropped, so the parse refuses
+  // the whole rule instead of quietly losing a condition.
+  if (rows.length === 1 && only) return conditionPayload(only) ?? {};
+  return {
+    kind: f.ruleMatch === "any" ? "any" : "all",
+    conditions: rows.map((c) => conditionPayload(c) ?? {}),
+  };
 }
 
 // True when the form holds a rule the server would refuse: the same parse, so the two cannot drift.

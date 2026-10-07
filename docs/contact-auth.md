@@ -228,9 +228,39 @@ transcription or description exists for the observation. A conversation the rule
   production from answering the observed backlog.
 - **A rule that cannot be evaluated refuses**, the gate's fail-closed direction: a missed observation
   is one tick, an observed out-of-scope conversation is the model call the rule exists to prevent.
-- **The editor** draws the section for a monitoring agent with the rule alone, says that the rule
-  decides what is observed, and says when an endpoint-only gate does nothing here. The endpoint and
-  notice warnings of the configuration panel are not raised for a monitoring agent.
+- **The editor** draws the section for a monitoring agent with the conditions alone (see
+  [The editor](#the-editor)), says that the rule decides what is observed, and says when an
+  endpoint-only gate does nothing here. The endpoint and notice warnings of the configuration panel
+  are not raised for a monitoring agent.
+
+## The editor
+
+The editor shows the gate as two parts, whatever the stored shape:
+
+- **Conditions**: one list of zero or more conditions of any kind (conversation type, label, phones
+  or identifiers, attribute). How they combine ("all" / "any") is asked only from two rows on. One
+  row saves as that plain condition and two or more as `all` / `any`; an `all` / `any` of one, which
+  the API accepts and means the same, loads as a list of one and saves back as the plain condition.
+  An empty list saves `rule: null`.
+- **External endpoint**: one switch, saved as `askEndpointAfterRule`. With conditions it is asked
+  after them, about what they let through; with none it decides alone (`rule: null` and the url).
+  Off, its fields are hidden and the url is kept, unused.
+
+How a stored gate loads (`readContactAuthEndpointEnabled` in `src/client/pages/agents/contactAuthRuleForm.ts`):
+with conditions, the switch is the stored `askEndpointAfterRule`, strictly, so a url left beside a
+rule with the flag off shows the switch off, as the runtime treats it; with no conditions, the switch
+is on when there is a url, since that endpoint is what decides.
+
+An enabled gate with no condition and no endpoint is the fail-closed `not_configured` at runtime, so
+no editor save writes it (`contactAuthGateEmpty`): the Behavior tab's Save is disabled with the
+reason, and Save and export refuses before writing any section and does not export. The API and MCP
+still accept it, as before.
+
+A monitoring agent's editor shows the conditions only: no switch, no endpoint fields, no notices. A
+stored endpoint-only gate there says that the observer then watches every conversation. Saving keeps
+the stored url, and writes the stored `askEndpointAfterRule` back while the switch still holds the
+value inferred from the stored bag (`contactAuthAskEndpointToSave`); a switch the operator changed
+before moving the agent to monitoring is written as set.
 
 ## Request / response contract
 

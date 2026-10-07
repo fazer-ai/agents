@@ -74,6 +74,17 @@ that is legitimately several lines.
 `font` (`sans`/`serif`/`mono`), `baseFontSize`, `accentColor`, `margin`, `pageSize`, `locale`,
 `currency`, `footerText`, `showPageNumbers`.
 
+**A new template starts from one object, `NEW_DOCUMENT_STYLE`**: sans at 10pt, a navy accent
+(`#1e3a8a`), normal margins, A4, page numbers on, and the `{{company_name}} · {{doc_number}}` footer.
+Every starter, the blank one included, spreads it and sets only `locale` and `currency`, and a create
+that names no `footerText` gets the footer too (`newTemplateStyle`; an empty `footerText` is how a
+template has none), so the look changes in one place. A stored template keeps its stored values: on
+read, `DOCUMENT_STYLE_DEFAULTS` (the same object without the footer) fills only a key the row never
+had, since a row saved without a footer would otherwise grow one it never asked for. The accent
+colours the title, the rule under the header, the table head (over a 90% tint of itself) and the
+grand total. No line height is set on the page: inherited by the fixed footer, it pushes the footer
+off the page whenever page numbers are on.
+
 The three families are `@react-pdf/renderer`'s built-ins. There is no `Font.register` and no bundled
 TTF: a face resolves from a path that differs between the dev tree and the container, the registry it
 goes into is global and does not deduplicate, and the built-ins cover Latin-1, which is what PT-BR

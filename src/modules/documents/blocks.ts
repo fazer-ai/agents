@@ -191,13 +191,37 @@ export type DocumentStyle = z.infer<typeof documentStyleSchema>;
 export const DOCUMENT_STYLE_DEFAULTS: DocumentStyle = {
   font: "sans",
   baseFontSize: 10,
-  accentColor: "#111827",
+  accentColor: "#1e3a8a",
   margin: "normal",
   pageSize: "A4",
   locale: "pt-BR",
   currency: "BRL",
-  showPageNumbers: false,
+  showPageNumbers: true,
 };
+
+// What a NEW template starts from: the defaults above plus the footer every starter carries. Kept
+// apart from them because the defaults also fill the keys a STORED row never had, and a row saved
+// without a footer must not grow one on read.
+export const NEW_DOCUMENT_STYLE: DocumentStyle = {
+  ...DOCUMENT_STYLE_DEFAULTS,
+  footerText: "{{company_name}} · {{doc_number}}",
+};
+
+// The style a create writes: the caller's, with the new-template footer unless it names its own
+// (an empty one is how a template has none). Anything that is not an object goes through untouched,
+// for validation to refuse by name.
+export function newTemplateStyle(style: unknown): unknown {
+  if (style === undefined || style === null) {
+    return { footerText: NEW_DOCUMENT_STYLE.footerText };
+  }
+  if (
+    typeof style !== "object" ||
+    Array.isArray(style) ||
+    "footerText" in style
+  )
+    return style;
+  return { footerText: NEW_DOCUMENT_STYLE.footerText, ...style };
+}
 
 // PER KEY, not per object, and that is the whole difference. `.partial().safeParse` fails wholesale:
 // one property this version cannot read (a font family or a margin name a NEWER build wrote) would

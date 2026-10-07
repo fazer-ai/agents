@@ -1,8 +1,8 @@
 import {
-  DOCUMENT_STYLE_DEFAULTS,
   type DocumentBlock,
   type DocumentField,
   type DocumentStyle,
+  NEW_DOCUMENT_STYLE,
 } from "./blocks";
 
 // Ready-made templates, offered as "start from a model" in the console. The console edits only the
@@ -98,11 +98,9 @@ const STRINGS: Record<DocumentStyle["locale"], Strings> = {
 
 function style(locale: DocumentStyle["locale"]): DocumentStyle {
   return {
-    ...DOCUMENT_STYLE_DEFAULTS,
+    ...NEW_DOCUMENT_STYLE,
     locale,
     currency: locale === "pt-BR" ? "BRL" : "USD",
-    accentColor: "#1d4ed8",
-    footerText: "{{company_name}} · {{doc_number}}",
   };
 }
 
@@ -284,11 +282,7 @@ function starters(locale: DocumentStyle["locale"]): DocumentStarter[] {
       name: s.blankName as string,
       description: s.blankDescription as string,
       numberPrefix: "",
-      style: {
-        ...DOCUMENT_STYLE_DEFAULTS,
-        locale,
-        currency: locale === "pt-BR" ? "BRL" : "USD",
-      },
+      style: base,
       fields: [],
       blocks: [
         { id: "header", type: "header", title: "{{doc_title}} {{doc_number}}" },

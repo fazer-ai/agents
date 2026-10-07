@@ -52,6 +52,7 @@
         "lucide-react": "^1.50.0",
         "mammoth": "^1.13.0",
         "mermaid": "^12.1.0",
+        "pdfkit": "0.20.1",
         "pg": "8.23.1",
         "pino": "^10.4.0",
         "pino-pretty": "^13.1.3",

@@ -132,6 +132,28 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     await rm(DIR, { recursive: true, force: true });
   });
 
+  // The issue's contract: change the default, not each starter. A template created with no style, or
+  // with only its language, reads back exactly as the starters of that language.
+  test("a template created without a style reads back as the starters' style", async () => {
+    for (const [name, style, locale] of [
+      ["Sem estilo", undefined, "pt-BR"],
+      ["No style en", { locale: "en-US", currency: "USD" }, "en-US"],
+    ] as const) {
+      const created = await createDocumentTemplate(
+        ctx(tenantA),
+        {
+          name,
+          blocks: [{ id: "header", type: "header", title: "{{doc_title}}" }],
+          fields: [],
+          ...(style ? { style } : {}),
+        },
+        appDb,
+      );
+      const starter = documentStarter("quote", locale);
+      expect(created.style).toEqual(starter?.style as never);
+    }
+  });
+
   test("creates a template and derives the agent's tool name from it", async () => {
     const tpl = await getDocumentTemplate(ctx(tenantA), templateId, appDb);
     expect(tpl.slug).toBe("orcamento");

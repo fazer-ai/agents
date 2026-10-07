@@ -835,6 +835,34 @@ function readLiveBeforeConsoleWrite(
   }
 }
 
+// A versioned read that omitted the assignee, completed with the holder the action asked for (or the
+// stored one when it asked for none), named only when that holder is the stored one.
+function withHolderOf(
+  live: LiveConversationState,
+  conv: {
+    assigneeType: string | null;
+    assigneeId: number | null;
+    assigneeName: string | null;
+  },
+  fallback: { assigneeId?: number | null; assigneeType?: string | null },
+): LiveConversationState {
+  const assigneeType =
+    fallback.assigneeType === undefined
+      ? conv.assigneeType
+      : fallback.assigneeType;
+  const assigneeId =
+    fallback.assigneeId === undefined ? conv.assigneeId : fallback.assigneeId;
+  const kept =
+    assigneeType === conv.assigneeType && assigneeId === conv.assigneeId;
+  return {
+    ...live,
+    assigneeType,
+    assigneeId,
+    assigneeName: kept ? conv.assigneeName : null,
+    assigneeStated: true,
+  };
+}
+
 // Writes the mirror after a console action, claiming the version Chatwoot produced for it. The two
 // write endpoints do not serialize `updated_at`, so a blind write carries no version and an event
 // Chatwoot serialized BEFORE the click, still retrying, would outrank it and undo the action (the
@@ -850,6 +878,7 @@ async function mirrorConsoleWrite(
     chatwootConversationId: number;
     assigneeType: string | null;
     assigneeId: number | null;
+    assigneeName: string | null;
   },
   client: ChatwootClient,
   fallback: {
@@ -908,14 +937,18 @@ async function mirrorConsoleWrite(
     }
     // NOTE: a snapshot with no version is not reconciled: the reconcile would apply the WHOLE
     // snapshot, so a status click could carry back an assignee a webhook has since changed. The
-    // fallback writes exactly the fields this action meant to change. Nor is one that did not state
-    // the assignee, which the reconcile would write as nobody.
-    if (live && live.updatedAt !== null && live.assigneeStated === true) {
+    // fallback writes exactly the fields this action meant to change. One that did not state the
+    // assignee keeps its version: the holder it is silent on is the one this action wrote, else the
+    // stored one, so the reconcile never reads the silence as nobody.
+    if (live && live.updatedAt !== null) {
       const outcome = await reconcileMirrorFromLive({
         tenantId,
         instanceId: conv.chatwootInstanceId,
         conversationId: conv.chatwootConversationId,
-        live,
+        live:
+          live.assigneeStated === true
+            ? live
+            : withHolderOf(live, conv, fallback),
         // NOTE: an operator's click is a decision even when it restates the stored state.
         ownershipIsDecision: fallback.status != null,
         base,

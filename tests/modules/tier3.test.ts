@@ -1213,11 +1213,23 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
   });
 
   test("a versioned read after the write that omits the assignee does not reconcile it away", async () => {
+    // Marks below the read's version, so the reconcile applies it rather than deferring to the
+    // unversioned write: the holder it applies is the bot this hand-back asked for.
+    const version = Math.floor(Date.now() / 1000) + 3600;
     const stub = makeStub({
       assigneeType: "User",
       assigneeId: 7,
       metaOmittedAfterWrite: true,
-      metaOmittedVersion: Math.floor(Date.now() / 1000) + 3600,
+      metaOmittedVersion: version,
+    });
+    await suDb.conversation.update({
+      where: { id: convId },
+      data: {
+        assigneeType: "User",
+        assigneeId: 7,
+        chatwootStatusAt: version - 60,
+        chatwootAssigneeAt: version - 60,
+      },
     });
     await returnConversationToAgent(
       ctx(tenant),
@@ -1230,6 +1242,39 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       select: { assigneeType: true, assigneeId: true },
     });
     expect([row?.assigneeType, row?.assigneeId]).toEqual(["AgentBot", 501]);
+  });
+
+  test("a versioned read that omits the assignee does not outrank a newer stored holder", async () => {
+    // A human assignment the mirror already holds at a later version than the read: the omitted
+    // assignee must not turn the read into an unversioned write that puts the bot back.
+    const version = Math.floor(Date.now() / 1000);
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      metaOmittedAfterWrite: true,
+      metaOmittedVersion: version,
+    });
+    await suDb.conversation.update({
+      where: { id: convId },
+      data: {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 8,
+        chatwootStatusAt: version + 60,
+        chatwootAssigneeAt: version + 60,
+      },
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 8]);
   });
 
   test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {

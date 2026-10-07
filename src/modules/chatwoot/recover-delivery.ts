@@ -1343,6 +1343,7 @@ export async function announceUnanswered(
           conversationId: true,
           inboundMessageId: true,
           routeObserved: true,
+          routeAgentBotId: true,
           owesMemoryOnly: true,
         },
       }),
@@ -1353,7 +1354,11 @@ export async function announceUnanswered(
     // own outcome.
     const reply = owesAReply(row);
     const outcome = reply ? "unanswered" : "memory_unrecovered";
-    const [conv] = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    // An observer's delivery belongs to the observer, named by the bot route the receiver recorded; the
+    // inbox names the responder. A route bot no persona carries any more names nobody.
+    const observerBotId =
+      row.routeObserved === true ? row.routeAgentBotId : null;
+    const [conv, observer] = await runScopedOn(base, sysCtx(tenantId), (db) =>
       Promise.all([
         row.conversationId === null
           ? null
@@ -1371,6 +1376,16 @@ export async function announceUnanswered(
                 inbox: { select: { agentId: true } },
               },
             }),
+        observerBotId === null
+          ? null
+          : db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: row.chatwootInstanceId,
+                chatwootAgentBotId: observerBotId,
+              },
+              select: { agentId: true },
+            }),
       ]),
     );
     await writeFlowEvent(
@@ -1379,7 +1394,10 @@ export async function announceUnanswered(
         turnId: crypto.randomUUID(),
         source: "inbox",
         conversationId: conv?.id ?? null,
-        agentId: conv?.inbox?.agentId ?? null,
+        agentId:
+          row.routeObserved === true
+            ? (observer?.agentId ?? null)
+            : (conv?.inbox?.agentId ?? null),
         inboxId: conv?.inboxId ?? null,
         base,
       },

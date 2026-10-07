@@ -106,6 +106,8 @@ async function seedStrandedDelivery(over: {
   humanReplyShape?: string;
   // Whose route it arrived on.
   routeObserved?: boolean | null;
+  // The Chatwoot bot id of that route.
+  routeAgentBotId?: number | null;
   // Whether that route's claim said it folds into memory what it does not answer.
   routeRemembers?: boolean | null;
   // The reply's own id, which is what makes its lost memory append recoverable.
@@ -129,6 +131,7 @@ async function seedStrandedDelivery(over: {
       humanReplyShape: over.humanReplyShape ?? null,
       humanReplyMessageId: over.humanReplyMessageId ?? null,
       routeObserved: over.routeObserved ?? null,
+      routeAgentBotId: over.routeAgentBotId ?? null,
       routeRemembers: over.routeRemembers ?? null,
     },
     select: { id: true },
@@ -153,7 +156,13 @@ async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
   while (true) {
     const rows = await flowLogRows(suDb, {
       where: { tenantId, stage: "delivery", conversationId: convDbId },
-      select: { level: true, status: true, source: true, detail: true },
+      select: {
+        level: true,
+        status: true,
+        source: true,
+        detail: true,
+        agentId: true,
+      },
     });
     if (rows.length > 0 || Date.now() - started > waitMs) return rows;
     await Bun.sleep(25);
@@ -480,6 +489,45 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
 
       await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
     });
+  });
+
+  // The line is filed under the agent the delivery was for: on an observer's route that is the agent
+  // behind the route's bot, not the inbox's responder, so a channel excluding one is not paged for the
+  // other. A route bot no persona carries any more names nobody.
+  test("an observer's stranded delivery is filed under the observer", async () => {
+    const watcher = await suDb.agent.create({
+      data: { tenantId, name: "Observadora", systemPrompt: "x", settings: {} },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: watcher.id,
+        chatwootAgentBotId: AGENT_BOT_ID + 40,
+        accessToken: encryptJson("BOT-W"),
+        webhookSecret: encryptJson("S-W"),
+        webhookRouteTokenHash: `swp-route-w-${process.pid}`,
+        name: "Observadora",
+      },
+    });
+    const cases = [
+      [8850, 9150, AGENT_BOT_ID + 40, watcher.id],
+      [8851, 9151, AGENT_BOT_ID + 41, null],
+    ] as const;
+    for (const [convId, messageId, bot, agent] of cases) {
+      const conv = await seedConversation(convId);
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs: STALE_MS * 2,
+        inboundMessageId: messageId,
+        routeObserved: true,
+        routeAgentBotId: bot,
+      });
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      const lines = await deliveryLines(conv.id);
+      expect(lines.map((l) => l.agentId)).toEqual([agent]);
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    }
   });
 
   test("is recorded as a loss the operator can find", async () => {
@@ -903,6 +951,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       humanReplyShape: null,
       humanReplyMessageId: null,
       routeObserved: false,
+      routeAgentBotId: null,
       routeRemembers: null,
     };
     // Somebody else claimed it.

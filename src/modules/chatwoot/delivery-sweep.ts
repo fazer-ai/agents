@@ -336,6 +336,7 @@ interface StrandedRow {
   // (see `armReplyMemory`).
   humanReplyMessageId: number | null;
   routeObserved: boolean | null;
+  routeAgentBotId: number | null;
   routeRemembers: boolean | null;
 }
 
@@ -378,6 +379,9 @@ async function mirrorOf(
   conversationRowId: bigint;
   inboxId: bigint | null;
   agentId: bigint | null;
+  // The agent the delivery was FOR, which the flow line is filed under: the responder, except on an
+  // observer's route, where it is the agent behind the route's bot (null when no persona carries it).
+  lineAgentId: bigint | null;
   // Whether that responder has a ROUTE of its own — a bot row the fork could have delivered to.
   // Null when it was not asked (the loss verdict does not need it) or could not be read.
   responderHasRoute: boolean | null;
@@ -403,10 +407,28 @@ async function mirrorOf(
         })
       : null;
     const agentId = inbox?.agentId ?? null;
+    const observerBotId =
+      row.routeObserved === true ? row.routeAgentBotId : null;
+    const lineAgentId =
+      row.routeObserved !== true
+        ? agentId
+        : observerBotId === null
+          ? null
+          : ((
+              await db.chatwootAgentBot.findFirst({
+                where: {
+                  tenantId,
+                  chatwootInstanceId: row.chatwootInstanceId,
+                  chatwootAgentBotId: observerBotId,
+                },
+                select: { agentId: true },
+              })
+            )?.agentId ?? null);
     return {
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
       agentId,
+      lineAgentId,
       responderHasRoute:
         !withResponderRoute || agentId === null
           ? null
@@ -504,6 +526,7 @@ export async function sweepStrandedDeliveries(
         humanReplyShape: true,
         humanReplyMessageId: true,
         routeObserved: true,
+        routeAgentBotId: true,
         routeRemembers: true,
       },
     }),
@@ -749,7 +772,7 @@ async function record(
       // Filed WITHOUT a conversation when the mirror does not know it. The line is worth writing
       // unattached: the DEAD row carries the delivery id, this carries everything else about it.
       conversationId: mirror?.conversationRowId ?? null,
-      agentId: mirror?.agentId ?? null,
+      agentId: mirror?.lineAgentId ?? null,
       inboxId: mirror?.inboxId ?? null,
       base,
     },

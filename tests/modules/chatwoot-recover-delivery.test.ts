@@ -4884,6 +4884,33 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
+    // An observer's memory is the observer's: the line names the agent behind the route's bot, not the
+    // inbox's responder, so the alert says who lost it and a channel excluding the observer stays quiet.
+    test("an observer's lost memory is attributed to the observer, not the responder", async () => {
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      const cases = [
+        [18960, 19470, OBSERVER_BOT_ID, watcherAgentDbId],
+        // A route bot no persona carries any more names nobody, rather than the responder.
+        [18961, 19471, OBSERVER_BOT_ID + 91, null],
+      ] as const;
+      for (const [convId, messageId, bot, agent] of cases) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+          routeAgentBotId: bot,
+          routeObserved: true,
+        });
+        await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+        const lines = await deliveryLines(conv.id);
+        expect(lines.map((l) => [l.level, l.agentId])).toEqual([
+          ["warn", agent],
+        ]);
+      }
+    });
+
     // Chatwoot's delivery id is unique per instance only: a loss on another instance with the same id
     // is its own loss, and the line already written for the first must not stand in for it.
     test("two instances' deliveries sharing an id each get their own unanswered line", async () => {

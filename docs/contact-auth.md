@@ -207,7 +207,9 @@ endpoint alone when there are no conditions; same request contract, same timeout
 on the observer's route, the resolve that pulls the verdict forward, and the debounce flush handing
 an armed burst over to an agent flipped to monitoring. It is also asked before the observer's media
 pass, because that transcription or description exists for the observation. A conversation the gate
-refuses costs no `OBSERVE` job, no media call and no model call.
+refuses is never observed: no observation runs and no media or model call is made. A refusal at
+the endpoint may leave a retired `OBSERVE` row behind, which never runs: it is the fence described
+under "Asked once per arm".
 
 - **A refusal speaks to nobody.** Nothing is sent, nothing is opened and no note is written, whatever
   `denyMessage`, `handoffEnabled` and `operatorNoteEnabled` say: those are about a customer the agent

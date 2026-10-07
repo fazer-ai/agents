@@ -156,7 +156,10 @@ export function resolveFooterText(
   text: string,
   vars: Record<string, string>,
 ): string {
+  // Tokens are written compactly first: one may legally carry whitespace, newlines included, and
+  // splitting into lines must not cut it in half.
   return text
+    .replace(DOCUMENT_TOKEN_RE, (_match, name: string) => `{{${name}}}`)
     .split("\n")
     .map((line) => {
       const pieces = line.split(FOOTER_SEPARATOR);

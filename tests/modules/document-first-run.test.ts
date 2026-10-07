@@ -155,6 +155,15 @@ describe("footer text", () => {
     ).toBe("Acme | 0042");
   });
 
+  test("a token written across lines still resolves", () => {
+    expect(
+      resolveFooterText("{{company_name\n}} · {{doc_number}}", {
+        company_name: "Acme",
+        doc_number: "0042",
+      }),
+    ).toBe("Acme · 0042");
+  });
+
   test("text that is not a separator is left alone", () => {
     expect(
       resolveFooterText("Obrigado! {{doc_number}}", { doc_number: "7" }),

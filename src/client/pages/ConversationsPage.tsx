@@ -320,6 +320,13 @@ export function ConversationsPage() {
           void fetchConversations();
           return prev;
         }
+        // Narrowed to an outcome (a dashboard figure's conversations), a change can move a row out
+        // of the list (a reopen, a person taking over) and the event does not carry what decides
+        // it, so the server answers again instead of the row being merged in place.
+        if (outcome && outcome !== "all") {
+          void fetchConversations();
+          return prev;
+        }
         const merged: Conversation = {
           ...current,
           status: event.status ?? current.status,

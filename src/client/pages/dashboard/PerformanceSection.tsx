@@ -376,6 +376,7 @@ export function PerformanceSection({
         <KpiTile
           icon={Zap}
           label={metricLabel.automation}
+          href={periodHref("automation")}
           primary={
             mode === "rate"
               ? pf(kpis.automationRate)

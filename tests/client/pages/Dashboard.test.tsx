@@ -513,6 +513,22 @@ describe("a block whose request fails", () => {
   });
 });
 
+describe("every funnel tile opens the conversations it counts", () => {
+  test("automation opens the conversations the agent resolved", async () => {
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "30%" }).length).toBe(1);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "30%" }));
+    await waitFor(() => {
+      expect(location.startsWith("/conversations?")).toBe(true);
+    });
+    expect(new URL(location, "http://x").searchParams.get("outcome")).toBe(
+      "resolved_by_agent",
+    );
+  });
+});
+
 describe("a block still loading", () => {
   test("offers no CSV until its figures arrive", async () => {
     const exportDaily = () =>

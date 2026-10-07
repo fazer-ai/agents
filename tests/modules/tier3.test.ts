@@ -92,6 +92,9 @@ function makeStub(
     metaOmittedAfterWrite?: boolean;
     // ...carrying a version, which is what would send the read down the reconcile path.
     metaOmittedVersion?: number;
+    // The status reads report once the status call has gone out: an operator who resolved it
+    // meanwhile, which the bot assignment (it sets pending) would undo.
+    statusAfterToggle?: string;
   } = {},
   // A holder that appears only from the SECOND live read on. The hand-back reads the conversation
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
@@ -122,6 +125,7 @@ function makeStub(
   // bot, so every later read reports the bot until a late holder claims it back.
   let botHolder: number | null = null;
   let omitMeta = false;
+  let toggled = false;
   const calls = {
     getMessages: 0,
     sendMessage: [] as { content: string; isPrivate: boolean }[],
@@ -209,6 +213,7 @@ function makeStub(
     },
     toggleStatus: async (_cid: number, status: string) => {
       calls.toggleStatus.push(status);
+      toggled = true;
       return {};
     },
     getConversation: async (cid: number) => {
@@ -259,7 +264,9 @@ function makeStub(
               }
             : {
                 id: cid,
-                status: "pending",
+                status: toggled
+                  ? (live.statusAfterToggle ?? "pending")
+                  : "pending",
                 ...on,
                 meta: {
                   assignee_type: live.assigneeType ?? null,
@@ -1128,6 +1135,24 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.assignAgentBot).toEqual([]);
     expect(stub.calls.unassignConversation).toBe(0);
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
+  });
+
+  test("a conversation resolved after the status call is not reopened by the bot assignment", async () => {
+    // The bot assignment sets pending, so it is held back once the read after the status call says
+    // somebody resolved it; the plain unassign, which leaves the status alone, removes the person.
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      statusAfterToggle: "resolved",
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([]);
+    expect(stub.calls.unassignConversation).toBe(1);
   });
 
   test("a bot assignment that came back without the bot is followed by an unassign, even when nobody held it", async () => {

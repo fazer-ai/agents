@@ -836,7 +836,8 @@ describe.skipIf(!dbUp)(
         where: { id },
         select: { assigneeType: true, assigneeId: true },
       });
-      expect(mirrored).toEqual({ assigneeType: "User", assigneeId: 9 });
+      // The reread carries no version, so the mirror waits for the assignment webhook.
+      expect(mirrored).toEqual({ assigneeType: "User", assigneeId: 21 });
     });
 
     // An untargeted handoff makes no assignment request, and the open toggle does not auto-assign

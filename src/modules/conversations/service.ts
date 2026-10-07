@@ -2341,9 +2341,17 @@ export async function returnConversationToAgent(
   const nobodyToRemove =
     live !== null && live.assigneeStated === true && live.assigneeType === null;
   let handedToBot = alreadyOurs;
+  // The bot assignment also sets `pending`, so it is only sent while the read after the status call
+  // still says pending: somebody who resolved or opened it meanwhile keeps that status, and the plain
+  // unassign (which leaves the status alone) takes its place.
+  let attempted = false;
   if (newHolder === null && !alreadyOurs) {
     try {
-      if (ourAgentBotId !== null) {
+      if (
+        ourAgentBotId !== null &&
+        (live === null || live.status === "pending")
+      ) {
+        attempted = true;
         handedToBot = await client.assignAgentBot(
           conv.chatwootConversationId,
           ourAgentBotId,
@@ -2352,14 +2360,15 @@ export async function returnConversationToAgent(
       }
       // NOTE: an assignment that came back without the bot may have named a USER with that id (a
       // Chatwoot that ignores `assignee_type`), so the unassign follows it even onto an empty read.
-      if (!handedToBot && (ourAgentBotId !== null || !nobodyToRemove)) {
+      if (!handedToBot && (attempted || !nobodyToRemove)) {
         await client.unassignConversation(conv.chatwootConversationId, {
           asAdmin: true,
         });
       }
     } catch (err) {
       // Once a bot assignment was sent, the holder is no longer known to be the baseline (it may have
-      // landed, or named a user with the bot's id), so it is read again; unread, it is unknown.
+      // landed, or named a user with the bot's id), so it is read again for the row; unread, it is
+      // unknown. The mirror is left to the assignment webhook, which carries the version this lacks.
       let partialHolder: {
         assigneeType: string | null;
         assigneeId: number | null;
@@ -2368,24 +2377,12 @@ export async function returnConversationToAgent(
         assigneeType: baseline.assigneeType,
         assigneeId: baseline.assigneeId,
       };
-      if (ourAgentBotId !== null) {
+      if (attempted) {
         const seen = await readHolder().catch(() => null);
         partialHolder =
           seen?.assigneeStated === true
             ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
             : { assigneeType: null, assigneeId: null, holderUnknown: true };
-        if (seen?.assigneeStated === true) {
-          await updateMirror(ctx, base, id, {
-            assigneeType: seen.assigneeType,
-            assigneeId: seen.assigneeId,
-            assigneeName: seen.assigneeName,
-          }).catch((mirrorErr) => {
-            logger.warn(
-              { err: mirrorErr },
-              `conversations: the partial hand-back could not record its holder (conv=${String(id)})`,
-            );
-          });
-        }
       }
       // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
       // is still holding the conversation, which is the recoverable half of the pair (the comment on

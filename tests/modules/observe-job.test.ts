@@ -2417,6 +2417,13 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
             undefined,
       );
       expect(attribution?.status).toBe("error");
+      // Both lines carry the failure class, which is what an alert keys a cause on.
+      expect(
+        (attribution?.detail as Record<string, unknown> | null)?.failure,
+      ).toBe("HTTP 503");
+      expect(
+        (errors[0]?.detail as Record<string, unknown> | null)?.failure,
+      ).toBe("HTTP 503");
     } finally {
       await suDb.agent.update({
         where: { id: agentId },
@@ -3729,6 +3736,78 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(last.labels).toEqual([
       { scope: "conversation", added: 1, removed: 0, after: 2 },
     ]);
+  });
+
+  // An observer whose key is dead fails every tick the same way; the line names the failure class,
+  // so it reaches an error-only channel as one cause instead of a page per tick.
+  test("an observer refused by its provider is one cause alert", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const channel = await suDb.alertChannel.create({
+      data: {
+        tenantId,
+        type: "webhook",
+        name: "erros",
+        url: encryptJson("https://example.com/hook"),
+        minLevel: "error",
+        enabled: true,
+      },
+      select: { id: true },
+    });
+    try {
+      for (let i = 0; i < 2; i++) {
+        const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+        const res = await runObserve(
+          tenantId,
+          {
+            instanceId,
+            conversationId: CONV,
+            agentId,
+            reason: "burst",
+            atMessageId: null,
+          },
+          appDb,
+          {
+            makeClient: async () =>
+              stubClientWithVocab(
+                [message(1, "quero cancelar")],
+                ["compra-de-ingresso"],
+                log,
+                ["compra-de-ingresso", "cancelamento"],
+              ),
+            makeModel: () =>
+              ({
+                bindTools: () => ({
+                  invoke: async () => {
+                    throw Object.assign(new Error("invalid api key"), {
+                      status: 401,
+                    });
+                  },
+                }),
+                invoke: async () => new AIMessage(""),
+              }) as unknown as BaseChatModel,
+          },
+        );
+        expect(res.outcome).toBe("fail");
+      }
+      const lines = await observeLines();
+      expect(detailOf(lines, -1).failure).toBe("HTTP 401");
+      let rows: Array<{ causeKey: string | null; count: number }> = [];
+      for (let i = 0; i < 30 && (rows[0]?.count ?? 0) < 2; i++) {
+        rows = await suDb.alertDelivery.findMany({
+          where: { channelId: channel.id },
+          select: { causeKey: true, count: true },
+        });
+        if ((rows[0]?.count ?? 0) < 2)
+          await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.causeKey).toMatch(/^observe:.+:HTTP 401$/);
+      expect(rows[0]?.count).toBe(2);
+    } finally {
+      await suDb.alertDelivery.deleteMany({ where: { channelId: channel.id } });
+      await suDb.alertChannel.delete({ where: { id: channel.id } });
+    }
   });
 
   test("a write kept by a model failure after it is still on the line", async () => {

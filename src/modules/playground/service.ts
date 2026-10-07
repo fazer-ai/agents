@@ -457,6 +457,7 @@ async function buildPlaygroundGraph(params: {
     provider: string;
     model: string;
     reason: string;
+    failure: string;
   }) => void;
   onModelFallbackUnavailable?: (info: {
     provider: string;
@@ -779,14 +780,14 @@ async function runPlaygroundTurnOnce(
       // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
       // labelled with the primary by construction and would otherwise blame the model that never made
       // the second call. `status` stays "error": the call did fail.
-      onModelFallbackFailed: ({ provider, model, reason }) =>
+      onModelFallbackFailed: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "info",
           status: "error",
           provider,
           model,
-          detail: { fallbackFailed: reason },
+          detail: { fallbackFailed: reason, failure },
         }),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
@@ -1269,14 +1270,14 @@ async function runPlaygroundFollowupOnce(
       // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
       // labelled with the primary by construction and would otherwise blame the model that never made
       // the second call. `status` stays "error": the call did fail.
-      onModelFallbackFailed: ({ provider, model, reason }) =>
+      onModelFallbackFailed: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "info",
           status: "error",
           provider,
           model,
-          detail: { fallbackFailed: reason },
+          detail: { fallbackFailed: reason, failure },
         }),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {

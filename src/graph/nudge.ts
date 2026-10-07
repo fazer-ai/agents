@@ -1451,14 +1451,14 @@ async function runAgentNudgeBody(
     // call emits its OWN error when the turn throws, and alert coalescing keys on (channel, stage,
     // level), so a second `generate`/`error` would page twice for one outage. This line only says
     // WHICH model died, since the stage is labelled with the primary by construction.
-    onModelFallbackFailed: ({ provider, model, reason }) =>
+    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "info",
         status: "error",
         provider,
         model,
-        detail: { fallbackFailed: reason },
+        detail: { fallbackFailed: reason, failure },
       }),
     // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having

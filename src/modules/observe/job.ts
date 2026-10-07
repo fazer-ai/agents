@@ -24,6 +24,7 @@ import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
+import { providerFailure } from "@/lib/provider-failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText, clipTextEnd } from "@/lib/text";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -1340,14 +1341,14 @@ export async function runObserve(
           model,
           detail: { fallbackFrom: cfg.mc.provider, fallbackReason: why },
         }),
-      onModelFallbackFailed: ({ provider, model, reason: why }) =>
+      onModelFallbackFailed: ({ provider, model, reason: why, failure }) =>
         emitFlowEvent(flow, {
           stage: "observe",
           level: "info",
           status: "error",
           provider,
           model,
-          detail: { fallbackFailed: why },
+          detail: { fallbackFailed: why, failure },
         }),
       // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
       // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
@@ -1515,6 +1516,7 @@ export async function runObserve(
       detail: {
         reason,
         failed: "model_call",
+        failure: providerFailure(err),
         toolCalls: toolsRan - noEffect,
         ...(committed ? { retried: false } : {}),
         ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),

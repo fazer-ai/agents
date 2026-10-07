@@ -212,6 +212,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/memory-compaction.test.ts": 3,
   "tests/modules/memory-dead-letter.test.ts": 1,
   "tests/modules/observe-job.test.ts": 2,
+  "tests/modules/observer-sibling-media.test.ts": 1,
   "tests/modules/playground-guardrails.test.ts": 1,
   // NOTE: The `vision` stage line of the reengage turn is the only proof the attachment was opened: the reply
   // text cannot tell "read and summarised" from "made up".

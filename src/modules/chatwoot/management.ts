@@ -1078,7 +1078,9 @@ const INBOX_SELECT = {
   },
 } as const;
 
-// The observers Chatwoot has actually agreed to, for the one reading that cannot count an intent.
+// The observers Chatwoot has actually agreed to, for the readings that cannot count an intent: every
+// observer list on the audit trail. Another agent's observe can hold a pending row on the same inbox,
+// and its attach may still fail and take the row back without a line of its own.
 function confirmedObserverIds(row: {
   observers: { agentId: bigint; attachedAt: Date | null }[];
 }): string[] {
@@ -2089,7 +2091,7 @@ export async function bindInbox(
           where: { inboxId, agentId },
         });
         if (retired.count > 0) {
-          const was = toInboxDto(pre).observerAgentIds;
+          const was = confirmedObserverIds(pre);
           await auditMutation(db, ctx, {
             action: "inbox.unobserve",
             target: `inbox:${inboxId}`,
@@ -2647,7 +2649,7 @@ export async function observeInbox(
           // NOTE: the state before this call, not the rows before this write: this call's own pending
           // row is in `before` too.
           before: { observerAgentIds: confirmedObserverIds(before) },
-          after: { observerAgentIds: dto.observerAgentIds },
+          after: { observerAgentIds: confirmedObserverIds(row) },
         });
       }
       return { dto, responderWon: false };
@@ -2766,8 +2768,8 @@ export async function unobserveInbox(
       await auditMutation(db, ctx, {
         action: "inbox.unobserve",
         target: `inbox:${inboxId}`,
-        before: { observerAgentIds: toInboxDto(before).observerAgentIds },
-        after: { observerAgentIds: dto.observerAgentIds },
+        before: { observerAgentIds: confirmedObserverIds(before) },
+        after: { observerAgentIds: confirmedObserverIds(row) },
       });
     }
     return dto;
@@ -2877,7 +2879,7 @@ export async function removeInbox(
         // NOTE: the watchers go with it (`InboxObserver` cascades on the inbox), so they are in the
         // projection, read under the same lock: the trail names who was watching, on the one
         // action that cannot be undone.
-        observers: { select: { agentId: true } },
+        observers: { select: { agentId: true, attachedAt: true } },
       },
     });
     const { count } = await db.inbox.deleteMany({ where: { id: inboxId } });
@@ -2895,7 +2897,7 @@ export async function removeInbox(
           agentId: current.agentId === null ? null : String(current.agentId),
           // NOTE: the cascade's casualties, on the removal's row rather than a separate
           // `inbox.unobserve`: one action happened.
-          observerAgentIds: current.observers.map((o) => String(o.agentId)),
+          observerAgentIds: confirmedObserverIds(current),
         },
       });
     }

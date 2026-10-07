@@ -1410,6 +1410,12 @@ export interface EagerMediaOwner {
   // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
   // a provider.
   admission: "allowed" | "refused" | "unverified";
+  // The other watchers of this inbox, on an observer's route, whose STT and vision settings answer
+  // when the route's own are off. Every watcher appends the same message to the one contact-inbox
+  // thread and the first append wins, so the rendering cannot depend on whose delivery ran first:
+  // a watcher with STT off would otherwise remember a voice note as a marker its sibling transcribes.
+  // The provider call is still one per message (`shareInFlight`, the annotation stash).
+  siblingWatcherAgentIds?: bigint[];
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1553,6 +1559,52 @@ async function mediaAdmitted(
 // Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
 // so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
 // to run it (production+enabled always, test only on the answer path, disabled never).
+// The route's own config first, then each sibling watcher's, in a fixed order (see
+// `siblingWatcherAgentIds`). A null agent asks the inbox's responder, as it always has.
+async function firstMediaConfig<T>(
+  owner: EagerMediaOwner,
+  resolve: (agentId: bigint | null) => Promise<T | null>,
+): Promise<T | null> {
+  const own = await resolve(owner.agentId);
+  if (own) return own;
+  for (const agentId of owner.siblingWatcherAgentIds ?? []) {
+    const cfg = await resolve(agentId);
+    if (cfg) return cfg;
+  }
+  return null;
+}
+
+// The confirmed watchers of an inbox other than `agentId`, ordered by agent so every route asks
+// them in the same order. Best-effort like the pass it feeds: unreadable, the route keeps its own.
+async function siblingWatcherAgentIds(
+  tenantId: bigint,
+  inboxId: bigint,
+  agentId: bigint,
+  base: PrismaClient,
+): Promise<bigint[]> {
+  try {
+    const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.inboxObserver.findMany({
+        where: {
+          inboxId,
+          agentId: { not: agentId },
+          attachedAt: { not: null },
+        },
+        select: { agentId: true },
+        orderBy: { agentId: "asc" },
+      }),
+    );
+    return rows.map((r) => r.agentId);
+  } catch (err) {
+    logger.warn(
+      "chatwoot: could not read the inbox's other watchers (inbox row=%s): %s",
+      String(inboxId),
+      errMsg(err),
+    );
+    return [];
+  }
+}
+
 export async function runEagerMedia(
   tenantId: bigint,
   instanceId: bigint,
@@ -1634,13 +1686,15 @@ export async function runEagerMedia(
         messageId: n.message.id,
       });
       try {
-        const sttCfg = await resolveSttConfig(
-          tenantId,
-          instanceId,
-          chatwootInboxId,
-          base,
-          // NOTE: The route's agent, which on an observer's route is not the inbox's.
-          { agentId: owner.agentId },
+        const sttCfg = await firstMediaConfig(owner, (agentId) =>
+          resolveSttConfig(
+            tenantId,
+            instanceId,
+            chatwootInboxId,
+            base,
+            // NOTE: The route's agent, which on an observer's route is not the inbox's.
+            { agentId },
+          ),
         );
         if (sttCfg && (await admitted())) {
           const text = await transcribeInboundAudio({
@@ -1687,13 +1741,15 @@ export async function runEagerMedia(
   // shared with the turn that re-reads a thread; this side keeps the decision to run and where results go.
   if (visionPending) {
     try {
-      const visionCfg = await resolveVisionConfig(
-        tenantId,
-        instanceId,
-        chatwootInboxId,
-        base,
-        // NOTE: The route's agent, which on an observer's route is not the inbox's.
-        { agentId: owner.agentId },
+      const visionCfg = await firstMediaConfig(owner, (agentId) =>
+        resolveVisionConfig(
+          tenantId,
+          instanceId,
+          chatwootInboxId,
+          base,
+          // NOTE: The route's agent, which on an observer's route is not the inbox's.
+          { agentId },
+        ),
       );
       // Only a new extraction waits for the gate; metadata already on an attachment is reused. Email
       // body images are not counted as unread: telling them from an ornament needs the download.
@@ -3643,6 +3699,19 @@ export async function processChatwootDelivery(
   // Whether the watcher answer came from the attach window rather than a row. Only that answer
   // can: "no row" on the binding read is also the post-detach state of a bot owning an old conversation.
   const observerAttaching = observer?.attaching === true;
+  // On an observer's route, the inbox's other watchers, for the media pass (`siblingWatcherAgentIds`
+  // on EagerMediaOwner). Read once, and only by a pass that runs.
+  let siblingsMemo: Promise<bigint[]> | null = null;
+  const siblingWatchers = (): Promise<bigint[]> => {
+    if (observer === null) return Promise.resolve([]);
+    siblingsMemo ??= siblingWatcherAgentIds(
+      params.tenantId,
+      observer.inboxId,
+      observer.agentId,
+      base,
+    );
+    return siblingsMemo;
+  };
 
   // tx1: CAS <claimFrom> to PROCESSING; a duplicate that finds nothing to claim skips. Stamped
   // with `claimed_at`, the clock the sweep measures an attempt by. "PENDING" is a delivery arriving;
@@ -4431,6 +4500,7 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: "unverified",
+        siblingWatcherAgentIds: await siblingWatchers(),
       });
     }
   }
@@ -4974,6 +5044,7 @@ export async function processChatwootDelivery(
       deps: params.deps,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
+      siblingWatcherAgentIds: await siblingWatchers(),
     });
   }
   // The observer marks only after its ingestion has the message (queued, or nothing to queue):

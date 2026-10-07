@@ -1246,6 +1246,72 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     }
   });
 
+  test("the audit trail names only the watchers Chatwoot confirmed, not another agent's attach in flight", async () => {
+    const watcher = (name: string) =>
+      suDb.agent.create({
+        data: { tenantId, name, systemPrompt: "x", mode: "monitoring" },
+        select: { id: true },
+      });
+    const settled = await watcher("Confirmada");
+    const inFlight = await watcher("Em voo");
+    // Another observe's intent, written before its Chatwoot call: unstamped, and its attach may
+    // still fail and take the row back with no line of its own.
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: otherInboxRowId,
+        agentId: inFlight.id,
+        attachedAt: null,
+      },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({ observerRoute: true, observing, firstBot: 450 });
+    const lastAudit = (action: string) =>
+      suDb.auditLog.findFirst({
+        where: { tenantId, action, target: `inbox:${otherInboxRowId}` },
+        orderBy: { id: "desc" },
+        select: { before: true, after: true },
+      });
+    // Whatever an earlier case left watching this inbox, confirmed: the trail names it on both sides.
+    const standing = (
+      await suDb.inboxObserver.findMany({
+        where: {
+          tenantId,
+          inboxId: otherInboxRowId,
+          attachedAt: { not: null },
+        },
+        select: { agentId: true },
+        orderBy: { id: "asc" },
+      })
+    ).map((r) => String(r.agentId));
+    try {
+      await observeInbox(ctx(tenantId), otherInboxRowId, settled.id, cw, appDb);
+      expect(await lastAudit("inbox.observe")).toEqual({
+        before: { observerAgentIds: standing },
+        after: { observerAgentIds: [...standing, String(settled.id)] },
+      });
+      await unobserveInbox(
+        ctx(tenantId),
+        otherInboxRowId,
+        settled.id,
+        cw,
+        appDb,
+      );
+      expect(await lastAudit("inbox.unobserve")).toEqual({
+        before: { observerAgentIds: [...standing, String(settled.id)] },
+        after: { observerAgentIds: standing },
+      });
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: {
+          tenantId,
+          inboxId: otherInboxRowId,
+          agentId: { in: [inFlight.id, settled.id] },
+        },
+      });
+    }
+  });
+
   test("the table keys a binding by inbox AND agent: a pair repeats nowhere, two agents share an inbox", async () => {
     const watcher = (name: string) =>
       suDb.agent.create({

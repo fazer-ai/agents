@@ -1437,14 +1437,18 @@ async function runAgentNudgeBody(
     // primary was down: the reply went out, the customer was served, and the only trace would be a
     // usage row under another model's name. Warn rather than info — this is the operator's one
     // signal that a provider they are paying for is not taking their traffic.
-    onModelFallback: ({ provider, model, reason }) =>
+    onModelFallback: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
         provider,
         model,
-        detail: { fallbackFrom: cfg.mc.provider, fallbackReason: reason },
+        detail: {
+          fallbackFrom: cfg.mc.provider,
+          fallbackReason: reason,
+          primaryFailure: failure,
+        },
       }),
     // NOTE: the turn's real ending when there was a second provider and it failed too. ATTRIBUTION,
     // not a second alarm, so `info` while `status` stays "error": the `generate` stage around this

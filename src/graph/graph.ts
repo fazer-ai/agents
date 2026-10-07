@@ -83,6 +83,9 @@ export interface BuildAgentGraphParams {
     provider: string;
     model: string;
     reason: string;
+    // The PRIMARY's failure, in `providerFailure`'s closed word: the line is labelled with the
+    // fallback, and a degraded primary still has to count toward its own rate (flowlog/alerts.ts).
+    failure: string;
   }) => void;
   onModelFallbackFailed?: (info: {
     provider: string;
@@ -785,10 +788,10 @@ export function buildAgentGraph({
                 deadlineMs: second.deadlineMs,
                 // NOTE: after the job's deadline no fallback starts (see `second.run`), so there is no
                 // failover to report and no failed provider: the primary failed on the job's deadline.
-                onFallback: ({ reason }) => {
+                onFallback: ({ reason, failure }) => {
                   if (jobSignal?.aborted) return;
                   fallbackHasTheTurn = true;
-                  onModelFallback?.({ ...second.labels, reason });
+                  onModelFallback?.({ ...second.labels, reason, failure });
                 },
                 onFallbackFailed: ({ reason, failure }) => {
                   if (jobSignal?.aborted) return;

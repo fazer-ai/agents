@@ -1332,14 +1332,18 @@ export async function runObserve(
           model,
           detail: { retry: attempt, node: "observer" },
         }),
-      onModelFallback: ({ provider, model, reason: why }) =>
+      onModelFallback: ({ provider, model, reason: why, failure }) =>
         emitFlowEvent(flow, {
           stage: "observe",
           level: "warn",
           status: "ok",
           provider,
           model,
-          detail: { fallbackFrom: cfg.mc.provider, fallbackReason: why },
+          detail: {
+            fallbackFrom: cfg.mc.provider,
+            fallbackReason: why,
+            primaryFailure: failure,
+          },
         }),
       onModelFallbackFailed: ({ provider, model, reason: why, failure }) =>
         emitFlowEvent(flow, {

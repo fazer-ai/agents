@@ -1106,14 +1106,18 @@ async function runTurnBody(
       }),
     // NOTE: A fallback that answers is a successful turn, so this warn is the operator's one signal
     // that the primary provider is not taking their traffic.
-    onModelFallback: ({ provider, model, reason }) =>
+    onModelFallback: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
         provider,
         model,
-        detail: { fallbackFrom: loaded.mc.provider, fallbackReason: reason },
+        detail: {
+          fallbackFrom: loaded.mc.provider,
+          fallbackReason: reason,
+          primaryFailure: failure,
+        },
       }),
     // NOTE: The fallback failed too. Attribution, not a second alarm: the wrapping `generate` stage
     // already emits the error (labelled with the primary), and alert coalescing keys on (channel,

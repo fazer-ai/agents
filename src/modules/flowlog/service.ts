@@ -9,7 +9,12 @@ import {
   sanitizeErrorMessage,
 } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { causeKeyOf, dispatchAlertsForEvent } from "./alerts";
+import {
+  causeKeyOf,
+  dispatchAlertsForEvent,
+  dispatchRateAlert,
+  rateSubjectOf,
+} from "./alerts";
 import { trackFlowWrite } from "./scheduled";
 import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
 
@@ -141,6 +146,15 @@ export async function writeFlowEvent(
       await dispatchAlertsForEvent(ctx, { ...ev, level }, base);
     } catch (err) {
       logger.warn({ err, turnId: ctx.turnId }, "flowlog alert dispatch failed");
+    }
+  }
+  // A transient provider failure also counts toward that provider's rate, at any level: the attempt
+  // a retry recovers is `info` and pages nobody alone, and many of them are a degraded provider.
+  if (ctx.source === "inbox" && rateSubjectOf(ev) !== null) {
+    try {
+      await dispatchRateAlert(ctx, ev, base);
+    } catch (err) {
+      logger.warn({ err, turnId: ctx.turnId }, "flowlog rate alert failed");
     }
   }
   return { delivered };

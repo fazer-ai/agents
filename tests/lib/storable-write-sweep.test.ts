@@ -363,7 +363,8 @@ const GUARD_CALLS: Record<string, number> = {
   // column it guards (`alert_deliveries.last_error`) is written by the worker, from a string this
   // file built.
   "src/modules/flowlog/alert-send.ts": 1,
-  "src/modules/flowlog/alerts.ts": 1,
+  // The body of an alert and of a rate alert, each a line posted to the channel.
+  "src/modules/flowlog/alerts.ts": 2,
   "src/modules/flowlog/service.ts": 2,
   "src/modules/rag/documents.ts": 1,
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,

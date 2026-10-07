@@ -1855,6 +1855,35 @@ describe("issueHasAction", () => {
     });
   });
 
+  // A monitoring agent runs only the gate's RULE (before it arms an observation): no endpoint is
+  // asked, nobody is answered or handed off, so the endpoint and notice warnings are about controls
+  // that do nothing for it.
+  describe("a monitoring agent's gate", () => {
+    test("raises none of the endpoint or notice warnings", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          agentMonitoring: true,
+          contactAuthEnabled: true,
+          contactAuthIncludeMessageText: true,
+          contactAuthHandoffEnabled: false,
+          contactAuthCredentialRef: "vault:999",
+          pendingRefs: new Set(["vault:999"]),
+        }).map((i) => i.key),
+      ).toEqual([]);
+    });
+
+    test("the same settings on an agent that answers still raise them", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          contactAuthEnabled: true,
+          contactAuthHandoffEnabled: false,
+        }).map((i) => i.key),
+      ).toEqual(["contactAuthNoUrl", "contactAuthSilentRefusal"]);
+    });
+  });
+
   test("a targetless textCap issue has no action, and everything else does", () => {
     expect(
       issueHasAction({ key: "textCap", field: "toolGuidance.private_note" }),

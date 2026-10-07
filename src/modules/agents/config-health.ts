@@ -224,6 +224,10 @@ export interface ConfigHealthInput {
   // needs none), so an absent ref raises nothing; a ref that is pending or gone does, because the
   // gate fails closed and the agent goes silent for every contact.
   contactAuthEnabled?: boolean;
+  // A monitoring agent runs only the gate's rule, before it arms an observation: no endpoint is
+  // asked and nobody is answered or handed off, so every warning below is about something that does
+  // not happen for it.
+  agentMonitoring?: boolean;
   contactAuthCredentialRef?: string;
   // The endpoint itself. `readContactAuthConfig` normalizes a missing or malformed URL to null and
   // leaves `enabled` alone, so the pair is storable — and the gate then refuses every message.
@@ -717,6 +721,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "contactAuth", tab: "behavior", sectionId: "contactAuth" },
     credIssue(
       Boolean(input.contactAuthEnabled) &&
+        !input.agentMonitoring &&
         !input.contactAuthRuleOnly &&
         Boolean(input.contactAuthCredentialRef),
       input.contactAuthCredentialRef ?? "",
@@ -736,6 +741,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // wrong on its own, so this is said rather than silently resolved.
   if (
     input.contactAuthEnabled &&
+    !input.agentMonitoring &&
     !input.contactAuthRuleOnly &&
     input.contactAuthIncludeMessageText &&
     input.contactAuthHandoffEnabled
@@ -755,6 +761,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // A rule with the endpoint asked after it still needs the endpoint: what the rule allows is refused.
   if (
     input.contactAuthEnabled &&
+    !input.agentMonitoring &&
     !input.contactAuthRuleOnly &&
     !(input.contactAuthUrl ?? "").trim()
   ) {
@@ -771,6 +778,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // said rather than forced: the fix is a deny message, or the handoff, and the operator picks.
   if (
     input.contactAuthEnabled &&
+    !input.agentMonitoring &&
     !(input.contactAuthDenyMessage ?? "").trim() &&
     !input.contactAuthHandoffEnabled
   ) {

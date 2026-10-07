@@ -1193,8 +1193,9 @@ function FollowUpStepsEditor({
 
 // What a WATCHER's Behavior tab shows. A watcher runs the ordinary graph, so the rule is: hide what
 // is about SPEAKING TO THE CUSTOMER (availability and away message, grouping, audio, splitting,
-// images, contact authorization, takeover, the proactive ladder), show everything else, because
-// everything else runs. Hidden, not unmounted (`Section.hidden`): the form keeps its state, and
+// images, takeover, the proactive ladder), show everything else, because everything else runs. The
+// contact gate is drawn with its rule alone: on the observer path the rule decides which
+// conversations are observed, and nothing of the endpoint or the notices runs. Hidden, not unmounted (`Section.hidden`): the form keeps its state, and
 // flipping the mode back shows it again untouched.
 export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observation",
@@ -1202,6 +1203,7 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observability",
   "modelFallback",
   "attributeContext",
+  "contactAuth",
   "limits",
   // NOTE: STT and vision run for a watcher: the receiver's `watcherReads` path runs `runEagerMedia`
   // under the observer's own settings when that route remembers the message, so their controls and
@@ -3110,23 +3112,36 @@ export function BehaviorTab({
 
           <Section
             id="contactAuth"
-            hidden={watcher}
             icon={ShieldCheck}
             title={t("editor.contactAuth", "Who this agent serves")}
-            help={t(
-              "editor.contactAuthHelp",
-              "Decides, before the agent answers, whether this conversation is one it serves. Every message is checked again, and the check does not run in the Playground.\n\nA rule decides here, from what Chatwoot already holds (the conversation type, a label, a list, an attribute), before the other checks, so a conversation the agent does not serve gets no away message or redirect first.\n\nAn external endpoint decides from your own system, by the phone number, email and identifier Chatwoot holds for the contact, after the other checks. A rule can also hand what it lets through to the endpoint.",
-            )}
+            help={
+              watcher
+                ? t(
+                    "editor.contactAuthWatcherHelp",
+                    "Decides which conversations this agent observes. The rule is checked before an observation is scheduled, on every new message and when a conversation is resolved, so a conversation it refuses costs no analysis. Nothing is sent to the customer and no note is written.",
+                  )
+                : t(
+                    "editor.contactAuthHelp",
+                    "Decides, before the agent answers, whether this conversation is one it serves. Every message is checked again, and the check does not run in the Playground.\n\nA rule decides here, from what Chatwoot already holds (the conversation type, a label, a list, an attribute), before the other checks, so a conversation the agent does not serve gets no away message or redirect first.\n\nAn external endpoint decides from your own system, by the phone number, email and identifier Chatwoot holds for the contact, after the other checks. A rule can also hand what it lets through to the endpoint.",
+                  )
+            }
           >
             <SwitchField
               checked={contactAuth.enabled}
               onCheckedChange={(v) =>
                 setContactAuth({ ...contactAuth, enabled: v })
               }
-              label={t(
-                "editor.contactAuthEnabled",
-                "Only answer authorized contacts",
-              )}
+              label={
+                watcher
+                  ? t(
+                      "editor.contactAuthWatcherEnabled",
+                      "Only observe the conversations a rule lets through",
+                    )
+                  : t(
+                      "editor.contactAuthEnabled",
+                      "Only answer authorized contacts",
+                    )
+              }
             />
             {contactAuth.enabled && (
               <>
@@ -3184,7 +3199,20 @@ export function BehaviorTab({
                     invalid={contactAuthRuleBad}
                   />
                 )}
-                {contactAuthUsesRule && (
+                {watcher && (
+                  <p className="text-text-muted text-xs">
+                    {contactAuthUsesRule
+                      ? t(
+                          "editor.contactAuthWatcherRule",
+                          "On a monitoring agent, the rule decides which conversations it observes. A conversation the rule refuses is not observed, and nothing is sent or noted.",
+                        )
+                      : t(
+                          "editor.contactAuthWatcherEndpointOnly",
+                          "On a monitoring agent an external endpoint is not asked, so this gate observes every conversation. Choose a rule to limit what it observes.",
+                        )}
+                  </p>
+                )}
+                {!watcher && contactAuthUsesRule && (
                   <SwitchField
                     checked={contactAuth.askEndpointAfterRule}
                     onCheckedChange={(v) =>
@@ -3203,7 +3231,7 @@ export function BehaviorTab({
                     )}
                   />
                 )}
-                {contactAuthAsksEndpoint && (
+                {!watcher && contactAuthAsksEndpoint && (
                   <>
                     <FormField
                       label={t("editor.contactAuthUrl", "Authorization URL")}
@@ -3357,103 +3385,110 @@ export function BehaviorTab({
                     )}
                   </>
                 )}
-                <FormField
-                  label={t(
-                    "editor.contactAuthNoticeCooldown",
-                    "Notice cooldown (s)",
-                  )}
-                  description={t(
-                    "editor.contactAuthNoticeCooldownHint",
-                    "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
-                  )}
-                >
-                  <Input
-                    type="number"
-                    min={0}
-                    max={3600}
-                    value={contactAuth.noticeCooldownSeconds}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        noticeCooldownSeconds: e.target.value,
-                      })
-                    }
-                  />
-                </FormField>
-                <FormField
-                  label={t(
-                    "editor.contactAuthDenyMessage",
-                    "Message to a denied contact",
-                  )}
-                  error={refusals.contactAuthDenyMessage}
-                  description={t(
-                    "editor.contactAuthDenyMessageHint",
-                    "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
-                  )}
-                >
-                  <Textarea
-                    value={contactAuth.denyMessage}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        denyMessage: e.target.value,
-                      })
-                    }
-                    rows={2}
-                    maxLength={TEMPLATE_MESSAGE_MAX}
-                    placeholder={t(
-                      "editor.contactAuthDenyMessagePlaceholder",
-                      "This channel serves registered customers only.",
+                {!watcher && (
+                  <>
+                    <FormField
+                      label={t(
+                        "editor.contactAuthNoticeCooldown",
+                        "Notice cooldown (s)",
+                      )}
+                      description={t(
+                        "editor.contactAuthNoticeCooldownHint",
+                        "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
+                      )}
+                    >
+                      <Input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        value={contactAuth.noticeCooldownSeconds}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            noticeCooldownSeconds: e.target.value,
+                          })
+                        }
+                      />
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.contactAuthDenyMessage",
+                        "Message to a denied contact",
+                      )}
+                      error={refusals.contactAuthDenyMessage}
+                      description={t(
+                        "editor.contactAuthDenyMessageHint",
+                        "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
+                      )}
+                    >
+                      <Textarea
+                        value={contactAuth.denyMessage}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            denyMessage: e.target.value,
+                          })
+                        }
+                        rows={2}
+                        maxLength={TEMPLATE_MESSAGE_MAX}
+                        placeholder={t(
+                          "editor.contactAuthDenyMessagePlaceholder",
+                          "This channel serves registered customers only.",
+                        )}
+                      />
+                    </FormField>
+                    <SwitchField
+                      checked={contactAuth.handoffEnabled}
+                      onCheckedChange={(v) =>
+                        setContactAuth({ ...contactAuth, handoffEnabled: v })
+                      }
+                      label={t(
+                        "editor.contactAuthHandoff",
+                        "Open refused conversations for humans",
+                      )}
+                    />
+                    {contactAuth.handoffEnabled && (
+                      <ContactAuthTeamSelect
+                        agentId={agentId}
+                        value={contactAuth.handoffTeamId}
+                        instanceId={contactAuth.handoffTeamInstanceId}
+                        onChange={(v, instanceId) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            handoffTeamId: v,
+                            // Cleared with the team: a recorded account with no team pins nothing, and
+                            // a stale one would outlive the choice it belonged to.
+                            handoffTeamInstanceId: v ? instanceId : "",
+                          })
+                        }
+                      />
                     )}
-                  />
-                </FormField>
-                <SwitchField
-                  checked={contactAuth.handoffEnabled}
-                  onCheckedChange={(v) =>
-                    setContactAuth({ ...contactAuth, handoffEnabled: v })
-                  }
-                  label={t(
-                    "editor.contactAuthHandoff",
-                    "Open refused conversations for humans",
-                  )}
-                />
-                {contactAuth.handoffEnabled && (
-                  <ContactAuthTeamSelect
-                    agentId={agentId}
-                    value={contactAuth.handoffTeamId}
-                    instanceId={contactAuth.handoffTeamInstanceId}
-                    onChange={(v, instanceId) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        handoffTeamId: v,
-                        // Cleared with the team: a recorded account with no team pins nothing, and
-                        // a stale one would outlive the choice it belonged to.
-                        handoffTeamInstanceId: v ? instanceId : "",
-                      })
-                    }
-                  />
-                )}
-                <SwitchField
-                  checked={contactAuth.operatorNoteEnabled}
-                  onCheckedChange={(v) =>
-                    setContactAuth({ ...contactAuth, operatorNoteEnabled: v })
-                  }
-                  label={t(
-                    "editor.contactAuthOperatorNote",
-                    "Write a private note when a contact is refused",
-                  )}
-                  help={t(
-                    "editor.contactAuthOperatorNoteHelp",
-                    "Turn it off when most conversations are refused on purpose, so each one does not get a note. A check that fails, or a contact with nothing to check, always gets a note, since those need fixing.",
-                  )}
-                />
-                {contactAuthQuietRefusal && (
-                  <p className="text-text-muted text-xs">
-                    {t(
-                      "editor.contactAuthQuietRefusal",
-                      "Quiet refusal: conversations this agent does not serve go to the human queue with no message to the customer and no note. This is the setup for an agent that should act on only part of an inbox.",
+                    <SwitchField
+                      checked={contactAuth.operatorNoteEnabled}
+                      onCheckedChange={(v) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          operatorNoteEnabled: v,
+                        })
+                      }
+                      label={t(
+                        "editor.contactAuthOperatorNote",
+                        "Write a private note when a contact is refused",
+                      )}
+                      help={t(
+                        "editor.contactAuthOperatorNoteHelp",
+                        "Turn it off when most conversations are refused on purpose, so each one does not get a note. A check that fails, or a contact with nothing to check, always gets a note, since those need fixing.",
+                      )}
+                    />
+                    {contactAuthQuietRefusal && (
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "editor.contactAuthQuietRefusal",
+                          "Quiet refusal: conversations this agent does not serve go to the human queue with no message to the customer and no note. This is the setup for an agent that should act on only part of an inbox.",
+                        )}
+                      </p>
                     )}
-                  </p>
+                  </>
                 )}
               </>
             )}
@@ -4219,9 +4254,10 @@ export function BehaviorTab({
           fallbackBaseUrlInvalid ||
           fallbackBaseUrlUnsupported ||
           fallbackModelMissing ||
+          // NOTE: A watcher's gate draws the rule's fields, so a rule it cannot read is said there.
+          contactAuthRuleBad ||
           (!watcher &&
             (contactAuthUrlInvalid ||
-              contactAuthRuleBad ||
               normalizeBaseUrlInvalid ||
               normalizeBaseUrlUnsupported))
         }

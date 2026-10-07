@@ -1079,7 +1079,9 @@ function AgentEditor() {
     ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
     ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
-    contactAuthEnabled: contactAuth.enabled,
+    // NOTE: A watcher's section draws the rule alone, so the fields a refusal names (the deny copy,
+    // the credential) are not on its screen.
+    contactAuthEnabled: contactAuth.enabled && agentMode !== "monitoring",
     memoryCompactionEnabled: memory.compactionEnabled,
     modelFallbackChosen: !!modelFallback.provider,
     guardrailsEnabled: guardrails.enabled,
@@ -2114,6 +2116,7 @@ function AgentEditor() {
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
+    agentMonitoring: agentMode === "monitoring",
     contactAuthUrl: contactAuth.url,
     contactAuthRuleOnly:
       contactAuth.ruleKind !== "" && !contactAuth.askEndpointAfterRule,

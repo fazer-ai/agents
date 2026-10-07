@@ -197,6 +197,34 @@ nothing from the agent, the conversation is opened for the human queue (so it is
 up. `contactAuthSilentRefusal` still fires only for no message AND no handoff, which is the pair that
 leaves a customer with nothing.
 
+## The observer path
+
+A monitoring agent answers nobody, so of the two stages only the rule applies to it, and it decides
+which conversations the agent OBSERVES (`contact-auth/observer.ts`, `observerRuleAllows`). It is
+asked before every place an observation is armed: a new incoming message on the observer's route,
+the resolve that pulls the verdict forward, and the debounce flush handing an armed burst over to an
+agent flipped to monitoring. It is also asked before the observer's media pass, because that
+transcription or description exists for the observation. A conversation the rule refuses costs no
+`OBSERVE` job, no media call and no model call.
+
+- **A refusal speaks to nobody.** Nothing is sent, nothing is opened and no note is written, whatever
+  `denyMessage`, `handoffEnabled` and `operatorNoteEnabled` say: those are about a customer the agent
+  would have answered. The one trace is the `contact_auth` flow line any verdict leaves (one per
+  watcher per delivery: the media pass and the arm share the verdict).
+- **The endpoint stage never runs here.** Its question is whether a contact may be SERVED, and an
+  observer serves nobody; asked once per message on a busy inbox it would be an external call per
+  message for no answer the observer can use. An enabled gate with only an endpoint observes as
+  before, with no line, and the endpoint is never called. `askEndpointAfterRule` is ignored here: the
+  rule's allow is final.
+- **Memory is not the rule's to decide.** The burst is still remembered and the handled watermark
+  still moves; what the rule withholds is the observation. Remembering is what keeps a later flip to
+  production from answering the observed backlog.
+- **A rule that cannot be evaluated refuses**, the gate's fail-closed direction: a missed observation
+  is one tick, an observed out-of-scope conversation is the model call the rule exists to prevent.
+- **The editor** draws the section for a monitoring agent with the rule alone, says that the rule
+  decides what is observed, and says when an endpoint-only gate does nothing here. The endpoint and
+  notice warnings of the configuration panel are not raised for a monitoring agent.
+
 ## Request / response contract
 
 The request separates two kinds of data, and the separation IS the contract:

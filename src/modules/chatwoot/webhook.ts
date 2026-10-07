@@ -76,6 +76,7 @@ import {
   recordMediaRefusal,
   refusedCovers,
 } from "@/modules/contact-auth/media-refusal";
+import { observerRuleAllows } from "@/modules/contact-auth/observer";
 import {
   RULE_CONVERSATION_TYPE,
   RULE_LABEL,
@@ -4210,6 +4211,18 @@ export async function processChatwootDelivery(
           (watcher === responderRt || responderRt?.agentId !== watcher.agentId)
         ) {
           seen.add(watcher.agentId);
+          if (
+            !(await observerRuleAllows({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              conversationId,
+              agentId: watcher.agentId,
+              settings: watcher.settings,
+              base,
+            }))
+          ) {
+            continue;
+          }
           await armObserve({
             tenantId: params.tenantId,
             instanceId: params.instanceId,
@@ -4484,6 +4497,29 @@ export async function processChatwootDelivery(
   // memory. A ROW-BACKED observer analyses whatever its mode, as its ingestion does: a watcher that
   // remembers an audio as a marker remembers nothing of it.
   const watcherReads = observer !== null;
+  // The contact gate's rule on the observer path, asked once per watcher per delivery: the media
+  // pass and the arm below put the same question, and two asks would leave two lines.
+  const observeVerdicts = new Map<string, Promise<boolean>>();
+  const observerMayObserve = (
+    watcher: { agentId: bigint },
+    settings: unknown,
+  ): Promise<boolean> => {
+    if (n.conversationId === null) return Promise.resolve(true);
+    const key = String(watcher.agentId);
+    let verdict = observeVerdicts.get(key);
+    if (!verdict) {
+      verdict = observerRuleAllows({
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        agentId: watcher.agentId,
+        settings,
+        base,
+      });
+      observeVerdicts.set(key, verdict);
+    }
+    return verdict;
+  };
   // When the contact authorization gate runs on this message, the media pass waits for its verdict.
   const gateAsksNext =
     (act || commandActive) &&
@@ -4504,6 +4540,9 @@ export async function processChatwootDelivery(
   ) {
     if (gateAsksNext) {
       mediaAwaitsGate = true;
+    } else if (observing && !(await observerMayObserve(rt, rt.settings))) {
+      // NOTE: A conversation the watcher's rule keeps it out of is not transcribed or described for
+      // it: that analysis exists for the observation the rule just refused.
     } else {
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
@@ -5615,17 +5654,18 @@ export async function processChatwootDelivery(
             })
         : null;
     for (const watcher of watchers) {
+      const settings =
+        freshSettings !== null && watcher.agentId === rt?.agentId
+          ? freshSettings
+          : watcher.settings;
+      if (!(await observerMayObserve(watcher, settings))) continue;
       await armObserve({
         tenantId: params.tenantId,
         instanceId: params.instanceId,
         conversationId,
         agentId: watcher.agentId,
         reason: "burst",
-        cfg: readMonitoringConfig(
-          freshSettings !== null && watcher.agentId === rt?.agentId
-            ? freshSettings
-            : watcher.settings,
-        ),
+        cfg: readMonitoringConfig(settings),
         // The message this burst is about, in Chatwoot's own sequence: the reset fence the tick is
         // held to is asked in that order and in no other.
         atMessageId: n.message?.id ?? null,

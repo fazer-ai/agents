@@ -54,6 +54,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
+import { observerRuleAllows } from "@/modules/contact-auth/observer";
 import {
   authorizeContact,
   type ContactAuthStage,
@@ -1324,18 +1325,30 @@ async function ingestObservedBurst(args: {
         burst.length,
       );
       // NOTE: A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
-      // message: best-effort, after the memory has it.
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId,
-        agentId: ctx.agentId,
-        reason: "burst",
-        cfg: readMonitoringConfig(ctx.settings),
-        // NOTE: In Chatwoot's own id sequence, the order the tick's reset fence is asked in.
-        atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
-        base,
-      });
+      // message: best-effort, after the memory has it, and only where the contact gate's rule lets
+      // the watcher observe this conversation.
+      if (
+        await observerRuleAllows({
+          tenantId,
+          instanceId,
+          conversationId,
+          agentId: ctx.agentId,
+          settings: ctx.settings,
+          base,
+        })
+      ) {
+        await armObserve({
+          tenantId,
+          instanceId,
+          conversationId,
+          agentId: ctx.agentId,
+          reason: "burst",
+          cfg: readMonitoringConfig(ctx.settings),
+          // NOTE: In Chatwoot's own id sequence, the order the tick's reset fence is asked in.
+          atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
+          base,
+        });
+      }
       if (!floorInView) {
         // NOTE: Failed rather than left for a later flush: no flush re-reads beyond one page, so
         // the part the bound left out would be lost quietly. The dead-letter keeps it visible.

@@ -1349,6 +1349,8 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(providers.auth).toBe(2);
     expect(providers.stt).toBe(1);
     expect(customerFacing).toEqual([]);
+    // ...and its denial takes back the observation the first message queued, as an arm's does.
+    expect(await runnableObserveRows(15)).toEqual([]);
   });
 
   // An observation armed while the rule allowed it is asked again when it runs: a label removed or a

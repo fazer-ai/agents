@@ -78,7 +78,6 @@ import {
 } from "@/modules/contact-auth/media-refusal";
 import {
   observerArmPermit,
-  observerAsk,
   observerRuleVerdict,
   rememberWatcherAdmission,
   watcherAdmissionStands,
@@ -1509,9 +1508,26 @@ async function mediaAdmitted(
       return true;
     }
     const watcherPass = isMonitoring(ctx.mode ?? "");
-    if (watcherPass && owner.watcherPermit) {
-      // The arm's verdict, asked once for both; it leaves its own line.
-      if (!(await owner.watcherPermit(agentId, ctx.settings))) {
+    if (watcherPass) {
+      // The watcher's whole gate, with the retirement bookkeeping an arm's ask does: the delivery's
+      // own ask when the caller shares it, asked once for both, or a fresh one. It leaves its own line.
+      const permitOf =
+        owner.watcherPermit ??
+        ((watcherId: bigint, settings: unknown) =>
+          observerArmPermit({
+            tenantId,
+            instanceId,
+            conversationId,
+            agentId: watcherId,
+            settings,
+            base,
+            fetchImpl: owner.deps?.contactAuthFetch,
+            message:
+              messageId != null
+                ? { id: messageId, text: n.message?.content ?? null }
+                : null,
+          }));
+      if (!(await permitOf(agentId, ctx.settings))) {
         await recordMediaRefusal(
           tenantId,
           convDbId,
@@ -1545,23 +1561,10 @@ async function mediaAdmitted(
       conversationId,
       inboxId: chatwootInboxId,
       channelType: ctx.inbox.channelType,
-      // A watcher, read fresh because the agent may have been flipped since the delivery began, asks
-      // the way its arm does (docs/contact-auth.md, The observer path), so a concurrent arm and
-      // pass put one question to the endpoint.
-      ...(watcherPass
-        ? observerAsk(
-            cfg,
-            conversationId,
-            n.message?.id != null
-              ? { id: n.message.id, text: n.message.content ?? null }
-              : null,
-          )
-        : {
-            messageText: n.message?.content ?? null,
-            requestKey: cfg.includeMessageText
-              ? `msg:${n.message?.id ?? "none"}`
-              : "inbox",
-          }),
+      messageText: n.message?.content ?? null,
+      requestKey: cfg.includeMessageText
+        ? `msg:${n.message?.id ?? "none"}`
+        : "inbox",
       // The media pass asks at one place, so it asks the whole gate.
       stage: "both",
       cfg,

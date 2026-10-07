@@ -111,20 +111,28 @@ type AlertBodyInput = Pick<
 // members can be unrelated conversations, so a burst links to the stage+level list and a single
 // event links to its own turn (plus its conversation when the mirror knew one). No `source`: only
 // inbox traffic alerts, which is the page's default. `consoleUrl` names the tenant so an operator
-// of several tenants lands on the right one.
-export function alertLinks(a: AlertBodyInput): string[] {
+// of several tenants lands on the right one. Each link carries the label the body prints for it, so
+// the burst's says how many lines the list holds.
+export function alertLinks(
+  a: AlertBodyInput,
+): { label: string; url: string }[] {
   const opts = { tenantId: a.tenantId };
   if (a.count > 1) {
     const q = new URLSearchParams();
     if (a.stage) q.set("stage", a.stage);
     q.set("level", a.level);
-    return [consoleUrl(`/logs?${q}`, opts)];
+    return [
+      { label: `View all ${a.count}`, url: consoleUrl(`/logs?${q}`, opts) },
+    ];
   }
   if (!a.turnId) return [];
   const q = new URLSearchParams({ turnId: a.turnId });
-  const links = [consoleUrl(`/logs?${q}`, opts)];
+  const links = [{ label: "View log", url: consoleUrl(`/logs?${q}`, opts) }];
   if (a.conversationId != null) {
-    links.push(consoleUrl(`/conversations/${a.conversationId}`, opts));
+    links.push({
+      label: "View conversation",
+      url: consoleUrl(`/conversations/${a.conversationId}`, opts),
+    });
   }
   return links;
 }
@@ -141,11 +149,12 @@ export function buildAlertBody(a: AlertBodyInput): {
   if (a.type === "discord") {
     const icon = a.level === "error" ? "🔴" : "🟠";
     const head = `${icon} **fazer.ai agents** \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}`;
-    // In angle brackets so Discord does not unfurl the console's login page under every alert.
-    // Appended AFTER the clip, which takes its room out of the summary: the link is the part an
-    // operator acts on, and a long summary must not cut it in half.
+    // Masked links, so the line reads as two words instead of two 80-character URLs, with the URL
+    // still in angle brackets so Discord does not unfurl the console's login page under every
+    // alert. Appended AFTER the clip, which takes its room out of the summary: the link is the part
+    // an operator acts on, and a long summary must not cut it in half.
     const links = alertLinks(a)
-      .map((u) => `<${u}>`)
+      .map((l) => `[${l.label}](<${l.url}>)`)
       .join(" · ");
     const content = links
       ? `${clipText(head, DISCORD_MAX - links.length - 1)}\n${links}`

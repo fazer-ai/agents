@@ -299,12 +299,13 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
 type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
-  "src/graph/nudge.ts": [1, "flow-event"],
+  "src/graph/nudge.ts": [2, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
-  "src/graph/runtime.ts": [5, "flow-event"],
+  "src/graph/runtime.ts": [6, "flow-event"],
   "src/graph/tool-flowlog.ts": [2, "flow-event"],
-  // A playground turn that failed unhandled: a fixed sentence, never the error's text.
-  "src/modules/playground/service.ts": [1, "flow-event"],
+  // A playground turn that failed unhandled: a fixed sentence, never the error's text. And the two
+  // fallback-failed lines, the redacted reason.
+  "src/modules/playground/service.ts": [3, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
@@ -327,7 +328,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/guardrails/handoff.ts": [1, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
-  "src/modules/observe/job.ts": [1, "flow-event"],
+  "src/modules/observe/job.ts": [2, "flow-event"],
   // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
   // that stood down: a select and the type it is handed as.
   "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],

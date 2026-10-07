@@ -1,6 +1,10 @@
 import logger from "@/api/lib/logger";
 import config from "@/config";
-import { asProviderFailure } from "@/lib/provider-failure";
+import {
+  asProviderFailure,
+  markReportedElsewhere,
+  providerFailure,
+} from "@/lib/provider-failure";
 import { Semaphore } from "@/lib/semaphore";
 import {
   EMPTY_COMPLETION_MESSAGE,
@@ -62,7 +66,7 @@ export interface ModelFallback<T> {
   // `generate` stage wrapping this call is labelled with the PRIMARY by construction: without it an
   // operator reads "the fallback took the turn (ok)" followed by an error attributed to the model
   // that never made the second call, which reads as the primary failing twice.
-  onFallbackFailed?: (info: { reason: string }) => void;
+  onFallbackFailed?: (info: { reason: string; failure: string }) => void;
 }
 
 // Which model an event is about, carried on every event and NOT optional: only this module knows
@@ -220,9 +224,14 @@ export async function runModelCall<T>(
           // The fallback is the last thing there is, so what it failed with is what the turn
           // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
           const out = describeProviderFault(fallbackErr);
-          fallback.onFallbackFailed?.({
-            reason: out instanceof Error ? out.message : "provider error",
-          });
+          if (fallback.onFallbackFailed) {
+            const failure = providerFailure(fallbackErr);
+            fallback.onFallbackFailed({
+              reason: out instanceof Error ? out.message : "provider error",
+              failure,
+            });
+            markReportedElsewhere(out, failure);
+          }
           throw out;
         }
       };

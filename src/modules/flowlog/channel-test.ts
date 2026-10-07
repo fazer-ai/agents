@@ -76,6 +76,7 @@ export async function sendAlertChannelTest(
       tenantId: ctx.tenantId,
       turnId: null,
       conversationId: null,
+      causeKey: null,
     },
     deps,
   );

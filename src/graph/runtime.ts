@@ -1119,14 +1119,15 @@ async function runTurnBody(
     // already emits the error (labelled with the primary), and alert coalescing keys on (channel,
     // stage, level), so a second error would page twice. `info` names which model died; `status`
     // stays "error".
-    onModelFallbackFailed: ({ provider, model, reason }) =>
+    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "info",
         status: "error",
         provider,
         model,
-        detail: { fallbackFailed: reason },
+        detail: { fallbackFailed: reason, failure },
+        errorMessage: reason,
       }),
     // NOTE: A configured fallback that cannot be built, reported once per turn build rather than on
     // a failure, when it would be too late to warn.

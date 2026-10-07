@@ -31,6 +31,7 @@ import {
   USAGE_MODEL_METADATA_KEY,
   USAGE_PROVIDER_METADATA_KEY,
 } from "@/graph/usage";
+import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
 import { calledOffToolResult } from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
@@ -87,6 +88,8 @@ export interface BuildAgentGraphParams {
     provider: string;
     model: string;
     reason: string;
+    // `providerFailure`'s closed word, for the line's `detail.failure` (flowlog/alerts.ts).
+    failure: string;
   }) => void;
   // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
   // null/undefined sends the whole thread.
@@ -741,11 +744,14 @@ export function buildAgentGraph({
           });
         } catch (err) {
           // NOTE: a call the job's deadline ended failed on the job, not on the provider.
-          if (!jobSignal?.aborted) {
-            onModelFallbackFailed?.({
+          if (!jobSignal?.aborted && onModelFallbackFailed) {
+            const failure = providerFailure(err);
+            onModelFallbackFailed({
               ...second.labels,
               reason: err instanceof Error ? err.message : "provider error",
+              failure,
             });
+            markReportedElsewhere(err, failure);
           }
           throw err;
         }
@@ -784,9 +790,13 @@ export function buildAgentGraph({
                   fallbackHasTheTurn = true;
                   onModelFallback?.({ ...second.labels, reason });
                 },
-                onFallbackFailed: ({ reason }) => {
+                onFallbackFailed: ({ reason, failure }) => {
                   if (jobSignal?.aborted) return;
-                  onModelFallbackFailed?.({ ...second.labels, reason });
+                  onModelFallbackFailed?.({
+                    ...second.labels,
+                    reason,
+                    failure,
+                  });
                 },
               }
             : undefined,

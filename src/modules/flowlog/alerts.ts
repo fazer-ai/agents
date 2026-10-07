@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext, FlowEvent } from "./service";
@@ -125,16 +126,68 @@ function statusWithWhy(ev: FlowEvent & { level: FlowLevel }): string {
   return parts.length === 0 ? head : `${head}: ${parts.join(" ")}`;
 }
 
+// The failures that are the ACCOUNT, not the moment: the same endpoint answers them the same way until
+// someone fixes a key, a quota or a plan, so they are causes and not noise to coalesce for 30 seconds.
+const ACCOUNT_FAILURES: ReadonlySet<string> = new Set([
+  "HTTP 401",
+  "HTTP 403",
+  "HTTP 429",
+]);
+
+// What an operator has to fix, when this line names something only a person can: the key a cause
+// alert is deduplicated on per channel for `ALERT_CAUSE_WINDOW_MS`, and the reason it passes the
+// channel's `minLevel` (a TTS key that died is a `warn`, since the reply went as text, and it is the one
+// thing an error-only channel needs to hear). Null for every other line. Built from closed
+// vocabularies only (`failure` is `providerFailure`'s word, `unit` and `kind` are enums, a channel
+// code is a slug), so the key never carries text a server wrote.
+export function causeKeyOf(ev: FlowEvent): string | null {
+  const detail = ev.detail ?? {};
+  if (ev.stage === "spend_ceiling") {
+    return detail.state === "over" ? "spend_ceiling:over" : null;
+  }
+  if (ev.stage === "channel_error") {
+    return `channel_error:${vocabulary("code", detail.code) ?? "unknown"}`;
+  }
+  if (ev.stage === "dead_letter") {
+    const unit = vocabulary("unit", detail.unit);
+    if (unit === null) return null;
+    const kind = vocabulary("kind", detail.kind);
+    return kind === null
+      ? `dead_letter:${unit}`
+      : `dead_letter:${unit}:${kind}`;
+  }
+  const failure = detail.failure;
+  if (
+    ev.status === "error" &&
+    typeof failure === "string" &&
+    ACCOUNT_FAILURES.has(failure)
+  ) {
+    return `${ev.stage}:${vocabulary("provider", ev.provider) ?? "-"}:${failure}`;
+  }
+  return null;
+}
+
+// A line whose failure a fallback's line already classified as an account failure: that line is the
+// alert (`causeKeyOf`), and this one, labelled with the primary, is only the turn's record.
+function coveredByCause(ev: FlowEvent): boolean {
+  const reported = ev.detail?.fallbackFailure;
+  return typeof reported === "string" && ACCOUNT_FAILURES.has(reported);
+}
+
 export async function dispatchAlertsForEvent(
   ctx: FlowContext,
   ev: FlowEvent & { level: FlowLevel },
   base: PrismaClient,
+  causeWindowMs: number = config.alertWorker.causeWindowMs,
 ): Promise<void> {
   // NOTE: A dead `AlertDelivery` never becomes an alert. Routing it back here would queue a
   // delivery to the channel that just died, which dies and queues another (coalescing does not
   // bound it: the row it would follow is DEAD, so every cycle inserts). The flow-log row, written
   // before this runs, is the only sink that is not the failing path.
   if (ev.detail?.unit === ALERT_DELIVERY_UNIT) return;
+  // NOTE: A turn whose fallback died on its account: the fallback's own line is the cause alert,
+  // deduplicated for the window, so this line paging every 30 seconds beside it would undo that.
+  if (coveredByCause(ev)) return;
   const rank = LEVEL_RANK[ev.level] ?? 0;
   await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
     const channels = await db.alertChannel.findMany({
@@ -148,41 +201,74 @@ export async function dispatchAlertsForEvent(
     });
     if (channels.length === 0) return;
     const summary = alertSummary(ev);
+    const causeKey = causeKeyOf(ev);
+    // A cause alert is at least a `warn` on the row: the line can be an `info` (a run the job
+    // will retry against a dead key), and what the operator reads is that something needs fixing.
+    const level: FlowLevel =
+      causeKey !== null && ev.level === "info" ? "warn" : ev.level;
     for (const ch of channels) {
-      // minLevel gate: a channel set to "error" ignores "warn" events (default rank = error = 2).
-      if ((LEVEL_RANK[ch.minLevel] ?? 2) > rank) continue;
+      // minLevel gate: a channel set to "error" ignores "warn" events (default rank = error = 2). A
+      // cause passes it: the stage allowlist and the excluded agents below still apply, because those
+      // name the stage and the agent, where the level is only a threshold.
+      if (causeKey === null && (LEVEL_RANK[ch.minLevel] ?? 2) > rank) continue;
       // stage allowlist (empty = all stages).
       if (ch.stages.length > 0 && !ch.stages.includes(ev.stage)) continue;
       // NOTE: Agents this channel leaves out. A line with no agent is never excluded: the list
       // names agents, and an unrouted or tenant-wide line belongs to none of them.
       if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))
         continue;
-      // Coalesce a burst: bump an existing pending delivery for this (channel, stage, level),
-      // else insert one. A rare race may insert two rows; the worker's window still coalesces most.
-      const bumped = await db.alertDelivery.updateMany({
-        where: {
-          channelId: ch.id,
-          stage: ev.stage,
-          level: ev.level,
-          status: "PENDING",
-        },
-        data: { count: { increment: 1 } },
-      });
-      if (bumped.count === 0) {
-        await db.alertDelivery.create({
-          data: {
-            tenantId: ctx.tenantId,
+      if (causeKey !== null) {
+        // One delivery per (channel, cause) per window, whatever its status: a sent alert keeps
+        // counting the repeats instead of a second one going out. Serialized per (channel, cause)
+        // for the transaction, because the window is not a key a unique index can hold, and two
+        // concurrent failures of a dead key are the normal case, not a rare one.
+        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`alert-cause:${ch.id}:${causeKey}`}, 0))`;
+        const open = await db.alertDelivery.findFirst({
+          where: {
+            channelId: ch.id,
+            causeKey,
+            status: { not: "DEAD" },
+            createdAt: { gte: new Date(Date.now() - causeWindowMs) },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        });
+        if (open) {
+          // NOTE: Raw, so `updated_at` stays put: it is the SENDING lease the worker reaps by, and a
+          // dead key repeating faster than the stale window would otherwise keep a crashed claim alive
+          // for the whole cause window.
+          await db.$executeRaw`UPDATE alert_deliveries SET count = count + 1 WHERE id = ${open.id}`;
+          continue;
+        }
+      } else {
+        // Coalesce a burst: bump an existing pending delivery for this (channel, stage, level),
+        // else insert one. A rare race may insert two rows; the worker's window still coalesces most.
+        const bumped = await db.alertDelivery.updateMany({
+          where: {
             channelId: ch.id,
             stage: ev.stage,
-            level: ev.level,
-            summary,
-            // NOTE: Where the event happened, so the alert can link to it. Only here: the bump
-            // above leaves them naming the first event, like `summary`.
-            turnId: ctx.turnId,
-            conversationId: ctx.conversationId ?? null,
+            level,
+            status: "PENDING",
+            causeKey: null,
           },
+          data: { count: { increment: 1 } },
         });
+        if (bumped.count > 0) continue;
       }
+      await db.alertDelivery.create({
+        data: {
+          tenantId: ctx.tenantId,
+          channelId: ch.id,
+          stage: ev.stage,
+          level,
+          causeKey,
+          summary,
+          // NOTE: Where the event happened, so the alert can link to it. Only here: the bump
+          // above leaves them naming the first event, like `summary`.
+          turnId: ctx.turnId,
+          conversationId: ctx.conversationId ?? null,
+        },
+      });
     }
   });
 }

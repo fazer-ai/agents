@@ -61,6 +61,9 @@ export interface AlertSendTarget {
   tenantId: bigint | null;
   turnId: string | null;
   conversationId: bigint | null;
+  // Set on a cause alert: its burst gathers every line of the cause, whatever level each was
+  // written at, so the list it links to is not narrowed by level.
+  causeKey: string | null;
 }
 
 export interface AlertSendDeps {
@@ -105,6 +108,7 @@ type AlertBodyInput = Pick<
   | "tenantId"
   | "turnId"
   | "conversationId"
+  | "causeKey"
 >;
 
 // Where the operator goes from the alert. The ids name the FIRST event of the window, and a burst's
@@ -120,7 +124,7 @@ export function alertLinks(
   if (a.count > 1) {
     const q = new URLSearchParams();
     if (a.stage) q.set("stage", a.stage);
-    q.set("level", a.level);
+    if (a.causeKey === null) q.set("level", a.level);
     return [
       { label: `View all ${a.count}`, url: consoleUrl(`/logs?${q}`, opts) },
     ];

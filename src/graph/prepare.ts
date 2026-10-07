@@ -85,6 +85,7 @@ import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
   emitFlowEvent,
   type FlowContext,
+  type FlowEvent,
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
@@ -1146,6 +1147,26 @@ export interface ToolsetCtx {
   replyIsAudioWith?: (voiceReply: boolean | null) => boolean;
 }
 
+// The flow line a tool's side effect reports. A failure is an `error` line (warn unless the tool asks
+// for info); `status: "ok"` is the record of one that went through, never an error.
+export function sideEffectFlowEvent(
+  e: Parameters<SideEffectErrorReporter>[0],
+): FlowEvent {
+  return {
+    stage: "tool",
+    level: e.status === "ok" ? "info" : (e.level ?? "warn"),
+    status: e.status ?? "error",
+    // NOTE: Spread first — the canonical tool/phase discriminators must win over any
+    // caller-supplied detail keys (the Logs page and alerting key on detail.phase).
+    detail: { ...(e.detail ?? {}), tool: e.tool, phase: e.phase },
+    ...(e.status === "ok"
+      ? {}
+      : {
+          errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
+        }),
+  };
+}
+
 export interface ToolBuildDeps {
   buildNativeTools: (
     ctx: {
@@ -1248,22 +1269,8 @@ export async function buildToolset(
   // onDiscoverError below): visible in the Logs page, and inbox traffic pages minLevel:warn alert
   // channels. detail.tool names the trail card; detail.phase discriminates the side effect.
   const onSideEffectError = flow
-    ? (e: {
-        tool: string;
-        phase: string;
-        detail?: Record<string, unknown>;
-        err: unknown;
-        level?: "warn" | "info";
-      }) =>
-        emitFlowEvent(flow, {
-          stage: "tool",
-          level: e.level ?? "warn",
-          status: "error",
-          // NOTE: Spread first — the canonical tool/phase discriminators must win over any
-          // caller-supplied detail keys (the Logs page and alerting key on detail.phase).
-          detail: { ...(e.detail ?? {}), tool: e.tool, phase: e.phase },
-          errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
-        })
+    ? (e: Parameters<SideEffectErrorReporter>[0]) =>
+        emitFlowEvent(flow, sideEffectFlowEvent(e))
     : undefined;
   // The two closures a tool calls to say a booking now stands, or no longer does: the Calendar
   // toolpack and any HTTP tool whose definition declares an appointment. The POLICY

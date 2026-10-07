@@ -2600,7 +2600,9 @@ function openCaseInInboxTool(ctx: ToolCtx) {
             ctx.onSideEffectError?.({
               tool: OPEN_CASE_TOOL_NAME,
               phase: "case_attachments",
-              level: a.failed > 0 || a.unread ? "warn" : "info",
+              ...(a.failed > 0 || a.unread
+                ? { level: "warn" as const }
+                : { status: "ok" as const }),
               detail: {
                 caseId: result.caseId,
                 carried: a.carried,

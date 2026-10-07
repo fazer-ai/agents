@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ToolMessage } from "@langchain/core/messages";
 import { owesHandbackNote } from "@/graph/handback";
+import { sideEffectFlowEvent } from "@/graph/prepare";
 import { interpolatePromptVars } from "@/graph/prompt";
 import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -4305,6 +4306,7 @@ describe("carrying the customer's files (issue #1128)", () => {
         phase: string;
         detail?: Record<string, unknown>;
         level?: string;
+        status?: string;
       }> = [];
       const client = { ...f.client, muted: false } as unknown as ChatwootClient;
       const [t] = buildNativeTools(
@@ -4340,6 +4342,31 @@ describe("carrying the customer's files (issue #1128)", () => {
       skipped: 1,
       failed: 0,
     });
-    expect(line?.level).toBe("info");
+    expect(line?.status).toBe("ok");
+    expect(line?.level).toBeUndefined();
+  });
+
+  test("a carry that went through is an ok line, one that failed a warn error line", () => {
+    const ok = sideEffectFlowEvent({
+      tool: "open_case_in_inbox",
+      phase: "case_attachments",
+      detail: { carried: 2 },
+      err: new Error("customer files: 2 carried"),
+      status: "ok",
+    });
+    expect(ok).toMatchObject({ level: "info", status: "ok" });
+    expect(ok.errorMessage).toBeUndefined();
+    expect(
+      sideEffectFlowEvent({
+        tool: "open_case_in_inbox",
+        phase: "case_attachments",
+        err: new Error("1 failed"),
+        level: "warn",
+      }),
+    ).toMatchObject({
+      level: "warn",
+      status: "error",
+      errorMessage: "1 failed",
+    });
   });
 });

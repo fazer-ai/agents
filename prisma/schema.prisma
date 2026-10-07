@@ -831,6 +831,12 @@ model Conversation {
   // attribute-context block. kanbanAttributes stays {} on upstream Chatwoot (no card in the payload).
   customAttributes             Json      @default("{}") @map("custom_attributes")
   kanbanAttributes             Json      @default("{}") @map("kanban_attributes")
+  // The fork's `conversation.group_type` ("group" | "individual") and the conversation's label list,
+  // mirrored under the same rule as the bags above: written only when the payload carried them, and
+  // the list assigned wholesale. Read by the contact gate's local rule (docs/contact-auth.md). NULL
+  // type = the payload never said (a Chatwoot without the field).
+  conversationType             String?   @map("conversation_type")
+  labels                       String[]  @default([])
   lastEventAt                  DateTime? @map("last_event_at")
   // Ordering watermark for conversation-level STATE (status + assignee), mirrored from the payload's
   // conversation `updated_at` — the source row's version stamp, which advances on every write to it,

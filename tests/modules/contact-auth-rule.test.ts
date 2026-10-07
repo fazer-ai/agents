@@ -120,7 +120,7 @@ describe("parsing a rule", () => {
     expect(
       parseContactAuthRule({ kind: "attribute", scope: "lead", key: "x" }),
     ).toBeNull();
-    expect(parseContactAuthRule({ kind: "label", label: "vip" })).toBeNull();
+    expect(parseContactAuthRule({ kind: "tag", tag: "vip" })).toBeNull();
   });
 
   test("the config reader carries the rule, and a bad one reads as none", () => {
@@ -194,7 +194,7 @@ describe("the write boundary", () => {
     ).toThrow("contactAuth.rule");
     expect(() =>
       assertSettingsContactAuthRule(
-        { contactAuth: { rule: { kind: "label", label: "vip" } } },
+        { contactAuth: { rule: { kind: "tag", tag: "vip" } } },
         {},
       ),
     ).toThrow("contactAuth.rule");

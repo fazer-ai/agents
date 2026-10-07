@@ -419,6 +419,10 @@ export async function mirrorChatwootEvent(
                       n.kanbanAttributes as Prisma.InputJsonValue,
                   }
                 : {}),
+              ...(n.conversationType
+                ? { conversationType: n.conversationType }
+                : {}),
+              ...(n.labels ? { labels: n.labels } : {}),
               ...(decision.redirectOrigin
                 ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
                 : {}),
@@ -508,6 +512,10 @@ export async function mirrorChatwootEvent(
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
               : {}),
+            ...(decision.unversioned && n.conversationType
+              ? { conversationType: n.conversationType }
+              : {}),
+            ...(decision.unversioned && n.labels ? { labels: n.labels } : {}),
             // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget
             // conversation can be re-entered from a second WhatsApp thread, and every payload carries
             // the pairing as of when it was SERIALIZED — a retried delivery (3 attempts, 3s apart)

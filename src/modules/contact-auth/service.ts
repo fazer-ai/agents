@@ -2,7 +2,6 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { evaluatePrecondition } from "@/modules/agents/tool-preconditions";
 import { mirroredContactIdentifier } from "@/modules/chatwoot/contact-identifier";
 import type { FlowEvent } from "@/modules/flowlog/service";
 import {
@@ -29,10 +28,11 @@ import {
   writeContactAuthGrant,
 } from "./grants";
 import {
-  type ContactAuthConfig,
-  type ContactAuthRule,
-  phoneDigits,
-} from "./settings";
+  evaluateContactAuthRule,
+  type RuleFacts,
+  ruleReadsConversation,
+} from "./rule";
+import type { ContactAuthConfig } from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
@@ -107,28 +107,42 @@ function bagOf(value: unknown): Record<string, unknown> {
     : {};
 }
 
-// The two refusal codes a local rule gives. OUR codes, like every `reason`, so they are safe in the
-// flow line: they name WHICH rule refused, never the value it compared. The phone and the identifier
-// stay out of telemetry exactly as they do on the endpoint path.
-export const RULE_NOT_LISTED = "rule_not_listed";
-export const RULE_UNMET = "rule_unmet";
+export { RULE_NOT_LISTED, RULE_UNMET } from "./rule";
 
-// The verdict of a local rule. Allowed or denied, nothing else: a rule reads rows we hold, so there
-// is no timeout, no status and no credential to fail. A read that throws is the one way it can fail,
-// and it propagates to singleFlight's caller the way a failed contact read already does.
-function allowlistVerdict(
-  rule: Extract<ContactAuthRule, { kind: "allowlist" }>,
-  phone: string | null,
-  identifier: string | null,
-): ContactAuthVerdict {
-  // EXACT digits, never a suffix: `11 99999-0000` is not `55 11 99999-0000` for this gate, because
-  // a suffix rule is the one where a short entry quietly lets in every number that ends the same way.
-  const listed =
-    (phone !== null && rule.phones.includes(phoneDigits(phone))) ||
-    (identifier !== null && rule.identifiers.includes(identifier));
-  return listed
-    ? { outcome: "allowed" }
-    : { outcome: "denied", reason: RULE_NOT_LISTED };
+const NO_CONVERSATION_FACTS = {
+  conversationType: null,
+  labels: [],
+  conversationAttributes: {},
+} as const;
+
+// What a rule reads from the conversation row, in one indexed read. A caller with no row (null id)
+// gets the empty facts, under which every conversation condition is unmet.
+async function ruleFacts(
+  base: PrismaClient,
+  tenantId: bigint,
+  conversationDbId: bigint | null,
+  contactFacts: Pick<RuleFacts, "phone" | "identifier" | "contactAttributes">,
+): Promise<RuleFacts> {
+  const conv =
+    conversationDbId === null
+      ? null
+      : await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.conversation.findFirst({
+            where: { id: conversationDbId },
+            select: {
+              customAttributes: true,
+              conversationType: true,
+              labels: true,
+            },
+          }),
+        );
+  const type = conv?.conversationType;
+  return {
+    ...contactFacts,
+    conversationType: type === "group" || type === "individual" ? type : null,
+    labels: conv?.labels ?? [],
+    conversationAttributes: bagOf(conv?.customAttributes),
+  };
 }
 
 export async function authorizeContact(
@@ -143,8 +157,7 @@ export async function authorizeContact(
   // A conversation-scoped rule answers about the CONVERSATION, so two conversations of one contact
   // are two questions: sharing a flight would hand the marked one's allow to the unmarked one.
   const rule = cfg.rule;
-  const conversationScoped =
-    rule?.kind === "attribute" && rule.scope === "conversation";
+  const conversationScoped = rule !== null && ruleReadsConversation(rule);
   const key = contactAuthFlightKey(
     tenantId,
     agentId,
@@ -174,27 +187,25 @@ export async function authorizeContact(
       const phone = trimmed(contact?.phone);
       const email = trimmed(contact?.email);
       const identifier = mirroredContactIdentifier(contact?.attributes);
-      // NOTE: a local rule answers here and the endpoint is never asked. An ATTRIBUTE rule runs before
-      // the identity check, since a widget visitor with no phone or email on a marked conversation is
-      // its whole use case. No grant is read, written or dropped: a rule reads our own rows every
-      // message, and a stored verdict would only make a list edit take effect late.
-      if (rule && rule.kind === "attribute") {
-        const conversationDbId = params.conversationDbId;
-        const conv =
-          rule.scope === "conversation" && conversationDbId !== null
-            ? await runScopedOn(base, sysCtx(tenantId), (db) =>
-                db.conversation.findFirst({
-                  where: { id: conversationDbId },
-                  select: { customAttributes: true },
-                }),
-              )
-            : null;
-        return evaluatePrecondition(rule, {
-          conversationAttributes: bagOf(conv?.customAttributes),
-          contactAttributes: bagOf(contact?.customAttributes),
-        })
-          ? { outcome: "allowed" }
-          : { outcome: "denied", reason: RULE_UNMET };
+      // NOTE: a local rule answers here and the endpoint is never asked. Only a plain allowlist waits
+      // for the identity check below: every other rule reads facts a contact with no phone or email
+      // still has (a group, a label, a marked conversation), which is the whole point of reading them.
+      // No grant is read, written or dropped: a rule reads our own rows every message, and a stored
+      // verdict would only make an edit take effect late.
+      if (rule && rule.kind !== "allowlist") {
+        return evaluateContactAuthRule(
+          rule,
+          await ruleFacts(
+            base,
+            tenantId,
+            conversationScoped ? params.conversationDbId : null,
+            {
+              phone,
+              identifier,
+              contactAttributes: bagOf(contact?.customAttributes),
+            },
+          ),
+        );
       }
       // NOTE: The Chatwoot contact id alone is NOT identity: it names the row to us and says
       // nothing to the operator's system. Without a phone, an email or an operator identifier
@@ -205,7 +216,14 @@ export async function authorizeContact(
       // The list compares the phone and the identifier. A contact that has only an email has
       // something the endpoint could ask about, and nothing this list can match: refused as not
       // listed, which is what it is.
-      if (rule) return allowlistVerdict(rule, phone, identifier);
+      if (rule) {
+        return evaluateContactAuthRule(rule, {
+          ...NO_CONVERSATION_FACTS,
+          phone,
+          identifier,
+          contactAttributes: {},
+        });
+      }
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
       // The stored verdict, read after the identity (a grant is about the identity the mirror
       // holds now) and before the credential, so a reuse costs neither the vault read nor a

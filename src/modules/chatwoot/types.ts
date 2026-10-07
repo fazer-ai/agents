@@ -199,6 +199,10 @@ export interface NormalizedChatwootEvent {
   // Kanban::Task#common_event_data carries `custom_attributes`). `undefined` ⇒ absent (upstream
   // Chatwoot, or a conversation with no card).
   kanbanAttributes?: Record<string, unknown>;
+  // The fork's `conversation.group_type` and `conversation.labels`. `undefined` ⇒ the payload said
+  // nothing (the mirror keeps what it has); `labels: []` states the conversation has none.
+  conversationType?: "group" | "individual";
+  labels?: string[];
   // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
   // (conversation.redirect_origin_display_id, written by the fork's token resolve). A number is the
   // pairing. `null` states there is none (the fork clears it when a re-entry's token names no origin),

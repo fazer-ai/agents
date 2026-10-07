@@ -25,11 +25,28 @@ export type ContactAuthMode = "perMessage" | "once";
 // dependency of a fail-closed endpoint. TYPED, as in tool-preconditions.ts: the gate is fail-closed,
 // so every way a rule could fail to answer would refuse a customer, and a closed set of conditions
 // always answers. The attribute condition IS the precondition's, parsed by the same function.
-export type ContactAuthRule =
+export type ContactAuthCondition =
   // The contact's mirrored phone (compared by digits, so `+55 (11) 9...` and `5511 9...` are one
   // number) or its operator identifier is on the list.
   | { kind: "allowlist"; phones: string[]; identifiers: string[] }
-  | ToolPrecondition;
+  | ToolPrecondition
+  // The conversation is a WhatsApp group or a one-to-one chat (the fork's `group_type`).
+  | { kind: "conversation_type"; type: ContactAuthConversationType }
+  // The conversation carries this label, stored lowercased as Chatwoot stores label titles.
+  | { kind: "label"; label: string };
+
+// One level only: a combination holds plain conditions, never another combination, so every rule
+// the API accepts is a rule the editor can show and save back unchanged.
+export type ContactAuthRule =
+  | ContactAuthCondition
+  | { kind: "all"; conditions: ContactAuthCondition[] }
+  | { kind: "any"; conditions: ContactAuthCondition[] };
+
+export type ContactAuthConversationType = "group" | "individual";
+
+export const CONTACT_AUTH_RULE_CONDITIONS_MAX = 10;
+// Chatwoot keeps a label title in a varchar(255).
+export const CONTACT_AUTH_LABEL_MAX = 255;
 
 // A list the operator types into a text box, and every entry is compared on every message: bounded
 // so a paste of a whole CRM cannot turn a settings bag into a table. Past a few hundred numbers the
@@ -88,7 +105,7 @@ function entries(
 // than none, because the operator would read the gate as a list while the runtime reads it as open.
 // A malformed rule reads as ABSENT, and an enabled gate with neither a rule nor a url is the
 // fail-closed `not_configured` it always was, never an open door.
-export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
+function parseCondition(raw: unknown): ContactAuthCondition | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
   if (r.kind === "allowlist") {
@@ -99,12 +116,62 @@ export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
     // leave the rule out and let `not_configured` refuse), and as a rule it is almost always a save
     // made before the list was typed, so it is refused rather than honoured.
     if (phones.length + identifiers.length === 0) return null;
-    if (phones.length + identifiers.length > CONTACT_AUTH_ALLOWLIST_MAX) {
-      return null;
-    }
     return { kind: "allowlist", phones, identifiers };
   }
+  if (r.kind === "conversation_type") {
+    return r.type === "group" || r.type === "individual"
+      ? { kind: "conversation_type", type: r.type }
+      : null;
+  }
+  if (r.kind === "label") {
+    const label = str(r.label);
+    return label &&
+      label.length <= CONTACT_AUTH_LABEL_MAX &&
+      !/[\r\n]/.test(label)
+      ? { kind: "label", label: label.toLowerCase() }
+      : null;
+  }
   return parseToolPrecondition(raw);
+}
+
+function listEntries(c: ContactAuthCondition): number {
+  return c.kind === "allowlist" ? c.phones.length + c.identifiers.length : 0;
+}
+
+export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  let rule: ContactAuthRule | null;
+  if (r.kind === "all" || r.kind === "any") {
+    const list = r.conditions;
+    if (
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      list.length > CONTACT_AUTH_RULE_CONDITIONS_MAX
+    ) {
+      return null;
+    }
+    const conditions: ContactAuthCondition[] = [];
+    for (const item of list) {
+      const c = parseCondition(item);
+      if (!c) return null;
+      conditions.push(c);
+    }
+    rule =
+      r.kind === "all"
+        ? { kind: "all", conditions }
+        : { kind: "any", conditions };
+  } else {
+    rule = parseCondition(raw);
+  }
+  if (!rule) return null;
+  // The list cap is on the RULE: two lists of 500 inside a combination are the table the cap exists
+  // to keep out of a settings bag.
+  const listed =
+    rule.kind === "all" || rule.kind === "any"
+      ? rule.conditions.reduce((n, c) => n + listEntries(c), 0)
+      : listEntries(rule);
+  return listed > CONTACT_AUTH_ALLOWLIST_MAX ? null : rule;
 }
 
 // The write boundary's question: is there a rule that the reader would drop? Absent and null are not

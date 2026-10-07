@@ -275,6 +275,13 @@ export function DocumentTemplateModal({
   // be told something, and the modal keeps its payload after closing (Radix needs it for the exit
   // animation), so this never flashes a refusal at a form nobody has opened.
   const slugIssue = template ? slugProblem(slug) : null;
+  // The tool name the current template name would derive, offered when it differs from the one the
+  // tool has; never applied by itself.
+  const derivedSlug = slugifyTemplateName(name);
+  const renameSuggestion =
+    template && derivedSlug !== slug && !slugProblem(derivedSlug)
+      ? derivedSlug
+      : null;
 
   const textBlocks = blocks.filter((b) => b.type === "text");
   const fields = template?.fields ?? [];
@@ -337,15 +344,10 @@ export function DocumentTemplateModal({
           <FormField label={t("documents.name", "Name")}>
             <Input
               value={name}
-              // The name is the source of the slug, and it stays the source: every keystroke here
-              // re-derives it, so a rename renames the agent's tool instead of leaving a template
-              // called "Contrato" behind a tool called send_orcamento. A slug the operator typed by
-              // hand is overwritten by the next edit to the name, deliberately — a slug that
-              // survived it would be a second name to keep in sync by hand.
-              onChange={(e) => {
-                setName(e.target.value);
-                setSlug(slugifyTemplateName(e.target.value));
-              }}
+              // A rename keeps the agent's tool name, as an MCP or API rename does: a prompt that
+              // mentions send_orcamento keeps working, and the model still reads the new name in the
+              // tool's description. Renaming the tool is a separate, explicit act (below).
+              onChange={(e) => setName(e.target.value)}
             />
           </FormField>
           <FormField label={t("documents.description", "Description")}>
@@ -367,15 +369,46 @@ export function DocumentTemplateModal({
             {/* The tool name the model will be offered, and the operator's to change, so a rename
                 can be fixed from this screen. The refusal shows HERE rather than in a toast,
                 because the only thing that answers it is this input. */}
-            <FormField
-              label={t("documents.toolName", "Agent tool")}
-              hint={t("documents.toolNameHint", "The agent calls it {{tool}}", {
-                tool: documentToolName(slug),
-              })}
-              error={slugIssue}
-            >
-              <Input value={slug} onChange={(e) => setSlug(e.target.value)} />
-            </FormField>
+            <div className="flex flex-col gap-1">
+              <FormField
+                label={t("documents.toolName", "Agent tool")}
+                hint={t(
+                  "documents.toolNameHint",
+                  "The agent calls it {{tool}}",
+                  {
+                    tool: documentToolName(slug),
+                  },
+                )}
+                error={slugIssue}
+              >
+                <Input value={slug} onChange={(e) => setSlug(e.target.value)} />
+              </FormField>
+              {template && slug !== template.slug && !slugIssue ? (
+                <p className="text-warning text-xs">
+                  {t(
+                    "documents.toolRenamedWarning",
+                    "Prompts that mention {{old}} stop working once you save.",
+                    { old: documentToolName(template.slug) },
+                  )}
+                </p>
+              ) : renameSuggestion ? (
+                <p className="text-text-muted text-xs">
+                  {t(
+                    "documents.toolNameKept",
+                    "Renaming the template keeps this tool name, so prompts that mention it keep working.",
+                  )}{" "}
+                  <button
+                    type="button"
+                    className="text-accent underline-offset-2 hover:underline"
+                    onClick={() => setSlug(renameSuggestion)}
+                  >
+                    {t("documents.toolRenameTo", "Use {{tool}}", {
+                      tool: documentToolName(renameSuggestion),
+                    })}
+                  </button>
+                </p>
+              ) : null}
+            </div>
           </div>
 
           {style && (
@@ -489,15 +522,19 @@ export function DocumentTemplateModal({
             <p className="font-medium text-sm text-text-primary">
               {t("documents.textBlocks", "Text")}
             </p>
-            <p className="text-text-muted text-xs">
-              {t(
-                "documents.textBlocksBuildHint",
-                "Only the wording is editable here. To add, remove or reorder blocks and fields, ask your AI assistant connected over MCP.",
-              )}{" "}
-              <McpSettingsLink>
-                {t("documents.mcpHowToConnect", "How to connect")}
-              </McpSettingsLink>
-            </p>
+            {/* One pointer to the MCP settings at a time: the empty-state box below carries it for
+                a template with no fields, this line for every other. */}
+            {fields.length > 0 && (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "documents.textBlocksBuildHint",
+                  "Only the wording is editable here. To add, remove or reorder blocks and fields, ask your AI assistant connected over MCP.",
+                )}{" "}
+                <McpSettingsLink>
+                  {t("documents.mcpHowToConnect", "How to connect")}
+                </McpSettingsLink>
+              </p>
+            )}
             {fields.length === 0 && (
               // The blank starter lands here with nothing to edit, so the screen says how a template
               // gets its content instead of showing an empty list.

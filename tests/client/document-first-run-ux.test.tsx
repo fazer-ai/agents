@@ -288,7 +288,7 @@ describe("the editor", () => {
     const links = screen
       .queryAllByRole("link")
       .map((a) => a.getAttribute("href") ?? "");
-    expect(links.includes("/settings/mcp")).toBe(true);
+    expect(links.filter((h) => h === "/settings/mcp").length).toBe(1);
     expect(dialogText().includes("Build this template with AI")).toBe(true);
   });
 
@@ -298,7 +298,7 @@ describe("the editor", () => {
     const links = screen
       .queryAllByRole("link")
       .map((a) => a.getAttribute("href") ?? "");
-    expect(links.includes("/settings/mcp")).toBe(true);
+    expect(links.filter((h) => h === "/settings/mcp").length).toBe(1);
     expect(dialogText().includes("Build this template with AI")).toBe(false);
   });
 

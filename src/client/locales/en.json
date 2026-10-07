@@ -1105,6 +1105,9 @@
     "textBlocksBuildHint": "Only the wording is editable here. To add, remove or reorder blocks and fields, ask your AI assistant connected over MCP.",
     "toolName": "Agent tool",
     "toolNameHint": "The agent calls it {{tool}}",
+    "toolNameKept": "Renaming the template keeps this tool name, so prompts that mention it keep working.",
+    "toolRenamedWarning": "Prompts that mention {{old}} stop working once you save.",
+    "toolRenameTo": "Use {{tool}}",
     "use": "Use"
   },
   "edition": {

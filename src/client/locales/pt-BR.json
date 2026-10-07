@@ -1138,6 +1138,9 @@
     "textBlocksBuildHint": "Só o texto é editável aqui. Para adicionar, remover ou reordenar blocos e campos, peça ao seu assistente de IA conectado por MCP.",
     "toolName": "Ferramenta do agente",
     "toolNameHint": "O agente chama de {{tool}}",
+    "toolNameKept": "Renomear o modelo mantém este nome de ferramenta, então prompts que o citam continuam funcionando.",
+    "toolRenamedWarning": "Prompts que citam {{old}} deixam de funcionar quando você salvar.",
+    "toolRenameTo": "Usar {{tool}}",
     "use": "Usar"
   },
   "edition": {

@@ -471,6 +471,34 @@ describe("the letterhead name suggestion", () => {
     });
   });
 
+  test("is not saved over a name stored while another field was being edited", async () => {
+    await i18n.changeLanguage("en");
+    const card = (company: typeof EMPTY_COMPANY) => (
+      <MemoryRouter>
+        <NavGuardProvider>
+          <ToastProvider>
+            <CompanyProfileCard
+              company={company}
+              onChanged={() => {}}
+              suggestedName="Acme Serviços Ltda"
+            />
+          </ToastProvider>
+        </NavGuardProvider>
+      </MemoryRouter>
+    );
+    const view = render(card(EMPTY_COMPANY));
+    const address = screen.getAllByRole("textbox")[2] as HTMLInputElement;
+    fireEvent.change(address, { target: { value: "Rua Nova, 1" } });
+    view.rerender(card({ ...EMPTY_COMPANY, name: "Saved Elsewhere" }));
+    await new Promise((r) => setTimeout(r, 30));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      expect(companyPuts.length).toBe(1);
+    });
+    expect("name" in (companyPuts[0] ?? {})).toBe(false);
+    expect(companyPuts[0]?.address).toBe("Rua Nova, 1");
+  });
+
   test("stays cleared once the operator clears it", async () => {
     await i18n.changeLanguage("en");
     renderCard(EMPTY_COMPANY);

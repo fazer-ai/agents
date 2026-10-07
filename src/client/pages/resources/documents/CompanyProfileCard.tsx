@@ -65,9 +65,12 @@ export function CompanyProfileCard({
   // profile another client saves meanwhile; it joins what Save sends while it is on screen.
   const [nameTouched, setNameTouched] = useState(false);
   const suggestion = suggestedName?.trim() ?? "";
+  // Checked against the LATEST stored profile too: a draft kept for an edit in another field still
+  // carries the old empty name after another client saves one.
   const suggesting = (f: typeof form) =>
     !nameTouched &&
     suggestion !== "" &&
+    !company?.name?.trim() &&
     f.draft.name === "" &&
     f.seededFrom.name === "";
   const shown = (f: typeof form) =>

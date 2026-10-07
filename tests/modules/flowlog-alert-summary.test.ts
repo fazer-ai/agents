@@ -74,6 +74,25 @@ describe("alertSummary", () => {
     expect(alertSummary(ev)).toBe("[generate via openai] model exploded");
   });
 
+  // The provider's error says why the read failed; what the operator lost is the file, so a line that
+  // ended an extraction without content says which kind it left unread.
+  test("an extraction that gave up names what it left unread, after the error", () => {
+    const ev: AlertEvent = {
+      stage: "vision",
+      level: "warn",
+      status: "error",
+      provider: "gemini",
+      errorMessage: "vision gemini failed with 503",
+      detail: { kind: "image", attempt: 2, unread: "image" },
+    };
+    expect(alertSummary(ev)).toBe(
+      "[vision via gemini] vision gemini failed with 503 (image left unread)",
+    );
+    expect(
+      alertSummary({ ...ev, detail: { unread: "an address@x.com" } }),
+    ).toBe("[vision via gemini] vision gemini failed with 503");
+  });
+
   test("a turn answered by the fallback labels the reason, so it does not read as a timeout", () => {
     const ev: AlertEvent = {
       stage: "observe",

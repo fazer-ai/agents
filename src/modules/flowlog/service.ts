@@ -160,6 +160,14 @@ export async function withFlowStage<T>(
     // RECOVERS from (e.g. TTS → text fallback) pass "warn" so the conversation/Logs show an advisory
     // rather than a red error. The status stays "error" (the stage itself did fail).
     errorLevel?: FlowLevel;
+    // The failure line's level and extra detail, decided by the caller from the error, for a caller
+    // that knows what comes next: a retry it is about to make is `info` with `willRetry`, and only the
+    // failure that ends the work keeps the severity. Wins over `errorLevel`. A throw here falls back
+    // to `errorLevel`, for the same reason `detailOf` is guarded.
+    failureOf?: (err: unknown) => {
+      level: FlowLevel;
+      detail?: Record<string, unknown>;
+    };
   },
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -186,14 +194,25 @@ export async function withFlowStage<T>(
     });
     return out;
   } catch (err) {
+    let level = meta.errorLevel ?? "error";
+    let detail = meta.detail;
+    if (meta.failureOf) {
+      try {
+        const failure = meta.failureOf(err);
+        level = failure.level;
+        if (failure.detail) detail = { ...detail, ...failure.detail };
+      } catch (e) {
+        logger.warn({ err: e, stage }, "flow stage failureOf failed");
+      }
+    }
     emitFlowEvent(ctx, {
       stage,
-      level: meta.errorLevel ?? "error",
+      level,
       status: "error",
       provider: meta.provider ?? null,
       model: meta.model ?? null,
       durationMs: Date.now() - start,
-      detail: meta.detail,
+      detail,
       errorMessage: sanitizeErrorMessage(err),
     });
     throw err;

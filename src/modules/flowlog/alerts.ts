@@ -88,9 +88,16 @@ function vocabulary(key: string, value: unknown): string | null {
 export function alertSummary(ev: FlowEvent & { level: FlowLevel }): string {
   const via = ev.provider ? ` via ${ev.provider}` : "";
   return sanitizeErrorMessage(
-    `[${ev.stage}${via}] ${ev.errorMessage ?? statusWithWhy(ev)}`,
+    `[${ev.stage}${via}] ${ev.errorMessage ? withUnread(ev.errorMessage, ev) : statusWithWhy(ev)}`,
     300,
   );
+}
+
+// The error says why a read failed; `unread` says what the customer's message lost, which is what the
+// operator weighs (`image`, `document`). Set only on the line that ended an extraction empty.
+function withUnread(text: string, ev: FlowEvent): string {
+  const unread = vocabulary("unread", ev.detail?.unread);
+  return unread === null ? text : `${text} (${unread} left unread)`;
 }
 
 function statusWithWhy(ev: FlowEvent & { level: FlowLevel }): string {

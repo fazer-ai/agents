@@ -18,7 +18,7 @@ import {
 interface Msg {
   id: number;
   createdAt: number;
-  type?: "in" | "out";
+  type?: "in" | "out" | "activity";
   private?: boolean;
   senderType?: "contact" | "user" | "agent_bot";
   senderId?: number;
@@ -80,7 +80,7 @@ function fake(
         payload: older.slice(-20).map((m) => ({
           id: m.id,
           created_at: m.createdAt,
-          message_type: m.type === "out" ? 1 : 0,
+          message_type: m.type === "out" ? 1 : m.type === "activity" ? 2 : 0,
           private: m.private ?? false,
           sender_type:
             m.senderType === "user"
@@ -289,6 +289,28 @@ describe("carryCaseAttachments", () => {
         { id: 2, createdAt: 200, type: "out" },
         { id: 3, createdAt: 495, files: [{ id: 13, name: "recibo.pdf" }] },
         { id: 4, createdAt: 500 },
+      ],
+    });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput(
+        { mode: "attendance" },
+        { attendanceStartedAt: async () => new Date(500 * 1000) },
+      ),
+    );
+    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["recibo.pdf"]);
+  });
+
+  test("attendance: a private note or an activity row inside the burst does not end it", async () => {
+    const f = fake({
+      messages: [
+        { id: 1, createdAt: 100, files: [{ id: 11 }] },
+        { id: 2, createdAt: 200, type: "out" },
+        { id: 3, createdAt: 480, files: [{ id: 13, name: "recibo.pdf" }] },
+        { id: 4, createdAt: 485, type: "out", private: true },
+        { id: 5, createdAt: 490, type: "activity" },
+        { id: 6, createdAt: 500 },
       ],
     });
     const out = await carryCaseAttachments(
@@ -689,6 +711,27 @@ describe("carryCaseAttachments", () => {
     expect(out?.carried).toBe(1);
     expect(uploadedNames(uploads(f.calls)[0])).toEqual(["first.pdf"]);
     expect(f.calls.filter((c) => c.fn === "getMessages")).toHaveLength(2);
+  });
+
+  test("a walk stopped by its page limit says so", async () => {
+    const messages: Msg[] = Array.from({ length: 1001 }, (_, i) => ({
+      id: i + 1,
+      createdAt: 1000 + i,
+      ...(i === 0 ? { files: [{ id: 900, name: "first.pdf" }] } : {}),
+    }));
+    const f = fake({ messages });
+    expect(await carryCaseAttachments(f.client, carryInput({}))).toEqual({
+      carried: 0,
+      skipped: 0,
+      failed: 0,
+      truncated: true,
+    });
+    const whole = fake({ messages: messages.slice(2) });
+    expect(await carryCaseAttachments(whole.client, carryInput({}))).toEqual({
+      carried: 0,
+      skipped: 0,
+      failed: 0,
+    });
   });
 
   test("a run called off before the note writes nothing", async () => {

@@ -2596,11 +2596,11 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           result.attachments
         ) {
           const a = result.attachments;
-          if (a.carried + a.skipped + a.failed > 0 || a.unread) {
+          if (a.carried + a.skipped + a.failed > 0 || a.unread || a.truncated) {
             ctx.onSideEffectError?.({
               tool: OPEN_CASE_TOOL_NAME,
               phase: "case_attachments",
-              ...(a.failed > 0 || a.unread
+              ...(a.failed > 0 || a.unread || a.truncated
                 ? { level: "warn" as const }
                 : { status: "ok" as const }),
               detail: {
@@ -2609,11 +2609,12 @@ function openCaseInInboxTool(ctx: ToolCtx) {
                 skipped: a.skipped,
                 failed: a.failed,
                 ...(a.unread ? { unread: a.unread } : {}),
+                ...(a.truncated ? { truncated: true } : {}),
               },
               err: new Error(
                 a.unread
                   ? `customer files not carried: the ${a.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
-                  : `customer files: ${a.carried} carried, ${a.skipped} skipped, ${a.failed} failed`,
+                  : `customer files: ${a.carried} carried, ${a.skipped} skipped, ${a.failed} failed${a.truncated ? "; the walk stopped at its page limit, older files were not seen" : ""}`,
               ),
             });
           }

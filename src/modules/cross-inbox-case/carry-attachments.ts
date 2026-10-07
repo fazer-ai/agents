@@ -54,6 +54,8 @@ export interface CarryOutcome {
   // be read, or the run was called off before the note.
   unread?: "attendance" | "case";
   calledOff?: boolean;
+  // The walk stopped at its page limit, so older files were never seen.
+  truncated?: boolean;
 }
 
 interface Candidate {
@@ -128,13 +130,15 @@ function carriedIds(conv: unknown): Map<number, string> {
   return out;
 }
 
-// Every message of the origin, walking it back page by page.
+// Every message of the origin, walking it back page by page. `complete` is false when the page limit
+// ended the walk before the conversation did.
 async function originRows(
   client: CarryClient,
   conversationId: number,
-): Promise<Record<string, unknown>[]> {
+): Promise<{ rows: Record<string, unknown>[]; complete: boolean }> {
   const seen = new Map<number, Record<string, unknown>>();
   let before: number | undefined;
+  let complete = false;
   for (let pages = 0; pages < MAX_PAGES; pages += 1) {
     const page = rows(
       await client.getMessages(
@@ -146,6 +150,7 @@ async function originRows(
       const id = Number(m.id);
       if (Number.isFinite(id)) seen.set(id, m);
     }
+    complete = true;
     if (page.length < MESSAGES_PAGE) break;
     // The cursor is the page's EARLIEST message, by time and then id: Chatwoot pages on that pair, and
     // an imported message has an old date under a new id, so the smallest id is not the page's end.
@@ -159,8 +164,9 @@ async function originRows(
     }
     if (!oldest || oldest.id === before) break;
     before = oldest.id;
+    complete = false;
   }
-  return [...seen.values()];
+  return { rows: [...seen.values()], complete };
 }
 
 function isContactIncoming(m: Record<string, unknown>): boolean {
@@ -181,8 +187,9 @@ function isImported(m: Record<string, unknown>): boolean {
 }
 
 // Where the attendance starts in the origin's own timeline. A turn is stamped with the NEWEST message
-// of the customer's burst, so the contact's messages right before it, with nothing else between, are
-// the same burst and start the attendance with it. Imported messages are not the timeline.
+// of the customer's burst, so the contact's messages right before it, with no public answer between,
+// are the same burst and start the attendance with it. Private notes and activity rows do not end a
+// burst; imported messages are not the timeline.
 function attendanceSince(
   all: Record<string, unknown>[],
   since: number,
@@ -194,7 +201,14 @@ function attendanceSince(
   let start = since;
   for (let i = first - 1; first > 0 && i >= 0; i -= 1) {
     const m = timeline[i];
-    if (!m || !isContactIncoming(m)) break;
+    if (!m) break;
+    if (
+      m.private === true ||
+      m.message_type === 2 ||
+      m.message_type === "activity"
+    )
+      continue;
+    if (!isContactIncoming(m)) break;
     const at = Number(m.created_at);
     if (Number.isFinite(at)) start = Math.min(start, at);
   }
@@ -208,9 +222,12 @@ async function candidatesOf(
   client: CarryClient,
   input: CarryInput,
   boundary: Date | null,
-): Promise<Candidate[]> {
+): Promise<{ found: Candidate[]; complete: boolean }> {
   const types = new Set<string>(input.config.fileTypes);
-  const all = await originRows(client, input.originConversationId);
+  const { rows: all, complete } = await originRows(
+    client,
+    input.originConversationId,
+  );
   // Chatwoot dates a message to the second.
   const since = boundary
     ? attendanceSince(all, Math.floor(boundary.getTime() / 1000))
@@ -248,7 +265,7 @@ async function candidatesOf(
       });
     }
   }
-  return out;
+  return { found: out, complete };
 }
 
 // PT-BR, like the case's other system notes.
@@ -326,7 +343,9 @@ async function carryLocked(
 
   let found: Candidate[];
   try {
-    found = await candidatesOf(client, input, boundary);
+    const walked = await candidatesOf(client, input, boundary);
+    found = walked.found;
+    if (!walked.complete) outcome.truncated = true;
   } catch {
     return { ...outcome, unread: "case" };
   }

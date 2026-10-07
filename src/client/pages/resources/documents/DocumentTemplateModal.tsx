@@ -571,11 +571,8 @@ export function DocumentTemplateModal({
                       {` · ${fieldTypeLabel[f.type as DocumentFieldType] ?? f.type}`}
                     </span>
                     {f.required && (
-                      <span
-                        className="text-text-muted"
-                        title={t("documents.fieldRequired", "Required")}
-                      >
-                        {" *"}
+                      <span className="text-text-muted">
+                        {` · ${t("documents.fieldRequiredShort", "required")}`}
                       </span>
                     )}
                   </span>

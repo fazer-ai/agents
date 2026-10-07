@@ -1040,7 +1040,7 @@
     "emptyDesc": "Start from a ready-made quote, proposal or receipt, or from a blank one, then edit the wording.",
     "emptyTitle": "No document templates yet",
     "enabled": "Agents may issue this document",
-    "fieldRequired": "Required",
+    "fieldRequiredShort": "required",
     "fields": "Fields the agent fills",
     "fieldType": {
       "currency": "amount",

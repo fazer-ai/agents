@@ -27,6 +27,9 @@ const { DocumentsPanel } = await import(
 );
 const { ToastProvider } = await import("@/client/components");
 const { SelectableCard } = await import("@/client/components/SelectableCard");
+const { CompanyProfileCard } = await import(
+  "@/client/pages/resources/documents/CompanyProfileCard"
+);
 const { NavGuardProvider } = await import("@/client/contexts/NavGuardContext");
 const { AuthContext } = await import("@/client/contexts/AuthContext");
 const { setActiveTenantId } = await import("@/client/lib/activeTenant");
@@ -88,6 +91,7 @@ const EMPTY_COMPANY = {
 const realFetch = globalThis.fetch;
 let posted: Record<string, unknown>[] = [];
 let storedCompany = EMPTY_COMPANY;
+let companyPuts: Record<string, unknown>[] = [];
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -135,6 +139,11 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.pathname.endsWith("/document-templates")) {
     return json({ templates: [] });
   }
+  if (method === "PUT" && url.pathname.endsWith("/tenant-settings/company")) {
+    const sent = JSON.parse(String(init?.body ?? "{}"));
+    companyPuts.push(sent);
+    return json({ company: { ...storedCompany, ...sent } });
+  }
   if (url.pathname.endsWith("/api/v1/tenants")) {
     return json({ tenants: [{ id: "1", name: "Acme Fleet Co" }] });
   }
@@ -147,6 +156,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 afterEach(() => {
   cleanup();
   posted = [];
+  companyPuts = [];
   storedCompany = EMPTY_COMPANY;
 });
 const startingLanguage = i18n.language;
@@ -383,6 +393,64 @@ describe("the letterhead editor", () => {
       const first = screen.getAllByRole("textbox")[0] as HTMLInputElement;
       expect(first.value).toBe("Acme Serviços Ltda");
     });
+  });
+});
+
+describe("the letterhead name suggestion", () => {
+  function renderCard(company: typeof EMPTY_COMPANY) {
+    return render(
+      <MemoryRouter>
+        <NavGuardProvider>
+          <ToastProvider>
+            <CompanyProfileCard
+              company={company}
+              onChanged={() => {}}
+              suggestedName="Acme Serviços Ltda"
+            />
+          </ToastProvider>
+        </NavGuardProvider>
+      </MemoryRouter>,
+    );
+  }
+  const nameBox = () => screen.getAllByRole("textbox")[0] as HTMLInputElement;
+
+  test("gives way to a name another client saved meanwhile", async () => {
+    await i18n.changeLanguage("en");
+    const view = renderCard(EMPTY_COMPANY);
+    expect(nameBox().value).toBe("Acme Serviços Ltda");
+    view.rerender(
+      <MemoryRouter>
+        <NavGuardProvider>
+          <ToastProvider>
+            <CompanyProfileCard
+              company={{ ...EMPTY_COMPANY, name: "Saved Elsewhere" }}
+              onChanged={() => {}}
+              suggestedName="Acme Serviços Ltda"
+            />
+          </ToastProvider>
+        </NavGuardProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(nameBox().value).toBe("Saved Elsewhere");
+    });
+  });
+
+  test("is saved when Save is pressed with it on screen", async () => {
+    await i18n.changeLanguage("en");
+    renderCard(EMPTY_COMPANY);
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      expect(companyPuts.length).toBe(1);
+    });
+    expect(companyPuts[0]?.name).toBe("Acme Serviços Ltda");
+  });
+
+  test("stays cleared once the operator clears it", async () => {
+    await i18n.changeLanguage("en");
+    renderCard(EMPTY_COMPANY);
+    fireEvent.change(nameBox(), { target: { value: "" } });
+    expect(nameBox().value).toBe("");
   });
 });
 

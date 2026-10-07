@@ -61,9 +61,21 @@ export function CompanyProfileCard({
   const formRef = useRef(form);
   formRef.current = form;
   const draft = form.draft;
+  // The account's name, SHOWN in an empty name box until the operator types there or the stored
+  // profile gets a name. Kept out of the draft, so the form still reads as untouched and adopts a
+  // profile another client saves meanwhile; it joins what Save sends while it is on screen.
+  const [nameTouched, setNameTouched] = useState(false);
+  const suggestion = suggestedName?.trim() ?? "";
+  const suggesting = (f: typeof form) =>
+    !nameTouched &&
+    suggestion !== "" &&
+    f.draft.name === "" &&
+    f.seededFrom.name === "";
+  const shown = (f: typeof form) =>
+    suggesting(f) ? { ...f, draft: { ...f.draft, name: suggestion } } : f;
   // The same `companyChanges` the save sends is what "unsaved" means for the nav guard (a
   // click on another tab, a tenant switch), so the two cannot disagree.
-  const dirty = Object.keys(companyChanges(form)).length > 0;
+  const dirty = Object.keys(companyChanges(shown(form))).length > 0;
   // The six patch keys ARE the six names the server refuses by: `updateCompanySettings` names the key
   // of the patch it rejected, and that key was chosen to be this form's input name. Declared from the
   // same constant the inputs are rendered from, so a seventh field cannot be added to one and not the
@@ -94,19 +106,6 @@ export function CompanyProfileCard({
     setForm((current) => nextCompanyDraft(current, company));
   }, [company]);
 
-  // Once per opening (the card remounts with the modal), and only into an empty, untouched name.
-  const suggested = useRef(false);
-  useEffect(() => {
-    const name = suggestedName?.trim();
-    if (suggested.current || !name || company?.name?.trim()) return;
-    suggested.current = true;
-    setForm((current) =>
-      current.draft.name === "" && current.seededFrom.name === ""
-        ? { ...current, draft: { ...current.draft, name } }
-        : current,
-    );
-  }, [company, suggestedName]);
-
   const label: Record<(typeof FIELDS)[number], string> = {
     name: t("documents.company.name", "Company name"),
     document: t("documents.company.document", "Tax id"),
@@ -120,7 +119,13 @@ export function CompanyProfileCard({
     setBusy("profile");
     // Only what this form changed, captured before the await: the operator can type during it, and
     // a field they never touched is not this request's to write.
-    const sent = companyChanges(form);
+    // A suggestion on screen is saved as if typed, so it becomes the operator's from here on.
+    if (suggesting(formRef.current)) {
+      formRef.current = shown(formRef.current);
+      setForm(formRef.current);
+      setNameTouched(true);
+    }
+    const sent = companyChanges(formRef.current);
     try {
       const { data, error } =
         await api.api.v1["tenant-settings"].company.put(sent);
@@ -255,16 +260,17 @@ export function CompanyProfileCard({
             label={label[field]}
             // The value the mark is keyed on: the message shows while this box still holds what the
             // server refused, and stops the keystroke it changes. No `onChange` line to forget.
-            error={refusal.at(field, draft[field])}
+            error={refusal.at(field, shown(form).draft[field])}
           >
             <Input
-              value={draft[field]}
-              onChange={(e) =>
+              value={shown(form).draft[field]}
+              onChange={(e) => {
+                if (field === "name") setNameTouched(true);
                 setForm((current) => ({
                   ...current,
                   draft: { ...current.draft, [field]: e.target.value },
-                }))
-              }
+                }));
+              }}
             />
           </FormField>
         ))}

@@ -1073,7 +1073,7 @@
     "emptyDesc": "Comece por um orçamento, proposta ou recibo pronto, ou por um em branco, e edite o texto.",
     "emptyTitle": "Nenhum modelo de documento ainda",
     "enabled": "Agentes podem emitir este documento",
-    "fieldRequired": "Obrigatório",
+    "fieldRequiredShort": "obrigatório",
     "fields": "Campos que o agente preenche",
     "fieldType": {
       "currency": "valor",

@@ -446,6 +446,31 @@ describe("the letterhead name suggestion", () => {
     expect(companyPuts[0]?.name).toBe("Acme Serviços Ltda");
   });
 
+  test("is not an unsaved edit on its own", async () => {
+    await i18n.changeLanguage("en");
+    let dirty: boolean | null = null;
+    render(
+      <MemoryRouter>
+        <NavGuardProvider>
+          <ToastProvider>
+            <CompanyProfileCard
+              company={EMPTY_COMPANY}
+              onChanged={() => {}}
+              onDirtyChange={(d) => {
+                dirty = d;
+              }}
+              suggestedName="Acme Serviços Ltda"
+            />
+          </ToastProvider>
+        </NavGuardProvider>
+      </MemoryRouter>,
+    );
+    expect(nameBox().value).toBe("Acme Serviços Ltda");
+    await waitFor(() => {
+      expect(dirty).toBe(false);
+    });
+  });
+
   test("stays cleared once the operator clears it", async () => {
     await i18n.changeLanguage("en");
     renderCard(EMPTY_COMPANY);

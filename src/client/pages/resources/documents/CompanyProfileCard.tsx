@@ -72,9 +72,10 @@ export function CompanyProfileCard({
     f.seededFrom.name === "";
   const shown = (f: typeof form) =>
     suggesting(f) ? { ...f, draft: { ...f.draft, name: suggestion } } : f;
-  // The same `companyChanges` the save sends is what "unsaved" means for the nav guard (a
-  // click on another tab, a tenant switch), so the two cannot disagree.
-  const dirty = Object.keys(companyChanges(shown(form))).length > 0;
+  // What the operator typed is what "unsaved" means for the nav guard (a click on another tab, a
+  // tenant switch) and for the modal's close. A suggestion nobody typed is not an edit to lose, so
+  // opening the letterhead and closing it again asks nothing.
+  const dirty = Object.keys(companyChanges(form)).length > 0;
   // The six patch keys ARE the six names the server refuses by: `updateCompanySettings` names the key
   // of the patch it rejected, and that key was chosen to be this form's input name. Declared from the
   // same constant the inputs are rendered from, so a seventh field cannot be added to one and not the

@@ -5243,7 +5243,43 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Optional agent id: only conversations on inboxes that agent answers or observes (an observer attachment still pending counts).",
+              "description": "Optional agent id: only conversations on inboxes that agent answers or observes (an observer attachment still pending counts). With any dashboard parameter below, the dashboard's agent filter instead: bound to the agent, or the agent ran on it.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "createdSince",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Dashboard drill-down: conversations created at or after this ISO instant.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "createdUntil",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Dashboard drill-down: conversations created before this ISO instant.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Dashboard drill-down: only this inbox.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Dashboard drill-down: all | involved | resolved_by_agent | handoff, as the dashboard funnel counts them.",
               "type": "string"
             }
           },
@@ -6656,7 +6692,16 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
               "type": "string"
             }
           },
@@ -6670,6 +6715,33 @@
                 "inbox",
                 "playground"
               ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
             }
           },
           {
@@ -6806,7 +6878,55 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -6900,6 +7020,32 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "operationId": "getV1MetricsKpis"
@@ -6918,7 +7064,16 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
               "type": "string"
             }
           },
@@ -6935,11 +7090,29 @@
             }
           },
           {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
             "name": "tz",
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) used to bucket days; invalid values fall back to UTC.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -7073,6 +7246,24 @@
         ],
         "parameters": [
           {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
             "name": "source",
             "in": "query",
             "required": false,
@@ -7085,11 +7276,20 @@
             }
           },
           {
-            "name": "since",
+            "name": "agentId",
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
               "type": "string"
             }
           },
@@ -7098,7 +7298,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "IANA timezone (e.g. America/Sao_Paulo) used to bucket days; an unknown zone is refused with a 400.",
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
               "type": "string"
             }
           },
@@ -29705,6 +29905,1508 @@
         "operationId": "getV1AuditExport"
       }
     },
+    "/v1/metrics/outcomes": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Outcome trend",
+        "description": "Involvement, resolution and handoff counts per local day over the conversations of the view, with totals, optionally repeated per agent or inbox.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "breakdown",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Repeat the funnel per agent or per inbox: agent | inbox.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsOutcomes"
+      }
+    },
+    "/v1/metrics/breakdown": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Usage breakdown",
+        "description": "The view's ledger rows grouped by agent, inbox, model or call type: conversations, requests, cost, cost per conversation, resolution rate and cache share.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "dimension",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Row dimension: agent (default) | inbox | model | node (call type).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsBreakdown"
+      }
+    },
+    "/v1/metrics/handoffs": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Handoff reasons",
+        "description": "Conversations handed over per cause per local day (the agent, a skip_reply by reason, a guardrail, a person), and skip_reply calls by reason.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsHandoffs"
+      }
+    },
+    "/v1/metrics/labels": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Outcome by label",
+        "description": "Volume and outcome of the view's conversations per Chatwoot label, and how many carry none.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsLabels"
+      }
+    },
+    "/v1/metrics/health": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Health",
+        "description": "Model call latency p50/p90 by model, and warn/error flow-log lines by stage and tool.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsHealth"
+      }
+    },
+    "/v1/metrics/follow-ups": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Follow-up activity",
+        "description": "Follow-up steps delivered in the window, the conversations they reached, how many customers wrote back and how many the last step closed.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsFollow-ups"
+      }
+    },
+    "/v1/metrics/knowledge": {
+      "get": {
+        "tags": [
+          "Dashboard"
+        ],
+        "summary": "Knowledge suggestions",
+        "description": "Knowledge suggestions proposed in the window and where each stands: waiting, discarded by the reviewer, approved, rejected.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Start of the window, inclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "End of the window, exclusive. ISO instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this agent: its ledger rows, and the conversations whose inbox is bound to it or that it ran on.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only this inbox (its database id).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "IANA timezone (e.g. America/Sao_Paulo) the daily buckets are cut in; an unknown zone is refused with a 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1MetricsKnowledge"
+      }
+    },
     "/v1/logs": {
       "get": {
         "tags": [
@@ -29755,6 +31457,24 @@
             "required": false,
             "schema": {
               "description": "Filter by agent id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Filter by inbox id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Filter tool lines by the tool's name (the line's detail.tool).",
               "type": "string"
             }
           },
@@ -29983,6 +31703,24 @@
             "required": false,
             "schema": {
               "description": "Filter by agent id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "inboxId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Filter by inbox id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Filter tool lines by the tool's name (the line's detail.tool).",
               "type": "string"
             }
           },

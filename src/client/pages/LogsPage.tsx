@@ -321,6 +321,13 @@ export function LogsPage() {
   // Deep-link filters (set by "view this conversation's logs"): scope to one conversation or turn.
   const conversationId = searchParams.get("conversationId") ?? "";
   const turnId = searchParams.get("turnId") ?? "";
+  // Deep-link filters set by the dashboard's health block: its window, agent, inbox and one tool.
+  const since = searchParams.get("since") ?? "";
+  const until = searchParams.get("until") ?? "";
+  const agentId = searchParams.get("agentId") ?? "";
+  const inboxId = searchParams.get("inboxId") ?? "";
+  const tool = searchParams.get("tool") ?? "";
+  const fromDashboard = Boolean(since || until || agentId || inboxId || tool);
 
   const exportModal = useModalController();
 
@@ -354,7 +361,19 @@ export function LogsPage() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on filter change only
   useEffect(() => {
     setCursorStack([null]);
-  }, [stage, level, source, q, conversationId, turnId]);
+  }, [
+    stage,
+    level,
+    source,
+    q,
+    conversationId,
+    turnId,
+    since,
+    until,
+    agentId,
+    inboxId,
+    tool,
+  ]);
 
   const setFilter = (key: string, value: string) => {
     setSearchParams(
@@ -380,6 +399,11 @@ export function LogsPage() {
       if (q) query.search = q;
       if (conversationId) query.conversationId = conversationId;
       if (turnId) query.turnId = turnId;
+      if (since) query.since = since;
+      if (until) query.until = until;
+      if (agentId) query.agentId = agentId;
+      if (inboxId) query.inboxId = inboxId;
+      if (tool) query.tool = tool;
       if (cursor) query.cursor = cursor;
       const { data, error: err } = await api.api.v1.logs.get({ query });
       if (err || !data) {
@@ -393,7 +417,20 @@ export function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [stage, level, source, q, conversationId, turnId, cursor]);
+  }, [
+    stage,
+    level,
+    source,
+    q,
+    conversationId,
+    turnId,
+    since,
+    until,
+    agentId,
+    inboxId,
+    tool,
+    cursor,
+  ]);
 
   useEffect(() => {
     void load();
@@ -418,8 +455,25 @@ export function LogsPage() {
     if (q) f.search = q;
     if (conversationId) f.conversationId = conversationId;
     if (turnId) f.turnId = turnId;
+    if (since) f.since = since;
+    if (until) f.until = until;
+    if (agentId) f.agentId = agentId;
+    if (inboxId) f.inboxId = inboxId;
+    if (tool) f.tool = tool;
     return f;
-  }, [source, stage, level, q, conversationId, turnId]);
+  }, [
+    source,
+    stage,
+    level,
+    q,
+    conversationId,
+    turnId,
+    since,
+    until,
+    agentId,
+    inboxId,
+    tool,
+  ]);
 
   return (
     <PageContainer size="wide" className="space-y-6">
@@ -503,6 +557,52 @@ export function LogsPage() {
           <option value="all">{t("logs.source.all", "All")}</option>
         </select>
       </div>
+
+      {fromDashboard && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary px-2.5 py-1 text-text-secondary text-xs">
+            {tool
+              ? t(
+                  "logs.scopedFromDashboardTool",
+                  "From the dashboard: {{tool}}",
+                  {
+                    tool,
+                  },
+                )
+              : t("logs.scopedFromDashboard", "From the dashboard")}
+            {since && until
+              ? ` · ${t("logs.scopedRange", "{{from}} to {{to}}", {
+                  from: new Date(since).toLocaleDateString(),
+                  to: new Date(until).toLocaleDateString(),
+                })}`
+              : ""}
+            <button
+              type="button"
+              onClick={() =>
+                setSearchParams(
+                  (prev) => {
+                    const next = new URLSearchParams(prev);
+                    for (const k of [
+                      "since",
+                      "until",
+                      "agentId",
+                      "inboxId",
+                      "tool",
+                    ])
+                      next.delete(k);
+                    return next;
+                  },
+                  { replace: true },
+                )
+              }
+              aria-label={t("logs.clearScope", "Clear filter")}
+              className="text-text-muted hover:text-text-primary"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </span>
+        </div>
+      )}
 
       {(conversationId || turnId) && (
         <div className="flex flex-wrap items-center gap-2">

@@ -249,6 +249,15 @@ function readReason(v: unknown): SkipReplyReason | null {
     : null;
 }
 
+// The reason one `skip_reply` result carries, from its mark. Null for anything else, including a
+// plain-string result (a direct invocation with no tool call in scope), which carries no mark.
+export function skipReplyReasonOf(output: unknown): SkipReplyReason | null {
+  if (typeof output !== "object" || output === null) return null;
+  const kwargs = (output as { additional_kwargs?: Record<string, unknown> })
+    .additional_kwargs;
+  return readReason(kwargs?.[SKIP_REPLY_REASON_KEY]);
+}
+
 // The reason THIS turn chose its silence for, with the same bound and mark as `silenceWasChosen`:
 // null exactly when that answers false. A marked line with no reason reads as `acknowledged`, the
 // reading that changes nothing about the conversation.

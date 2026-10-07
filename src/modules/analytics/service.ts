@@ -1,9 +1,14 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
 import { badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { classifyOutcome } from "@/modules/conversations/resolution-origin";
+import {
+  agentRanSql,
+  cohortWhereSql,
+  type DashboardFilter,
+  outcomeSql,
+  usageWhereSql,
+} from "./filter";
 
 // Instance metrics for the operational dashboard. LLM tokens/calls are aggregated FROM THE LOCAL
 // LlmUsage table (captured at the source in the model callback), never mirrored from Langfuse —
@@ -64,15 +69,8 @@ export interface InstanceMetrics {
   };
 }
 
-export interface MetricsFilter {
-  since?: Date;
-  // Usage segment. Omitted → all sources ("Todos"). The dashboard defaults to "inbox" so test
-  // turns don't inflate the real figures.
-  source?: UsageSource;
-  // IANA timezone (e.g. "America/Sao_Paulo") used to bucket the daily timeseries. Omitted/invalid
-  // → UTC. Only `getTimeseries` reads it; aggregate KPIs are timezone-agnostic (absolute sums).
-  tz?: string;
-}
+// The page's filter (./filter.ts). Kept under this name for the MCP readers that import it.
+export type MetricsFilter = DashboardFilter;
 
 // Validate an IANA timezone before interpolating it into `AT TIME ZONE` (an unknown zone makes
 // Postgres throw). A zone the caller sent and this cannot read is refused, not replaced: falling back
@@ -93,7 +91,18 @@ export async function getInstanceMetrics(
   filter: MetricsFilter = {},
   base: PrismaClient = basePrisma,
 ): Promise<InstanceMetrics> {
-  const sinceWhere = filter.since ? { createdAt: { gte: filter.since } } : {};
+  const sinceWhere = {
+    ...(filter.since || filter.until
+      ? {
+          createdAt: {
+            ...(filter.since ? { gte: filter.since } : {}),
+            ...(filter.until ? { lt: filter.until } : {}),
+          },
+        }
+      : {}),
+    ...(filter.agentId !== undefined ? { agentId: filter.agentId } : {}),
+    ...(filter.inboxId !== undefined ? { inboxId: filter.inboxId } : {}),
+  };
   const usageWhere = {
     ...sinceWhere,
     ...(filter.source ? { source: filter.source } : {}),
@@ -218,11 +227,13 @@ export async function getInstanceMetrics(
   });
 }
 
-// Operational KPIs (the AI-support-agent standard: Intercom Fin / OpenAI). "Involved" = the bot
-// actually ran on the conversation (it produced LlmUsage). Resolution = of those, how many the AGENT
-// itself closed, read from `Conversation.resolvedBy` (not from status and assignee, which counts
-// follow-up and Chatwoot auto-resolve closings; see src/modules/conversations/resolution-origin.ts).
-// Automation = Involvement × Resolution. Computed from local data, RLS-scoped inside the tx.
+// Operational KPIs (the AI-support-agent standard: Intercom Fin / OpenAI), over the conversations of
+// the view (`cohortWhereSql`: created in the window, in the filtered inbox, of the filtered agent).
+// "Involved" = the agent took a turn on it (an agent-turn ledger row). Resolution = of those, how many
+// the AGENT itself closed, read from `Conversation.resolvedBy` (not from status and assignee, which
+// counts follow-up and Chatwoot auto-resolve closings; see resolution-origin.ts). Automation =
+// Involvement × Resolution. Every count is over ONE set of conversations, so no rate passes 100% and
+// a day's point on the trend is the tile of a one-day window (docs/dashboard.md).
 export interface DashboardKpis {
   totalConversations: number;
   involved: number;
@@ -235,107 +246,122 @@ export interface DashboardKpis {
   involvementRate: number;
   resolutionRate: number;
   automationRate: number;
-  // MEDIAN seconds from creation to the team's first reply, Chatwoot's own first-response SLA
-  // mirrored rather than recomputed; median because one weekend conversation moves a mean by hours.
-  // NULL when no conversation in the window carries both readings, hence the sample count beside it.
-  // A conversation the business opened counts its own opening message as the reply, as Chatwoot does.
+  handoffRate: number;
+  // Seconds from creation to the team's first reply, Chatwoot's own first-response SLA mirrored
+  // rather than recomputed: the median and the 90th percentile, because one weekend conversation
+  // moves a mean by hours. NULL when no conversation of the view carries both readings, hence the
+  // sample count beside them. A conversation the business opened counts its own opening message as
+  // the reply, as Chatwoot does.
   firstResponseSeconds: number | null;
+  firstResponseP90Seconds: number | null;
   firstResponseSampled: number;
+}
+
+export interface OutcomeCounts {
+  total: number;
+  involved: number;
+  resolvedByBot: number;
+  handoff: number;
+  resolvedBeforeTracking: number;
+}
+
+export function outcomeRates(c: OutcomeCounts) {
+  return {
+    involvementRate: c.total > 0 ? c.involved / c.total : 0,
+    resolutionRate: c.involved > 0 ? c.resolvedByBot / c.involved : 0,
+    automationRate: c.total > 0 ? c.resolvedByBot / c.total : 0,
+    handoffRate: c.total > 0 ? c.handoff / c.total : 0,
+  };
+}
+
+// The counts behind the funnel, as SQL aggregates over the view's conversations. `group` adds one
+// grouping column (a local day, an agent, an inbox); without it the result is a single row.
+export function outcomeCountsSql(
+  f: DashboardFilter,
+  group?: { key: Prisma.Sql; from?: Prisma.Sql },
+): Prisma.Sql {
+  const ran = agentRanSql("c", f.agentId);
+  const outcome = outcomeSql("c");
+  return Prisma.sql`
+    SELECT ${group ? Prisma.sql`${group.key} AS key,` : Prisma.empty}
+           COUNT(DISTINCT c.id)::int AS total,
+           COUNT(DISTINCT c.id) FILTER (WHERE ${ran})::int AS involved,
+           COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'resolved_by_agent')::int AS resolved,
+           COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'handoff')::int AS handoff,
+           COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'resolved_before_tracking')::int AS untracked
+      FROM conversations c ${group?.from ?? Prisma.empty}
+     WHERE ${cohortWhereSql("c", f)}
+     ${group ? Prisma.sql`GROUP BY 1` : Prisma.empty}`;
+}
+
+export interface OutcomeRow {
+  key?: string | null;
+  total: number;
+  involved: number;
+  resolved: number;
+  handoff: number;
+  untracked: number;
+}
+
+export function toCounts(r: OutcomeRow | undefined): OutcomeCounts {
+  return {
+    total: Number(r?.total ?? 0),
+    involved: Number(r?.involved ?? 0),
+    resolvedByBot: Number(r?.resolved ?? 0),
+    handoff: Number(r?.handoff ?? 0),
+    resolvedBeforeTracking: Number(r?.untracked ?? 0),
+  };
 }
 
 export async function getKpis(
   ctx: TenantContext,
-  filter: MetricsFilter = {},
+  filter: DashboardFilter = {},
   base: PrismaClient = basePrisma,
 ): Promise<DashboardKpis> {
   return runScopedOn(base, ctx, async (db) => {
-    const totalConversations = await db.conversation.count({
-      where: filter.since ? { createdAt: { gte: filter.since } } : {},
-    });
-    const involvedRows = await db.llmUsage.findMany({
-      where: {
-        // KPIs are always about real customer conversations: playground turns never create a
-        // mirror conversation (conversationId stays null), and source="inbox" makes that explicit.
-        conversationId: { not: null },
-        source: "inbox",
-        // NOTE: A billed call is not the same claim as "the agent took this conversation", and this is
-        // the only reader that makes the second one. Vision runs on the incoming attachment before
-        // the bot-ownership gate decides anything, so an image sent into a conversation a human
-        // handled start to finish would otherwise land here as bot involvement.
-        //   The null arm is not a formality: Prisma renders `notIn` as plain SQL `NOT IN`, which
-        // drops NULL rows rather than keeping them, and a legacy row with no node is an agent turn.
-        // Without it this filter would quietly shrink every historical figure.
-        OR: [{ node: null }, { node: { notIn: [...NON_AGENT_TURN_NODES] } }],
-        ...(filter.since ? { createdAt: { gte: filter.since } } : {}),
-      },
-      select: { conversationId: true },
-      distinct: ["conversationId"],
-    });
-    const involvedIds = involvedRows
-      .map((r) => r.conversationId)
-      .filter((x): x is bigint => x !== null);
-    const involved = involvedIds.length;
-    let resolvedByBot = 0;
-    let handoff = 0;
-    let resolvedBeforeTracking = 0;
-    if (involved > 0) {
-      const convs = await db.conversation.findMany({
-        where: { id: { in: involvedIds } },
-        select: { status: true, assigneeType: true, resolvedBy: true },
-      });
-      for (const c of convs) {
-        switch (classifyOutcome(c)) {
-          case "handoff":
-            handoff += 1;
-            break;
-          case "resolved_by_agent":
-            resolvedByBot += 1;
-            break;
-          case "resolved_before_tracking":
-            resolvedBeforeTracking += 1;
-            break;
-          // NOTE: resolved_by_other / unresolved: neither a resolution nor a handoff.
-        }
-      }
-    }
+    // A billed call is not the same claim as "the agent took this conversation", and this is
+    // the reader that makes the second one. Vision runs on the incoming attachment before the
+    // bot-ownership gate decides anything, so an image sent into a conversation a human handled start
+    // to finish must not land here as bot involvement: `agentRanSql` counts agent turns only.
+    const [row] = await db.$queryRaw<OutcomeRow[]>(outcomeCountsSql(filter));
+    const counts = toCounts(row);
     // Raw SQL for percentile_cont (no Prisma builder), inside the scoped tx so RLS fences the rows —
     // never filter tenant_id by hand. EPOCH of the difference: both columns are mirrored from the
     // same Chatwoot row, so the subtraction is between two readings of one source rather than
     // across two clocks.
     const [responseRow] = await db.$queryRaw<
-      { median: number | null; sampled: number }[]
+      { median: number | null; p90: number | null; sampled: number }[]
     >(Prisma.sql`
       SELECT percentile_cont(0.5) WITHIN GROUP (
-               ORDER BY EXTRACT(EPOCH FROM (chatwoot_first_reply_at - chatwoot_created_at))
+               ORDER BY EXTRACT(EPOCH FROM (c.chatwoot_first_reply_at - c.chatwoot_created_at))
              )::float8 AS median,
+             percentile_cont(0.9) WITHIN GROUP (
+               ORDER BY EXTRACT(EPOCH FROM (c.chatwoot_first_reply_at - c.chatwoot_created_at))
+             )::float8 AS p90,
              COUNT(*)::int AS sampled
-        FROM conversations
-       WHERE chatwoot_created_at IS NOT NULL
-         AND chatwoot_first_reply_at IS NOT NULL
+        FROM conversations c
+       WHERE c.chatwoot_created_at IS NOT NULL
+         AND c.chatwoot_first_reply_at IS NOT NULL
          -- A reply cannot precede the conversation that carries it: a clock skew or a hand-written
          -- row would otherwise contribute a negative "response time".
-         AND chatwoot_first_reply_at >= chatwoot_created_at
-         -- The window is the one the other KPIs use — OUR row's createdAt — so a filtered dashboard
-         -- counts the same conversations here as it does above.
-         AND (${filter.since ?? null}::timestamptz IS NULL OR created_at >= ${filter.since ?? null})`);
-    // COUNT and the percentile come from ONE aggregate over the same rows, so they cannot
-    // disagree: no row in the sample means `sampled` is 0 and `median` is NULL together.
+         AND c.chatwoot_first_reply_at >= c.chatwoot_created_at
+         -- The same conversations the funnel counts.
+         AND ${cohortWhereSql("c", filter)}`);
+    // COUNT and the percentiles come from ONE aggregate over the same rows, so they cannot
+    // disagree: no row in the sample means `sampled` is 0 and both percentiles are NULL together.
     const sampled = Number(responseRow?.sampled ?? 0);
-
     return {
-      totalConversations,
-      involved,
-      resolvedByBot,
-      handoff,
-      resolvedBeforeTracking,
+      totalConversations: counts.total,
+      involved: counts.involved,
+      resolvedByBot: counts.resolvedByBot,
+      handoff: counts.handoff,
+      resolvedBeforeTracking: counts.resolvedBeforeTracking,
       firstResponseSeconds:
         responseRow?.median != null ? Number(responseRow.median) : null,
+      firstResponseP90Seconds:
+        responseRow?.p90 != null ? Number(responseRow.p90) : null,
       firstResponseSampled: sampled,
-      involvementRate:
-        totalConversations > 0 ? involved / totalConversations : 0,
-      resolutionRate: involved > 0 ? resolvedByBot / involved : 0,
-      automationRate:
-        totalConversations > 0 ? resolvedByBot / totalConversations : 0,
+      ...outcomeRates(counts),
     };
   });
 }
@@ -362,8 +388,6 @@ export async function getTimeseries(
   filter: MetricsFilter = {},
   base: PrismaClient = basePrisma,
 ): Promise<TimeseriesPoint[]> {
-  const since = filter.since ?? null;
-  const source = filter.source ?? null;
   const tz = normalizeTimeZone(filter.tz);
   return runScopedOn(base, ctx, async (db) => {
     const rows = await db.$queryRaw<
@@ -382,9 +406,8 @@ export async function getTimeseries(
              COALESCE(SUM(prompt_tokens), 0)::int AS prompt,
              COALESCE(SUM(completion_tokens), 0)::int AS completion,
              COALESCE(SUM(cached_read_tokens), 0)::int AS cached
-      FROM llm_usage
-      WHERE (${since}::timestamptz IS NULL OR created_at >= ${since})
-        AND (${source}::text IS NULL OR source = ${source})
+      FROM llm_usage u
+      WHERE ${usageWhereSql("u", filter)}
       GROUP BY bucket
       ORDER BY bucket ASC`);
     return rows.map((r) => ({

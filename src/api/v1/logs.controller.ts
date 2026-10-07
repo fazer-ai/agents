@@ -46,6 +46,8 @@ export const logsController = new Elysia({
         level: parseQueryText(query.level, "level"),
         stage: parseQueryText(query.stage, "stage"),
         agentId: parseQueryId(query.agentId, "agentId"),
+        inboxId: parseQueryId(query.inboxId, "inboxId"),
+        tool: parseQueryText(query.tool, "tool"),
         conversationId: parseQueryId(query.conversationId, "conversationId"),
         turnId: parseQueryText(query.turnId, "turnId"),
         source: query.source,
@@ -75,6 +77,15 @@ export const logsController = new Elysia({
         ),
         agentId: t.Optional(
           t.String({ description: "Filter by agent id (BigInt string)." }),
+        ),
+        inboxId: t.Optional(
+          t.String({ description: "Filter by inbox id (BigInt string)." }),
+        ),
+        tool: t.Optional(
+          t.String({
+            description:
+              "Filter tool lines by the tool's name (the line's detail.tool).",
+          }),
         ),
         conversationId: t.Optional(
           t.String({
@@ -126,6 +137,8 @@ export const logsController = new Elysia({
         level: parseQueryText(query.level, "level"),
         stage: parseQueryText(query.stage, "stage"),
         agentId: parseQueryId(query.agentId, "agentId"),
+        inboxId: parseQueryId(query.inboxId, "inboxId"),
+        tool: parseQueryText(query.tool, "tool"),
         conversationId: parseQueryId(query.conversationId, "conversationId"),
         turnId: parseQueryText(query.turnId, "turnId"),
         source: query.source,
@@ -155,6 +168,15 @@ export const logsController = new Elysia({
         ),
         agentId: t.Optional(
           t.String({ description: "Filter by agent id (BigInt string)." }),
+        ),
+        inboxId: t.Optional(
+          t.String({ description: "Filter by inbox id (BigInt string)." }),
+        ),
+        tool: t.Optional(
+          t.String({
+            description:
+              "Filter tool lines by the tool's name (the line's detail.tool).",
+          }),
         ),
         conversationId: t.Optional(
           t.String({

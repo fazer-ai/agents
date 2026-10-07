@@ -1,0 +1,51 @@
+# Dashboard
+
+The operator's dashboard (`src/client/pages/DashboardPage.tsx`, blocks under `src/client/pages/dashboard/`) is organised by the question an operator brings, not by the table the data lives in: is the agent doing its job, why does it hand over and what are people asking, what does it cost, is it healthy, and what else does it do on its own. This page maps every block to the query behind it, so the next change does not reintroduce a second source.
+
+**Every figure comes from this app's own records.** Money is `llm_usage.cost_usd`, priced when the call was written and re-priceable after (`scripts/reprice-usage.ts`). No figure is read from Langfuse: it samples traces on the client, prices only at ingestion and delivers best-effort, so its sum is not a total. Langfuse appears only as the "Open in Langfuse" link (`DashboardCosts.langfuse`), and the page renders the same numbers with it unreachable.
+
+## The one filter
+
+Period, agent, inbox and source live in the URL (`?range=7d|30d|90d|all|custom&from=&to=&agent=&inbox=&source=`, `src/client/pages/dashboard/filters.ts`). A value at its default is left out, a value that does not parse falls back to its default, and an agent or inbox id this account does not have is dropped from the URL rather than shown as an empty view. The window is half-open `[since, until)` in the browser's own days (`docs/ui.md`, "A day is defined by the viewer's browser timezone"), and the previous period is the same number of days ending where this one starts; "all" has none.
+
+Every route takes the same query (`dashboardFilterQuery`, `src/api/v1/dashboard.controller.ts`) and every service builds on the fragments of `src/modules/analytics/filter.ts`:
+
+| fragment | means |
+|---|---|
+| `cohortWhereSql` | **the view's conversations**: created in the window (`conversations.created_at`, when the conversation reached us), in the filtered inbox, and under an agent filter, the ones whose inbox is bound to that agent or that the agent ran on |
+| `agentRanSql` | **the agent ran on it**: a real-traffic ledger row that is an agent turn (`node` null or not in `NON_AGENT_TURN_NODES`), by the filtered agent when there is one |
+| `outcomeSql` | `classifyOutcome` in SQL (handoff, resolved by the agent, resolved before tracking, resolved by someone else, unresolved); fenced against the TypeScript rule by `tests/modules/analytics-outcome-sql.test.ts` |
+| `usageWhereSql` | **the view's ledger rows**: billed in the window, in the source, by the agent, in the inbox |
+| `logWhereSql` | the same for `execution_logs`, which carries the same columns |
+
+Conversation figures are real traffic by construction (a playground turn has no conversation). Ledger figures follow the source toggle.
+
+## The blocks
+
+| block | route | source |
+|---|---|---|
+| Funnel tiles (conversations, involvement, resolution, automation, handoffs) and the funnel bars | `GET /v1/metrics/kpis` → `getKpis` | `outcomeCountsSql` over the view's conversations. Involved = `agentRanSql`; resolution = resolved by the agent ÷ involved; automation = resolved ÷ total; handoffs = handoff ÷ total. One set of conversations, so no rate passes 100% |
+| Previous period beside each tile | the same route with the previous window | the same query |
+| First response (p50, p90) | `GET /v1/metrics/kpis` | `percentile_cont` over `chatwoot_first_reply_at - chatwoot_created_at` of the view's conversations, Chatwoot's own SLA mirrored |
+| Funnel over time, total or split by agent / inbox | `GET /v1/metrics/outcomes` → `getOutcomeTrend` | `outcomeCountsSql` grouped by the local day of `created_at`; a split repeats it with each agent or inbox as the filter. A day's point is the tile of a one-day window |
+| Clicking a tile or a point | `GET /v1/conversations?createdSince&createdUntil&inboxId&outcome&agentId` | `drillDownPageIds` (`src/modules/analytics/drilldown.ts`): `cohortWhereSql` plus the outcome, paged in SQL in the list's order. The list's length is the number clicked |
+| Handoffs by cause | `GET /v1/metrics/handoffs` → `getHandoffReasons` | `execution_logs`: a `tool` line of `handoff_to_human` (the agent), a `handoff` line with `outcome` `opened_after_skip` and its `reason` (the agent's silence), `guardrail_handoff`, or `taken_over` (a person). Distinct conversations per cause and local day. The model's own free-text reason is not a category: it never repeats |
+| Silences by reason | same route | `tool` lines of `skip_reply`, by `detail.skipReason` (the closed vocabulary the model picked); a line written before the reason was logged reads "unrecorded" |
+| Outcome by label | `GET /v1/metrics/labels` → `getLabelOutcomes` | the view's conversations unnested over `conversations.labels`, mirrored from the webhook's `push_data.labels` (`src/modules/chatwoot/mirror.ts`). A conversation with two labels counts in both rows; a conversation is labelled once an event carrying the list arrives |
+| Cost tiles (cost, cost per conversation, cost per resolved conversation, tokens) | `GET /v1/metrics/costs` → `getDashboardCosts` | `SUM(cost_usd)` over the view's ledger rows; the divisors are the distinct conversations of those rows and those of them the agent resolved |
+| Daily cost by model / by call type | same route | `daysByModel` / `daysByNode`: priced rows grouped by local day and `model` or `COALESCE(node, 'agent')`; the segments of a day add up to its total |
+| Cost per conversation over time | same route | each day's cost over that day's distinct conversations, and over those the agent resolved |
+| Requests with no price | same route | rows with null `cost_usd`, by model |
+| Cached input by agent | `GET /v1/metrics/breakdown?dimension=agent` | `SUM(cached_read_tokens) / SUM(prompt_tokens)`; null, never 0%, when the agent sent no input |
+| Spend ceiling and month-end projection | `GET /v1/tenant-settings/spend-ceiling/usage` | the calendar month in UTC, the ceiling's own window; the projection is `projectMonthEnd` (`src/modules/spend-ceiling/decide.ts`), the spend over the days elapsed stretched to the month, never below the spend, floored at one day elapsed. See [`spend-ceiling.md`](spend-ceiling.md) |
+| Model call latency | `GET /v1/metrics/health` → `getHealth` | `percentile_cont(0.5)` and `(0.9)` of `llm_usage.duration_ms` per model; rows from before the column are not in it |
+| Warnings and errors | same route | `execution_logs` at `warn`/`error` by stage and, for `tool` lines, `detail.tool`. Each row links to `/logs` with the same window, agent, inbox, source, stage, level and tool |
+| Follow-ups | `GET /v1/metrics/follow-ups` → `getFollowUpActivity` | the follow-up's own outcome line (`stage: generate`, `detail.trigger: followup`) with `outcome` `messaged` or `templated`; came back = `last_inbound_at` after the first such step; closed = `resolved_by = followup_abandonment` |
+| Knowledge suggestions | `GET /v1/metrics/knowledge` → `getKnowledgeActivity` | `approval_queue_items` created in the window, by status (waiting = pending, edited, screening) |
+| Where the usage goes | `GET /v1/metrics/breakdown?dimension=agent\|inbox\|model\|node` → `getBreakdown` | the view's ledger rows grouped by the dimension: distinct conversations, requests, cost, cost per conversation, and the share of those conversations the agent resolved. Clicking an agent or inbox row applies it as the page's filter |
+
+Two windows coexist on purpose: conversation figures count conversations **created** in the window, ledger figures count calls **billed** in it. A conversation that started last week and was answered today is in today's cost and in last week's funnel.
+
+## Export and accessibility
+
+Each block exports what it shows as CSV (`src/client/pages/dashboard/csv.ts`): raw numbers, a header row, the same rows the screen shows. A chart is hidden from the accessibility tree and a table with the same figures stands in its place (`Block`, `src/client/pages/dashboard/Block.tsx`); the CSV and that table are built from one `BlockTable`, so they cannot disagree. Chart colors are read from the theme's CSS variables and re-read when the theme flips (`useChartPalette`).

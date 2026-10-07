@@ -10,6 +10,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import { projectMonthEnd } from "@/modules/spend-ceiling/decide";
 import {
   readSpendSnapshot,
   readTenantSpendCeiling,
@@ -512,6 +513,8 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
         // Two unpriced August calls; July's row is not this month's.
         unpricedCalls: 2,
         unpricedModels: ["openrouter/free-model"],
+        // The month at August's pace so far, from the same figure as the bar.
+        projectedUsd: projectMonthEnd(22.5, AUG),
       });
       const play = usage.entries.find((e) => e.source === "playground");
       expect(play).toMatchObject({

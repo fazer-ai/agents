@@ -4,18 +4,24 @@ import { doc, errors } from "@/api/lib/openapi";
 import {
   badQueryParam,
   parseQueryCount,
+  parseQueryEnum,
   parseQueryId,
   parseQueryInstant,
   parseQueryText,
 } from "@/api/lib/query-filters";
 import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import {
+  dashboardFilterQuery,
+  parseDashboardFilter,
+} from "@/api/v1/dashboard.controller";
 import config from "@/config";
 import { requireDbId } from "@/lib/db-id";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { getDashboardCosts } from "@/modules/analytics/costs";
+import { DRILL_OUTCOMES } from "@/modules/analytics/drilldown";
 import {
   getInstanceMetrics,
   getKpis,
@@ -91,6 +97,28 @@ function acceptUrl(token: string): string {
 // Versioned read API. The same surface serves the React UI and (future) fleet dashboard.
 // Every response carries instance identity so a fleet can attribute events. Mounted under
 // the /api group, so paths are /api/v1/*.
+// The dashboard drill-down (src/modules/analytics/drilldown.ts): present when any of its four
+// parameters is, with the outcome defaulting to every conversation of the view.
+function parseDrillDown(query: {
+  createdSince?: string;
+  createdUntil?: string;
+  inboxId?: string;
+  outcome?: string;
+}) {
+  const createdSince = parseQueryInstant(query.createdSince, "createdSince");
+  const createdUntil = parseQueryInstant(query.createdUntil, "createdUntil");
+  const inboxId = parseQueryId(query.inboxId, "inboxId");
+  const outcome = parseQueryEnum(query.outcome, "outcome", DRILL_OUTCOMES);
+  if (
+    createdSince === undefined &&
+    createdUntil === undefined &&
+    inboxId === undefined &&
+    outcome === undefined
+  )
+    return undefined;
+  return { createdSince, createdUntil, inboxId, outcome: outcome ?? "all" };
+}
+
 export const v1Controller = new Elysia({ prefix: "/v1" })
   .use(tenancyPlugin)
   .get("/meta", () => ({ instance: instanceIdentity }), {
@@ -294,6 +322,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         cursor: parseQueryId(query.cursor, "cursor"),
         q: parseQueryText(query.q, "q"),
         agentId: parseQueryId(query.agentId, "agentId"),
+        drillDown: parseDrillDown(query),
       });
       return {
         instance: instanceIdentity,
@@ -330,7 +359,30 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         agentId: t.Optional(
           t.String({
             description:
-              "Optional agent id: only conversations on inboxes that agent answers or observes (an observer attachment still pending counts).",
+              "Optional agent id: only conversations on inboxes that agent answers or observes (an observer attachment still pending counts). With any dashboard parameter below, the dashboard's agent filter instead: bound to the agent, or the agent ran on it.",
+          }),
+        ),
+        createdSince: t.Optional(
+          t.String({
+            description:
+              "Dashboard drill-down: conversations created at or after this ISO instant.",
+          }),
+        ),
+        createdUntil: t.Optional(
+          t.String({
+            description:
+              "Dashboard drill-down: conversations created before this ISO instant.",
+          }),
+        ),
+        inboxId: t.Optional(
+          t.String({
+            description: "Dashboard drill-down: only this inbox.",
+          }),
+        ),
+        outcome: t.Optional(
+          t.String({
+            description:
+              "Dashboard drill-down: all | involved | resolved_by_agent | handoff, as the dashboard funnel counts them.",
           }),
         ),
       }),
@@ -675,29 +727,14 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics",
     async ({ tenantContext, query }) => {
-      const since = parseQueryInstant(query.since, "since");
-      const metrics = await getInstanceMetrics(ctxOrThrow(tenantContext), {
-        since,
-        source: query.source,
-      });
+      const metrics = await getInstanceMetrics(
+        ctxOrThrow(tenantContext),
+        parseDashboardFilter(query),
+      );
       return { instance: instanceIdentity, metrics };
     },
     {
-      query: t.Object({
-        since: t.Optional(
-          t.String({
-            description:
-              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
-          }),
-        ),
-        // Usage segment: "inbox" (real) | "playground". Omitted → all sources.
-        source: t.Optional(
-          t.Union([t.Literal("inbox"), t.Literal("playground")], {
-            description:
-              "Usage segment to scope the metrics: inbox (real traffic) or playground; omit for all sources.",
-          }),
-        ),
-      }),
+      query: t.Object(dashboardFilterQuery),
       requireAuth: true,
       detail: {
         ...doc(
@@ -712,21 +749,14 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/kpis",
     async ({ tenantContext, query }) => {
-      const since = parseQueryInstant(query.since, "since");
-      const kpis = await getKpis(ctxOrThrow(tenantContext), {
-        since,
-      });
+      const kpis = await getKpis(
+        ctxOrThrow(tenantContext),
+        parseDashboardFilter(query),
+      );
       return { instance: instanceIdentity, kpis };
     },
     {
-      query: t.Object({
-        since: t.Optional(
-          t.String({
-            description:
-              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
-          }),
-        ),
-      }),
+      query: t.Object(dashboardFilterQuery),
       requireAuth: true,
       detail: {
         ...doc(
@@ -735,41 +765,20 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   )
   .get(
     "/metrics/timeseries",
     async ({ tenantContext, query }) => {
-      const since = parseQueryInstant(query.since, "since");
-      const points = await getTimeseries(ctxOrThrow(tenantContext), {
-        since,
-        source: query.source,
-        tz: query.tz,
-      });
+      const points = await getTimeseries(
+        ctxOrThrow(tenantContext),
+        parseDashboardFilter(query),
+      );
       return { instance: instanceIdentity, points };
     },
     {
-      query: t.Object({
-        since: t.Optional(
-          t.String({
-            description:
-              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
-          }),
-        ),
-        source: t.Optional(
-          t.Union([t.Literal("inbox"), t.Literal("playground")], {
-            description:
-              "Usage segment to scope the series: inbox (real traffic) or playground; omit for all sources.",
-          }),
-        ),
-        tz: t.Optional(
-          t.String({
-            description:
-              "IANA timezone (e.g. America/Sao_Paulo) used to bucket days; invalid values fall back to UTC.",
-          }),
-        ),
-      }),
+      query: t.Object(dashboardFilterQuery),
       requireAuth: true,
       detail: {
         ...doc(
@@ -784,36 +793,14 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/costs",
     async ({ tenantContext, query }) => {
-      const since = parseQueryInstant(query.since, "since");
-      const costs = await getDashboardCosts(ctxOrThrow(tenantContext), {
-        since,
-        source: query.source,
-        tz: query.tz,
-      });
+      const costs = await getDashboardCosts(
+        ctxOrThrow(tenantContext),
+        parseDashboardFilter(query),
+      );
       return { instance: instanceIdentity, costs };
     },
     {
-      query: t.Object({
-        // Usage segment: "inbox" (real) | "playground". Omitted: both.
-        source: t.Optional(
-          t.Union([t.Literal("inbox"), t.Literal("playground")], {
-            description:
-              "Usage segment to scope the cost: inbox (real traffic) or playground; omit for both.",
-          }),
-        ),
-        since: t.Optional(
-          t.String({
-            description:
-              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
-          }),
-        ),
-        tz: t.Optional(
-          t.String({
-            description:
-              "IANA timezone (e.g. America/Sao_Paulo) used to bucket days; an unknown zone is refused with a 400.",
-          }),
-        ),
-      }),
+      query: t.Object(dashboardFilterQuery),
       requireAuth: true,
       detail: {
         ...doc(

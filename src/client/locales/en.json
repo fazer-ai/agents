@@ -724,6 +724,15 @@
       "ai": "AI",
       "human": "Human #{{id}}"
     },
+    "drill": {
+      "all": "every conversation",
+      "clear": "Clear the dashboard filter",
+      "handoff": "handed over to a person",
+      "involved": "handled by the agent",
+      "label": "From the dashboard: {{outcome}}",
+      "range": "started {{from}} to {{to}}",
+      "resolved": "resolved by the agent"
+    },
     "empty": "No conversations yet.",
     "error": "Could not load conversations.",
     "errorBadge": "Error",
@@ -765,40 +774,135 @@
   "dashboard": {
     "absolute": "#",
     "agent": "Agent #{{id}}",
-    "agentCallsTokens": "{{calls}} requests · {{tokens}} tokens",
-    "attendance": "Team response",
+    "automation": {
+      "title": "What the agent does on its own"
+    },
+    "breakdown": {
+      "dimension": "Group by",
+      "help": "The period's model calls grouped by the dimension you pick. Conversations are the ones those calls belonged to, and the resolution rate is the share of them the agent closed itself. Click an agent or an inbox to filter the whole page by it.",
+      "noInbox": "No inbox (playground)",
+      "title": "Where the usage goes"
+    },
+    "cache": {
+      "help": "The share of each agent's input tokens the provider served from its cache, which it bills at a discount. On a long prompt this is the biggest cost lever; an agent with no input in the period shows no figure.",
+      "title": "Cached input by agent"
+    },
     "calls_one": "{{n}} request",
     "calls_other": "{{n}} requests",
+    "cause": {
+      "agent": "The agent handed over",
+      "guardrail": "A guardrail stopped the reply",
+      "person": "A person took over",
+      "skipNeedsHuman": "The agent stayed silent: needs a person",
+      "skipNotForUs": "The agent stayed silent: not for this team",
+      "skipUnanswered": "The agent ended without answering"
+    },
     "ceiling": {
       "cta": "Set the ceiling",
+      "of": "ceiling {{ceiling}}",
       "period": "{{month}} · the calendar month, not the selected period",
+      "projection": "So far {{used}}; at this pace the month ends near {{projected}}",
       "title": "Spend ceiling",
       "unread": "The ceiling could not be read."
     },
-    "chart": {
-      "ariaCalls": "Daily LLM requests and conversations over time",
-      "ariaCost": "Daily LLM cost, conversations, and cost per conversation over time",
-      "calls": "LLM requests",
+    "col": {
+      "agent": "Agent",
+      "cacheShare": "Cached input",
+      "calls": "Requests",
       "conversations": "Conversations",
-      "cost": "Cost (USD)",
+      "cost": "Cost",
       "costPerConversation": "Cost / conversation",
-      "label": "Chart metric"
+      "day": "Day",
+      "figure": "Figure",
+      "handoffs": "Handoffs",
+      "inbox": "Inbox",
+      "involved": "Handled by the agent",
+      "label": "Label",
+      "level": "Level",
+      "lines": "Log lines",
+      "model": "Model",
+      "node": "Call type",
+      "percentileMs": "{{p}} (ms)",
+      "previousOf": "{{label}} (previous period)",
+      "promptTokens": "Input tokens",
+      "resolution": "Resolution",
+      "stage": "Stage",
+      "tool": "Tool",
+      "total": "Total",
+      "value": "Value"
     },
-    "conversations": "Conversations",
-    "costByModel": "Cost by model",
-    "costFallback": "No cost data for this period yet; showing request volume.",
-    "costPerConversation": "Cost / conversation",
-    "costPerConversationHint_one": "across {{n}} conversation",
-    "costPerConversationHint_other": "across {{n}} conversations",
+    "cost": {
+      "acrossConversations_one": "across {{n}} conversation",
+      "acrossConversations_other": "across {{n}} conversations",
+      "acrossResolved_one": "across {{n}} resolved",
+      "acrossResolved_other": "across {{n}} resolved",
+      "byModel": "Model",
+      "byNode": "Call type",
+      "daily": "Daily cost",
+      "dailyHelp": "Summed from this app's own record of every model call, priced when the call was made. Split by model, or by what the call was for: a change in the image reader and a change in the agent's prompt show up in different colors.",
+      "perConversation": "Cost / conversation",
+      "perConversationHelp": "Each day's cost divided by the conversations that had a model call that day, and by those of them the agent resolved. A day with nothing to divide by is left blank.",
+      "perConversationTrend": "Cost per conversation",
+      "perResolved": "Cost / conversation resolved by the agent",
+      "splitBy": "Split the cost by",
+      "title": "Cost"
+    },
     "costsError": "Could not read the cost.",
     "error": "Could not load metrics.",
+    "exportCsv": "CSV",
+    "exportCsvOf": "Export {{title}} as CSV",
+    "filter": {
+      "agent": "Agent",
+      "allAgents": "All agents",
+      "allInboxes": "All inboxes",
+      "inbox": "Inbox"
+    },
+    "followups": {
+      "cameBack": "Customer wrote back",
+      "closed": "Closed by the last step",
+      "conversations": "Conversations reached",
+      "help": "Follow-up steps that reached the customer in the period (a message or a template; a step that stayed silent is not counted), the conversations they reached, how many customers wrote again after one, and how many the last step closed.",
+      "steps": "Steps delivered",
+      "title": "Follow-ups"
+    },
     "funnel": "Automation funnel",
+    "funnelMode": "Show the funnel as",
+    "handoffs": {
+      "help": "Conversations that left the agent each day, by who decided: the agent itself, its silence with the reason it gave, a guardrail, or a person who replied or took the conversation. A conversation counts once per cause and day. The agent's free-text reason is in the conversation's private note, not here.",
+      "none": "No handoffs in this period.",
+      "silences": "Turns the agent chose not to answer, by reason",
+      "title": "Handoffs by cause",
+      "totals": "Conversations in the period"
+    },
+    "health": {
+      "error": "Error",
+      "latency": "Model call latency",
+      "latencyHelp": "How long each model call took, as this app timed it: half of the calls took less than p50, nine in ten less than p90. Calls made before the timing was recorded are not counted.",
+      "noProblems": "No warnings or errors in this period.",
+      "problems": "Warnings and errors",
+      "problemsHelp": "Lines of the execution log at warning or error level, by stage and, for a tool, by tool. Open a row to see those lines on the Logs page with the same filters.",
+      "title": "Health",
+      "warn": "Warning"
+    },
     "inbox": "Inbox #{{id}}",
+    "knowledge": {
+      "approved": "Approved",
+      "discarded": "Discarded by the reviewer",
+      "help": "Entries the agents proposed for their knowledge bases in the period, and where each stands now: waiting for a person, set aside by the reviewer model, approved or rejected.",
+      "proposed": "Proposed",
+      "rejected": "Rejected",
+      "title": "Knowledge suggestions",
+      "waiting": "Waiting for review"
+    },
     "kpi": {
+      "automation": "Automation",
+      "automationHelp": "Involvement × Resolution: the share of all conversations in the period that the agent took and closed itself.",
+      "automationHint": "resolved by the agent, of every conversation",
       "firstResponse": "First response",
       "firstResponseHelp": "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
-      "firstResponseHint": "median over {{sampled}} answered conversations",
+      "firstResponseHint2": "median and 90th percentile over {{sampled}} answered conversations",
       "firstResponseNone": "no data for this period yet",
+      "firstResponsePair": "{{p50}} · p90 {{p90}}",
       "handoff": "Handoffs",
       "handoffHint": "{{handoff}} escalated to a human",
       "involvement": "Involvement",
@@ -809,21 +913,56 @@
       "total": "Conversations",
       "totalHint": "in the period"
     },
+    "labels": {
+      "help": "The conversations of the period grouped by their Chatwoot labels, as the last event from Chatwoot stated them. A conversation with two labels counts in both rows. Labels are recorded from the moment this version is running, so older conversations appear here after their next event.",
+      "none": "No labelled conversations in this period.",
+      "title": "Outcome by label",
+      "unlabeled_one": "{{n}} conversation with no label",
+      "unlabeled_other": "{{n}} conversations with no label"
+    },
     "loading": "Loading metrics…",
-    "metric": {
-      "calls": "Requests",
-      "cost": "Cost"
+    "nav": {
+      "automation": "Follow-ups and knowledge",
+      "breakdown": "Where the usage goes",
+      "cost": "Cost",
+      "health": "Health",
+      "performance": "Performance",
+      "reasons": "Handoffs and topics"
     },
     "noAgent": "Unattributed",
     "noData": "No data yet.",
+    "node": {
+      "agent": "Agent reply",
+      "guardrail": "Guardrail",
+      "memoryCompact": "Memory compaction",
+      "nudge": "Follow-up",
+      "observer": "Observer",
+      "suggestionReview": "Knowledge suggestion review",
+      "ttsNormalize": "Voice text preparation",
+      "vision": "Image reading"
+    },
     "openInLangfuse": "Open in Langfuse",
     "percent": "%",
+    "previous": "previous: {{value}}",
+    "previousPeriod": "previous period",
     "range": {
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",
       "all": "All",
-      "label": "Period"
+      "custom": "Dates",
+      "from": "From",
+      "label": "Period",
+      "to": "To"
+    },
+    "reasons": {
+      "title": "Why it hands over, and what people ask"
+    },
+    "silence": {
+      "acknowledged": "Nothing to answer",
+      "needsHuman": "Needs a person",
+      "notForUs": "Not for this team",
+      "unrecorded": "Reason not recorded"
     },
     "source": {
       "all": "All",
@@ -831,20 +970,24 @@
       "label": "Usage segment",
       "playground": "Playground"
     },
-    "subtitle": "Automation funnel, LLM cost and conversation volume.",
-    "timeseries": "Daily usage",
+    "subtitle2": "How the agents are doing, what they cost and where it goes.",
     "title": "Dashboard",
     "tokens": "Tokens (in / out)",
-    "tokensCachedHint": "{{cached}} cached · {{written}} cache-write",
-    "tokensHint": "prompt / completion",
     "totalCost": "LLM cost",
+    "trend": {
+      "breakdown": "Split by",
+      "byAgent": "By agent",
+      "byInbox": "By inbox",
+      "help": "One point per day of the conversations that started that day, so a one-day period shows the same rate on the tile and on the line. Click a point to open those conversations. A day with no conversations has no rate and is left blank.",
+      "metric": "Rate",
+      "ofConversations_one": "{{n}} conversation",
+      "ofConversations_other": "{{n}} conversations",
+      "perSeries": "{{metric}} in the period",
+      "title": "Funnel over time"
+    },
     "unpriced_one": "{{n}} request in this period has no price and is not in the cost: {{models}}. Set this account's own price for the model in Advanced > Model prices, then re-price the calls already made.",
     "unpriced_other": "{{n}} requests in this period have no price and are not in the cost: {{models}}. Set this account's own price for the model in Advanced > Model prices, then re-price the calls already made.",
-    "unpricedCta": "Open model prices",
-    "usageByAgent": "Usage by agent",
-    "usageByInbox": "Usage by inbox",
-    "usageByModel": "Usage by model",
-    "usageTitle": "LLM usage"
+    "unpricedCta": "Open model prices"
   },
   "documents": {
     "add": "New template",
@@ -2165,6 +2308,9 @@
     "openConversation": "Open conversation",
     "page": "Page {{n}}",
     "scopedConversation": "Conversation #{{id}}",
+    "scopedFromDashboard": "From the dashboard",
+    "scopedFromDashboardTool": "From the dashboard: {{tool}}",
+    "scopedRange": "{{from}} to {{to}}",
     "search": "Search",
     "searchPlaceholder": "Search error messages…",
     "source": {

@@ -6,8 +6,9 @@ import {
   MessagesSquare,
   Search,
   User,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import {
@@ -180,6 +181,15 @@ export function ConversationsPage() {
   // survives a reload. Empty means every agent.
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = searchParams.get("agentId") ?? "";
+  // A dashboard figure's conversations (its window of creation, inbox and outcome), when the list
+  // was opened from one. The agent filter above then reads as the dashboard's.
+  const createdSince = searchParams.get("createdSince") ?? "";
+  const createdUntil = searchParams.get("createdUntil") ?? "";
+  const inboxId = searchParams.get("inboxId") ?? "";
+  const outcome = searchParams.get("outcome") ?? "";
+  const fromDashboard = Boolean(
+    createdSince || createdUntil || inboxId || outcome,
+  );
   const setAgentId = useCallback(
     (next: string) =>
       setSearchParams(
@@ -213,12 +223,32 @@ export function ConversationsPage() {
     return () => clearTimeout(id);
   }, [search]);
 
+  const drillQuery = useMemo(
+    () => ({
+      ...(createdSince ? { createdSince } : {}),
+      ...(createdUntil ? { createdUntil } : {}),
+      ...(inboxId ? { inboxId } : {}),
+      ...(outcome ? { outcome } : {}),
+    }),
+    [createdSince, createdUntil, inboxId, outcome],
+  );
+  const outcomeLabel: Record<string, string> = {
+    all: t("conversations.drill.all", "every conversation"),
+    involved: t("conversations.drill.involved", "handled by the agent"),
+    resolved_by_agent: t(
+      "conversations.drill.resolved",
+      "resolved by the agent",
+    ),
+    handoff: t("conversations.drill.handoff", "handed over to a person"),
+  };
+
   const fetchConversations = useCallback(async () => {
     const { data, error: err } = await api.api.v1.conversations.get({
       query: {
         ...(status ? { status } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
         ...(agentId ? { agentId } : {}),
+        ...drillQuery,
       },
     });
     if (err || !data) {
@@ -228,7 +258,7 @@ export function ConversationsPage() {
     setError(false);
     setConversations(data.conversations);
     setNextCursor(data.nextCursor);
-  }, [status, debouncedSearch, agentId]);
+  }, [status, debouncedSearch, agentId, drillQuery]);
 
   // Append the next page (older conversations), de-duping by id since a live re-sort may have
   // pulled a row into an earlier page meanwhile.
@@ -241,6 +271,7 @@ export function ConversationsPage() {
           ...(status ? { status } : {}),
           ...(debouncedSearch ? { q: debouncedSearch } : {}),
           ...(agentId ? { agentId } : {}),
+          ...drillQuery,
           cursor: nextCursor,
         },
       });
@@ -253,7 +284,7 @@ export function ConversationsPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nextCursor, status, debouncedSearch, agentId]);
+  }, [nextCursor, status, debouncedSearch, agentId, drillQuery]);
 
   useEffect(() => {
     let active = true;
@@ -404,6 +435,54 @@ export function ConversationsPage() {
             </option>
           )}
         </Select>
+      )}
+
+      {fromDashboard && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg-tertiary px-2.5 py-1 text-text-secondary text-xs">
+            {t("conversations.drill.label", "From the dashboard: {{outcome}}", {
+              outcome: outcomeLabel[outcome || "all"] ?? outcome,
+            })}
+            {createdSince && createdUntil
+              ? ` · ${t(
+                  "conversations.drill.range",
+                  "started {{from}} to {{to}}",
+                  {
+                    from: new Date(createdSince).toLocaleDateString(),
+                    to: new Date(
+                      new Date(createdUntil).getTime() - 1,
+                    ).toLocaleDateString(),
+                  },
+                )}`
+              : ""}
+            <button
+              type="button"
+              onClick={() =>
+                setSearchParams(
+                  (prev) => {
+                    const next = new URLSearchParams(prev);
+                    for (const k of [
+                      "createdSince",
+                      "createdUntil",
+                      "inboxId",
+                      "outcome",
+                    ])
+                      next.delete(k);
+                    return next;
+                  },
+                  { replace: true },
+                )
+              }
+              aria-label={t(
+                "conversations.drill.clear",
+                "Clear the dashboard filter",
+              )}
+              className="text-text-muted hover:text-text-primary"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </span>
+        </div>
       )}
 
       <FilterPills

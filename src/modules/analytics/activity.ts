@@ -1,0 +1,284 @@
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import basePrisma from "@/api/lib/prisma";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  agentRanSql,
+  cohortWhereSql,
+  type DashboardFilter,
+  localDaySql,
+  logWhereSql,
+  outcomeSql,
+} from "./filter";
+import { normalizeTimeZone } from "./service";
+
+// WHAT THE AGENT DOES BESIDES ANSWERING, read from the flow log, the conversation mirror and the
+// knowledge queue: why conversations leave it, what they are about, the follow-ups it sends and the
+// knowledge it proposes. Each figure names its source in docs/dashboard.md.
+
+// Why a conversation left the agent, one category per writer of that event. The model's own reason
+// for `handoff_to_human` is free text and never repeats, so it is not a category; the categories are
+// who decided, and for `skip_reply` the closed reason the model picked.
+export const HANDOFF_CAUSES = [
+  // The agent called handoff_to_human.
+  "agent",
+  // The agent stayed silent with skip_reply and the conversation was opened for a person: the reason
+  // the model gave (needs_human, not_for_us) or a turn that ended with nothing said (unanswered).
+  "skip_needs_human",
+  "skip_not_for_us",
+  "skip_unanswered",
+  // A guardrail stopped the reply and handed the conversation over.
+  "guardrail",
+  // A person replied or took the conversation in Chatwoot.
+  "person",
+] as const;
+export type HandoffCause = (typeof HANDOFF_CAUSES)[number];
+
+export interface HandoffReasons {
+  // Conversations per cause per local day. One conversation counts once per cause and day.
+  days: { date: string; cause: HandoffCause; conversations: number }[];
+  totals: { cause: HandoffCause; conversations: number }[];
+  // skip_reply calls per reason, the silences whether or not they handed anything over. "unrecorded"
+  // is a line written before the reason was logged.
+  silences: { reason: string; turns: number }[];
+}
+
+const CAUSE_SQL = Prisma.sql`(CASE
+  WHEN l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human' AND l.status = 'ok' THEN 'agent'
+  WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'opened_after_skip'
+    THEN 'skip_' || COALESCE(l.detail->>'reason', 'unanswered')
+  WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'guardrail_handoff' THEN 'guardrail'
+  WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'taken_over' THEN 'person'
+  END)`;
+
+export async function getHandoffReasons(
+  ctx: TenantContext,
+  filter: DashboardFilter,
+  base: PrismaClient = basePrisma,
+): Promise<HandoffReasons> {
+  const tz = normalizeTimeZone(filter.tz);
+  return runScopedOn(base, ctx, async (db) => {
+    const rows = await db.$queryRaw<
+      { date: string; cause: string; conversations: number }[]
+    >(Prisma.sql`
+      SELECT date, cause, COUNT(DISTINCT conversation_id)::int AS conversations
+        FROM (SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+                     ${CAUSE_SQL} AS cause,
+                     l.conversation_id
+                FROM execution_logs l
+               WHERE ${logWhereSql("l", filter)}
+                 AND l.conversation_id IS NOT NULL
+                 AND l.stage IN ('tool', 'handoff')) x
+       WHERE cause IS NOT NULL
+       GROUP BY 1, 2
+       ORDER BY 1, 2`);
+    const [totalsRows, silences] = [
+      await db.$queryRaw<{ cause: string; conversations: number }[]>(
+        Prisma.sql`
+        SELECT cause, COUNT(DISTINCT conversation_id)::int AS conversations
+          FROM (SELECT ${CAUSE_SQL} AS cause, l.conversation_id
+                  FROM execution_logs l
+                 WHERE ${logWhereSql("l", filter)}
+                   AND l.conversation_id IS NOT NULL
+                   AND l.stage IN ('tool', 'handoff')) x
+         WHERE cause IS NOT NULL
+         GROUP BY 1`,
+      ),
+      await db.$queryRaw<{ reason: string; turns: number }[]>(Prisma.sql`
+        SELECT COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason,
+               COUNT(*)::int AS turns
+          FROM execution_logs l
+         WHERE ${logWhereSql("l", filter)}
+           AND l.stage = 'tool'
+           AND l.detail->>'tool' = 'skip_reply'
+         GROUP BY 1
+         ORDER BY 2 DESC`),
+    ];
+    const known = (c: string): c is HandoffCause =>
+      (HANDOFF_CAUSES as readonly string[]).includes(c);
+    return {
+      days: rows
+        .filter((r) => known(r.cause))
+        .map((r) => ({
+          date: r.date,
+          cause: r.cause as HandoffCause,
+          conversations: Number(r.conversations),
+        })),
+      totals: totalsRows
+        .filter((r) => known(r.cause))
+        .map((r) => ({
+          cause: r.cause as HandoffCause,
+          conversations: Number(r.conversations),
+        }))
+        .sort((a, b) => b.conversations - a.conversations),
+      silences: silences.map((s) => ({
+        reason: s.reason,
+        turns: Number(s.turns),
+      })),
+    };
+  });
+}
+
+export interface LabelOutcome {
+  label: string;
+  conversations: number;
+  involved: number;
+  resolvedByBot: number;
+  handoff: number;
+  // Of the involved: resolved by the agent. Null when the agent ran on none of them.
+  resolutionRate: number | null;
+}
+
+export interface LabelOutcomes {
+  labels: LabelOutcome[];
+  // Conversations of the view with no label recorded. They count in no row above.
+  unlabeled: number;
+}
+
+// Volume and outcome per conversation label, over the view's conversations. A conversation with two
+// labels counts in both rows, so the rows do not add up to the total, and the page says so.
+export async function getLabelOutcomes(
+  ctx: TenantContext,
+  filter: DashboardFilter,
+  base: PrismaClient = basePrisma,
+): Promise<LabelOutcomes> {
+  return runScopedOn(base, ctx, async (db) => {
+    const ran = agentRanSql("c", filter.agentId);
+    const outcome = outcomeSql("c");
+    const rows = await db.$queryRaw<
+      {
+        label: string;
+        total: number;
+        involved: number;
+        resolved: number;
+        handoff: number;
+      }[]
+    >(Prisma.sql`
+      SELECT lb.label,
+             COUNT(DISTINCT c.id)::int AS total,
+             COUNT(DISTINCT c.id) FILTER (WHERE ${ran})::int AS involved,
+             COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'resolved_by_agent')::int AS resolved,
+             COUNT(DISTINCT c.id) FILTER (WHERE ${ran} AND ${outcome} = 'handoff')::int AS handoff
+        FROM conversations c
+        CROSS JOIN LATERAL unnest(c.labels) AS lb(label)
+       WHERE ${cohortWhereSql("c", filter)}
+       GROUP BY 1
+       ORDER BY 2 DESC, 1`);
+    const [unlabeled] = await db.$queryRaw<{ n: number }[]>(Prisma.sql`
+      SELECT COUNT(*)::int AS n FROM conversations c
+       WHERE ${cohortWhereSql("c", filter)} AND cardinality(c.labels) = 0`);
+    return {
+      labels: rows.map((r) => {
+        const involved = Number(r.involved);
+        const resolvedByBot = Number(r.resolved);
+        return {
+          label: r.label,
+          conversations: Number(r.total),
+          involved,
+          resolvedByBot,
+          handoff: Number(r.handoff),
+          resolutionRate: involved > 0 ? resolvedByBot / involved : null,
+        };
+      }),
+      unlabeled: Number(unlabeled?.n ?? 0),
+    };
+  });
+}
+
+export interface FollowUpActivity {
+  // Follow-up steps that reached the customer (a message or a template) in the window.
+  stepsSent: number;
+  // Conversations that received at least one of those steps.
+  conversations: number;
+  // Of those, the ones whose customer wrote again after a step reached them.
+  cameBack: number;
+  // Of those, the ones the last step closed (resolved by the follow-up's abandonment close).
+  closedByLastStep: number;
+}
+
+// The follow-up's own outcome line (`markFollowUp`, stage generate, trigger followup) is the source:
+// one line per step, with the outcome that says whether the customer received it.
+export async function getFollowUpActivity(
+  ctx: TenantContext,
+  filter: DashboardFilter,
+  base: PrismaClient = basePrisma,
+): Promise<FollowUpActivity> {
+  return runScopedOn(base, ctx, async (db) => {
+    const [row] = await db.$queryRaw<
+      {
+        steps: number;
+        conversations: number;
+        came_back: number;
+        closed: number;
+      }[]
+    >(Prisma.sql`
+      WITH steps AS (
+        SELECT l.conversation_id, l.created_at
+          FROM execution_logs l
+         WHERE ${logWhereSql("l", filter)}
+           AND l.stage = 'generate'
+           AND l.detail->>'trigger' = 'followup'
+           AND l.detail->>'outcome' IN ('messaged', 'templated')
+           AND l.conversation_id IS NOT NULL
+      ), firsts AS (
+        SELECT conversation_id, MIN(created_at) AS first_at FROM steps GROUP BY 1
+      )
+      SELECT (SELECT COUNT(*) FROM steps)::int AS steps,
+             COUNT(*)::int AS conversations,
+             COUNT(*) FILTER (WHERE c.last_inbound_at > f.first_at)::int AS came_back,
+             COUNT(*) FILTER (WHERE c.status = 'resolved' AND c.resolved_by = 'followup_abandonment')::int AS closed
+        FROM firsts f
+        JOIN conversations c ON c.id = f.conversation_id`);
+    return {
+      stepsSent: Number(row?.steps ?? 0),
+      conversations: Number(row?.conversations ?? 0),
+      cameBack: Number(row?.came_back ?? 0),
+      closedByLastStep: Number(row?.closed ?? 0),
+    };
+  });
+}
+
+export interface KnowledgeActivity {
+  // Suggestions the agents proposed in the window, and where each stands now.
+  proposed: number;
+  // Waiting for a person (pending, edited, or still being screened by the reviewer model).
+  waiting: number;
+  // Set aside by the reviewer model as a duplicate or not worth a person's time.
+  discarded: number;
+  approved: number;
+  rejected: number;
+}
+
+export async function getKnowledgeActivity(
+  ctx: TenantContext,
+  filter: DashboardFilter,
+  base: PrismaClient = basePrisma,
+): Promise<KnowledgeActivity> {
+  return runScopedOn(base, ctx, async (db) => {
+    const groups = await db.approvalQueueItem.groupBy({
+      by: ["status"],
+      where: {
+        ...(filter.since || filter.until
+          ? {
+              createdAt: {
+                ...(filter.since ? { gte: filter.since } : {}),
+                ...(filter.until ? { lt: filter.until } : {}),
+              },
+            }
+          : {}),
+        ...(filter.agentId !== undefined ? { agentId: filter.agentId } : {}),
+      },
+      _count: { _all: true },
+    });
+    const n = (...statuses: string[]) =>
+      groups
+        .filter((g) => statuses.includes(g.status))
+        .reduce((sum, g) => sum + g._count._all, 0);
+    return {
+      proposed: groups.reduce((sum, g) => sum + g._count._all, 0),
+      waiting: n("PENDING", "EDITED", "SCREENING"),
+      discarded: n("DISCARDED"),
+      approved: n("APPROVED"),
+      rejected: n("REJECTED"),
+    };
+  });
+}

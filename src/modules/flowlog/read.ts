@@ -33,8 +33,11 @@ export interface ListLogsOpts {
   level?: string;
   stage?: string;
   agentId?: bigint;
+  inboxId?: bigint;
   conversationId?: bigint;
   turnId?: string;
+  // A tool line's `detail.tool`, which is how the dashboard's health block opens one tool's failures.
+  tool?: string;
   // undefined → "inbox" (real traffic); "all" → no source filter; else exact match.
   source?: string;
   // Case-insensitive substring match on errorMessage.
@@ -88,6 +91,8 @@ export function buildLogWhere(
     ...(opts.level ? { level: opts.level } : {}),
     ...(opts.stage ? { stage: opts.stage } : {}),
     ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
+    ...(opts.inboxId !== undefined ? { inboxId: opts.inboxId } : {}),
+    ...(opts.tool ? { detail: { path: ["tool"], equals: opts.tool } } : {}),
     ...(opts.conversationId !== undefined
       ? { conversationId: opts.conversationId }
       : {}),

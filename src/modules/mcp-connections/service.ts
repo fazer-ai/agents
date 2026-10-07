@@ -658,7 +658,10 @@ function discoveryError(err: unknown): AppError {
       { seconds },
     );
   }
-  const status = httpErrorCode(err);
+  // Only an HTTP error status counts; a JSON-RPC error carries a negative protocol code
+  // (-32601) in the same field, and that is a malformed exchange, not an HTTP answer.
+  const code = httpErrorCode(err);
+  const status = code !== null && code >= 400 && code < 600 ? code : null;
   if (status === 401 || status === 403) {
     return new AppError(
       `the MCP server refused the credential (HTTP ${status})`,

@@ -343,6 +343,11 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     expect(discoveryError(new Error("not MCP")).translationKey).toBe(
       "errors.mcpDiscoveryFailed",
     );
+    expect(
+      discoveryError(
+        Object.assign(new Error("Method not found"), { code: -32601 }),
+      ).translationKey,
+    ).toBe("errors.mcpDiscoveryFailed");
   });
 
   // A schema that declares draft-07 is validated by the SDK's draft-07 engine, so its tuple stays as

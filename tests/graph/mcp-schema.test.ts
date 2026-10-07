@@ -281,6 +281,17 @@ describe("declarationSchema", () => {
     expect(
       await accepts(
         {
+          type: "object",
+          properties: {
+            pick: { enum: [{ $ref: "https://example.com/schema.json" }] },
+          },
+        },
+        { pick: { $ref: "https://example.com/schema.json" } },
+      ),
+    ).toBe("ok");
+    expect(
+      await accepts(
+        {
           anyOf: [
             {
               type: "object",
@@ -309,6 +320,31 @@ describe("declarationSchema", () => {
         { v: "plain" },
       ),
     ).toBe("ok");
+  });
+
+  test("instance data is copied as is, while a property named like a keyword is still a schema", () => {
+    expect(
+      declarationSchema({
+        type: "object",
+        properties: {
+          pick: {
+            enum: [{ $ref: "#/$defs/word" }],
+            default: { $ref: "#/$defs/word" },
+          },
+          enum: { $ref: "#/$defs/word" },
+        },
+        $defs: { word: { type: "string" } },
+      }),
+    ).toEqual({
+      type: "object",
+      properties: {
+        pick: {
+          enum: [{ $ref: "#/$defs/word" }],
+          default: { $ref: "#/$defs/word" },
+        },
+        enum: { type: "string" },
+      },
+    });
   });
 
   test("the server's schema is not mutated", () => {

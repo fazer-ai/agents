@@ -21,6 +21,17 @@ function isSchema(v: unknown): v is Schema {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+// Keywords whose value is instance data, not a schema: copied as is, a `{"$ref": ...}` literal in an
+// `enum` included.
+const INSTANCE_KEYWORDS = new Set(["enum", "const", "default", "examples"]);
+// Keywords whose value maps names to schemas: every value is a schema, whatever the name (a
+// property called `enum` or `$ref` included).
+const SCHEMA_MAPS = new Set([
+  "properties",
+  "patternProperties",
+  "dependentSchemas",
+]);
+
 function inlineRefs(schema: Schema, walk: Walk): unknown {
   const defs = {
     ...(isSchema(schema.definitions) ? schema.definitions : {}),
@@ -49,7 +60,12 @@ function inlineRefs(schema: Schema, walk: Walk): unknown {
     const out: Schema = {};
     for (const [key, value] of Object.entries(node)) {
       if (key === "$defs" || key === "definitions") continue;
-      out[key] = visit(value, seen);
+      if (INSTANCE_KEYWORDS.has(key)) out[key] = value;
+      else if (SCHEMA_MAPS.has(key) && isSchema(value))
+        out[key] = Object.fromEntries(
+          Object.entries(value).map(([name, v]) => [name, visit(v, seen)]),
+        );
+      else out[key] = visit(value, seen);
     }
     return out;
   };

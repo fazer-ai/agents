@@ -4,7 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
-import { alertErrMsg, sendAlert } from "./alert-send";
+import { alertErrMsg, loadAlertContext, sendAlert } from "./alert-send";
 import { emitDeadLetter } from "./dead-letter";
 
 // Alert delivery worker (claim + deliver), mirroring the outbound-webhook worker: a single-replica
@@ -56,6 +56,7 @@ interface ClaimedAlert {
   turnId: string | null;
   conversationId: bigint | null;
   causeKey: string | null;
+  createdAt: Date;
   attempts: number;
   type: string;
   url: string;
@@ -155,6 +156,7 @@ async function claimDue(
         a.turn_id         AS "turnId",
         a.conversation_id AS "conversationId",
         a.cause_key       AS "causeKey",
+        a.created_at      AS "createdAt",
         a.attempts,
         picked.type,
         picked.url,
@@ -260,10 +262,19 @@ async function deliverClaimed(
   opts: AlertWorkerOptions,
 ): Promise<Outcome> {
   const now = opts.now ?? (() => Date.now());
+  // The names an operator reads the alert by; an unreadable context sends the alert without them.
+  const context = await loadAlertContext(base, {
+    tenantId: a.tenantId,
+    conversationId: a.conversationId,
+    firstAt: a.createdAt,
+  }).catch((err) => {
+    logger.warn({ err, alertId: String(a.id) }, "alert context unreadable");
+    return null;
+  });
   const res = await sendAlert(
     base,
     sysCtx(a.tenantId),
-    { ...a, deliveryId: String(a.id) },
+    { ...a, deliveryId: String(a.id), context },
     {
       fetchImpl: opts.fetchImpl,
       assertSafe: opts.assertSafe,

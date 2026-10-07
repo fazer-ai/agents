@@ -117,7 +117,16 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     refusing = await start({ MCP_HTTP_REFUSES: "1" });
   });
 
-  afterAll(() => {
+  // NOTE: the turn paths leave their clients in the process-wide cache; one left open over SSE
+  // reconnects through the global fetch once its fixture dies, which is the next file's fake.
+  afterAll(async () => {
+    const cache = (g as Record<symbol, unknown>)[
+      Symbol.for("fazerai.mcp.clients")
+    ] as Map<string, { close: () => Promise<void> }> | undefined;
+    await Promise.all(
+      [...(cache?.values() ?? [])].map((c) => c.close().catch(() => {})),
+    );
+    cache?.clear();
     config.ssrf.allowPrivateTargets = privateBefore;
     for (const k of NATIVE) g[k] = domGlobals[k];
     for (const f of fixtures) f.proc.kill();

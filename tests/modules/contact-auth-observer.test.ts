@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -1070,6 +1071,56 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
         base: appDb,
       }),
     ).toBe("off");
+  });
+
+  // A denial asked in the same millisecond as an allow wins the tie, as the durable marks do.
+  test("a denial asked in the same millisecond as an allow still fences the tick", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(47, "individual");
+    setSystemTime(new Date(Date.now() + 60_000));
+    try {
+      await deliverMessage(47, "individual");
+      authAnswer = "deny";
+      let asked = false;
+      const askingFetch = (async (url: unknown, init?: unknown) => {
+        asked = true;
+        return (authFetch as (u: unknown, i?: unknown) => Promise<Response>)(
+          url,
+          init,
+        );
+      }) as unknown as typeof fetch;
+      const downAfterAsk = new Proxy(appDb, {
+        get(target, prop, receiver) {
+          if (prop === "$extends" && asked) {
+            return () => ({
+              $transaction: () =>
+                Promise.reject(new Error("database unreachable")),
+            });
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      }) as PrismaClient;
+      const ruleParams = {
+        tenantId,
+        instanceId,
+        conversationId: 47,
+        agentId: observerId,
+        settings,
+        base: appDb,
+      };
+      await observerArmPermit({
+        ...ruleParams,
+        base: downAfterAsk,
+        fetchImpl: askingFetch,
+        sleep: async () => {},
+      });
+      expect(await observerRuleVerdict(ruleParams, { emit: false })).toBe(
+        "refused",
+      );
+    } finally {
+      setSystemTime();
+    }
   });
 
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the

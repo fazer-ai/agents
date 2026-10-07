@@ -175,13 +175,14 @@ export function observerRuleVerdict(
 export async function observerArmPermit(
   p: ObserverRuleParams,
 ): Promise<{ askedAt: number } | null> {
-  // The ask's time, or the earlier start of an endpoint question this call joined.
+  // When the endpoint question was asked, the same for every caller of one flight; this call's own
+  // time only for a verdict no endpoint question stands behind.
   let askedAt = Date.now();
   const verdict = await observerGateVerdict(p, {
     emit: true,
     stage: "both",
     onAskedAt: (t) => {
-      askedAt = Math.min(askedAt, t);
+      askedAt = t;
     },
   });
   if (verdict === "allowed") {
@@ -217,7 +218,8 @@ async function retireWithRetries(
   // the refusal. Ordered by when the verdicts were asked, not when their bookkeeping ends: an allow
   // asked after this refusal already answered for the conversation.
   const key = refusalKey(p);
-  if ((recentAllows.get(key) ?? 0) < askedAt) {
+  // A refusal wins a tie, as the durable marks make it win (`armObserve`, `retireRefusedObserve`).
+  if ((recentAllows.get(key) ?? 0) <= askedAt) {
     unretiredRefusals.set(
       key,
       Math.max(unretiredRefusals.get(key) ?? 0, askedAt),

@@ -61,7 +61,7 @@ export function footerReserve(style: DocumentStyle): number {
 }
 
 // The header prints the document's title, number and meta values, which are identifiers as often as
-// words. A word that fits a full line is never given a break point, because the line breaker would
+// words, and labels print in spaced capitals wider than what was typed. A word that fits a full line is never given a break point, because the line breaker would
 // use one (and draw a hyphen) to fill a line rather than move the word down. A word wider than any
 // line gets one every few characters, since the renderer drops whatever a line cannot hold. The width
 // is measured by the same engine, in the same built-in font, the page is drawn with.
@@ -78,12 +78,21 @@ const BOLD_FONT: Record<DocumentStyle["font"], string> = {
 
 const measurer = new PDFDocument({ autoFirstPage: false });
 
-function headerBreaks(font: string, fontSize: number, lineWidth: number) {
+function headerBreaks(
+  font: string,
+  fontSize: number,
+  lineWidth: number,
+  letterSpacing = 0,
+) {
   return (word: string) =>
-    measurer.font(font).fontSize(fontSize).widthOfString(word) <= lineWidth
+    measurer.font(font).fontSize(fontSize).widthOfString(word) +
+      letterSpacing * [...word].length <=
+    lineWidth
       ? [word]
       : (word.match(/.{1,12}/gsu) ?? [word]);
 }
+
+const LABEL_SPACING = 0.4;
 
 const SPACE_AFTER: Record<"none" | "sm" | "md" | "lg", number> = {
   none: 0,
@@ -191,7 +200,7 @@ function styles(style: DocumentStyle) {
     metaLabel: {
       fontSize: size - 2,
       color: "#6b7280",
-      letterSpacing: 0.4,
+      letterSpacing: LABEL_SPACING,
     },
     metaValue: { fontSize: size - 1, fontWeight: 700 },
     heading: {
@@ -206,7 +215,7 @@ function styles(style: DocumentStyle) {
     pairLabel: {
       fontSize: size - 2,
       color: "#6b7280",
-      letterSpacing: 0.4,
+      letterSpacing: LABEL_SPACING,
     },
     tableHead: {
       flexDirection: "row",
@@ -409,7 +418,15 @@ function renderBlock(
             <View style={sheet.metaGrid}>
               {block.meta.map((row) => (
                 <View key={row.label} style={sheet.metaCell}>
-                  <Text style={sheet.metaLabel}>
+                  <Text
+                    style={sheet.metaLabel}
+                    hyphenationCallback={headerBreaks(
+                      FONT_FAMILY[style.font],
+                      size - 2,
+                      line - 12,
+                      LABEL_SPACING,
+                    )}
+                  >
                     {printableUpperCase(text(row.label))}
                   </Text>
                   <Text
@@ -473,6 +490,8 @@ function renderBlock(
 
     case "fields": {
       const columns = block.columns ?? 1;
+      const cellWidth =
+        (PAGE_WIDTH[style.pageSize] - 2 * MARGIN[style.margin]) / columns - 12;
       return (
         <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
           {block.rows.map((row) => (
@@ -480,7 +499,15 @@ function renderBlock(
               key={row.label}
               style={[sheet.pairRow, { width: `${100 / columns}%` }]}
             >
-              <Text style={sheet.pairLabel}>
+              <Text
+                style={sheet.pairLabel}
+                hyphenationCallback={headerBreaks(
+                  FONT_FAMILY[style.font],
+                  style.baseFontSize - 2,
+                  cellWidth,
+                  LABEL_SPACING,
+                )}
+              >
                 {printableUpperCase(text(row.label))}
               </Text>
               <Text>{text(row.value)}</Text>

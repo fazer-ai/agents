@@ -546,6 +546,86 @@ describe("footerReserve", () => {
     }
   });
 
+  // A label prints in spaced capitals, which are wider than what was typed: one with no space wider
+  // than its cell breaks inside it and keeps every character, in the header and in a fields block.
+  test("a label wider than its cell keeps every character", async () => {
+    // "W" x30 fits a full row but not half of one; the B/C label fits a row only without the spacing.
+    for (const [label, columns] of [
+      ["w".repeat(50), 1],
+      ["w".repeat(50), 2],
+      ["W".repeat(30), 2],
+      ["B".repeat(33) + "C".repeat(27), 1],
+    ] as const) {
+      const parsed = parseTemplateContent(
+        [
+          {
+            id: "header",
+            type: "header",
+            title: "Orçamento",
+            meta: [{ label, value: "1" }],
+          },
+          {
+            id: "specs",
+            type: "fields",
+            columns,
+            rows: [
+              { label, value: "2" },
+              { label: "Outro", value: "3" },
+            ],
+          },
+        ],
+        [],
+        {},
+      );
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const bytes = await renderDocumentPdf({
+        blocks: parsed.content.blocks,
+        fields: [],
+        style: { ...DOCUMENT_STYLE_DEFAULTS, baseFontSize: 14 },
+        values: {},
+        company: COMPANY,
+        meta: META,
+      });
+      const pdf = await getDocumentProxy(new Uint8Array(bytes));
+      const page = await pdf.getPage(1);
+      const items = (await page.getTextContent()).items.filter(
+        (item) => "str" in item && "transform" in item,
+      ) as { str: string; transform: number[]; width: number }[];
+      const [, , right] = page.view as number[];
+      for (const item of items) {
+        expect(
+          `${label}/${columns}:${item.str}:${(item.transform[4] ?? 0) + item.width <= (right ?? 0) - 42 + 0.5}`,
+        ).toBe(`${label}/${columns}:${item.str}:true`);
+      }
+      const boxes = items
+        .filter((item) => item.str.trim() !== "")
+        .map((item) => ({
+          str: item.str,
+          x0: item.transform[4] ?? 0,
+          x1: (item.transform[4] ?? 0) + item.width,
+          y: item.transform[5] ?? 0,
+        }));
+      for (const [i, a] of boxes.entries()) {
+        for (const b of boxes.slice(i + 1)) {
+          const overlap =
+            Math.abs(a.y - b.y) < 1 &&
+            Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > 0.5;
+          expect(`${label}/${columns}:${a.str} / ${b.str}:${overlap}`).toBe(
+            `${label}/${columns}:${a.str} / ${b.str}:false`,
+          );
+        }
+      }
+      const drawn = items
+        .map((item) => item.str)
+        .join("")
+        .replaceAll("-", "");
+      const upper = label.toUpperCase();
+      expect(`${label}/${columns}:${drawn.split(upper).length - 1}`).toBe(
+        `${label}/${columns}:2`,
+      );
+    }
+  });
+
   // Labels print in small capitals, but only a character whose capital the built-in fonts can draw
   // is raised: "µ" stays "µ" rather than becoming a Greek "Μ" the page cannot encode.
   test("a label is raised to capitals only where the capital prints", async () => {

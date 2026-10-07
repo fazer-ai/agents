@@ -5037,6 +5037,193 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       ]);
     });
 
+    // A row stays DEAD while its conversation moves on: a later turn retires only the rows it ran
+    // over, and a re-engage or a person replying retires none. So "unanswered" is asked of the
+    // conversation, live, before it is said: answered or resolved after the message is `superseded`,
+    // at `info`, and pages nobody.
+    describe("a conversation that moved on is not reported unanswered", () => {
+      type After = {
+        id: number;
+        type: 0 | 1 | 2;
+        private?: boolean;
+        sender?: "contact" | "user" | "agent_bot" | null;
+        // A person answering on the phone paired to the inbox: the fork stores the echo sender-less
+        // and names them here.
+        externalSender?: string;
+      };
+      function afterPage(rows: After[]) {
+        return {
+          payload: rows.map((m) => ({
+            id: m.id,
+            content: "texto",
+            message_type: m.type,
+            private: m.private === true,
+            inbox_id: CHATWOOT_INBOX_ID,
+            created_at: SENT_AT,
+            sender:
+              m.sender === null || m.sender === undefined
+                ? null
+                : { id: 41, name: "x", type: m.sender },
+            attachments: [],
+            ...(m.externalSender
+              ? {
+                  content_attributes: {
+                    external_sender_name: m.externalSender,
+                  },
+                }
+              : {}),
+          })),
+        };
+      }
+      // Spent on arrival, so the recovery itself refuses before any network and the only Chatwoot
+      // read is the one this asks about.
+      async function endedRow(convId: number, messageId: number, over = {}) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+          ...over,
+        });
+        return { conv, rowId };
+      }
+      const outcomes = async (convDbId: bigint) =>
+        (await deliveryLines(convDbId)).map((l) => [
+          l.level,
+          (l.detail as Record<string, unknown> | null)?.outcome,
+          (l.detail as Record<string, unknown> | null)?.supersededBy,
+        ]);
+
+      test("a reply after the message, from a bot or a person, supersedes it", async () => {
+        for (const [convId, messageId, reply] of [
+          [28950, 29950, { sender: "agent_bot" }],
+          [28951, 29951, { sender: "user" }],
+          [28962, 29962, { sender: null, externalSender: "Ana" }],
+        ] as const) {
+          const { conv, rowId } = await endedRow(convId, messageId);
+          const stub = stubChatwoot({
+            caughtUp: afterPage([{ id: messageId + 3, type: 1, ...reply }]),
+          });
+          const result = await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(stub),
+          );
+          expect(result.outcome).toBe("done");
+          expect(await outcomes(conv.id)).toEqual([
+            ["info", "superseded", "answered"],
+          ]);
+        }
+      });
+
+      test("a resolved conversation supersedes it, with the customer's message last", async () => {
+        const { conv, rowId } = await endedRow(28952, 29952);
+        const stub = stubChatwoot({
+          conv: { status: "resolved" },
+          caughtUp: afterPage([]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "resolved"],
+        ]);
+      });
+
+      // What does NOT answer: a note, an activity, and Chatwoot's own sender-less outgoing (an away
+      // message, an automation, a survey). The customer is still waiting, and the page stays.
+      test("a note, an activity or a sender-less outgoing after it leaves it unanswered", async () => {
+        const { conv, rowId } = await endedRow(28953, 29953);
+        const stub = stubChatwoot({
+          caughtUp: afterPage([
+            { id: 29954, type: 1, private: true, sender: "user" },
+            { id: 29955, type: 2 },
+            { id: 29956, type: 1, sender: null },
+          ]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+        expect(await ledger(rowId)).toMatchObject({ status: "DEAD" });
+      });
+
+      test("an observer's lost memory on a conversation that moved on is superseded too", async () => {
+        const { conv, rowId } = await endedRow(28957, 29957, {
+          routeObserved: true,
+        });
+        const stub = stubChatwoot({
+          caughtUp: afterPage([{ id: 29958, type: 1, sender: "agent_bot" }]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+      });
+
+      // A reply from BEFORE the message answered something else. A read that ignored `after` and
+      // handed back the newest page would carry it, and it must not count.
+      test("a reply older than the message does not supersede it", async () => {
+        const { conv, rowId } = await endedRow(28963, 29963);
+        const stub = stubChatwoot({
+          caughtUp: afterPage([
+            { id: 29900, type: 1, sender: "agent_bot" },
+            { id: 29963, type: 0, sender: "contact" },
+          ]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // An account it cannot read decides nothing, so the line is the one it always was.
+      test("a conversation it cannot read is still reported unanswered", async () => {
+        const { conv, rowId } = await endedRow(28959, 29959);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stubChatwoot({ throwOnRead: true })),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // Once per row across the outcomes: a re-run, and the dead-letter hook (which builds its own
+      // client and here cannot read the account), find the row decided and add nothing.
+      test("a superseded row stays decided through a re-run and its dead letter", async () => {
+        const { conv, rowId } = await endedRow(28960, 29960);
+        const stub = stubChatwoot({
+          caughtUp: afterPage([{ id: 29961, type: 1, sender: "agent_bot" }]),
+        });
+        for (let run = 0; run < 2; run++)
+          await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(stub),
+          );
+        await announceUnanswered(tenantId, rowId, appDb);
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+      });
+    });
+
     test("a recovery that is still coming, or a row someone else took, writes no unanswered line", async () => {
       const convId = 18932;
       await seedConversation(convId);

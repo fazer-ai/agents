@@ -1077,6 +1077,7 @@ async function runRecovery(params: {
       );
       await announceUnanswered(params.tenantId, row.id, base, {
         leftProcessed: true,
+        makeClient: params.deps?.makeClient,
       });
     }
     logger.warn(
@@ -1267,7 +1268,9 @@ export async function runRecoveryJob(
     (outcome !== "deferred" && outcome !== "unreachable") ||
     (await schedulerGaveUp(job, base))
   ) {
-    await announceUnanswered(job.tenantId, deliveryRowId, base);
+    await announceUnanswered(job.tenantId, deliveryRowId, base, {
+      makeClient: deps?.makeClient,
+    });
   }
   // NOTE: the two retrying outcomes take DIFFERENT roads. BUSY reschedules, which CLEARS the failure
   // budget: a turn is deliberately unbounded (the sweep waits thirty minutes) while this kind's
@@ -1325,11 +1328,95 @@ function owesAReply(row: {
   );
 }
 
+// Whether the conversation itself has moved past the stranded message, read live, because the row
+// cannot say: a later turn retires only the rows it ran over, and one that was still PENDING then,
+// or whose message reached the conversation by another road (an operator's re-engage, a person
+// replying), stays DEAD while the customer was answered long ago. Two answers that close it: a
+// public outgoing message after the stranded one from a person or a bot (a sender-less outgoing is
+// Chatwoot's own: an away message, an automation, a survey, and answers nothing), or the
+// conversation resolved. Null on anything the read cannot settle, which leaves the line as it was:
+// a page about a customer who was answered is noise, and silence about one who was not is the loss.
+async function supersededLive(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  messageId: number;
+  base: PrismaClient;
+  makeClient?: RuntimeDeps["makeClient"];
+}): Promise<"answered" | "resolved" | null> {
+  try {
+    const client = await loadChatwootClient(
+      params.tenantId,
+      params.instanceId,
+      {
+        base: params.base,
+        ...(params.makeClient ? { makeClient: params.makeClient } : {}),
+      },
+    );
+    const conv = await client.getConversation(params.conversationId);
+    if (isRecord(conv) && conv.status === "resolved") return "resolved";
+    const after = parseChatwootMessages(
+      await client.getMessages(params.conversationId, {
+        after: params.messageId,
+      }),
+    );
+    const replied = after.some(
+      (m) =>
+        m.id > params.messageId &&
+        m.messageType === "outgoing" &&
+        !m.private &&
+        (m.senderType === "user" ||
+          m.senderType === "agent_bot" ||
+          m.externalSenderName !== null),
+    );
+    return replied ? "answered" : null;
+  } catch (err) {
+    logger.warn(
+      "chatwoot recovery: could not read conversation %d to tell an unanswered message from a superseded one: %s",
+      params.conversationId,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+}
+
+// The outcomes that settle a ledger row's story, one of them once per row: a row found superseded is
+// not reported unanswered by a later pass that could not read the conversation, nor the other way
+// round. Keyed on `deliveryRowId`, since Chatwoot's delivery id is unique per instance only.
+const DECIDING_OUTCOMES = ["unanswered", "memory_unrecovered", "superseded"];
+
+async function rowDecided(
+  db: Pick<PrismaClient, "executionLog">,
+  deliveryRowId: bigint,
+): Promise<boolean> {
+  return (
+    (await db.executionLog.findFirst({
+      where: {
+        stage: "delivery",
+        AND: [
+          {
+            OR: DECIDING_OUTCOMES.map((o) => ({
+              detail: { path: ["outcome"], equals: o },
+            })),
+          },
+          {
+            detail: { path: ["deliveryRowId"], equals: String(deliveryRowId) },
+          },
+        ],
+      },
+      select: { id: true },
+    })) !== null
+  );
+}
+
 export async function announceUnanswered(
   tenantId: bigint,
   deliveryRowId: bigint,
   base: PrismaClient,
-  opts: { leftProcessed?: boolean } = {},
+  opts: {
+    leftProcessed?: boolean;
+    makeClient?: RuntimeDeps["makeClient"];
+  } = {},
 ): Promise<void> {
   try {
     const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -1353,7 +1440,34 @@ export async function announceUnanswered(
     // words in the memory, a degraded turn later and not a customer waiting, so it is a `warn` with its
     // own outcome.
     const reply = owesAReply(row);
-    const outcome = reply ? "unanswered" : "memory_unrecovered";
+    // Decided already: a re-run, or the dead-letter hook after the job's own end. Asked here as well
+    // as under the lock below only to spare the Chatwoot read; the lock is what makes it once.
+    if (
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        rowDecided(db, deliveryRowId),
+      )
+    )
+      return;
+    // Asked before the line, of the conversation and not the row (`supersededLive`). Where it
+    // moved on, the line is `info` with `outcome: "superseded"`, which pages nobody: both outcomes
+    // below describe a conversation that is still waiting on this message, and this one is not.
+    const supersededBy =
+      row.conversationId !== null && row.inboundMessageId !== null
+        ? await supersededLive({
+            tenantId,
+            instanceId: row.chatwootInstanceId,
+            conversationId: row.conversationId,
+            messageId: row.inboundMessageId,
+            base,
+            makeClient: opts.makeClient,
+          })
+        : null;
+    const outcome =
+      supersededBy !== null
+        ? "superseded"
+        : reply
+          ? "unanswered"
+          : "memory_unrecovered";
     // An observer's delivery belongs to the observer, named by the bot route the receiver recorded; the
     // inbox names the responder. A route bot no persona carries any more names nobody.
     const observerBotId =
@@ -1403,43 +1517,32 @@ export async function announceUnanswered(
       },
       {
         stage: "delivery",
-        level: reply ? "error" : "warn",
-        status: "error",
+        level: supersededBy !== null ? "info" : reply ? "error" : "warn",
+        status: supersededBy !== null ? "ok" : "error",
         detail: {
           outcome,
+          ...(supersededBy !== null ? { supersededBy } : {}),
           deliveryEvent: row.event,
           deliveryId: row.deliveryId,
           deliveryRowId: String(deliveryRowId),
           messageId: row.inboundMessageId,
           conversationId: row.conversationId,
         },
-        errorMessage: !reply
-          ? "The message never reached the agent's memory: its recovery ended without replaying it. Nobody was owed a reply."
-          : opts.leftProcessed
-            ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
-            : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
+        errorMessage:
+          supersededBy !== null
+            ? undefined
+            : !reply
+              ? "The message never reached the agent's memory: its recovery ended without replaying it. Nobody was owed a reply."
+              : opts.leftProcessed
+                ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
+                : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
       },
       {
         // Once per ledger row (not `deliveryId`: Chatwoot's id is unique per instance only), checked
         // and written under one lock: a late attempt and the dead-letter hook can race for it.
         once: {
           lockKey: `delivery-unanswered:${deliveryRowId}`,
-          already: async (db) =>
-            (await db.executionLog.findFirst({
-              where: {
-                stage: "delivery",
-                AND: [
-                  { detail: { path: ["outcome"], equals: outcome } },
-                  {
-                    detail: {
-                      path: ["deliveryRowId"],
-                      equals: String(deliveryRowId),
-                    },
-                  },
-                ],
-              },
-              select: { id: true },
-            })) !== null,
+          already: (db) => rowDecided(db, deliveryRowId),
         },
       },
     );

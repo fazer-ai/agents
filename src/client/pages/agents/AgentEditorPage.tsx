@@ -929,6 +929,9 @@ function AgentEditor() {
     subjectTemplate: "",
     openingTemplate: "",
     noteTemplate: "",
+    carryMode: "off",
+    carryFileTypes: ["image", "file"],
+    carryMaxFiles: 10,
   });
   // Which Chatwoot custom attributes are injected into the prompt as current values, per
   // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).

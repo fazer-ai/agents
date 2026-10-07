@@ -30,6 +30,11 @@ describe("the form round-trips what is stored", () => {
       subjectTemplate: "Solicitação de {{nome_contato}}: {{resumo}}",
       openingTemplate: "Olá {{primeiro_nome}}\n\n{{mensagem}}",
       noteTemplate: "{{motivo}} {{link_origem}}",
+      carryAttachments: {
+        mode: "attendance" as const,
+        fileTypes: ["file" as const, "video" as const],
+        maxFiles: 4,
+      },
     };
     const saved = serializeCrossInboxCase(readCrossInboxCaseState(stored));
     expect(readCrossInboxCaseConfig({ crossInboxCase: saved })).toEqual(stored);

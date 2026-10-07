@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { ToolMessage } from "@langchain/core/messages";
 import { owesHandbackNote } from "@/graph/handback";
+import { sideEffectFlowEvent } from "@/graph/prepare";
 import { interpolatePromptVars } from "@/graph/prompt";
 import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
+import { mergeBehaviorSettings } from "@/modules/agents/behavior-settings";
 import {
   ChatwootApiError,
   ChatwootCalledOffError,
@@ -77,6 +79,9 @@ function fakeChatwoot(
     // The destination inbox's agent bot, which Chatwoot assigns to a conversation it creates there
     // (the fork assigns it without the type).
     inboxBot?: number;
+    // The origin's messages as REST rows (with attachments), served to `getMessages` instead of
+    // `incoming`/`history`. Files download as 8 bytes from the instance's host.
+    originRows?: Array<Record<string, unknown>>;
   } = {},
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
@@ -285,6 +290,13 @@ function fakeChatwoot(
     },
     getMessages: async (id: number, o?: { before?: number }) => {
       record("getMessages", [id, o]);
+      if (opts.originRows) {
+        return {
+          payload: opts.originRows.filter(
+            (m) => o?.before == null || Number(m.id) < o.before,
+          ),
+        };
+      }
       if (opts.history) {
         const rows = opts.history
           .map((m, i) => ({
@@ -349,8 +361,38 @@ function fakeChatwoot(
       Object.assign(conv(id).attrs, attrs);
       return {};
     },
+    isInstanceUrl: (url: string) => url.startsWith("https://cw.example/"),
+    downloadAttachment: async (url: string) => {
+      record("downloadAttachment", [url]);
+      return {
+        bytes: new Uint8Array(8).buffer,
+        contentType: "application/pdf",
+      };
+    },
+    sendFilesAsAdmin: async (id: number, files: unknown[], o?: unknown) => {
+      record("sendFilesAsAdmin", [id, files, o]);
+      return {};
+    },
   } as CaseClient;
   return { client, calls, convs, contacts };
+}
+
+// A contact message carrying files, as the REST list serves it.
+function fileRow(id: number, fileIds: number[], contactId = 5) {
+  return {
+    id,
+    created_at: id,
+    message_type: 0,
+    private: false,
+    sender_type: "Contact",
+    sender_id: contactId,
+    content: null,
+    attachments: fileIds.map((fid) => ({
+      id: fid,
+      file_type: "file",
+      data_url: `https://cw.example/rails/active_storage/blobs/${fid}/doc-${fid}.pdf`,
+    })),
+  };
 }
 
 const WRITES = new Set([
@@ -364,6 +406,7 @@ const WRITES = new Set([
   "sendPrivateNote",
   "setConversationLabels",
   "setConversationCustomAttributes",
+  "sendFilesAsAdmin",
 ]);
 
 function input(over: Partial<OpenCaseInput> = {}): OpenCaseInput {
@@ -421,6 +464,7 @@ describe("settings", () => {
       subjectTemplate: null,
       openingTemplate: null,
       noteTemplate: null,
+      carryAttachments: CROSS_INBOX_CASE_DEFAULTS.carryAttachments,
     });
     const bad = readCrossInboxCaseConfig({
       crossInboxCase: { targetInboxId: 0, caseAttributeKey: "Protocolo X" },
@@ -4101,6 +4145,277 @@ describe("the operator's opening and the case note (issue #923)", () => {
       expect(sends(f, false)).toEqual([
         "Olá, Ana!\n\nSua solicitação nº 100 foi recebida.\n\nParte do modelo.\n\nAtenciosamente,\nEquipe",
       ]);
+    });
+  });
+});
+
+describe("carrying the customer's files (issue #1128)", () => {
+  test("a settings patch of one field keeps the others stored", () => {
+    const stored = mergeBehaviorSettings(
+      {},
+      {
+        crossInboxCase: {
+          carryAttachments: { mode: "attendance", maxFiles: 4 },
+        },
+      },
+    );
+    const next = mergeBehaviorSettings(stored, {
+      crossInboxCase: { carryAttachments: { fileTypes: ["file"] } },
+    });
+    expect(
+      readCrossInboxCaseConfig(next as Record<string, unknown>)
+        .carryAttachments,
+    ).toEqual({ mode: "attendance", fileTypes: ["file"], maxFiles: 4 });
+  });
+
+  const carry = (
+    mode: "off" | "attendance" | "conversation",
+    over: Partial<OpenCaseInput> = {},
+  ) =>
+    input({
+      config: {
+        ...CROSS_INBOX_CASE_DEFAULTS,
+        targetInboxId: 40,
+        carryAttachments: { mode, fileTypes: ["image", "file"], maxFiles: 10 },
+      },
+      ...over,
+    });
+
+  test("off, or the block omitted, makes exactly the same requests", async () => {
+    const rows = [fileRow(1, [11]), fileRow(2, [12])];
+    const omitted = fakeChatwoot({ originRows: rows });
+    await openCaseInInbox(omitted.client, input());
+    const off = fakeChatwoot({ originRows: rows });
+    await openCaseInInbox(off.client, carry("off"));
+    expect(off.calls).toEqual(omitted.calls);
+    expect(off.calls.some((c) => c.fn === "downloadAttachment")).toBe(false);
+    expect(off.calls.some((c) => c.fn === "sendFilesAsAdmin")).toBe(false);
+  });
+
+  test("on: one private note with the files right after the case note, and the result counts it", async () => {
+    const f = fakeChatwoot({
+      originRows: [fileRow(1, [11]), fileRow(2, [12, 13])],
+    });
+    const r = await openCaseInInbox(f.client, carry("conversation"));
+    expect(r).toMatchObject({
+      kind: "opened",
+      caseId: 100,
+      attachments: { carried: 3, skipped: 0, failed: 0 },
+    });
+    const order = writesOf(f.calls);
+    const note = order.indexOf(
+      "sendMessageAsAdmin",
+      order.indexOf("sendMessageAsAdmin") + 1,
+    );
+    expect(order[note + 1]).toBe("sendFilesAsAdmin");
+    const files = f.calls.find((c) => c.fn === "sendFilesAsAdmin");
+    expect(files?.args[0]).toBe(100);
+    expect(files?.args[2]).toMatchObject({ private: true });
+    // The customer receives nothing more than without the block: one public opening.
+    const publicSends = f.calls.filter(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        (c.args[2] as { private: boolean }).private === false,
+    );
+    expect(publicSends).toHaveLength(1);
+  });
+
+  test("a case already open for this conversation gets only the files it did not have", async () => {
+    const f = fakeChatwoot({
+      originRows: [fileRow(301, [11]), fileRow(302, [12]), fileRow(303, [13])],
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 100 },
+          labels: [],
+        },
+        {
+          id: 100,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {
+            origin_conversation_id: 7,
+            carried_attachment_ids: "301:11,302:12",
+          },
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(f.client, carry("conversation"));
+    expect(r).toMatchObject({
+      kind: "already_open",
+      attachments: { carried: 1, skipped: 0, failed: 0 },
+    });
+    const files = f.calls.filter((c) => c.fn === "sendFilesAsAdmin");
+    expect(files).toHaveLength(1);
+    const sent = (files[0]?.args[1] ?? []) as Array<{ fileName: string }>;
+    expect(sent.map((x) => x.fileName)).toEqual(["doc-13.pdf"]);
+    expect(
+      f.convs.find((c) => c.id === 100)?.attrs.carried_attachment_ids,
+    ).toBe("301:11,302:12,303:13");
+  });
+
+  test("a case the destination continues keeps its record: no second opening, only the new file", async () => {
+    const f = fakeChatwoot({
+      continueOpen: true,
+      originRows: [fileRow(301, [11]), fileRow(302, [12])],
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 100,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: { carried_attachment_ids: "301:11" },
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(f.client, carry("conversation"));
+    expect(r).toMatchObject({ kind: "continued", caseId: 100 });
+    expect((r as { attachments?: unknown }).attachments).toEqual({
+      carried: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    const publicSends = f.calls.filter(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        (c.args[2] as { private: boolean }).private === false,
+    );
+    expect(publicSends).toHaveLength(0);
+  });
+
+  test("the tool reports the counts to the flow log and answers the model the same as without them", async () => {
+    const run = async (mode: "off" | "conversation") => {
+      const f = fakeChatwoot({
+        originRows: [fileRow(1, [11]), fileRow(2, [12])],
+      });
+      const reports: Array<{
+        phase: string;
+        detail?: Record<string, unknown>;
+        level?: string;
+        status?: string;
+      }> = [];
+      const client = { ...f.client, muted: false } as unknown as ChatwootClient;
+      const [t] = buildNativeTools(
+        {
+          client,
+          conversationId: 7,
+          crossInboxCase: {
+            config: {
+              ...CROSS_INBOX_CASE_DEFAULTS,
+              targetInboxId: 40,
+              carryAttachments: { mode, fileTypes: ["file"], maxFiles: 1 },
+            },
+            contactId: 5,
+          },
+          onSideEffectError: (e) => reports.push(e),
+        },
+        ["open_case_in_inbox"],
+      );
+      if (!t) throw new Error("tool not built");
+      const out = await t.invoke({ reason: "cliente mandou o comprovante" });
+      return { out, reports };
+    };
+    const control = await run("off");
+    const on = await run("conversation");
+    expect(on.out).toEqual(control.out);
+    expect(
+      control.reports.filter((r) => r.phase === "case_attachments"),
+    ).toEqual([]);
+    const line = on.reports.find((r) => r.phase === "case_attachments");
+    expect(line?.detail).toMatchObject({
+      caseId: 100,
+      carried: 1,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(line?.status).toBe("ok");
+    expect(line?.level).toBeUndefined();
+  });
+
+  test("a walk cut by its page limit is a warn line that says so", async () => {
+    const f = fakeChatwoot({});
+    // A conversation that never ends: every page is full and older than the cursor.
+    const client = {
+      ...f.client,
+      muted: false,
+      getMessages: async (_id: number, o?: { before?: number }) => {
+        const top = o?.before ?? 100_000;
+        return {
+          payload: Array.from({ length: 20 }, (_, i) => ({
+            id: top - 1 - i,
+            created_at: top - 1 - i,
+            message_type: 1,
+          })),
+        };
+      },
+    } as unknown as ChatwootClient;
+    const reports: Array<{
+      phase: string;
+      detail?: Record<string, unknown>;
+      level?: string;
+    }> = [];
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        crossInboxCase: {
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            carryAttachments: {
+              mode: "conversation",
+              fileTypes: ["file"],
+              maxFiles: 1,
+            },
+          },
+          contactId: 5,
+        },
+        onSideEffectError: (e) => reports.push(e),
+      },
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    await t.invoke({ reason: "cliente mandou o comprovante" });
+    const line = reports.find((r) => r.phase === "case_attachments");
+    expect(line?.level).toBe("warn");
+    expect(line?.detail).toMatchObject({ carried: 0, truncated: true });
+  });
+
+  test("a carry that went through is an ok line, one that failed a warn error line", () => {
+    const ok = sideEffectFlowEvent({
+      tool: "open_case_in_inbox",
+      phase: "case_attachments",
+      detail: { carried: 2 },
+      err: new Error("customer files: 2 carried"),
+      status: "ok",
+    });
+    expect(ok).toMatchObject({ level: "info", status: "ok" });
+    expect(ok.errorMessage).toBeUndefined();
+    expect(
+      sideEffectFlowEvent({
+        tool: "open_case_in_inbox",
+        phase: "case_attachments",
+        err: new Error("1 failed"),
+        level: "warn",
+      }),
+    ).toMatchObject({
+      level: "warn",
+      status: "error",
+      errorMessage: "1 failed",
     });
   });
 });

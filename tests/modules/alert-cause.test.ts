@@ -264,6 +264,26 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
     expect(rows[0]?.causeKey).toBe("tts:elevenlabs:HTTP 401");
   });
 
+  // The worker reaps a claim by `updated_at`, so a count bump on a claimed row must leave it alone:
+  // a dead key repeating faster than the stale window would otherwise hold a crashed claim for hours.
+  test("a repeat counted on a claimed row keeps its claim time", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    await writeFlowEvent(flow(tenantId), tts401());
+    const claimedAt = new Date(Date.now() - 10 * 60_000);
+    await suDb.alertDelivery.updateMany({
+      where: { channelId: ch },
+      data: { status: "SENDING", updatedAt: claimedAt },
+    });
+    await writeFlowEvent(flow(tenantId), tts401());
+    const row = await suDb.alertDelivery.findFirstOrThrow({
+      where: { channelId: ch },
+      select: { count: true, updatedAt: true },
+    });
+    expect(row.count).toBe(2);
+    expect(row.updatedAt.getTime()).toBe(claimedAt.getTime());
+  });
+
   test("the same cause after the window opens a second delivery", async () => {
     const tenantId = await freshTenant();
     const ch = await channel(tenantId);

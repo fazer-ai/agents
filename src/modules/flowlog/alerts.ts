@@ -224,10 +224,10 @@ export async function dispatchAlertsForEvent(
           select: { id: true },
         });
         if (open) {
-          await db.alertDelivery.update({
-            where: { id: open.id },
-            data: { count: { increment: 1 } },
-          });
+          // NOTE: Raw, so `updated_at` stays put: it is the SENDING lease the worker reaps by, and a
+          // dead key repeating faster than the stale window would otherwise keep a crashed claim alive
+          // for the whole cause window.
+          await db.$executeRaw`UPDATE alert_deliveries SET count = count + 1 WHERE id = ${open.id}`;
           continue;
         }
       } else {

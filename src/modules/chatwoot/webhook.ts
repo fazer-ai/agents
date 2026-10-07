@@ -210,6 +210,7 @@ import {
   verifyChatwootSignature,
 } from "./signing";
 import type { NormalizedChatwootEvent } from "./types";
+import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
 // Dedicated Chatwoot Agent Bot webhook receiver: resolve tenant and instance by the opaque routeToken
 // (constant-time hash probe), verify the HMAC with the bot's stored secret (auth AFTER resolution),
@@ -1571,36 +1572,6 @@ async function firstMediaConfig<T extends { credentialRef: string | null }>(
     if (cfg?.credentialRef) return cfg;
   }
   return resolve(owner.agentId);
-}
-
-// The switched-on watchers of an inbox, Chatwoot-confirmed, in agent order: every route reads the
-// same list, so the first one is the same memory owner and media config on all of them. Null when
-// unreadable; callers then keep the route's own agent, as a lone watcher does.
-async function inboxWatchers(
-  tenantId: bigint,
-  inboxId: bigint,
-  base: PrismaClient,
-): Promise<{ agentId: bigint; settings: unknown }[] | null> {
-  try {
-    const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.inboxObserver.findMany({
-        where: { inboxId, attachedAt: { not: null }, agent: { enabled: true } },
-        select: { agentId: true, agent: { select: { settings: true } } },
-        orderBy: { agentId: "asc" },
-      }),
-    );
-    return rows.map((r) => ({
-      agentId: r.agentId,
-      settings: r.agent.settings,
-    }));
-  } catch (err) {
-    logger.warn(
-      "chatwoot: could not read the inbox's watchers (inbox row=%s): %s",
-      String(inboxId),
-      errMsg(err),
-    );
-    return null;
-  }
 }
 
 export async function runEagerMedia(
@@ -5299,7 +5270,9 @@ export async function processChatwootDelivery(
       responderRt.enabled &&
       ingestsContinuously(responderRt.mode)
         ? responderRt
-        : ((observer !== null ? (await watchers())?.[0] : undefined) ?? rt);
+        : observer !== null
+          ? watcherMemoryOwner(await watchers(), rt)
+          : rt;
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,

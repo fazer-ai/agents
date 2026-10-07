@@ -830,6 +830,74 @@ describe.skipIf(!dbUp)(
       expect(jobs[0]?.payload.messageId).toBe(713);
     });
 
+    // NOTE: COM MAIS DE UM OBSERVADOR, A MEMÓRIA É DO PRIMEIRO DELES, nas duas pontas: o caminho ao
+    // vivo arquiva sob o primeiro, e a recuperação do encalhe de um observador posterior arma o mesmo
+    // job da thread. Arquivada sob a rota, a ordem das recuperações decidiria a compactação.
+    test("beside another watcher, a later watcher's lost append is filed under the first watcher", async () => {
+      const SECOND_WATCHER_BOT = 39;
+      const second = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Segunda observadora",
+          mode: "monitoring",
+          enabled: true,
+          systemPrompt: "Você observa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: { memory: { compaction: { enabled: false } } },
+        },
+      });
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: second.id,
+          chatwootAgentBotId: SECOND_WATCHER_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-second-${process.pid}`,
+          name: "Segunda observadora",
+        },
+      });
+      const inbox = await suDb.inbox.findFirstOrThrow({
+        where: { tenantId, chatwootInboxId: TEST_MODE_INBOX_ID },
+        select: { id: true },
+      });
+      await suDb.inboxObserver.create({
+        data: {
+          tenantId,
+          inboxId: inbox.id,
+          agentId: second.id,
+          createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        },
+      });
+      try {
+        expect(second.id > watcherAgentDbId).toBe(true);
+        const convId = 9177;
+        pages.set(convId, [restComposerReply(7916, "Já confirmei a troca.")]);
+        const rowId = await seedStranded(convId, {
+          inboxId: TEST_MODE_INBOX_ID,
+          messageId: 7916,
+          routeAgentBotId: SECOND_WATCHER_BOT,
+          routeObserved: true,
+        });
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+        const jobs = await ingestJobs(convId);
+        expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
+        expect(jobs[0]?.payload.compactionEnabled).toBe(true);
+      } finally {
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inbox.id, agentId: second.id },
+        });
+      }
+    });
+
     // NOTE: O PAPEL QUE A LINHA NÃO DECLAROU SE RECUPERA DA LIGAÇÃO. `route_observed` é escrito pela
     // reivindicação, então uma entrega que encalhou ANTES dela carrega NULO, e `role-unstated` é um
     // dos três vereditos pelos quais a varredura arma esta recuperação: um terço do trabalho de

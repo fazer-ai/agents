@@ -23,6 +23,7 @@ import { buildRecoveryPayload } from "./recover-payload";
 import { renderAttendantMessage } from "./render";
 import { responderCoversMessage } from "./responder-coverage";
 import { isHumanReplyShape } from "./stranded-delivery";
+import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
 // Folding back into the contact's memory the colleague's reply an ingestion lost. The ledger names
 // every colleague's reply at INSERT (`humanReplyMessageId`), so the words are read back over REST by
@@ -289,6 +290,7 @@ export async function recoverStrandedHumanReply(
       // The MIRROR's row id, which is what a flow-log line hangs on: the reports an operator reads
       // are keyed by it, not by Chatwoot's display id.
       conversationRowId: conv.id,
+      inboxRowId: inbox.id,
       agentId: routeAgentId,
       whatsappProvider: inbox.provider,
       mode: agent.mode,
@@ -602,8 +604,9 @@ export async function recoverStrandedHumanReply(
   // ./webhook.ts). Both stranded rows of one reply arm the same job, the later arm replacing the
   // payload, and the payload's agent decides whose compaction settings summarise the attendance.
   // Under the responder whenever it received the message and remembers continuously, so both rows
-  // arm the same payload; otherwise the route's own agent (a responder in `test`, switched off, or
-  // bound after the message holds no part of it).
+  // arm the same payload; on a watcher's route beside other watchers, the first of them
+  // (./watchers.ts), as on the live path; otherwise the route's own agent (a responder in `test`,
+  // switched off, or bound after the message holds no part of it).
   const responder = bound.responder;
   const ownedByResponder =
     bound.observed &&
@@ -626,10 +629,15 @@ export async function recoverStrandedHumanReply(
       messageCreatedAt(message),
       base,
     ));
-  const owner =
+  const owner: { agentId: bigint; settings: unknown } =
     ownedByResponder && responder !== null
       ? { agentId: responder.agentId, settings: responder.settings }
-      : { agentId: bound.agentId, settings: bound.settings };
+      : bound.observed
+        ? watcherMemoryOwner(
+            await inboxWatchers(tenantId, bound.inboxRowId, base),
+            { agentId: bound.agentId, settings: bound.settings },
+          )
+        : { agentId: bound.agentId, settings: bound.settings };
 
   try {
     await armIngest({

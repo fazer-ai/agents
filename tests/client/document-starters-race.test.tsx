@@ -108,12 +108,19 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     await gate(locale).wait;
     return json({
       starters: [
-        { key: "quote", name: `modelo-${locale}`, description: "", blocks: 3 },
+        {
+          key: "quote",
+          name: `modelo-${locale}`,
+          description: "",
+          blocks: 3,
+          style: { locale },
+        },
         {
           key: "receipt",
           name: `recibo-${locale}`,
           description: "",
           blocks: 2,
+          style: { locale },
         },
       ],
     });

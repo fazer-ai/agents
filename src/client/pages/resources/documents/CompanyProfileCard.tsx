@@ -60,7 +60,6 @@ export function CompanyProfileCard({
   // render rather than only where it is read, so it can never be one keystroke behind.
   const formRef = useRef(form);
   formRef.current = form;
-  const draft = form.draft;
   // The account's name, SHOWN in an empty name box until the operator types there or the stored
   // profile gets a name. Kept out of the draft, so the form still reads as untouched and adopts a
   // profile another client saves meanwhile; it joins what Save sends while it is on screen.

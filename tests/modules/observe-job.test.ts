@@ -2421,8 +2421,12 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       expect(
         (attribution?.detail as Record<string, unknown> | null)?.failure,
       ).toBe("HTTP 503");
+      // The tick's own line was labelled with the primary, so it records the fallback's class apart.
       expect(
         (errors[0]?.detail as Record<string, unknown> | null)?.failure,
+      ).toBeUndefined();
+      expect(
+        (errors[0]?.detail as Record<string, unknown> | null)?.fallbackFailure,
       ).toBe("HTTP 503");
     } finally {
       await suDb.agent.update({

@@ -225,11 +225,12 @@ export async function runModelCall<T>(
           // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
           const out = describeProviderFault(fallbackErr);
           if (fallback.onFallbackFailed) {
+            const failure = providerFailure(fallbackErr);
             fallback.onFallbackFailed({
               reason: out instanceof Error ? out.message : "provider error",
-              failure: providerFailure(fallbackErr),
+              failure,
             });
-            markReportedElsewhere(out);
+            markReportedElsewhere(out, failure);
           }
           throw out;
         }

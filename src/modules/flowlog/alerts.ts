@@ -167,6 +167,13 @@ export function causeKeyOf(ev: FlowEvent): string | null {
   return null;
 }
 
+// A line whose failure a fallback's line already classified as an account failure: that line is the
+// alert (`causeKeyOf`), and this one, labelled with the primary, is only the turn's record.
+function coveredByCause(ev: FlowEvent): boolean {
+  const reported = ev.detail?.fallbackFailure;
+  return typeof reported === "string" && ACCOUNT_FAILURES.has(reported);
+}
+
 export async function dispatchAlertsForEvent(
   ctx: FlowContext,
   ev: FlowEvent & { level: FlowLevel },
@@ -178,6 +185,9 @@ export async function dispatchAlertsForEvent(
   // bound it: the row it would follow is DEAD, so every cycle inserts). The flow-log row, written
   // before this runs, is the only sink that is not the failing path.
   if (ev.detail?.unit === ALERT_DELIVERY_UNIT) return;
+  // NOTE: A turn whose fallback died on its account: the fallback's own line is the cause alert,
+  // deduplicated for the window, so this line paging every 30 seconds beside it would undo that.
+  if (coveredByCause(ev)) return;
   const rank = LEVEL_RANK[ev.level] ?? 0;
   await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
     const channels = await db.alertChannel.findMany({

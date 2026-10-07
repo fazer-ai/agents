@@ -745,12 +745,13 @@ export function buildAgentGraph({
         } catch (err) {
           // NOTE: a call the job's deadline ended failed on the job, not on the provider.
           if (!jobSignal?.aborted && onModelFallbackFailed) {
+            const failure = providerFailure(err);
             onModelFallbackFailed({
               ...second.labels,
               reason: err instanceof Error ? err.message : "provider error",
-              failure: providerFailure(err),
+              failure,
             });
-            markReportedElsewhere(err);
+            markReportedElsewhere(err, failure);
           }
           throw err;
         }

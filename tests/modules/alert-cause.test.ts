@@ -252,16 +252,38 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
   });
 
   // The fallback's failure has its own line under the fallback's labels, so the stage around the
-  // call, labelled with the primary, must not classify it again: a dead fallback key would otherwise
-  // also be a cause on the primary that never made the call.
-  test("a fallback failure written on its own line is not classified again by the stage", async () => {
-    const tenantId = await freshTenant();
-    const ch = await channel(tenantId);
-    const failures: string[] = [];
-    const turns: string[] = [];
-    for (const withLine of [true, false]) {
+  // call, labelled with the primary, records the class as `fallbackFailure` and never as its own
+  // `failure`: a dead fallback key would otherwise also be a cause on the primary that never made the
+  // call. When that class is a cause, the fallback's line is the alert, and the stage's line pages
+  // nobody beside it; any other class keeps the ordinary alert.
+  for (const [label, status, withLine, line, delivered] of [
+    [
+      "a fallback refused by its account",
+      401,
+      true,
+      { fallbackFailure: "HTTP 401" },
+      [],
+    ],
+    [
+      "a fallback down for the moment",
+      503,
+      true,
+      { fallbackFailure: "HTTP 503" },
+      [null],
+    ],
+    [
+      "a fallback with no line of its own",
+      401,
+      false,
+      { failure: "HTTP 401" },
+      ["generate:openai:HTTP 401"],
+    ],
+  ] as const) {
+    test(`the stage around ${label} records and alerts on it once`, async () => {
+      const tenantId = await freshTenant();
+      const ch = await channel(tenantId);
       const ctx = flow(tenantId);
-      turns.push(ctx.turnId);
+      const failures: string[] = [];
       await withFlowStage(ctx, "generate", { provider: "openai" }, () =>
         runModelCall<string>(
           () =>
@@ -274,9 +296,7 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
               labels: { provider: "anthropic", model: "claude-sonnet-4-6" },
               deadlineMs: 5_000,
               run: () =>
-                Promise.reject(
-                  Object.assign(new Error("bad key"), { status: 401 }),
-                ),
+                Promise.reject(Object.assign(new Error("no"), { status })),
               ...(withLine
                 ? {
                     onFallbackFailed: ({ failure }: { failure: string }) => {
@@ -288,26 +308,21 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
           },
         ),
       ).catch(() => {});
-    }
-    expect(failures).toEqual(["HTTP 401"]);
-    const failureOn = async (turnId: string) =>
-      (
-        (
-          await flowLogRows(suDb, {
-            where: { tenantId, turnId, stage: "generate" },
-            select: { detail: true },
-          })
-        )[0]?.detail as Record<string, unknown> | undefined
-      )?.failure;
-    // With the fallback's own line written, the stage's line names no failure; without it, the
-    // stage's line is the only record and keeps it.
-    expect(await failureOn(turns[0] as string)).toBeUndefined();
-    expect(await failureOn(turns[1] as string)).toBe("HTTP 401");
-    // And only the second is a cause on the primary.
-    expect(
-      (await deliveries(ch)).map((d) => d.causeKey).filter((k) => k !== null),
-    ).toEqual(["generate:openai:HTTP 401"]);
-  });
+      expect(failures).toEqual(withLine ? [`HTTP ${status}`] : []);
+      const rows = await flowLogRows(suDb, {
+        where: { tenantId, turnId: ctx.turnId, stage: "generate" },
+        select: { detail: true },
+      });
+      const detail = rows[0]?.detail as Record<string, unknown> | undefined;
+      expect({
+        failure: detail?.failure,
+        fallbackFailure: detail?.fallbackFailure,
+      }).toEqual({ failure: undefined, fallbackFailure: undefined, ...line });
+      expect((await deliveries(ch)).map((d) => d.causeKey)).toEqual([
+        ...delivered,
+      ]);
+    });
+  }
 
   test("six failures of one cause, spread past the coalesce window, are one delivery of six", async () => {
     const tenantId = await freshTenant();

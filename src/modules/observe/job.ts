@@ -24,7 +24,7 @@ import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
-import { providerFailure } from "@/lib/provider-failure";
+import { failureDetail } from "@/lib/provider-failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText, clipTextEnd } from "@/lib/text";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -1517,7 +1517,7 @@ export async function runObserve(
       detail: {
         reason,
         failed: "model_call",
-        failure: providerFailure(err),
+        ...failureDetail(err),
         toolCalls: toolsRan - noEffect,
         ...(committed ? { retried: false } : {}),
         ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),

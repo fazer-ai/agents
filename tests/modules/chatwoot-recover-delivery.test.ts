@@ -29,7 +29,10 @@ import {
 } from "@/modules/chatwoot/recover-delivery";
 import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import type { ClaimedJob } from "@/modules/scheduler/service";
-import { getJobHandler } from "@/modules/scheduler/worker";
+import {
+  getDeadLetterHandler,
+  getJobHandler,
+} from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { burnSchedulerJobId } from "../utils/scheduler";
@@ -2066,6 +2069,55 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // NOTE: no closing line: the operator's page stays open. Keyed by the mirror's ROW id, which the
     // writer files against; the Chatwoot number would match nothing and pass vacuously.
     expect(await deliveryLines(conv.id)).toEqual([]);
+  });
+
+  // The row left on PROCESSED with nobody answered, because putting it back failed: the state nothing
+  // revisits, so the recovery says the loss itself instead of leaving it to a DEAD row that is not.
+  test("a row that cannot be put back says the message went unanswered", async () => {
+    const convId = 18935;
+    const messageId = 19445;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const fn = `refuse_put_back_${rowId}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id = ${rowId} AND OLD.status = 'PROCESSED' AND NEW.status = 'DEAD' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE UPDATE ON chatwoot_webhook_deliveries FOR EACH ROW EXECUTE FUNCTION ${fn}()`,
+    );
+    try {
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: {
+          ...depsWith(stub),
+          sleep: async () => {},
+          makeModel: () => {
+            throw new Error("provider 500");
+          },
+        },
+      });
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${fn} ON chatwoot_webhook_deliveries`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${fn}()`);
+    }
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
+    const lines = await deliveryLines(conv.id);
+    expect(
+      lines.map((l) => [
+        l.level,
+        (l.detail as Record<string, unknown> | null)?.outcome,
+      ]),
+    ).toEqual([["error", "unanswered"]]);
   });
 
   test("a BURST stranded together is answered once, and the older row stays on the page", async () => {
@@ -4879,17 +4931,137 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
-    test("its death is announced by the scheduler, at error, since nothing else said the message was lost", () => {
-      // No hook of its own: `dispatchDeadLetter` announces every kind, and its generic line already
-      // carries the delivery row id — the dedupe key IS it. What a hook here would lose is the
-      // re-arm suppression that path does, and the level living next to the other twelve answers.
-      //
-      // `error` because the sweep's line for a row with a recovery armed is `info`: a job that dies
-      // never reached the line its ending would have written, and the customer is still unanswered.
-      expect(deliveryRecoveryDedupeKey(987_654n)).toBe(
-        "delivery-recovery:987654",
-      );
-      expect(JOB_DEATH_LEVEL.DELIVERY_RECOVERY).toBe("error");
+    // A recovery that DIES never reached the line its ending would have written (an account it could
+    // not read on every attempt), and the sweep's line was `info`. The death is announced like every
+    // kind's, at `warn`, and the delivery's own line says the customer went unanswered, once, and
+    // only while the death is this claim's and the row is still DEAD.
+    test("its death says the message went unanswered, through the delivery's own line", async () => {
+      const convId = 18933;
+      const conv = await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19443,
+      });
+      const job = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+          status: "DEAD",
+          runAt: new Date(),
+          payload: { deliveryRowId: String(rowId) },
+        },
+        select: { id: true, claimSeq: true, dedupeKey: true },
+      });
+      const hook = getDeadLetterHandler("DELIVERY_RECOVERY");
+      if (!hook)
+        throw new Error("the recovery's dead-letter hook is not registered");
+      const claimed: ClaimedJob = {
+        id: job.id,
+        tenantId,
+        kind: "DELIVERY_RECOVERY",
+        payload: { deliveryRowId: String(rowId) },
+        dedupeKey: job.dedupeKey,
+        attempts: 5,
+        claimSeq: job.claimSeq,
+      };
+      try {
+        await hook(
+          claimed,
+          "recovery: the Chatwoot account could not be read",
+          appDb,
+        );
+        // The same death announced again (a second reaper) writes nothing more.
+        await hook(
+          claimed,
+          "recovery: the Chatwoot account could not be read",
+          appDb,
+        );
+        const lines = await deliveryLines(conv.id);
+        expect(
+          lines.map((l) => [
+            l.level,
+            (l.detail as Record<string, unknown> | null)?.outcome,
+          ]),
+        ).toEqual([["error", "unanswered"]]);
+        // flowlog-scope: tenant-wide. The dead letter names its job, whose id is this test's alone.
+        const deaths = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "dead_letter",
+            detail: { path: ["jobId"], equals: String(job.id) },
+          },
+          select: { level: true },
+        });
+        expect(deaths.map((d) => d.level)).toEqual([
+          JOB_DEATH_LEVEL.DELIVERY_RECOVERY,
+        ]);
+        expect(JOB_DEATH_LEVEL.DELIVERY_RECOVERY).toBe("warn");
+      } finally {
+        await suDb.schedulerJob.delete({ where: { id: job.id } });
+      }
+    });
+
+    test("a death that was re-armed, or of a row someone else took, says nothing", async () => {
+      const convId = 18934;
+      const conv = await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19444,
+      });
+      const hook = getDeadLetterHandler("DELIVERY_RECOVERY");
+      if (!hook)
+        throw new Error("the recovery's dead-letter hook is not registered");
+      // Re-armed: the row is PENDING again, so no death is owed.
+      const rearmed = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+          status: "PENDING",
+          runAt: new Date(),
+          payload: { deliveryRowId: String(rowId) },
+        },
+        select: { id: true, claimSeq: true },
+      });
+      try {
+        await hook(
+          {
+            id: rearmed.id,
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            payload: { deliveryRowId: String(rowId) },
+            attempts: 5,
+            claimSeq: rearmed.claimSeq,
+          },
+          "x",
+          appDb,
+        );
+        // A real death, but the delivery is no longer DEAD.
+        await suDb.schedulerJob.update({
+          where: { id: rearmed.id },
+          data: { status: "DEAD" },
+        });
+        await suDb.chatwootWebhookDelivery.update({
+          where: { id: rowId },
+          data: { status: "PROCESSED" },
+        });
+        await hook(
+          {
+            id: rearmed.id,
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            payload: { deliveryRowId: String(rowId) },
+            attempts: 5,
+            claimSeq: rearmed.claimSeq,
+          },
+          "x",
+          appDb,
+        );
+        expect(await deliveryLines(conv.id)).toEqual([]);
+      } finally {
+        await suDb.schedulerJob.delete({ where: { id: rearmed.id } });
+      }
     });
   });
 

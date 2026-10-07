@@ -173,35 +173,47 @@ async function dispatchDeadLetter(
       await hook(job, error, base);
       return;
     }
-    // NOTE: claim the announcement rather than trust the dead-letter that got us here: a re-arm lands
-    // on this same row, and announcing re-queued work would page an operator about a loss that did not
-    // happen (a still-broken cause fails the new arm and announces then). A claim, not a read, because
-    // a missing row cannot tell an erased death from a completed one; the token it leaves lets the
-    // revoke see whether this line is owed (DEAD_LETTER_ANNOUNCED). The trail write is fire-and-forget,
-    // so a re-arm between claim and insert is still announced over; closing that needs the job's tx.
-    if (!(await claimDeadLetterAnnouncement(job, base))) return;
-    // NOTE: the attempt count is deliberately absent: the two roads to DEAD disagree about the number
-    // while meaning the same thing (../memory/compact.ts). The error tells the roads apart.
-    emitDeadLetter({
-      tenantId: job.tenantId,
-      unit: "job",
-      level: JOB_DEATH_LEVEL[job.kind],
-      error,
-      detail: {
-        kind: job.kind,
-        jobId: String(job.id),
-        // NOTE: ids by construction (a dedupe key has to be stable), and the only field on this
-        // line an operator can act on: it says WHICH follow-up, WHICH document, WHICH reminder.
-        ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
-      },
-      base,
-    });
+    await announceJobDeath(job, error, base);
   } catch (err) {
     logger.warn(
       { err, jobId: String(job.id), kind: job.kind },
       "scheduler: dead-letter announcement failed",
     );
   }
+}
+
+// The generic dead-letter line, for a hook that announces the death like every kind and then adds
+// its own: true when this call wrote it (the row is still this claim's death), false when the row
+// moved on, was re-armed or was already announced, which is also when the hook should say nothing.
+export async function announceJobDeath(
+  job: ClaimedJob,
+  error: string,
+  base: PrismaClient,
+): Promise<boolean> {
+  // NOTE: claim the announcement rather than trust the dead-letter that got us here: a re-arm lands
+  // on this same row, and announcing re-queued work would page an operator about a loss that did not
+  // happen (a still-broken cause fails the new arm and announces then). A claim, not a read, because
+  // a missing row cannot tell an erased death from a completed one; the token it leaves lets the
+  // revoke see whether this line is owed (DEAD_LETTER_ANNOUNCED). The trail write is fire-and-forget,
+  // so a re-arm between claim and insert is still announced over; closing that needs the job's tx.
+  if (!(await claimDeadLetterAnnouncement(job, base))) return false;
+  // NOTE: the attempt count is deliberately absent: the two roads to DEAD disagree about the number
+  // while meaning the same thing (../memory/compact.ts). The error tells the roads apart.
+  emitDeadLetter({
+    tenantId: job.tenantId,
+    unit: "job",
+    level: JOB_DEATH_LEVEL[job.kind],
+    error,
+    detail: {
+      kind: job.kind,
+      jobId: String(job.id),
+      // NOTE: ids by construction (a dedupe key has to be stable), and the only field on this
+      // line an operator can act on: it says WHICH follow-up, WHICH document, WHICH reminder.
+      ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
+    },
+    base,
+  });
+  return true;
 }
 
 // The second road to DEAD: a claim that crashed or hung never reaches failJob, so it carries no

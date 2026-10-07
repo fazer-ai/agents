@@ -22,7 +22,12 @@ import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  announceJobDeath,
+  type JobResult,
+  registerDeadLetterHandler,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
 import { maxIncomingId, parseChatwootMessages } from "./messages";
 import {
@@ -1073,6 +1078,9 @@ async function runRecovery(params: {
         row.deliveryId,
         conversationId,
       );
+      await announceUnanswered(params.tenantId, row.id, base, {
+        leftProcessed: true,
+      });
     }
     logger.warn(
       "chatwoot recovery: the turn %s on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
@@ -1270,12 +1278,15 @@ async function deliveryRecoveryHandler(
 }
 
 // The line that alerts on a stranded message nobody answered, written when its recovery ends with
-// the row still DEAD. Once per delivery: a re-run of the same job finds the line and writes nothing.
-// Best-effort, like every line here: the DEAD row stays on the worklist either way.
+// the row still DEAD, when the recovery job dies with it still DEAD, or when the recovery left it on
+// PROCESSED with nobody answered because putting it back failed (`leftProcessed`), the state nothing
+// revisits. Once per delivery: a re-run of the same job finds the line and writes nothing.
+// Best-effort, like every line here: the row stays where it is either way.
 export async function announceUnanswered(
   tenantId: bigint,
   deliveryRowId: bigint,
   base: PrismaClient,
+  opts: { leftProcessed?: boolean } = {},
 ): Promise<void> {
   try {
     const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -1291,7 +1302,7 @@ export async function announceUnanswered(
         },
       }),
     );
-    if (row?.status !== "DEAD") return;
+    if (row?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD")) return;
     const [already, conv] = await runScopedOn(base, sysCtx(tenantId), (db) =>
       Promise.all([
         db.executionLog.findFirst({
@@ -1344,8 +1355,9 @@ export async function announceUnanswered(
           messageId: row.inboundMessageId,
           conversationId: row.conversationId,
         },
-        errorMessage:
-          "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
+        errorMessage: opts.leftProcessed
+          ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
+          : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
       },
     );
   } catch (err) {
@@ -1357,15 +1369,26 @@ export async function announceUnanswered(
   }
 }
 
-// No dead-letter hook of its own: `dispatchDeadLetter` already announces every kind's death with the
-// kind, the job id and the dedupe key (here the delivery row id), re-reads the row so a re-armed job
-// is not announced as a loss, and takes its level from `JOB_DEATH_LEVEL`. That level is `error`: a job
-// that died never reached `announceUnanswered`, and the sweep's own line was `info`.
+// A recovery that died never reached `announceUnanswered` (an account it could not read on every
+// attempt, a crash), and the sweep's line was `info` because it was coming. Its death is announced like
+// every kind's, re-arm suppression included (`announceJobDeath`), and when that line was owed and the
+// row is still DEAD, the delivery's own line says the customer went unanswered.
+export async function announceDeadRecovery(
+  job: ClaimedJob,
+  error: string,
+  base: PrismaClient,
+): Promise<void> {
+  if (!(await announceJobDeath(job, error, base))) return;
+  const deliveryRowId = readDeliveryRowId(job.payload);
+  if (deliveryRowId !== null)
+    await announceUnanswered(job.tenantId, deliveryRowId, base);
+}
 
 let registered = false;
 export function registerDeliveryRecoveryHandler(): void {
   if (registered) return;
   registerJobHandler("DELIVERY_RECOVERY", deliveryRecoveryHandler);
+  registerDeadLetterHandler("DELIVERY_RECOVERY", announceDeadRecovery);
   registered = true;
 }
 

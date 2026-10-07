@@ -237,9 +237,10 @@ const EXPECTED_DEATH_LEVEL: Record<
   MEMORY_COMPACT: "error",
   INGEST_MESSAGE: "error",
   DELIVERY_SWEEP: "error",
-  // `error`: the sweep's line for a delivery whose recovery was armed is `info`, so a recovery that
-  // dies before it could say how it ended is the only line saying the customer is still unanswered.
-  DELIVERY_RECOVERY: "error",
+  // The only kind whose death is not an `error` for the customer's sake, which is why writing it out
+  // matters: the delivery's own line (`announceDeadRecovery`) is the `error` that says the message went
+  // unanswered, and what died here is the automatic second attempt.
+  DELIVERY_RECOVERY: "warn",
   TAKEOVER_RECOVERY: "warn",
   // `warn`, by the same rule read the other way round: the receiver already reported this loss at
   // `error`, on the conversation, before the row ever reached the sweep. What dies here

@@ -55,6 +55,7 @@ interface ClaimedAlert {
   count: number;
   turnId: string | null;
   conversationId: bigint | null;
+  causeKey: string | null;
   attempts: number;
   type: string;
   url: string;
@@ -153,6 +154,7 @@ async function claimDue(
         a.count,
         a.turn_id         AS "turnId",
         a.conversation_id AS "conversationId",
+        a.cause_key       AS "causeKey",
         a.attempts,
         picked.type,
         picked.url,

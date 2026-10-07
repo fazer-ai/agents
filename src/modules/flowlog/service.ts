@@ -2,13 +2,14 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { providerFailure } from "@/lib/provider-failure";
 import {
   MAX_STRING,
   redactSecretsDeep,
   sanitizeErrorMessage,
 } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { dispatchAlertsForEvent } from "./alerts";
+import { causeKeyOf, dispatchAlertsForEvent } from "./alerts";
 import { trackFlowWrite } from "./scheduled";
 import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
 
@@ -129,8 +130,13 @@ export async function writeFlowEvent(
     delivered = false;
     logger.warn({ err, turnId: ctx.turnId }, "flowlog emit failed");
   }
-  // Alerting: only warn/error, and only real (inbox) traffic — a playground error must not page.
-  if ((level === "warn" || level === "error") && ctx.source === "inbox") {
+  // Alerting: only warn/error, plus a cause alert at any level (a run the job retries against a dead
+  // key is an `info`, and the key still needs a person), and only real (inbox) traffic — a playground
+  // error must not page.
+  if (
+    (level === "warn" || level === "error" || causeKeyOf(ev) !== null) &&
+    ctx.source === "inbox"
+  ) {
     try {
       await dispatchAlertsForEvent(ctx, { ...ev, level }, base);
     } catch (err) {
@@ -195,7 +201,13 @@ export async function withFlowStage<T>(
     return out;
   } catch (err) {
     let level = meta.errorLevel ?? "error";
-    let detail = meta.detail;
+    // What kind of failure it was, in the closed vocabulary (`timeout`, `HTTP <nnn>`,
+    // `provider error`), never the server's text: the alert dispatcher keys causes and rates on it,
+    // and the message beside it is free text no rule should parse.
+    let detail: Record<string, unknown> = {
+      ...meta.detail,
+      failure: providerFailure(err),
+    };
     if (meta.failureOf) {
       try {
         const failure = meta.failureOf(err);

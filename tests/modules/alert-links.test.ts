@@ -26,6 +26,7 @@ function body(over: Partial<Parameters<typeof buildAlertBody>[0]> = {}) {
     tenantId: 7n,
     turnId: "71b89fbe-turn",
     conversationId: 7697n,
+    causeKey: null,
     ...over,
   });
 }

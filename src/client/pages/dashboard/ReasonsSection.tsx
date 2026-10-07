@@ -110,7 +110,10 @@ export function ReasonsSection({
     raw: s.reason,
     label: silenceLabel[s.reason] ?? s.reason,
   }));
-  const silenceRows: ChartRow[] = days.map((day) => {
+  // Its own range: under "all time" the window starts at the first event, and a silence can come
+  // before the first handoff.
+  const silenceDays = daysOf(win, h?.silenceDays[0]?.date ?? null);
+  const silenceRows: ChartRow[] = silenceDays.map((day) => {
     const row: ChartRow = { day };
     for (const s of silenceSeries)
       row[s.key] =

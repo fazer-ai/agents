@@ -164,7 +164,8 @@ const stubFetch = (async (input: unknown) => {
         days: [{ date: "2026-10-01", cause: "person", conversations: 2 }],
         totals: [{ cause: "person", conversations: 2 }],
         silences: [{ reason: "needs_human", turns: 3 }],
-        silenceDays: [{ date: "2026-10-01", reason: "needs_human", turns: 3 }],
+        // Earlier than the first handoff: under "all time" the silences keep their own range.
+        silenceDays: [{ date: "2026-09-25", reason: "needs_human", turns: 3 }],
         targets: [
           { cause: "skip_needs_human", target: "pinned", conversations: 2 },
         ],
@@ -592,6 +593,21 @@ describe("silences and where the transfers went", () => {
       ...document.querySelectorAll(".sr-only > table caption"),
     ].map((c) => c.textContent);
     expect(tables).toContain("Silences by reason");
+  });
+});
+
+describe("all time", () => {
+  test("silences before the first handoff keep their days", async () => {
+    await renderDash("/?range=all");
+    const rowsOf = (caption: string) =>
+      [...document.querySelectorAll(".sr-only > table")]
+        .find((t) => t.querySelector("caption")?.textContent === caption)
+        ?.querySelectorAll("tbody tr").length ?? 0;
+    await waitFor(() => {
+      expect(rowsOf("Silences by reason")).toBeGreaterThan(0);
+    });
+    // Six more days: Sep 25 to Sep 30 come before the first handoff on Oct 1.
+    expect(rowsOf("Silences by reason") - rowsOf("Handoffs by cause")).toBe(6);
   });
 });
 

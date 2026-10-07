@@ -1017,6 +1017,7 @@ async function runTurnBody(
       client,
       conversationId,
       threadId,
+      checkpointer: params.deps?.checkpointer,
       // NOTE: The slow-tool ack's send is a wait after the graph's ask at the tool boundary.
       stillWanted: stillWantedFence,
       messageId: params.messageId,

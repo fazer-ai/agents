@@ -11,6 +11,10 @@ import {
   CROSS_INBOX_CASE_CARRIED_ATTRIBUTE,
   readCarryAttachments,
 } from "@/modules/cross-inbox-case/carry-attachments-settings";
+import {
+  burstReachSeconds,
+  DEBOUNCE_DEFAULTS,
+} from "@/modules/debounce/settings";
 
 // The origin conversation's messages as Chatwoot's REST list serves them: 20 a page, ordered by
 // (created_at, id), `before` for the page earlier than that pair of a message id. Each file is an attachment with an id and a data_url
@@ -147,6 +151,13 @@ const uploads = (calls: Array<{ fn: string; args: unknown[] }>) =>
   calls.filter((c) => c.fn === "sendFilesAsAdmin");
 const uploadedNames = (call: { args: unknown[] } | undefined) =>
   ((call?.args[1] ?? []) as Array<{ fileName: string }>).map((f) => f.fileName);
+
+test("a burst reaches back the debounce ceiling, and nothing with debounce off", () => {
+  expect(
+    burstReachSeconds({ ...DEBOUNCE_DEFAULTS, maxWindowSeconds: 90 }),
+  ).toBe(90);
+  expect(burstReachSeconds({ ...DEBOUNCE_DEFAULTS, enabled: false })).toBe(0);
+});
 
 describe("readCarryAttachments", () => {
   test("off by default, images and documents, ten files", () => {
@@ -295,7 +306,10 @@ describe("carryCaseAttachments", () => {
       f.client,
       carryInput(
         { mode: "attendance" },
-        { attendanceStartedAt: async () => new Date(500 * 1000) },
+        {
+          burstSeconds: 60,
+          attendanceStartedAt: async () => new Date(500 * 1000),
+        },
       ),
     );
     expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
@@ -317,21 +331,62 @@ describe("carryCaseAttachments", () => {
       f.client,
       carryInput(
         { mode: "attendance" },
-        { attendanceStartedAt: async () => new Date(500 * 1000) },
+        {
+          burstSeconds: 60,
+          attendanceStartedAt: async () => new Date(500 * 1000),
+        },
       ),
     );
     expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
     expect(uploadedNames(uploads(f.calls)[0])).toEqual(["recibo.pdf"]);
   });
 
+  test("attendance: the burst reaches back only as far as debounce can coalesce", async () => {
+    // The file was the last thing of an attendance the team resolved; the customer came back an hour
+    // later.
+    const f = fake({
+      messages: [
+        { id: 1, createdAt: 1000, files: [{ id: 11, name: "antigo.pdf" }] },
+        { id: 2, createdAt: 1100, type: "activity" },
+        { id: 3, createdAt: 4600 },
+      ],
+    });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput(
+        { mode: "attendance" },
+        {
+          burstSeconds: 60,
+          attendanceStartedAt: async () => new Date(4600 * 1000),
+        },
+      ),
+    );
+    expect(out).toEqual({ carried: 0, skipped: 0, failed: 0 });
+    const withoutDebounce = fake({
+      messages: [
+        { id: 1, createdAt: 4590, files: [{ id: 11, name: "rajada.pdf" }] },
+        { id: 3, createdAt: 4600 },
+      ],
+    });
+    expect(
+      await carryCaseAttachments(
+        withoutDebounce.client,
+        carryInput(
+          { mode: "attendance" },
+          { attendanceStartedAt: async () => new Date(4600 * 1000) },
+        ),
+      ),
+    ).toEqual({ carried: 0, skipped: 0, failed: 0 });
+  });
+
   test("attendance: an imported message is not part of the burst", async () => {
     const f = fake({
       messages: [
         { id: 1, createdAt: 200, type: "out" },
-        { id: 2, createdAt: 600, files: [{ id: 12, name: "atual.pdf" }] },
+        { id: 2, createdAt: 660, files: [{ id: 12, name: "atual.pdf" }] },
         {
           id: 3,
-          createdAt: 100,
+          createdAt: 650,
           imported: true,
           files: [{ id: 13, name: "antigo.pdf" }],
         },
@@ -342,7 +397,10 @@ describe("carryCaseAttachments", () => {
       f.client,
       carryInput(
         { mode: "attendance" },
-        { attendanceStartedAt: async () => new Date(700 * 1000) },
+        {
+          burstSeconds: 60,
+          attendanceStartedAt: async () => new Date(700 * 1000),
+        },
       ),
     );
     expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });

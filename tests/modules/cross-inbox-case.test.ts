@@ -4346,6 +4346,46 @@ describe("carrying the customer's files (issue #1128)", () => {
     expect(line?.level).toBeUndefined();
   });
 
+  test("the tool hands the debounce reach to the files step", async () => {
+    const run = async (burstSeconds?: number) => {
+      // The receipt at 40, then the text at 90 that stamped the turn, with nothing between.
+      const f = fakeChatwoot({
+        originRows: [fileRow(40, [41]), { ...fileRow(90, []) }],
+      });
+      const reports: Array<{
+        phase: string;
+        detail?: Record<string, unknown>;
+      }> = [];
+      const [t] = buildNativeTools(
+        {
+          client: { ...f.client, muted: false } as unknown as ChatwootClient,
+          conversationId: 7,
+          crossInboxCase: {
+            config: {
+              ...CROSS_INBOX_CASE_DEFAULTS,
+              targetInboxId: 40,
+              carryAttachments: {
+                mode: "attendance",
+                fileTypes: ["file"],
+                maxFiles: 10,
+              },
+            },
+            contactId: 5,
+            attendanceStartedAt: async () => new Date(90 * 1000),
+            ...(burstSeconds != null ? { burstSeconds } : {}),
+          },
+          onSideEffectError: (e) => reports.push(e),
+        },
+        ["open_case_in_inbox"],
+      );
+      if (!t) throw new Error("tool not built");
+      await t.invoke({ reason: "cliente mandou o comprovante" });
+      return reports.find((r) => r.phase === "case_attachments")?.detail;
+    };
+    expect(await run(60)).toMatchObject({ carried: 1 });
+    expect(await run()).toBeUndefined();
+  });
+
   test("a walk cut by its page limit is a warn line that says so", async () => {
     const f = fakeChatwoot({});
     // A conversation that never ends: every page is full and older than the cursor.

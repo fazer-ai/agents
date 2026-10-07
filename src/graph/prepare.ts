@@ -81,6 +81,10 @@ import {
   readCrossInboxCaseConfig,
   renderCaseSubject,
 } from "@/modules/cross-inbox-case/settings";
+import {
+  burstReachSeconds,
+  readDebounceConfig,
+} from "@/modules/debounce/settings";
 import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
   emitFlowEvent,
@@ -314,6 +318,9 @@ export interface AgentConfig {
   sendImageConfig: SendImageConfig;
   // Where `open_case_in_inbox` opens the case (operator-set; no inbox = the tool is not built).
   crossInboxCaseConfig: CrossInboxCaseConfig;
+  // How far before its stamp a coalesced turn can reach: the debounce ceiling, 0 with debounce off.
+  // Absent reads as 0.
+  burstSeconds?: number;
   // The contact fields in the prompt and the ones update_contact may write (none = no tool).
   contactFieldsConfig: ContactFieldsConfig;
   // The origin contact as Chatwoot knows it; what `open_case_in_inbox` settles the identity on.
@@ -982,6 +989,7 @@ export async function loadAgentConfig(
     contactAuthConfig: readContactAuthConfig(effSettings),
     sendImageConfig: readSendImageConfig(effSettings),
     crossInboxCaseConfig,
+    burstSeconds: burstReachSeconds(readDebounceConfig(effSettings)),
     contactFieldsConfig,
     chatwootContactId: conv?.contact?.chatwootContactId ?? null,
     kanbanConfig: readKanbanConfig(effSettings),
@@ -1067,6 +1075,8 @@ export interface ToolsetCtx {
   tenantId: bigint;
   instanceId: bigint;
   base: PrismaClient;
+  // The saver the turn's graph runs on, when the caller injected one. Absent ⇒ the global one.
+  checkpointer?: BaseCheckpointSaver;
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
@@ -1227,6 +1237,7 @@ export interface ToolBuildDeps {
         renderSubject?: (summary: string | null) => string | null;
         interpolate?: (template: string) => string;
         attendanceStartedAt?: () => Promise<Date | null>;
+        burstSeconds?: number;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1621,10 +1632,13 @@ export async function buildToolset(
               cfg.contactInboxId != null &&
               cfg.crossInboxCaseConfig.carryAttachments.mode === "attendance"
                 ? {
+                    burstSeconds: cfg.burstSeconds ?? 0,
                     attendanceStartedAt: async () =>
                       attendanceStartedAt(
                         {
-                          checkpointer: await getCheckpointer(),
+                          // NOTE: The saver the running graph writes to, so the boundary reads the same thread.
+                          checkpointer:
+                            ctx.checkpointer ?? (await getCheckpointer()),
                           base: ctx.base,
                         },
                         {

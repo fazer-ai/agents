@@ -1350,6 +1350,7 @@ async function runAgentNudgeBody(
         client,
         conversationId,
         threadId: params.threadId,
+        checkpointer: params.deps?.checkpointer,
         // NOTE: the slow-tool ack's own ask, after its send.
         stillWanted: toolFence,
         // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation

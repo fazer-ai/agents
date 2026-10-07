@@ -39,6 +39,8 @@ export interface CarryInput {
   // When the origin's current attendance started, as memory compaction cuts the thread. Null ⇒ the
   // whole conversation is the current attendance. Asked only under `attendance`.
   attendanceStartedAt?: () => Promise<Date | null>;
+  // How far before that instant a coalesced turn's burst can start (the debounce ceiling). Absent ⇒ 0.
+  burstSeconds?: number;
   // The per-file ceiling. Absent ⇒ CARRY_MAX_FILE_BYTES.
   maxFileBytes?: number;
   stillWanted?: () => Promise<boolean>;
@@ -193,6 +195,7 @@ function isImported(m: Record<string, unknown>): boolean {
 function attendanceSince(
   all: Record<string, unknown>[],
   since: number,
+  burstSeconds: number,
 ): number {
   const timeline = all
     .filter((m) => !isImported(m))
@@ -210,6 +213,8 @@ function attendanceSince(
       continue;
     if (!isContactIncoming(m)) break;
     const at = Number(m.created_at);
+    // NOTE: a burst is flushed within the debounce ceiling of its start; anything older is not it.
+    if (Number.isFinite(at) && at < since - burstSeconds) break;
     if (Number.isFinite(at)) start = Math.min(start, at);
   }
   return start;
@@ -230,7 +235,11 @@ async function candidatesOf(
   );
   // Chatwoot dates a message to the second.
   const since = boundary
-    ? attendanceSince(all, Math.floor(boundary.getTime() / 1000))
+    ? attendanceSince(
+        all,
+        Math.floor(boundary.getTime() / 1000),
+        input.burstSeconds ?? 0,
+      )
     : null;
   const newestFirst = all
     .map((m) => ({ m, at: Number(m.created_at), id: Number(m.id) }))

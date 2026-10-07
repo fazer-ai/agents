@@ -322,6 +322,15 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
     expect(refused.translationKey).toBe("errors.mcpDiscoveryAuth");
     expect(refused.translationParams).toEqual({ status: 401 });
 
+    // A server that refuses streamable HTTP and then the credential over SSE reports the credential.
+    const lockedLegacy = await start({
+      MCP_HTTP_REFUSES: "1",
+      MCP_REQUIRE_TOKEN: "certo",
+    });
+    const refusedOverSse = await attempt(sel(lockedLegacy));
+    expect(refusedOverSse.translationKey).toBe("errors.mcpDiscoveryAuth");
+    expect(refusedOverSse.translationParams).toEqual({ status: 401 });
+
     const closed = await attempt(sel(open, { url: "http://127.0.0.1:9/mcp" }));
     expect(closed.translationKey).toBe("errors.mcpDiscoveryUnreachable");
 

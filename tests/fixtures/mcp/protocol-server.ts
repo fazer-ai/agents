@@ -11,8 +11,8 @@ import {
 // A legacy-protocol MCP server (SDK v1) on an ephemeral port, in its own process. `/mcp` speaks
 // streamable HTTP, or answers 400 to every request when started with `MCP_HTTP_REFUSES=1`; `/sse`
 // plus `/messages` speak the SSE transport. With `MCP_REQUIRE_TOKEN=<t>`, every path answers 401 to a
-// request without `Authorization: Bearer <t>`, echoing the request URL in the body the way some
-// servers and proxies do. Its tools are declared with raw JSON Schema, so a
+// request without `Authorization: Bearer <t>` (after the 400 of `MCP_HTTP_REFUSES`), echoing the
+// request URL in the body the way some servers and proxies do. Its tools are declared with raw JSON Schema, so a
 // schema reaches the client exactly as written here. It prints one JSON line per HTTP request.
 
 const PRICE_SCHEMA = {
@@ -147,6 +147,10 @@ const http = createServer((req, res: ServerResponse) => {
     const raw = Buffer.concat(chunks).toString();
     const body = raw ? JSON.parse(raw) : undefined;
     log({ path: url.pathname, request: req.method, method: body?.method });
+    if (refuses && url.pathname === "/mcp") {
+      res.writeHead(400, { "content-type": "text/plain" }).end("no");
+      return;
+    }
     if (token && req.headers.authorization !== `Bearer ${token}`) {
       res
         .writeHead(401, { "content-type": "application/json" })
@@ -169,10 +173,6 @@ const http = createServer((req, res: ServerResponse) => {
       return;
     }
     if (url.pathname === "/mcp") {
-      if (refuses) {
-        res.writeHead(400, { "content-type": "text/plain" }).end("no");
-        return;
-      }
       const sid = req.headers["mcp-session-id"] as string | undefined;
       let transport = sid ? sessions.get(sid) : undefined;
       if (!transport) {

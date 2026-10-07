@@ -506,7 +506,11 @@ async function connectClient(
         `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}; the SSE fallback failed too${sseCode === null ? "" : ` with HTTP ${sseCode}`}`,
         { cause: last },
       ),
-      { data: { status: code } },
+      {
+        data: {
+          status: sseCode === 401 || sseCode === 403 ? sseCode : code,
+        },
+      },
     );
   }
 }

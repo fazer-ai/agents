@@ -116,6 +116,18 @@ export function readContactAuthEndpointEnabled(
   return typeof url === "string" && url.trim() !== "";
 }
 
+// What the save writes for `askEndpointAfterRule`: the switch as shown, except on a monitoring agent.
+// Its editor draws no switch, so the value it holds there was inferred from the stored url and never
+// chosen; the stored flag is written back as it was, and a later return to production asks the
+// endpoint after the conditions only if it already did.
+export function contactAuthAskEndpointToSave(
+  endpointEnabled: boolean,
+  monitoring: boolean,
+  stored: unknown,
+): boolean {
+  return monitoring ? stored === true : endpointEnabled;
+}
+
 function conditionPayload(
   f: ContactAuthConditionForm,
 ): Record<string, unknown> | null {

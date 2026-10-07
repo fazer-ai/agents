@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  contactAuthAskEndpointToSave,
   contactAuthRulePayload,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthEndpointEnabled,
@@ -68,5 +69,21 @@ describe("what is stored loads as a list and saves back to the same meaning", ()
     );
     expect(readContactAuthEndpointEnabled(none, "", true)).toBe(false);
     expect(readContactAuthEndpointEnabled(none, null, false)).toBe(false);
+  });
+});
+
+describe("what the save writes for the endpoint flag", () => {
+  test("a responder writes the switch as shown", () => {
+    expect(contactAuthAskEndpointToSave(true, false, false)).toBe(true);
+    expect(contactAuthAskEndpointToSave(false, false, true)).toBe(false);
+  });
+
+  test("a monitoring agent, which draws no switch, writes the stored flag back as it was", () => {
+    // An endpoint-only gate loads with the switch on (inferred from the url); saving it must not
+    // turn a stored `false` into `true`, or a later return to production would ask the endpoint.
+    expect(contactAuthAskEndpointToSave(true, true, false)).toBe(false);
+    expect(contactAuthAskEndpointToSave(true, true, undefined)).toBe(false);
+    expect(contactAuthAskEndpointToSave(false, true, true)).toBe(true);
+    expect(contactAuthAskEndpointToSave(true, true, "true")).toBe(false);
   });
 });

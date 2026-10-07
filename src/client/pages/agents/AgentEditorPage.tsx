@@ -130,6 +130,7 @@ import {
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
 import {
+  contactAuthAskEndpointToSave,
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthEndpointEnabled,
@@ -1689,8 +1690,18 @@ function AgentEditor() {
         enabled: contactAuth.enabled,
         rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled),
         // NOTE: The endpoint switch. Beside conditions it is the two-stage flag; with none the reader
-        // ignores it (no rule means the endpoint decides), and it is saved as shown either way.
-        askEndpointAfterRule: contactAuth.endpointEnabled,
+        // ignores it (no rule means the endpoint decides). A monitoring agent's editor has no switch,
+        // so its stored flag is kept.
+        askEndpointAfterRule: contactAuthAskEndpointToSave(
+          contactAuth.endpointEnabled,
+          watcher,
+          (
+            syncedAgentRef.current?.settings as
+              | { contactAuth?: { askEndpointAfterRule?: unknown } }
+              | null
+              | undefined
+          )?.contactAuth?.askEndpointAfterRule,
+        ),
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,

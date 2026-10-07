@@ -91,6 +91,8 @@ export function DocumentStarterModal({
     try {
       const sent = {
         name,
+        // The template's own, which the blank starter leaves empty: the menu's summary describes the
+        // starter, and a template's description is appended to the agent's tool description.
         description: starter.description,
         blocks: starter.blocks as Record<string, unknown>[],
         fields: starter.fields as Record<string, unknown>[],
@@ -141,7 +143,7 @@ export function DocumentStarterModal({
       title={
         naming
           ? t("documents.nameTitle", "Name this template")
-          : t("documents.starterTitle", "Start from a template")
+          : t("documents.starterPickTitle", "Choose a starting point")
       }
       // Dismissing mid-create would leave a request in flight whose result the operator can no
       // longer see, and the template it creates would then appear with no explanation. It is also
@@ -168,6 +170,10 @@ export function DocumentStarterModal({
             <Input
               autoFocus
               value={draftName}
+              placeholder={t(
+                "documents.namePlaceholder",
+                "e.g. Service agreement",
+              )}
               onChange={(e) => {
                 setDraftName(e.target.value);
                 setCreateError(null);
@@ -204,8 +210,8 @@ export function DocumentStarterModal({
         <div className="flex flex-col gap-3">
           <p className="text-sm text-text-muted">
             {t(
-              "documents.starterHint",
-              "Pick one to copy into your account, then edit its wording.",
+              "documents.starterBuildHint",
+              "Pick one to copy into your account, then edit its wording here. New fields and blocks are added by asking your AI assistant connected over MCP.",
             )}
           </p>
           {startersError && (
@@ -225,13 +231,13 @@ export function DocumentStarterModal({
                 <p className="font-medium text-sm text-text-primary">
                   {s.name}
                 </p>
-                <p className="text-text-muted text-xs">{s.description}</p>
+                <p className="text-text-muted text-xs">{s.summary}</p>
               </div>
               <Button
                 size="sm"
                 onClick={() => {
                   setNaming(s);
-                  setDraftName(s.name);
+                  setDraftName(s.suggestedName);
                   setCreateError(null);
                 }}
               >

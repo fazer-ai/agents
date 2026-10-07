@@ -29,7 +29,7 @@ describe("the blank starter", () => {
         currency: locale === "pt-BR" ? "BRL" : "USD",
       });
       expect(blank.name.length).toBeGreaterThan(0);
-      expect(blank.description.length).toBeGreaterThan(0);
+      expect(blank.summary.length).toBeGreaterThan(0);
     });
 
     test(`passes the same validation a create runs (${locale})`, () => {
@@ -44,11 +44,11 @@ describe("the blank starter", () => {
     });
   }
 
-  test("its name and description are translated, not copied", () => {
+  test("its name and summary are translated, not copied", () => {
     const pt = documentStarter("blank", "pt-BR");
     const en = documentStarter("blank", "en-US");
     expect(pt?.name).not.toBe(en?.name);
-    expect(pt?.description).not.toBe(en?.description);
+    expect(pt?.summary).not.toBe(en?.summary);
   });
 
   // The minimum is a real rule and not a habit of this starter: without the header, nothing prints.

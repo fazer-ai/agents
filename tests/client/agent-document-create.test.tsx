@@ -119,6 +119,8 @@ function serve() {
           {
             key: "quote",
             name: `Quote ${locale}`,
+            summary: "Quote with items.",
+            suggestedName: `Quote ${locale}`,
             description: "Quote with items.",
             numberPrefix: "Q-",
             blocks: CREATED.blocks,

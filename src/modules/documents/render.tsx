@@ -20,7 +20,7 @@ import {
 import { formatMoney, formatNumber } from "./format";
 import { type InlineSpan, parseSimpleMarkdown } from "./markdown";
 import { printableUpperCase } from "./printable";
-import { resolveTokens } from "./tokens";
+import { resolveFooterText, resolveTokens } from "./tokens";
 import { computeTotals, lineTotal } from "./totals";
 import type { DocumentValues, LineItemValue } from "./validate";
 import { buildDocumentVars, type DocumentMeta } from "./vars";
@@ -656,7 +656,7 @@ export async function renderDocumentPdf(
           <View style={sheet.footer} fixed>
             <Text style={sheet.footerText}>
               {input.style.footerText
-                ? resolveTokens(input.style.footerText, vars)
+                ? resolveFooterText(input.style.footerText, vars)
                 : ""}
             </Text>
             {input.style.showPageNumbers ? (

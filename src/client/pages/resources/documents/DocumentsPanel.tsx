@@ -6,7 +6,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   type AgentRef,
@@ -23,6 +23,7 @@ import {
   useModalController,
   useToast,
 } from "@/client/components";
+import { AuthContext } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { mediaFetch } from "@/client/lib/media";
@@ -64,6 +65,9 @@ export function DocumentsPanel() {
   // route takes the two the starter table has, and the browser can hand us "en", "en-GB", "pt".
   const starterLocale = starterLocaleOf(i18n.language);
   const { showToast } = useToast();
+  // Read off the context directly: the account name is only a suggestion for the letterhead, and the
+  // panel renders outside an AuthProvider in its tests.
+  const tenantName = useContext(AuthContext)?.user?.tenantName ?? null;
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [starters, setStarters] = useState<Starter[]>([]);
   const [issued, setIssued] = useState<IssuedDocument[]>([]);
@@ -627,6 +631,7 @@ export function DocumentsPanel() {
           }}
           onDirtyChange={setCompanyDirty}
           session={companySession}
+          suggestedName={tenantName}
         />
       </Modal>
 

@@ -1,7 +1,7 @@
-import { Building2, ImageUp, Trash2 } from "lucide-react";
+import { ImageUp, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, Card, FormField, Input, useToast } from "@/client/components";
+import { Button, FormField, Input, useToast } from "@/client/components";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
@@ -30,6 +30,7 @@ export function CompanyProfileCard({
   onSaved,
   onDirtyChange,
   session,
+  suggestedName,
 }: {
   company: CompanyProfile | null;
   onChanged: (next: CompanyProfile) => void;
@@ -46,6 +47,9 @@ export function CompanyProfileCard({
   // modal's BODY and remounts per opening, so a guard it owned would compare stale against stale;
   // only the parent, which stays mounted, can tell. A number, so a template id cannot be passed.
   session?: number;
+  // The company name the account was set up with, offered while the profile has none. Typed into the
+  // form rather than saved, so the letterhead still says only what the operator confirmed.
+  suggestedName?: string | null;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -89,6 +93,19 @@ export function CompanyProfileCard({
     // no-ops, so none needs marking as ours. The rule lives in `companyDraft.ts`.
     setForm((current) => nextCompanyDraft(current, company));
   }, [company]);
+
+  // Once per opening (the card remounts with the modal), and only into an empty, untouched name.
+  const suggested = useRef(false);
+  useEffect(() => {
+    const name = suggestedName?.trim();
+    if (suggested.current || !name || company?.name?.trim()) return;
+    suggested.current = true;
+    setForm((current) =>
+      current.draft.name === "" && current.seededFrom.name === ""
+        ? { ...current, draft: { ...current.draft, name } }
+        : current,
+    );
+  }, [company, suggestedName]);
 
   const label: Record<(typeof FIELDS)[number], string> = {
     name: t("documents.company.name", "Company name"),
@@ -218,19 +235,14 @@ export function CompanyProfileCard({
   }
 
   return (
-    <Card className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <Building2 className="h-4 w-4 text-accent" aria-hidden="true" />
-        <h2 className="font-medium text-sm text-text-primary">
-          {t("documents.company.title", "Company profile")}
-        </h2>
-        <span className="text-text-muted text-xs">
-          {t(
-            "documents.company.subtitle",
-            "Printed on every document you issue.",
-          )}
-        </span>
-      </div>
+    // The modal around it carries the title, so the body opens on what the profile is for.
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-text-muted">
+        {t(
+          "documents.company.subtitle",
+          "Printed on every document you issue.",
+        )}
+      </p>
 
       {/* ONE PER LINE, deliberately. This card lives in a `md` modal (max-w-md), so a second
           column leaves each input under 200px — and the six fields are not the same length:
@@ -317,6 +329,6 @@ export function CompanyProfileCard({
           {t("common.save", "Save")}
         </Button>
       </div>
-    </Card>
+    </div>
   );
 }

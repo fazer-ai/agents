@@ -334,7 +334,8 @@ function CreateButton({
 
 // SelectableCard (a <button>) can't nest an edit button, so the pencil is an absolutely-positioned
 // sibling overlay sitting just left of the card's check indicator. stopPropagation keeps a pencil
-// click from toggling the grant selection.
+// click from toggling the grant selection. The card's content column is padded by the pencil's width
+// so the title and badge end before it instead of running underneath.
 function EditableCard({
   onEdit,
   editLabel,
@@ -350,7 +351,7 @@ function EditableCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative">
+    <div className="relative [&_[data-selectable-content]]:pr-7">
       {children}
       {/* Vertically center the pencil on the card's selection check (mt-0.5 h-5): top-3.5 + an
           h-5 button put both centers at the same y. */}
@@ -1580,7 +1581,11 @@ export function ToolGrantsEditor({
                     onToggle={() => toggleDocument(tpl.id)}
                     icon={FileText}
                     title={tpl.name}
-                    badge={<Badge variant="secondary">{tpl.toolName}</Badge>}
+                    badge={
+                      <Badge variant="secondary" className="break-all">
+                        {tpl.toolName}
+                      </Badge>
+                    }
                     // NOTE: AVAILABLE, not merely enabled. Assembly skips a template for two
                     // reasons with different remedies (a switch on this template, or content this
                     // build cannot read, edited from the client that wrote it), so each gets its own

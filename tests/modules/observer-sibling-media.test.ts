@@ -10,11 +10,11 @@ import { flowLogRows } from "../utils/flowlog";
 
 // Several watchers of one inbox append the same message to the one contact-inbox thread, and the
 // first append wins. So every watcher's route renders media with the same config: the first config
-// able to run among the inbox's switched-on watchers, in agent order, else the route's own.
-// Otherwise the voice note is remembered as a marker or as words depending on whose delivery ran
-// first. Offline the same way as eager-media-flow-context.test.ts: the service writes its `stt` line
-// on a missing or unresolvable key, before any client or provider, and that line is the witness that
-// a config resolved on this route.
+// able to run among the inbox's switched-on watchers, in agent order, else the route's own. Able to
+// run means a key that resolves to a usable vault entry. Otherwise the voice note is remembered as a
+// marker or as words depending on whose delivery ran first. Offline: a missing or unresolvable key
+// makes the service write its `stt` line before any client, and a usable one reaches the fake
+// client's download, which refuses; either way the line is the witness that a config resolved here.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -42,6 +42,7 @@ const CHATWOOT_INBOX_ID = 4431;
 const DEAF_BOT = 431;
 const LISTENER_BOT = 432;
 const UNKEYED_BOT = 433;
+const STALE_KEY_BOT = 434;
 
 let tenantId: bigint;
 let instanceId: bigint;
@@ -49,6 +50,7 @@ let inboxDbId: bigint;
 let deafId: bigint;
 let listenerId: bigint;
 let unkeyedId: bigint;
+let staleKeyId: bigint;
 let seq = 0;
 
 async function watcher(
@@ -135,7 +137,9 @@ async function voiceNoteOnDeafRoute(convId: number): Promise<number> {
       makeClient: (async () =>
         ({
           downloadAttachment: async () => {
-            throw new Error("the audio must not be downloaded: no credential");
+            throw new Error(
+              "offline: the download is where the provider leg starts",
+            );
           },
           sendMessage: async () => ({}),
           sendPrivateNote: async () => ({}),
@@ -188,9 +192,18 @@ describe.skipIf(!dbUp)(
       deafId = await watcher("Sem transcrição", DEAF_BOT, {
         stt: { enabled: false },
       });
+      const key = await suDb.vaultEntry.create({
+        data: { tenantId, name: "stt", secret: encryptJson("sk-test") },
+        select: { id: true },
+      });
       listenerId = await watcher("Com transcrição", LISTENER_BOT, {
-        // A key that names no vault entry: the service writes its line on the failed resolution,
-        // before any client or provider, so the run stays offline.
+        stt: {
+          enabled: true,
+          provider: "openai",
+          credentialRef: `vault:${key.id}`,
+        },
+      });
+      staleKeyId = await watcher("Chave apagada", STALE_KEY_BOT, {
         stt: {
           enabled: true,
           provider: "openai",
@@ -218,6 +231,7 @@ describe.skipIf(!dbUp)(
           "chatwoot_webhook_deliveries",
           "conversations",
           "inbox_observers",
+          "vault_entries",
           "inboxes",
           "chatwoot_agent_bots",
           "agents",
@@ -271,6 +285,24 @@ describe.skipIf(!dbUp)(
       } finally {
         await suDb.inboxObserver.deleteMany({
           where: { tenantId, inboxId: inboxDbId, agentId: unkeyedId },
+        });
+      }
+    });
+
+    test("a sibling whose key resolves to no vault entry does not take the config either", async () => {
+      await suDb.inboxObserver.create({
+        data: {
+          tenantId,
+          inboxId: inboxDbId,
+          agentId: staleKeyId,
+          attachedAt: new Date(),
+        },
+      });
+      try {
+        expect(await voiceNoteOnDeafRoute(9435)).toBe(0);
+      } finally {
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inboxDbId, agentId: staleKeyId },
         });
       }
     });

@@ -189,6 +189,20 @@ describe("declarationSchema", () => {
     expect(JSON.stringify(declared)).not.toContain("allOf");
   });
 
+  test("composition is folded however large the schema around it", () => {
+    const wide = Object.fromEntries(
+      Array.from({ length: 4100 }, (_, i) => [`s${i}`, { type: "string" }]),
+    );
+    const declared = declarationSchema({
+      allOf: [
+        { properties: wide },
+        { allOf: [{ properties: { n: { type: "number" } } }] },
+      ],
+    }) as { properties: Record<string, unknown> };
+    expect(JSON.stringify(declared)).not.toContain("allOf");
+    expect(declared.properties.n).toEqual({ type: "number" });
+  });
+
   test("the server's schema is not mutated", () => {
     const listed = {
       allOf: [{ properties: { a: { $ref: "#/$defs/a" } } }],

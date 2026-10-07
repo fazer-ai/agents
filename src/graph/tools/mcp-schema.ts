@@ -6,10 +6,10 @@
 
 type Schema = Record<string, unknown>;
 
-// Nodes each pass may visit: inlining shared definitions can repeat a subtree exponentially, and
-// this runs on the shared event loop for a schema the server controls. A spent budget only stops
-// expanding: a `$ref` met after it becomes an open object, while the schema the server sent is
-// still copied around it, and the two passes count apart, so the root is folded either way.
+// Nodes the inlining may visit: expanding shared definitions can repeat a subtree exponentially,
+// and this runs on the shared event loop for a schema the server controls. A spent budget only
+// stops expanding: a `$ref` met after it becomes an open object, while the schema the server sent
+// is still copied around it. Folding is linear in what the inlining built, so it has no budget.
 const NODE_BUDGET = 4096;
 
 interface Walk {
@@ -116,9 +116,9 @@ function isObjectSchema(s: unknown): s is Schema {
 // `allOf` merged in; `anyOf`/`oneOf` object branches merged, an argument required only when every
 // branch requires it; `if`/`then`/`else` reduced to the properties they may add; `not`, `$schema`
 // and `unevaluatedProperties` dropped. Applied down through properties, items and
-// additionalProperties. Past the budget a node is kept as it is.
-function simplify(node: unknown, walk: Walk): unknown {
-  if (!isSchema(node) || --walk.budget < 0) return node;
+// additionalProperties.
+function simplify(node: unknown): unknown {
+  if (!isSchema(node)) return node;
   const {
     allOf,
     anyOf,
@@ -138,7 +138,7 @@ function simplify(node: unknown, walk: Walk): unknown {
     for (const branch of allOf) {
       if (isSchema(branch) && (branch.then || branch.else))
         out = mergeSchemas(out, conditionalShape(branch.then, branch.else));
-      const simplified = simplify(branch, walk);
+      const simplified = simplify(branch);
       if (isSchema(simplified)) out = mergeSchemas(out, simplified);
     }
   }
@@ -147,7 +147,7 @@ function simplify(node: unknown, walk: Walk): unknown {
     const properties: Schema = {};
     const requiredSets: Set<unknown>[] = [];
     for (const branch of union.filter(isObjectSchema)) {
-      const simplified = simplify(branch, walk);
+      const simplified = simplify(branch);
       if (!isSchema(simplified)) continue;
       if (isSchema(simplified.properties))
         Object.assign(properties, simplified.properties);
@@ -175,22 +175,20 @@ function simplify(node: unknown, walk: Walk): unknown {
     if (!out.type) out.type = "object";
     const props: Schema = {};
     for (const [name, prop] of Object.entries(out.properties))
-      props[name] = simplify(prop, walk);
+      props[name] = simplify(prop);
     out.properties = props;
   }
   if (Array.isArray(out.items))
-    out.items = out.items.map((item) => simplify(item, walk));
-  else if (isSchema(out.items)) out.items = simplify(out.items, walk);
+    out.items = out.items.map((item) => simplify(item));
+  else if (isSchema(out.items)) out.items = simplify(out.items);
   if (isSchema(out.additionalProperties))
-    out.additionalProperties = simplify(out.additionalProperties, walk);
+    out.additionalProperties = simplify(out.additionalProperties);
   return out;
 }
 
 export function declarationSchema(schema: unknown): unknown {
   if (!isSchema(schema)) return schema;
-  const declared = simplify(inlineRefs(schema, { budget: NODE_BUDGET }), {
-    budget: NODE_BUDGET,
-  });
+  const declared = simplify(inlineRefs(schema, { budget: NODE_BUDGET }));
   if (isSchema(declared) && !declared.properties) declared.properties = {};
   return declared;
 }

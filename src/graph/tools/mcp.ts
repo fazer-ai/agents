@@ -360,7 +360,7 @@ export const __callHeadersForTest = { callHeaders, fetchWithCallHeaders };
 
 // The SDK's HTTP error carries the status in `data.status` (its `code` is a string category), and
 // older errors carry it as a numeric `code` or in the message.
-function httpErrorCode(err: unknown): number | null {
+export function httpErrorCode(err: unknown): number | null {
   const e = err as {
     code?: unknown;
     message?: unknown;
@@ -501,9 +501,12 @@ async function connectClient(
     const sseCode = httpErrorCode(last);
     // NOTE: only the statuses go in the message: a response body can echo the request URL, where a
     // query-injected credential lives, and this error reaches the logs and the alert channels.
-    throw new Error(
-      `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}; the SSE fallback failed too${sseCode === null ? "" : ` with HTTP ${sseCode}`}`,
-      { cause: last },
+    throw Object.assign(
+      new Error(
+        `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}; the SSE fallback failed too${sseCode === null ? "" : ` with HTTP ${sseCode}`}`,
+        { cause: last },
+      ),
+      { data: { status: code } },
     );
   }
 }

@@ -1,8 +1,13 @@
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { buildConnConfig, discoverMcpServer } from "@/graph/tools/mcp";
+import {
+  buildConnConfig,
+  discoverMcpServer,
+  httpErrorCode,
+} from "@/graph/tools/mcp";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import {
   hasSafeStdioCommandChars,
@@ -597,6 +602,95 @@ export interface DiscoveredMcp {
   instructions: string | null;
 }
 
+// How long the console's discovery waits for the server: under the ~30s after which the HTTP
+// client gives up on the request, so a server that hangs answers with a reason instead of a
+// dropped connection. The connection still closes when the SDK's own request timeout fires.
+const DISCOVERY_TIMEOUT_MS = 20_000;
+
+class DiscoveryTimeout extends Error {}
+
+function withDiscoveryTimeout<T>(
+  work: Promise<T>,
+  ms = DISCOVERY_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DiscoveryTimeout(`${ms / 1000}`)), ms);
+  });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+}
+
+// Error codes the runtime gives a request that never reached a server (Bun's and Node's spellings).
+const UNREACHABLE_CODES = new Set([
+  "ConnectionRefused",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "FailedToOpenSocket",
+]);
+
+function unreachable(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; cur && depth < 5; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    if (typeof code === "string" && UNREACHABLE_CODES.has(code)) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+// A failed discovery is the MCP server's failure, not ours: 502 with a sentence the console shows
+// as is, by kind (credential refused, an HTTP status, no answer in time, not reachable, anything
+// else). The upstream error's own text stays in the log, since a response body can echo the
+// request URL and the credential in its query.
+function discoveryError(err: unknown): AppError {
+  if (err instanceof AppError) return err;
+  if (err instanceof DiscoveryTimeout) {
+    const seconds = Number(err.message);
+    return new AppError(
+      `the MCP server did not answer within ${seconds}s`,
+      502,
+      "errors.mcpDiscoveryTimeout",
+      { seconds },
+    );
+  }
+  const status = httpErrorCode(err);
+  if (status === 401 || status === 403) {
+    return new AppError(
+      `the MCP server refused the credential (HTTP ${status})`,
+      502,
+      "errors.mcpDiscoveryAuth",
+      { status },
+    );
+  }
+  if (status !== null) {
+    return new AppError(
+      `the MCP server answered HTTP ${status}`,
+      502,
+      "errors.mcpDiscoveryHttp",
+      { status },
+    );
+  }
+  if (unreachable(err)) {
+    return new AppError(
+      "could not reach the MCP server",
+      502,
+      "errors.mcpDiscoveryUnreachable",
+    );
+  }
+  return new AppError(
+    "the MCP server could not be listed",
+    502,
+    "errors.mcpDiscoveryFailed",
+  );
+}
+
+export const __discoveryForTest = { discoveryError, withDiscoveryTimeout };
+
 export async function discoverMcpTools(
   ctx: TenantContext,
   id: bigint,
@@ -664,7 +758,12 @@ export async function discoverMcpTools(
   const connConfig = await buildConnConfig(target, {
     stdioEnabled: config.mcpStdioEnabled,
   });
-  const { tools, instructions } = await discoverMcpServer(target, connConfig);
+  const { tools, instructions } = await withDiscoveryTimeout(
+    discoverMcpServer(target, connConfig),
+  ).catch((err: unknown) => {
+    logger.warn({ err, mcp: sel.name }, "mcp discovery failed");
+    throw discoveryError(err);
+  });
   return {
     instructions,
     tools: tools.map((t) => ({

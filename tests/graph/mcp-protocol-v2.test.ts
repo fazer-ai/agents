@@ -8,6 +8,7 @@ import {
   loadMcpToolsForAgent,
   type McpSelection,
 } from "@/graph/tools/mcp";
+import { __discoveryForTest } from "@/modules/mcp-connections/service";
 
 // The MCP client against a legacy-protocol server (SDK v1) in its own process, with and without
 // declared headers (which change the fetch each request goes through). One server answers streamable
@@ -298,6 +299,51 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
       expect((await call("point")).content).toBe('{"at":[1,2]}');
     },
   );
+
+  // The console's discovery answers a failed server with 502 and a sentence by kind, from the
+  // errors a real connection raises: a refused credential, a closed port, a server that hangs.
+  test("a failed discovery becomes a 502 by kind", async () => {
+    const { discoveryError, withDiscoveryTimeout } = __discoveryForTest;
+    const attempt = async (s: McpSelection, ms?: number) =>
+      discoveryError(
+        await withDiscoveryTimeout(
+          buildConnConfig(s, { stdioEnabled: false, allowHttp: true }).then(
+            (c) => discoverMcpServer(s, c),
+          ),
+          ms,
+        ).then(
+          () => null,
+          (e: unknown) => e,
+        ),
+      );
+    const locked = await start({ MCP_REQUIRE_TOKEN: "certo" });
+    const refused = await attempt(sel(locked));
+    expect(refused.statusCode).toBe(502);
+    expect(refused.translationKey).toBe("errors.mcpDiscoveryAuth");
+    expect(refused.translationParams).toEqual({ status: 401 });
+
+    const closed = await attempt(sel(open, { url: "http://127.0.0.1:9/mcp" }));
+    expect(closed.translationKey).toBe("errors.mcpDiscoveryUnreachable");
+
+    const hung = Bun.serve({
+      port: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    try {
+      const silent = await attempt(
+        sel(open, { url: `http://127.0.0.1:${hung.port}/mcp` }),
+        300,
+      );
+      expect(silent.translationKey).toBe("errors.mcpDiscoveryTimeout");
+      expect(silent.translationParams).toEqual({ seconds: 0.3 });
+    } finally {
+      hung.stop(true);
+    }
+
+    expect(discoveryError(new Error("not MCP")).translationKey).toBe(
+      "errors.mcpDiscoveryFailed",
+    );
+  });
 
   // A schema that declares draft-07 is validated by the SDK's draft-07 engine, so its tuple stays as
   // written: rewritten to `prefixItems`, `additionalItems: false` would refuse every element.

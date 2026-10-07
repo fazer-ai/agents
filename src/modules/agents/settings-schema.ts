@@ -347,24 +347,51 @@ const availability = z.looseObject({
 });
 
 // The local rule. Either this or `url`: with a rule, the endpoint is never called.
+const contactAuthCondition = z.union([
+  z.object({
+    kind: z.literal("allowlist"),
+    phones: z.array(z.string()).optional(),
+    identifiers: z.array(z.string()).optional(),
+  }),
+  z.object({
+    kind: z.literal("attribute"),
+    scope: z.enum(["conversation", "contact"]),
+    key: nonBlank("must not be blank"),
+    equals: nonBlank("must not be blank").optional(),
+  }),
+  z.object({
+    kind: z.literal("conversation_type"),
+    type: z.enum(["group", "individual"]),
+  }),
+  z.object({
+    kind: z.literal("label"),
+    label: nonBlank("must not be blank"),
+  }),
+]);
+
 const contactAuthRule = z
   .union([
+    contactAuthCondition,
     z.object({
-      kind: z.literal("allowlist"),
-      phones: z.array(z.string()).optional(),
-      identifiers: z.array(z.string()).optional(),
-    }),
-    z.object({
-      kind: z.literal("attribute"),
-      scope: z.enum(["conversation", "contact"]),
-      key: nonBlank("must not be blank"),
-      equals: nonBlank("must not be blank").optional(),
+      kind: z.enum(["all", "any"]),
+      // NOTE: each condition is one of the shapes above; only the kind is declared here, so the
+      // published schema does not carry the union twice. The write boundary parses the rest.
+      conditions: z.array(
+        z.looseObject({
+          kind: z.enum([
+            "allowlist",
+            "attribute",
+            "conversation_type",
+            "label",
+          ]),
+        }),
+      ),
     }),
   ])
   .nullable()
   .optional()
   .describe(
-    "decides instead of `url`: allowlist = phone (with country code) or identifier listed, 1-500 entries; attribute = set, or equal to `equals`. null clears",
+    "decides instead of `url`: allowlist = phone or identifier listed, 1-500 entries; attribute = set, or equal to `equals`; label = the conversation carries it; all/any = 1-10 conditions, one level. null clears",
   );
 
 const contactAuth = z.looseObject({

@@ -279,6 +279,22 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
+  // NOTE: the fork's `group_type` and the label list (`label_list`), read by the contact gate's rule.
+  // A value outside the two types, or a list holding anything but strings, says nothing rather than
+  // something wrong: absent leaves the stored value alone, and `[]` is a real clear.
+  if (
+    conv &&
+    (conv.group_type === "group" || conv.group_type === "individual")
+  ) {
+    normalized.conversationType = conv.group_type;
+  }
+  if (
+    conv &&
+    Array.isArray(conv.labels) &&
+    conv.labels.every((l) => typeof l === "string")
+  ) {
+    normalized.labels = (conv.labels as string[]).map((l) => l.toLowerCase());
+  }
   // NOTE: the redirect episode's other half, when the fork wrote one. PRESENCE of the key is the
   // statement: the fork always ships it (nil included) and a Chatwoot without it never does, so a
   // payload that says nothing never clears an established pairing. A present-but-unusable value (0,

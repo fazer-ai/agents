@@ -59,9 +59,9 @@ So the runtime does not serialise, and the fences sit where an out-of-order verd
 damage — the customer copy and the handoff both re-check that the conversation is still the bot's
 (`stillOurs`), and the notices are claimed per conversation.
 
-Lives in `src/modules/contact-auth/` (`settings.ts` the config reader, `check.ts` the request +
-decision table, `state.ts` the single-flight + notice cooldown, `service.ts` the orchestration both
-callers share).
+Lives in `src/modules/contact-auth/` (`settings.ts` the config reader, `rule.ts` the local rule's
+decision table, `check.ts` the request + decision table, `state.ts` the single-flight + notice
+cooldown, `service.ts` the orchestration both callers share).
 
 ## Configuration (`agent.settings.contactAuth`)
 
@@ -72,7 +72,7 @@ read, so a malformed bag can never break the webhook.
 | Field                   | Default | Meaning                                                             |
 | ----------------------- | ------- | ------------------------------------------------------------------- |
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
-| `rule`                  | `null`  | A local verdict instead of the endpoint (issue #646, see [Deciding locally](#deciding-locally-rule)). With a rule the endpoint is never called. |
+| `rule`                  | `null`  | A local verdict instead of the endpoint (see [Deciding locally](#deciding-locally-rule)): a list, an attribute, the conversation type, a label, or `all` / `any` of those. With a rule the endpoint is never called. |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
 | `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. The grant bookkeeping AFTER the answer is awaited without it, and that is deliberate: walking away from a Prisma statement does not stop it, so an abandoned upsert can commit after a later refusal deleted the row and revive an authorization the endpoint has withdrawn. A write nobody waits for is a write nobody can order. It costs one indexed single-statement transaction on the way out, and a failure there marks the contact unconfirmed. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
@@ -97,6 +97,21 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
 | ----------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | `allowlist` | a contact whose mirrored phone is in `phones` (compared by digits: `+55 (11) 98888-7777` is `5511988887777`), or whose identifier is in `identifiers` (exact) | the contact row the gate already reads |
 | `attribute` | a contact or conversation whose mirrored attribute `key` is set, or equals `equals`. The same shape and the same evaluator as a tool precondition (`tool-preconditions.ts`) | one indexed read of the conversation row, for `scope: "conversation"` |
+| `conversation_type` | a conversation whose `type` is `group` (a WhatsApp group) or `individual`, as the fork's `conversation.group_type` marks it. A conversation whose payload never stated the type is a group when its contact's identifier ends in `@g.us` (the group's JID), and individual otherwise | the conversation row |
+| `label` | a conversation carrying `label`. Stored lowercased and compared without case, since Chatwoot keeps label titles lowercased | the conversation row |
+| `all` / `any` | every condition in `conditions` holds / at least one does. 1 to 10 conditions of the four kinds above; a combination inside a combination is refused | what its conditions read |
+
+```json
+{
+  "kind": "all",
+  "conditions": [
+    { "kind": "conversation_type", "type": "group" },
+    { "kind": "label", "label": "suporte" }
+  ]
+}
+```
+
+The type and the labels come from the mirror (`Conversation.conversationType`, `Conversation.labels`), written from the conversation block every message and conversation event carries, so no condition costs a Chatwoot round trip and the callers that run with no payload in hand (the debounce flush, a nudge, a re-engagement) read the same values. They follow the mirror's rule for the attribute bags (`docs/chatwoot.md`, Mirror sync): written only when the payload carried them, the label list assigned wholesale, ordered by `last_activity_at`. That rule has one known window: a retried message delivery carries the snapshot of when it was serialized, so a label added in the seconds between the message and its retry can be undone until the next event on the conversation.
 
 - **Either the rule or the endpoint.** With a rule set, `url`, `credentialRef`, `timeoutMs`,
   `includeMessageText` and `mode` are kept but not used, and the editor hides them. The
@@ -111,10 +126,12 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
 - **Exact digits, never a suffix.** `11 98888-7777` without the country code does not match
   `+55 11 98888-7777`. A suffix match is the one where a short entry quietly admits every number
   ending the same way. Entries are 8 to 15 digits; the list holds 1 to 500 entries in total.
-- **Identity.** An `allowlist` compares the phone and the identifier, so a contact with neither is
-  `no_identity`, and one with only an email is refused as not listed. An `attribute` rule does not
-  ask about identity at all, and is decided before that check: a widget visitor with no phone, on a
-  conversation an operator marked, is exactly what `scope: "conversation"` is for.
+- **Identity.** A plain `allowlist` compares the phone and the identifier, so a contact with neither
+  is `no_identity`, and one with only an email is refused as not listed. Every other rule, a
+  combination included, does not ask about identity at all and is decided before that check: a
+  widget visitor with no phone on a conversation an operator marked, or a WhatsApp group (whose
+  contact has no phone and no email), is exactly what those conditions are for. A list inside a
+  combination is just unmet for a contact with neither.
 - **Refused, not repaired.** A malformed rule is refused at the write (REST, MCP, create, import)
   with `errors.invalidContactAuthRule`, one bad entry refusing the whole list. The reader drops one
   stored some other way, and an enabled gate with neither a rule nor a `url` is the fail-closed
@@ -123,12 +140,12 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
   trail is append-only, so an `agent.settings_set` row records the kind, how many phones and
   identifiers, and `entriesChanged` when they moved. An identifier with a line break is refused,
   since the editor holds the list one entry per line.
-- **The refusal says which rule.** The flow line carries `reason: rule_not_listed` or
-  `rule_unmet`, our codes, never the phone or the identifier. The operator note names the agent's
-  rule instead of the external check.
-- **Not here: a label condition.** Labels are not mirrored, so reading one is a Chatwoot round trip
-  before every turn, priced separately from the two above because it is not free. It is the
-  natural next condition, and the `kind` tag is where it would be added.
+- **The refusal says which condition.** The flow line carries our code, never the value compared:
+  `rule_not_listed` (list), `rule_unmet` (attribute), `rule_conversation_type`, `rule_label`. An
+  `all` reports the first condition that failed; an `any` that matched nothing reports
+  `rule_none_met`. The operator note names the agent's rule instead of the external check.
+- **The audit trail keeps a list's shape inside a combination too.** Each `allowlist` condition is
+  recorded as its kind and counts, exactly as a plain list is.
 
 ## Request / response contract
 

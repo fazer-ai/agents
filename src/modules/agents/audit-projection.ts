@@ -273,8 +273,8 @@ function markable(v: unknown): Record<string, unknown> {
 }
 
 // The contact gate's allowlist is a list of PEOPLE, and the trail is append-only, so a number projected
-// here would outlive its removal. The rule is recorded by shape (kind, counts), plus a marker when the
-// entries moved without the counts moving.
+// here would outlive its removal. A list is recorded by shape (kind, counts), plus a marker when the
+// entries moved without the counts moving, whether it is the rule or one condition of a combination.
 function redactContactAuthRule(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -288,25 +288,53 @@ function redactContactAuthRule(
       ? (r as Record<string, unknown>)
       : null;
   };
+  // The lists in a rule, in order: the rule itself, or each condition of an `all` / `any`.
+  const listsOf = (r: Record<string, unknown> | null): unknown[] => {
+    if (!r) return [];
+    if (Array.isArray(r.conditions)) {
+      return r.conditions.filter(
+        (c) => (c as Record<string, unknown> | null)?.kind === "allowlist",
+      );
+    }
+    return r.kind === "allowlist" ? [r] : [];
+  };
+  const entries = (r: unknown, k: string) => {
+    const v = (r as Record<string, unknown> | null)?.[k];
+    return Array.isArray(v) ? v : null;
+  };
+  const people = (r: Record<string, unknown> | null) =>
+    JSON.stringify(
+      listsOf(r).map((l) => [entries(l, "phones"), entries(l, "identifiers")]),
+    );
   const rb = ruleOf(before.contactAuth);
   const ra = ruleOf(after.contactAuth);
-  const entries = (r: Record<string, unknown> | null, k: string) =>
-    Array.isArray(r?.[k]) ? (r?.[k] as unknown[]) : null;
-  const moved =
-    JSON.stringify([entries(rb, "phones"), entries(rb, "identifiers")]) !==
-    JSON.stringify([entries(ra, "phones"), entries(ra, "identifiers")]);
+  const moved = people(rb) !== people(ra);
+  const shapeOf = (l: unknown): Record<string, unknown> => {
+    const shape: Record<string, unknown> = {
+      kind: "allowlist",
+      phones: entries(l, "phones")?.length ?? 0,
+      identifiers: entries(l, "identifiers")?.length ?? 0,
+    };
+    if (moved) shape.entriesChanged = true;
+    return shape;
+  };
   for (const [block, r] of [
     [before.contactAuth, rb],
     [after.contactAuth, ra],
   ] as const) {
-    if (r?.kind !== "allowlist") continue;
-    const shape: Record<string, unknown> = {
-      kind: "allowlist",
-      phones: entries(r, "phones")?.length ?? 0,
-      identifiers: entries(r, "identifiers")?.length ?? 0,
-    };
-    if (moved) shape.entriesChanged = true;
-    (block as Record<string, unknown>).rule = shape;
+    if (!r) continue;
+    if (Array.isArray(r.conditions)) {
+      (block as Record<string, unknown>).rule = {
+        ...r,
+        conditions: r.conditions.map((c) =>
+          (c as Record<string, unknown> | null)?.kind === "allowlist"
+            ? shapeOf(c)
+            : c,
+        ),
+      };
+    } else if (r.kind === "allowlist") {
+      (block as Record<string, unknown>).rule = shapeOf(r);
+    }
   }
 }
 

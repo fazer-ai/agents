@@ -79,10 +79,6 @@ import {
   type ContactField,
   type ContactFieldsConfig,
 } from "@/modules/chatwoot/contact-fields";
-import {
-  CONTACT_AUTH_IDENTIFIERS_TEXT_MAX,
-  CONTACT_AUTH_PHONES_TEXT_MAX,
-} from "@/modules/contact-auth/settings";
 import { debugModesFrom } from "@/modules/flowlog/debug-mode";
 import {
   FULL_DETAIL_ARM_HOURS,
@@ -99,8 +95,14 @@ import {
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
+  ConditionKindOptions,
+  ContactAuthConditionFields,
+  ContactAuthConditionList,
+} from "./ContactAuthConditionFields";
+import {
   type ContactAuthRuleForm,
   contactAuthRuleInvalid,
+  isCombinedRuleKind,
 } from "./contactAuthRuleForm";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
@@ -3119,7 +3121,7 @@ export function BehaviorTab({
                   label={t("editor.contactAuthSource", "Who decides")}
                   help={t(
                     "editor.contactAuthSourceHelp",
-                    "An external endpoint answers from your own system (a CRM, a customer list).\n\nA list or an attribute decides here, from what Chatwoot already holds for the contact, with no service to host. The endpoint is then never called.\n\nA list or an attribute is checked on every message, so an edit takes effect on the contact's next message.",
+                    'An external endpoint answers from your own system (a CRM, a customer list).\n\nA rule decides here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list, an attribute), with no service to host, and the endpoint is then never called. "All of these conditions" and "Any of these conditions" combine several.\n\nA rule is checked on every message, so an edit takes effect on the next message.',
                   )}
                 >
                   <Select
@@ -3137,137 +3139,37 @@ export function BehaviorTab({
                         "External endpoint",
                       )}
                     </option>
-                    <option value="allowlist">
+                    <ConditionKindOptions />
+                    <option value="all">
                       {t(
-                        "editor.contactAuthSourceAllowlist",
-                        "A list of phones or identifiers",
+                        "editor.contactAuthSourceAll",
+                        "All of these conditions",
                       )}
                     </option>
-                    <option value="attribute">
+                    <option value="any">
                       {t(
-                        "editor.contactAuthSourceAttribute",
-                        "A contact or conversation attribute",
+                        "editor.contactAuthSourceAny",
+                        "Any of these conditions",
                       )}
                     </option>
                   </Select>
                 </FormField>
-                {contactAuth.ruleKind === "allowlist" && (
-                  <>
-                    <FormField
-                      label={t("editor.contactAuthRulePhones", "Phones")}
-                      description={t(
-                        "editor.contactAuthRulePhonesHint",
-                        "One per line, with the country code (+55 11 99999-0000). Compared by digits, never by the end of the number.",
-                      )}
-                      error={
-                        contactAuthRuleBad
-                          ? t(
-                              "editor.contactAuthRuleListInvalid",
-                              "The list needs 1 to 500 entries in total; each phone needs 8 to 15 digits and each identifier at most 200 characters.",
-                            )
-                          : null
-                      }
-                    >
-                      <Textarea
-                        rows={4}
-                        maxLength={CONTACT_AUTH_PHONES_TEXT_MAX}
-                        value={contactAuth.rulePhones}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            rulePhones: e.target.value,
-                          })
-                        }
-                        placeholder="+55 11 99999-0000"
-                      />
-                    </FormField>
-                    <FormField
-                      label={t(
-                        "editor.contactAuthRuleIdentifiers",
-                        "Identifiers",
-                      )}
-                      description={t(
-                        "editor.contactAuthRuleIdentifiersHint",
-                        "One per line: the contact's identifier in Chatwoot, compared exactly.",
-                      )}
-                    >
-                      <Textarea
-                        rows={3}
-                        maxLength={CONTACT_AUTH_IDENTIFIERS_TEXT_MAX}
-                        value={contactAuth.ruleIdentifiers}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleIdentifiers: e.target.value,
-                          })
-                        }
-                      />
-                    </FormField>
-                  </>
-                )}
-                {contactAuth.ruleKind === "attribute" && (
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <FormField
-                      label={t("editor.contactAuthRuleScope", "Attribute of")}
-                    >
-                      <Select
-                        value={contactAuth.ruleScope}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleScope: e.target.value,
-                          })
-                        }
-                      >
-                        <option value="contact">
-                          {t("editor.contactAuthRuleScopeContact", "Contact")}
-                        </option>
-                        <option value="conversation">
-                          {t(
-                            "editor.contactAuthRuleScopeConversation",
-                            "Conversation",
-                          )}
-                        </option>
-                      </Select>
-                    </FormField>
-                    <FormField
-                      label={t("editor.contactAuthRuleKey", "Attribute key")}
-                      error={
-                        contactAuthRuleBad
-                          ? t("editor.contactAuthRuleKeyRequired", "Required.")
-                          : null
-                      }
-                    >
-                      <Input
-                        value={contactAuth.ruleKey}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleKey: e.target.value,
-                          })
-                        }
-                        placeholder="plano"
-                      />
-                    </FormField>
-                    <FormField
-                      label={t("editor.contactAuthRuleEquals", "Equal to")}
-                      description={t(
-                        "editor.contactAuthRuleEqualsHint",
-                        "Empty: any value counts.",
-                      )}
-                    >
-                      <Input
-                        value={contactAuth.ruleEquals}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleEquals: e.target.value,
-                          })
-                        }
-                        placeholder="ativo"
-                      />
-                    </FormField>
-                  </div>
+                {isCombinedRuleKind(contactAuth.ruleKind) ? (
+                  <ContactAuthConditionList
+                    form={contactAuth}
+                    onChange={(next) =>
+                      setContactAuth({ ...contactAuth, ...next })
+                    }
+                    showErrors={contactAuthRuleBad}
+                  />
+                ) : (
+                  <ContactAuthConditionFields
+                    value={contactAuth}
+                    onChange={(next) =>
+                      setContactAuth({ ...contactAuth, ...next })
+                    }
+                    invalid={contactAuthRuleBad}
+                  />
                 )}
                 {!contactAuthUsesRule && (
                   <>

@@ -77,11 +77,16 @@ import {
   refusedCovers,
 } from "@/modules/contact-auth/media-refusal";
 import {
+  RULE_CONVERSATION_TYPE,
+  RULE_LABEL,
+  RULE_NONE_MET,
+  RULE_NOT_LISTED,
+  RULE_UNMET,
+} from "@/modules/contact-auth/rule";
+import {
   authorizeContact,
   type ContactAuthOutcome,
   contactAuthFlowEvent,
-  RULE_NOT_LISTED,
-  RULE_UNMET,
 } from "@/modules/contact-auth/service";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
@@ -2034,6 +2039,20 @@ export type ContactAuthCopyOutcome =
 // Operator-facing note for a conversation the contact-authorization gate refused (pt-BR). Reasons are
 // short slugs by now, so the note carries one without anything the customer wrote; this is the ONE
 // place the endpoint's own reason surfaces, on the conversation, not in the execution log.
+// Which condition of the agent's own rule refused, said to the operator. Keyed by OUR reason codes.
+const RULE_NOTE_LINES: Record<string, string> = {
+  [RULE_NOT_LISTED]:
+    "🔒 Contato não autorizado pela regra do agente: o telefone e o identificador do contato não estão na lista.",
+  [RULE_UNMET]:
+    "🔒 Contato não autorizado pela regra do agente: o atributo exigido não está como a regra pede.",
+  [RULE_CONVERSATION_TYPE]:
+    "🔒 Conversa fora da regra do agente: o tipo de conversa (grupo ou individual) não é o que a regra pede.",
+  [RULE_LABEL]:
+    "🔒 Conversa fora da regra do agente: a conversa não tem a etiqueta exigida.",
+  [RULE_NONE_MET]:
+    "🔒 Conversa fora da regra do agente: nenhuma das condições da regra foi atendida.",
+};
+
 export function contactAuthNoteText(
   verdict: {
     outcome: ContactAuthOutcome;
@@ -2073,12 +2092,9 @@ export function contactAuthNoteText(
     }[copy];
     // A local rule refused: no endpoint was asked, so "external check" would point the operator at
     // a service that never saw this contact. Name the rule and which of its two questions failed.
-    const ruleLine =
-      verdict.reason === RULE_NOT_LISTED
-        ? "🔒 Contato não autorizado pela regra do agente: o telefone e o identificador do contato não estão na lista."
-        : verdict.reason === RULE_UNMET
-          ? "🔒 Contato não autorizado pela regra do agente: o atributo exigido não está como a regra pede."
-          : null;
+    const ruleLine = verdict.reason
+      ? (RULE_NOTE_LINES[verdict.reason] ?? null)
+      : null;
     if (ruleLine) return `${ruleLine}${copyLine}${handoffLine}`;
     return `🔒 Contato não autorizado pela verificação externa.${reason}${copyLine}${handoffLine}`;
   }

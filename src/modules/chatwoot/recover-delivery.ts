@@ -1228,9 +1228,18 @@ function readDeliveryRowId(payload: unknown): bigint | null {
   return typeof v === "string" ? parseDbId(v) : null;
 }
 
-async function deliveryRecoveryHandler(
+function deliveryRecoveryHandler(
   job: ClaimedJob,
   base: PrismaClient,
+): Promise<JobResult> {
+  return runRecoveryJob(job, base);
+}
+
+// The handler's body, with `deps` for a test that drives a claimed job minus the network.
+export async function runRecoveryJob(
+  job: ClaimedJob,
+  base: PrismaClient,
+  deps?: RuntimeDeps,
 ): Promise<JobResult> {
   const deliveryRowId = readDeliveryRowId(job.payload);
   // Nothing to work on, and no attempt can produce one. Failing would spend five attempts and then
@@ -1247,10 +1256,17 @@ async function deliveryRecoveryHandler(
     tenantId: job.tenantId,
     deliveryRowId,
     base,
+    ...(deps ? { deps } : {}),
   });
   // NOTE: Every outcome that ends the job without retrying it is where the loss is decided: a row
   // still DEAD now stays DEAD, and the sweep's line about it was `info` because this job was coming.
-  if (outcome !== "deferred" && outcome !== "unreachable") {
+  // A retrying outcome decides it too when the scheduler already gave up on this claim: a last
+  // attempt past its deadline is dead-lettered while the row is still PROCESSING, so the dead-letter
+  // hook found nothing to announce, and nothing runs after this.
+  if (
+    (outcome !== "deferred" && outcome !== "unreachable") ||
+    (await schedulerGaveUp(job, base))
+  ) {
     await announceUnanswered(job.tenantId, deliveryRowId, base);
   }
   // NOTE: the two retrying outcomes take DIFFERENT roads. BUSY reschedules, which CLEARS the failure
@@ -1279,6 +1295,21 @@ async function deliveryRecoveryHandler(
 // PROCESSED with nobody answered because putting it back failed (`leftProcessed`), the state nothing
 // revisits. Once per delivery: a re-run of the same job finds the line and writes nothing.
 // Best-effort, like every line here: the row stays where it is either way.
+// Whether the scheduler already dead-lettered this very claim, read rather than assumed: false on
+// any doubt, which leaves the announcement to the hook or the next attempt.
+async function schedulerGaveUp(
+  job: ClaimedJob,
+  base: PrismaClient,
+): Promise<boolean> {
+  const row = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+    db.schedulerJob.findUnique({
+      where: { id: job.id },
+      select: { status: true, claimSeq: true },
+    }),
+  ).catch(() => null);
+  return row?.status === "DEAD" && row.claimSeq === job.claimSeq;
+}
+
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a
 // transcription write-back (`message_updated`) and a row marked `owesMemoryOnly` replay into memory and
 // post nothing.

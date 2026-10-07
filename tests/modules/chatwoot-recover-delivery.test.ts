@@ -27,6 +27,7 @@ import {
   putRowBack,
   recoverStrandedDelivery,
   registerDeliveryRecoveryHandler,
+  runRecoveryJob,
 } from "@/modules/chatwoot/recover-delivery";
 import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -4936,6 +4937,57 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           where: { id: { in: rows } },
         });
         await suDb.chatwootInstance.delete({ where: { id: other.id } });
+      }
+    });
+
+    // A last attempt past its deadline is dead-lettered while the row is still PROCESSING, so the hook
+    // finds nothing to announce; the attempt that finishes afterwards with the row back on DEAD is the
+    // only one left to say it. Not while the claim is still live: then the retry decides.
+    test("a retrying outcome the scheduler already gave up on says the message went unanswered", async () => {
+      for (const [convId, messageId, status, expected] of [
+        [18940, 19450, "DEAD", [["error", "unanswered"]]],
+        [18941, 19451, "CLAIMED", []],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+        });
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status,
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true },
+        });
+        try {
+          const result = await runRecoveryJob(
+            {
+              id: job.id,
+              tenantId,
+              kind: "DELIVERY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              attempts: 4,
+              claimSeq: job.claimSeq,
+            },
+            appDb,
+            depsWith(stubChatwoot({ throwOnRead: true })),
+          );
+          expect(result.outcome).toBe("fail");
+          const lines = await deliveryLines(conv.id);
+          expect(
+            lines.map((l) => [
+              l.level,
+              (l.detail as Record<string, unknown> | null)?.outcome,
+            ]),
+          ).toEqual(expected.map((e) => [...e]));
+        } finally {
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
       }
     });
 

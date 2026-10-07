@@ -197,10 +197,15 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
 
   // The adapter passes a server's schema through unchanged, `$ref` and `anyOf` included, and the
   // arguments a model fills against it reach the server as sent.
-  test("a schema with $ref and anyOf reaches the model as declared and its arguments reach the server", async () => {
+  test("a schema with $ref and anyOf reaches the model inlined and its arguments reach the server", async () => {
     const t = await tools(sel(open));
     const schema = t.price?.schema as Record<string, unknown>;
-    expect(JSON.stringify(schema)).toContain('"$ref":"#/$defs/item"');
+    expect(JSON.stringify(schema)).not.toContain("$ref");
+    expect(schema).toMatchObject({
+      properties: {
+        item: { type: "object", properties: { sku: { type: "string" } } },
+      },
+    });
     const args = { item: { sku: "ÁÇ-1", qty: 2 }, extra: 3 };
     expect(JSON.parse(textOf(await t.price?.invoke(args)))).toEqual(args);
   });

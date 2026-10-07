@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import { normalizeTupleItems } from "@/graph/gemini-tools";
+import { declarationSchema } from "@/graph/tools/mcp-schema";
 import {
   hasSafeStdioCommandChars,
   isMcpStdioLauncher,
@@ -457,6 +458,8 @@ async function connectClient(
           result: withStructuredContent(result) as typeof result,
         }),
       });
+      for (const tool of tools)
+        (tool as { schema: unknown }).schema = declarationSchema(tool.schema);
       return { client, tools };
     } catch (err) {
       void client.close().catch(() => {});

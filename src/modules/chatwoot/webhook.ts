@@ -78,6 +78,7 @@ import {
 } from "@/modules/contact-auth/media-refusal";
 import {
   observerArmPermit,
+  observerAsk,
   observerRuleVerdict,
 } from "@/modules/contact-auth/observer";
 import {
@@ -1508,14 +1509,22 @@ async function mediaAdmitted(
       inboxId: chatwootInboxId,
       channelType: ctx.inbox.channelType,
       // A watcher, read fresh because the agent may have been flipped since the delivery began, asks
-      // the way its arm does (docs/contact-auth.md, The observer path): no message text, and the
-      // arm's asking, so a concurrent arm and pass put one question to the endpoint.
-      messageText: watcherPass ? null : (n.message?.content ?? null),
-      requestKey: watcherPass
-        ? `observe:${conversationId}`
-        : cfg.includeMessageText
-          ? `msg:${n.message?.id ?? "none"}`
-          : "inbox",
+      // the way its arm does (docs/contact-auth.md, The observer path), so a concurrent arm and
+      // pass put one question to the endpoint.
+      ...(watcherPass
+        ? observerAsk(
+            cfg,
+            conversationId,
+            n.message?.id != null
+              ? { id: n.message.id, text: n.message.content ?? null }
+              : null,
+          )
+        : {
+            messageText: n.message?.content ?? null,
+            requestKey: cfg.includeMessageText
+              ? `msg:${n.message?.id ?? "none"}`
+              : "inbox",
+          }),
       // The media pass asks at one place, so it asks the whole gate.
       stage: "both",
       cfg,
@@ -4529,6 +4538,10 @@ export async function processChatwootDelivery(
         settings,
         base,
         fetchImpl: params.deps?.contactAuthFetch,
+        message:
+          n.message?.id != null
+            ? { id: n.message.id, text: n.message.content ?? null }
+            : null,
       });
       observeVerdicts.set(key, verdict);
     }

@@ -216,9 +216,11 @@ refuses costs no `OBSERVE` job, no media call and no model call.
 - **The endpoint's answer only decides what is observed.** A denial leaves the conversation
   unobserved; so does an endpoint that fails (a timeout, a status outside the contract, a credential
   that cannot be resolved), the gate's fail-closed direction, and that line is `warn` as on a
-  responder. The message text is never forwarded from here, whatever `includeMessageText` says:
-  forwarding it exists so a customer can unlock themselves, and an observer unlocks nobody. The
-  request still carries the conversation's inbox and channel.
+  responder. The request follows the responder's contract: it carries the conversation's inbox
+  and channel, and with `includeMessageText` the text of the message that armed the observation
+  (the newest handed-over message on the debounce hand-over), keyed per message as a responder's
+  `msg:` asks are, so two messages are two questions. A resolve has no message of its own and goes
+  without the key, as a responder's nudge does.
 - **Asked once per arm.** The endpoint is asked when an observation is armed, not when it runs: the
   tick asks the conditions alone, before the model is paid (a refusal ends it with
   `skipped: contact_auth_refused`, a read that fails retries) and again at every tool hop through its
@@ -283,8 +285,8 @@ reason, and Save and export refuses before writing any section and does not expo
 still accept it, as before.
 
 A monitoring agent's editor shows the same two parts. What only makes sense when answering a
-customer stays hidden there: the deny message, the handoff and its team, the operator note, the
-notice cooldown, and the switch that forwards the message text. A note under the endpoint switch
+customer stays hidden there: the deny message, the handoff and its team, the operator note and the
+notice cooldown. The switch that forwards the message text stays, under the responder's contract. A note under the endpoint switch
 says that its answer only decides which conversations are observed.
 
 ## Request / response contract

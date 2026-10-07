@@ -182,14 +182,14 @@ function audioEvent(
   groupType: "group" | "individual",
   anonymous: boolean,
   inboxId: number,
-  update?: { messageId: number },
+  update?: { messageId?: number; text?: string },
 ) {
   seq += 1;
   const messageId = update?.messageId ?? 108_000 + seq;
   const n = normalizeChatwootEvent({
-    event: update ? "message_updated" : "message_created",
+    event: update?.messageId != null ? "message_updated" : "message_created",
     id: messageId,
-    content: "",
+    content: update?.text ?? "",
     message_type: "incoming",
     private: false,
     sender: { id: 8800 + convId, name: "Cliente", type: null },
@@ -217,7 +217,7 @@ async function deliverMessage(
   groupType: "group" | "individual",
   anonymous = false,
   inboxId = OBSERVED_INBOX,
-  update?: { messageId: number },
+  update?: { messageId?: number; text?: string },
 ) {
   const n = audioEvent(convId, groupType, anonymous, inboxId, update);
   const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -481,12 +481,14 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       handoffEnabled: true,
       includeMessageText: true,
     });
-    await deliverMessage(17, "individual");
+    await deliverMessage(17, "individual", false, OBSERVED_INBOX, {
+      text: "codigo 4711",
+    });
     expect(await runnableObserveRows(17)).toEqual([]);
     expect(providers.stt).toBe(0);
     expect(providers.auth).toBe(1);
-    // ...and the text stays out even with forwarding switched on: an observer unlocks nobody.
-    expect(authBodies[0]).not.toHaveProperty("message");
+    // ...with the text of the message that armed it, under the responder's contract.
+    expect(authBodies[0]?.message).toEqual({ text: "codigo 4711" });
     expect(customerFacing).toEqual([]);
     const lines = await gateLines(17);
     expect(lines.map((l) => l.detail)).toEqual([
@@ -948,6 +950,51 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     authAnswer = "allow";
     await deliverMessage(26, "individual", false, BOUND_INBOX, { messageId });
     expect(providers.stt).toBe(0);
+  });
+
+  // With forwarding on, each message is its own question (the key carries its id, as a
+  // responder's does); with it off, the text never travels.
+  test("the observer forwards the arming message's text only when asked to, one question per message", async () => {
+    await setGate({ enabled: true, url: AUTH_URL, includeMessageText: true });
+    await deliverMessage(39, "individual", false, OBSERVED_INBOX, {
+      text: "primeira",
+    });
+    await deliverMessage(39, "individual", false, OBSERVED_INBOX, {
+      text: "segunda",
+    });
+    expect(authBodies.map((b) => b.message)).toEqual([
+      { text: "primeira" },
+      { text: "segunda" },
+    ]);
+    authBodies.length = 0;
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(40, "individual", false, OBSERVED_INBOX, {
+      text: "nao vai",
+    });
+    expect(authBodies).toHaveLength(1);
+    expect(authBodies[0]).not.toHaveProperty("message");
+  });
+
+  // A resolve has no message of its own: the request goes without the key, as a responder's nudge.
+  test("the resolve arm asks without message text even with forwarding on", async () => {
+    await setGate({ enabled: true, url: AUTH_URL, includeMessageText: true });
+    await deliverMessage(41, "individual", false, OBSERVED_INBOX, {
+      text: "oi",
+    });
+    authBodies.length = 0;
+    await deliverResolve(41, "individual");
+    expect(authBodies).toHaveLength(1);
+    expect(authBodies[0]).not.toHaveProperty("message");
+  });
+
+  // The bound watcher's media pass and arm share one question, text and all.
+  test("a bound watcher forwarding the text asks once for the media pass and the arm", async () => {
+    await setGate({ enabled: true, url: AUTH_URL, includeMessageText: true });
+    await deliverMessage(42, "individual", false, BOUND_INBOX, {
+      text: "codigo 9",
+    });
+    expect(providers.auth).toBe(1);
+    expect(authBodies[0]?.message).toEqual({ text: "codigo 9" });
   });
 
   test("with conditions and the endpoint after them, the endpoint is asked only about what they let through", async () => {

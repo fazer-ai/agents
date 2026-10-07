@@ -3290,28 +3290,25 @@ export function BehaviorTab({
                         }
                       />
                     </FormField>
-                    {/* An observer never forwards the message text: it unlocks nobody. */}
-                    {!watcher && (
-                      <div className="flex flex-col gap-1.5">
-                        <SwitchField
-                          checked={contactAuth.includeMessageText}
-                          onCheckedChange={(v) =>
-                            setContactAuth({
-                              ...contactAuth,
-                              includeMessageText: v,
-                            })
-                          }
-                          label={t(
-                            "editor.contactAuthIncludeText",
-                            "Send the customer's message text",
-                          )}
-                          help={t(
-                            "editor.contactAuthIncludeTextHelp",
-                            "This option sends the customer's message with the Contact authorization check.\n\nThis lets the check accept a code sent in that message.\n\nThe text remains separate from the contact's identity and never appears in Logs.",
-                          )}
-                        />
-                      </div>
-                    )}
+                    <div className="flex flex-col gap-1.5">
+                      <SwitchField
+                        checked={contactAuth.includeMessageText}
+                        onCheckedChange={(v) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            includeMessageText: v,
+                          })
+                        }
+                        label={t(
+                          "editor.contactAuthIncludeText",
+                          "Send the customer's message text",
+                        )}
+                        help={t(
+                          "editor.contactAuthIncludeTextHelp",
+                          "This option sends the customer's message with the Contact authorization check.\n\nThis lets the check accept a code sent in that message.\n\nThe text remains separate from the contact's identity and never appears in Logs.",
+                        )}
+                      />
+                    </div>
                     <FormField
                       label={t(
                         "editor.contactAuthMode",

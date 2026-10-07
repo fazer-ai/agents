@@ -24,6 +24,29 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+export interface ObserverMessage {
+  id: number;
+  text: string | null;
+}
+
+// What the observer's ask carries, under the responder's contract: with `includeMessageText` the
+// text of the message that armed it, and a key per message (as a responder's `msg:` key), so two
+// messages are two questions; otherwise no text and one key per conversation. Shared with the media
+// pass of a bound watcher (chatwoot/webhook.ts), so the pass and the arm put the same question.
+export function observerAsk(
+  cfg: { includeMessageText: boolean },
+  conversationId: number,
+  message: ObserverMessage | null | undefined,
+): { messageText: string | null; requestKey: string } {
+  if (cfg.includeMessageText && message) {
+    return {
+      messageText: message.text,
+      requestKey: `observe:${conversationId}:msg:${message.id}`,
+    };
+  }
+  return { messageText: null, requestKey: `observe:${conversationId}` };
+}
+
 export interface ObserverRuleParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -37,6 +60,9 @@ export interface ObserverRuleParams {
   fetchImpl?: typeof fetch;
   // The pause between retirement attempts (`observerArmPermit`), a seam for tests.
   sleep?: (ms: number) => Promise<void>;
+  // The message that armed this ask, for an endpoint that forwards the text
+  // (`includeMessageText`); none on a resolve.
+  message?: ObserverMessage | null;
 }
 
 // The gate's answer for the watcher. `stage: "rule"` is the conditions alone, the tick's question;
@@ -76,15 +102,11 @@ async function observerGateVerdict(
       contactDbId: conv?.contactId ?? null,
       conversationDbId: conv?.id ?? null,
       conversationId: p.conversationId,
-      // The endpoint's request carries the inbox it would for a responder. The message text never
-      // travels from here: forwarding it exists so a customer can unlock themselves on their next
-      // message, and an observer serves no customer to unlock.
+      // The endpoint's request carries what it would for a responder: the inbox, and with
+      // `includeMessageText` the arming message's text (`observerAsk`).
       inboxId: conv?.inbox?.chatwootInboxId ?? null,
       channelType: conv?.inbox?.channelType ?? null,
-      messageText: null,
-      // Per conversation: the endpoint may answer by the conversation's inbox or id, so two
-      // conversations of one contact are two questions.
-      requestKey: `observe:${p.conversationId}`,
+      ...observerAsk(cfg, p.conversationId, p.message),
       stage: opts.stage,
       cfg,
       base: p.base,

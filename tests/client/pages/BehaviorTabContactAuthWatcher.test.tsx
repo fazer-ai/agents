@@ -21,7 +21,7 @@ import { behaviorTabProps } from "./behaviorTabProps";
 
 // A monitoring agent's gate: the conditions and the endpoint switch are drawn, and the endpoint's
 // fields when it is on, with copy saying its answer only decides what is observed; what only makes
-// sense when answering a customer (deny message, handoff, the message text) stays hidden. Every assertion reduces to a number or a boolean BEFORE
+// sense when answering a customer (deny message, handoff) stays hidden. Every assertion reduces to a number or a boolean BEFORE
 // expect (a failing expectation holding a DOM node serializes a cyclic happy-dom tree).
 
 const realFetch = globalThis.fetch;
@@ -108,7 +108,8 @@ describe("the gate in a monitoring agent's editor", () => {
     expect(askAfterSwitch()).toBe(1);
     expect(urlField()).toBe(1);
     expect(endpointObservedHint() > 0).toBe(true);
-    expect(messageTextSwitch()).toBe(0);
+    // The endpoint gets the message text under the responder's contract, when asked to.
+    expect(messageTextSwitch()).toBe(1);
     expect(denyMessage()).toBe(0);
     expect(handoff()).toBe(0);
     expect(saveBlocked()).toBe(false);

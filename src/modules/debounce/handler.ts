@@ -1176,6 +1176,8 @@ async function ingestObservedBurst(args: {
     return "unread";
   }
   let newest = armedLast;
+  // The newest handed-over message, whose text the watcher's endpoint gets when it forwards text.
+  let arming: { id: number; text: string | null } | null = null;
   // Hoisted so the watermark advance at the tail can name what it closed: one id per message
   // this route folded into memory.
   const handedIds: number[] = [];
@@ -1295,6 +1297,9 @@ async function ingestObservedBurst(args: {
         });
         handedIds.push(m.id);
         if (newest === null || m.id > newest) newest = m.id;
+        if (arming === null || m.id > arming.id) {
+          arming = { id: m.id, text: m.content ?? null };
+        }
       }
       // NOTE: Retire the ledger rows of what the observer now has, or the stranded-delivery sweep
       // would re-run a message already remembered. Best-effort, like the flush's.
@@ -1335,6 +1340,7 @@ async function ingestObservedBurst(args: {
         settings: ctx.settings,
         base,
         fetchImpl: deps?.contactAuthFetch,
+        message: arming,
       });
       if (permit) {
         await armObserve({

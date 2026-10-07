@@ -1410,12 +1410,13 @@ export interface EagerMediaOwner {
   // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
   // a provider.
   admission: "allowed" | "refused" | "unverified";
-  // The other watchers of this inbox, on an observer's route, whose STT and vision settings answer
-  // when the route's own are off. Every watcher appends the same message to the one contact-inbox
-  // thread and the first append wins, so the rendering cannot depend on whose delivery ran first:
-  // a watcher with STT off would otherwise remember a voice note as a marker its sibling transcribes.
-  // The provider call is still one per message (`shareInFlight`, the annotation stash).
-  siblingWatcherAgentIds?: bigint[];
+  // On an observer's route, the inbox's switched-on watchers in their fixed order (`inboxWatchers`),
+  // whose settings answer before the route's own: the first one able to run is the config. Every
+  // watcher appends the same message to the one contact-inbox thread and the first append wins, so
+  // the rendering cannot depend on whose delivery ran first; asked of the same list, every route
+  // renders with the same config. The provider call stays one per message (`shareInFlight`, the
+  // annotation stash). Absent, or with no config able to run, the route's own answers, as alone.
+  watcherAgentIds?: bigint[];
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1559,49 +1560,46 @@ async function mediaAdmitted(
 // Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
 // so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
 // to run it (production+enabled always, test only on the answer path, disabled never).
-// The route's own config first, then each sibling watcher's, in a fixed order (see
-// `siblingWatcherAgentIds`). A null agent asks the inbox's responder, as it always has.
-async function firstMediaConfig<T>(
+// The first config of `watcherAgentIds` able to run (enabled, with a credential: the service skips
+// one without), else the route's own. A null agent asks the inbox's responder, as it always has.
+async function firstMediaConfig<T extends { credentialRef: string | null }>(
   owner: EagerMediaOwner,
   resolve: (agentId: bigint | null) => Promise<T | null>,
 ): Promise<T | null> {
-  const own = await resolve(owner.agentId);
-  if (own) return own;
-  for (const agentId of owner.siblingWatcherAgentIds ?? []) {
+  for (const agentId of owner.watcherAgentIds ?? []) {
     const cfg = await resolve(agentId);
-    if (cfg) return cfg;
+    if (cfg?.credentialRef) return cfg;
   }
-  return null;
+  return resolve(owner.agentId);
 }
 
-// The confirmed watchers of an inbox other than `agentId`, ordered by agent so every route asks
-// them in the same order. Best-effort like the pass it feeds: unreadable, the route keeps its own.
-async function siblingWatcherAgentIds(
+// The switched-on watchers of an inbox, Chatwoot-confirmed, in agent order: every route reads the
+// same list, so the first one is the same memory owner and media config on all of them. Null when
+// unreadable; callers then keep the route's own agent, as a lone watcher does.
+async function inboxWatchers(
   tenantId: bigint,
   inboxId: bigint,
-  agentId: bigint,
   base: PrismaClient,
-): Promise<bigint[]> {
+): Promise<{ agentId: bigint; settings: unknown }[] | null> {
   try {
     const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.inboxObserver.findMany({
-        where: {
-          inboxId,
-          agentId: { not: agentId },
-          attachedAt: { not: null },
-        },
-        select: { agentId: true },
+        where: { inboxId, attachedAt: { not: null }, agent: { enabled: true } },
+        select: { agentId: true, agent: { select: { settings: true } } },
         orderBy: { agentId: "asc" },
       }),
     );
-    return rows.map((r) => r.agentId);
+    return rows.map((r) => ({
+      agentId: r.agentId,
+      settings: r.agent.settings,
+    }));
   } catch (err) {
     logger.warn(
-      "chatwoot: could not read the inbox's other watchers (inbox row=%s): %s",
+      "chatwoot: could not read the inbox's watchers (inbox row=%s): %s",
       String(inboxId),
       errMsg(err),
     );
-    return [];
+    return null;
   }
 }
 
@@ -3699,19 +3697,16 @@ export async function processChatwootDelivery(
   // Whether the watcher answer came from the attach window rather than a row. Only that answer
   // can: "no row" on the binding read is also the post-detach state of a bot owning an old conversation.
   const observerAttaching = observer?.attaching === true;
-  // On an observer's route, the inbox's other watchers, for the media pass (`siblingWatcherAgentIds`
-  // on EagerMediaOwner). Read once, and only by a pass that runs.
-  let siblingsMemo: Promise<bigint[]> | null = null;
-  const siblingWatchers = (): Promise<bigint[]> => {
-    if (observer === null) return Promise.resolve([]);
-    siblingsMemo ??= siblingWatcherAgentIds(
-      params.tenantId,
-      observer.inboxId,
-      observer.agentId,
-      base,
-    );
-    return siblingsMemo;
+  // On an observer's route, the inbox's watchers (`inboxWatchers`), for the media pass and the memory
+  // owner. Read once, and only by a reader that runs.
+  let watchersMemo: ReturnType<typeof inboxWatchers> | null = null;
+  const watchers = (): ReturnType<typeof inboxWatchers> => {
+    if (observer === null) return Promise.resolve(null);
+    watchersMemo ??= inboxWatchers(params.tenantId, observer.inboxId, base);
+    return watchersMemo;
   };
+  const watcherAgentIds = async (): Promise<bigint[] | undefined> =>
+    (await watchers())?.map((w) => w.agentId);
 
   // tx1: CAS <claimFrom> to PROCESSING; a duplicate that finds nothing to claim skips. Stamped
   // with `claimed_at`, the clock the sweep measures an attempt by. "PENDING" is a delivery arriving;
@@ -4500,7 +4495,7 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: "unverified",
-        siblingWatcherAgentIds: await siblingWatchers(),
+        watcherAgentIds: await watcherAgentIds(),
       });
     }
   }
@@ -5044,7 +5039,7 @@ export async function processChatwootDelivery(
       deps: params.deps,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
-      siblingWatcherAgentIds: await siblingWatchers(),
+      watcherAgentIds: await watcherAgentIds(),
     });
   }
   // The observer marks only after its ingestion has the message (queued, or nothing to queue):
@@ -5295,15 +5290,16 @@ export async function processChatwootDelivery(
     // Whose memory the append is filed under, which decides whose compaction settings summarise
     // the attendance. Both routes can arm the same job (the observer appends a colleague's reply until
     // the responder's delivery finishes) and the later arm wins, so it is the responder whenever it
-    // received the message and remembers continuously; otherwise the route's own agent.
-    const memoryOwner =
+    // received the message and remembers continuously; beside other watchers, the first of them
+    // (`inboxWatchers`), the same answer on every watcher's route; otherwise the route's own agent.
+    const memoryOwner: { agentId: bigint; settings: unknown } =
       observer !== null &&
       responderRt !== null &&
       responderCovers &&
       responderRt.enabled &&
       ingestsContinuously(responderRt.mode)
         ? responderRt
-        : rt;
+        : ((observer !== null ? (await watchers())?.[0] : undefined) ?? rt);
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,

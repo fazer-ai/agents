@@ -548,6 +548,62 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  test("beside other watchers, the memory is filed under the first of them, whichever route arms it", async () => {
+    requests.length = 0;
+    const SECOND_BOT = 962;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora (memória)",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: { memory: { compaction: { enabled: false } } },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `obr-route-${SECOND_BOT}-${process.pid}`,
+        name: "Segunda observadora (memória)",
+      },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inbox.id, agentId: second.id },
+    });
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { enabled: false },
+    });
+    try {
+      expect(second.id > observerId).toBe(true);
+      // The later watcher's route arms first: the row is still the first watcher's.
+      const { messageId } = await deliver(SECOND_BOT, 47, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(agentOf(await ingestRowFor(messageId))).toBe(String(observerId));
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { enabled: true },
+      });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inbox.id, agentId: second.id },
+      });
+    }
+  });
+
   // The persona bot deleted out-of-band on Chatwoot leaves the binding standing and the responder's
   // route dead — the state the console shows as "missing", with a Reconnect beside it. Standing
   // down for a delivery that never comes would lose the message from memory entirely.

@@ -9,11 +9,12 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
 // Several watchers of one inbox append the same message to the one contact-inbox thread, and the
-// first append wins. So the media pass on a watcher's route reads its sibling's STT settings when its
-// own are off: otherwise the voice note is remembered as a marker or as words depending on whose
-// delivery ran first. Offline the same way as eager-media-flow-context.test.ts: STT on with NO
-// credentialRef makes the service write its `no_credential` line before any client or provider, and
-// that line is the witness that a config resolved on this route.
+// first append wins. So every watcher's route renders media with the same config: the first config
+// able to run among the inbox's switched-on watchers, in agent order, else the route's own.
+// Otherwise the voice note is remembered as a marker or as words depending on whose delivery ran
+// first. Offline the same way as eager-media-flow-context.test.ts: the service writes its `stt` line
+// on a missing or unresolvable key, before any client or provider, and that line is the witness that
+// a config resolved on this route.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -40,12 +41,14 @@ const suDb = su as PrismaClient;
 const CHATWOOT_INBOX_ID = 4431;
 const DEAF_BOT = 431;
 const LISTENER_BOT = 432;
+const UNKEYED_BOT = 433;
 
 let tenantId: bigint;
 let instanceId: bigint;
 let inboxDbId: bigint;
 let deafId: bigint;
 let listenerId: bigint;
+let unkeyedId: bigint;
 let seq = 0;
 
 async function watcher(
@@ -186,6 +189,15 @@ describe.skipIf(!dbUp)(
         stt: { enabled: false },
       });
       listenerId = await watcher("Com transcrição", LISTENER_BOT, {
+        // A key that names no vault entry: the service writes its line on the failed resolution,
+        // before any client or provider, so the run stays offline.
+        stt: {
+          enabled: true,
+          provider: "openai",
+          credentialRef: "vault:999999999",
+        },
+      });
+      unkeyedId = await watcher("Sem chave", UNKEYED_BOT, {
         stt: { enabled: true, provider: "openai" },
       });
       await suDb.inboxObserver.create({
@@ -241,6 +253,24 @@ describe.skipIf(!dbUp)(
       } finally {
         await suDb.inboxObserver.deleteMany({
           where: { tenantId, inboxId: inboxDbId, agentId: listenerId },
+        });
+      }
+    });
+
+    test("a sibling switched on without a key does not take the config: it could not run", async () => {
+      await suDb.inboxObserver.create({
+        data: {
+          tenantId,
+          inboxId: inboxDbId,
+          agentId: unkeyedId,
+          attachedAt: new Date(),
+        },
+      });
+      try {
+        expect(await voiceNoteOnDeafRoute(9434)).toBe(0);
+      } finally {
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inboxDbId, agentId: unkeyedId },
         });
       }
     });

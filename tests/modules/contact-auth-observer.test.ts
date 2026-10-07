@@ -265,6 +265,18 @@ async function deliverResolve(
   });
 }
 
+function runnableObserveRows(convId: number) {
+  return suDb.schedulerJob.findMany({
+    where: {
+      tenantId,
+      kind: "OBSERVE",
+      status: { in: ["PENDING", "CLAIMED"] },
+      dedupeKey: { startsWith: `observe:${tenantId}:${instanceId}:${convId}:` },
+    },
+    select: { payload: true },
+  });
+}
+
 function observeRows(convId: number) {
   return suDb.schedulerJob.findMany({
     where: {
@@ -481,6 +493,25 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(lines.map((l) => l.detail)).toEqual([
       expect.objectContaining({ outcome: "error", stage: "endpoint" }),
     ]);
+  });
+
+  test("an endpoint that later denies retires the observation an earlier allow armed", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(23, "individual");
+    expect(await runnableObserveRows(23)).toHaveLength(1);
+    authAnswer = "deny";
+    await deliverMessage(23, "individual");
+    expect(providers.auth).toBe(2);
+    expect(await runnableObserveRows(23)).toEqual([]);
+  });
+
+  test("an endpoint that fails after an allow retires the armed observation too", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(24, "individual");
+    expect(await runnableObserveRows(24)).toHaveLength(1);
+    authAnswer = "error";
+    await deliverMessage(24, "individual");
+    expect(await runnableObserveRows(24)).toEqual([]);
   });
 
   test("with conditions and the endpoint after them, the endpoint is asked only about what they let through", async () => {

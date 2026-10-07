@@ -3,6 +3,8 @@ import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import { observeDedupeKey } from "@/modules/observe/job";
+import { retireJobsByDedupeKey } from "@/modules/scheduler/service";
 import { authorizeContact, contactAuthFlowEvent } from "./service";
 import { contactAuthHasRuleStage, readContactAuthConfig } from "./settings";
 
@@ -124,11 +126,27 @@ export function observerRuleVerdict(
 // Whether the watcher may observe this conversation, for the places that arm an observation: the
 // whole gate, conditions and endpoint. A read that fails refuses, the gate's fail-closed direction: a
 // missed observation is one tick, while an observed out-of-scope conversation is the model call the
-// gate exists to prevent.
+// gate exists to prevent. A refusal also retires the observation an earlier allow left queued, since
+// the tick re-checks only the conditions and would otherwise analyze what the endpoint now refuses.
+// A tick already running is not stopped.
 export async function observerArmAllows(
   p: ObserverRuleParams,
 ): Promise<boolean> {
-  return (
-    (await observerGateVerdict(p, { emit: true, stage: "both" })) === "allowed"
+  const verdict = await observerGateVerdict(p, { emit: true, stage: "both" });
+  if (verdict === "allowed") return true;
+  const threadId = chatwootThreadId(p.tenantId, p.instanceId, p.conversationId);
+  await retireJobsByDedupeKey(
+    p.tenantId,
+    "OBSERVE",
+    observeDedupeKey(threadId, p.agentId),
+    p.base,
+  ).catch((err) =>
+    logger.warn(
+      "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
+      String(p.conversationId),
+      String(p.agentId),
+      err instanceof Error ? err.message : String(err),
+    ),
   );
+  return false;
 }

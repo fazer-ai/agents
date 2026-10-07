@@ -223,7 +223,10 @@ refuses costs no `OBSERVE` job, no media call and no model call.
   tick asks the conditions alone, before the model is paid (a refusal ends it with
   `skipped: contact_auth_refused`, a read that fails retries) and again at every tool hop through its
   fence, without a line per hop. Asking the endpoint again at the tick would double the calls for a
-  verdict the arm just reached; an endpoint that revokes a conversation is heard at its next arm.
+  verdict the arm just reached; an endpoint that revokes a conversation is heard at its next arm,
+  and that refusal (or a failure) also retires the observation an earlier allow left queued for this
+  watcher, so the revoked conversation is not analyzed by the pending tick. A tick already running
+  is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
   reached, since asking the whole gate again would put the same question to the endpoint twice. A pass
   that asks for itself under a watcher (an agent flipped to monitoring while its gate waited) asks the

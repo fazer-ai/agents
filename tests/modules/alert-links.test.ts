@@ -37,13 +37,28 @@ function content(over: Partial<Parameters<typeof buildAlertBody>[0]> = {}) {
 describe("alert links", () => {
   test("a single event links to its turn and its conversation, on its own tenant", () => {
     const c = content();
-    expect(c).toContain(`<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>`);
-    expect(c).toContain(`<${host}/conversations/7697?switchTenant=7>`);
+    expect(c).toContain(
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+    );
+    expect(c).toContain(
+      `[View conversation](<${host}/conversations/7697?switchTenant=7>)`,
+    );
+  });
+
+  // A raw console URL runs to 80+ characters and wraps over several lines on a phone; the label is
+  // what tells the operator where the click goes. Every URL in the body sits inside a masked link.
+  test("no console URL is printed bare", () => {
+    for (const c of [content(), content({ stage: "delivery", count: 4 })]) {
+      const bare = c.replace(/\[[^\]]+\]\(<[^>]+>\)/g, "");
+      expect(bare).not.toContain(host);
+    }
   });
 
   test("a single event with no conversation still links to its turn", () => {
     const c = content({ conversationId: null });
-    expect(c).toContain(`<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>`);
+    expect(c).toContain(
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
+    );
     expect(c).not.toContain("/conversations/");
   });
 
@@ -51,7 +66,7 @@ describe("alert links", () => {
   test("a burst links to the stage and level, never to the first event's turn or conversation", () => {
     const c = content({ stage: "delivery", count: 4 });
     expect(c).toContain(
-      `<${host}/logs?stage=delivery&level=error&switchTenant=7>`,
+      `[View all 4](<${host}/logs?stage=delivery&level=error&switchTenant=7>)`,
     );
     expect(c).not.toContain("turnId=");
     expect(c).not.toContain("/conversations/");
@@ -65,8 +80,13 @@ describe("alert links", () => {
   test("a summary long enough to be clipped does not cut the link", () => {
     const c = content({ summary: "x".repeat(5000) });
     expect(c.length).toBeLessThanOrEqual(1900);
-    expect(c.endsWith(`<${host}/conversations/7697?switchTenant=7>`)).toBe(
-      true,
+    expect(
+      c.endsWith(
+        `[View conversation](<${host}/conversations/7697?switchTenant=7>)`,
+      ),
+    ).toBe(true);
+    expect(c).toContain(
+      `[View log](<${host}/logs?turnId=71b89fbe-turn&switchTenant=7>)`,
     );
   });
 
@@ -193,10 +213,10 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     );
     const [c] = await deliver(id);
     expect(c).toContain(
-      `<${host}/logs?turnId=turn-665-a&switchTenant=${tenantId}>`,
+      `[View log](<${host}/logs?turnId=turn-665-a&switchTenant=${tenantId}>)`,
     );
     expect(c).toContain(
-      `<${host}/conversations/4242?switchTenant=${tenantId}>`,
+      `[View conversation](<${host}/conversations/4242?switchTenant=${tenantId}>)`,
     );
   });
 
@@ -222,7 +242,7 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     expect(row.conversationId).toBe(1n);
     const [c] = await deliver(id);
     expect(c).toContain(
-      `<${host}/logs?stage=tts&level=error&switchTenant=${tenantId}>`,
+      `[View all 2](<${host}/logs?stage=tts&level=error&switchTenant=${tenantId}>)`,
     );
     expect(c).not.toContain("turn-665-");
   });

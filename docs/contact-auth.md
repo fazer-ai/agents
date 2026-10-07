@@ -206,10 +206,10 @@ endpoint alone when there are no conditions; same request contract, same timeout
 `mode: "once"`. The gate is asked before every place an observation is armed: a new incoming message
 on the observer's route, the resolve that pulls the verdict forward, and the debounce flush handing
 an armed burst over to an agent flipped to monitoring. It is also asked before the observer's media
-pass, because that transcription or description exists for the observation. A conversation the gate
-refuses is never observed: no observation runs and no media or model call is made. A refusal at
-the endpoint may leave a retired `OBSERVE` row behind, which never runs: it is the fence described
-under "Asked once per arm".
+pass, because that transcription or description exists for the observation. A refusal arms nothing:
+the refused delivery queues no observation and costs no media or model call. A refusal at the
+endpoint may also retire an observation an earlier allow queued, leaving a retired `OBSERVE` row
+that does not run unless a later allow re-arms it (see "Asked once per arm").
 
 - **A refusal speaks to nobody.** Nothing is sent, nothing is opened and no note is written, whatever
   `denyMessage`, `handoffEnabled` and `operatorNoteEnabled` say: those are about a customer the agent

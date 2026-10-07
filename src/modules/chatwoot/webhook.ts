@@ -4547,10 +4547,8 @@ export async function processChatwootDelivery(
     isMonitoring(responderRt.mode) &&
     n.conversationId !== null &&
     (await (async () => {
-      const cfg = readContactAuthConfig(responderRt.settings);
-      if (!cfg.enabled) return false;
-      // An audio the bound watcher already refused is one it will not analyze, whatever its
-      // conditions say now.
+      // NOTE: An audio the bound watcher already refused is one it will not analyze, whatever its
+      // gate says now, turned off included.
       if (
         refusedCovers(
           watcherMediaRefusedThrough(
@@ -4562,6 +4560,8 @@ export async function processChatwootDelivery(
         )
       )
         return true;
+      const cfg = readContactAuthConfig(responderRt.settings);
+      if (!cfg.enabled) return false;
       if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
         return true;
       return (

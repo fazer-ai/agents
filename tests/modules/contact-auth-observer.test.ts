@@ -1322,6 +1322,25 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     });
   });
 
+  test("a sibling still analyzes a late audio the bound watcher refused before its gate was turned off", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({ enabled: true, rule: GROUP_ONLY });
+      const messageId = await deliverMessage(
+        50,
+        "individual",
+        false,
+        BOUND_INBOX,
+        { noMedia: true },
+      );
+      await deliverSameOn(secondBot, 50, "individual", { noMedia: true });
+      await setGate({ enabled: false, rule: GROUP_ONLY });
+      await deliverMessage(50, "individual", false, BOUND_INBOX, { messageId });
+      expect(providers.stt).toBe(0);
+      await deliverSameOn(secondBot, 50, "individual", { messageId });
+      expect(providers.stt).toBe(1);
+    });
+  });
+
   test("a bound watcher's refusal leaves another watcher of the same inbox free to transcribe", async () => {
     await withSecondWatcher(async (secondBot) => {
       await setGate({

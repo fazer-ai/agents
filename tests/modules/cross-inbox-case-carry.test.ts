@@ -250,6 +250,27 @@ describe("carryCaseAttachments", () => {
     ]);
   });
 
+  test("attendance: an old message under a new id does not end the walk", async () => {
+    // 25 messages, so the walk needs a second page; the newest id is an imported message dated before
+    // the boundary, and the file that belongs to the attendance is on the older page.
+    const messages: Msg[] = Array.from({ length: 24 }, (_, i) => ({
+      id: i + 1,
+      createdAt: 1000 + i,
+      ...(i === 0 ? { files: [{ id: 901, name: "current.pdf" }] } : {}),
+    }));
+    messages.push({ id: 25, createdAt: 100, files: [{ id: 902 }] });
+    const f = fake({ messages });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput(
+        { mode: "attendance" },
+        { attendanceStartedAt: async () => new Date(500 * 1000) },
+      ),
+    );
+    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["current.pdf"]);
+  });
+
   test("attendance with no compaction yet is the whole conversation", async () => {
     const f = fake({
       messages: [
@@ -390,6 +411,32 @@ describe("carryCaseAttachments", () => {
     const o = uploads(f.calls)[0]?.args[2] as { content: string };
     expect(o.content).toContain("(3 de 5)");
     expect(o.content).toContain("2 anexos ficaram de fora");
+  });
+
+  test("maxFiles holds across calls: a file the limit left out does not drain in later", async () => {
+    const messages: Msg[] = [301, 302, 303, 304, 305].map((id) => ({
+      id,
+      createdAt: id,
+      files: [{ id: id * 10 }],
+    }));
+    const f = fake({ messages });
+    await carryCaseAttachments(f.client, carryInput({ maxFiles: 3 }));
+    const again = fake({ messages, caseAttrs: { ...f.caseAttrs } });
+    expect(
+      await carryCaseAttachments(again.client, carryInput({ maxFiles: 3 })),
+    ).toEqual({ carried: 0, skipped: 0, failed: 0 });
+    expect(uploads(again.calls)).toHaveLength(0);
+    const newer = fake({
+      messages: [
+        ...messages,
+        { id: 306, createdAt: 306, files: [{ id: 3060 }] },
+      ],
+      caseAttrs: { ...f.caseAttrs },
+    });
+    expect(
+      await carryCaseAttachments(newer.client, carryInput({ maxFiles: 3 })),
+    ).toEqual({ carried: 1, skipped: 2, failed: 0 });
+    expect(uploadedNames(uploads(newer.calls)[0])).toEqual(["doc-3060.pdf"]);
   });
 
   test("a case that already got some files gets only the new ones, and none when nothing is new", async () => {

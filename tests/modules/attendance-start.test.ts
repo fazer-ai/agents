@@ -4,7 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { attendanceStartedAt } from "@/modules/memory/attendance-start";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Where the current attendance of a conversation starts, read from the compaction rows: the
+// Where the current attendance of a contact's thread starts, read from the compaction rows: the
 // `attendance` scope of carrying a customer's files into a case.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -67,14 +67,17 @@ describe.skipIf(!dbUp)("attendanceStartedAt", () => {
       messageCount: 2,
       attendanceAt: at,
     });
-    // Conversation 7 was resolved, compacted, reopened and compacted again; 8 never was; 9 was cut with
-    // the mirrored conversation gone; 7 under another contact-inbox is someone else's.
+    // Contact-inbox 301: conversation 7 was cut, then a cut folded 7 and 8 together under 8's name,
+    // then one more was cut with its mirrored conversation gone, and a late cut wrote an earlier
+    // attendance last. 302 only has an undated cut. 999 is someone else's thread.
     await suDb.attendanceSummary.createMany({
       data: [
         row(7, "m1", new Date("2026-10-01T10:00:00Z")),
-        row(7, "m2", new Date("2026-10-03T10:00:00Z")),
-        row(9, "m3", null),
-        row(7, "m4", new Date("2026-10-05T10:00:00Z"), 999),
+        row(8, "m2", new Date("2026-10-03T10:00:00Z")),
+        row(7, "m3", null),
+        row(6, "m6", new Date("2026-10-02T10:00:00Z")),
+        row(4, "m4", null, 302),
+        row(7, "m5", new Date("2026-10-05T10:00:00Z"), 999),
       ],
     });
   });
@@ -85,33 +88,29 @@ describe.skipIf(!dbUp)("attendanceStartedAt", () => {
     await suDb.tenant.delete({ where: { id: otherTenantId } }).catch(() => {});
   });
 
-  const ask = (
-    conversationId: number,
-    over: { tenantId?: bigint; contactInboxId?: number } = {},
-  ) =>
+  const ask = (over: { tenantId?: bigint; contactInboxId?: number } = {}) =>
     attendanceStartedAt(appDb, {
       tenantId: over.tenantId ?? tenantId,
       instanceId,
       contactInboxId: over.contactInboxId ?? 301,
-      conversationId,
     });
 
-  test("the newest cut of the conversation is where the open attendance starts", async () => {
-    expect((await ask(7))?.toISOString()).toBe("2026-10-03T10:00:00.000Z");
+  test("the newest dated cut of the thread is where the open attendance starts, whichever conversation names it", async () => {
+    expect((await ask())?.toISOString()).toBe("2026-10-03T10:00:00.000Z");
   });
 
-  test("a conversation never compacted has no boundary: the whole of it is current", async () => {
-    expect(await ask(8)).toBeNull();
+  test("a thread never compacted has no boundary: all of it is current", async () => {
+    expect(await ask({ contactInboxId: 303 })).toBeNull();
   });
 
   test("a cut with no date says nothing about where", async () => {
-    expect(await ask(9)).toBeNull();
+    expect(await ask({ contactInboxId: 302 })).toBeNull();
   });
 
   test("another contact-inbox's rows, and another tenant's, are not read", async () => {
-    expect((await ask(7, { contactInboxId: 999 }))?.toISOString()).toBe(
+    expect((await ask({ contactInboxId: 999 }))?.toISOString()).toBe(
       "2026-10-05T10:00:00.000Z",
     );
-    expect(await ask(7, { tenantId: otherTenantId })).toBeNull();
+    expect(await ask({ tenantId: otherTenantId })).toBeNull();
   });
 });

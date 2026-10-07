@@ -129,7 +129,8 @@ function carriedIds(conv: unknown): Map<number, string> {
 }
 
 // The files the contact sent, newest first, walking the origin back page by page. Under
-// `attendance`, the walk stops at the first message at or before the boundary.
+// `attendance`, a message at or before the boundary is passed over but does not end the walk: an
+// imported message carries an old date under a new id, so dates do not fall in step with the pages.
 async function candidatesOf(
   client: CarryClient,
   input: CarryInput,
@@ -146,15 +147,12 @@ async function candidatesOf(
         before == null ? undefined : { before },
       ),
     );
-    let reachedBoundary = false;
     // Newest first, whatever order the page came in.
     const sorted = [...page].sort((a, b) => Number(b.id) - Number(a.id));
     for (const m of sorted) {
       const createdAt = Number(m.created_at);
-      if (since !== null && Number.isFinite(createdAt) && createdAt <= since) {
-        reachedBoundary = true;
+      if (since !== null && Number.isFinite(createdAt) && createdAt <= since)
         continue;
-      }
       if (m.message_type !== 0 && m.message_type !== "incoming") continue;
       if (m.private === true) continue;
       const sender = contactSender(m);
@@ -182,7 +180,7 @@ async function candidatesOf(
         });
       }
     }
-    if (reachedBoundary || page.length < MESSAGES_PAGE) break;
+    if (page.length < MESSAGES_PAGE) break;
     const ids = page
       .map((m) => Number(m.id))
       .filter((id) => Number.isFinite(id));
@@ -273,11 +271,15 @@ async function carryLocked(
   } catch {
     return { ...outcome, unread: "case" };
   }
-  const fresh = found.filter((c) => !done.has(c.attachmentId));
-  if (fresh.length === 0) return outcome;
-
-  const chosen = fresh.slice(0, config.maxFiles);
-  outcome.skipped += fresh.length - chosen.length;
+  // The limit is the case's newest files, not the newest of those not yet carried: a file it left out
+  // stays out, instead of draining in on the next call.
+  const chosen = found
+    .slice(0, config.maxFiles)
+    .filter((c) => !done.has(c.attachmentId));
+  if (chosen.length === 0) return outcome;
+  outcome.skipped += found
+    .slice(config.maxFiles)
+    .filter((c) => !done.has(c.attachmentId)).length;
   const ceiling = input.maxFileBytes ?? CARRY_MAX_FILE_BYTES;
   const files: Array<{
     candidate: Candidate;

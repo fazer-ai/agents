@@ -1619,7 +1619,6 @@ export async function buildToolset(
                         tenantId: ctx.tenantId,
                         instanceId: ctx.instanceId,
                         contactInboxId: cfg.contactInboxId as number,
-                        conversationId: ctx.conversationId,
                       }),
                   }
                 : {}),

@@ -521,25 +521,23 @@ const crossInboxCase = z.looseObject({
         .enum(CARRY_MODES)
         .optional()
         .describe(
-          "off (default); attendance = the contact's files of the origin's current attendance; conversation = all of the origin's",
+          "off (default); attendance = the origin's current attendance; conversation = all of it",
         ),
       fileTypes: z
         .array(z.string())
         .optional()
         .describe(
-          `subset of ${CARRY_FILE_TYPES.join(", ")}; unknown entries dropped; default image, file`,
+          `of ${CARRY_FILE_TYPES.join(", ")}; others dropped; default image, file`,
         ),
       maxFiles: z
         .number()
         .optional()
         .describe(
-          `newest N win; 1-${CARRY_ATTACHMENTS_MAX_FILES}, clamped; default ${CARRY_ATTACHMENTS_DEFAULTS.maxFiles}`,
+          `newest win; 1-${CARRY_ATTACHMENTS_MAX_FILES}; default ${CARRY_ATTACHMENTS_DEFAULTS.maxFiles}`,
         ),
     })
     .optional()
-    .describe(
-      "the customer's files copied into the case as one private note; a patch merges field by field, an omitted field keeps its stored value",
-    ),
+    .describe("the customer's files copied into the case as one private note"),
 });
 
 // The labels the agent's own close writes, merged into the conversation's set right

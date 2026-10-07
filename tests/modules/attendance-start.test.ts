@@ -60,6 +60,19 @@ describe("openAttendanceStart", () => {
     expect(openAttendanceStart([said(7, null)])).toBeNull();
     expect(openAttendanceStart([])).toBeNull();
   });
+  test("a late message from an earlier attendance, dated but unstamped, does not move the start", () => {
+    const late = new HumanMessage({
+      content: "atrasada",
+      additional_kwargs: sentAtStamp(new Date("2026-09-01T10:00:00Z")),
+    });
+    expect(
+      openAttendanceStart([
+        said(7, "2026-10-05T10:00:00Z"),
+        late,
+      ])?.toISOString(),
+    ).toBe("2026-10-05T10:00:00.000Z");
+  });
+
   test("a summary still waiting for its rewrite ends the attendance it covers", () => {
     const thread = [
       said(7, "2026-10-01T10:00:00Z"),

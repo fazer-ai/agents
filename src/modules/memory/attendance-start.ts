@@ -2,7 +2,11 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { isMemoryHead, stampedSentAt } from "@/graph/markers";
+import {
+  isMemoryHead,
+  stampedConversationId,
+  stampedSentAt,
+} from "@/graph/markers";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { selectClosedPrefix } from "./cut";
@@ -35,6 +39,9 @@ export function openAttendanceStart(
   );
   let first: Date | null = null;
   for (const m of messages.slice(from)) {
+    // Only a turn stamped with its conversation belongs to an attendance: a late message from an
+    // earlier one is ingested with its date and without the stamp (../../graph/ingest.ts).
+    if (stampedConversationId(m) === null) continue;
     const at = stampedSentAt(m);
     if (at && (first === null || at < first)) first = at;
   }

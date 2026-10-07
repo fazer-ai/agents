@@ -22,6 +22,11 @@ import {
 // translate('errors.mcpCommandInvalid', 'The stdio command contains unsupported characters.')
 // translate('errors.mcpCommandRequired', 'The stdio transport requires a command.')
 // translate('errors.mcpConnectionNotFound', 'MCP connection not found.')
+// translate('errors.mcpDiscoveryAuth', 'The MCP server refused the credential (HTTP {{status}}). Check the credential on this connection.')
+// translate('errors.mcpDiscoveryFailed', 'The MCP server could not be listed. Its answer is in the server log.')
+// translate('errors.mcpDiscoveryHttp', 'The MCP server answered with an error (HTTP {{status}}).')
+// translate('errors.mcpDiscoveryTimeout', 'The MCP server did not answer within {{seconds}} seconds.')
+// translate('errors.mcpDiscoveryUnreachable', 'Could not reach the MCP server. Check the URL and that the server is running.')
 // translate('errors.mcpHeadersInvalid', 'Invalid headers: {{reason}}.')
 // translate('errors.mcpLauncherInvalid', 'The stdio command must start with a supported launcher ({{launchers}}).')
 // translate('errors.mcpNameTaken', 'That MCP connection name is already in use.')
@@ -234,6 +239,6 @@ export const mcpConnectionsController = new Elysia({
         "Connects to the MCP server behind the connection and lists the tools and instructions it exposes.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 502),
     },
   );

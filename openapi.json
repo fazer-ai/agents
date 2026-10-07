@@ -19509,6 +19509,32 @@
                 }
               }
             }
+          },
+          "502": {
+            "description": "Bad gateway — an upstream dependency failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad gateway — an upstream dependency failed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "operationId": "postV1Mcp-connectionsByIdDiscover"

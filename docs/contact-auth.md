@@ -167,14 +167,19 @@ that state exist; reading the pair as two stages would start calling an endpoint
 endpoint right to ask last (a conversation an earlier gate silenced costs no call) does not apply to
 a rule:
 
-- **Rule stage**: ahead of every gate that answers the customer or reports a refusal, so a
-  conversation this agent does not serve gets its refusal and nothing else. In the webhook that is
-  ahead of the WhatsApp→chat redirect, availability (the away message) and the spend ceiling; in the
-  debounce flush, the nudge and the re-engage it is ahead of the spend ceiling. It stays AFTER the
-  test-mode gate: that gate is what keeps a test agent from speaking to real leads, and a refusal
-  speaks (the deny copy) and opens conversations, while the test-mode gate only writes an
-  operator-only note. It stays after the commands (`/teste`, `/reset`) and the redirect cross-link
-  too, which are the operator's tooling and an episode's bookkeeping.
+- **Rule stage**: first among the gates that run before a turn, ahead of every gate that answers
+  the customer or reports a refusal, so a conversation this agent does not serve gets its refusal and
+  nothing else. In the webhook that is ahead of the test-mode gate, the WhatsApp→chat redirect,
+  availability (the away message) and the spend ceiling; in the debounce flush, the nudge and the
+  re-engage it is ahead of the spend ceiling. It stays after the commands (`/teste`, `/reset`) and the
+  redirect cross-link, which are the operator's tooling and an episode's bookkeeping.
+- **Test mode**: the test-mode gate is what keeps a test agent from speaking to real leads, and a
+  refusal speaks (the deny copy) and opens conversations. So on a test-mode agent, in a conversation
+  not activated with `/teste` (the same reading the test-mode gate uses to decide who is served), a
+  refusal at the rule is silent: no copy, no handoff, no private note, and no test-mode notice either
+  (`testNoticeSentAt` stays unset). Only the flow line is written, with `silencedBy: "test_mode"`. In a
+  conversation activated with `/teste` the refusal goes out as configured: that is the operator
+  testing the gate.
 - **Endpoint stage**: where the gate always stood, last.
 
 With only one of the two configured, only that stage runs, at its own position: a rule-only agent
@@ -376,8 +381,8 @@ stale one after an unlink means asking about a customer this contact is no longe
 ## Where the gate runs
 
 **Webhook** (`maybeConsumeCommandOrGate` in `src/modules/chatwoot/webhook.ts`): in this order:
-redirect cross-link → test-mode (`/teste`, `/reset`) → **contact auth, rule stage** → WhatsApp→chat
-redirect → availability → spend ceiling → **contact auth, endpoint stage**. The endpoint stage is
+redirect cross-link → commands (`/teste`, `/reset`) → **contact auth, rule stage** → test-mode gate →
+WhatsApp→chat redirect → availability → spend ceiling → **contact auth, endpoint stage**. The endpoint stage is
 last on purpose: a conversation an earlier gate already silenced costs no authorization call. The
 rule stage is early on purpose: it costs nothing, and a conversation the agent does not serve should
 not get an away message first (see [Two stages](#two-stages-rule-then-endpoint)). It runs only for a new incoming message on an enabled,

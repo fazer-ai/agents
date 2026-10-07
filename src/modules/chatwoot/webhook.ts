@@ -3164,8 +3164,13 @@ async function maybeConsumeCommandOrGate(params: {
         fetchImpl: deps?.contactAuthFetch,
       });
     // Acts on a FINAL verdict: true = the delivery is consumed (refused, or the conversation left the
-    // bot while asking), false = the turn goes on.
-    const settle = async (verdict: ContactAuthResult): Promise<boolean> => {
+    // bot while asking), false = the turn goes on. `silencedByTestMode`: a refusal in a conversation
+    // the test-mode gate would have kept quiet is only recorded (see the rule stage below).
+    const settle = async (
+      verdict: ContactAuthResult,
+      silencedByTestMode = false,
+    ): Promise<boolean> => {
+      const line = contactAuthFlowEvent(verdict);
       emitFlowEvent(
         {
           tenantId,
@@ -3177,7 +3182,9 @@ async function maybeConsumeCommandOrGate(params: {
           threadId: chatwootThreadId(tenantId, instanceId, conversationId),
           base,
         },
-        contactAuthFlowEvent(verdict),
+        silencedByTestMode
+          ? { ...line, detail: { ...line.detail, silencedBy: "test_mode" } }
+          : line,
       );
       params.onAuthVerdict?.(verdict.outcome === "allowed");
       if (verdict.outcome === "allowed" && n.message?.id != null) {
@@ -3187,6 +3194,14 @@ async function maybeConsumeCommandOrGate(params: {
       }
       if (verdict.outcome !== "allowed") {
         await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
+        if (silencedByTestMode) {
+          logger.info(
+            "chatwoot: contact-auth refusal silenced by test mode (conv=%s outcome=%s)",
+            String(conversationId),
+            verdict.outcome,
+          );
+          return true;
+        }
         // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
         // contact, but copy, handoff and note belong to a CONVERSATION, and one contact can have two; the
         // per-conversation notice claim below stops a double. Order: copy (after the open the fence would
@@ -3287,6 +3302,26 @@ async function maybeConsumeCommandOrGate(params: {
     return { cfg: authCfg, ask, settle };
   })();
 
+  // NOTE: Contact authorization, RULE stage: free, so ahead of every gate that answers the customer
+  // (the test-mode notice, the WhatsApp redirect, availability, the spend ceiling); after the commands
+  // and the redirect cross-link, the operator's tooling. A test agent still must not speak to a real
+  // lead: where the test-mode gate would keep quiet (not activated with /teste) a refusal is only
+  // recorded, with no copy, handoff, note or test notice; an activated one is the operator testing the
+  // gate. An allow is final only with no endpoint stage, which otherwise has the last word below.
+  if (contactAuth && contactAuthHasRuleStage(contactAuth.cfg)) {
+    const verdict = await contactAuth.ask("rule");
+    if (
+      verdict.outcome !== "allowed" ||
+      !contactAuthHasEndpointStage(contactAuth.cfg)
+    ) {
+      const testModeSilent =
+        verdict.outcome !== "allowed" &&
+        ctx.mode === "test" &&
+        ctx.conv.testActivatedAt === null;
+      if (await contactAuth.settle(verdict, testModeSilent)) return true;
+    }
+  }
+
   // ── Test-mode gate: a "test" agent stays silent until the conversation is activated with /teste. ──
   if (ctx.mode === "test" && ctx.conv.testActivatedAt === null) {
     // One-shot private note (operator-only) so whoever watches the inbox knows WHY the bot is quiet
@@ -3324,24 +3359,6 @@ async function maybeConsumeCommandOrGate(params: {
       String(conversationId),
     );
     return true;
-  }
-
-  // NOTE: Contact authorization, RULE stage: ahead of every gate that answers the customer (the
-  // WhatsApp redirect, availability, the spend ceiling), since it costs nothing and a conversation
-  // this agent does not serve should not get a redirect link or an away message ahead of its refusal.
-  // AFTER the test-mode gate on purpose: that gate is what keeps a test agent from speaking to real
-  // leads, and a refusal speaks (the deny copy) and opens conversations; a conversation it silences
-  // gets one operator-only note, never a customer message. After the commands and the redirect
-  // cross-link too, which are the operator's tooling and an episode's bookkeeping. An allow here is
-  // final only when there is no endpoint stage; otherwise the endpoint, below, has the last word.
-  if (contactAuth && contactAuthHasRuleStage(contactAuth.cfg)) {
-    const verdict = await contactAuth.ask("rule");
-    if (
-      verdict.outcome !== "allowed" ||
-      !contactAuthHasEndpointStage(contactAuth.cfg)
-    ) {
-      if (await contactAuth.settle(verdict)) return true;
-    }
   }
 
   // ── WhatsApp→chat redirect gate: on the designated entry inbox this agent NEVER runs the AI — it

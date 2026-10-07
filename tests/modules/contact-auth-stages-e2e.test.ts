@@ -59,6 +59,7 @@ const INBOX_QUIET = 882; // label rule, closed hours with an away copy, quiet re
 const INBOX_NOTE_ON = 883; // the same, with the note left at its default
 const INBOX_LEGACY_URL = 884; // a rule and a url left behind, without the flag: the rule alone
 const INBOX_ENDPOINT_ONLY = 885; // no rule: the endpoint, after the closed hours, as always
+const INBOX_TEST_MODE = 886; // a test-mode agent with a label rule, the copy, the handoff and the note
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -105,9 +106,14 @@ function countingEndpoint(answer: "allow" | "deny") {
   return { fetchImpl, calls: () => calls };
 }
 
-async function seedConversation(convId: number, inbox: number) {
+async function seedConversation(
+  convId: number,
+  inbox: number,
+  testActivatedAt: Date | null = null,
+) {
   await suDb.conversation.create({
     data: {
+      testActivatedAt,
       tenantId,
       chatwootInstanceId: instanceId,
       inboxId: inboxDbIds.get(inbox) ?? null,
@@ -334,11 +340,25 @@ describe.skipIf(!dbUp)("the contact gate in two stages (webhook e2e)", () => {
         true,
       ],
     ];
+    agents.push([
+      INBOX_TEST_MODE,
+      {
+        ...plain,
+        contactAuth: {
+          enabled: true,
+          rule: { kind: "label", label: "suporte" },
+          denyMessage: DENY_COPY,
+          handoffEnabled: true,
+        },
+      },
+      false,
+    ]);
     for (const [inbox, settings, withHours] of agents) {
       const agent = await suDb.agent.create({
         data: {
           ...baseAgent,
           name: `cast-${inbox}`,
+          ...(inbox === INBOX_TEST_MODE ? { mode: "test" } : {}),
           ...(withHours ? { businessHoursId: hours.id } : {}),
           settings: settings as never,
         },
@@ -565,5 +585,88 @@ describe.skipIf(!dbUp)("the contact gate in two stages (webhook e2e)", () => {
     });
     expect(ep.calls()).toBe(0);
     expect(cw.publicOn(convId)).toEqual([AWAY_COPY]);
+  });
+
+  // A test-mode agent is silent in a conversation nobody activated, and the rule now asks ahead of
+  // that gate: a refusal there must stay as quiet as the test-mode gate would have been, or a test
+  // agent would speak (the copy) and act (the handoff) on a real lead's conversation.
+  test("test mode, conversation not activated: the rule's refusal is silent, with no test notice", async () => {
+    const convId = 9861;
+    await seedConversation(convId, INBOX_TEST_MODE);
+    const cw = stubChatwoot();
+    const ep = countingEndpoint("allow");
+    await deliver({
+      convId,
+      inbox: INBOX_TEST_MODE,
+      groupType: "individual",
+      labels: ["vendas"],
+      fetchImpl: ep.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    expect(cw.publicOn(convId)).toEqual([]);
+    expect(cw.notesOn(convId)).toEqual([]);
+    expect(cw.statusToggles).toEqual([]);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { testNoticeSentAt: true },
+    });
+    expect(conv.testNoticeSentAt).toBeNull();
+    expect(await gateLines(convId)).toEqual([
+      expect.objectContaining({
+        outcome: "denied",
+        stage: "rule",
+        silencedBy: "test_mode",
+      }),
+    ]);
+  });
+
+  test("test mode, conversation activated by /teste: the tester gets the refusal as configured", async () => {
+    const convId = 9862;
+    await seedConversation(convId, INBOX_TEST_MODE, new Date());
+    const cw = stubChatwoot();
+    const ep = countingEndpoint("allow");
+    await deliver({
+      convId,
+      inbox: INBOX_TEST_MODE,
+      groupType: "individual",
+      labels: ["vendas"],
+      fetchImpl: ep.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    expect(cw.publicOn(convId)).toEqual([DENY_COPY]);
+    expect(cw.notesOn(convId)).toHaveLength(1);
+    expect(cw.statusToggles).toEqual([[convId, "open"]]);
+    const lines = await gateLines(convId);
+    expect(lines).toEqual([
+      expect.objectContaining({ outcome: "denied", stage: "rule" }),
+    ]);
+    expect(lines[0]).not.toHaveProperty("silencedBy");
+  });
+
+  test("test mode, conversation not activated, the rule allows: the test-mode gate speaks as before", async () => {
+    const convId = 9863;
+    await seedConversation(convId, INBOX_TEST_MODE);
+    const cw = stubChatwoot();
+    const ep = countingEndpoint("allow");
+    await deliver({
+      convId,
+      inbox: INBOX_TEST_MODE,
+      groupType: "individual",
+      labels: ["suporte"],
+      fetchImpl: ep.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    expect(cw.publicOn(convId)).toEqual([]);
+    expect(cw.notesOn(convId)).toEqual([expect.stringContaining("modo teste")]);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { testNoticeSentAt: true },
+    });
+    expect(conv.testNoticeSentAt).not.toBeNull();
+    const lines = await gateLines(convId);
+    expect(lines).toEqual([
+      expect.objectContaining({ outcome: "allowed", stage: "rule" }),
+    ]);
+    expect(lines[0]).not.toHaveProperty("silencedBy");
   });
 });

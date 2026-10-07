@@ -330,7 +330,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         agentId: t.Optional(
           t.String({
             description:
-              "Optional agent id: only conversations whose inbox is bound to that agent (inboxes it only observes are excluded).",
+              "Optional agent id: only conversations on inboxes that agent answers or observes (an observer attachment still pending counts).",
           }),
         ),
       }),

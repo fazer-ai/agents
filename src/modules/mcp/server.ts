@@ -431,9 +431,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           agent_id: z
             .string()
             .optional()
-            .describe(
-              "Only inboxes bound to this agent, not ones it observes.",
-            ),
+            .describe("Only inboxes this agent answers or observes."),
         },
       },
       async (

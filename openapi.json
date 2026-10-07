@@ -5243,7 +5243,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Optional agent id: only conversations whose inbox is bound to that agent (inboxes it only observes are excluded).",
+              "description": "Optional agent id: only conversations on inboxes that agent answers or observes (an observer attachment still pending counts).",
               "type": "string"
             }
           },

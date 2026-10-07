@@ -9,8 +9,9 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// The Conversations list narrowed to one agent. "One agent's conversations" means the ones on
-// inboxes BOUND to it; an inbox it only observes is somebody else's conversation to answer.
+// The Conversations list narrowed to one agent: the conversations on every inbox the agent is
+// attached to, as the responder bound to it or as its observer. A monitoring agent is never bound,
+// so without its observed inboxes its filter would be empty by construction.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -47,9 +48,11 @@ afterAll(() => {
 
 let tenantA = 0n;
 let tenantB = 0n;
-// A: `sales` answers inbox 1 and observes inbox 2; `support` answers inbox 2. Inbox 3 is unbound.
+// A: `sales` answers inbox 1; `support` answers inbox 2. `watcher` (monitoring) observes inbox 2,
+// confirmed, and inbox 3, which has no responder, with the attachment still pending.
 let sales = 0n;
 let support = 0n;
+let watcher = 0n;
 // B's own agent, bound to B's inbox: an id that exists, in another tenant.
 let foreign = 0n;
 
@@ -62,10 +65,10 @@ const ctx = (t: bigint): TenantContext => ({
 const ids = (items: { chatwootConversationId: number }[]) =>
   items.map((c) => c.chatwootConversationId).sort((a, b) => a - b);
 
-async function agent(tenantId: bigint, name: string) {
+async function agent(tenantId: bigint, name: string, mode = "production") {
   return (
     await suDb.agent.create({
-      data: { tenantId, name, systemPrompt: "x" },
+      data: { tenantId, name, systemPrompt: "x", mode },
     })
   ).id;
 }
@@ -84,6 +87,7 @@ describe.skipIf(!dbUp)("conversations filtered by agent", () => {
     ).id;
     sales = await agent(tenantA, "Sales");
     support = await agent(tenantA, "Support");
+    watcher = await agent(tenantA, "Watcher", "monitoring");
     foreign = await agent(tenantB, "Foreign");
 
     const instA = (
@@ -124,7 +128,15 @@ describe.skipIf(!dbUp)("conversations filtered by agent", () => {
     const i3 = await inbox(tenantA, instA, 3, null);
     const iB = await inbox(tenantB, instB, 9, foreign);
     await suDb.inboxObserver.create({
-      data: { tenantId: tenantA, inboxId: i2, agentId: sales },
+      data: { tenantId: tenantA, inboxId: i2, agentId: watcher },
+    });
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId: tenantA,
+        inboxId: i3,
+        agentId: watcher,
+        attachedAt: null,
+      },
     });
     const contact = await suDb.contact.create({
       data: {
@@ -194,14 +206,38 @@ describe.skipIf(!dbUp)("conversations filtered by agent", () => {
     expect(ids(page.items)).toEqual([101, 102, 103]);
   });
 
-  test("an inbox the agent only observes is not its conversation", async () => {
+  test("a responder's filter is its bound inbox, not the observer's", async () => {
     const page = await listConversations(
       ctx(tenantA),
       { agentId: support },
       appDb,
     );
-    // 201 is on inbox 2, which `sales` observes and `support` answers: it is support's alone.
+    // 201 is on inbox 2, which `support` answers and `watcher` observes; 301 is the watcher's alone.
     expect(ids(page.items)).toEqual([201]);
+  });
+
+  test("a monitoring agent's filter is the conversations of the inboxes it observes", async () => {
+    const page = await listConversations(
+      ctx(tenantA),
+      { agentId: watcher },
+      appDb,
+    );
+    expect(ids(page.items)).toEqual([201, 301]);
+    const on201 = page.items.find((c) => c.chatwootConversationId === 201);
+    expect(on201?.agentName).toBe("Support");
+    expect(on201?.observerNames).toEqual(["Watcher"]);
+  });
+
+  // The same reading as every other "does this agent observe the inbox" question: a row written
+  // ahead of Chatwoot's answer already speaks for the inbox, and the row's badge shows it too.
+  test("a pending observer row counts", async () => {
+    const page = await listConversations(
+      ctx(tenantA),
+      { agentId: watcher, status: "pending", q: "301" },
+      appDb,
+    );
+    expect(ids(page.items)).toEqual([301]);
+    expect(page.items[0]?.observerNames).toEqual(["Watcher"]);
   });
 
   test("without the filter every conversation is still listed", async () => {
@@ -253,6 +289,19 @@ describe.skipIf(!dbUp)("conversations filtered by agent", () => {
       cursor = BigInt(page.nextCursor);
     }
     expect(seen).toEqual([103, 102, 101]);
+    const watched: number[] = [];
+    cursor = undefined;
+    for (let i = 0; i < 5; i++) {
+      const page = await listConversations(
+        ctx(tenantA),
+        { agentId: watcher, limit: 1, cursor },
+        appDb,
+      );
+      watched.push(...page.items.map((c) => c.chatwootConversationId));
+      if (!page.nextCursor) break;
+      cursor = BigInt(page.nextCursor);
+    }
+    expect(watched).toEqual([301, 201]);
   });
 
   // Over a real MCP client: the tool is registered with the argument, and a call reaches the filter.
@@ -289,6 +338,19 @@ describe.skipIf(!dbUp)("conversations filtered by agent", () => {
         items: { chatwootConversationId: number }[];
       };
       expect(ids(list.items)).toEqual([201]);
+      const observed = (await client.callTool({
+        name,
+        arguments: { agent_id: String(watcher) },
+      })) as { content: { text: string }[] };
+      expect(
+        ids(
+          (
+            JSON.parse(observed.content[0]?.text ?? "{}") as {
+              items: { chatwootConversationId: number }[];
+            }
+          ).items,
+        ),
+      ).toEqual([201, 301]);
       const bad = (await client.callTool({
         name,
         arguments: { agent_id: " 17 " },

@@ -16,11 +16,12 @@ import {
   runEagerMedia,
 } from "@/modules/chatwoot/webhook";
 import {
-  observerArmAllows,
+  observerArmPermit,
   observerRuleVerdict,
 } from "@/modules/contact-auth/observer";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
-import { runObserve } from "@/modules/observe/job";
+import { armObserve, runObserve } from "@/modules/observe/job";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -177,11 +178,12 @@ function audioEvent(
   groupType: "group" | "individual",
   anonymous: boolean,
   inboxId: number,
+  update?: { messageId: number },
 ) {
   seq += 1;
-  const messageId = 108_000 + seq;
+  const messageId = update?.messageId ?? 108_000 + seq;
   const n = normalizeChatwootEvent({
-    event: "message_created",
+    event: update ? "message_updated" : "message_created",
     id: messageId,
     content: "",
     message_type: "incoming",
@@ -211,14 +213,15 @@ async function deliverMessage(
   groupType: "group" | "individual",
   anonymous = false,
   inboxId = OBSERVED_INBOX,
+  update?: { messageId: number },
 ) {
-  const n = audioEvent(convId, groupType, anonymous, inboxId);
+  const n = audioEvent(convId, groupType, anonymous, inboxId, update);
   const delivery = await suDb.chatwootWebhookDelivery.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       deliveryId: `cao-${process.pid}-${seq}`,
-      event: "message_created",
+      event: n.event,
       status: "PENDING",
     },
     select: { id: true },
@@ -232,6 +235,7 @@ async function deliverMessage(
     base: appDb,
     deps: deps() as never,
   });
+  return n.message?.id as number;
 }
 
 async function deliverResolve(
@@ -471,7 +475,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       includeMessageText: true,
     });
     await deliverMessage(17, "individual");
-    expect(await observeRows(17)).toEqual([]);
+    expect(await runnableObserveRows(17)).toEqual([]);
     expect(providers.stt).toBe(0);
     expect(providers.auth).toBe(1);
     // ...and the text stays out even with forwarding switched on: an observer unlocks nobody.
@@ -487,7 +491,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     authAnswer = "error";
     await setGate({ enabled: true, url: AUTH_URL });
     await deliverMessage(18, "individual");
-    expect(await observeRows(18)).toEqual([]);
+    expect(await runnableObserveRows(18)).toEqual([]);
     expect(customerFacing).toEqual([]);
     const lines = await gateLines(18);
     expect(lines.map((l) => l.detail)).toEqual([
@@ -512,6 +516,61 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     authAnswer = "error";
     await deliverMessage(24, "individual");
     expect(await runnableObserveRows(24)).toEqual([]);
+  });
+
+  // Two deliveries in flight on one conversation: the allow asked first must not re-arm after the
+  // denial asked later has retired the observation.
+  test("an allow asked before a later denial cannot re-arm the observation the denial retired", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(25, "individual");
+    expect(await runnableObserveRows(25)).toHaveLength(1);
+    const permit = await observerArmPermit({
+      tenantId,
+      instanceId,
+      conversationId: 25,
+      agentId: observerId,
+      settings,
+      base: appDb,
+      fetchImpl: deps().contactAuthFetch,
+    });
+    expect(permit).not.toBeNull();
+    authAnswer = "deny";
+    await deliverMessage(25, "individual");
+    expect(
+      await armObserve({
+        tenantId,
+        instanceId,
+        conversationId: 25,
+        agentId: observerId,
+        reason: "burst",
+        cfg: readMonitoringConfig({}),
+        gateAskedAt: permit?.askedAt,
+        base: appDb,
+      }),
+    ).toBe("off");
+    expect(await runnableObserveRows(25)).toEqual([]);
+    // An allow asked after the denial arms as before.
+    authAnswer = "allow";
+    await deliverMessage(25, "individual");
+    expect(await runnableObserveRows(25)).toHaveLength(1);
+  });
+
+  // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
+  // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
+  test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {
+    authAnswer = "deny";
+    await setGate({ enabled: true, url: AUTH_URL });
+    const messageId = await deliverMessage(
+      26,
+      "individual",
+      false,
+      BOUND_INBOX,
+    );
+    expect(providers.stt).toBe(0);
+    authAnswer = "allow";
+    await deliverMessage(26, "individual", false, BOUND_INBOX, { messageId });
+    expect(providers.stt).toBe(0);
   });
 
   test("with conditions and the endpoint after them, the endpoint is asked only about what they let through", async () => {
@@ -596,7 +655,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       },
     ) as PrismaClient;
     expect(
-      await observerArmAllows({
+      await observerArmPermit({
         tenantId,
         instanceId,
         conversationId: 11,
@@ -604,7 +663,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
         settings: { contactAuth: { enabled: true, rule: GROUP_ONLY } },
         base: unreadable,
       }),
-    ).toBe(false);
+    ).toBeNull();
     // ...and says why to the tick, which retries a read that failed instead of treating it as a no.
     expect(
       await observerRuleVerdict(
@@ -785,7 +844,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     authAnswer = "deny";
     await setGate({ enabled: true, url: AUTH_URL });
     await deliverResolve(21, "individual");
-    expect(await observeRows(21)).toEqual([]);
+    expect(await runnableObserveRows(21)).toEqual([]);
     expect(providers.auth).toBe(1);
     expect(customerFacing).toEqual([]);
   });

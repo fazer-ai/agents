@@ -558,6 +558,9 @@ describe.skipIf(!dbUp)(
           where: {
             tenantId,
             kind: "OBSERVE",
+            // The denial leaves a retired row carrying its mark (`retireRefusedObserve`), never a
+            // runnable one.
+            status: { in: ["PENDING", "CLAIMED"] },
             dedupeKey: {
               startsWith: `observe:${threadOf(CONV_ENDPOINT_DENIED)}:`,
             },

@@ -54,7 +54,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
-import { observerArmAllows } from "@/modules/contact-auth/observer";
+import { observerArmPermit } from "@/modules/contact-auth/observer";
 import {
   authorizeContact,
   type ContactAuthStage,
@@ -1327,17 +1327,16 @@ async function ingestObservedBurst(args: {
       // NOTE: A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
       // message: best-effort, after the memory has it, and only where the contact gate (conditions,
       // and the endpoint under the same rules) lets the watcher observe this conversation.
-      if (
-        await observerArmAllows({
-          tenantId,
-          instanceId,
-          conversationId,
-          agentId: ctx.agentId,
-          settings: ctx.settings,
-          base,
-          fetchImpl: deps?.contactAuthFetch,
-        })
-      ) {
+      const permit = await observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId: ctx.agentId,
+        settings: ctx.settings,
+        base,
+        fetchImpl: deps?.contactAuthFetch,
+      });
+      if (permit) {
         await armObserve({
           tenantId,
           instanceId,
@@ -1347,6 +1346,7 @@ async function ingestObservedBurst(args: {
           cfg: readMonitoringConfig(ctx.settings),
           // NOTE: In Chatwoot's own id sequence, the order the tick's reset fence is asked in.
           atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
+          gateAskedAt: permit.askedAt,
           base,
         });
       }

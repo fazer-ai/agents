@@ -200,7 +200,7 @@ leaves a customer with nothing.
 ## The observer path
 
 A monitoring agent answers nobody, and the gate decides which conversations it OBSERVES
-(`contact-auth/observer.ts`, `observerArmAllows`). Both stages run under the rules a responder
+(`contact-auth/observer.ts`, `observerArmPermit`). Both stages run under the rules a responder
 follows: the conditions first, then the endpoint when `askEndpointAfterRule` asks for it, or the
 endpoint alone when there are no conditions; same request contract, same timeout, same grants under
 `mode: "once"`. The gate is asked before every place an observation is armed: a new incoming message
@@ -225,10 +225,16 @@ refuses costs no `OBSERVE` job, no media call and no model call.
   fence, without a line per hop. Asking the endpoint again at the tick would double the calls for a
   verdict the arm just reached; an endpoint that revokes a conversation is heard at its next arm,
   and that refusal (or a failure) also retires the observation an earlier allow left queued for this
-  watcher, so the revoked conversation is not analyzed by the pending tick. A tick already running
-  is not stopped.
+  watcher, so the revoked conversation is not analyzed by the pending tick. The refusal leaves the
+  time it was asked on the observation's row (a retired row is created when there is none), and an
+  arm whose allow was asked before it arms nothing: a delivery that got its allow and is still in
+  its media pass cannot bring back what a later denial retired. A refusal by the conditions needs
+  none of this, since the tick asks them again. A tick already running is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
-  reached, since asking the whole gate again would put the same question to the endpoint twice. A pass
+  reached, since asking the whole gate again would put the same question to the endpoint twice. When
+  that verdict refuses, the pass is skipped and the refusal is recorded for the message as the pass
+  would record it (Media waits for the gate), so Chatwoot's late update of the same audio is not
+  transcribed by a later allow. A pass
   that asks for itself under a watcher (an agent flipped to monitoring while its gate waited) asks the
   whole gate the way the arm does, with the arm's asking, so a concurrent arm and pass share one
   request. An observer beside a separate responder keeps the responder's `unverified` pass (Media

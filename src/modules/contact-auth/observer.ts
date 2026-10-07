@@ -3,8 +3,7 @@ import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent } from "@/modules/flowlog/service";
-import { observeDedupeKey } from "@/modules/observe/job";
-import { retireJobsByDedupeKey } from "@/modules/scheduler/service";
+import { retireRefusedObserve } from "@/modules/observe/job";
 import { authorizeContact, contactAuthFlowEvent } from "./service";
 import { contactAuthHasRuleStage, readContactAuthConfig } from "./settings";
 
@@ -43,7 +42,7 @@ export interface ObserverRuleParams {
 async function observerGateVerdict(
   p: ObserverRuleParams,
   opts: { emit: boolean; stage: "rule" | "both" },
-): Promise<"allowed" | "refused" | "unreadable"> {
+): Promise<"allowed" | "refused" | "endpoint_refused" | "unreadable"> {
   const cfg = readContactAuthConfig(p.settings);
   if (!cfg.enabled) return "allowed";
   if (opts.stage === "rule" && !contactAuthHasRuleStage(cfg)) return "allowed";
@@ -102,7 +101,8 @@ async function observerGateVerdict(
         contactAuthFlowEvent(verdict),
       );
     }
-    return verdict.outcome === "allowed" ? "allowed" : "refused";
+    if (verdict.outcome === "allowed") return "allowed";
+    return verdict.stage === "endpoint" ? "endpoint_refused" : "refused";
   } catch (err) {
     logger.warn(
       "contact-auth: the observer's gate could not be evaluated (conv=%s agent=%s): %s",
@@ -120,27 +120,27 @@ export function observerRuleVerdict(
   p: ObserverRuleParams,
   opts: { emit: boolean },
 ): Promise<"allowed" | "refused" | "unreadable"> {
-  return observerGateVerdict(p, { ...opts, stage: "rule" });
+  return observerGateVerdict(p, { ...opts, stage: "rule" }).then((v) =>
+    v === "endpoint_refused" ? "refused" : v,
+  );
 }
 
 // Whether the watcher may observe this conversation, for the places that arm an observation: the
 // whole gate, conditions and endpoint. A read that fails refuses, the gate's fail-closed direction: a
 // missed observation is one tick, while an observed out-of-scope conversation is the model call the
-// gate exists to prevent. A refusal also retires the observation an earlier allow left queued, since
-// the tick re-checks only the conditions and would otherwise analyze what the endpoint now refuses.
-// A tick already running is not stopped.
-export async function observerArmAllows(
+// gate exists to prevent. An allow is a permit carrying when it was asked, which the arm hands to
+// `armObserve` so a denial asked later wins over it. The ENDPOINT's refusal or failure retires the
+// observation an earlier allow left queued (`retireRefusedObserve`), since the tick re-checks only
+// the conditions and would otherwise analyze what the endpoint now refuses; the conditions' own
+// refusal needs no such step, the tick asks them again. A tick already running is not stopped.
+export async function observerArmPermit(
   p: ObserverRuleParams,
-): Promise<boolean> {
+): Promise<{ askedAt: number } | null> {
+  const askedAt = Date.now();
   const verdict = await observerGateVerdict(p, { emit: true, stage: "both" });
-  if (verdict === "allowed") return true;
-  const threadId = chatwootThreadId(p.tenantId, p.instanceId, p.conversationId);
-  await retireJobsByDedupeKey(
-    p.tenantId,
-    "OBSERVE",
-    observeDedupeKey(threadId, p.agentId),
-    p.base,
-  ).catch((err) =>
+  if (verdict === "allowed") return { askedAt };
+  if (verdict !== "endpoint_refused") return null;
+  await retireRefusedObserve({ ...p, askedAt }).catch((err) =>
     logger.warn(
       "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
       String(p.conversationId),
@@ -148,5 +148,5 @@ export async function observerArmAllows(
       err instanceof Error ? err.message : String(err),
     ),
   );
-  return false;
+  return null;
 }

@@ -1133,6 +1133,47 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect(await logs(ex.i1)).toBe(0);
   });
 
+  test("the Logs page pages through inbox-less lines like any other, whatever their number", async () => {
+    const conv = await seedConv(ex, "manyTakeovers", { at: D1, inbox: ex.i2 });
+    await suDb.executionLog.createMany({
+      data: Array.from({ length: 5 }, (_, i) => ({
+        tenantId: ex.tenantId,
+        turnId: crypto.randomUUID(),
+        conversationId: conv,
+        stage: "handoff",
+        level: "info",
+        source: "inbox",
+        detail: { outcome: "taken_over", n: i },
+        createdAt: new Date(D1.getTime() + i * 1000),
+      })),
+    });
+    const page = (cursor?: bigint, stage = "handoff") =>
+      listExecutionLogs(
+        ctx(ex.tenantId),
+        {
+          inboxId: ex.i2,
+          stage,
+          level: "info",
+          conversationId: conv,
+          limit: 2,
+          cursor,
+        },
+        appDb,
+      );
+    const seen: string[] = [];
+    let cursor: bigint | undefined;
+    for (let i = 0; i < 5; i++) {
+      const p = await page(cursor);
+      expect(p.items.length).toBeLessThanOrEqual(2);
+      seen.push(...p.items.map((x) => x.id));
+      if (!p.nextCursor) break;
+      cursor = BigInt(p.nextCursor);
+    }
+    expect(new Set(seen).size).toBe(5);
+    // Every other filter applies to them too.
+    expect((await page(undefined, "tool")).items).toEqual([]);
+  });
+
   test("a handoff call that transferred nothing is not the agent's handoff", async () => {
     const line = (conv: bigint | undefined, handedOff?: boolean) =>
       suDb.executionLog.create({

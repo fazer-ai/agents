@@ -85,9 +85,9 @@ export type ExecutionLogRow = Prisma.ExecutionLogGetPayload<{
 // keyset pagination via `cursor`) and the export (which ignores `cursor`/`limit`).
 export function buildLogWhere(
   opts: ListLogsOpts,
-  // Under an inbox filter: the conversations of that inbox that have lines naming no inbox
-  // (`inboxLogConversations`), whose lines are that inbox's too.
-  inboxConversations: bigint[] = [],
+  // Under an inbox filter: lines naming no inbox whose conversation is that inbox's
+  // (`inboxLogLineIds`), which are that inbox's lines too.
+  inboxLineIds: bigint[] = [],
 ): Prisma.ExecutionLogWhereInput {
   const createdAt: Prisma.DateTimeFilter = {};
   if (opts.since) createdAt.gte = opts.since;
@@ -101,14 +101,7 @@ export function buildLogWhere(
       ? {
           OR: [
             { inboxId: opts.inboxId },
-            ...(inboxConversations.length > 0
-              ? [
-                  {
-                    inboxId: null,
-                    conversationId: { in: inboxConversations },
-                  },
-                ]
-              : []),
+            ...(inboxLineIds.length > 0 ? [{ id: { in: inboxLineIds } }] : []),
           ],
         }
       : {}),
@@ -151,24 +144,43 @@ export function mapExecutionLogRow(r: ExecutionLogRow): ExecutionLogItem {
 }
 
 // A line written before its inbox was known (a person taking over is logged from the webhook) names
-// only its conversation. Under an inbox filter it is still that inbox's line, so the reader resolves,
-// within the window, which of the inbox's conversations carry such lines. The dashboard counts them
-// by the same rule (`logWhereSql`), so its figure and the page it links to agree.
-export async function inboxLogConversations(
+// only its conversation. Under an inbox filter it is still that inbox's line, so the reader finds
+// such lines whose conversation is in the inbox and that pass every other filter, newest first, and
+// at most `limit` of them: the page is the newest `limit` rows of both arms together, so no more than
+// that many from this arm can ever be on it, and the id list it hands `buildLogWhere` stays bounded
+// however large the inbox. The dashboard counts them by the same rule (`logWhereSql`).
+export async function inboxLogLineIds(
   db: Prisma.TransactionClient,
   opts: ListLogsOpts,
+  limit: number,
 ): Promise<bigint[]> {
   if (opts.inboxId === undefined) return [];
   const since = opts.since ?? null;
   const until = opts.until ?? null;
+  const source = opts.source === "all" ? null : (opts.source ?? "inbox");
+  const tool = opts.tool ?? null;
+  const noTool = Boolean(opts.noTool && !opts.tool);
   const rows = await db.$queryRaw<{ id: bigint }[]>(Prisma.sql`
-    SELECT DISTINCT l.conversation_id AS id
+    SELECT l.id
       FROM execution_logs l
-      JOIN conversations c ON c.id = l.conversation_id
      WHERE l.inbox_id IS NULL
-       AND c.inbox_id = ${opts.inboxId}
+       AND EXISTS (SELECT 1 FROM conversations c
+                    WHERE c.id = l.conversation_id AND c.inbox_id = ${opts.inboxId})
        AND (${since}::timestamptz IS NULL OR l.created_at >= ${since})
-       AND (${until}::timestamptz IS NULL OR l.created_at <= ${until})`);
+       AND (${until}::timestamptz IS NULL OR l.created_at <= ${until})
+       AND (${opts.level ?? null}::text IS NULL OR l.level = ${opts.level ?? null})
+       AND (${opts.stage ?? null}::text IS NULL OR l.stage = ${opts.stage ?? null})
+       AND (${opts.agentId ?? null}::bigint IS NULL OR l.agent_id = ${opts.agentId ?? null})
+       AND (${tool}::text IS NULL OR l.detail->>'tool' = ${tool})
+       AND (NOT ${noTool} OR l.detail->>'tool' IS NULL)
+       AND (${opts.conversationId ?? null}::bigint IS NULL OR l.conversation_id = ${opts.conversationId ?? null})
+       AND (${opts.turnId ?? null}::text IS NULL OR l.turn_id = ${opts.turnId ?? null})
+       AND (${source}::text IS NULL OR l.source = ${source})
+       AND (${opts.search ?? null}::text IS NULL
+            OR strpos(lower(l.error_message), lower(${opts.search ?? null})) > 0)
+       AND (${opts.cursor ?? null}::bigint IS NULL OR l.id < ${opts.cursor ?? null})
+     ORDER BY l.id DESC
+     LIMIT ${limit}`);
   return rows.map((r) => r.id);
 }
 
@@ -181,7 +193,7 @@ export async function listExecutionLogs(
   const take = Math.min(opts.limit ?? 50, 200);
   const rows = await runScopedOn(base, ctx, async (db) =>
     db.executionLog.findMany({
-      where: buildLogWhere(opts, await inboxLogConversations(db, opts)),
+      where: buildLogWhere(opts, await inboxLogLineIds(db, opts, take + 1)),
       orderBy: { id: "desc" },
       take: take + 1, // one extra row tells us whether a next page exists
       select: LOG_SELECT,

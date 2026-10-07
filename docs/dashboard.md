@@ -16,7 +16,7 @@ Every route takes the same query (`dashboardFilterQuery`, `src/api/v1/dashboard.
 | `agentRanSql` | **the agent ran on it**: a real-traffic ledger row that is an agent turn (`node` null or not in `NON_AGENT_TURN_NODES`), by the filtered agent when there is one |
 | `outcomeSql` | `classifyOutcome` in SQL (handoff, resolved by the agent, resolved before tracking, resolved by someone else, unresolved); fenced against the TypeScript rule by `tests/modules/analytics-outcome-sql.test.ts` |
 | `usageWhereSql` | **the view's ledger rows**: billed in the window, in the source, by the agent, in the inbox |
-| `logWhereSql` | the same for `execution_logs`, which carries the same columns; under an inbox filter a line that names its conversation and no inbox (a takeover is logged from the webhook) is its conversation's inbox's. The Logs page reads the same rule (`inboxLogConversations`, `src/modules/flowlog/read.ts`) |
+| `logWhereSql` | the same for `execution_logs`, which carries the same columns; under an inbox filter a line that names its conversation and no inbox (a takeover is logged from the webhook) is its conversation's inbox's. The Logs page reads the same rule (`inboxLogLineIds`, `src/modules/flowlog/read.ts`, bounded by the page size) |
 
 Conversation figures are real traffic by construction (a playground turn has no conversation). Ledger figures follow the source toggle.
 

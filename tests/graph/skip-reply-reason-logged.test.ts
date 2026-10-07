@@ -40,14 +40,18 @@ async function run(
   tool: string,
   input: string,
   output: unknown,
+  opts: { handedOff?: () => boolean } = {},
 ): Promise<Record<string, unknown>> {
   const turnId = crypto.randomUUID();
-  const logger = new ToolFlowLogger({
-    tenantId,
-    turnId,
-    source: "inbox",
-    base: appDb,
-  });
+  const logger = new ToolFlowLogger(
+    {
+      tenantId,
+      turnId,
+      source: "inbox",
+      base: appDb,
+    },
+    opts,
+  );
   logger.handleToolStart(
     {} as Serialized,
     input,
@@ -124,5 +128,36 @@ describe.skipIf(!dbUp)("skip_reply's line carries the reason picked", () => {
       skipResult("needs_human"),
     );
     expect("skipReason" in detail).toBe(false);
+  });
+
+  test("handoff_to_human's line says whether the transfer happened, not only that the call returned", async () => {
+    // A call off while the note was in flight returns normally and transfers nothing.
+    const declined = await run(
+      "handoff_to_human",
+      "{}",
+      {
+        content:
+          "Did not hand off (the run was called off while the note was in flight).",
+      },
+      { handedOff: () => false },
+    );
+    expect(declined.handedOff).toBe(false);
+    const done = await run(
+      "handoff_to_human",
+      "{}",
+      { content: "Handed off." },
+      { handedOff: () => true },
+    );
+    expect(done.handedOff).toBe(true);
+    // Nobody to ask (playground, observer), or another tool: the key is absent, never false.
+    expect(
+      "handedOff" in (await run("handoff_to_human", "{}", { content: "x" })),
+    ).toBe(false);
+    expect(
+      "handedOff" in
+        (await run("skip_reply", "{}", skipResult("needs_human"), {
+          handedOff: () => true,
+        })),
+    ).toBe(false);
   });
 });

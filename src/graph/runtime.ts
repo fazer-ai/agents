@@ -1206,6 +1206,7 @@ async function runTurnBody(
     logValues: loaded.logToolValues,
     tools,
     turnDelivered,
+    handedOff: () => handoffState.completed === true,
   });
 
   // One guardrail gate, shared with the proactive path. A trip logs a `guardrail` line and

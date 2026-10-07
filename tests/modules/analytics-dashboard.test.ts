@@ -1116,6 +1116,76 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect(await logs(ex.i1)).toBe(0);
   });
 
+  test("a handoff call that transferred nothing is not the agent's handoff", async () => {
+    const line = (conv: bigint | undefined, handedOff?: boolean) =>
+      suDb.executionLog.create({
+        data: {
+          tenantId: ex.tenantId,
+          turnId: crypto.randomUUID(),
+          conversationId: conv ?? null,
+          inboxId: ex.i1,
+          stage: "tool",
+          status: "ok",
+          source: "inbox",
+          detail: {
+            tool: "handoff_to_human",
+            ...(handedOff === undefined ? {} : { handedOff }),
+          },
+          createdAt: D1,
+        },
+      });
+    await line(ex.conv.noEvent1, false);
+    await line(ex.conv.noEvent2, true);
+    // Written before the mark existed: a clean return still counts, as it always did.
+    await line(ex.conv.visionOnly);
+    const r = await getHandoffReasons(ctx(ex.tenantId), DAY, appDb);
+    expect(r.totals.find((t) => t.cause === "agent")?.conversations).toBe(2);
+  });
+
+  test("each series of a breakdown is the funnel of that agent's or inbox's own view", async () => {
+    const week: DashboardFilter = {
+      since: new Date("2026-09-01T00:00:00Z"),
+      until: new Date("2026-09-08T00:00:00Z"),
+      tz: "America/Sao_Paulo",
+    };
+    for (const breakdown of ["agent", "inbox"] as const) {
+      const trend = await getOutcomeTrend(
+        ctx(ex.tenantId),
+        week,
+        breakdown,
+        appDb,
+      );
+      expect(trend.series?.length ?? 0).toBeGreaterThan(0);
+      for (const s of trend.series ?? []) {
+        const own: DashboardFilter =
+          breakdown === "agent"
+            ? { ...week, agentId: BigInt(s.key) }
+            : { ...week, inboxId: BigInt(s.key) };
+        const alone = await getOutcomeTrend(
+          ctx(ex.tenantId),
+          own,
+          undefined,
+          appDb,
+        );
+        expect(s.totals).toEqual(alone.totals);
+        expect(s.days).toEqual(alone.days);
+      }
+    }
+    // anaOnBeto is in both agents' series: Beto's inbox, Ana's turn.
+    const byAgent = await getOutcomeTrend(
+      ctx(ex.tenantId),
+      week,
+      "agent",
+      appDb,
+    );
+    expect(
+      byAgent.series?.find((s) => s.label === "Ana")?.totals.involved,
+    ).toBe(1);
+    expect(
+      byAgent.series?.find((s) => s.label === "Beto")?.totals.involved,
+    ).toBe(0);
+  });
+
   test("an inbox filter narrows the ledger figures too", async () => {
     const rows = await getBreakdown(
       ctx(ex.tenantId),

@@ -19,7 +19,8 @@ import { normalizeTimeZone } from "./service";
 // for `handoff_to_human` is free text and never repeats, so it is not a category; the categories are
 // who decided, and for `skip_reply` the closed reason the model picked.
 export const HANDOFF_CAUSES = [
-  // The agent called handoff_to_human.
+  // The agent called handoff_to_human and the transfer happened (`detail.handedOff`; a line written
+  // before that mark counts when the call returned cleanly, as it did before).
   "agent",
   // The agent stayed silent with skip_reply and the conversation was opened for a person: the reason
   // the model gave (needs_human, not_for_us) or a turn that ended with nothing said (unanswered).
@@ -43,7 +44,8 @@ export interface HandoffReasons {
 }
 
 const CAUSE_SQL = Prisma.sql`(CASE
-  WHEN l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human' AND l.status = 'ok' THEN 'agent'
+  WHEN l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human' AND l.status = 'ok'
+       AND COALESCE(l.detail->>'handedOff', 'true') = 'true' THEN 'agent'
   WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'opened_after_skip'
     THEN 'skip_' || COALESCE(l.detail->>'reason', 'unanswered')
   WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'guardrail_handoff' THEN 'guardrail'

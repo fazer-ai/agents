@@ -228,6 +228,22 @@ describe("a block's CSV", () => {
     ).toBe('Agent,Cost,Rate\r\n"Ana, SAC",1.5,0.25\r\n"O ""bot""",,');
   });
 
+  test("a name that starts like a formula is written as text; a negative number stays a number", () => {
+    expect(
+      toCsv(
+        ["Agent", "Delta"],
+        [
+          ['=HYPERLINK("x")', -2],
+          ["+1", null],
+          ["@cmd", null],
+          ["-5", null],
+        ],
+      ),
+    ).toBe(
+      'Agent,Delta\r\n"\'=HYPERLINK(""x"")",-2\r\n\'+1,\r\n\'@cmd,\r\n\'-5,',
+    );
+  });
+
   test("a header alone is a valid file", () => {
     expect(toCsv(["Day", "Cost"], [])).toBe("Day,Cost");
   });

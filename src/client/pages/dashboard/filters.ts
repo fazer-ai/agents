@@ -210,6 +210,53 @@ export function drillDownHref(
   return `/conversations?${p.toString()}`;
 }
 
+export type TrendMetric =
+  | "involvement"
+  | "resolution"
+  | "automation"
+  | "handoff";
+
+// The conversations behind each rate: its numerator's outcome.
+export const METRIC_DRILL: Record<
+  TrendMetric,
+  "involved" | "resolved_by_agent" | "handoff"
+> = {
+  involvement: "involved",
+  resolution: "resolved_by_agent",
+  automation: "resolved_by_agent",
+  handoff: "handoff",
+};
+
+// A point of the funnel-over-time chart. On the total chart each line is a rate, so a hit line names
+// its outcome; on a split chart each line is an agent or inbox, so a hit line narrows the view to it
+// and the selected rate names the outcome. A click between lines is the whole day: every conversation
+// on the total chart, the selected rate's on a split one.
+export function trendPointHref(
+  f: DashboardFilters,
+  day: string,
+  breakdown: "none" | "agent" | "inbox",
+  metric: TrendMetric,
+  seriesKey?: string,
+): string {
+  const w = dayWindow(day);
+  if (breakdown === "none") {
+    const hit = seriesKey as TrendMetric | undefined;
+    return drillDownHref(
+      f,
+      w,
+      hit && hit in METRIC_DRILL ? METRIC_DRILL[hit] : "all",
+    );
+  }
+  const id = seriesKey?.startsWith("s") ? seriesKey.slice(1) : null;
+  const view =
+    id === null
+      ? f
+      : breakdown === "agent"
+        ? { ...f, agentId: id }
+        : { ...f, inboxId: id };
+  return drillDownHref(view, w, METRIC_DRILL[metric]);
+}
+
 // One local day as a window, for the drill-down of a point.
 export function dayWindow(key: string): { since: Date; until: Date } {
   const since = startOfLocalDay(key);

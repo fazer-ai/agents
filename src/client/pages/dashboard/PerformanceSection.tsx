@@ -26,8 +26,10 @@ import {
   apiQuery,
   type DashboardFilters,
   daysOf,
-  dayWindow,
   drillDownHref,
+  METRIC_DRILL,
+  type TrendMetric,
+  trendPointHref,
   type Window,
 } from "./filters";
 import { useBlock } from "./useBlock";
@@ -44,7 +46,7 @@ type OutcomesData = Awaited<
 type Trend = NonNullable<OutcomesData>["trend"];
 type Counts = Trend["totals"];
 
-type Metric = "involvement" | "resolution" | "automation" | "handoff";
+type Metric = TrendMetric;
 type Breakdown = "none" | "agent" | "inbox";
 
 // The funnel rates of a set of counts, the same arithmetic as the server's `outcomeRates`. Null when
@@ -63,12 +65,7 @@ function rate(c: Counts | undefined, m: Metric): number | null {
   }
 }
 
-const DRILL: Record<Metric, "involved" | "resolved_by_agent" | "handoff"> = {
-  involvement: "involved",
-  resolution: "resolved_by_agent",
-  automation: "resolved_by_agent",
-  handoff: "handoff",
-};
+const DRILL = METRIC_DRILL;
 
 function KpiTile({
   icon: Icon,
@@ -459,6 +456,8 @@ export function PerformanceSection({
       </Card>
 
       <Block
+        error={trend.error}
+        onRetry={trend.reload}
         icon={TrendingUp}
         title={t("dashboard.trend.title", "Funnel over time")}
         help={t(
@@ -504,10 +503,6 @@ export function PerformanceSection({
       >
         {trend.loading && !tr ? (
           <Skeleton className="h-64 w-full" />
-        ) : trend.error ? (
-          <p className="py-8 text-center text-sm text-text-muted">
-            {t("dashboard.error", "Could not load metrics.")}
-          </p>
         ) : (tr?.days.length ?? 0) === 0 ? (
           <p className="py-8 text-center text-sm text-text-muted">
             {t("dashboard.noData", "No data yet.")}
@@ -521,13 +516,9 @@ export function PerformanceSection({
               format={(v) => pf(v)}
               compare={compare}
               compareLabel={t("dashboard.previousPeriod", "previous period")}
-              onPick={(day) =>
+              onPick={(day, seriesKey) =>
                 navigate(
-                  drillDownHref(
-                    filters,
-                    dayWindow(day),
-                    DRILL[breakdown === "none" ? "resolution" : metric],
-                  ),
+                  trendPointHref(filters, day, breakdown, metric, seriesKey),
                 )
               }
             />

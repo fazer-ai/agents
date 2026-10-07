@@ -116,6 +116,8 @@ export function ReasonsSection({
         {t("dashboard.reasons.title", "Why it hands over, and what people ask")}
       </h2>
       <Block
+        error={handoffs.error}
+        onRetry={handoffs.reload}
         icon={ArrowRightLeft}
         title={t("dashboard.handoffs.title", "Handoffs by cause")}
         help={t(
@@ -196,6 +198,8 @@ export function ReasonsSection({
       </Block>
 
       <Block
+        error={labels.error}
+        onRetry={labels.reload}
         icon={Tags}
         title={t("dashboard.labels.title", "Outcome by label")}
         help={t(

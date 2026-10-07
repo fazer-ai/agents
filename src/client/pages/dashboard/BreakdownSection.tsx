@@ -137,6 +137,8 @@ export function BreakdownSection({
   return (
     <section id="breakdown" className="flex scroll-mt-4 flex-col gap-3">
       <Block
+        error={block.error}
+        onRetry={block.reload}
         icon={Table2}
         title={t("dashboard.breakdown.title", "Where the usage goes")}
         help={t(
@@ -160,10 +162,6 @@ export function BreakdownSection({
       >
         {block.loading && !block.data ? (
           <Skeleton className="h-32 w-full" />
-        ) : block.error ? (
-          <p className="text-sm text-text-muted">
-            {t("dashboard.error", "Could not load metrics.")}
-          </p>
         ) : rows.length === 0 ? (
           <p className="text-sm text-text-muted">
             {t("dashboard.noData", "No data yet.")}

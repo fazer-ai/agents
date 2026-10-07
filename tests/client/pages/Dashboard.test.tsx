@@ -117,6 +117,8 @@ const entry = (patch: Record<string, unknown> & { source: string }) => ({
 let costs: Record<string, unknown> | "error" = COSTS;
 let kpis = KPIS;
 let ceilingPollMs = 300_000;
+let healthFails = false;
+let optionsFail = false;
 
 const stubFetch = (async (input: unknown) => {
   const url = new URL(
@@ -144,6 +146,12 @@ const stubFetch = (async (input: unknown) => {
     return costs === "error"
       ? json({ error: "x" }, 500)
       : json({ instance: "i", costs });
+  // Agent 8's breakdown never answers: what is on screen while it loads is the test.
+  if (
+    p.endsWith("/metrics/breakdown") &&
+    url.searchParams.get("agentId") === "8"
+  )
+    return new Promise<Response>(() => {});
   if (p.endsWith("/metrics/breakdown"))
     return json({ instance: "i", rows: BREAKDOWN });
   if (p.endsWith("/metrics/handoffs"))
@@ -153,6 +161,8 @@ const stubFetch = (async (input: unknown) => {
     });
   if (p.endsWith("/metrics/labels"))
     return json({ instance: "i", labels: { labels: [], unlabeled: 0 } });
+  if (p.endsWith("/metrics/health") && healthFails)
+    return json({ error: "x" }, 500);
   if (p.endsWith("/metrics/health"))
     return json({ instance: "i", health: { latency: [], problems: [] } });
   if (p.endsWith("/metrics/follow-ups"))
@@ -200,15 +210,16 @@ const stubFetch = (async (input: unknown) => {
         }),
       ],
     });
-  if (p.endsWith("/v1/agents") || p.endsWith("/v1/agents/"))
+  if (p.endsWith("/metrics/filter-options") && optionsFail)
+    return json({ error: "x" }, 500);
+  if (p.endsWith("/metrics/filter-options"))
     return json({
       agents: [
         { id: "7", name: "Ana" },
         { id: "8", name: "Beto" },
       ],
+      inboxes: [{ id: "3", name: "WhatsApp" }],
     });
-  if (p.endsWith("/chatwoot/inboxes"))
-    return json({ inboxes: [{ id: "3", name: "WhatsApp" }] });
   return json({ error: "nope" }, 500);
 }) as unknown as typeof globalThis.fetch;
 
@@ -250,6 +261,8 @@ beforeEach(() => {
   costs = COSTS;
   kpis = KPIS;
   ceilingPollMs = 300_000;
+  healthFails = false;
+  optionsFail = false;
 });
 afterEach(cleanup);
 
@@ -298,6 +311,30 @@ describe("one filter, in the URL, for every block", () => {
     await renderDash("/?agent=999999");
     await waitFor(() => {
       expect(location.includes("agent=")).toBe(false);
+    });
+  });
+
+  test("an unreadable list of agents and inboxes keeps the link's ids", async () => {
+    optionsFail = true;
+    await renderDash("/?agent=7&inbox=3");
+    await waitFor(() => {
+      expect(asks("/metrics/filter-options").length).toBe(1);
+      expect(asks("/metrics/health").length).toBeGreaterThan(0);
+    });
+    expect(location).toBe("/?agent=7&inbox=3");
+  });
+
+  test("a new filter takes the previous view's figures off the screen while it loads", async () => {
+    await renderDash("/");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "Beto" }).length).toBe(1);
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Agent" }), {
+      target: { value: "8" },
+    });
+    await waitFor(() => {
+      expect(location).toBe("/?agent=8");
+      expect(screen.queryAllByRole("button", { name: "Beto" }).length).toBe(0);
     });
   });
 
@@ -441,6 +478,29 @@ describe("the cost is the ledger's", () => {
     await renderDash("/");
     await waitFor(() => {
       expect(has("Could not read the cost.")).toBe(true);
+    });
+  });
+});
+
+describe("a block whose request fails", () => {
+  test("says so with a retry, never that nothing happened", async () => {
+    healthFails = true;
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Warnings and errors")).toBe(true);
+      expect(
+        screen.queryAllByRole("button", { name: "Try again" }).length,
+      ).toBe(2);
+    });
+    expect(has("No warnings or errors in this period.")).toBe(false);
+    const before = asks("/metrics/health").length;
+    healthFails = false;
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Try again" })[0] as HTMLElement,
+    );
+    await waitFor(() => {
+      expect(asks("/metrics/health").length).toBe(before + 1);
+      expect(has("No warnings or errors in this period.")).toBe(true);
     });
   });
 });

@@ -1117,7 +1117,6 @@ model Conversation {
   /// each append walks that account's whole conversation history to find the handful of rows sharing
   /// one contact-inbox.
   @@index([tenantId, chatwootInstanceId, contactInboxId])
-  @@index([labels], type: Gin)
   @@map("conversations")
 }
 

@@ -7,6 +7,7 @@ import {
   localDayKey,
   previousWindow,
   readFilters,
+  trendPointHref,
   windowOf,
   writeFilters,
 } from "@/client/pages/dashboard/filters";
@@ -137,6 +138,80 @@ describe("the drill-down link", () => {
       agentId: "4",
       inboxId: "9",
     });
+  });
+});
+
+describe("a point of the funnel over time", () => {
+  const q = (href: string) =>
+    Object.fromEntries(new URL(href, "http://x").searchParams);
+
+  test("on the total chart, the line hit names the outcome; between lines, the whole day", () => {
+    expect(
+      q(
+        trendPointHref(
+          DEFAULT_FILTERS,
+          "2026-10-04",
+          "none",
+          "resolution",
+          "handoff",
+        ),
+      ).outcome,
+    ).toBe("handoff");
+    expect(
+      q(
+        trendPointHref(
+          DEFAULT_FILTERS,
+          "2026-10-04",
+          "none",
+          "resolution",
+          "involvement",
+        ),
+      ).outcome,
+    ).toBe("involved");
+    expect(
+      q(trendPointHref(DEFAULT_FILTERS, "2026-10-04", "none", "resolution"))
+        .outcome,
+    ).toBe("all");
+  });
+
+  test("on a split chart, the line hit narrows to its agent or inbox, and the rate names the outcome", () => {
+    const byAgent = q(
+      trendPointHref(
+        { ...DEFAULT_FILTERS, inboxId: "3" },
+        "2026-10-04",
+        "agent",
+        "handoff",
+        "s12",
+      ),
+    );
+    expect(byAgent).toMatchObject({
+      outcome: "handoff",
+      agentId: "12",
+      inboxId: "3",
+    });
+    const byInbox = q(
+      trendPointHref(
+        DEFAULT_FILTERS,
+        "2026-10-04",
+        "inbox",
+        "automation",
+        "s9",
+      ),
+    );
+    expect(byInbox).toMatchObject({
+      outcome: "resolved_by_agent",
+      inboxId: "9",
+    });
+    expect(byInbox.agentId).toBeUndefined();
+    const between = q(
+      trendPointHref(
+        { ...DEFAULT_FILTERS, agentId: "4" },
+        "2026-10-04",
+        "agent",
+        "involvement",
+      ),
+    );
+    expect(between).toMatchObject({ outcome: "involved", agentId: "4" });
   });
 });
 

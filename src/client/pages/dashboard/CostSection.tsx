@@ -425,6 +425,8 @@ export function CostSection({
       )}
 
       <Block
+        error={costs.error}
+        onRetry={costs.reload}
         icon={Coins}
         title={t("dashboard.cost.daily", "Daily cost")}
         help={t(
@@ -464,6 +466,8 @@ export function CostSection({
       </Block>
 
       <Block
+        error={costs.error}
+        onRetry={costs.reload}
         icon={LineIcon}
         title={t(
           "dashboard.cost.perConversationTrend",
@@ -506,6 +510,8 @@ export function CostSection({
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
+          error={cache.error}
+          onRetry={cache.reload}
           icon={Database}
           title={t("dashboard.cache.title", "Cached input by agent")}
           help={t(

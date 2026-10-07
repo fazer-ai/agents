@@ -3,7 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // One block's data, loaded on its own: a slow or failing block does not hold or blank the others.
 // Each load takes a sequence number and only the latest one's answer is kept, so switching the
 // filter twice quickly cannot leave the first view's numbers on screen. `key` is what the load
-// depends on (the serialized query); a new key reloads.
+// depends on (the serialized query): a new key drops the previous view's data at once, so nothing of
+// the old filter stays on screen (or clickable) while the new one loads; `reload` keeps it, since a
+// refresh of the same view is the same numbers until the new ones arrive.
 export function useBlock<T>(
   key: string,
   load: () => Promise<{ data: T | null; status?: number | null }>,
@@ -23,9 +25,14 @@ export function useBlock<T>(
   const seq = useRef(0);
   const loadRef = useRef(load);
   loadRef.current = load;
-  const run = useCallback(() => {
+  const run = useCallback((fresh: boolean) => {
     const mine = ++seq.current;
-    setState((s) => ({ ...s, loading: true, error: false, status: null }));
+    setState((s) => ({
+      data: fresh ? null : s.data,
+      loading: true,
+      error: false,
+      status: null,
+    }));
     loadRef
       .current()
       .then((res) => {
@@ -44,7 +51,8 @@ export function useBlock<T>(
   }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is the reload trigger; the loader is read through a ref.
   useEffect(() => {
-    run();
+    run(true);
   }, [key, run]);
-  return { ...state, reload: run };
+  const reload = useCallback(() => run(false), [run]);
+  return { ...state, reload };
 }

@@ -132,7 +132,12 @@ export async function getInstanceMetrics(
 
     const perInbox = await db.llmUsage.groupBy({
       by: ["inboxId"],
-      where: { ...usageWhere, inboxId: { not: null } },
+      // A filtered inbox already excludes the rows with none; spreading `not: null` over it would
+      // lift the filter.
+      where:
+        filter.inboxId !== undefined
+          ? usageWhere
+          : { ...usageWhere, inboxId: { not: null } },
       _sum: { promptTokens: true, completionTokens: true },
       _count: { _all: true },
       orderBy: { _sum: { promptTokens: "desc" } },

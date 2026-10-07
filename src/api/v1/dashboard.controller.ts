@@ -21,6 +21,7 @@ import {
 } from "@/modules/analytics/breakdown";
 import type { DashboardFilter } from "@/modules/analytics/filter";
 import { getHealth } from "@/modules/analytics/health";
+import { getFilterOptions } from "@/modules/analytics/options";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 
 // The dashboard's blocks past the headline figures. Every route takes the page's one
@@ -92,6 +93,21 @@ export const dashboardController = new Elysia({
   tags: ["Dashboard"],
 })
   .use(tenancyPlugin)
+  .get(
+    "/filter-options",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      ...(await getFilterOptions(ctxOrThrow(tenantContext))),
+    }),
+    {
+      requireAuth: true,
+      detail: doc(
+        "Dashboard filter options",
+        "Every agent and inbox of the tenant, id and name only, for the dashboard's agent and inbox filters. Whole, not paged.",
+      ),
+      response: errors(401, 403, 404),
+    },
+  )
   .get(
     "/outcomes",
     async ({ tenantContext, query }) => ({

@@ -87,6 +87,8 @@ export function HealthSection({
       </h2>
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
+          error={health.error}
+          onRetry={health.reload}
           icon={Clock}
           title={t("dashboard.health.latency", "Model call latency")}
           help={t(
@@ -143,6 +145,8 @@ export function HealthSection({
         </Block>
 
         <Block
+          error={health.error}
+          onRetry={health.reload}
           icon={Activity}
           title={t("dashboard.health.problems", "Warnings and errors")}
           help={t(
@@ -256,6 +260,8 @@ export function AutomationSection({
       </h2>
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
+          error={followUps.error}
+          onRetry={followUps.reload}
           icon={Repeat}
           title={t("dashboard.followups.title", "Follow-ups")}
           help={t(
@@ -278,6 +284,8 @@ export function AutomationSection({
           )}
         </Block>
         <Block
+          error={knowledge.error}
+          onRetry={knowledge.reload}
           icon={BookOpen}
           title={t("dashboard.knowledge.title", "Knowledge suggestions")}
           help={t(

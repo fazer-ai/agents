@@ -283,6 +283,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/metrics/health": { gap: "model latency and logged problems" },
   "GET /v1/metrics/follow-ups": { gap: "follow-up activity" },
   "GET /v1/metrics/knowledge": { gap: "knowledge suggestion activity" },
+  "GET /v1/metrics/filter-options": {
+    gap: "the dashboard filter's agent and inbox options",
+  },
   "GET /v1/vault/": { tool: "vault_list" },
   "POST /v1/vault/": { tool: "credential_create" },
   "PUT /v1/vault/:id": { none: SECRET },

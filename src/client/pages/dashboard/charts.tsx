@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import {
   Bar,
   BarChart,
@@ -72,7 +72,8 @@ function dayLabel(lang: string) {
 
 // One line per series over the days of the window. `compare` names, per series, the key holding the
 // previous period's value at the same position, which the tooltip shows beside the current one.
-// Clicking a point hands its day to `onPick` (the drill-down).
+// Clicking a point hands its day to `onPick` (the drill-down), with the key of the line whose dot was
+// hit; a click on the plot between lines names the day alone.
 export function LineTrend({
   data,
   series,
@@ -89,11 +90,13 @@ export function LineTrend({
   format: (v: number) => string;
   compare?: Record<string, string>;
   compareLabel?: string;
-  onPick?: (day: string) => void;
+  onPick?: (day: string, seriesKey?: string) => void;
   height?: number;
 }) {
   const p = useChartPalette();
   const day = useMemo(() => dayLabel(lang), [lang]);
+  // The dot's own click runs before the chart's, which is the one that knows the day.
+  const hitSeries = useRef<string | null>(null);
   return (
     <div style={{ height }} className="w-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -102,7 +105,9 @@ export function LineTrend({
           margin={{ top: 8, right: 12, bottom: 0, left: 0 }}
           onClick={(e) => {
             const label = (e as { activeLabel?: string } | null)?.activeLabel;
-            if (onPick && typeof label === "string") onPick(label);
+            const hit = hitSeries.current ?? undefined;
+            hitSeries.current = null;
+            if (onPick && typeof label === "string") onPick(label, hit);
           }}
           style={onPick ? { cursor: "pointer" } : undefined}
         >
@@ -160,7 +165,12 @@ export function LineTrend({
               stroke={p.series[i % p.series.length]}
               strokeWidth={2}
               dot={{ r: 2 }}
-              activeDot={{ r: 5 }}
+              activeDot={{
+                r: 5,
+                onClick: () => {
+                  hitSeries.current = s.key;
+                },
+              }}
               connectNulls
               isAnimationActive={false}
             />

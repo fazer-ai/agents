@@ -254,21 +254,27 @@ export async function getKnowledgeActivity(
   base: PrismaClient = basePrisma,
 ): Promise<KnowledgeActivity> {
   return runScopedOn(base, ctx, async (db) => {
-    const groups = await db.approvalQueueItem.groupBy({
-      by: ["status"],
-      where: {
-        ...(filter.since || filter.until
-          ? {
-              createdAt: {
-                ...(filter.since ? { gte: filter.since } : {}),
-                ...(filter.until ? { lt: filter.until } : {}),
-              },
-            }
-          : {}),
-        ...(filter.agentId !== undefined ? { agentId: filter.agentId } : {}),
-      },
-      _count: { _all: true },
-    });
+    const since = filter.since ?? null;
+    const until = filter.until ?? null;
+    const agent = filter.agentId ?? null;
+    const inbox = filter.inboxId ?? null;
+    // A suggestion's inbox is its conversation's, reached through the thread it was proposed in.
+    // Under an inbox filter, one with no conversation (proposed outside any inbox) is not that
+    // inbox's.
+    const rows = await db.$queryRaw<{ status: string; n: number }[]>(Prisma.sql`
+      SELECT q.status::text AS status, COUNT(*)::int AS n
+        FROM approval_queue_items q
+       WHERE (${since}::timestamptz IS NULL OR q.created_at >= ${since})
+         AND (${until}::timestamptz IS NULL OR q.created_at < ${until})
+         AND (${agent}::bigint IS NULL OR q.agent_id = ${agent})
+         AND (${inbox}::bigint IS NULL OR EXISTS (
+               SELECT 1 FROM conversations c
+                WHERE c.thread_id = q.thread_id AND c.inbox_id = ${inbox}))
+       GROUP BY 1`);
+    const groups = rows.map((r) => ({
+      status: r.status,
+      _count: { _all: Number(r.n) },
+    }));
     const n = (...statuses: string[]) =>
       groups
         .filter((g) => statuses.includes(g.status))

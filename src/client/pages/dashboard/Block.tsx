@@ -28,6 +28,8 @@ export function Block({
   actions,
   table,
   chart,
+  error,
+  onRetry,
   children,
 }: {
   id?: string;
@@ -38,9 +40,14 @@ export function Block({
   table?: BlockTable;
   // True when the children are a chart: the table is then rendered for screen readers.
   chart?: boolean;
+  // The block's request failed: it says so, with a retry, instead of rendering an empty result
+  // that reads as "nothing happened". No CSV either, since there is nothing true to export.
+  error?: boolean;
+  onRetry?: () => void;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
+  const shown = !error;
   return (
     <Card id={id} className="flex scroll-mt-4 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -51,7 +58,7 @@ export function Block({
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           {actions}
-          {table && (
+          {table && shown && (
             <button
               type="button"
               onClick={() =>
@@ -72,8 +79,25 @@ export function Block({
           )}
         </div>
       </div>
-      {chart ? <div aria-hidden="true">{children}</div> : children}
-      {chart && table && (
+      {error ? (
+        <p className="flex items-center gap-2 py-4 text-sm text-text-muted">
+          {t("dashboard.error", "Could not load metrics.")}
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="text-accent text-sm hover:underline"
+            >
+              {t("dashboard.retry", "Try again")}
+            </button>
+          )}
+        </p>
+      ) : chart ? (
+        <div aria-hidden="true">{children}</div>
+      ) : (
+        children
+      )}
+      {shown && chart && table && (
         <table className="sr-only">
           <caption>{title}</caption>
           <thead>

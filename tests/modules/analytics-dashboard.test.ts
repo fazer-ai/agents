@@ -12,7 +12,7 @@ import { getBreakdown } from "@/modules/analytics/breakdown";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import type { DashboardFilter } from "@/modules/analytics/filter";
 import { getHealth } from "@/modules/analytics/health";
-import { getKpis } from "@/modules/analytics/service";
+import { getInstanceMetrics, getKpis } from "@/modules/analytics/service";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { listConversations } from "@/modules/conversations/service";
@@ -1034,6 +1034,42 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect(seen.length).toBe((await drill("all")).items.length);
   });
 
+  test("an inbox filter counts the suggestions proposed in that inbox's conversations", async () => {
+    const kb = await suDb.knowledgeBase.create({
+      data: { tenantId: ex.tenantId, name: "Docs" },
+    });
+    const thread = async (name: string) =>
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: ex.conv[name] },
+          select: { threadId: true },
+        })
+      ).threadId;
+    let h = 0;
+    for (const threadId of [
+      await thread("anaOnBeto"),
+      await thread("visionOnly"),
+      await thread("visionOnly"),
+      null,
+    ])
+      await suDb.approvalQueueItem.create({
+        data: {
+          tenantId: ex.tenantId,
+          knowledgeBaseId: kb.id,
+          agentId: ex.a1,
+          threadId,
+          proposedContent: "x",
+          normalizedHash: `e${h++}`,
+          createdAt: D1,
+        },
+      });
+    const k = (inboxId?: bigint) =>
+      getKnowledgeActivity(ctx(ex.tenantId), { ...DAY, inboxId }, appDb);
+    expect((await k()).proposed).toBe(4);
+    expect((await k(ex.i2)).proposed).toBe(1);
+    expect((await k(ex.i1)).proposed).toBe(2);
+  });
+
   test("an inbox filter narrows the ledger figures too", async () => {
     const rows = await getBreakdown(
       ctx(ex.tenantId),
@@ -1043,5 +1079,12 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     );
     // Ana on Beto's inbox: the 7 billed there and the turn on anaOnBeto.
     expect(rows.find((r) => r.label === "Ana")?.costUsd).toBeCloseTo(8);
+    const m = await getInstanceMetrics(
+      ctx(ex.tenantId),
+      { ...DAY, inboxId: ex.i2 },
+      appDb,
+    );
+    expect(m.llm.byInbox.map((r) => r.inboxId)).toEqual([String(ex.i2)]);
+    expect(m.llm.byInbox[0]?.calls).toBe(m.llm.calls);
   });
 });

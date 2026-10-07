@@ -958,6 +958,7 @@
     "reasons": {
       "title": "Why it hands over, and what people ask"
     },
+    "retry": "Try again",
     "silence": {
       "acknowledged": "Nothing to answer",
       "needsHuman": "Needs a person",

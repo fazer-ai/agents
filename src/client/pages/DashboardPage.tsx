@@ -187,26 +187,17 @@ export function DashboardPage() {
     [filters, setParams],
   );
 
+  // An unreadable list leaves both null: the selects show only "All", and a link's ids are kept
+  // rather than dropped against a list that never arrived.
   useEffect(() => {
-    void api.api.v1.agents
+    void api.api.v1.metrics["filter-options"]
       .get()
-      .then((r) =>
-        setAgents(
-          (r.data?.agents ?? []).map((a) => ({ id: a.id, name: a.name })),
-        ),
-      )
-      .catch(() => setAgents([]));
-    void api.api.v1.chatwoot.inboxes
-      .get()
-      .then((r) =>
-        setInboxes(
-          (r.data?.inboxes ?? []).map((i) => ({
-            id: String(i.id),
-            name: i.name,
-          })),
-        ),
-      )
-      .catch(() => setInboxes([]));
+      .then((r) => {
+        if (!r.data) return;
+        setAgents(r.data.agents);
+        setInboxes(r.data.inboxes);
+      })
+      .catch(() => {});
   }, []);
 
   // A link naming an agent or inbox this account does not have opens on every agent or inbox,

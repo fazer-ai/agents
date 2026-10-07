@@ -1329,7 +1329,13 @@ export async function announceUnanswered(
             stage: "delivery",
             AND: [
               { detail: { path: ["outcome"], equals: outcome } },
-              { detail: { path: ["deliveryId"], equals: row.deliveryId } },
+              // The ledger row, not `deliveryId`: Chatwoot's id is unique per instance only.
+              {
+                detail: {
+                  path: ["deliveryRowId"],
+                  equals: String(deliveryRowId),
+                },
+              },
             ],
           },
           select: { id: true },
@@ -1371,6 +1377,7 @@ export async function announceUnanswered(
           outcome,
           deliveryEvent: row.event,
           deliveryId: row.deliveryId,
+          deliveryRowId: String(deliveryRowId),
           messageId: row.inboundMessageId,
           conversationId: row.conversationId,
         },

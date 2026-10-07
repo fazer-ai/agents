@@ -20,6 +20,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
+  announceUnanswered,
   deliveryRecoveryDedupeKey,
   MAX_RECOVERY_AGE_MS,
   MAX_RECOVERY_ATTEMPTS,
@@ -4879,6 +4880,62 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             (l.detail as Record<string, unknown> | null)?.outcome,
           ]),
         ).toEqual([["warn", "memory_unrecovered"]]);
+      }
+    });
+
+    // Chatwoot's delivery id is unique per instance only: a loss on another instance with the same id
+    // is its own loss, and the line already written for the first must not stand in for it.
+    test("two instances' deliveries sharing an id each get their own unanswered line", async () => {
+      const other = await seedChatwootInstance(suDb, {
+        tenantId,
+        accountId: 72,
+        baseUrl: "https://chat.recover-other.example",
+        adminToken: encryptJson("ADMIN"),
+      });
+      const rows = [];
+      for (const [inst, convId] of [
+        [instanceId, 18938],
+        [other.id, 18939],
+      ] as const) {
+        rows.push(
+          (
+            await suDb.chatwootWebhookDelivery.create({
+              data: {
+                tenantId,
+                chatwootInstanceId: inst,
+                deliveryId: `shared-${process.pid}`,
+                event: "message_created",
+                status: "DEAD",
+                receivedAt: new Date(Date.now() - 60 * 60 * 1000),
+                attempts: MAX_RECOVERY_ATTEMPTS,
+                conversationId: convId,
+                inboundMessageId: convId + 1000,
+              },
+              select: { id: true },
+            })
+          ).id,
+        );
+      }
+      try {
+        for (const rowId of rows)
+          await announceUnanswered(tenantId, rowId, appDb);
+        // flowlog-scope: tenant-wide. The lines name their ledger rows, whose ids are this test's alone.
+        const lines = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "delivery",
+            OR: rows.map((id) => ({
+              detail: { path: ["deliveryRowId"], equals: String(id) },
+            })),
+          },
+          select: { level: true },
+        });
+        expect(lines.map((l) => l.level)).toEqual(["error", "error"]);
+      } finally {
+        await suDb.chatwootWebhookDelivery.deleteMany({
+          where: { id: { in: rows } },
+        });
+        await suDb.chatwootInstance.delete({ where: { id: other.id } });
       }
     });
 

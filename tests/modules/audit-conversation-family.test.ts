@@ -131,6 +131,41 @@ async function seedConversation(
 
 // A client whose MIRROR write fails and whose everything else works, for the case where Chatwoot has
 // already accepted the action and our own bookkeeping is what breaks.
+// The hand-back's own bot lookup failing (the only `chatwootAgentBot.findFirst` it makes; the
+// responder checks read the row with `findUnique`).
+const botLookupFailingBase = (client: PrismaClient): PrismaClient => {
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, receiver) {
+        if (prop === "$extends") {
+          return (...args: unknown[]) => wrap(t.$extends(...args));
+        }
+        if (prop === "$transaction") {
+          return (fn: unknown, ...rest: unknown[]) =>
+            typeof fn === "function"
+              ? t.$transaction(
+                  (tx: unknown) => (fn as (c: unknown) => unknown)(wrap(tx)),
+                  ...rest,
+                )
+              : t.$transaction(fn, ...rest);
+        }
+        if (prop === "chatwootAgentBot") {
+          const real = Reflect.get(t, prop, receiver);
+          return {
+            ...real,
+            findUnique: real.findUnique.bind(real),
+            findFirst: async () => {
+              throw new Error("bot lookup failed (pool timeout)");
+            },
+          };
+        }
+        return Reflect.get(t, prop, receiver);
+      },
+    });
+  return wrap(client);
+};
+
 const mirrorFailingBase = (client: PrismaClient): PrismaClient => {
   // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
   const wrap = (target: any): any =>
@@ -358,6 +393,26 @@ describe.skipIf(!dbUp)(
         assigneeType: "User",
         assigneeId: 42,
       });
+    });
+
+    test("a hand-back whose bot cannot be read changes nothing in Chatwoot", async () => {
+      await clearAudit();
+      const id = await seedConversation(4024, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 5,
+      });
+      const stub = stubClient();
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          botLookupFailingBase(appDb),
+        ),
+      ).rejects.toThrow("bot lookup failed");
+      expect(stub.calls).not.toContain("toggleStatus");
+      expect(stub.calls).not.toContain("assignAgentBot");
     });
 
     test("a hand-back records the outcome, because taken-over is not the outcome asked for", async () => {

@@ -1112,6 +1112,24 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
   });
 
+  test("a bot assignment that came back without the bot is followed by an unassign, even when nobody held it", async () => {
+    // A Chatwoot that ignores `assignee_type` reads the bot's id as a USER's, so the empty read
+    // taken before the write no longer says nobody is there.
+    const stub = makeStub({
+      assigneeType: null,
+      assigneeId: null,
+      botAssignable: false,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(1);
+  });
+
   test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {
     // A bot deleted in Chatwoot, or a Chatwoot that predates bot assignees, answers without a bot.
     // The person still has to go, or the hand-back leaves them holding a pending conversation.

@@ -2261,6 +2261,25 @@ export async function returnConversationToAgent(
       "errors.returnResponderChanged",
     );
   }
+  // The bot of the inbox the hand-back was judged on. Chatwoot clears the bot assignee whenever a
+  // person takes the conversation, so removing the person alone leaves it in "Unassigned" while the
+  // agent answers it; the hand-back assigns this bot instead (docs/chatwoot.md, next to the unassign note).
+  // Read before the first remote write, so a failed read changes nothing in Chatwoot.
+  const ourAgentBotId =
+    liveInbox?.agentId != null
+      ? ((
+          await runScopedOn(base, ctx, (db) =>
+            db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: conv.chatwootInstanceId,
+                agentId: liveInbox?.agentId ?? 0n,
+              },
+              select: { chatwootAgentBotId: true },
+            }),
+          )
+        )?.chatwootAgentBotId ?? null)
+      : null;
   await client.toggleStatus(conv.chatwootConversationId, "pending", {
     asAdmin: true,
   });
@@ -2307,24 +2326,6 @@ export async function returnConversationToAgent(
       ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
       : null;
   const newHolder = holderOtherThan(live);
-  // The bot of the inbox the hand-back was judged on. Chatwoot clears the bot assignee whenever a
-  // person takes the conversation, so removing the person alone leaves it in "Unassigned" while the
-  // agent answers it; the hand-back assigns this bot instead (docs/chatwoot.md, next to the unassign note).
-  const ourAgentBotId =
-    liveInbox?.agentId != null
-      ? ((
-          await runScopedOn(base, ctx, (db) =>
-            db.chatwootAgentBot.findFirst({
-              where: {
-                tenantId,
-                chatwootInstanceId: conv.chatwootInstanceId,
-                agentId: liveInbox?.agentId ?? 0n,
-              },
-              select: { chatwootAgentBotId: true },
-            }),
-          )
-        )?.chatwootAgentBotId ?? null)
-      : null;
   const alreadyOurs =
     live !== null &&
     ourAgentBotId !== null &&
@@ -2345,7 +2346,9 @@ export async function returnConversationToAgent(
           { asAdmin: true },
         );
       }
-      if (!handedToBot && !nobodyToRemove) {
+      // NOTE: an assignment that came back without the bot may have named a USER with that id (a
+      // Chatwoot that ignores `assignee_type`), so the unassign follows it even onto an empty read.
+      if (!handedToBot && (ourAgentBotId !== null || !nobodyToRemove)) {
         await client.unassignConversation(conv.chatwootConversationId, {
           asAdmin: true,
         });

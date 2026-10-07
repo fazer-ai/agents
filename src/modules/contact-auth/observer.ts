@@ -201,7 +201,10 @@ export async function observerArmPermit(
     verdict === "endpoint_refused" ||
     (verdict === "unreadable" &&
       contactAuthHasEndpointStage(readContactAuthConfig(p.settings)));
-  if (takesBack) await retireWithRetries(p, askedAt);
+  if (takesBack) {
+    noteRefusal(refusalKey(p), askedAt);
+    await retireWithRetries(p, askedAt);
+  }
   return null;
 }
 
@@ -261,6 +264,52 @@ const unretiredRefusals = new Map<string, number>();
 // than any retirement still retrying.
 const recentAllows = new Map<string, number>();
 const RECENT_ALLOWS_CAP = 10_000;
+
+// The newest endpoint refusal per watcher and conversation, kept whether or not its retirement
+// landed: a watcher's media admission given before it stops covering a late update
+// (`watcherAdmissionStands`). Bounded like the allows.
+const recentRefusals = new Map<string, number>();
+
+function noteRefusal(key: string, askedAt: number): void {
+  const before = recentRefusals.get(key) ?? 0;
+  recentRefusals.delete(key);
+  recentRefusals.set(key, Math.max(before, askedAt));
+  if (recentRefusals.size > RECENT_ALLOWS_CAP) {
+    const oldest = recentRefusals.keys().next().value;
+    if (oldest !== undefined) recentRefusals.delete(oldest);
+  }
+}
+
+// A watcher's allow for one message's media, with when it was asked, so Chatwoot's late update of
+// the same audio is not put to the endpoint again. It stands only while no refusal asked at or after
+// it is known for the conversation. In memory, like the media admissions it stands beside.
+const WATCHER_ADMISSION_TTL_MS = 15 * 60_000;
+const watcherAdmissions = new Map<string, { askedAt: number; at: number }>();
+
+export function rememberWatcherAdmission(key: string, askedAt: number): void {
+  watcherAdmissions.delete(key);
+  watcherAdmissions.set(key, { askedAt, at: Date.now() });
+  if (watcherAdmissions.size > RECENT_ALLOWS_CAP) {
+    const oldest = watcherAdmissions.keys().next().value;
+    if (oldest !== undefined) watcherAdmissions.delete(oldest);
+  }
+}
+
+export function watcherAdmissionStands(
+  key: string,
+  p: {
+    tenantId: bigint;
+    instanceId: bigint;
+    conversationId: number;
+    agentId: bigint;
+  },
+): boolean {
+  const admission = watcherAdmissions.get(key);
+  if (!admission || Date.now() - admission.at > WATCHER_ADMISSION_TTL_MS) {
+    return false;
+  }
+  return (recentRefusals.get(refusalKey(p)) ?? 0) < admission.askedAt;
+}
 
 function rememberAllow(key: string, askedAt: number): void {
   const before = recentAllows.get(key) ?? 0;

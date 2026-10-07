@@ -1123,6 +1123,24 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     }
   });
 
+  // An allow remembered for a voice note stops covering its late update once the endpoint has
+  // refused the conversation since (here at the resolve): the update asks the gate again.
+  test("a late update after a newer endpoint refusal does not reuse the message's allow", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    const messageId = await deliverMessage(
+      48,
+      "individual",
+      false,
+      BOUND_INBOX,
+    );
+    expect(providers.auth).toBe(1);
+    authAnswer = "deny";
+    await deliverResolve(48, "individual");
+    expect(providers.auth).toBe(2);
+    await deliverMessage(48, "individual", false, BOUND_INBOX, { messageId });
+    expect(providers.auth).toBe(3);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

@@ -80,6 +80,8 @@ import {
   observerArmPermit,
   observerAsk,
   observerRuleVerdict,
+  rememberWatcherAdmission,
+  watcherAdmissionStands,
 } from "@/modules/contact-auth/observer";
 import {
   RULE_CONVERSATION_TYPE,
@@ -4617,7 +4619,12 @@ export async function processChatwootDelivery(
       !isNewIncoming &&
       watcherAdmission !== null &&
       n.conversationId !== null &&
-      mediaAlreadyAdmitted(watcherAdmission) &&
+      watcherAdmissionStands(watcherAdmission, {
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        agentId: rt.agentId,
+      }) &&
       (await observerRuleVerdict(
         {
           tenantId: params.tenantId,
@@ -4629,13 +4636,13 @@ export async function processChatwootDelivery(
         },
         { emit: false },
       )) === "allowed";
+    const watcherPermit =
+      !gateAsksNext && observing && !lateAdmitted
+        ? await observerMayObserve(rt, rt.settings)
+        : null;
     if (gateAsksNext) {
       mediaAwaitsGate = true;
-    } else if (
-      observing &&
-      !lateAdmitted &&
-      !(await observerMayObserve(rt, rt.settings))
-    ) {
+    } else if (observing && !lateAdmitted && !watcherPermit) {
       // NOTE: A conversation the watcher's rule keeps it out of is not transcribed or described for
       // it: that analysis exists for the observation the rule just refused. The watcher bound as the
       // inbox's agent owns the media gate, so its refusal is remembered for the message as the pass
@@ -4651,7 +4658,9 @@ export async function processChatwootDelivery(
         );
       }
     } else {
-      if (watcherAdmission !== null) rememberMediaAdmission(watcherAdmission);
+      if (watcherAdmission !== null && watcherPermit) {
+        rememberWatcherAdmission(watcherAdmission, watcherPermit.askedAt);
+      }
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
         agentId: rt.agentId,

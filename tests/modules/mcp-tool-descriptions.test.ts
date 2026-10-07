@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CODE_TOOL_CONTEXT_NAMES } from "@/lib/code-tool-vocabulary";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import { documentStarters } from "@/modules/documents/starters";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 
@@ -239,5 +240,25 @@ describe("MCP tool descriptions", () => {
       .map(([name, d]) => ({ name, len: d.length }))
       .sort((a, b) => b.len - a.len);
     expect(others[0]?.len).toBeLessThanOrEqual(1500);
+  });
+});
+
+// The two tools that name the starters enumerate them, so a starter added to the table has to reach
+// both: a model reading an older list never learns the new key exists. Read off the parenthesised
+// list itself, since a key can also be an ordinary word elsewhere in the text ("a blank space").
+describe("the starter list in tool descriptions", () => {
+  test("names every starter key", async () => {
+    const all = await descriptions();
+    const keys = documentStarters("pt-BR").map((s) => s.key);
+    const lists: Record<string, RegExp> = {
+      document_starters_list: /templates \(([^)]*)\)/,
+      document_template_create: /`starter` \(([^)]*)\)/,
+    };
+    for (const [tool, shape] of Object.entries(lists)) {
+      const list = shape.exec(all.get(tool) ?? "")?.[1] ?? "";
+      const named = new Set(list.match(/[a-z_]+/g) ?? []);
+      const missing = keys.filter((k) => !named.has(k));
+      expect(`${tool}: ${missing.join(",")}`).toBe(`${tool}: `);
+    }
   });
 });

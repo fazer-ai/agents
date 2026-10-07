@@ -882,7 +882,7 @@
     "deleteTitle": "Delete document template",
     "description": "Description",
     "editTitle": "Edit document template",
-    "emptyDesc": "Start from a ready-made quote, proposal or receipt, then edit the wording.",
+    "emptyDesc": "Start from a ready-made quote, proposal or receipt, or from a blank one, then edit the wording.",
     "emptyTitle": "No document templates yet",
     "enabled": "Agents may issue this document",
     "fields": "Fields the agent fills",

@@ -38293,7 +38293,7 @@
           "Resources"
         ],
         "summary": "List starter templates",
-        "description": "Ready-made templates (quote, proposal, receipt) to create one from.",
+        "description": "Ready-made templates (quote, proposal, receipt, and a blank one) to create one from.",
         "parameters": [
           {
             "name": "locale",

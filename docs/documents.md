@@ -36,6 +36,12 @@ for a sum: it will eventually get one wrong in front of a customer, and the numb
 price. A discount larger than the subtotal is clamped, and the CLAMPED value is what is printed — so
 the three numbers on the page always add up to each other.
 
+**The minimum is one block that prints** (`header`, `text`, `fields`, `lineItems` or `totals`), and no
+fields at all. A template with nothing printable is refused, because every document it issued would
+be a numbered blank page. The `blank` starter is exactly that minimum: one `header` with
+`{{doc_title}} {{doc_number}}`, no fields, the default style and no number prefix, so a template
+built from scratch starts with nothing to delete.
+
 ## Fields and tokens
 
 `fields` is the contract: `{name, label, type, required?, description?}` with
@@ -278,7 +284,7 @@ take a whole agent down), and the names that lost are logged for the operator wh
 ## Transports
 
 - **Console** — Components → Document templates. Create from a ready-made starter (quote, proposal,
-  receipt), edit the letterhead, edit the **wording** of `text` blocks, and watch a live PDF preview.
+  receipt, or blank), edit the letterhead, edit the **wording** of `text` blocks, and watch a live PDF preview.
   Adding, removing and reordering blocks is API/MCP only. The panel is split in two: **Templates**
   (the letterhead as a one-line summary that opens an editor, then the templates) and **Issued** (the
   documents that went out, with the template each came from — and the only place a document can be

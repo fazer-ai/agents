@@ -58,7 +58,7 @@ export function Block({
   const shown = !error;
   const ready = shown && !loading;
   return (
-    <Card id={id} className="flex scroll-mt-4 flex-col gap-4">
+    <Card id={id} className="flex scroll-mt-4 flex-col gap-4 lg:scroll-mt-32">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
           <Icon className="h-4 w-4 text-accent" aria-hidden="true" />
@@ -159,18 +159,20 @@ export function Delta({
   format: (v: number) => string;
   lowerIsBetter?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   if (previous === null || previous === undefined || current === null)
     return null;
   const diff = current - previous;
+  // In the reader's own decimals, and a change that rounds to nothing reads 0, not −0.
+  const signed = (v: number, digits: number) =>
+    new Intl.NumberFormat(i18n.language, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+      signDisplay: "exceptZero",
+    }).format(v);
   let change: string | null = null;
-  if (kind === "rate") {
-    const pp = diff * 100;
-    change = `${pp >= 0 ? "+" : "−"}${Math.abs(pp).toFixed(1)} pp`;
-  } else if (previous > 0) {
-    const pct = (diff / previous) * 100;
-    change = `${pct >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(0)}%`;
-  }
+  if (kind === "rate") change = `${signed(diff * 100, 1)} pp`;
+  else if (previous > 0) change = `${signed((diff / previous) * 100, 0)}%`;
   const better = lowerIsBetter ? diff < 0 : diff > 0;
   const tone =
     diff === 0 ? "text-text-muted" : better ? "text-success" : "text-warning";
@@ -185,5 +187,24 @@ export function Delta({
         </span>
       )}
     </span>
+  );
+}
+
+// A section's title, with the icon its entry carries in the section bar, so the bar and the page
+// read as one index. A notch above a block's own title, which it heads.
+export function SectionHeading({
+  icon: Icon,
+  children,
+}: {
+  icon: LucideIcon;
+  children: ReactNode;
+}) {
+  return (
+    <h2 className="flex items-center gap-2.5 font-semibold text-base text-text-primary">
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent">
+        <Icon className="h-4 w-4" aria-hidden="true" />
+      </span>
+      {children}
+    </h2>
   );
 }

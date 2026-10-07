@@ -125,7 +125,6 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "dashboard.absolute",
   "dashboard.col.percentileMs",
   "dashboard.exportCsv",
-  "dashboard.kpi.firstResponsePair",
   "dashboard.percent",
   "dashboard.range.30d",
   "dashboard.range.7d",
@@ -935,7 +934,7 @@ describe("both languages answer, and answer differently", () => {
     expectWaiverLedger(
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
-      hasProOnlyKeys ? 110 : 108,
+      hasProOnlyKeys ? 109 : 107,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

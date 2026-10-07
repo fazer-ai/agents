@@ -519,18 +519,14 @@ describe("a block whose request fails", () => {
 });
 
 describe("every funnel tile opens the conversations it counts", () => {
-  test("automation opens the conversations the agent resolved", async () => {
+  test("the automation rate is the resolution tile's second line, not a tile of its own", async () => {
     await renderDash("/?range=7d");
     await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: "30%" }).length).toBe(1);
+      expect(has(/closed by the agent itself, 30% of every conversation/)).toBe(
+        true,
+      );
     });
-    fireEvent.click(screen.getByRole("button", { name: "30%" }));
-    await waitFor(() => {
-      expect(location.startsWith("/conversations?")).toBe(true);
-    });
-    expect(new URL(location, "http://x").searchParams.get("outcome")).toBe(
-      "resolved_by_agent",
-    );
+    expect(screen.queryAllByRole("button", { name: "30%" }).length).toBe(0);
   });
 });
 
@@ -626,16 +622,12 @@ describe("first response", () => {
   test("reads as a median and a 90th percentile", async () => {
     await renderDash("/");
     await waitFor(() => {
-      expect(
-        has("median and 90th percentile over 20 answered conversations"),
-      ).toBe(true);
+      expect(has("median; p90 10 min, over 20 answered conversations")).toBe(
+        true,
+      );
     });
-    const tile = screen
-      .getAllByText(/p90/)
-      .map((n) => n.textContent ?? "")
-      .join(" ");
-    expect(/1 min/.test(tile) || /95/.test(tile)).toBe(true);
-    expect(/10 min/.test(tile)).toBe(true);
+    // The median is the tile's figure.
+    expect(has("95 sec")).toBe(true);
   });
 
   test("no sample is no data, never an instant answer", async () => {

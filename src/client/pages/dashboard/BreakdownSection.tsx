@@ -135,7 +135,10 @@ export function BreakdownSection({
   const clickable = dimension === "agent" || dimension === "inbox";
 
   return (
-    <section id="breakdown" className="flex scroll-mt-4 flex-col gap-3">
+    <section
+      id="breakdown"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+    >
       <Block
         error={block.error}
         loading={block.loading && !block.data}

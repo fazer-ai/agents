@@ -18,7 +18,7 @@ import {
   SpendHealthLines,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { Block, type BlockTable, Delta } from "./Block";
+import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -275,11 +275,14 @@ export function CostSection({
     : null;
 
   return (
-    <section id="cost" className="flex scroll-mt-4 flex-col gap-3">
+    <section
+      id="cost"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-medium text-sm text-text-primary">
+        <SectionHeading icon={Coins}>
           {t("dashboard.cost.title", "Cost")}
-        </h2>
+        </SectionHeading>
         {langfuseUrl && (
           <a
             href={langfuseUrl}
@@ -555,7 +558,10 @@ export function CostSection({
 
         {/* The month, against the ceiling: the calendar month in UTC (the ceiling's own window,
             whatever the period above), the spend so far, and where the month ends at this pace. */}
-        <Card id="month" className="flex scroll-mt-4 flex-col gap-3">
+        <Card
+          id="month"
+          className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+        >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
               <Gauge className="h-4 w-4 text-accent" aria-hidden="true" />
@@ -626,6 +632,7 @@ export function CostSection({
                       entry={entry}
                       when={ceilingWhen}
                       enabled={ceilingData.enabled}
+                      briefUnpriced
                     />
                   </div>
                 );

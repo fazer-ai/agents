@@ -277,62 +277,65 @@ export function DashboardPage() {
 
   return (
     <PageContainer className="flex flex-col gap-6">
-      <header className="flex flex-col gap-4">
-        <div className="flex items-center gap-3">
-          <Gauge className="h-6 w-6 text-accent" aria-hidden="true" />
-          <div>
-            <h1 className="font-semibold text-text-primary text-xl">
-              {t("dashboard.title", "Dashboard")}
-            </h1>
-            <p className="mt-0.5 text-sm text-text-muted">
-              {t(
-                "dashboard.subtitle2",
-                "How the agents are doing, what they cost and where it goes.",
-              )}
-            </p>
-          </div>
+      <header className="flex items-center gap-3">
+        <Gauge className="h-6 w-6 text-accent" aria-hidden="true" />
+        <div>
+          <h1 className="font-semibold text-text-primary text-xl">
+            {t("dashboard.title", "Dashboard")}
+          </h1>
+          <p className="mt-0.5 text-sm text-text-muted">
+            {t(
+              "dashboard.subtitle2",
+              "How the agents are doing, what they cost and where it goes.",
+            )}
+          </p>
         </div>
+      </header>
+
+      {/* The filter and the section index stay on screen while the page scrolls, as a band across
+          the top rather than a column beside it: at a laptop's width a column took a quarter of
+          the room the blocks need. -mx-6/px-6 cover the scroll container's padding, so the blocks
+          pass under the band and not beside it. */}
+      <div className="z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-border border-b bg-bg-secondary px-6 py-3 lg:sticky lg:-top-6">
         <FilterBar
           filters={filters}
           onChange={setFilters}
           agents={agents ?? []}
           inboxes={inboxes ?? []}
         />
-      </header>
+        <SectionNav sections={sections} layout="bar" />
+      </div>
 
-      <div className="flex gap-6">
-        <SectionNav sections={sections} />
-        <div className="flex min-w-0 grow flex-col gap-8">
-          <div id="performance" className="scroll-mt-4">
-            <DataBoundary
-              loading={kpis.loading && !kpis.data}
-              error={kpis.error}
-              errorStatus={kpis.status ?? undefined}
-              onRetry={kpis.reload}
-              loadingLabel={t("dashboard.loading", "Loading metrics…")}
-              errorLabel={t("dashboard.error", "Could not load metrics.")}
-              skeleton={<DashboardSkeleton />}
-            >
-              {kpis.data && (
-                <PerformanceSection
-                  filters={filters}
-                  win={win}
-                  prev={prev}
-                  kpis={kpis.data}
-                  prevKpis={prevKpis.data}
-                  onFilter={setFilters}
-                  view={perfView}
-                  onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
-                />
-              )}
-            </DataBoundary>
-          </div>
-          <ReasonsSection filters={filters} win={win} />
-          <CostSection filters={filters} win={win} prev={prev} />
-          <HealthSection filters={filters} win={win} />
-          <AutomationSection filters={filters} win={win} />
-          <BreakdownSection filters={filters} win={win} onFilter={setFilters} />
+      <div className="flex min-w-0 flex-col gap-8">
+        <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
+          <DataBoundary
+            loading={kpis.loading && !kpis.data}
+            error={kpis.error}
+            errorStatus={kpis.status ?? undefined}
+            onRetry={kpis.reload}
+            loadingLabel={t("dashboard.loading", "Loading metrics…")}
+            errorLabel={t("dashboard.error", "Could not load metrics.")}
+            skeleton={<DashboardSkeleton />}
+          >
+            {kpis.data && (
+              <PerformanceSection
+                filters={filters}
+                win={win}
+                prev={prev}
+                kpis={kpis.data}
+                prevKpis={prevKpis.data}
+                onFilter={setFilters}
+                view={perfView}
+                onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
+              />
+            )}
+          </DataBoundary>
         </div>
+        <ReasonsSection filters={filters} win={win} />
+        <CostSection filters={filters} win={win} prev={prev} />
+        <HealthSection filters={filters} win={win} />
+        <AutomationSection filters={filters} win={win} />
+        <BreakdownSection filters={filters} win={win} onFilter={setFilters} />
       </div>
     </PageContainer>
   );

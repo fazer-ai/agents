@@ -5,7 +5,6 @@ import {
   Target,
   Timer,
   TrendingUp,
-  Zap,
 } from "lucide-react";
 import { lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
@@ -20,7 +19,7 @@ import {
 import { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
 import { cn } from "@/client/lib/utils";
-import { Block, type BlockTable, Delta } from "./Block";
+import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -313,9 +312,9 @@ export function PerformanceSection({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h2 className="font-medium text-sm text-text-primary">
+        <SectionHeading icon={Target}>
           {t("dashboard.funnel", "Automation funnel")}
-        </h2>
+        </SectionHeading>
         <SegmentedControl
           aria-label={t("dashboard.funnelMode", "Show the funnel as")}
           value={mode}
@@ -379,9 +378,16 @@ export function PerformanceSection({
               : nf.format(kpis.resolvedByBot)
           }
           secondary={t(
-            "dashboard.kpi.resolutionHint",
-            "{{resolved}} closed by the agent itself",
-            { resolved: nf.format(kpis.resolvedByBot) },
+            "dashboard.kpi.resolutionHint2",
+            "{{resolved}} closed by the agent itself, {{automation}} of every conversation",
+            {
+              resolved: nf.format(kpis.resolvedByBot),
+              automation: pf(kpis.automationRate),
+            },
+          )}
+          help={t(
+            "dashboard.kpi.resolutionHelp",
+            "Of the conversations the agent took, the share it closed itself. Over every conversation in the period, the same closings are the automation rate (involvement × resolution), which the funnel over time also draws.",
           )}
           href={periodHref("resolution")}
           delta={
@@ -389,32 +395,6 @@ export function PerformanceSection({
               kind="rate"
               current={kpis.resolutionRate}
               previous={prevRate("resolution")}
-              format={pf}
-            />
-          }
-        />
-        <KpiTile
-          icon={Zap}
-          label={metricLabel.automation}
-          href={periodHref("automation")}
-          primary={
-            mode === "rate"
-              ? pf(kpis.automationRate)
-              : nf.format(kpis.resolvedByBot)
-          }
-          secondary={t(
-            "dashboard.kpi.automationHint",
-            "resolved by the agent, of every conversation",
-          )}
-          help={t(
-            "dashboard.kpi.automationHelp",
-            "Involvement × Resolution: the share of all conversations in the period that the agent took and closed itself.",
-          )}
-          delta={
-            <Delta
-              kind="rate"
-              current={kpis.automationRate}
-              previous={prevRate("automation")}
               format={pf}
             />
           }
@@ -437,6 +417,48 @@ export function PerformanceSection({
               current={kpis.handoffRate}
               previous={prevRate("handoff")}
               format={pf}
+              lowerIsBetter
+            />
+          }
+        />
+        {/* The human half of an attendance: Chatwoot's own first-response SLA, mirrored onto the
+            conversation. The median and the 90th percentile, and an empty period says so rather than
+            showing 0 s. */}
+        <KpiTile
+          icon={Timer}
+          label={t("dashboard.kpi.firstResponse", "First response")}
+          primary={
+            formatDuration(kpis.firstResponseSeconds, i18n.language) ?? "\u2014"
+          }
+          secondary={
+            kpis.firstResponseSampled > 0
+              ? t(
+                  "dashboard.kpi.firstResponseHint3",
+                  "median; p90 {{p90}}, over {{sampled}} answered conversations",
+                  {
+                    p90:
+                      formatDuration(
+                        kpis.firstResponseP90Seconds,
+                        i18n.language,
+                      ) ?? "\u2014",
+                    sampled: nf.format(kpis.firstResponseSampled),
+                  },
+                )
+              : t(
+                  "dashboard.kpi.firstResponseNone",
+                  "no data for this period yet",
+                )
+          }
+          help={t(
+            "dashboard.kpi.firstResponseHelp",
+            "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
+          )}
+          delta={
+            <Delta
+              kind="amount"
+              current={kpis.firstResponseSeconds}
+              previous={prevKpis?.firstResponseSeconds}
+              format={(v) => formatDuration(v, i18n.language) ?? "\u2014"}
               lowerIsBetter
             />
           }
@@ -592,55 +614,6 @@ export function PerformanceSection({
           </ul>
         </Card>
       )}
-
-      {/* The human half of an attendance: Chatwoot's own first-response SLA, mirrored onto the
-          conversation. The median and the 90th percentile, and an empty period says so rather than
-          showing 0 s. */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <KpiTile
-          icon={Timer}
-          label={t("dashboard.kpi.firstResponse", "First response")}
-          primary={
-            kpis.firstResponseSeconds === null
-              ? "\u2014"
-              : t("dashboard.kpi.firstResponsePair", "{{p50}} · p90 {{p90}}", {
-                  p50:
-                    formatDuration(kpis.firstResponseSeconds, i18n.language) ??
-                    "\u2014",
-                  p90:
-                    formatDuration(
-                      kpis.firstResponseP90Seconds,
-                      i18n.language,
-                    ) ?? "\u2014",
-                })
-          }
-          secondary={
-            kpis.firstResponseSampled > 0
-              ? t(
-                  "dashboard.kpi.firstResponseHint2",
-                  "median and 90th percentile over {{sampled}} answered conversations",
-                  { sampled: nf.format(kpis.firstResponseSampled) },
-                )
-              : t(
-                  "dashboard.kpi.firstResponseNone",
-                  "no data for this period yet",
-                )
-          }
-          help={t(
-            "dashboard.kpi.firstResponseHelp",
-            "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
-          )}
-          delta={
-            <Delta
-              kind="amount"
-              current={kpis.firstResponseSeconds}
-              previous={prevKpis?.firstResponseSeconds}
-              format={(v) => formatDuration(v, i18n.language) ?? "\u2014"}
-              lowerIsBetter
-            />
-          }
-        />
-      </div>
     </section>
   );
 }

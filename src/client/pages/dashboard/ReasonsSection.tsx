@@ -3,7 +3,7 @@ import { lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { Block, type BlockTable } from "./Block";
+import { Block, type BlockTable, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -153,10 +153,13 @@ export function ReasonsSection({
   };
 
   return (
-    <section id="reasons" className="flex scroll-mt-4 flex-col gap-3">
-      <h2 className="font-medium text-sm text-text-primary">
+    <section
+      id="reasons"
+      className="flex scroll-mt-4 flex-col gap-3 lg:scroll-mt-32"
+    >
+      <SectionHeading icon={ArrowRightLeft}>
         {t("dashboard.reasons.title", "Why it hands over, and what people ask")}
-      </h2>
+      </SectionHeading>
       <Block
         error={handoffs.error}
         loading={handoffs.loading && !handoffs.data}

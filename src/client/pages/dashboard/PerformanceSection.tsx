@@ -66,6 +66,20 @@ function rate(c: Counts | undefined, m: Metric): number | null {
 
 const DRILL = METRIC_DRILL;
 
+// Five tiles, laid out by the room the page has, not the window's: the app's sidebar takes a share
+// of the window that a breakpoint cannot see. A row of five where each tile keeps its hint on two
+// lines; below it three and two, each row full; then two by two, with the last tile across. No
+// width leaves a tile alone beside a gap. The grid goes inside an `@container`.
+export const KPI_GRID =
+  "grid gap-4 @md:grid-cols-2 @2xl:grid-cols-6 @min-[70rem]:grid-cols-5";
+export const KPI_SPANS = [
+  "@2xl:col-span-2 @min-[70rem]:col-span-1",
+  "@2xl:col-span-2 @min-[70rem]:col-span-1",
+  "@2xl:col-span-2 @min-[70rem]:col-span-1",
+  "@2xl:col-span-3 @min-[70rem]:col-span-1",
+  "@md:col-span-2 @2xl:col-span-3 @min-[70rem]:col-span-1",
+] as const;
+
 function KpiTile({
   icon: Icon,
   label,
@@ -75,6 +89,7 @@ function KpiTile({
   accent,
   help,
   href,
+  className,
 }: {
   icon: typeof Bot;
   label: string;
@@ -84,10 +99,11 @@ function KpiTile({
   accent?: boolean;
   help?: React.ReactNode;
   href?: string;
+  className?: string;
 }) {
   const navigate = useNavigate();
   return (
-    <Card className="flex flex-col gap-2">
+    <Card className={cn("flex flex-col gap-2", className)}>
       <div className="flex items-center gap-2 text-text-muted text-xs">
         <Icon
           className={cn("h-4 w-4", accent ? "text-accent" : "text-text-muted")}
@@ -325,144 +341,152 @@ export function PerformanceSection({
           ]}
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <KpiTile
-          icon={MessagesSquare}
-          label={t("dashboard.kpi.total", "Conversations")}
-          primary={nf.format(kpis.totalConversations)}
-          secondary={t("dashboard.kpi.totalHint", "in the period")}
-          href={drillDownHref(filters, win, "all")}
-          delta={
-            <Delta
-              kind="amount"
-              current={kpis.totalConversations}
-              previous={prevKpis?.totalConversations}
-              format={(v) => nf.format(v)}
-            />
-          }
-        />
-        <KpiTile
-          icon={Bot}
-          accent
-          label={metricLabel.involvement}
-          primary={
-            mode === "rate"
-              ? pf(kpis.involvementRate)
-              : nf.format(kpis.involved)
-          }
-          secondary={t(
-            "dashboard.kpi.involvementHint",
-            "{{involved}} of {{total}} handled by AI",
-            {
-              involved: nf.format(kpis.involved),
-              total: nf.format(kpis.totalConversations),
-            },
-          )}
-          href={periodHref("involvement")}
-          delta={
-            <Delta
-              kind="rate"
-              current={kpis.involvementRate}
-              previous={prevRate("involvement")}
-              format={pf}
-            />
-          }
-        />
-        <KpiTile
-          icon={Target}
-          accent
-          label={metricLabel.resolution}
-          primary={
-            mode === "rate"
-              ? pf(kpis.resolutionRate)
-              : nf.format(kpis.resolvedByBot)
-          }
-          secondary={t(
-            "dashboard.kpi.resolutionHint2",
-            "{{resolved}} closed by the agent itself, {{automation}} of every conversation",
-            {
-              resolved: nf.format(kpis.resolvedByBot),
-              automation: pf(kpis.automationRate),
-            },
-          )}
-          help={t(
-            "dashboard.kpi.resolutionHelp",
-            "Of the conversations the agent took, the share it closed itself. Over every conversation in the period, the same closings are the automation rate (involvement × resolution), which the funnel over time also draws.",
-          )}
-          href={periodHref("resolution")}
-          delta={
-            <Delta
-              kind="rate"
-              current={kpis.resolutionRate}
-              previous={prevRate("resolution")}
-              format={pf}
-            />
-          }
-        />
-        <KpiTile
-          icon={ArrowRightLeft}
-          label={metricLabel.handoff}
-          primary={
-            mode === "rate" ? pf(kpis.handoffRate) : nf.format(kpis.handoff)
-          }
-          secondary={t(
-            "dashboard.kpi.handoffHint",
-            "{{handoff}} escalated to a human",
-            { handoff: nf.format(kpis.handoff) },
-          )}
-          href={periodHref("handoff")}
-          delta={
-            <Delta
-              kind="rate"
-              current={kpis.handoffRate}
-              previous={prevRate("handoff")}
-              format={pf}
-              lowerIsBetter
-            />
-          }
-        />
-        {/* The human half of an attendance: Chatwoot's own first-response SLA, mirrored onto the
+      <div className="@container">
+        <div className={KPI_GRID}>
+          <KpiTile
+            className={KPI_SPANS[0]}
+            icon={MessagesSquare}
+            label={t("dashboard.kpi.total", "Conversations")}
+            primary={nf.format(kpis.totalConversations)}
+            secondary={t("dashboard.kpi.totalHint", "in the period")}
+            href={drillDownHref(filters, win, "all")}
+            delta={
+              <Delta
+                kind="amount"
+                current={kpis.totalConversations}
+                previous={prevKpis?.totalConversations}
+                format={(v) => nf.format(v)}
+              />
+            }
+          />
+          <KpiTile
+            className={KPI_SPANS[1]}
+            icon={Bot}
+            accent
+            label={metricLabel.involvement}
+            primary={
+              mode === "rate"
+                ? pf(kpis.involvementRate)
+                : nf.format(kpis.involved)
+            }
+            secondary={t(
+              "dashboard.kpi.involvementHint",
+              "{{involved}} of {{total}} handled by AI",
+              {
+                involved: nf.format(kpis.involved),
+                total: nf.format(kpis.totalConversations),
+              },
+            )}
+            href={periodHref("involvement")}
+            delta={
+              <Delta
+                kind="rate"
+                current={kpis.involvementRate}
+                previous={prevRate("involvement")}
+                format={pf}
+              />
+            }
+          />
+          <KpiTile
+            className={KPI_SPANS[2]}
+            icon={Target}
+            accent
+            label={metricLabel.resolution}
+            primary={
+              mode === "rate"
+                ? pf(kpis.resolutionRate)
+                : nf.format(kpis.resolvedByBot)
+            }
+            secondary={t(
+              "dashboard.kpi.resolutionHint2",
+              "{{resolved}} closed by the agent itself, {{automation}} of every conversation",
+              {
+                resolved: nf.format(kpis.resolvedByBot),
+                automation: pf(kpis.automationRate),
+              },
+            )}
+            help={t(
+              "dashboard.kpi.resolutionHelp",
+              "Of the conversations the agent took, the share it closed itself. Over every conversation in the period, the same closings are the automation rate (involvement × resolution), which the funnel over time also draws.",
+            )}
+            href={periodHref("resolution")}
+            delta={
+              <Delta
+                kind="rate"
+                current={kpis.resolutionRate}
+                previous={prevRate("resolution")}
+                format={pf}
+              />
+            }
+          />
+          <KpiTile
+            className={KPI_SPANS[3]}
+            icon={ArrowRightLeft}
+            label={metricLabel.handoff}
+            primary={
+              mode === "rate" ? pf(kpis.handoffRate) : nf.format(kpis.handoff)
+            }
+            secondary={t(
+              "dashboard.kpi.handoffHint",
+              "{{handoff}} escalated to a human",
+              { handoff: nf.format(kpis.handoff) },
+            )}
+            href={periodHref("handoff")}
+            delta={
+              <Delta
+                kind="rate"
+                current={kpis.handoffRate}
+                previous={prevRate("handoff")}
+                format={pf}
+                lowerIsBetter
+              />
+            }
+          />
+          {/* The human half of an attendance: Chatwoot's own first-response SLA, mirrored onto the
             conversation. The median and the 90th percentile, and an empty period says so rather than
             showing 0 s. */}
-        <KpiTile
-          icon={Timer}
-          label={t("dashboard.kpi.firstResponse", "First response")}
-          primary={
-            formatDuration(kpis.firstResponseSeconds, i18n.language) ?? "\u2014"
-          }
-          secondary={
-            kpis.firstResponseSampled > 0
-              ? t(
-                  "dashboard.kpi.firstResponseHint3",
-                  "median; p90 {{p90}}, over {{sampled}} answered conversations",
-                  {
-                    p90:
-                      formatDuration(
-                        kpis.firstResponseP90Seconds,
-                        i18n.language,
-                      ) ?? "\u2014",
-                    sampled: nf.format(kpis.firstResponseSampled),
-                  },
-                )
-              : t(
-                  "dashboard.kpi.firstResponseNone",
-                  "no data for this period yet",
-                )
-          }
-          help={t(
-            "dashboard.kpi.firstResponseHelp",
-            "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
-          )}
-          delta={
-            <Delta
-              kind="amount"
-              current={kpis.firstResponseSeconds}
-              previous={prevKpis?.firstResponseSeconds}
-              format={(v) => formatDuration(v, i18n.language) ?? "\u2014"}
-              lowerIsBetter
-            />
-          }
-        />
+          <KpiTile
+            className={KPI_SPANS[4]}
+            icon={Timer}
+            label={t("dashboard.kpi.firstResponse", "First response")}
+            primary={
+              formatDuration(kpis.firstResponseSeconds, i18n.language) ??
+              "\u2014"
+            }
+            secondary={
+              kpis.firstResponseSampled > 0
+                ? t(
+                    "dashboard.kpi.firstResponseHint3",
+                    "median; p90 {{p90}}, over {{sampled}} answered conversations",
+                    {
+                      p90:
+                        formatDuration(
+                          kpis.firstResponseP90Seconds,
+                          i18n.language,
+                        ) ?? "\u2014",
+                      sampled: nf.format(kpis.firstResponseSampled),
+                    },
+                  )
+                : t(
+                    "dashboard.kpi.firstResponseNone",
+                    "no data for this period yet",
+                  )
+            }
+            help={t(
+              "dashboard.kpi.firstResponseHelp",
+              "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
+            )}
+            delta={
+              <Delta
+                kind="amount"
+                current={kpis.firstResponseSeconds}
+                previous={prevKpis?.firstResponseSeconds}
+                format={(v) => formatDuration(v, i18n.language) ?? "\u2014"}
+                lowerIsBetter
+              />
+            }
+          />
+        </div>
       </div>
 
       <Card className="flex flex-col gap-3">

@@ -24,6 +24,8 @@ Conversation figures are real traffic by construction (a playground turn has no 
 
 The filter and the section index sit in one band across the top of the page, which stays on screen while the page scrolls (from the `lg` breakpoint). The index is a row, not a column beside the blocks: at a laptop's width a column took a quarter of the room the blocks need. Each section's title carries the icon its entry carries in the index.
 
+The funnel's five tiles are laid out by the width the page has (a container query on their row, `KPI_GRID` in `PerformanceSection.tsx`), not by the window's, since the app's sidebar takes a share a window breakpoint cannot see: five across from 70rem, three and two below it, two by two below that with the last tile across the row. No width leaves a tile alone beside a gap.
+
 
 | block | route | source |
 |---|---|---|

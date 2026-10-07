@@ -19,6 +19,7 @@ import {
   Skeleton,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
@@ -36,6 +37,8 @@ import {
 import { AutomationSection, HealthSection } from "./dashboard/HealthSection";
 import {
   DEFAULT_PERFORMANCE_VIEW,
+  KPI_GRID,
+  KPI_SPANS,
   type Kpis,
   PerformanceSection,
   type PerformanceView,
@@ -163,10 +166,12 @@ const SKELETON_KEYS = ["k0", "k1", "k2", "k3", "k4"];
 function DashboardSkeleton() {
   return (
     <div className="flex flex-col gap-6" aria-hidden="true">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        {SKELETON_KEYS.map((k) => (
-          <Skeleton key={k} className="h-24 w-full" />
-        ))}
+      <div className="@container">
+        <div className={KPI_GRID}>
+          {SKELETON_KEYS.map((k, i) => (
+            <Skeleton key={k} className={cn("h-24 w-full", KPI_SPANS[i])} />
+          ))}
+        </div>
       </div>
       <Skeleton className="h-28 w-full" />
       <Skeleton className="h-72 w-full" />

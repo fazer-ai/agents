@@ -222,7 +222,7 @@ describe("carryCaseAttachments", () => {
     expect(f.calls.some((c) => c.fn === "sendMessageAsAdmin")).toBe(false);
   });
 
-  test("attendance: only files after the boundary memory compaction cut", async () => {
+  test("attendance: only files since the attendance started", async () => {
     const f = fake({
       messages: [
         { id: 1, createdAt: 100, files: [{ id: 11 }] },
@@ -248,6 +248,24 @@ describe("carryCaseAttachments", () => {
       "doc-14.pdf",
       "doc-15.pdf",
     ]);
+  });
+
+  test("attendance: the message the attendance started with is part of it", async () => {
+    const f = fake({
+      messages: [
+        { id: 1, createdAt: 499, files: [{ id: 11 }] },
+        { id: 2, createdAt: 500, files: [{ id: 12 }] },
+      ],
+    });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput(
+        { mode: "attendance" },
+        { attendanceStartedAt: async () => new Date(500 * 1000 + 400) },
+      ),
+    );
+    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["doc-12.pdf"]);
   });
 
   test("attendance: an old message under a new id does not end the walk", async () => {

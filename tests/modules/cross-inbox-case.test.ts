@@ -4,6 +4,7 @@ import { owesHandbackNote } from "@/graph/handback";
 import { interpolatePromptVars } from "@/graph/prompt";
 import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
+import { mergeBehaviorSettings } from "@/modules/agents/behavior-settings";
 import {
   ChatwootApiError,
   ChatwootCalledOffError,
@@ -4148,6 +4149,24 @@ describe("the operator's opening and the case note (issue #923)", () => {
 });
 
 describe("carrying the customer's files (issue #1128)", () => {
+  test("a settings patch of one field keeps the others stored", () => {
+    const stored = mergeBehaviorSettings(
+      {},
+      {
+        crossInboxCase: {
+          carryAttachments: { mode: "attendance", maxFiles: 4 },
+        },
+      },
+    );
+    const next = mergeBehaviorSettings(stored, {
+      crossInboxCase: { carryAttachments: { fileTypes: ["file"] } },
+    });
+    expect(
+      readCrossInboxCaseConfig(next as Record<string, unknown>)
+        .carryAttachments,
+    ).toEqual({ mode: "attendance", fileTypes: ["file"], maxFiles: 4 });
+  });
+
   const carry = (
     mode: "off" | "attendance" | "conversation",
     over: Partial<OpenCaseInput> = {},

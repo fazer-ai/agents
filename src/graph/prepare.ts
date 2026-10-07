@@ -1609,13 +1609,13 @@ export async function buildToolset(
               config: cfg.crossInboxCaseConfig,
               contactId: cfg.chatwootContactId,
               // NOTE: Read only when the files block asks for the attendance scope, and only on a real
-              // conversation of a known contact-inbox, which is what keys the compaction rows.
+              // conversation of a known contact-inbox, which is what keys the memory thread.
               ...(ctx.conversationId > 0 &&
               cfg.contactInboxId != null &&
               cfg.crossInboxCaseConfig.carryAttachments.mode === "attendance"
                 ? {
-                    attendanceStartedAt: () =>
-                      attendanceStartedAt(ctx.base, {
+                    attendanceStartedAt: async () =>
+                      attendanceStartedAt(await getCheckpointer(), {
                         tenantId: ctx.tenantId,
                         instanceId: ctx.instanceId,
                         contactInboxId: cfg.contactInboxId as number,

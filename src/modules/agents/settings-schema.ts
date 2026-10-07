@@ -538,7 +538,7 @@ const crossInboxCase = z.looseObject({
     })
     .optional()
     .describe(
-      "the customer's files copied into the case as one private note; replaced as a unit",
+      "the customer's files copied into the case as one private note; a patch merges field by field, an omitted field keeps its stored value",
     ),
 });
 

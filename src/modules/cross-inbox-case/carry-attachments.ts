@@ -36,8 +36,8 @@ export interface CarryInput {
   // The origin's contact: only files THEY sent are carried. Null ⇒ any contact sender.
   originContactId: number | null;
   caseId: number;
-  // When the origin's current attendance started, as memory compaction cut it. Null ⇒ the whole
-  // conversation is the current attendance (it was never compacted). Asked only under `attendance`.
+  // When the origin's current attendance started, as memory compaction cuts the thread. Null ⇒ the
+  // whole conversation is the current attendance. Asked only under `attendance`.
   attendanceStartedAt?: () => Promise<Date | null>;
   // The per-file ceiling. Absent ⇒ CARRY_MAX_FILE_BYTES.
   maxFileBytes?: number;
@@ -129,15 +129,17 @@ function carriedIds(conv: unknown): Map<number, string> {
 }
 
 // The files the contact sent, newest first, walking the origin back page by page. Under
-// `attendance`, a message at or before the boundary is passed over but does not end the walk: an
-// imported message carries an old date under a new id, so dates do not fall in step with the pages.
+// `attendance`, a message from before the attendance started is passed over but does not end the
+// walk: an imported message carries an old date under a new id, so dates do not fall in step with the
+// pages.
 async function candidatesOf(
   client: CarryClient,
   input: CarryInput,
   boundary: Date | null,
 ): Promise<Candidate[]> {
   const types = new Set<string>(input.config.fileTypes);
-  const since = boundary ? boundary.getTime() / 1000 : null;
+  // Chatwoot dates a message to the second.
+  const since = boundary ? Math.floor(boundary.getTime() / 1000) : null;
   const out: Candidate[] = [];
   let before: number | undefined;
   for (let pages = 0; pages < MAX_PAGES; pages += 1) {
@@ -151,7 +153,7 @@ async function candidatesOf(
     const sorted = [...page].sort((a, b) => Number(b.id) - Number(a.id));
     for (const m of sorted) {
       const createdAt = Number(m.created_at);
-      if (since !== null && Number.isFinite(createdAt) && createdAt <= since)
+      if (since !== null && Number.isFinite(createdAt) && createdAt < since)
         continue;
       if (m.message_type !== 0 && m.message_type !== "incoming") continue;
       if (m.private === true) continue;

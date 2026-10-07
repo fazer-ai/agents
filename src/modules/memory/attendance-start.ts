@@ -1,35 +1,42 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { BaseMessage } from "@langchain/core/messages";
+import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import { contactInboxThreadId } from "@/graph/checkpointer";
+import { stampedSentAt } from "@/graph/markers";
+import { buildThreadStateGraph } from "@/graph/thread-state";
+import { selectClosedPrefix } from "./cut";
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+// Where the CURRENT attendance starts, for a reader outside the contact's memory thread (carrying the
+// customer's files into a case, ../cross-inbox-case). Read off the thread with the same cut compaction
+// uses, so the two never disagree: the earliest instant stamped on the open attendance's messages.
+// Not the summary rows' dates: those date the conversation's last event when the job ran, which can be
+// after the customer came back. Null when the open attendance carries no instant: the whole
+// conversation then reads as current.
+export function openAttendanceStart(messages: BaseMessage[]): Date | null {
+  const { open } = selectClosedPrefix(messages, {
+    currentAttendanceClosed: false,
+  });
+  let first: Date | null = null;
+  for (const m of open) {
+    const at = stampedSentAt(m);
+    if (at && (first === null || at < first)) first = at;
+  }
+  return first;
 }
 
-// Where the CURRENT attendance starts, as memory compaction cut the contact's thread, for a reader
-// outside it (carrying the customer's files into a case, ../cross-inbox-case). Compaction cuts the
-// contact-inbox's thread, not one conversation: a cut can fold several conversations into one row
-// named after the newest of them. So the boundary is the newest dated cut of the whole thread, and
-// no dated cut means everything is still the first attendance. An undated row (the mirrored
-// conversation was gone when it was cut) says nothing about where, and is passed over.
 export async function attendanceStartedAt(
-  base: PrismaClient,
-  p: {
-    tenantId: bigint;
-    instanceId: bigint;
-    contactInboxId: number;
-  },
+  checkpointer: BaseCheckpointSaver,
+  p: { tenantId: bigint; instanceId: bigint; contactInboxId: number },
 ): Promise<Date | null> {
-  const row = await runScopedOn(base, sysCtx(p.tenantId), (db) =>
-    db.attendanceSummary.findFirst({
-      where: {
-        tenantId: p.tenantId,
-        chatwootInstanceId: p.instanceId,
-        contactInboxId: p.contactInboxId,
-        attendanceAt: { not: null },
-      },
-      orderBy: { attendanceAt: "desc" },
-      select: { attendanceAt: true },
-    }),
-  );
-  return row?.attendanceAt ?? null;
+  const state = await buildThreadStateGraph(checkpointer).getState({
+    configurable: {
+      thread_id: contactInboxThreadId(
+        p.tenantId,
+        p.instanceId,
+        p.contactInboxId,
+      ),
+    },
+  });
+  const messages =
+    (state.values as { messages?: BaseMessage[] } | undefined)?.messages ?? [];
+  return openAttendanceStart(messages);
 }

@@ -1051,7 +1051,7 @@
     },
     "issuedEmptyDesc": "Documents your agents issue from a template show up here, with the PDF the customer received.",
     "issuedEmptyTitle": "No documents issued yet",
-    "mcpConnectLink": "How to connect one",
+    "mcpHowToConnect": "How to connect",
     "name": "Name",
     "nameHint": "This is what the agent's tool is called, so each template needs its own name.",
     "namePlaceholder": "e.g. Service agreement",

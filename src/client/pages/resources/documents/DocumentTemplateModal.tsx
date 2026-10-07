@@ -495,7 +495,7 @@ export function DocumentTemplateModal({
                 "Only the wording is editable here. To add, remove or reorder blocks and fields, ask your AI assistant connected over MCP.",
               )}{" "}
               <McpSettingsLink>
-                {t("documents.mcpConnectLink", "How to connect one")}
+                {t("documents.mcpHowToConnect", "How to connect")}
               </McpSettingsLink>
             </p>
             {fields.length === 0 && (

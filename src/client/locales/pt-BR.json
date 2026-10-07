@@ -1084,7 +1084,7 @@
     },
     "issuedEmptyDesc": "Os documentos que seus agentes emitem a partir de um modelo aparecem aqui, com o PDF que o cliente recebeu.",
     "issuedEmptyTitle": "Nenhum documento emitido ainda",
-    "mcpConnectLink": "Como conectar um",
+    "mcpHowToConnect": "Como conectar",
     "name": "Nome",
     "nameHint": "É assim que a ferramenta do agente se chama, então cada modelo precisa do seu próprio nome.",
     "namePlaceholder": "ex.: Contrato de serviço",

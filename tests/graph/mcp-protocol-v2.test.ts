@@ -76,7 +76,15 @@ function sel(f: Fixture, over: Partial<McpSelection> = {}): McpSelection {
     credentialBaseUrl: null,
     credentialKind: null,
     credentialParamName: null,
-    enabledTools: ["echo", "refuse", "price", "pair", "pair07", "point"],
+    enabledTools: [
+      "echo",
+      "refuse",
+      "price",
+      "pair",
+      "pair07",
+      "point",
+      "summary",
+    ],
     headers: {},
     ...over,
   };
@@ -128,6 +136,7 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
         "point",
         "price",
         "refuse",
+        "summary",
       ]);
       expect(textOf(await t.echo?.invoke({ q: "olá" }))).toBe('{"q":"olá"}');
     },
@@ -226,13 +235,14 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
       "point",
       "price",
       "refuse",
+      "summary",
     ]);
     expect(found.instructions).toBe("Fixture instructions.");
   });
 
   // When the SSE fallback fails too, the error still names the streamable HTTP attempt and its
   // status, so a wrong credential reads as an authentication failure and not as an SSE problem, and
-  // it carries no credential, not even one in the URL's query.
+  // it carries no credential, not even one in the URL's query that the server echoes in its body.
   test.each([
     ["without", {}],
     ["with", DECLARED],
@@ -254,9 +264,33 @@ describe("MCP connections on @langchain/mcp-adapters 2", () => {
       expect(err?.message).toContain(
         "failed with HTTP 401 (authentication failed)",
       );
-      expect(err?.message).toContain("The SSE fallback failed too: SSE error");
+      expect(err?.message).toContain("the SSE fallback failed too");
+      expect(err?.message).not.toContain("unauthorized");
       expect(err?.message).not.toContain("errado");
       expect(err?.message).not.toContain("segredo-na-query");
+    },
+  );
+
+  // The adapter keeps `structuredContent` in the artifact only; the model still sees it, appended to
+  // a text that does not already carry it, and once when the text is that data serialized.
+  test.each([
+    ["without", {}],
+    ["with", DECLARED],
+  ])(
+    "structured content %s declared headers stays visible to the model",
+    async (_label, headers) => {
+      const t = await tools(sel(open, { headers }));
+      const call = (name: string) =>
+        t[name]?.invoke({
+          type: "tool_call",
+          id: `c-${name}`,
+          name: t[name]?.name ?? name,
+          args: {},
+        }) as Promise<ToolMessage>;
+      expect((await call("summary")).content).toBe(
+        'Found one result\n\n{"total":42}',
+      );
+      expect((await call("point")).content).toBe('{"at":[1,2]}');
     },
   );
 

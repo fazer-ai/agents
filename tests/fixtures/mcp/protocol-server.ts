@@ -11,7 +11,8 @@ import {
 // A legacy-protocol MCP server (SDK v1) on an ephemeral port, in its own process. `/mcp` speaks
 // streamable HTTP, or answers 400 to every request when started with `MCP_HTTP_REFUSES=1`; `/sse`
 // plus `/messages` speak the SSE transport. With `MCP_REQUIRE_TOKEN=<t>`, every path answers 401 to a
-// request without `Authorization: Bearer <t>`. Its tools are declared with raw JSON Schema, so a
+// request without `Authorization: Bearer <t>`, echoing the request URL in the body the way some
+// servers and proxies do. Its tools are declared with raw JSON Schema, so a
 // schema reaches the client exactly as written here. It prints one JSON line per HTTP request.
 
 const PRICE_SCHEMA = {
@@ -90,6 +91,11 @@ function server() {
         },
       },
       {
+        name: "summary",
+        description: "Answers a one-line summary plus structured data",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
         name: "price",
         description: "Price an item",
         inputSchema: PRICE_SCHEMA,
@@ -101,6 +107,12 @@ function server() {
       return {
         content: [{ type: "text", text: '{"at":[1,2]}' }],
         structuredContent: { at: [1, 2] },
+      };
+    }
+    if (req.params.name === "summary") {
+      return {
+        content: [{ type: "text", text: "Found one result" }],
+        structuredContent: { total: 42 },
       };
     }
     if (req.params.name === "refuse") {
@@ -138,7 +150,7 @@ const http = createServer((req, res: ServerResponse) => {
     if (token && req.headers.authorization !== `Bearer ${token}`) {
       res
         .writeHead(401, { "content-type": "application/json" })
-        .end('{"error":"unauthorized"}');
+        .end(JSON.stringify({ error: "unauthorized", url: req.url }));
       return;
     }
     if (url.pathname === "/sse" && req.method === "GET") {

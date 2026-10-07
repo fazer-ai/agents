@@ -371,10 +371,6 @@ function httpErrorCode(err: unknown): number | null {
   return m ? Number(m[1]) : null;
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 // The adapter's fallback for a server that answers streamable HTTP with a 4xx: SSE at the same URL,
 // then at `/sse` in place of a trailing `/mcp`. Kept so a connection behaves the same with or
 // without declared headers.
@@ -385,6 +381,25 @@ function sseFallbackUrls(url: string): string[] {
   parts[parts.length - 1] = "sse";
   u.pathname = parts.join("/");
   return [url, u.toString()];
+}
+
+// A tool result with its `structuredContent` visible to the model. The adapter keeps it in the
+// artifact only, which no node of the graph projects back into a message, so a tool answering a
+// one-line summary plus structured data would show the model the summary alone. When the text is
+// not already that data serialized, the data is appended to it as JSON.
+export function withStructuredContent(result: unknown): unknown {
+  if (!Array.isArray(result) || result.length !== 2) return result;
+  const [content, artifacts] = result as [unknown, unknown];
+  if (typeof content !== "string" || !Array.isArray(artifacts)) return result;
+  const structured = (
+    artifacts as Array<{ type?: unknown; data?: unknown }>
+  ).find((a) => a?.type === "mcp_structured_content");
+  if (structured?.data === undefined) return result;
+  const json = JSON.stringify(structured.data);
+  try {
+    if (JSON.stringify(JSON.parse(content)) === json) return result;
+  } catch {}
+  return [content ? `${content}\n\n${json}` : json, artifacts];
 }
 
 // A schema in the dialect the SDK validates it with. One that declares `$schema` is compiled by that
@@ -438,6 +453,9 @@ async function connectClient(
         throwOnLoadError: true,
         prefixToolNameWithServerName: false,
         additionalToolNamePrefix: "",
+        afterToolCall: ({ result }) => ({
+          result: withStructuredContent(result) as typeof result,
+        }),
       });
       return { client, tools };
     } catch (err) {
@@ -477,10 +495,11 @@ async function connectClient(
         last = e;
       }
     }
-    // NOTE: no URL in the message: a query-injected credential lives there, and this error reaches
-    // the logs and the alert channels.
+    const sseCode = httpErrorCode(last);
+    // NOTE: only the statuses go in the message: a response body can echo the request URL, where a
+    // query-injected credential lives, and this error reaches the logs and the alert channels.
     throw new Error(
-      `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}: ${errorText(err)}. The SSE fallback failed too: ${errorText(last)}`,
+      `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}; the SSE fallback failed too${sseCode === null ? "" : ` with HTTP ${sseCode}`}`,
       { cause: last },
     );
   }

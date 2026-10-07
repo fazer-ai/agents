@@ -788,6 +788,57 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // A Chatwoot that ignores `assignee_type` assigns the USER whose id is the bot's, and then the
+    // fallback unassign fails: the person the hand-back started from is already gone, so the row
+    // and the mirror carry what Chatwoot says now, not the baseline.
+    test("a hand-back whose fallback unassign fails records the holder it reads again", async () => {
+      await clearAudit();
+      const id = await seedConversation(4025, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      let swapped = false;
+      const user = (assigneeId: number) => ({
+        id: 1,
+        status: "pending",
+        meta: {
+          assignee_type: "User",
+          assignee: { id: assigneeId, name: "U" },
+        },
+      });
+      const stub = stubClient({
+        getConversation: async () => user(swapped ? 9 : 21),
+        assignAgentBot: async () => {
+          swapped = true;
+          return false;
+        },
+        unassignConversation: async () => {
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      const [row] = await rows();
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 9,
+        partial: true,
+      });
+      const mirrored = await suDb.conversation.findUnique({
+        where: { id },
+        select: { assigneeType: true, assigneeId: true },
+      });
+      expect(mirrored).toEqual({ assigneeType: "User", assigneeId: 9 });
+    });
+
     // An untargeted handoff makes no assignment request, and the open toggle does not auto-assign
     // anybody (Chatwoot 4.17.0). With the post-write state unusable, the row must not invent a
     // human: the holder is the one the conversation already had.

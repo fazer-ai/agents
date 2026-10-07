@@ -1030,3 +1030,25 @@ describe("ChatwootClient", () => {
     });
   });
 });
+
+describe("parseLiveConversation states the assignee only when the payload does", () => {
+  test("an explicit null assignee is stated; an omitted one is not", async () => {
+    const { parseLiveConversation } = await import(
+      "@/modules/chatwoot/normalize"
+    );
+    const stated = parseLiveConversation({
+      id: 1,
+      status: "pending",
+      meta: { assignee_type: null, assignee: null },
+    });
+    const omittedType = parseLiveConversation({
+      id: 1,
+      status: "pending",
+      meta: {},
+    });
+    const omittedMeta = parseLiveConversation({ id: 1, status: "pending" });
+    expect(stated?.assigneeStated).toBe(true);
+    expect(omittedType?.assigneeStated).toBe(false);
+    expect(omittedMeta?.assigneeStated).toBe(false);
+  });
+});

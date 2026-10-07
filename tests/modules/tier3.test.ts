@@ -87,6 +87,9 @@ function makeStub(
     // the case the hand-back falls back to a plain unassign on.
     botAssignable?: boolean;
     botCleared?: boolean;
+    // From the bot assignment on, reads come back without `meta`: a payload that says nothing about
+    // the assignee, which is not one that says nobody holds it.
+    metaOmittedAfterWrite?: boolean;
   } = {},
   // A holder that appears only from the SECOND live read on. The hand-back reads the conversation
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
@@ -116,6 +119,7 @@ function makeStub(
   // Set by a bot assignment the double accepted: like the fork, it removes the person and names the
   // bot, so every later read reports the bot until a late holder claims it back.
   let botHolder: number | null = null;
+  let omitMeta = false;
   const calls = {
     getMessages: 0,
     sendMessage: [] as { content: string; isPrivate: boolean }[],
@@ -198,6 +202,7 @@ function makeStub(
       cleared = true;
       // `botCleared`: Chatwoot took the bot, and something cleared it again before the next read.
       botHolder = live.botCleared ? null : botId;
+      if (live.metaOmittedAfterWrite) omitMeta = true;
       return true;
     },
     toggleStatus: async (_cid: number, status: string) => {
@@ -228,31 +233,33 @@ function makeStub(
                   : { id: late.assigneeId, name: "Bea" },
             },
           }
-        : cleared
-          ? {
-              id: cid,
-              status: "pending",
-              ...on,
-              meta:
-                botHolder === null
-                  ? { assignee_type: null, assignee: null }
-                  : {
-                      assignee_type: "AgentBot",
-                      assignee: { id: botHolder, name: "Bot" },
-                    },
-            }
-          : {
-              id: cid,
-              status: "pending",
-              ...on,
-              meta: {
-                assignee_type: live.assigneeType ?? null,
-                assignee:
-                  live.assigneeId != null
-                    ? { id: live.assigneeId, name: "Ana" }
-                    : null,
-              },
-            };
+        : omitMeta
+          ? { id: cid, status: "pending", ...on }
+          : cleared
+            ? {
+                id: cid,
+                status: "pending",
+                ...on,
+                meta:
+                  botHolder === null
+                    ? { assignee_type: null, assignee: null }
+                    : {
+                        assignee_type: "AgentBot",
+                        assignee: { id: botHolder, name: "Bot" },
+                      },
+              }
+            : {
+                id: cid,
+                status: "pending",
+                ...on,
+                meta: {
+                  assignee_type: live.assigneeType ?? null,
+                  assignee:
+                    live.assigneeId != null
+                      ? { id: live.assigneeId, name: "Ana" }
+                      : null,
+                },
+              };
     },
   };
   return {
@@ -1150,6 +1157,25 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       select: { assigneeType: true, assigneeId: true },
     });
     expect([row?.assigneeType, row?.assigneeId]).toEqual([null, null]);
+  });
+
+  test("a read after the write that omits the assignee keeps the bot that was confirmed", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      metaOmittedAfterWrite: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["AgentBot", 501]);
   });
 
   test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {

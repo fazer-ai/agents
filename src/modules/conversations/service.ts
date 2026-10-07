@@ -809,6 +809,7 @@ interface ConsoleWriteMirror {
     assigneeType: string | null;
     assigneeId: number | null;
     assigneeName: string | null;
+    assigneeStated: boolean;
   } | null;
 }
 
@@ -902,6 +903,7 @@ async function mirrorConsoleWrite(
         assigneeType: live.assigneeType,
         assigneeId: live.assigneeId,
         assigneeName: live.assigneeName,
+        assigneeStated: live.assigneeStated === true,
       };
     }
     // NOTE: a snapshot with no version is not reconciled: the reconcile would apply the WHOLE
@@ -2335,7 +2337,8 @@ export async function returnConversationToAgent(
   // Without a bot assignment, nobody to remove means no request: unassigning an already unassigned
   // conversation changes nothing and could only land after somebody claimed it in the round trip
   // (Chatwoot has no conditional assignment). An unreadable read still writes.
-  const nobodyToRemove = live !== null && live.assigneeType === null;
+  const nobodyToRemove =
+    live !== null && live.assigneeStated === true && live.assigneeType === null;
   let handedToBot = alreadyOurs;
   if (newHolder === null && !alreadyOurs) {
     try {
@@ -2358,6 +2361,35 @@ export async function returnConversationToAgent(
       // is still holding the conversation, which is the recoverable half of the pair (the comment on
       // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
       // status of a live conversation moved, and the row is what says so.
+      // NOTE: once a bot assignment was sent, the holder is no longer known to be the baseline (it may
+      // have landed, or named a user with the bot's id), so it is read again; unread, it is unknown.
+      let partialHolder: {
+        assigneeType: string | null;
+        assigneeId: number | null;
+        holderUnknown?: true;
+      } = {
+        assigneeType: baseline.assigneeType,
+        assigneeId: baseline.assigneeId,
+      };
+      if (ourAgentBotId !== null) {
+        const seen = await readHolder().catch(() => null);
+        partialHolder =
+          seen?.assigneeStated === true
+            ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
+            : { assigneeType: null, assigneeId: null, holderUnknown: true };
+        if (seen?.assigneeStated === true) {
+          await updateMirror(ctx, base, id, {
+            assigneeType: seen.assigneeType,
+            assigneeId: seen.assigneeId,
+            assigneeName: seen.assigneeName,
+          }).catch((mirrorErr) => {
+            logger.warn(
+              { err: mirrorErr },
+              `conversations: the partial hand-back could not record its holder (conv=${String(id)})`,
+            );
+          });
+        }
+      }
       await recordConversationAction(ctx, base, id, {
         action: "conversation.return",
         before: {
@@ -2365,12 +2397,7 @@ export async function returnConversationToAgent(
           assigneeType: baseline.assigneeType,
           assigneeId: baseline.assigneeId,
         },
-        after: {
-          status: "pending",
-          assigneeType: baseline.assigneeType,
-          assigneeId: baseline.assigneeId,
-          partial: true,
-        },
+        after: { status: "pending", ...partialHolder, partial: true },
       });
       throw err;
     }
@@ -2417,7 +2444,9 @@ export async function returnConversationToAgent(
     const finalHolder = state
       ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
       : (holderOtherThan(observed) ??
-        (observed !== null && observed.assigneeType === null
+        (observed !== null &&
+        observed.assigneeStated === true &&
+        observed.assigneeType === null
           ? { assigneeType: null, assigneeId: null }
           : requestedHolder));
     // NOTE: The row's `after` takes it HERE, the moment it is known, and not at the end: everything

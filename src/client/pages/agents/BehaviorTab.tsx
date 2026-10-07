@@ -97,6 +97,7 @@ import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import { ContactAuthConditionList } from "./ContactAuthConditionFields";
 import {
   type ContactAuthRuleForm,
+  contactAuthGateEmpty,
   contactAuthRuleInvalid,
 } from "./contactAuthRuleForm";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
@@ -1448,11 +1449,7 @@ export function BehaviorTab({
   // The endpoint is asked only with its switch on: after the conditions when there are some, alone
   // when there are none. Off, its URL is kept but not asked, so an empty one is not an error.
   const contactAuthAsksEndpoint = contactAuth.endpointEnabled;
-  // An enabled gate with nothing to decide is the fail-closed `not_configured` at runtime: refused
-  // here instead of saved. A watcher never asks the endpoint, but a stored endpoint-only gate there
-  // still observes everything (and says so), so it is not "empty".
-  const contactAuthEmpty =
-    contactAuth.enabled && !contactAuthUsesRule && !contactAuthAsksEndpoint;
+  const contactAuthEmpty = contactAuthGateEmpty(contactAuth);
   // The quiet refusal: no message, no note, and the conversation handed to humans. What a gate used
   // as a scope filter looks like, said in the section so it reads as a setup rather than a gap.
   const contactAuthQuietRefusal =

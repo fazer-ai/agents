@@ -131,6 +131,7 @@ import {
 } from "./CrossInboxCaseFields";
 import {
   contactAuthAskEndpointToSave,
+  contactAuthGateEmpty,
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthEndpointEnabled,
@@ -1697,10 +1698,10 @@ function AgentEditor() {
           watcher,
           (
             syncedAgentRef.current?.settings as
-              | { contactAuth?: { askEndpointAfterRule?: unknown } }
+              | { contactAuth?: unknown }
               | null
               | undefined
-          )?.contactAuth?.askEndpointAfterRule,
+          )?.contactAuth,
         ),
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
@@ -3404,9 +3405,26 @@ function AgentEditor() {
   // Saves every dirty section sequentially (so the optimistic-concurrency token chains through each
   // write), used by "Save and export". Tools + Knowledge share the grant set, so one saveTools() write
   // persists both. Awaited so the export reads the just-saved version.
-  async function saveAllDirty() {
+  async function saveAllDirty(): Promise<boolean> {
+    // NOTE: The Behavior tab's Save is disabled on an empty gate; this path saves without that
+    // button, so it refuses the same state before writing any section.
+    if (dirty.behavior && contactAuthGateEmpty(contactAuth)) {
+      showToast(
+        watcher
+          ? t(
+              "editor.contactAuthWatcherEmpty",
+              "Add at least one condition, or turn the gate off.",
+            )
+          : t(
+              "editor.contactAuthEmpty",
+              "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+            ),
+        "error",
+      );
+      return false;
+    }
     if (dirty.general) {
-      if (!guardModelBeforeSave()) return;
+      if (!guardModelBeforeSave()) return false;
       await saveAgent(
         {
           name: name.trim(),
@@ -3440,6 +3458,7 @@ function AgentEditor() {
     if (dirty.knowledge) {
       await saveGrants();
     }
+    return true;
   }
 
   function askDelete() {
@@ -4268,7 +4287,7 @@ function AgentEditor() {
           includeDocuments,
           saveFirst,
         }) => {
-          if (saveFirst) await saveAllDirty();
+          if (saveFirst && !(await saveAllDirty())) return;
           await doExport(includeComponents, includeDocuments);
         }}
       />

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   contactAuthAskEndpointToSave,
+  contactAuthGateEmpty,
   contactAuthRulePayload,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthEndpointEnabled,
@@ -73,17 +74,71 @@ describe("what is stored loads as a list and saves back to the same meaning", ()
 });
 
 describe("what the save writes for the endpoint flag", () => {
+  const endpointOnly = { url: "https://a.test", askEndpointAfterRule: false };
+
   test("a responder writes the switch as shown", () => {
-    expect(contactAuthAskEndpointToSave(true, false, false)).toBe(true);
-    expect(contactAuthAskEndpointToSave(false, false, true)).toBe(false);
+    expect(contactAuthAskEndpointToSave(true, false, endpointOnly)).toBe(true);
+    expect(contactAuthAskEndpointToSave(false, false, endpointOnly)).toBe(
+      false,
+    );
   });
 
-  test("a monitoring agent, which draws no switch, writes the stored flag back as it was", () => {
-    // An endpoint-only gate loads with the switch on (inferred from the url); saving it must not
-    // turn a stored `false` into `true`, or a later return to production would ask the endpoint.
-    expect(contactAuthAskEndpointToSave(true, true, false)).toBe(false);
-    expect(contactAuthAskEndpointToSave(true, true, undefined)).toBe(false);
-    expect(contactAuthAskEndpointToSave(false, true, true)).toBe(true);
-    expect(contactAuthAskEndpointToSave(true, true, "true")).toBe(false);
+  test("a monitoring agent, which draws no switch, writes the stored flag back while the switch is the inferred one", () => {
+    // An endpoint-only gate loads with the switch on (inferred from the url); saving it must not turn
+    // a stored `false` into `true`, or a later return to production would ask the endpoint.
+    expect(contactAuthAskEndpointToSave(true, true, endpointOnly)).toBe(false);
+    expect(
+      contactAuthAskEndpointToSave(true, true, {
+        url: "https://a.test",
+        askEndpointAfterRule: true,
+      }),
+    ).toBe(true);
+    expect(
+      contactAuthAskEndpointToSave(true, true, {
+        url: "https://a.test",
+        askEndpointAfterRule: "true",
+      }),
+    ).toBe(false);
+  });
+
+  test("a switch the operator set before the mode changed is written as set", () => {
+    // Stored endpoint-only (switch inferred on), turned off in production, then the mode moved to
+    // monitoring before the Behavior save.
+    expect(contactAuthAskEndpointToSave(false, true, endpointOnly)).toBe(false);
+    const ruleNoFlag = {
+      rule: { kind: "label", label: "x" },
+      url: "https://a.test",
+      askEndpointAfterRule: false,
+    };
+    // Inferred off beside a rule; turned on by the operator: kept on.
+    expect(contactAuthAskEndpointToSave(true, true, ruleNoFlag)).toBe(true);
+    expect(contactAuthAskEndpointToSave(false, true, ruleNoFlag)).toBe(false);
+  });
+});
+
+describe("an enabled gate with nothing to decide", () => {
+  test("is empty only when on, with no conditions and no endpoint", () => {
+    const base = { enabled: true, ruleConditions: [], endpointEnabled: false };
+    expect(contactAuthGateEmpty(base)).toBe(true);
+    expect(contactAuthGateEmpty({ ...base, enabled: false })).toBe(false);
+    expect(contactAuthGateEmpty({ ...base, endpointEnabled: true })).toBe(
+      false,
+    );
+    expect(contactAuthGateEmpty({ ...base, ruleConditions: [{}] })).toBe(false);
+  });
+
+  // Checked on the source for the reason BehaviorTabContactAuthRule gives: rendering the whole editor
+  // page pulls auth, theme, toast and a live catalog.
+  test("is refused by Save and export too, before any section is written, and the export does not run", async () => {
+    const src = (
+      await Bun.file("src/client/pages/agents/AgentEditorPage.tsx").text()
+    ).replace(/\s+/g, " ");
+    const body = src.slice(src.indexOf("async function saveAllDirty"));
+    const guard = body.indexOf(
+      "if (dirty.behavior && contactAuthGateEmpty(contactAuth))",
+    );
+    expect(guard > 0).toBe(true);
+    expect(guard < body.indexOf("if (dirty.general)")).toBe(true);
+    expect(src).toContain("if (saveFirst && !(await saveAllDirty())) return;");
   });
 });

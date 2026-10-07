@@ -116,16 +116,41 @@ export function readContactAuthEndpointEnabled(
   return typeof url === "string" && url.trim() !== "";
 }
 
-// What the save writes for `askEndpointAfterRule`: the switch as shown, except on a monitoring agent.
-// Its editor draws no switch, so the value it holds there was inferred from the stored url and never
-// chosen; the stored flag is written back as it was, and a later return to production asks the
-// endpoint after the conditions only if it already did.
+// What the save writes for `askEndpointAfterRule`: the switch as shown, except on a monitoring agent
+// whose switch still holds the value inferred from the stored bag. Its editor draws no switch, so that
+// value was never chosen, and the stored flag is written back as it was: a later return to production
+// asks the endpoint after the conditions only if it already did. A switch that differs from the
+// inferred value was set by the operator (before the mode changed), and is written as set.
 export function contactAuthAskEndpointToSave(
   endpointEnabled: boolean,
   monitoring: boolean,
-  stored: unknown,
+  storedContactAuth: unknown,
 ): boolean {
-  return monitoring ? stored === true : endpointEnabled;
+  if (!monitoring) return endpointEnabled;
+  const bag =
+    storedContactAuth && typeof storedContactAuth === "object"
+      ? (storedContactAuth as Record<string, unknown>)
+      : {};
+  const inferred = readContactAuthEndpointEnabled(
+    readContactAuthRuleForm(bag.rule),
+    bag.url,
+    bag.askEndpointAfterRule,
+  );
+  return endpointEnabled === inferred
+    ? bag.askEndpointAfterRule === true
+    : endpointEnabled;
+}
+
+// An enabled gate with nothing to decide: no conditions and no endpoint asked. At runtime that is the
+// fail-closed `not_configured` (or, with a url kept behind a switched-off endpoint, an endpoint the
+// operator turned off), so no editor save writes it. A monitoring agent never asks the endpoint, but a
+// stored endpoint-only gate there observes everything and says so, so it is not "empty".
+export function contactAuthGateEmpty(f: {
+  enabled: boolean;
+  ruleConditions: readonly unknown[];
+  endpointEnabled: boolean;
+}): boolean {
+  return f.enabled && f.ruleConditions.length === 0 && !f.endpointEnabled;
 }
 
 function conditionPayload(

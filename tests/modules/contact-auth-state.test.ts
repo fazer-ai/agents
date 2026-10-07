@@ -140,10 +140,14 @@ describe("singleFlight", () => {
     release(ALLOWED);
     const [a, b] = await Promise.all([first, second]);
     expect(runs).toBe(1);
-    expect(a).toEqual({ verdict: ALLOWED, shared: false });
+    expect(a).toEqual({
+      verdict: ALLOWED,
+      shared: false,
+      askedAt: expect.any(Number),
+    });
     // The coalesced follower is told the verdict was shared, which the gate reads as "the leader
     // acts, I stay silent": only one deny message ever leaves for one concurrent burst.
-    expect(b).toEqual({ verdict: ALLOWED, shared: true });
+    expect(b).toEqual({ verdict: ALLOWED, shared: true, askedAt: a.askedAt });
   });
 
   test("distinct keys do not coalesce", async () => {

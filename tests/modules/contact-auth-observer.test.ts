@@ -1014,6 +1014,64 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(out).toEqual({ outcome: "done" });
   });
 
+  // A caller that joins an endpoint question already in flight carries that question's ask time:
+  // joining after a denial must not make an older allow look newer than it.
+  test("an allow shared from a flight that began before a denial cannot re-arm what the denial retired", async () => {
+    const settings = {
+      contactAuth: { enabled: true, url: AUTH_URL, includeMessageText: true },
+    };
+    await setGate(settings.contactAuth);
+    await deliverMessage(46, "individual");
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const heldFetch = (async () => {
+      await held;
+      return new Response(JSON.stringify({ authorized: true }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    const ask = () =>
+      observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId: 46,
+        agentId: observerId,
+        settings,
+        base: appDb,
+        fetchImpl: heldFetch,
+        message: { id: 990_046, text: "a" },
+      });
+    const first = ask();
+    await new Promise((r) => setTimeout(r, 30));
+    authAnswer = "deny";
+    await deliverMessage(46, "individual", false, OBSERVED_INBOX, {
+      text: "b",
+    });
+    expect(await runnableObserveRows(46)).toEqual([]);
+    await new Promise((r) => setTimeout(r, 5));
+    const joined = ask();
+    // Long enough for the second ask to reach the flight the first one holds open.
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    await first;
+    const permit = await joined;
+    expect(permit).not.toBeNull();
+    expect(
+      await armObserve({
+        tenantId,
+        instanceId,
+        conversationId: 46,
+        agentId: observerId,
+        reason: "burst",
+        cfg: readMonitoringConfig({}),
+        gateAskedAt: permit?.askedAt,
+        base: appDb,
+      }),
+    ).toBe("off");
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

@@ -73,7 +73,12 @@ export interface ObserverRuleParams {
 // hop would only repeat the arm's.
 async function observerGateVerdict(
   p: ObserverRuleParams,
-  opts: { emit: boolean; stage: "rule" | "both" },
+  opts: {
+    emit: boolean;
+    stage: "rule" | "both";
+    // Told when the endpoint question behind the verdict was asked, for a caller that joined it.
+    onAskedAt?: (askedAt: number) => void;
+  },
 ): Promise<"allowed" | "refused" | "endpoint_refused" | "unreadable"> {
   const cfg = readContactAuthConfig(p.settings);
   if (!cfg.enabled) return "allowed";
@@ -131,6 +136,7 @@ async function observerGateVerdict(
         contactAuthFlowEvent(verdict),
       );
     }
+    if (verdict.askedAt !== undefined) opts.onAskedAt?.(verdict.askedAt);
     if (verdict.outcome === "allowed") return "allowed";
     // Only a refusal by the conditions is one the tick can reach again; the endpoint's, and one
     // reached before either stage (a conversation with no contact yet), are not.
@@ -169,8 +175,15 @@ export function observerRuleVerdict(
 export async function observerArmPermit(
   p: ObserverRuleParams,
 ): Promise<{ askedAt: number } | null> {
-  const askedAt = Date.now();
-  const verdict = await observerGateVerdict(p, { emit: true, stage: "both" });
+  // The ask's time, or the earlier start of an endpoint question this call joined.
+  let askedAt = Date.now();
+  const verdict = await observerGateVerdict(p, {
+    emit: true,
+    stage: "both",
+    onAskedAt: (t) => {
+      askedAt = Math.min(askedAt, t);
+    },
+  });
   if (verdict === "allowed") {
     const key = refusalKey(p);
     rememberAllow(key, askedAt);

@@ -316,10 +316,7 @@ async function runRecovery(params: {
   // reply is coming, the newest page and the freshness fence (which reasons about a reply arriving
   // late) are neither asked nor paid for. Decided off the ledger's event rather than the rebuild,
   // because the rebuild is two REST reads further down and one of them is what this decides.
-  const replayPosts =
-    row.routeObserved !== true &&
-    row.event === TURN_BEARING_EVENT &&
-    row.owesMemoryOnly !== true;
+  const replayPosts = owesAReply(row);
 
   const conv = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
@@ -1282,6 +1279,21 @@ async function deliveryRecoveryHandler(
 // PROCESSED with nobody answered because putting it back failed (`leftProcessed`), the state nothing
 // revisits. Once per delivery: a re-run of the same job finds the line and writes nothing.
 // Best-effort, like every line here: the row stays where it is either way.
+// Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a
+// transcription write-back (`message_updated`) and a row marked `owesMemoryOnly` replay into memory and
+// post nothing.
+function owesAReply(row: {
+  routeObserved: boolean | null;
+  event: string;
+  owesMemoryOnly: boolean | null;
+}): boolean {
+  return (
+    row.routeObserved !== true &&
+    row.event === TURN_BEARING_EVENT &&
+    row.owesMemoryOnly !== true
+  );
+}
+
 export async function announceUnanswered(
   tenantId: bigint,
   deliveryRowId: bigint,
@@ -1299,17 +1311,24 @@ export async function announceUnanswered(
           chatwootInstanceId: true,
           conversationId: true,
           inboundMessageId: true,
+          routeObserved: true,
+          owesMemoryOnly: true,
         },
       }),
     );
     if (row?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD")) return;
+    // A delivery that owed only the agent's memory leaves nobody unanswered: what was lost is the
+    // words in the memory, a degraded turn later and not a customer waiting, so it is a `warn` with its
+    // own outcome.
+    const reply = owesAReply(row);
+    const outcome = reply ? "unanswered" : "memory_unrecovered";
     const [already, conv] = await runScopedOn(base, sysCtx(tenantId), (db) =>
       Promise.all([
         db.executionLog.findFirst({
           where: {
             stage: "delivery",
             AND: [
-              { detail: { path: ["outcome"], equals: "unanswered" } },
+              { detail: { path: ["outcome"], equals: outcome } },
               { detail: { path: ["deliveryId"], equals: row.deliveryId } },
             ],
           },
@@ -1346,18 +1365,20 @@ export async function announceUnanswered(
       },
       {
         stage: "delivery",
-        level: "error",
+        level: reply ? "error" : "warn",
         status: "error",
         detail: {
-          outcome: "unanswered",
+          outcome,
           deliveryEvent: row.event,
           deliveryId: row.deliveryId,
           messageId: row.inboundMessageId,
           conversationId: row.conversationId,
         },
-        errorMessage: opts.leftProcessed
-          ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
-          : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
+        errorMessage: !reply
+          ? "The message never reached the agent's memory: its recovery ended without replaying it. Nobody was owed a reply."
+          : opts.leftProcessed
+            ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
+            : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
       },
     );
   } catch (err) {

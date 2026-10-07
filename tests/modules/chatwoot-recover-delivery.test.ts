@@ -4854,6 +4854,34 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(lines[0]?.conversationId).not.toBeNull();
     });
 
+    // A delivery that owed only the agent's memory (a transcription write-back, an observer's route)
+    // leaves nobody unanswered when its recovery gives up: the line says the words never reached the
+    // memory, at `warn`.
+    test("a memory-only delivery given up on says the memory, not an unanswered customer", async () => {
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      for (const [convId, messageId, over] of [
+        [18936, 19446, { event: "message_updated" }],
+        [18937, 19447, { routeObserved: true }],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+          ...over,
+        });
+        await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+        const lines = await deliveryLines(conv.id);
+        expect(
+          lines.map((l) => [
+            l.level,
+            (l.detail as Record<string, unknown> | null)?.outcome,
+          ]),
+        ).toEqual([["warn", "memory_unrecovered"]]);
+      }
+    });
+
     test("a recovery that is still coming, or a row someone else took, writes no unanswered line", async () => {
       const convId = 18932;
       await seedConversation(convId);

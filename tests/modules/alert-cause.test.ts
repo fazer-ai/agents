@@ -324,6 +324,34 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
     });
   }
 
+  // A primary answering 429 is the one account failure a fallback is asked for, so it shows up only on
+  // the `ok` line where the fallback took the turn: the cause is the primary's, keyed on `fallbackFrom`.
+  test("a primary's 429 the fallback rescued is one cause under the primary", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    const tookOver = (primaryFailure: string): FlowEvent => ({
+      stage: "generate",
+      level: "warn",
+      status: "ok",
+      provider: "anthropic",
+      detail: {
+        fallbackFrom: "openai",
+        fallbackReason: primaryFailure,
+        primaryFailure,
+      },
+    });
+    for (let i = 0; i < 3; i++) {
+      await writeFlowEvent(flow(tenantId), tookOver("HTTP 429"));
+      await markDelivered(ch);
+    }
+    // A transient one is the rate's business, not a cause.
+    expect(causeKeyOf(tookOver("HTTP 503"))).toBeNull();
+    const rows = await deliveries(ch);
+    expect(rows.map((r) => [r.causeKey, r.count])).toEqual([
+      ["generate:openai:HTTP 429", 3],
+    ]);
+  });
+
   test("six failures of one cause, spread past the coalesce window, are one delivery of six", async () => {
     const tenantId = await freshTenant();
     const ch = await channel(tenantId);

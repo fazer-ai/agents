@@ -157,6 +157,17 @@ export function causeKeyOf(ev: FlowEvent): string | null {
       ? `dead_letter:${unit}`
       : `dead_letter:${unit}:${kind}`;
   }
+  // A primary the fallback took the turn from on an account failure (a 429, the one the fallback is
+  // asked for): the line is `ok` and labelled with the fallback, and the cause is the primary's.
+  const from = detail.fallbackFrom;
+  const primary = detail.primaryFailure;
+  if (
+    typeof from === "string" &&
+    typeof primary === "string" &&
+    ACCOUNT_FAILURES.has(primary)
+  ) {
+    return `${ev.stage}:${vocabulary("provider", from) ?? "-"}:${primary}`;
+  }
   const failure = detail.failure;
   if (
     ev.status === "error" &&

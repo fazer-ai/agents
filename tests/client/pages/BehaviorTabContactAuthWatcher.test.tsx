@@ -13,7 +13,10 @@ import {
   BehaviorTab,
   type ContactAuthState,
 } from "@/client/pages/agents/BehaviorTab";
-import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
+import {
+  EMPTY_CONTACT_AUTH_CONDITION_FORM,
+  EMPTY_CONTACT_AUTH_RULE_FORM,
+} from "@/client/pages/agents/contactAuthRuleForm";
 import { behaviorTabProps } from "./behaviorTabProps";
 
 // A monitoring agent's gate: only the rule runs on the observer path, so the section is drawn with
@@ -50,7 +53,12 @@ const sectionShown = () => {
 };
 const urlField = () => count(/^(Authorization URL|URL de autorização)$/);
 const askAfterSwitch = () =>
-  count(/^(Then ask an external endpoint|Depois, perguntar a um endpoint)/);
+  count(/^(Ask an external endpoint|Perguntar a um endpoint externo)$/);
+const label = (ruleLabel: string) => ({
+  ruleConditions: [
+    { ...EMPTY_CONTACT_AUTH_CONDITION_FORM, ruleKind: "label", ruleLabel },
+  ],
+});
 const denyMessage = () =>
   count(/^(Message to a denied contact|Mensagem para contato negado)$/);
 const handoff = () =>
@@ -80,7 +88,7 @@ describe("the gate in a monitoring agent's editor", () => {
   });
 
   test("is drawn with the rule alone and says the rule decides what is observed", () => {
-    renderWatcher({ ruleKind: "label", ruleLabel: "suporte" });
+    renderWatcher(label("suporte"));
     expect(sectionShown()).toBe(true);
     expect(observedHint() > 0).toBe(true);
     expect(urlField()).toBe(0);
@@ -92,7 +100,7 @@ describe("the gate in a monitoring agent's editor", () => {
   });
 
   test("an endpoint-only gate is flagged as doing nothing here, and does not block the save", () => {
-    renderWatcher({});
+    renderWatcher({ endpointEnabled: true, url: "https://a.test" });
     expect(sectionShown()).toBe(true);
     expect(endpointOnlyWarning() > 0).toBe(true);
     expect(urlField()).toBe(0);
@@ -100,7 +108,7 @@ describe("the gate in a monitoring agent's editor", () => {
   });
 
   test("a rule the form cannot read blocks the save, since its fields are on screen", () => {
-    renderWatcher({ ruleKind: "label", ruleLabel: "" });
+    renderWatcher(label(""));
     expect(saveBlocked()).toBe(true);
   });
 });

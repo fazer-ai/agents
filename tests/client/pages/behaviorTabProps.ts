@@ -79,7 +79,7 @@ export function behaviorTabProps(
       handoffEnabled: false,
       handoffTeamId: "",
       handoffTeamInstanceId: "",
-      askEndpointAfterRule: false,
+      endpointEnabled: false,
       operatorNoteEnabled: true,
     },
     setContactAuth: noop,

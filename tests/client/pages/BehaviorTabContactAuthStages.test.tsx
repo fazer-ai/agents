@@ -14,7 +14,10 @@ import {
   BehaviorTab,
   type ContactAuthState,
 } from "@/client/pages/agents/BehaviorTab";
-import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
+import {
+  EMPTY_CONTACT_AUTH_CONDITION_FORM,
+  EMPTY_CONTACT_AUTH_RULE_FORM,
+} from "@/client/pages/agents/contactAuthRuleForm";
 import { behaviorTabProps } from "./behaviorTabProps";
 
 // The section decides who the agent serves: a rule first, the endpoint after it when the operator
@@ -48,7 +51,7 @@ function renderGate(over: Partial<ContactAuthState>): void {
 const count = (re: RegExp) => screen.queryAllByText(re).length;
 const urlField = () => count(/^(Authorization URL|URL de autorização)$/);
 const askAfterSwitch = () =>
-  count(/^(Then ask an external endpoint|Depois, perguntar a um endpoint)/);
+  count(/^(Ask an external endpoint|Perguntar a um endpoint externo)$/);
 const quietHint = () => count(/^(Quiet refusal|Recusa silenciosa)/);
 const sectionTitle = () =>
   count(/^(Who this agent serves|Quem este agente atende)$/);
@@ -57,7 +60,15 @@ const saveBlocked = () =>
     .getAllByRole("button", { name: /^(Save|Salvar)$/ })
     .some((b) => (b as HTMLButtonElement).disabled);
 
-const LABEL_RULE = { ruleKind: "label", ruleLabel: "suporte" };
+const LABEL_RULE = {
+  ruleConditions: [
+    {
+      ...EMPTY_CONTACT_AUTH_CONDITION_FORM,
+      ruleKind: "label",
+      ruleLabel: "suporte",
+    },
+  ],
+};
 
 describe("the section in the editor", () => {
   beforeAll(() => {
@@ -73,7 +84,7 @@ describe("the section in the editor", () => {
     expect(sectionTitle() > 0).toBe(true);
   });
 
-  test("a rule alone hides the endpoint, and offers to ask it after", () => {
+  test("a rule with the switch off hides the endpoint, and offers to ask it after", () => {
     renderGate(LABEL_RULE);
     expect(askAfterSwitch() > 0).toBe(true);
     expect(urlField()).toBe(0);
@@ -81,14 +92,14 @@ describe("the section in the editor", () => {
   });
 
   test("a rule with the endpoint after it shows the endpoint, and needs its URL", () => {
-    renderGate({ ...LABEL_RULE, askEndpointAfterRule: true });
+    renderGate({ ...LABEL_RULE, endpointEnabled: true });
     expect(urlField() > 0).toBe(true);
     expect(saveBlocked()).toBe(true);
   });
 
-  test("the endpoint alone does not offer the switch", () => {
-    renderGate({});
-    expect(askAfterSwitch()).toBe(0);
+  test("the endpoint alone is the switch on with no conditions", () => {
+    renderGate({ endpointEnabled: true });
+    expect(askAfterSwitch() > 0).toBe(true);
     expect(urlField() > 0).toBe(true);
   });
 
@@ -128,17 +139,15 @@ describe("the Behavior save", () => {
   );
 
   test("carries both new fields as the form holds them", () => {
-    expect(src).toContain(
-      "askEndpointAfterRule: contactAuth.askEndpointAfterRule,",
-    );
+    expect(src).toContain("askEndpointAfterRule: contactAuth.endpointEnabled,");
     expect(src).toContain(
       "operatorNoteEnabled: contactAuth.operatorNoteEnabled,",
     );
   });
 
   test("reads them back as strictly as the runtime does", () => {
-    expect(src).toContain(
-      "askEndpointAfterRule: ca.askEndpointAfterRule === true,",
+    expect(src).toMatch(
+      /endpointEnabled: readContactAuthEndpointEnabled\(\s*caRule,\s*ca\.url,\s*ca\.askEndpointAfterRule,\s*\)/,
     );
     expect(src).toContain(
       "operatorNoteEnabled: ca.operatorNoteEnabled !== false,",
@@ -147,7 +156,7 @@ describe("the Behavior save", () => {
 
   test("the endpoint warnings follow the endpoint stage", () => {
     expect(src).toMatch(
-      /contactAuthRuleOnly:\s*contactAuth\.ruleKind !== "" && !contactAuth\.askEndpointAfterRule,/,
+      /contactAuthRuleOnly:\s*contactAuth\.ruleConditions\.length > 0 && !contactAuth\.endpointEnabled,/,
     );
   });
 });

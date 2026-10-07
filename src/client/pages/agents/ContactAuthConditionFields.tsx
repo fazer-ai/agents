@@ -21,8 +21,7 @@ import {
   newContactAuthConditionForm,
 } from "./contactAuthRuleForm";
 
-// The fields of ONE condition of the contact gate's local rule, by kind. Used for the rule itself and
-// for each row of an `all` / `any` combination.
+// The fields of ONE condition of the contact gate's local rule, by kind.
 export function ContactAuthConditionFields({
   value,
   onChange,
@@ -173,7 +172,8 @@ export function ContactAuthConditionFields({
   return null;
 }
 
-// The rows of an `all` / `any` rule: a kind per row, its fields, remove, and add up to the cap.
+// The gate's conditions: ONE list, any kind per row, remove and add up to the cap. How they combine
+// ("all" / "any") is asked only from two rows on, since with one there is nothing to combine.
 export function ContactAuthConditionList({
   form,
   onChange,
@@ -192,6 +192,26 @@ export function ContactAuthConditionList({
     });
   return (
     <div className="flex flex-col gap-3">
+      {rows.length >= 2 && (
+        <FormField
+          label={t(
+            "editor.contactAuthRuleMatch",
+            "Let a conversation through when it meets",
+          )}
+        >
+          <Select
+            value={form.ruleMatch === "any" ? "any" : "all"}
+            onChange={(e) => onChange({ ...form, ruleMatch: e.target.value })}
+          >
+            <option value="all">
+              {t("editor.contactAuthRuleMatchAll", "All of these conditions")}
+            </option>
+            <option value="any">
+              {t("editor.contactAuthRuleMatchAny", "Any of these conditions")}
+            </option>
+          </Select>
+        </FormField>
+      )}
       {rows.map((row, index) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: conditions are positional (no stable id); reorder is add/remove only
@@ -238,14 +258,6 @@ export function ContactAuthConditionList({
           />
         </div>
       ))}
-      {showErrors && rows.length === 0 && (
-        <p className="text-error text-xs">
-          {t(
-            "editor.contactAuthRuleConditionsEmpty",
-            "Add at least one condition.",
-          )}
-        </p>
-      )}
       {showErrors &&
         rows.length > 0 &&
         !rows.some(contactAuthConditionInvalid) &&
@@ -278,7 +290,7 @@ export function ContactAuthConditionList({
   );
 }
 
-// The four plain kinds, shared by the rule's own picker and each row of a combination.
+// The four kinds a row can be.
 export function ConditionKindOptions() {
   const { t } = useTranslation();
   return (

@@ -15,15 +15,26 @@ import {
   type ContactAuthState,
 } from "@/client/pages/agents/BehaviorTab";
 import {
+  type ContactAuthConditionForm,
   type ContactAuthRuleForm,
   contactAuthRuleInvalid,
   contactAuthRulePayload,
+  EMPTY_CONTACT_AUTH_CONDITION_FORM,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthRuleForm,
 } from "@/client/pages/agents/contactAuthRuleForm";
 import { behaviorTabProps } from "./behaviorTabProps";
 
 // The editor offers the conversation's type and labels as conditions, and `all` / `any` over several.
+
+const c = (
+  ruleKind: string,
+  patch: Partial<ContactAuthConditionForm> = {},
+): ContactAuthConditionForm => ({
+  ...EMPTY_CONTACT_AUTH_CONDITION_FORM,
+  ruleKind,
+  ...patch,
+});
 // Every assertion reduces to a number or a boolean BEFORE expect (a failing expectation holding a DOM
 // node serializes a cyclic happy-dom tree and stalls the runner).
 
@@ -39,7 +50,7 @@ describe("the rule's form state", () => {
       ],
     };
     const form = readContactAuthRuleForm(stored);
-    expect(form.ruleKind).toBe("all");
+    expect(form.ruleMatch).toBe("all");
     expect(form.ruleConditions.map((c) => c.ruleKind)).toEqual([
       "conversation_type",
       "label",
@@ -49,13 +60,13 @@ describe("the rule's form state", () => {
     expect(contactAuthRulePayload(form)).toEqual(stored);
   });
 
-  test("a single type or label reads and saves without a list", () => {
+  test("a single type or label reads as a list of one and saves back as itself", () => {
     for (const stored of [
       { kind: "conversation_type", type: "individual" },
       { kind: "label", label: "vip" },
     ]) {
       const form = readContactAuthRuleForm(stored);
-      expect(form.ruleConditions.length).toBe(0);
+      expect(form.ruleConditions.length).toBe(1);
       expect(contactAuthRulePayload(form)).toEqual(stored);
     }
   });
@@ -63,10 +74,11 @@ describe("the rule's form state", () => {
   test("the editor refuses exactly what the server refuses", () => {
     const any: ContactAuthRuleForm = {
       ...EMPTY_CONTACT_AUTH_RULE_FORM,
-      ruleKind: "any",
+      ruleMatch: "any",
     };
-    expect(contactAuthRuleInvalid(any)).toBe(true);
-    const row = { ...EMPTY_CONTACT_AUTH_RULE_FORM, ruleKind: "label" };
+    // No conditions is no rule, which is not a malformed one.
+    expect(contactAuthRuleInvalid(any)).toBe(false);
+    const row = c("label");
     expect(contactAuthRuleInvalid({ ...any, ruleConditions: [row] })).toBe(
       true,
     );
@@ -78,8 +90,8 @@ describe("the rule's form state", () => {
     ).toBe(false);
     expect(
       contactAuthRuleInvalid({
-        ...EMPTY_CONTACT_AUTH_RULE_FORM,
-        ruleKind: "label",
+        ...any,
+        ruleConditions: [row, c("conversation_type")],
       }),
     ).toBe(true);
   });
@@ -124,7 +136,7 @@ const typeField = () => count(/^(Conversation type|Tipo de conversa)$/);
 const labelField = () => count(/^(Label|Etiqueta)$/);
 const rowCount = () => count(/^(Condition|Condição) \d+$/);
 const emptyError = () =>
-  count(/^(Add at least one condition\.|Adicione pelo menos uma condição\.)$/);
+  count(/^(Add at least one condition|Adicione pelo menos uma condição)/);
 const saveBlocked = () =>
   screen
     .getAllByRole("button", { name: /^(Save|Salvar)$/ })
@@ -140,14 +152,14 @@ describe("the gate's section in the editor", () => {
   });
 
   test("the conversation type is offered and hides the endpoint", () => {
-    renderGate({ ruleKind: "conversation_type" });
+    renderGate({ ruleConditions: [c("conversation_type")] });
     expect(typeField() > 0).toBe(true);
     expect(urlField()).toBe(0);
     expect(saveBlocked()).toBe(false);
   });
 
   test("an empty label blocks the save", () => {
-    renderGate({ ruleKind: "label" });
+    renderGate({ ruleConditions: [c("label")] });
     expect(labelField() > 0).toBe(true);
     expect(saveBlocked()).toBe(true);
   });
@@ -155,32 +167,29 @@ describe("the gate's section in the editor", () => {
   test("lists that are each fine but exceed the rule's cap together say why the save is blocked", () => {
     const ids = (from: number, n: number) =>
       Array.from({ length: n }, (_, i) => `id-${from + i}`).join("\n");
-    const row = (identifiers: string) => ({
-      ...EMPTY_CONTACT_AUTH_RULE_FORM,
-      ruleKind: "allowlist",
-      ruleIdentifiers: identifiers,
-    });
+    const row = (identifiers: string) =>
+      c("allowlist", { ruleIdentifiers: identifiers });
     const tooLong = () =>
       count(
         /^(The lists in this rule hold more than 500 entries in total\.|As listas desta regra somam mais de 500 itens\.)$/,
       );
     renderGate({
-      ruleKind: "any",
+      ruleMatch: "any",
       ruleConditions: [row(ids(0, 250)), row(ids(250, 251))],
     });
     expect(saveBlocked()).toBe(true);
     expect(tooLong()).toBe(1);
     cleanup();
     renderGate({
-      ruleKind: "any",
+      ruleMatch: "any",
       ruleConditions: [row(ids(0, 250)), row(ids(250, 250))],
     });
     expect(saveBlocked()).toBe(false);
     expect(tooLong()).toBe(0);
   });
 
-  test("a combination starts empty, says so, and grows a row per click", () => {
-    renderGate({ ruleKind: "all" });
+  test("the list starts empty, says so, and grows a row per click", () => {
+    renderGate({});
     expect(rowCount()).toBe(0);
     expect(emptyError() > 0).toBe(true);
     expect(saveBlocked()).toBe(true);

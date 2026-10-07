@@ -94,15 +94,10 @@ import {
 } from "@/modules/tts/settings-shared";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
-import {
-  ConditionKindOptions,
-  ContactAuthConditionFields,
-  ContactAuthConditionList,
-} from "./ContactAuthConditionFields";
+import { ContactAuthConditionList } from "./ContactAuthConditionFields";
 import {
   type ContactAuthRuleForm,
   contactAuthRuleInvalid,
-  isCombinedRuleKind,
 } from "./contactAuthRuleForm";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
@@ -193,8 +188,10 @@ interface SttState {
 // half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
 export interface ContactAuthState extends ContactAuthRuleForm {
   enabled: boolean;
-  // With a rule picked, also ask the endpoint about what the rule allows (the two-stage gate).
-  askEndpointAfterRule: boolean;
+  // The editor's endpoint switch: with conditions, ask the endpoint about what they let through
+  // (saved as `askEndpointAfterRule`); with none, the endpoint decides alone. See
+  // readContactAuthEndpointEnabled for how a stored gate reads.
+  endpointEnabled: boolean;
   url: string;
   credentialRef: string;
   timeoutMs: string;
@@ -1446,11 +1443,16 @@ export function BehaviorTab({
       return false;
     }
   })();
-  // With a local rule the endpoint is never asked, so an empty URL is not an error.
-  const contactAuthUsesRule = contactAuth.ruleKind !== "";
-  // The endpoint is asked when there is no rule, or after the rule when the operator asked for both.
-  const contactAuthAsksEndpoint =
-    !contactAuthUsesRule || contactAuth.askEndpointAfterRule;
+  // The conditions are the local rule; with none there is no rule.
+  const contactAuthUsesRule = contactAuth.ruleConditions.length > 0;
+  // The endpoint is asked only with its switch on: after the conditions when there are some, alone
+  // when there are none. Off, its URL is kept but not asked, so an empty one is not an error.
+  const contactAuthAsksEndpoint = contactAuth.endpointEnabled;
+  // An enabled gate with nothing to decide is the fail-closed `not_configured` at runtime: refused
+  // here instead of saved. A watcher never asks the endpoint, but a stored endpoint-only gate there
+  // still observes everything (and says so), so it is not "empty".
+  const contactAuthEmpty =
+    contactAuth.enabled && !contactAuthUsesRule && !contactAuthAsksEndpoint;
   // The quiet refusal: no message, no note, and the conversation handed to humans. What a gate used
   // as a scope filter looks like, said in the section so it reads as a setup rather than a gap.
   const contactAuthQuietRefusal =
@@ -3122,7 +3124,7 @@ export function BehaviorTab({
                   )
                 : t(
                     "editor.contactAuthHelp",
-                    "Decides, before the agent answers, whether this conversation is one it serves. Every message is checked again, and the check does not run in the Playground.\n\nA rule decides here, from what Chatwoot already holds (the conversation type, a label, a list, an attribute), before the other checks, so a conversation the agent does not serve gets no away message or redirect first.\n\nAn external endpoint decides from your own system, by the phone number, email and identifier Chatwoot holds for the contact, after the other checks. A rule can also hand what it lets through to the endpoint.",
+                    "Decides, before the agent answers, whether this conversation is one it serves. Every message is checked again, and the check does not run in the Playground.\n\nConditions decide here, from what Chatwoot already holds (the conversation type, a label, a list, an attribute), before the other checks, so a conversation the agent does not serve gets no away message or redirect first.\n\nAn external endpoint decides from your own system, by the phone number, email and identifier Chatwoot holds for the contact, after the other checks: alone, or about what the conditions let through.",
                   )
             }
           >
@@ -3146,43 +3148,12 @@ export function BehaviorTab({
             {contactAuth.enabled && (
               <>
                 <FormField
-                  label={t("editor.contactAuthSource", "Who decides")}
+                  label={t("editor.contactAuthConditions", "Conditions")}
                   help={t(
-                    "editor.contactAuthSourceHelp",
-                    'An external endpoint answers from your own system (a CRM, a customer list).\n\nA rule decides here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list, an attribute), with no service to host. "All of these conditions" and "Any of these conditions" combine several.\n\nWith a rule, the endpoint is called only if you also turn on asking it after the rule. A rule is checked on every message, so an edit takes effect on the next message.',
+                    "editor.contactAuthConditionsHelp",
+                    "Decided here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list of phones or identifiers, an attribute), with no service to host and no cost. Checked on every message, so an edit takes effect on the next one.",
                   )}
                 >
-                  <Select
-                    value={contactAuth.ruleKind}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        ruleKind: e.target.value,
-                      })
-                    }
-                  >
-                    <option value="">
-                      {t(
-                        "editor.contactAuthSourceEndpoint",
-                        "External endpoint",
-                      )}
-                    </option>
-                    <ConditionKindOptions />
-                    <option value="all">
-                      {t(
-                        "editor.contactAuthSourceAll",
-                        "All of these conditions",
-                      )}
-                    </option>
-                    <option value="any">
-                      {t(
-                        "editor.contactAuthSourceAny",
-                        "Any of these conditions",
-                      )}
-                    </option>
-                  </Select>
-                </FormField>
-                {isCombinedRuleKind(contactAuth.ruleKind) ? (
                   <ContactAuthConditionList
                     form={contactAuth}
                     onChange={(next) =>
@@ -3190,45 +3161,60 @@ export function BehaviorTab({
                     }
                     showErrors={contactAuthRuleBad}
                   />
-                ) : (
-                  <ContactAuthConditionFields
-                    value={contactAuth}
-                    onChange={(next) =>
-                      setContactAuth({ ...contactAuth, ...next })
-                    }
-                    invalid={contactAuthRuleBad}
-                  />
-                )}
-                {watcher && (
+                </FormField>
+                {watcher && contactAuthUsesRule && (
                   <p className="text-text-muted text-xs">
-                    {contactAuthUsesRule
+                    {t(
+                      "editor.contactAuthWatcherRule",
+                      "On a monitoring agent, the rule decides which conversations it observes. A conversation the rule refuses is not observed, and nothing is sent or noted.",
+                    )}
+                  </p>
+                )}
+                {watcher && !contactAuthUsesRule && contactAuthAsksEndpoint && (
+                  <p className="text-warning text-xs">
+                    {t(
+                      "editor.contactAuthWatcherEndpointOnly",
+                      "On a monitoring agent an external endpoint is not asked, so this gate observes every conversation. Choose a rule to limit what it observes.",
+                    )}
+                  </p>
+                )}
+                {contactAuthEmpty && (
+                  <p className="text-error text-xs">
+                    {watcher
                       ? t(
-                          "editor.contactAuthWatcherRule",
-                          "On a monitoring agent, the rule decides which conversations it observes. A conversation the rule refuses is not observed, and nothing is sent or noted.",
+                          "editor.contactAuthWatcherEmpty",
+                          "Add at least one condition, or turn the gate off.",
                         )
                       : t(
-                          "editor.contactAuthWatcherEndpointOnly",
-                          "On a monitoring agent an external endpoint is not asked, so this gate observes every conversation. Choose a rule to limit what it observes.",
+                          "editor.contactAuthEmpty",
+                          "Add at least one condition or turn on the external endpoint, or turn the gate off.",
                         )}
                   </p>
                 )}
-                {!watcher && contactAuthUsesRule && (
+                {!watcher && (
                   <SwitchField
-                    checked={contactAuth.askEndpointAfterRule}
+                    checked={contactAuth.endpointEnabled}
                     onCheckedChange={(v) =>
                       setContactAuth({
                         ...contactAuth,
-                        askEndpointAfterRule: v,
+                        endpointEnabled: v,
                       })
                     }
                     label={t(
-                      "editor.contactAuthAskEndpointAfterRule",
-                      "Then ask an external endpoint about what the rule lets through",
+                      "editor.contactAuthEndpoint",
+                      "Ask an external endpoint",
                     )}
-                    help={t(
-                      "editor.contactAuthAskEndpointAfterRuleHelp",
-                      "The rule decides first and costs nothing: what it refuses is refused without calling the endpoint. What it lets through goes to the endpoint, which has the final word.",
-                    )}
+                    help={
+                      contactAuthUsesRule
+                        ? t(
+                            "editor.contactAuthEndpointAfterHelp",
+                            "Asked after the conditions, only about what they let through: what they refuse is refused without calling it. The endpoint has the final word, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact.",
+                          )
+                        : t(
+                            "editor.contactAuthEndpointAloneHelp",
+                            "With no conditions, the endpoint decides alone, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact. It is asked after the other checks, and a failure refuses.",
+                          )
+                    }
                   />
                 )}
                 {!watcher && contactAuthAsksEndpoint && (
@@ -4256,6 +4242,7 @@ export function BehaviorTab({
           fallbackModelMissing ||
           // NOTE: A watcher's gate draws the rule's fields, so a rule it cannot read is said there.
           contactAuthRuleBad ||
+          contactAuthEmpty ||
           (!watcher &&
             (contactAuthUrlInvalid ||
               normalizeBaseUrlInvalid ||

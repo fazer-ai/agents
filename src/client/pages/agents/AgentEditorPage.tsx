@@ -132,6 +132,7 @@ import {
 import {
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
+  readContactAuthEndpointEnabled,
   readContactAuthRuleForm,
 } from "./contactAuthRuleForm";
 import { ExportAgentModal } from "./ExportAgentModal";
@@ -417,6 +418,7 @@ function readBehaviorState(a: Agent) {
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const av = (s.availability ?? {}) as Record<string, unknown>;
   const ca = (s.contactAuth ?? {}) as Record<string, unknown>;
+  const caRule = readContactAuthRuleForm(ca.rule);
 
   // Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
@@ -472,10 +474,14 @@ function readBehaviorState(a: Agent) {
       baseURL: str(st.baseURL),
     },
     contactAuth: {
-      ...readContactAuthRuleForm(ca.rule),
+      ...caRule,
       enabled: ca.enabled === true,
-      // NOTE: Strict like the reader: only `true` asks the endpoint after the rule.
-      askEndpointAfterRule: ca.askEndpointAfterRule === true,
+      // NOTE: Strict like the reader: beside conditions only `true` asks the endpoint after them.
+      endpointEnabled: readContactAuthEndpointEnabled(
+        caRule,
+        ca.url,
+        ca.askEndpointAfterRule,
+      ),
       url: str(ca.url),
       credentialRef: str(ca.credentialRef),
       timeoutMs: num(ca.timeoutMs) || "5000",
@@ -816,7 +822,7 @@ function AgentEditor() {
   const [contactAuth, setContactAuth] = useState<ContactAuthState>({
     ...EMPTY_CONTACT_AUTH_RULE_FORM,
     enabled: false,
-    askEndpointAfterRule: false,
+    endpointEnabled: false,
     url: "",
     credentialRef: "",
     timeoutMs: "5000",
@@ -1682,9 +1688,9 @@ function AgentEditor() {
       contactAuth: {
         enabled: contactAuth.enabled,
         rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled),
-        // NOTE: Saved as chosen even with no rule picked, like the url under a rule: switching the
-        // source back and forth does not lose it, and the reader only reads it beside a rule.
-        askEndpointAfterRule: contactAuth.askEndpointAfterRule,
+        // NOTE: The endpoint switch. Beside conditions it is the two-stage flag; with none the reader
+        // ignores it (no rule means the endpoint decides), and it is saved as shown either way.
+        askEndpointAfterRule: contactAuth.endpointEnabled,
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,
@@ -2119,7 +2125,7 @@ function AgentEditor() {
     agentMonitoring: agentMode === "monitoring",
     contactAuthUrl: contactAuth.url,
     contactAuthRuleOnly:
-      contactAuth.ruleKind !== "" && !contactAuth.askEndpointAfterRule,
+      contactAuth.ruleConditions.length > 0 && !contactAuth.endpointEnabled,
     contactAuthCredentialRef: contactAuth.credentialRef,
     contactAuthIncludeMessageText: contactAuth.includeMessageText,
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,

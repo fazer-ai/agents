@@ -216,6 +216,13 @@ transcription or description exists for the observation. A conversation the rule
   message for no answer the observer can use. An enabled gate with only an endpoint observes as
   before, with no line, and the endpoint is never called. `askEndpointAfterRule` is ignored here: the
   rule's allow is final.
+- **Asked again when the observation runs.** An observation armed while the rule allowed the
+  conversation stays queued after a label is removed or the rule tightened, so the tick asks the rule
+  before the model is paid (a refusal ends it with `skipped: contact_auth_refused`, a read that fails
+  retries) and again at every tool hop through its fence, without a line per hop.
+- **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the rule's verdict,
+  since asking the whole gate again would run the endpoint stage an observer never runs. An observer
+  beside a separate responder keeps the responder's `unverified` pass (Media waits for the gate).
 - **Memory is not the rule's to decide.** The burst is still remembered and the handled watermark
   still moves; what the rule withholds is the observation. Remembering is what keeps a later flip to
   production from answering the observed backlog.
@@ -678,9 +685,11 @@ stands:
   reads for memory only if the verdict was a yes. On an allowed message this costs nothing, since the
   gate and the pass already ran one after the other.
 - **`unverified`**: no verdict was asked, which is every pass the gate does not stand in front of: a
-  conversation a person holds, a late attachment on `message_updated`, an observer's route, a consumed
-  message handed to memory, a memory-only replay. The pass asks the gate itself (`mediaAdmitted`),
-  with the same agent (the one bound to the conversation's inbox) and the same request key, so a
+  conversation a person holds, a late attachment on `message_updated`, an observer's route beside a
+  separate responder (after the observer's own rule let the message through; see The observer path),
+  a consumed message handed to memory, a memory-only replay. A watcher that is itself the inbox's
+  agent is the exception: its rule just answered for this message, so its pass runs as `allowed`.
+  The pass asks the gate itself (`mediaAdmitted`), with the same agent (the one bound to the conversation's inbox) and the same request key, so a
   stored grant answers under `mode: "once"`. It asks only when a provider call is about to happen: a
   text message, or media already read, costs the endpoint nothing. Fail-closed like the gate.
 

@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { isTransientProviderStatus } from "@/lib/provider-failure";
 import { sanitizeErrorMessage } from "@/lib/redact";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext, FlowEvent } from "./service";
 import { ALERT_DELIVERY_UNIT, type FlowLevel, type FlowStage } from "./stages";
 
@@ -209,6 +209,12 @@ interface AlertToDeliver {
   rank: number;
   summary: string;
   cause: { key: string; windowMs: number } | null;
+  // Asked per channel past its gates, for an alert whose trigger depends on what the channel keeps:
+  // the summary to deliver, or null when this channel does not get one.
+  summaryFor?: (
+    db: ScopedDb,
+    excludeAgentIds: bigint[],
+  ) => Promise<string | null>;
 }
 
 async function deliverAlert(
@@ -239,6 +245,10 @@ async function deliverAlert(
       // names agents, and an unrouted or tenant-wide line belongs to none of them.
       if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))
         continue;
+      const summary = alert.summaryFor
+        ? await alert.summaryFor(db, ch.excludeAgentIds)
+        : alert.summary;
+      if (summary === null) continue;
       if (cause !== null) {
         // One delivery per (channel, cause) per window, whatever its status: a sent alert keeps
         // counting the repeats instead of a second one going out. Serialized per (channel, cause)
@@ -284,7 +294,7 @@ async function deliverAlert(
           stage,
           level,
           causeKey: cause?.key ?? null,
-          summary: alert.summary,
+          summary,
           // NOTE: Where the event happened, so the alert can link to it. Only here: the bump
           // above leaves them naming the first event, like `summary`.
           turnId: ctx.turnId,
@@ -350,7 +360,9 @@ export async function dispatchRateAlert(
   const subject = rateSubjectOf(ev);
   if (subject === null) return;
   const since = new Date(Date.now() - opts.windowMs);
-  const failures = await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
+  // Counted per channel, without the agents it leaves out: an evaluation agent failing on
+  // purpose is not a degraded provider to the channel that excludes it. A line with no agent counts.
+  const failuresFor = (db: ScopedDb, excludeAgentIds: bigint[]) =>
     db.executionLog.count({
       where: {
         stage: subject.stage,
@@ -358,23 +370,47 @@ export async function dispatchRateAlert(
         status: "error",
         source: "inbox",
         createdAt: { gte: since },
-        OR: TRANSIENT_FAILURES.map((failure) => ({
-          detail: { path: ["failure"], equals: failure },
-        })),
+        AND: [
+          {
+            OR: TRANSIENT_FAILURES.map((failure) => ({
+              detail: { path: ["failure"], equals: failure },
+            })),
+          },
+          ...(excludeAgentIds.length > 0
+            ? [
+                {
+                  OR: [
+                    { agentId: null },
+                    { agentId: { notIn: excludeAgentIds } },
+                  ],
+                },
+              ]
+            : []),
+        ],
       },
-    }),
+    });
+  // The tenant's count bounds every channel's from above, so below the threshold nobody gets one.
+  const failures = await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
+    failuresFor(db, []),
   );
   if (failures < opts.threshold) return;
   const via = subject.provider ? ` via ${subject.provider}` : "";
   const minutes = Math.max(1, Math.round(opts.windowMs / 60_000));
+  const summaryOf = (n: number) =>
+    sanitizeErrorMessage(
+      `[${subject.stage}${via}] provider degraded: ${n} transient failures in ${minutes} min`,
+      300,
+    );
   await deliverAlert(ctx, base, {
     stage: subject.stage,
     level: "warn",
     rank: LEVEL_RANK.warn as number,
-    summary: sanitizeErrorMessage(
-      `[${subject.stage}${via}] provider degraded: ${failures} transient failures in ${minutes} min`,
-      300,
-    ),
+    summary: summaryOf(failures),
+    summaryFor: async (db, excludeAgentIds) => {
+      if (excludeAgentIds.length === 0) return summaryOf(failures);
+      const n = await failuresFor(db, excludeAgentIds);
+      return n < opts.threshold ? null : summaryOf(n);
+    },
     cause: {
       key: `rate:${subject.stage}:${vocabulary("provider", subject.provider) ?? "-"}`,
       windowMs: opts.windowMs,

@@ -328,6 +328,37 @@ describe.skipIf(!dbUp)("rate alerts", () => {
     expect(await rateRows(all)).toHaveLength(1);
   });
 
+  // The excluded agent's failures are not the provider's rate to the channel that leaves it out,
+  // even when a production agent's failure is the one that crosses the threshold; a line with no
+  // agent still counts.
+  test("an excluded agent's failures do not add to the rate of the channel that excludes it", async () => {
+    const tenantId = await freshTenant();
+    const evaluation = await suDb.agent.create({
+      data: { tenantId, name: "Eval", systemPrompt: "x" },
+    });
+    const production = await suDb.agent.create({
+      data: { tenantId, name: "Prod", systemPrompt: "x" },
+    });
+    const excludes = await channel(tenantId, {
+      excludeAgentIds: [evaluation.id],
+    });
+    const all = await channel(tenantId);
+    for (let i = 0; i < 4; i++) {
+      await writeFlowEvent(
+        flow(tenantId, { agentId: evaluation.id }),
+        failure(),
+      );
+    }
+    await writeFlowEvent(flow(tenantId, { agentId: production.id }), failure());
+    expect(await rateRows(excludes)).toEqual([]);
+    expect(await rateRows(all)).toHaveLength(1);
+    // Four more with no agent: five that count for the excluding channel, said in its own summary.
+    await fail(tenantId, 4);
+    const rows = await rateRows(excludes);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.summary).toContain("5 transient failures");
+  });
+
   test("concurrent failures across the threshold are one alert per channel", async () => {
     const tenantId = await freshTenant();
     const one = await channel(tenantId);

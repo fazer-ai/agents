@@ -908,8 +908,9 @@ async function mirrorConsoleWrite(
     }
     // NOTE: a snapshot with no version is not reconciled: the reconcile would apply the WHOLE
     // snapshot, so a status click could carry back an assignee a webhook has since changed. The
-    // fallback writes exactly the fields this action meant to change.
-    if (live && live.updatedAt !== null) {
+    // fallback writes exactly the fields this action meant to change. Nor is one that did not state
+    // the assignee, which the reconcile would write as nobody.
+    if (live && live.updatedAt !== null && live.assigneeStated === true) {
       const outcome = await reconcileMirrorFromLive({
         tenantId,
         instanceId: conv.chatwootInstanceId,
@@ -2357,12 +2358,8 @@ export async function returnConversationToAgent(
         });
       }
     } catch (err) {
-      // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
-      // is still holding the conversation, which is the recoverable half of the pair (the comment on
-      // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
-      // status of a live conversation moved, and the row is what says so.
-      // NOTE: once a bot assignment was sent, the holder is no longer known to be the baseline (it may
-      // have landed, or named a user with the bot's id), so it is read again; unread, it is unknown.
+      // Once a bot assignment was sent, the holder is no longer known to be the baseline (it may have
+      // landed, or named a user with the bot's id), so it is read again; unread, it is unknown.
       let partialHolder: {
         assigneeType: string | null;
         assigneeId: number | null;
@@ -2390,6 +2387,10 @@ export async function returnConversationToAgent(
           });
         }
       }
+      // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
+      // is still holding the conversation, which is the recoverable half of the pair (the comment on
+      // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
+      // status of a live conversation moved, and the row is what says so.
       await recordConversationAction(ctx, base, id, {
         action: "conversation.return",
         before: {

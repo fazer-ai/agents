@@ -90,6 +90,8 @@ function makeStub(
     // From the bot assignment on, reads come back without `meta`: a payload that says nothing about
     // the assignee, which is not one that says nobody holds it.
     metaOmittedAfterWrite?: boolean;
+    // ...carrying a version, which is what would send the read down the reconcile path.
+    metaOmittedVersion?: number;
   } = {},
   // A holder that appears only from the SECOND live read on. The hand-back reads the conversation
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
@@ -234,7 +236,14 @@ function makeStub(
             },
           }
         : omitMeta
-          ? { id: cid, status: "pending", ...on }
+          ? {
+              id: cid,
+              status: "pending",
+              ...on,
+              ...(live.metaOmittedVersion != null
+                ? { updated_at: live.metaOmittedVersion }
+                : {}),
+            }
           : cleared
             ? {
                 id: cid,
@@ -1164,6 +1173,26 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       assigneeType: "User",
       assigneeId: 7,
       metaOmittedAfterWrite: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["AgentBot", 501]);
+  });
+
+  test("a versioned read after the write that omits the assignee does not reconcile it away", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      metaOmittedAfterWrite: true,
+      metaOmittedVersion: Math.floor(Date.now() / 1000) + 3600,
     });
     await returnConversationToAgent(
       ctx(tenant),

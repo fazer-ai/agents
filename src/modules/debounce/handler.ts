@@ -1324,7 +1324,7 @@ async function ingestObservedBurst(args: {
         String(conversationId),
         burst.length,
       );
-      // NOTE: A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
+      // A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
       // message: best-effort, after the memory has it, and only where the contact gate (conditions,
       // and the endpoint under the same rules) lets the watcher observe this conversation.
       const permit = await observerArmPermit({

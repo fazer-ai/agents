@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DynamicStructuredTool } from "@langchain/core/tools";
 import { declarationSchema } from "@/graph/tools/mcp-schema";
 
 // The declaration an MCP tool's input schema gets in front of the model: local `$ref`s inlined and
@@ -83,7 +84,7 @@ describe("declarationSchema", () => {
     }
   });
 
-  test("conditionals add their properties; not, $schema and unevaluatedProperties go", () => {
+  test("conditionals add their properties but not their required; not, $schema and unevaluatedProperties go", () => {
     expect(
       declarationSchema({
         $schema: "http://json-schema.org/draft-07/schema#",
@@ -103,7 +104,6 @@ describe("declarationSchema", () => {
         x: { type: "string" },
         y: { type: "string" },
       },
-      required: ["x"],
     });
   });
 
@@ -133,7 +133,7 @@ describe("declarationSchema", () => {
     });
   });
 
-  test("a recursive $ref stops at an open object, and a schema with no properties gets an empty map", () => {
+  test("a recursive $ref stops at an unconstrained schema, and a schema with no properties gets an empty map", () => {
     expect(
       declarationSchema({
         type: "object",
@@ -148,7 +148,7 @@ describe("declarationSchema", () => {
     ).toEqual({
       type: "object",
       properties: {
-        node: { type: "object", properties: { next: { type: "object" } } },
+        node: { type: "object", properties: { next: {} } },
       },
     });
     expect(declarationSchema({ type: "object" })).toEqual({
@@ -201,6 +201,100 @@ describe("declarationSchema", () => {
     }) as { properties: Record<string, unknown> };
     expect(JSON.stringify(declared)).not.toContain("allOf");
     expect(declared.properties.n).toEqual({ type: "number" });
+  });
+
+  // NOTE: LangChain validates a call against the declaration before the adapter does, so a
+  // declaration narrower than the listed schema refuses calls the server would take.
+  test("the declaration accepts what the listed schema accepts", async () => {
+    const accepts = async (schema: unknown, args: Record<string, unknown>) =>
+      new DynamicStructuredTool({
+        name: "t",
+        description: "",
+        schema: declarationSchema(schema) as Record<string, unknown>,
+        func: async () => "ok",
+      }).invoke(args);
+    const wide = Object.fromEntries(
+      Array.from({ length: 4100 }, (_, i) => [`s${i}`, { type: "string" }]),
+    );
+    expect(
+      await accepts(
+        {
+          type: "object",
+          properties: {
+            ...wide,
+            deep: { $ref: "#/$defs/d0" },
+            q: { $ref: "#/$defs/word" },
+          },
+          required: ["q"],
+          $defs: {
+            word: { type: "string" },
+            d0: {
+              type: "object",
+              properties: Object.fromEntries(
+                Array.from({ length: 10 }, (_, j) => [
+                  `p${j}`,
+                  { $ref: "#/$defs/d1" },
+                ]),
+              ),
+            },
+            d1: {
+              type: "object",
+              properties: Object.fromEntries(
+                Array.from({ length: 500 }, (_, j) => [
+                  `r${j}`,
+                  { type: "string" },
+                ]),
+              ),
+            },
+          },
+        },
+        { q: "hello" },
+      ),
+    ).toBe("ok");
+    expect(
+      await accepts(
+        {
+          type: "object",
+          properties: { kind: { type: "string" } },
+          if: { properties: { kind: { const: "a" } } },
+          // biome-ignore lint/suspicious/noThenProperty: a JSON Schema conditional, not a thenable
+          then: { properties: { x: { type: "string" } }, required: ["x"] },
+          else: { properties: { y: { type: "string" } } },
+        },
+        { kind: "b", y: "ok" },
+      ),
+    ).toBe("ok");
+    expect(
+      await accepts(
+        {
+          anyOf: [
+            {
+              type: "object",
+              properties: { a: { type: "string" } },
+              required: ["a"],
+            },
+            { type: "object", properties: { b: { type: "number" } } },
+          ],
+        },
+        { b: 1 },
+      ),
+    ).toBe("ok");
+    expect(
+      await accepts(
+        {
+          type: "object",
+          properties: {
+            v: {
+              anyOf: [
+                { type: "object", properties: { x: { type: "string" } } },
+                { type: "string" },
+              ],
+            },
+          },
+        },
+        { v: "plain" },
+      ),
+    ).toBe("ok");
   });
 
   test("the server's schema is not mutated", () => {

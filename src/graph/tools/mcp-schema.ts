@@ -1,14 +1,15 @@
 // The declaration an MCP tool's input schema gets in front of the model. Providers refuse shapes a
 // server may legitimately declare (Anthropic refuses a root `allOf`/`anyOf`/`oneOf`, OpenAI wants a
 // root object), so local `$ref`s are inlined and composition is folded into one object schema, the
-// way @langchain/mcp-adapters 1.x did before handing the schema over. Only the declaration changes:
-// the call's arguments are still validated against the schema the server listed.
+// way @langchain/mcp-adapters 1.x did before handing the schema over. LangChain validates a call
+// against this declaration before the adapter validates it against the listed schema, so folding
+// only ever loosens: what the listed schema accepts, the declaration accepts too.
 
 type Schema = Record<string, unknown>;
 
 // Nodes the inlining may visit: expanding shared definitions can repeat a subtree exponentially,
 // and this runs on the shared event loop for a schema the server controls. A spent budget only
-// stops expanding: a `$ref` met after it becomes an open object, while the schema the server sent
+// stops expanding: a `$ref` met after it becomes an unconstrained schema, while the schema the server sent
 // is still copied around it. Folding is linear in what the inlining built, so it has no budget.
 const NODE_BUDGET = 4096;
 
@@ -34,7 +35,7 @@ function inlineRefs(schema: Schema, walk: Walk): unknown {
       const name = ref.match(/^#\/(?:\$defs|definitions)\/(.+)$/)?.[1];
       const target = name === undefined ? undefined : defs[name];
       if (!isSchema(target)) return node;
-      if (seen.has(ref) || walk.budget <= 0) return { type: "object" };
+      if (seen.has(ref) || walk.budget <= 0) return {};
       const { $ref: _, ...siblings } = node;
       const resolved = visit(target, new Set(seen).add(ref));
       return {
@@ -93,18 +94,14 @@ function mergeSchemas(a: Schema, b: Schema): Schema {
   return out;
 }
 
-// The properties a conditional may add, from both its `then` and its `else`.
+// The properties a conditional may add, from both its `then` and its `else`. Their `required` stays
+// out: one branch's requirement applied to every call would refuse calls the other branch accepts.
 function conditionalShape(thenBranch: unknown, elseBranch: unknown): Schema {
   let out: Schema = {};
   for (const branch of [thenBranch, elseBranch]) {
     if (!isSchema(branch)) continue;
     if (isSchema(branch.properties))
       out = mergeSchemas(out, { properties: branch.properties });
-    if (Array.isArray(branch.required))
-      out.required = unique([
-        ...(Array.isArray(out.required) ? out.required : []),
-        ...branch.required,
-      ]);
   }
   return out;
 }
@@ -113,8 +110,8 @@ function isObjectSchema(s: unknown): s is Schema {
   return isSchema(s) && (s.type === "object" || isSchema(s.properties));
 }
 
-// `allOf` merged in; `anyOf`/`oneOf` object branches merged, an argument required only when every
-// branch requires it; `if`/`then`/`else` reduced to the properties they may add; `not`, `$schema`
+// `allOf` merged in; `anyOf`/`oneOf` of object branches merged, an argument required only when
+// every branch requires it; `if`/`then`/`else` reduced to the properties they may add; `not`, `$schema`
 // and `unevaluatedProperties` dropped. Applied down through properties, items and
 // additionalProperties.
 function simplify(node: unknown): unknown {
@@ -143,16 +140,19 @@ function simplify(node: unknown): unknown {
     }
   }
   const union = anyOf ?? oneOf;
-  if (Array.isArray(union) && union.length > 0) {
+  // NOTE: a union is folded only when every branch is an object; a mixed one (an object or a
+  // string) is dropped instead, since declaring it an object would refuse the other branches.
+  if (Array.isArray(union) && union.length > 0 && union.every(isObjectSchema)) {
     const properties: Schema = {};
-    const requiredSets: Set<unknown>[] = [];
-    for (const branch of union.filter(isObjectSchema)) {
-      const simplified = simplify(branch);
-      if (!isSchema(simplified)) continue;
+    let common: unknown[] | undefined;
+    for (const branch of union) {
+      const simplified = simplify(branch) as Schema;
       if (isSchema(simplified.properties))
         Object.assign(properties, simplified.properties);
-      if (Array.isArray(simplified.required))
-        requiredSets.push(new Set(simplified.required));
+      const required = Array.isArray(simplified.required)
+        ? simplified.required
+        : [];
+      common = common?.filter((name) => required.includes(name)) ?? required;
       if (simplified.type && !out.type) out.type = simplified.type;
     }
     if (Object.keys(properties).length > 0)
@@ -160,17 +160,13 @@ function simplify(node: unknown): unknown {
         ...(isSchema(out.properties) ? out.properties : {}),
         ...properties,
       };
-    if (requiredSets.length > 0) {
-      const common = [...(requiredSets[0] ?? [])].filter((name) =>
-        requiredSets.every((set) => set.has(name)),
-      );
-      if (common.length > 0)
-        out.required = unique([
-          ...(Array.isArray(out.required) ? out.required : []),
-          ...common,
-        ]);
-    }
+    if (common && common.length > 0)
+      out.required = unique([
+        ...(Array.isArray(out.required) ? out.required : []),
+        ...common,
+      ]);
   }
+
   if (isSchema(out.properties)) {
     if (!out.type) out.type = "object";
     const props: Schema = {};

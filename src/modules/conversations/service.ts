@@ -2410,13 +2410,16 @@ export async function returnConversationToAgent(
       consoleWriteMark(before),
     );
     // Who the mirror ends up naming, resolved once for the event and the return. `state` (a
-    // versioned reconcile) wins; then `observed`, the unversioned read taken AFTER the unassign (a
+    // versioned reconcile) wins; then `observed`, the unversioned read taken AFTER the write (a
     // Chatwoot older than 4.0.2 sends no `updated_at`), the only look that sees a human who claimed
-    // it meanwhile (`newHolder` was read before); then `newHolder`, right when that read failed and
-    // the mirror already wrote the same holder.
+    // it meanwhile or a bot assignment cleared since; then the holder this call asked for, right when
+    // that read failed and the mirror already wrote it.
     const finalHolder = state
       ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
-      : (holderOtherThan(observed) ?? requestedHolder);
+      : (holderOtherThan(observed) ??
+        (observed !== null && observed.assigneeType === null
+          ? { assigneeType: null, assigneeId: null }
+          : requestedHolder));
     // NOTE: The row's `after` takes it HERE, the moment it is known, and not at the end: everything
     // below (the mirror's fallback write, the broadcast, the ownership read that names the outcome)
     // can throw, and the `finally` would then fall back to the pre-unassign reading and lose the
@@ -2427,13 +2430,17 @@ export async function returnConversationToAgent(
       assigneeId: finalHolder.assigneeId,
     };
     // And the ROW, which is the half a return value cannot fix. Where `observed` is what corrected the
-    // answer, `mirrorConsoleWrite` has already written its fallback — status pending, no assignee —
-    // because that is what this call asked for before anybody claimed the conversation. Leaving it
+    // answer, `mirrorConsoleWrite` has already written its fallback (status pending, the holder this
+    // call asked for) because that is what it asked for before anybody else moved the conversation. Leaving it
     // there makes the disagreement worse than the one just closed: the response and every open console
     // name the human, while the row that `shouldBotHandle` reads says the conversation is the bot's,
     // and the agent answers over them until an assignment webhook happens to arrive. It is the same
     // fallback-is-not-nobody reasoning one layer down, applied to the durable copy.
-    if (state === null && finalHolder.assigneeType !== null) {
+    if (
+      state === null &&
+      (finalHolder.assigneeType !== null ||
+        requestedHolder.assigneeType !== null)
+    ) {
       await updateMirror(ctx, base, id, {
         assigneeType: finalHolder.assigneeType,
         assigneeId: finalHolder.assigneeId,

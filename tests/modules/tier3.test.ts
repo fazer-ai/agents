@@ -86,6 +86,7 @@ function makeStub(
     // `false` answers a bot assignment the way a deleted bot does (no bot in the answer), which is
     // the case the hand-back falls back to a plain unassign on.
     botAssignable?: boolean;
+    botCleared?: boolean;
   } = {},
   // A holder that appears only from the SECOND live read on. The hand-back reads the conversation
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
@@ -195,7 +196,8 @@ function makeStub(
       calls.assignAgentBot.push(botId);
       if (live.botAssignable === false) return false;
       cleared = true;
-      botHolder = botId;
+      // `botCleared`: Chatwoot took the bot, and something cleared it again before the next read.
+      botHolder = live.botCleared ? null : botId;
       return true;
     },
     toggleStatus: async (_cid: number, status: string) => {
@@ -1128,6 +1130,26 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
     expect(stub.calls.assignAgentBot).toEqual([501]);
     expect(stub.calls.unassignConversation).toBe(1);
+  });
+
+  test("a bot cleared again before the read after the write is not reported as the holder", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      botCleared: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual([null, null]);
   });
 
   test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {

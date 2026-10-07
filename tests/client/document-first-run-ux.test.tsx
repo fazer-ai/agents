@@ -29,6 +29,7 @@ const { ToastProvider } = await import("@/client/components");
 const { SelectableCard } = await import("@/client/components/SelectableCard");
 const { NavGuardProvider } = await import("@/client/contexts/NavGuardContext");
 const { AuthContext } = await import("@/client/contexts/AuthContext");
+const { setActiveTenantId } = await import("@/client/lib/activeTenant");
 
 const STYLE = {
   font: "sans",
@@ -134,6 +135,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.pathname.endsWith("/document-templates")) {
     return json({ templates: [] });
   }
+  if (url.pathname.endsWith("/api/v1/tenants")) {
+    return json({ tenants: [{ id: "1", name: "Acme Fleet Co" }] });
+  }
   if (url.pathname.endsWith("/tenant-settings")) {
     return json({ company: storedCompany });
   }
@@ -151,8 +155,13 @@ afterAll(async () => {
   await i18n.changeLanguage(startingLanguage);
 });
 
-function renderPanel(tenantName: string | null = null) {
-  const auth = { user: tenantName ? { tenantName } : null } as never;
+function renderPanel(
+  tenantName: string | null = null,
+  user: Record<string, unknown> | null = tenantName
+    ? { role: "TENANT_ADMIN", tenantId: "1", tenantName }
+    : null,
+) {
+  const auth = { user } as never;
   render(
     <MemoryRouter initialEntries={["/recursos/documentos"]}>
       <AuthContext.Provider value={auth}>
@@ -353,6 +362,17 @@ describe("the letterhead editor", () => {
     await new Promise((r) => setTimeout(r, 50));
     const first = screen.getAllByRole("textbox")[0] as HTMLInputElement;
     expect(first.value).toBe("Stored Co");
+  });
+
+  test("a fleet session offers the selected tenant's name", async () => {
+    await i18n.changeLanguage("en");
+    setActiveTenantId("1");
+    renderPanel(null, { role: "SUPER_ADMIN", tenantId: null });
+    await openLetterhead();
+    await waitFor(() => {
+      const first = screen.getAllByRole("textbox")[0] as HTMLInputElement;
+      expect(first.value).toBe("Acme Fleet Co");
+    });
   });
 
   test("offers the name the account was set up with", async () => {

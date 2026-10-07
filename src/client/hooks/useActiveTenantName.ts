@@ -1,4 +1,5 @@
-import { useAuth } from "@/client/contexts/AuthContext";
+import { useContext } from "react";
+import { AuthContext } from "@/client/contexts/AuthContext";
 import { useTenantList } from "@/client/hooks/useTenantList";
 
 interface NamedUser {
@@ -26,8 +27,10 @@ export function resolveActiveTenantName(
   return tenants.find((tn) => tn.id === activeId)?.name ?? null;
 }
 
+// Read off the context rather than through useAuth: a name is only ever a label or a suggestion, so
+// a screen rendered outside an AuthProvider (a component test) gets null instead of a throw.
 export function useActiveTenantName(): string | null {
-  const { user } = useAuth();
+  const user = useContext(AuthContext)?.user;
   const { tenants, activeId } = useTenantList(isFleetSession(user));
   return resolveActiveTenantName(user, tenants, activeId);
 }

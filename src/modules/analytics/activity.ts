@@ -31,9 +31,10 @@ export const HANDOFF_CAUSES = [
   // A guardrail stopped the reply and handed the conversation over.
   "guardrail",
   // A person replied or took the conversation in Chatwoot. Every gate that meets a human owner logs
-  // `taken_over` again (each new customer message on a conversation a person holds), so a line counts
-  // only when the agent took a turn since the conversation's previous one: the takeover, not each
-  // later sighting of it. A takeover after the conversation was handed back still counts.
+  // `taken_over` again (each new customer message on a conversation a person holds, the first one
+  // after the agent itself handed over included), so a line counts only when the agent took a turn
+  // since the conversation's previous transfer of any cause: the takeover, not a later sighting of a
+  // person already holding it. A takeover after the conversation was handed back still counts.
   "person",
 ] as const;
 export type HandoffCause = (typeof HANDOFF_CAUSES)[number];
@@ -57,7 +58,10 @@ const CAUSE_SQL = Prisma.sql`(CASE
        AND NOT EXISTS (
          SELECT 1 FROM execution_logs p
           WHERE p.conversation_id = l.conversation_id
-            AND p.stage = 'handoff' AND p.detail->>'outcome' = 'taken_over'
+            AND ((p.stage = 'handoff'
+                  AND p.detail->>'outcome' IN ('taken_over', 'opened_after_skip', 'guardrail_handoff'))
+                 OR (p.stage = 'tool' AND p.detail->>'tool' = 'handoff_to_human' AND p.status = 'ok'
+                     AND COALESCE(p.detail->>'handedOff', 'true') = 'true'))
             AND p.created_at < l.created_at
             AND NOT EXISTS (
               SELECT 1 FROM llm_usage u

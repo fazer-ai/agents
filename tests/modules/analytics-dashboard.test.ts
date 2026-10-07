@@ -1318,6 +1318,43 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     );
   });
 
+  test("the first message after the agent handed over is not a person taking over", async () => {
+    const conv = await seedConv(ex, "agentHandedOver", {
+      at: D1,
+      inbox: ex.i1,
+    });
+    const line = (at: string, stage: string, detail: Record<string, unknown>) =>
+      suDb.executionLog.create({
+        data: {
+          tenantId: ex.tenantId,
+          turnId: crypto.randomUUID(),
+          conversationId: conv,
+          inboxId: ex.i1,
+          stage,
+          status: "ok",
+          source: "inbox",
+          detail: detail as Prisma.InputJsonObject,
+          createdAt: new Date(at),
+        },
+      });
+    await line("2026-09-05T10:00:00Z", "tool", {
+      tool: "handoff_to_human",
+      handedOff: true,
+    });
+    // The customer writes again; the gate meets the person the agent handed the conversation to.
+    await line("2026-09-06T10:00:00Z", "handoff", { outcome: "taken_over" });
+    const r = await getHandoffReasons(
+      ctx(ex.tenantId),
+      {
+        since: new Date("2026-09-06T00:00:00Z"),
+        until: new Date("2026-09-07T00:00:00Z"),
+        tz: "UTC",
+      },
+      appDb,
+    );
+    expect(r.totals.find((t) => t.cause === "person")).toBeUndefined();
+  });
+
   test("an inbox filter narrows the ledger figures too", async () => {
     const rows = await getBreakdown(
       ctx(ex.tenantId),

@@ -9,7 +9,13 @@ import {
   test,
 } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { AuthContext } from "@/client/contexts/AuthContext";
@@ -37,8 +43,39 @@ const stubFetch = (async (input: unknown) => {
     "http://localhost",
   );
   asked.push(url);
+  if (url.pathname.endsWith("/logs/export"))
+    return json({
+      content: "",
+      contentType: "text/csv",
+      filename: "logs.csv",
+      count: 0,
+      truncated: false,
+    });
+  // One line, so the page's Export button is enabled.
   if (url.pathname.endsWith("/logs"))
-    return json({ items: [], nextCursor: null });
+    return json({
+      items: [
+        {
+          id: "1",
+          turnId: "t1",
+          conversationId: null,
+          agentId: null,
+          inboxId: null,
+          threadId: null,
+          stage: "tool",
+          level: "warn",
+          status: "error",
+          provider: null,
+          model: null,
+          durationMs: 10,
+          source: "inbox",
+          detail: { tool: "consultar_pedido" },
+          errorMessage: null,
+          createdAt: "2026-09-08T12:00:00.000Z",
+        },
+      ],
+      nextCursor: null,
+    });
   if (url.pathname.endsWith("/conversations/agents"))
     return json({ agents: [] });
   if (url.pathname.endsWith("/conversations"))
@@ -111,6 +148,45 @@ describe("the Logs page opened from the health block", () => {
       expect(
         screen.queryAllByText(/From the dashboard: consultar_pedido/).length,
       ).toBe(1);
+    });
+  });
+});
+
+describe("exporting the Logs page opened from a dashboard window", () => {
+  test("exports that window, both bounds, exactly", async () => {
+    mount(
+      "/logs?stage=tool&level=warn&tool=consultar_pedido&source=inbox&since=2026-09-07T03:00:00.000Z&until=2026-09-14T02:59:59.999Z",
+      <LogsPage />,
+    );
+    await waitFor(() => {
+      expect(asked.some((u) => u.pathname.endsWith("/logs"))).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    // The modal's own Export, the second one on the page once it is open.
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole("button", { name: "Export", hidden: true }).length,
+      ).toBe(2);
+    });
+    fireEvent.click(
+      screen
+        .getAllByRole("button", { name: "Export", hidden: true })
+        .at(-1) as HTMLElement,
+    );
+    await waitFor(() => {
+      expect(asked.some((u) => u.pathname.endsWith("/logs/export"))).toBe(true);
+    });
+    const q = asked.find((u) =>
+      u.pathname.endsWith("/logs/export"),
+    )?.searchParams;
+    expect({
+      since: q?.get("since"),
+      until: q?.get("until"),
+      tool: q?.get("tool"),
+    }).toEqual({
+      since: "2026-09-07T03:00:00.000Z",
+      until: "2026-09-14T02:59:59.999Z",
+      tool: "consultar_pedido",
     });
   });
 });

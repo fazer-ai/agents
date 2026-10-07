@@ -47,14 +47,25 @@ function rangeFor(
   return { since: new Date(now - days * 86_400_000).toISOString() };
 }
 
+// An ISO instant as a `datetime-local` value in the browser's zone, to the second.
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export function LogsExportModal({
   modal,
   filters,
+  range,
 }: {
   modal: ModalController;
   // The active on-page filters, already keyed to the export endpoint's query params (source, and any
   // of stage/level/search/conversationId/turnId). Read at export time. The date range is added here.
   filters: Record<string, string>;
+  // The page's own window when it has one (opened from the dashboard): the modal opens on it as a
+  // custom range, and the period the operator picks then replaces BOTH bounds, never one of them.
+  range?: { since?: string; until?: string };
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -64,10 +75,17 @@ export function LogsExportModal({
   const [format, setFormat] = useState<LogExportFormat>("csv");
   const [busy, setBusy] = useState(false);
 
+  // The window exactly as the page holds it, until a bound is edited: the inputs stop at the second.
+  const [exact, setExact] = useState<{ since?: string; until?: string } | null>(
+    null,
+  );
+
   useOnModalOpen(modal, () => {
-    setPeriod("last7d");
-    setSince("");
-    setUntil("");
+    const opened = range?.since || range?.until ? range : null;
+    setPeriod(opened ? "custom" : "last7d");
+    setSince(opened?.since ? toLocalInput(opened.since) : "");
+    setUntil(opened?.until ? toLocalInput(opened.until) : "");
+    setExact(opened);
     setFormat("csv");
     setBusy(false);
   });
@@ -77,7 +95,12 @@ export function LogsExportModal({
     try {
       const query: Record<string, string> = {
         ...filters,
-        ...rangeFor(period, since, until, Date.now()),
+        ...(period === "custom" && exact
+          ? {
+              ...(exact.since ? { since: exact.since } : {}),
+              ...(exact.until ? { until: exact.until } : {}),
+            }
+          : rangeFor(period, since, until, Date.now())),
         format,
       };
       const { data, error } = await api.api.v1.logs.export.get({ query });
@@ -172,7 +195,11 @@ export function LogsExportModal({
                 type="datetime-local"
                 value={since}
                 max={until || undefined}
-                onChange={(e) => setSince(e.target.value)}
+                step={1}
+                onChange={(e) => {
+                  setExact(null);
+                  setSince(e.target.value);
+                }}
               />
             </FormField>
             <FormField label={t("logs.exportUntil", "To")}>
@@ -180,7 +207,11 @@ export function LogsExportModal({
                 type="datetime-local"
                 value={until}
                 min={since || undefined}
-                onChange={(e) => setUntil(e.target.value)}
+                step={1}
+                onChange={(e) => {
+                  setExact(null);
+                  setUntil(e.target.value);
+                }}
               />
             </FormField>
           </div>

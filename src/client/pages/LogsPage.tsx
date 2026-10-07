@@ -461,8 +461,6 @@ export function LogsPage() {
     if (q) f.search = q;
     if (conversationId) f.conversationId = conversationId;
     if (turnId) f.turnId = turnId;
-    if (since) f.since = since;
-    if (until) f.until = until;
     if (agentId) f.agentId = agentId;
     if (inboxId) f.inboxId = inboxId;
     if (tool) f.tool = tool;
@@ -475,8 +473,6 @@ export function LogsPage() {
     q,
     conversationId,
     turnId,
-    since,
-    until,
     agentId,
     inboxId,
     tool,
@@ -723,7 +719,11 @@ export function LogsPage() {
         </div>
       )}
 
-      <LogsExportModal modal={exportModal} filters={exportFilters} />
+      <LogsExportModal
+        modal={exportModal}
+        filters={exportFilters}
+        range={since || until ? { since, until } : undefined}
+      />
     </PageContainer>
   );
 }

@@ -4552,7 +4552,10 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
-        admission: "unverified",
+        // NOTE: On the responder's route the watcher IS the inbox's agent, and its rule just
+        // answered: the pass's own ask would run the endpoint stage an observer never runs, and
+        // leave a second line.
+        admission: observing && observer === null ? "allowed" : "unverified",
       });
     }
   }

@@ -12,8 +12,12 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
-import { observerRuleAllows } from "@/modules/contact-auth/observer";
+import {
+  observerRuleAllows,
+  observerRuleVerdict,
+} from "@/modules/contact-auth/observer";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
+import { runObserve } from "@/modules/observe/job";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -47,6 +51,8 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const OBSERVED_INBOX = 1088;
+// An inbox whose RESPONDER binding is the monitoring agent itself (no observer row).
+const BOUND_INBOX = 1089;
 const OBSERVER_BOT = 88;
 const AUTH_URL = "https://203.0.113.88:9443/check";
 const CW_BASE = "https://203.0.113.89:9";
@@ -124,11 +130,12 @@ function conversation(
   groupType: "group" | "individual",
   status = "pending",
   anonymous = false,
+  inboxId = OBSERVED_INBOX,
 ) {
   stamp += 1;
   return {
     id: convId,
-    inbox_id: OBSERVED_INBOX,
+    inbox_id: inboxId,
     status,
     group_type: groupType,
     labels: [],
@@ -158,6 +165,7 @@ async function deliverMessage(
   convId: number,
   groupType: "group" | "individual",
   anonymous = false,
+  inboxId = OBSERVED_INBOX,
 ) {
   seq += 1;
   const messageId = 108_000 + seq;
@@ -175,7 +183,13 @@ async function deliverMessage(
         data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
       },
     ],
-    conversation: conversation(convId, groupType, "pending", anonymous),
+    conversation: conversation(
+      convId,
+      groupType,
+      "pending",
+      anonymous,
+      inboxId,
+    ),
   });
   if (!n) throw new Error("the fixture did not normalize");
   const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -276,7 +290,11 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
         tenantId,
         name: "Triagem",
         systemPrompt: "…",
-        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          credentialRef: sttKeyRef,
+        },
         enabled: true,
         mode: "monitoring",
       },
@@ -304,6 +322,15 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     });
     await suDb.inboxObserver.create({
       data: { tenantId, inboxId: inbox.id, agentId: agent.id },
+    });
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: BOUND_INBOX,
+        name: "Grupos",
+        agentId: agent.id,
+      },
     });
   });
 
@@ -438,6 +465,81 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
         base: unreadable,
       }),
     ).toBe(false);
+    // ...and says why to the tick, which retries a read that failed instead of treating it as a no.
+    expect(
+      await observerRuleVerdict(
+        {
+          tenantId,
+          instanceId,
+          conversationId: 11,
+          agentId: observerId,
+          settings: { contactAuth: { enabled: true, rule: GROUP_ONLY } },
+          base: unreadable,
+        },
+        { emit: false },
+      ),
+    ).toBe("unreadable");
+  });
+
+  // The watcher bound as the inbox's own agent: its media pass is admitted by the rule it just
+  // asked, so an endpoint-only gate does not reach the endpoint there either, and a rule-only gate
+  // leaves one line, not a second one from the pass asking again.
+  test("a watcher bound as the inbox's agent transcribes what it observes without asking the endpoint", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(12, "individual", false, BOUND_INBOX);
+    expect(await observeRows(12)).toHaveLength(1);
+    expect(providers.stt).toBe(1);
+    expect(providers.auth).toBe(0);
+    await setGate({ enabled: true, rule: GROUP_ONLY });
+    await deliverMessage(13, "group", false, BOUND_INBOX);
+    expect(await observeRows(13)).toHaveLength(1);
+    expect(providers.stt).toBe(2);
+    expect(providers.auth).toBe(0);
+    expect((await gateLines(13)).length).toBe(1);
+  });
+
+  // An observation armed while the rule allowed it is asked again when it runs: a label removed or a
+  // rule tightened in between keeps the model out.
+  test("a queued observation the rule now refuses ends before the model, with a skipped line", async () => {
+    await setGate({ enabled: true, rule: GROUP_ONLY });
+    await deliverMessage(14, "group");
+    expect(await observeRows(14)).toHaveLength(1);
+    await setGate({
+      enabled: true,
+      rule: { kind: "label", label: "suporte" },
+    });
+    let modelCalls = 0;
+    const out = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: 14,
+        agentId: observerId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeModel: () => {
+          modelCalls += 1;
+          throw new Error("the model must not be reached");
+        },
+        makeClient: stubClient() as never,
+      },
+    );
+    expect(out).toEqual({ outcome: "done" });
+    expect(modelCalls).toBe(0);
+    const conv = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 14 },
+      select: { id: true },
+    });
+    const skipped = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv?.id, stage: "observe" },
+      select: { detail: true },
+    });
+    expect(
+      skipped.map((r) => (r.detail as { skipped?: string }).skipped),
+    ).toEqual(["contact_auth_refused"]);
   });
 
   test("a switched-off gate observes everything, with no line", async () => {

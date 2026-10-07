@@ -28,15 +28,17 @@ export interface ObserverRuleParams {
   base: PrismaClient;
 }
 
-// Whether the watcher may observe this conversation. True with no rule to ask (gate off, or an
-// endpoint-only gate, whose stage does not run here), and without a line: no verdict was reached.
-// A read that fails refuses, the gate's fail-closed direction: a missed observation is one tick,
-// while an observed out-of-scope conversation is the model call the rule exists to prevent.
-export async function observerRuleAllows(
+// The rule's answer for the watcher: `allowed` with no rule to ask (gate off, or an endpoint-only
+// gate, whose stage does not run here), and then without a line, since no verdict was reached.
+// `unreadable` is a read that failed, kept apart so the tick can retry it while the arm refuses it.
+// `emit: false` is for the tick's own fence, asked at every tool hop: the tick's line says why it
+// stopped, and a line per hop would only repeat the arm's.
+export async function observerRuleVerdict(
   p: ObserverRuleParams,
-): Promise<boolean> {
+  opts: { emit: boolean },
+): Promise<"allowed" | "refused" | "unreadable"> {
   const cfg = readContactAuthConfig(p.settings);
-  if (!cfg.enabled || !contactAuthHasRuleStage(cfg)) return true;
+  if (!cfg.enabled || !contactAuthHasRuleStage(cfg)) return "allowed";
   try {
     const conv = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
       db.conversation.findUnique({
@@ -64,27 +66,42 @@ export async function observerRuleAllows(
       cfg,
       base: p.base,
     });
-    emitFlowEvent(
-      {
-        tenantId: p.tenantId,
-        turnId: crypto.randomUUID(),
-        source: "inbox",
-        conversationId: conv?.id ?? null,
-        agentId: p.agentId,
-        inboxId: conv?.inboxId ?? null,
-        threadId: chatwootThreadId(p.tenantId, p.instanceId, p.conversationId),
-        base: p.base,
-      },
-      contactAuthFlowEvent(verdict),
-    );
-    return verdict.outcome === "allowed";
+    if (opts.emit) {
+      emitFlowEvent(
+        {
+          tenantId: p.tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: conv?.id ?? null,
+          agentId: p.agentId,
+          inboxId: conv?.inboxId ?? null,
+          threadId: chatwootThreadId(
+            p.tenantId,
+            p.instanceId,
+            p.conversationId,
+          ),
+          base: p.base,
+        },
+        contactAuthFlowEvent(verdict),
+      );
+    }
+    return verdict.outcome === "allowed" ? "allowed" : "refused";
   } catch (err) {
     logger.warn(
-      "contact-auth: the observer's rule could not be evaluated (conv=%s agent=%s), not observing: %s",
+      "contact-auth: the observer's rule could not be evaluated (conv=%s agent=%s): %s",
       String(p.conversationId),
       String(p.agentId),
       err instanceof Error ? err.message : String(err),
     );
-    return false;
+    return "unreadable";
   }
+}
+
+// Whether the watcher may observe this conversation, for the places that arm an observation. A read
+// that fails refuses, the gate's fail-closed direction: a missed observation is one tick, while an
+// observed out-of-scope conversation is the model call the rule exists to prevent.
+export async function observerRuleAllows(
+  p: ObserverRuleParams,
+): Promise<boolean> {
+  return (await observerRuleVerdict(p, { emit: true })) === "allowed";
 }

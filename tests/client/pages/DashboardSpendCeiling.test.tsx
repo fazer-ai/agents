@@ -69,8 +69,7 @@ const stubFetch = (async (input: unknown) => {
   asked.push(url);
   if (url.includes("/metrics/kpis")) return json({ instance: "i", kpis: KPIS });
   if (url.includes("/agents")) return json({ agents: [] });
-  if (url.includes("/metrics/costs"))
-    return json({ costs: { status: "error" } });
+  if (url.includes("/metrics/costs")) return json({ error: "x" }, 500);
   if (url.includes("/metrics/timeseries")) return json({ points: [] });
   if (url.includes("/spend-ceiling/usage"))
     return json({ instance: {}, ...usage });
@@ -80,7 +79,6 @@ const stubFetch = (async (input: unknown) => {
 }) as unknown as typeof globalThis.fetch;
 
 const entry = (patch: Record<string, unknown> & { source: string }) => ({
-  carriedUsd: 0,
   usedUsd: 0,
   ceilingUsd: null,
   state: "allowed",
@@ -88,9 +86,7 @@ const entry = (patch: Record<string, unknown> & { source: string }) => ({
   pollError: null,
   pollFailedAt: null,
   stale: false,
-  tracedCalls: 0,
-  costedCalls: 0,
-  ledgerCalls: 0,
+  unpricedCalls: 0,
   unpricedModels: [],
   ...patch,
 });
@@ -98,7 +94,6 @@ const entry = (patch: Record<string, unknown> & { source: string }) => ({
 const baseUsage = () => ({
   enabled: true,
   periodStart: "2026-09-01T00:00:00.000Z",
-  langfuseConfigured: true,
   legacyTokens: null,
   pollIntervalMs: 300_000,
   entries: [
@@ -250,11 +245,11 @@ describe("the spend ceiling on the dashboard", () => {
       if (url.includes("/metrics/costs"))
         return json({
           costs: {
-            status: "ok",
             totalCostUsd: 8,
             days: [{ date: "2026-09-01", costUsd: 8 }],
             byModel: [],
-            baseUrl: "https://lf.example",
+            unpriced: { calls: 0, models: [] },
+            langfuse: null,
           },
         });
       return stubFetch(input as RequestInfo);
@@ -278,29 +273,6 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
-  // NOTE: a figure higher than the project's own total explains itself. A row that carried spend
-  // from a Langfuse project the tenant left reads higher than the cost card beside it ($10.02 of
-  // $5.00 next to $5.01), and the page has to say why.
-  test("spend carried from a project the tenant left is named", async () => {
-    const u = baseUsage();
-    u.entries = [
-      entry({
-        source: "inbox",
-        usedUsd: 10.02,
-        ceilingUsd: 5,
-        state: "over",
-        carriedUsd: 5.01,
-      }),
-      entry({ source: "playground" }),
-    ];
-    await renderDash(u);
-    await waitFor(() => {
-      expect(has("$10.02 of $5.00")).toBe(true);
-    });
-    expect(has("$5.01")).toBe(true);
-    expect(has("no longer points at")).toBe(true);
-  });
-
   // NOTE: the page asks again while it stays open. The poll writes a new figure every period and
   // the health beside the bar is computed per read, so a dashboard left on a wall screen would
   // otherwise keep showing the first read's figure and its "refreshed" line for as long as it is
@@ -321,8 +293,8 @@ describe("the spend ceiling on the dashboard", () => {
   });
 
   // NOTE: it refreshes quietly: the timer reads the ceiling alone, so the usage section is not put
-  // back into its skeleton every period, and does not sit blank for as long as a slow Langfuse cost
-  // request takes.
+  // back into its skeleton every period, and does not sit blank for as long as a slow cost request
+  // takes.
   test("the periodic re-read does not reload the rest of the section", async () => {
     const u = baseUsage();
     u.pollIntervalMs = 40;
@@ -418,9 +390,8 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
-  // NOTE: a slow cost does not hold the section behind a skeleton. The cost is the only third-party
-  // call on the page and it waits up to ten seconds for a Langfuse that is gone; the tokens, the
-  // timeseries and the ceiling are all ours and already in hand.
+  // NOTE: a slow cost does not hold the section behind a skeleton: the tokens, the timeseries and the
+  // ceiling are already in hand, and the cost settles on its own.
   test("the figures render while the cost request is still out", async () => {
     let releaseCost: (() => void) | null = null;
     const slowCost = (async (input: unknown) => {
@@ -432,7 +403,7 @@ describe("the spend ceiling on the dashboard", () => {
         await new Promise<void>((r) => {
           releaseCost = r;
         });
-        return json({ costs: { status: "error" } });
+        return json({ error: "x" }, 500);
       }
       return stubFetch(input as RequestInfo);
     }) as unknown as typeof globalThis.fetch;
@@ -465,9 +436,8 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
-  // NOTE: while the cost is out, its slot holds a skeleton, not a claim. Rendering the absent cost
-  // would tell a configured tenant to connect Langfuse, and keeping the previous value would put
-  // the inbox's cost beside the playground's metrics.
+  // NOTE: while the cost is out, its slot holds a skeleton, not a claim: keeping the previous value
+  // would put the inbox's cost beside the playground's metrics.
   test("the cost slot says nothing while its request is out", async () => {
     let releaseCost: (() => void) | null = null;
     const slowCost = (async (input: unknown) => {
@@ -481,11 +451,11 @@ describe("the spend ceiling on the dashboard", () => {
         });
         return json({
           costs: {
-            status: "ok",
             totalCostUsd: 7,
             days: [],
             byModel: [],
-            baseUrl: "https://lf.example",
+            unpriced: { calls: 0, models: [] },
+            langfuse: null,
           },
         });
       }
@@ -507,9 +477,8 @@ describe("the spend ceiling on the dashboard", () => {
       await waitFor(() => {
         expect(has("$22.50 of $30.00")).toBe(true);
       });
-      // The figures are up and the cost is still out: the slot claims neither a value nor a missing
-      // Langfuse.
-      expect(has("Connect Langfuse")).toBe(false);
+      // The figures are up and the cost is still out: the slot claims no value.
+      expect(has("Could not read the cost")).toBe(false);
       expect(has("$7.00")).toBe(false);
       await act(async () => {
         (releaseCost as (() => void) | null)?.();
@@ -540,11 +509,11 @@ describe("the spend ceiling on the dashboard", () => {
         if (costCalls === 1) {
           return json({
             costs: {
-              status: "ok",
               totalCostUsd: 31,
               days: [],
               byModel: [],
-              baseUrl: "https://lf.example",
+              unpriced: { calls: 0, models: [] },
+              langfuse: null,
             },
           });
         }
@@ -553,11 +522,11 @@ describe("the spend ceiling on the dashboard", () => {
         });
         return json({
           costs: {
-            status: "ok",
             totalCostUsd: 2,
             days: [],
             byModel: [],
-            baseUrl: "https://lf.example",
+            unpriced: { calls: 0, models: [] },
+            langfuse: null,
           },
         });
       }
@@ -736,21 +705,21 @@ describe("the spend ceiling on the dashboard", () => {
           });
           return json({
             costs: {
-              status: "ok",
               totalCostUsd: 111,
               days: [],
               byModel: [],
-              baseUrl: "https://lf.example",
+              unpriced: { calls: 0, models: [] },
+              langfuse: null,
             },
           });
         }
         return json({
           costs: {
-            status: "ok",
             totalCostUsd: 22,
             days: [],
             byModel: [],
-            baseUrl: "https://lf.example",
+            unpriced: { calls: 0, models: [] },
+            langfuse: null,
           },
         });
       }
@@ -796,33 +765,9 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
-  // NOTE: the flag and the rows are two things. The flag is the credential's present; each row is
-  // its own last reading, and the gate acts on the row. A
-  // credential removed after a good poll leaves the gate refusing on that figure until the next
-  // poll writes the sentinel, so the notice appears ABOVE the bars and does not replace them.
-  test("without Langfuse the notice appears, and the bars still do", async () => {
-    const u = baseUsage();
-    u.langfuseConfigured = false;
-    await renderDash(u);
-    await waitFor(() => {
-      expect(has("cost cannot be read")).toBe(true);
-    });
-    expect(has("$22.50 of $30.00")).toBe(true);
-  });
-
-  test("without Langfuse and with the ceiling off the notice says nothing about refusing", async () => {
-    const u = { ...baseUsage(), enabled: false, langfuseConfigured: false };
-    await renderDash(u);
-    await waitFor(() => {
-      expect(has("cost cannot be read")).toBe(true);
-    });
-    expect(has("still being refused")).toBe(false);
-    expect(has("of $30.00")).toBe(false);
-  });
-
   // The usage read follows the same window the rest of the section does: it is asked once per
-  // segment, not once per page load, and the card is not there to make a second Langfuse call.
-  test("the ceiling is read from our own snapshot, not from Langfuse", async () => {
+  // segment, not once per page load.
+  test("the ceiling is read from our own usage route", async () => {
     await renderDash();
     await waitFor(() => {
       expect(has("$22.50 of $30.00")).toBe(true);

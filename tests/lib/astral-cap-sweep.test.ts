@@ -403,8 +403,6 @@ const BARE_SLICES: Record<
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],
-  // The spend ceiling's project key is the head of a hex digest.
-  "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
   // Six: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
   // write report, and the sixth is the same ceiling over the GUARDED list. Both cut arrays of label
   // titles, so neither cut can land inside one.
@@ -424,7 +422,6 @@ const BARE_SLICES: Record<
   // an imported protected-label list, an array of titles. The label and description that loop clips
   // go through `clipText`.
   "src/modules/agents/transfer.ts": [3, "array"],
-  "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
   // The date the reminder says it was sent on, cut from `toISOString()`: a fixed-width ASCII
   // `YYYY-MM-DD` the runtime produces, never operator or customer text.
   "src/modules/appointments/reminders.ts": [1, "ascii"],

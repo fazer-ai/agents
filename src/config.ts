@@ -460,16 +460,15 @@ const config = {
     ),
   },
   // Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job while the ceiling is on: how often
-  // a tenant's month-to-date cost is read from Langfuse into the local snapshot the spend ceiling's
-  // gate reads (slower with it off, see `spendPollIntervalMs`). The ceiling's effective lag is THIS
-  // plus Langfuse's own ingestion lag, and the two ADD, so it is the overshoot bound an operator
-  // accepts by leaving it. Default 5 min.
+  // a tenant's month-to-date cost is summed from the local ledger into the snapshot the spend
+  // ceiling's gate reads. It is the overshoot bound an operator accepts by leaving it. Default 1 min:
+  // the sum is one indexed query per tenant.
   spendCeiling: {
     pollIntervalMs: parseIntSetting(
       SPEND_CEILING_POLL_INTERVAL_MS,
       "SPEND_CEILING_POLL_INTERVAL_MS",
-      300_000,
-      "It is how often a tenant's month-to-date cost is read from Langfuse for the spend ceiling.",
+      60_000,
+      "It is how often a tenant's month-to-date cost is summed from the usage ledger for the spend ceiling.",
       MAX_DURATION_MS,
     ),
   },
@@ -524,7 +523,7 @@ const config = {
     timeoutMs: parseIntSetting(
       TTS_CHECK_TIMEOUT_MS,
       "TTS_CHECK_TIMEOUT_MS",
-      20_000,
+      30_000,
       "It bounds one call to the audio detector: in enforce mode the reply waits on it, so too high leaves the customer waiting and too low gives up on a detector that would have answered.",
       MAX_DURATION_MS,
     ),

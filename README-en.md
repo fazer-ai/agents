@@ -97,7 +97,7 @@ Three skills cover the operation, from installation to day-to-day use:
 
 ### 🖥️ Operator console
 
-- Dashboard with KPIs and **real LLM cost** (via Langfuse).
+- Dashboard with KPIs and **real LLM cost**, summed from the app's own usage records.
 - Conversations with detail view, error notices and a re-engage action.
 - Reusable components (building-block pools) to compose the agent's behavior.
 - Channels, Webhooks, API keys, Logs, Admin and Settings.

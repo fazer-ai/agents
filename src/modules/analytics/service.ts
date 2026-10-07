@@ -8,7 +8,7 @@ import { classifyOutcome } from "@/modules/conversations/resolution-origin";
 // Instance metrics for the operational dashboard. LLM tokens/calls are aggregated FROM THE LOCAL
 // LlmUsage table (captured at the source in the model callback), never mirrored from Langfuse —
 // so the figures are RLS-isolated, fleet-aggregable, and survive Langfuse being down/optional.
-// This module reads no cost: the dashboard's cost figures come from Langfuse (langfuse-costs.ts).
+// The cost figures are read from the same ledger by ./costs.ts.
 // All aggregation runs INSIDE the scoped tx (GUC active) so RLS fences it to the tenant; a raw
 // query outside the tx would leak or zero out. The $extends auto-scopes writes only, so reads
 // rely on RLS here — which is exactly the boundary we want.

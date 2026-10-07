@@ -3,16 +3,12 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
-import { parseLangfuseSettings } from "@/modules/tenant-settings/service";
 import { readSpendCeilingConfig } from "./settings";
 
-// Arms the per-tenant `SPEND_CEILING_POLL` job: on every save of the ceiling or Langfuse block, and at
-// boot, so a lost row does not leave a figure that stops refreshing. Armed while the ceiling is ON (a
-// tenant with no Langfuse IS armed, and its poll writes the reason on the row) and, with the ceiling
-// off, while the Langfuse block is switched on with a credential named, so the console always has the
-// month's cost. The block's intent, not a credential that resolves: a pending vault entry filled later
-// is not a save of either block, and the poll is what notices it. Kept apart from ./poll.ts so the
-// settings service does not pull the poll in.
+// Arms the per-tenant `SPEND_CEILING_POLL` job while the ceiling is ON: on every save of the
+// ceiling, and at boot, so a lost row does not leave a figure that stops refreshing. With the ceiling
+// off nothing is enforced and the console sums the ledger itself, so there is nothing to poll. Kept
+// apart from ./poll.ts so the settings service does not pull the poll in.
 
 export const SPEND_POLL_DEDUPE_KEY = "spend-ceiling";
 
@@ -30,10 +26,7 @@ export async function wantsSpendPoll(
       select: { settings: true },
     }),
   );
-  const settings = row?.settings ?? {};
-  if (readSpendCeilingConfig(settings).enabled) return true;
-  const langfuse = parseLangfuseSettings(settings);
-  return langfuse.enabled && Boolean(langfuse.credentialRef);
+  return readSpendCeilingConfig(row?.settings ?? {}).enabled;
 }
 
 // Idempotent: `enqueueJob` upserts on (tenant, kind, dedupeKey), so the second save keeps exactly
@@ -56,7 +49,7 @@ async function armSpendPoll(
   });
 }
 
-// Reconciles the per-tenant poll against the ceiling and Langfuse blocks. Best-effort: a failure here never
+// Reconciles the per-tenant poll against the ceiling block. Best-effort: a failure here never
 // blocks the settings write (the same discipline `syncTenantHeartbeat` follows).
 export async function syncTenantSpendPoll(
   tenantId: bigint,

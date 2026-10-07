@@ -329,6 +329,55 @@ export function agentTurn(
   };
 }
 
+// Opening an agent's screen starts a new session; a reload of a tab that had a saved session open
+// brings that one back. `pagehide` writes the marker, and the next mount takes it only when this
+// document is a reload of the URL that wrote it: `pagehide` also fires when the tab leaves for
+// another document, and in-app navigation never fires it. docs/playground.md.
+export const PLAYGROUND_RESUME_KEY = "@app:playground-resume";
+
+function writeResumeMarker(agentId: string, threadId: string): void {
+  try {
+    sessionStorage.setItem(
+      PLAYGROUND_RESUME_KEY,
+      JSON.stringify({ agentId, threadId, href: location.href }),
+    );
+  } catch {
+    // storage unavailable → the reload opens a new session
+  }
+}
+
+function dropResumeMarker(): void {
+  try {
+    sessionStorage.removeItem(PLAYGROUND_RESUME_KEY);
+  } catch {
+    // storage unavailable → there is no marker to drop
+  }
+}
+
+function documentIsReloadOf(href: unknown): boolean {
+  const nav = performance.getEntriesByType("navigation")[0] as
+    | PerformanceNavigationTiming
+    | undefined;
+  return nav?.type === "reload" && nav.name === href;
+}
+
+// Reads and removes the marker, returning the thread only when it was left by this agent in the
+// document this one reloaded.
+function takeResumeMarker(agentId: string): string | undefined {
+  try {
+    const raw = sessionStorage.getItem(PLAYGROUND_RESUME_KEY);
+    sessionStorage.removeItem(PLAYGROUND_RESUME_KEY);
+    const m = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    return m?.agentId === agentId &&
+      typeof m.threadId === "string" &&
+      documentIsReloadOf(m.href)
+      ? m.threadId
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // All playground chat state + actions for ONE agent, in a single hook so the editor tab and the
 // floating popup can share the SAME conversation: lift this hook into the parent (AgentEditorPage)
 // and the state survives switching between them. `getDraft` (when provided) is read at send time so
@@ -608,22 +657,54 @@ export function usePlaygroundChat(
     [agentId, newSession],
   );
 
-  // On mount (per agent), load history and resume the most recent session so a tab switch / reload
-  // doesn't lose the conversation.
+  // The session a reload brought this mount back to (PLAYGROUND_RESUME_KEY), taken out of storage
+  // when the mount happens, so leaving before it opens leaves nothing for the next mount. Held until
+  // the session is open, so a reload before then writes it back. A ref, because StrictMode's
+  // replayed effect keeps it and a real unmount does not.
+  const resumeRef = useRef<{ threadId: string | undefined } | null>(null);
+
+  // On mount (per agent), load the history list, and reopen a session only when this mount follows
+  // a reload that had one open.
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once per agent mount
   useEffect(() => {
+    resumeRef.current ??= { threadId: takeResumeMarker(agentId) };
     let cancelled = false;
     void (async () => {
       const { data } = await api.api.v1
         .agents({ id: agentId })
         .playground.sessions.get();
-      if (cancelled || !data) return;
-      setSessions(data.sessions);
-      const latest = data.sessions[0];
-      if (latest && !cancelled) await loadSession(latest.threadId);
+      if (cancelled) return;
+      const resume = resumeRef.current?.threadId;
+      try {
+        if (!data) return;
+        setSessions(data.sessions);
+        if (resume) await loadSession(resume);
+      } finally {
+        resumeRef.current = { threadId: undefined };
+      }
     })();
     return () => {
       cancelled = true;
+    };
+  }, [agentId]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      const tid = sessionSaved.current
+        ? threadId.current
+        : resumeRef.current?.threadId;
+      if (tid) writeResumeMarker(agentId, tid);
+    };
+    // A page restored from the back-forward cache never remounts, so the marker its pagehide
+    // wrote would otherwise be taken by the next in-app visit to this agent.
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) dropResumeMarker();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
     };
   }, [agentId]);
 

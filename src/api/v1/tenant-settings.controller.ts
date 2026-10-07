@@ -195,7 +195,7 @@ export const tenantSettingsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Get spend-ceiling usage",
-        "Dollars spent this calendar month per traffic source (as Langfuse last costed them), against the configured ceiling, with the snapshot's health (when it was last refreshed, whether the poll is failing) and the reconciliation against the local ledger (calls Langfuse priced at zero). Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
+        "Dollars spent this calendar month per traffic source, as the usage ledger priced the calls, against the configured ceiling, with the figure's health (when it was last refreshed, whether the poll is failing) and the calls no price covered, by model. Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
       ),
       response: errors(401, 403, 404),
     },
@@ -220,7 +220,7 @@ export const tenantSettingsController = new Elysia({
             minimum: 0,
             maximum: SPEND_CEILING_USD_MAX,
             description:
-              "Dollars (USD, as Langfuse costs the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
+              "Dollars (USD, as the usage ledger prices the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
           }),
         ),
         monthlyPlaygroundUsd: t.Optional(

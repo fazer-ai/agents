@@ -1,0 +1,305 @@
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { defaultUsagePersist, type UsageRow } from "@/graph/usage";
+import {
+  announceUnpricedModel,
+  resetUnpricedAnnouncements,
+} from "@/modules/pricing/unpriced-alert";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+
+// A MODEL THE LEDGER COULD NOT PRICE IS SAID OUT LOUD, once per model per month per
+// tenant, from the capture itself: no ceiling and no Langfuse are needed for it, which is the point,
+// since every call to that model is left out of the cost and of the ceiling until someone sets a
+// price. "Once" survives a restart and the log's retention because it is a claim row of its own.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const suDb = su as PrismaClient;
+const appDb = app as PrismaClient;
+
+let tenantA = 0n;
+let tenantB = 0n;
+
+const row = (
+  tenantId: bigint,
+  model: string,
+  costUsd: number | null,
+  source: UsageRow["source"] = "inbox",
+): UsageRow => ({
+  tenantId,
+  agentId: null,
+  conversationId: null,
+  inboxId: null,
+  threadId: null,
+  turnId: null,
+  model,
+  node: "agent",
+  source,
+  promptTokens: 10,
+  completionTokens: 5,
+  cachedReadTokens: 0,
+  cacheCreationTokens: 0,
+  durationMs: null,
+  costUsd,
+  priceTable: "litellm@test",
+});
+
+const alerts = (tenantId: bigint) =>
+  // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+  flowLogRows(suDb, {
+    where: { tenantId, stage: "spend_ceiling" },
+    orderBy: { id: "asc" },
+  });
+
+describe.skipIf(!dbUp)("the unpriced-model alert", () => {
+  const persist = () => defaultUsagePersist(appDb);
+
+  beforeAll(async () => {
+    tenantA = (
+      await suDb.tenant.create({
+        data: { name: "UP-A", slug: `up-a-${process.pid}` },
+      })
+    ).id;
+    tenantB = (
+      await suDb.tenant.create({
+        data: { name: "UP-B", slug: `up-b-${process.pid}` },
+      })
+    ).id;
+  });
+
+  beforeEach(async () => {
+    resetUnpricedAnnouncements();
+    for (const id of [tenantA, tenantB]) {
+      await suDb.llmUsage.deleteMany({ where: { tenantId: id } });
+      await suDb.unpricedModelAnnouncement.deleteMany({
+        where: { tenantId: id },
+      });
+      await clearFlowLog(suDb, { tenantId: id });
+    }
+  });
+
+  afterAll(async () => {
+    for (const id of [tenantA, tenantB]) {
+      if (!id) continue;
+      await clearFlowLog(suDb, { tenantId: id });
+      for (const table of [
+        "llm_usage",
+        "execution_logs",
+        "unpriced_model_announcements",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${id}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${id}`);
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  test("the first unpriced call of a model is announced, with no ceiling and no Langfuse", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    const rows = await alerts(tenantA);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.level).toBe("warn");
+    expect(rows[0]?.detail).toMatchObject({
+      subject: "unpriced",
+      models: ["mystery-1"],
+    });
+    // The fix it names is this app's, not a model definition in Langfuse.
+    expect(rows[0]?.errorMessage).toContain("mystery-1");
+    expect(rows[0]?.errorMessage).toContain("Model prices");
+    expect(rows[0]?.errorMessage).toContain("re-price");
+    expect(rows[0]?.errorMessage).not.toContain("Langfuse");
+  });
+
+  test("the same model again in the same source is not news; another model is", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    await persist()(row(tenantA, "mystery-1", null));
+    await persist()(row(tenantA, "mystery-2", null));
+    const rows = await alerts(tenantA);
+    expect(rows.map((r) => (r.detail as { models: string[] }).models)).toEqual([
+      ["mystery-1"],
+      ["mystery-2"],
+    ]);
+  });
+
+  // Only the inbox's line reaches the alert channels, so a model first tried in the playground is
+  // still announced when customer traffic reaches it, and each source says it once.
+  test("a playground announcement does not use up the inbox's", async () => {
+    await persist()(row(tenantA, "mystery-1", null, "playground"));
+    await persist()(row(tenantA, "mystery-1", null, "playground"));
+    await persist()(row(tenantA, "mystery-1", null));
+    await persist()(row(tenantA, "mystery-1", null));
+    const rows = await alerts(tenantA);
+    expect(rows.map((r) => r.source)).toEqual(["playground", "inbox"]);
+  });
+
+  test("a priced call announces nothing", async () => {
+    await persist()(row(tenantA, "known", 0.01));
+    expect(await alerts(tenantA)).toHaveLength(0);
+  });
+
+  test("another tenant's announcement is not this one's", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    await persist()(row(tenantB, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+    expect(await alerts(tenantB)).toHaveLength(1);
+  });
+
+  // A restart forgets the process set; the ledger still holds the earlier unpriced row, so the
+  // model is not announced a second time this month.
+  test("a restart does not announce the month's model again", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    // The first line has landed before the process "restarts".
+    expect(await alerts(tenantA)).toHaveLength(1);
+    resetUnpricedAnnouncements();
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  // An upgrade finds unpriced rows written before the alert existed. They are not a warning anyone
+  // received, so the first call after the upgrade still announces the model.
+  test("unpriced rows from before the alert existed do not silence it", async () => {
+    await suDb.llmUsage.create({
+      data: { tenantId: tenantA, model: "mystery-1" },
+    });
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  test("a line that did not land is tried again on the next call", async () => {
+    const refusing = appDb.$extends({
+      query: {
+        executionLog: {
+          async create() {
+            throw new Error("pool exhausted");
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await defaultUsagePersist(refusing)(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  // A call arriving while the failed line's claim is being released must not settle the key on the
+  // claim it is about to lose: the month would then pass with no warning ever landing.
+  test("a call during the release of a failed line's claim does not silence the retry", async () => {
+    const racing = appDb.$extends({
+      query: {
+        executionLog: {
+          async create() {
+            throw new Error("pool exhausted");
+          },
+        },
+        unpricedModelAnnouncement: {
+          async deleteMany({ args, query }) {
+            await announceUnpricedModel({
+              tenantId: tenantA,
+              model: "mystery-1",
+              source: "inbox",
+              base: appDb,
+            });
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await defaultUsagePersist(racing)(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  // The database gone between the claim and the line: neither the line nor the release lands, and
+  // the claim left behind is taken over once its lease ends instead of silencing the month.
+  const ageClaims = (tenantId: bigint) =>
+    suDb.unpricedModelAnnouncement.updateMany({
+      where: { tenantId },
+      data: { claimedAt: new Date(Date.now() - 10 * 60 * 1000) },
+    });
+
+  test("a claim neither delivered nor released is taken over after its lease", async () => {
+    const down = appDb.$extends({
+      query: {
+        executionLog: {
+          async create() {
+            throw new Error("connection lost");
+          },
+        },
+        unpricedModelAnnouncement: {
+          async deleteMany() {
+            throw new Error("connection lost");
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    await defaultUsagePersist(down)(row(tenantA, "mystery-1", null));
+    // Within the lease the claim may still be a call in flight.
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+    await ageClaims(tenantA);
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  test("a delivered claim is never taken over, however old", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    await ageClaims(tenantA);
+    resetUnpricedAnnouncements();
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+  });
+
+  test("a new month announces the model again", async () => {
+    for (const iso of ["2026-08-20T00:00:00Z", "2026-09-02T00:00:00Z"]) {
+      await announceUnpricedModel({
+        tenantId: tenantA,
+        model: "mystery-1",
+        source: "inbox",
+        now: new Date(iso),
+        base: appDb,
+      });
+    }
+    expect(await alerts(tenantA)).toHaveLength(2);
+  });
+
+  // The flow log is pruned by retention, possibly before the month ends; the claim is not in it, so
+  // a restart after the sweep does not page the channels a second time.
+  test("a flow log pruned by retention does not re-announce the month's model", async () => {
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(1);
+    await clearFlowLog(suDb, { tenantId: tenantA });
+    resetUnpricedAnnouncements();
+    await persist()(row(tenantA, "mystery-1", null));
+    expect(await alerts(tenantA)).toHaveLength(0);
+  });
+});

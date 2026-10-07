@@ -69,7 +69,7 @@ export function monthStart(now: Date): Date {
 // The other end of the same window, EXCLUSIVE: the first instant of the next month, so the pair is
 // `[monthStart, monthEnd)` and no instant belongs to two months. `Date.UTC` normalises month 12
 // into January of the next year on its own. The snapshot is keyed by `monthStart`, so the gate
-// never builds the pair; the console's ledger count and the poll's Langfuse window do.
+// never builds the pair; the poll's ledger sum and the console's counts do.
 export function monthEnd(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 }

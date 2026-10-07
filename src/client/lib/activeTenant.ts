@@ -15,14 +15,34 @@ function sharedStore(): Storage | null {
   return typeof localStorage === "undefined" ? null : localStorage;
 }
 
+// A browser that blocks site data throws on touching either store. Every API call reads the
+// selection, so there it reads as "nothing selected" and the request still goes out; with both stores
+// gone there is no shared default for another tab to move. A write to a store that exists still
+// throws, and so does an explicit choice: the switch persists and then reloads, and a choice that
+// cannot be kept has to fail where it is made.
+function available(store: () => Storage | null): Storage | null {
+  try {
+    return store();
+  } catch {
+    return null;
+  }
+}
+
+function read(store: () => Storage | null): string | null {
+  try {
+    return store()?.getItem(KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function getActiveTenantId(): string | null {
-  const tab = tabStore();
-  const own = tab?.getItem(KEY) ?? null;
+  const own = read(tabStore);
   if (own !== null) return own;
   // A tab that has not chosen starts from the last choice and KEEPS it: pinned to the tab on first
   // read, so a later choice in another tab does not move this one.
-  const inherited = sharedStore()?.getItem(KEY) ?? null;
-  if (inherited !== null) tab?.setItem(KEY, inherited);
+  const inherited = read(sharedStore);
+  if (inherited !== null) tabStore()?.setItem(KEY, inherited);
   return inherited;
 }
 
@@ -31,8 +51,7 @@ export function getActiveTenantId(): string | null {
 // id, it keeps inheriting the shared default, and a choice made in another tab would move this tab's
 // next request to another tenant under a page built for the first one.
 export function pinTabTenantId(id: string): void {
-  const tab = tabStore();
-  if (tab && tab.getItem(KEY) === null) tab.setItem(KEY, id);
+  if (read(tabStore) === null) available(tabStore)?.setItem(KEY, id);
 }
 
 // What the tab does with the tenant a fresh session reports, a function rather than inline in the
@@ -46,7 +65,11 @@ export function adoptSessionTenant(
 ): void {
   if (!user) return;
   if (user.role === "SUPER_ADMIN") {
-    if (defaultTenantId && getActiveTenantId() === null) {
+    if (
+      defaultTenantId &&
+      getActiveTenantId() === null &&
+      available(tabStore)
+    ) {
       setActiveTenantId(defaultTenantId);
     }
     return;

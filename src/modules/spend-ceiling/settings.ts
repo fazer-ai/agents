@@ -3,14 +3,13 @@ import { clipText } from "@/lib/text";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 
 // PER-TENANT SPEND CEILING, read from the free-form `tenant.settings.spendCeiling` bag. Counted in
-// DOLLARS, because the invoice is: tokens cannot track a bill. The figure comes from Langfuse's price
-// table via a periodic snapshot (./poll.ts, ./service.ts), so it is enforceable only where Langfuse
-// is configured. TWO CEILINGS, inbox and playground, so an operator testing in a loop cannot lock
+// DOLLARS, because the invoice is: tokens cannot track a bill. The figure is the usage ledger's
+// priced cost, summed into a periodic snapshot (./poll.ts, ./service.ts). TWO CEILINGS, inbox and playground, so an operator testing in a loop cannot lock
 // customers out. See docs/spend-ceiling.md.
 
 export interface SpendCeilingConfig {
   enabled: boolean;
-  // Dollars allowed per CALENDAR MONTH for `inbox` traffic, as Langfuse costed it. 0 = no ceiling
+  // Dollars allowed per CALENDAR MONTH for `inbox` traffic, as the usage ledger priced it. 0 = no ceiling
   // on this half, which is what an operator who only wants to bound the playground writes.
   monthlyInboxUsd: number;
   // The same, for `playground` traffic. Separate on purpose: an operator testing must not be able

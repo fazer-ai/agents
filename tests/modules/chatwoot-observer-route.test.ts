@@ -3041,7 +3041,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
-  // NOTE: each watcher asks its OWN contact gate (docs/contact-auth.md, The observer path). One watcher's
+  // Each watcher asks its OWN contact gate (docs/contact-auth.md, The observer path). One watcher's
   // refusal arms nothing for it and leaves the other's observation alone, and the gate decides what is
   // observed, never what is remembered: the memory owner stays the inbox's first watcher whatever its
   // gate said about this conversation.
@@ -3105,8 +3105,17 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       expect((await observeRows()).map((r) => r.dedupeKey)).toEqual([
         `observe:${thread}:${observerId}`,
       ]);
-      const lines = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "contact_auth", agentId: second.id },
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV },
+        select: { id: true },
+      });
+      const lines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          conversationId: conv.id,
+          stage: "contact_auth",
+          agentId: second.id,
+        },
         select: { detail: true },
       });
       expect(

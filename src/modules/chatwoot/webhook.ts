@@ -4534,8 +4534,8 @@ export async function processChatwootDelivery(
       rt.mode,
       base,
     )) !== null;
-  // NOTE: A WATCHER bound as the inbox's agent remembers, but analyses media only for a conversation
-  // its own contact gate lets it observe. Another watcher of the inbox (#1114) stands down on its pass
+  // A WATCHER bound as the inbox's agent remembers, but analyses media only for a conversation
+  // its own contact gate lets it observe. Another watcher of the inbox stands down on its pass
   // only when that is known to happen: the bound watcher's conditions allow the conversation and no
   // endpoint follows them. Otherwise this route analyses for itself, under its own gate, since one
   // watcher's refusal decides only what that watcher observes. The conditions are asked without a
@@ -4549,6 +4549,19 @@ export async function processChatwootDelivery(
     (await (async () => {
       const cfg = readContactAuthConfig(responderRt.settings);
       if (!cfg.enabled) return false;
+      // An audio the bound watcher already refused is one it will not analyze, whatever its
+      // conditions say now.
+      if (
+        refusedCovers(
+          watcherMediaRefusedThrough(
+            params.tenantId,
+            mirror.conversationRowId,
+            responderRt.agentId,
+          ),
+          n.message?.id,
+        )
+      )
+        return true;
       if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
         return true;
       return (
@@ -4656,9 +4669,23 @@ export async function processChatwootDelivery(
       observing && n.message?.id != null
         ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}:watcher:${rt.agentId}`
         : null;
+    // A message this watcher already refused stays refused for it, a refusal of a later message
+    // included: its late update is not transcribed by a yes given since, nor by an allow cached for it
+    // before that refusal, and its gate is not asked again.
+    const refusedForWatcher =
+      observing &&
+      refusedCovers(
+        watcherMediaRefusedThrough(
+          params.tenantId,
+          mirror.conversationRowId,
+          rt.agentId,
+        ),
+        n.message?.id,
+      );
     // The endpoint's answer is what is reused; the conditions are asked again, since a label
     // removed since then takes the conversation out of scope.
     const lateAdmitted =
+      !refusedForWatcher &&
       !isNewIncoming &&
       watcherAdmission !== null &&
       n.conversationId !== null &&
@@ -4679,18 +4706,6 @@ export async function processChatwootDelivery(
         },
         { emit: false },
       )) === "allowed";
-    // A message this watcher already refused stays refused for it: its late update is not
-    // transcribed by a yes given since, and its gate is not asked again.
-    const refusedForWatcher =
-      observing &&
-      refusedCovers(
-        watcherMediaRefusedThrough(
-          params.tenantId,
-          mirror.conversationRowId,
-          rt.agentId,
-        ),
-        n.message?.id,
-      );
     const watcherPermit =
       !gateAsksNext && observing && !lateAdmitted && !refusedForWatcher
         ? await observerMayObserve(rt, rt.settings)

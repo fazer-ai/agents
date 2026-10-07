@@ -183,7 +183,7 @@ function audioEvent(
   groupType: "group" | "individual",
   anonymous: boolean,
   inboxId: number,
-  update?: { messageId?: number; text?: string },
+  update?: { messageId?: number; text?: string; noMedia?: boolean },
 ) {
   seq += 1;
   const messageId = update?.messageId ?? 108_000 + seq;
@@ -194,13 +194,15 @@ function audioEvent(
     message_type: "incoming",
     private: false,
     sender: { id: 8800 + convId, name: "Cliente", type: null },
-    attachments: [
-      {
-        id: messageId * 10 + 1,
-        file_type: "audio",
-        data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
-      },
-    ],
+    attachments: update?.noMedia
+      ? []
+      : [
+          {
+            id: messageId * 10 + 1,
+            file_type: "audio",
+            data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
+          },
+        ],
     conversation: conversation(
       convId,
       groupType,
@@ -218,7 +220,7 @@ async function deliverMessage(
   groupType: "group" | "individual",
   anonymous = false,
   inboxId = OBSERVED_INBOX,
-  update?: { messageId?: number; text?: string },
+  update?: { messageId?: number; text?: string; noMedia?: boolean },
 ) {
   const n = audioEvent(convId, groupType, anonymous, inboxId, update);
   const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -1175,7 +1177,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(providers.stt).toBe(0);
   });
 
-  // NOTE: an inbox carries several watchers (#1114), and each one's gate decides only what IT
+  // An inbox carries several watchers, and each one's gate decides only what IT
   // observes. The watcher bound as the inbox's agent refusing a conversation must not keep another
   // watcher, whose own gate let the conversation through, from transcribing its audio.
   async function withSecondWatcher(
@@ -1237,9 +1239,10 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     bot: number,
     convId: number,
     groupType: "group" | "individual",
+    update?: { messageId?: number; noMedia?: boolean },
   ) {
-    seq -= 1;
-    const again = audioEvent(convId, groupType, false, BOUND_INBOX);
+    if (update?.messageId == null) seq -= 1;
+    const again = audioEvent(convId, groupType, false, BOUND_INBOX, update);
     const delivery = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -1273,6 +1276,48 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       const messageId = await deliverMessage(45, "group", false, BOUND_INBOX);
       expect(providers.stt).toBe(1);
       expect(await deliverSameOn(secondBot, 45, "group")).toBe(messageId);
+      expect(providers.stt).toBe(1);
+    });
+  });
+
+  // The refusal mark covers every earlier message of the conversation for this watcher, and it
+  // outranks an allow cached for one of them: a later refusal is the newer question answered.
+  test("a watcher's refusal outranks the allow it cached for an earlier message's late audio", async () => {
+    await setGate({
+      enabled: true,
+      rule: GROUP_ONLY,
+      url: AUTH_URL,
+      askEndpointAfterRule: true,
+    });
+    const earlier = await deliverMessage(46, "group", false, BOUND_INBOX, {
+      noMedia: true,
+    });
+    await deliverMessage(46, "individual", false, BOUND_INBOX);
+    expect(providers.stt).toBe(0);
+    await deliverMessage(46, "group", false, BOUND_INBOX, {
+      messageId: earlier,
+    });
+    expect(providers.stt).toBe(0);
+  });
+
+  // A sibling stands down only when the bound watcher will analyze: an audio the bound watcher
+  // already refused is not one it will analyze, whatever its conditions say by the late update.
+  test("a sibling still analyzes a late audio the bound watcher refused before its conditions changed", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({ enabled: true, rule: GROUP_ONLY });
+      const messageId = await deliverMessage(
+        47,
+        "individual",
+        false,
+        BOUND_INBOX,
+        { noMedia: true },
+      );
+      await deliverSameOn(secondBot, 47, "individual", { noMedia: true });
+      expect(providers.stt).toBe(0);
+      // The conversation becomes a group, and the audio arrives on the late update.
+      await deliverMessage(47, "group", false, BOUND_INBOX, { messageId });
+      expect(providers.stt).toBe(0);
+      await deliverSameOn(secondBot, 47, "group", { messageId });
       expect(providers.stt).toBe(1);
     });
   });

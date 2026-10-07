@@ -255,8 +255,8 @@ that does not run unless a later allow re-arms it (see "Asked once per arm").
 - **Several watchers on one inbox.** Each route asks its own watcher's gate, arms its own
   observation and keeps its own fence. Beside a watcher bound as the inbox's agent, which remembers
   and so analyses the media for both, another watcher stands down on the media pass only when that
-  analysis is known to happen: the bound watcher's conditions allow the conversation and no endpoint
-  follows them. Otherwise the route analyses for itself under its own gate, so a conversation the
+  analysis is known to happen: the bound watcher has not refused the message and its conditions
+  allow the conversation, with no endpoint following them. Otherwise the route analyses for itself under its own gate, so a conversation the
   bound watcher refuses is still transcribed for a sibling that observes it.
 - **Memory is not the gate's to decide.** The burst is still remembered and the handled watermark
   still moves; what the gate withholds is the observation. Remembering is what keeps a later flip to

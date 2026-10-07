@@ -199,39 +199,67 @@ leaves a customer with nothing.
 
 ## The observer path
 
-A monitoring agent answers nobody, so of the two stages only the rule applies to it, and it decides
-which conversations the agent OBSERVES (`contact-auth/observer.ts`, `observerRuleAllows`). It is
-asked before every place an observation is armed: a new incoming message on the observer's route,
-the resolve that pulls the verdict forward, and the debounce flush handing an armed burst over to an
-agent flipped to monitoring. It is also asked before the observer's media pass, because that
-transcription or description exists for the observation. A conversation the rule refuses costs no
-`OBSERVE` job, no media call and no model call.
+A monitoring agent answers nobody, and the gate decides which conversations it OBSERVES
+(`contact-auth/observer.ts`, `observerArmPermit`). Both stages run under the rules a responder
+follows: the conditions first, then the endpoint when `askEndpointAfterRule` asks for it, or the
+endpoint alone when there are no conditions; same request contract, same timeout, same grants under
+`mode: "once"`. The gate is asked before every place an observation is armed: a new incoming message
+on the observer's route, the resolve that pulls the verdict forward, and the debounce flush handing
+an armed burst over to an agent flipped to monitoring. It is also asked before the observer's media
+pass, because that transcription or description exists for the observation. A conversation the gate
+refuses costs no `OBSERVE` job, no media call and no model call.
 
 - **A refusal speaks to nobody.** Nothing is sent, nothing is opened and no note is written, whatever
   `denyMessage`, `handoffEnabled` and `operatorNoteEnabled` say: those are about a customer the agent
-  would have answered. The one trace is the `contact_auth` flow line any verdict leaves (one per
-  watcher per delivery: the media pass and the arm share the verdict).
-- **The endpoint stage never runs here.** Its question is whether a contact may be SERVED, and an
-  observer serves nobody; asked once per message on a busy inbox it would be an external call per
-  message for no answer the observer can use. An enabled gate with only an endpoint observes as
-  before, with no line, and the endpoint is never called. `askEndpointAfterRule` is ignored here: the
-  rule's allow is final.
-- **Asked again when the observation runs.** An observation armed while the rule allowed the
-  conversation stays queued after a label is removed or the rule tightened, so the tick asks the rule
-  before the model is paid (a refusal ends it with `skipped: contact_auth_refused`, a read that fails
-  retries) and again at every tool hop through its fence, without a line per hop.
-- **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the rule's verdict,
-  since asking the whole gate again would run the endpoint stage an observer never runs. An observer
-  beside a separate responder keeps the responder's `unverified` pass (Media waits for the gate).
-- **Memory is not the rule's to decide.** The burst is still remembered and the handled watermark
-  still moves; what the rule withholds is the observation. Remembering is what keeps a later flip to
+  would have answered. The one trace is the `contact_auth` flow line any verdict leaves, with the
+  `stage` that answered (one per watcher per delivery: the media pass and the arm share the verdict).
+- **The endpoint's answer only decides what is observed.** A denial leaves the conversation
+  unobserved; so does an endpoint that fails (a timeout, a status outside the contract, a credential
+  that cannot be resolved), the gate's fail-closed direction, and that line is `warn` as on a
+  responder. The request follows the responder's contract: it carries the conversation's inbox
+  and channel, and with `includeMessageText` the text of the message that armed the observation
+  (the newest handed-over message on the debounce hand-over), keyed per message as a responder's
+  `msg:` asks are, so two messages are two questions. A resolve has no message of its own and goes
+  without the key, as a responder's nudge does.
+- **Asked once per arm.** The endpoint is asked when an observation is armed, not when it runs: the
+  tick asks the conditions alone, before the model is paid (a refusal ends it with
+  `skipped: contact_auth_refused`, a read that fails retries) and again at every tool hop through its
+  fence, without a line per hop. Asking the endpoint again at the tick would double the calls for a
+  verdict the arm just reached; an endpoint that revokes a conversation is heard at its next arm,
+  and that refusal (or a failure) also retires the observation an earlier allow left queued for this
+  watcher, so the revoked conversation is not analyzed by the pending tick. The refusal leaves the
+  time it was asked on the observation's row (a retired row is created when there is none), and an
+  arm whose allow was asked before it arms nothing: a delivery that got its allow and is still in
+  its media pass cannot bring back what a later denial retired. The arm also leaves its allow's ask
+  time on the row, so a refusal asked before that allow and landing after it leaves the newer
+  observation runnable. A gate that cannot be read at the arm, on an agent that asks an endpoint,
+  counts as the endpoint's no here, as does a refusal reached before either stage (a conversation
+  with no contact yet), and a retirement that fails is tried three times before a warning; the
+  refusal is then kept in the process's memory, where its tick asks it, until a later allow or a
+  retirement that lands. A tick claimed by another replica does not see that memory. A resolution's verdict retired before it ran can be armed again by a later allow of the
+  same resolution. A refusal by the conditions needs none of this, since the tick asks them again. A tick
+  already running is not stopped.
+- **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
+  reached, since asking the whole gate again would put the same question to the endpoint twice. When
+  that verdict refuses, the pass is skipped and the refusal is recorded for the message as the pass
+  would record it (Media waits for the gate), so Chatwoot's late update of the same audio is not
+  transcribed by a later allow. An allowed message is remembered the same way, so that late update
+  does not ask the endpoint again. A pass
+  that asks for itself under a watcher (an agent flipped to monitoring while its gate waited) asks the
+  whole gate the way the arm does, with the arm's asking, so a concurrent arm and pass share one
+  request. An observer beside a separate responder keeps the responder's `unverified` pass (Media
+  waits for the gate).
+- **Memory is not the gate's to decide.** The burst is still remembered and the handled watermark
+  still moves; what the gate withholds is the observation. Remembering is what keeps a later flip to
   production from answering the observed backlog.
-- **A rule that cannot be evaluated refuses**, the gate's fail-closed direction: a missed observation
-  is one tick, an observed out-of-scope conversation is the model call the rule exists to prevent.
-- **The editor** draws the section for a monitoring agent with the conditions alone (see
-  [The editor](#the-editor)), says that the rule decides what is observed, and says when an
-  endpoint-only gate does nothing here. The endpoint and notice warnings of the configuration panel
-  are not raised for a monitoring agent.
+- **A gate that cannot be evaluated refuses**, the fail-closed direction: a missed observation is one
+  tick, an observed out-of-scope conversation is the model call the gate exists to prevent. An enabled
+  gate with neither conditions nor a url is the `not_configured` error here as everywhere, so it
+  observes nothing; the editor does not save it.
+- **The editor** draws the section for a monitoring agent with the conditions and the endpoint switch
+  (see [The editor](#the-editor)), and says that there the endpoint's answer only decides what is
+  observed. The configuration panel raises the endpoint's own warnings (no url, an unusable
+  credential) for a monitoring agent that asks an endpoint, and none of the notice warnings.
 
 ## The editor
 
@@ -256,11 +284,10 @@ no editor save writes it (`contactAuthGateEmpty`): the Behavior tab's Save is di
 reason, and Save and export refuses before writing any section and does not export. The API and MCP
 still accept it, as before.
 
-A monitoring agent's editor shows the conditions only: no switch, no endpoint fields, no notices. A
-stored endpoint-only gate there says that the observer then watches every conversation. Saving keeps
-the stored url, and writes the stored `askEndpointAfterRule` back while the switch still holds the
-value inferred from the stored bag (`contactAuthAskEndpointToSave`); a switch the operator changed
-before moving the agent to monitoring is written as set.
+A monitoring agent's editor shows the same two parts. What only makes sense when answering a
+customer stays hidden there: the deny message, the handoff and its team, the operator note and the
+notice cooldown. The switch that forwards the message text stays, under the responder's contract. A note under the endpoint switch
+says that its answer only decides which conversations are observed.
 
 ## Request / response contract
 

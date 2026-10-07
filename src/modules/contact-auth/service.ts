@@ -56,6 +56,9 @@ export interface ContactAuthResult extends ContactAuthVerdict {
   // request (single-flight). The gate acts (message, handoff, note) only on the leader's verdict,
   // so two deliveries racing do not act twice.
   shared: boolean;
+  // When the endpoint question this verdict answers was asked: the flight's start, shared by every
+  // caller that joined it. Absent when no endpoint was asked.
+  askedAt?: number;
 }
 
 // A verdict served from a stored grant carries the same outcome and the same facts as the ask that
@@ -269,7 +272,7 @@ export async function authorizeContact(
   // The endpoint's flight is keyed by the asking alone, whichever stage the caller named: the webhook
   // at the endpoint position and the media pass asking the whole gate put the same question to the
   // operator's endpoint, and two flights would send it twice.
-  const { verdict, shared } = await singleFlight(
+  const { verdict, shared, askedAt } = await singleFlight(
     contactAuthFlightKey(tenantId, agentId, contactDbId, params.requestKey),
     async (): Promise<ContactAuthVerdict> => {
       const contact = await readContact();
@@ -446,7 +449,7 @@ export async function authorizeContact(
       }
     },
   );
-  return { ...verdict, shared };
+  return { ...verdict, shared, askedAt };
 }
 
 // The execution-log line for a verdict. `detail` carries only an outcome enum, a boolean, an HTTP

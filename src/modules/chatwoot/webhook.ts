@@ -76,7 +76,12 @@ import {
   recordMediaRefusal,
   refusedCovers,
 } from "@/modules/contact-auth/media-refusal";
-import { observerRuleAllows } from "@/modules/contact-auth/observer";
+import {
+  observerArmPermit,
+  observerRuleVerdict,
+  rememberWatcherAdmission,
+  watcherAdmissionStands,
+} from "@/modules/contact-auth/observer";
 import {
   RULE_CONVERSATION_TYPE,
   RULE_LABEL,
@@ -1422,6 +1427,13 @@ export interface EagerMediaOwner {
   // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
   // a provider.
   admission: "allowed" | "refused" | "unverified";
+  // The delivery's own ask of a watcher's whole gate (`observerMayObserve`), for a pass that finds
+  // the inbox's agent observing: the pass and the observation's arm then share one verdict instead
+  // of asking the endpoint one after the other.
+  watcherPermit?: (
+    agentId: bigint,
+    settings: unknown,
+  ) => Promise<{ askedAt: number } | null>;
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1495,6 +1507,52 @@ async function mediaAdmitted(
     ) {
       return true;
     }
+    const watcherPass = isMonitoring(ctx.mode ?? "");
+    if (watcherPass) {
+      // The watcher's whole gate, with the retirement bookkeeping an arm's ask does: the delivery's
+      // own ask when the caller shares it, asked once for both, or a fresh one. It leaves its own line.
+      const permitOf =
+        owner.watcherPermit ??
+        ((watcherId: bigint, settings: unknown) =>
+          observerArmPermit({
+            tenantId,
+            instanceId,
+            conversationId,
+            agentId: watcherId,
+            settings,
+            base,
+            fetchImpl: owner.deps?.contactAuthFetch,
+            message:
+              messageId != null
+                ? { id: messageId, text: n.message?.content ?? null }
+                : null,
+          }));
+      if (!(await permitOf(agentId, ctx.settings))) {
+        await recordMediaRefusal(
+          tenantId,
+          convDbId,
+          n.message?.id,
+          base,
+          owner.sleep,
+        );
+        return false;
+      }
+      if (
+        convDbId !== null &&
+        refusedCovers(
+          await mediaRefusedThrough(tenantId, convDbId, base),
+          messageId,
+        )
+      ) {
+        return false;
+      }
+      if (messageId != null) {
+        rememberMediaAdmission(
+          mediaAdmissionKey(tenantId, instanceId, messageId),
+        );
+      }
+      return true;
+    }
     const verdict = await authorizeContact({
       tenantId,
       agentId,
@@ -1507,10 +1565,8 @@ async function mediaAdmitted(
       requestKey: cfg.includeMessageText
         ? `msg:${n.message?.id ?? "none"}`
         : "inbox",
-      // The media pass asks at one place, so it asks the whole gate; a watcher, read fresh because
-      // the agent may have been flipped since the delivery began, only ever has the rule stage
-      // (docs/contact-auth.md, The observer path), so no pass reaches the endpoint for it.
-      stage: isMonitoring(ctx.mode ?? "") ? "rule" : "both",
+      // The media pass asks at one place, so it asks the whole gate.
+      stage: "both",
       cfg,
       base,
       fetchImpl: owner.deps?.contactAuthFetch,
@@ -4213,18 +4269,16 @@ export async function processChatwootDelivery(
           (watcher === responderRt || responderRt?.agentId !== watcher.agentId)
         ) {
           seen.add(watcher.agentId);
-          if (
-            !(await observerRuleAllows({
-              tenantId: params.tenantId,
-              instanceId: params.instanceId,
-              conversationId,
-              agentId: watcher.agentId,
-              settings: watcher.settings,
-              base,
-            }))
-          ) {
-            continue;
-          }
+          const permit = await observerArmPermit({
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId,
+            agentId: watcher.agentId,
+            settings: watcher.settings,
+            base,
+            fetchImpl: params.deps?.contactAuthFetch,
+          });
+          if (!permit) continue;
           await armObserve({
             tenantId: params.tenantId,
             instanceId: params.instanceId,
@@ -4238,6 +4292,7 @@ export async function processChatwootDelivery(
             // NOTE: Only the reply-route answer can come from the attach window, and here it matters most: the
             // mark suppresses every later delivery of this resolution, so a lost verdict is lost for good.
             attaching: watcher === observerRt && observerRt.attaching === true,
+            gateAskedAt: permit.askedAt,
             base,
           });
         }
@@ -4499,24 +4554,34 @@ export async function processChatwootDelivery(
   // memory. A ROW-BACKED observer analyses whatever its mode, as its ingestion does: a watcher that
   // remembers an audio as a marker remembers nothing of it.
   const watcherReads = observer !== null;
-  // The contact gate's rule on the observer path, asked once per watcher per delivery: the media
-  // pass and the arm below put the same question, and two asks would leave two lines.
-  const observeVerdicts = new Map<string, Promise<boolean>>();
+  // The contact gate on the observer path, asked once per watcher per delivery: the media pass and
+  // the arm below put the same question, and two asks would leave two lines (and, with an endpoint,
+  // call it twice).
+  const observeVerdicts = new Map<
+    string,
+    Promise<{ askedAt: number } | null>
+  >();
   const observerMayObserve = (
     watcher: { agentId: bigint },
     settings: unknown,
-  ): Promise<boolean> => {
-    if (n.conversationId === null) return Promise.resolve(true);
+  ): Promise<{ askedAt: number } | null> => {
+    if (n.conversationId === null)
+      return Promise.resolve({ askedAt: Date.now() });
     const key = String(watcher.agentId);
     let verdict = observeVerdicts.get(key);
     if (!verdict) {
-      verdict = observerRuleAllows({
+      verdict = observerArmPermit({
         tenantId: params.tenantId,
         instanceId: params.instanceId,
         conversationId: n.conversationId,
         agentId: watcher.agentId,
         settings,
         base,
+        fetchImpl: params.deps?.contactAuthFetch,
+        message:
+          n.message?.id != null
+            ? { id: n.message.id, text: n.message.content ?? null }
+            : null,
       });
       observeVerdicts.set(key, verdict);
     }
@@ -4540,12 +4605,72 @@ export async function processChatwootDelivery(
           watcherReads ||
           activatedTestLateMedia)))
   ) {
+    // Chatwoot follows a voice note with a `message_updated`: the bound watcher's allow for the
+    // message already covers it, so the late update does not put the question to the endpoint again
+    // (the pass still honours a refusal recorded since).
+    // Scoped to the watcher: that admission is its own verdict, never the responder's media gate
+    // nor another agent's that held the inbox before.
+    const watcherAdmission =
+      observing && n.message?.id != null
+        ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}:watcher:${rt.agentId}`
+        : null;
+    // The endpoint's answer is what is reused; the conditions are asked again, since a label
+    // removed since then takes the conversation out of scope.
+    const lateAdmitted =
+      !isNewIncoming &&
+      watcherAdmission !== null &&
+      n.conversationId !== null &&
+      watcherAdmissionStands(watcherAdmission, rt.settings, {
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        agentId: rt.agentId,
+      }) &&
+      (await observerRuleVerdict(
+        {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId,
+          agentId: rt.agentId,
+          settings: rt.settings,
+          base,
+        },
+        { emit: false },
+      )) === "allowed";
+    const watcherPermit =
+      !gateAsksNext && observing && !lateAdmitted
+        ? await observerMayObserve(rt, rt.settings)
+        : null;
     if (gateAsksNext) {
       mediaAwaitsGate = true;
-    } else if (observing && !(await observerMayObserve(rt, rt.settings))) {
+    } else if (observing && !lateAdmitted && !watcherPermit) {
       // NOTE: A conversation the watcher's rule keeps it out of is not transcribed or described for
-      // it: that analysis exists for the observation the rule just refused.
+      // it: that analysis exists for the observation the rule just refused. The watcher bound as the
+      // inbox's agent owns the media gate, so its refusal is remembered for the message as the pass
+      // would remember it: a late update of the same audio is not transcribed by a later yes. An
+      // observer beside a responder leaves the mark alone, since the responder's gate decides there.
+      if (observer === null) {
+        await recordMediaRefusal(
+          params.tenantId,
+          mirror.conversationRowId,
+          n.message?.id,
+          base,
+          params.deps?.sleep,
+        );
+      }
     } else {
+      if (
+        watcherAdmission !== null &&
+        watcherPermit &&
+        n.conversationId !== null
+      ) {
+        rememberWatcherAdmission(watcherAdmission, watcherPermit, rt.settings, {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId,
+          agentId: rt.agentId,
+        });
+      }
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
         agentId: rt.agentId,
@@ -4554,8 +4679,8 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
-        // NOTE: On the responder's route the watcher IS the inbox's agent, and its rule just
-        // answered: the pass's own ask would run the endpoint stage an observer never runs, and
+        // NOTE: On the responder's route the watcher IS the inbox's agent, and its gate just
+        // answered: the pass's own ask would put the same question again (to the endpoint too), and
         // leave a second line.
         admission: observing && observer === null ? "allowed" : "unverified",
       });
@@ -4701,6 +4826,8 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: admissionFromGate(),
+        watcherPermit: (agentId, settings) =>
+          observerMayObserve({ agentId }, settings),
       });
     }
     if (!consumed) {
@@ -4717,6 +4844,8 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: admissionFromGate(),
+        watcherPermit: (agentId, settings) =>
+          observerMayObserve({ agentId }, settings),
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -5101,6 +5230,8 @@ export async function processChatwootDelivery(
       deps: params.deps,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
+      watcherPermit: (agentId, settings) =>
+        observerMayObserve({ agentId }, settings),
     });
   }
   // The observer marks only after its ingestion has the message (queued, or nothing to queue):
@@ -5663,7 +5794,8 @@ export async function processChatwootDelivery(
         freshSettings !== null && watcher.agentId === rt?.agentId
           ? freshSettings
           : watcher.settings;
-      if (!(await observerMayObserve(watcher, settings))) continue;
+      const permit = await observerMayObserve(watcher, settings);
+      if (!permit) continue;
       await armObserve({
         tenantId: params.tenantId,
         instanceId: params.instanceId,
@@ -5675,6 +5807,7 @@ export async function processChatwootDelivery(
         // held to is asked in that order and in no other.
         atMessageId: n.message?.id ?? null,
         attaching: watcher.agentId === attachingAgentId,
+        gateAskedAt: permit.askedAt,
         base,
       });
     }

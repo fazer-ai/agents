@@ -2,7 +2,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { ToolInputParsingException } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { recursionLimitFor } from "@/graph/graph";
@@ -54,6 +54,7 @@ import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
   type Rearm,
+  retireUnlessAllowedLaterOn,
   upsertJobRow,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -141,6 +142,51 @@ export function observeKeyPrefix(threadId: string): string {
   return `observe:${threadId}:`;
 }
 
+// The watcher's endpoint refused this conversation at an arm: retires its queued observation unless
+// an allow asked after this refusal armed it, and leaves the refusal's ask time on the row, under the
+// arm's lock, so an allow asked before it and still in flight (a delivery waiting on its media pass)
+// cannot re-arm what the refusal retired (`ArmObserveParams.gateAskedAt`). With no row yet, a DONE
+// one is created to carry the mark.
+export async function retireRefusedObserve(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  agentId: bigint;
+  askedAt: number;
+  base: PrismaClient;
+}): Promise<void> {
+  const threadId = chatwootThreadId(p.tenantId, p.instanceId, p.conversationId);
+  const dedupeKey = observeDedupeKey(threadId, p.agentId);
+  await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(db, `observe-arm:${threadId}`, async () => {
+      await retireUnlessAllowedLaterOn(db, {
+        tenantId: p.tenantId,
+        kind: "OBSERVE",
+        dedupeKey,
+        at: p.askedAt,
+        allowedField: "gateAllowedAt",
+        refusedField: "gateRefusedAt",
+        // A resolution's verdict retired before it ran is not one this resolution already has.
+        unrunFields: ["resolveMark"],
+        createPayload: {
+          instanceId: String(p.instanceId),
+          conversationId: p.conversationId,
+          agentId: String(p.agentId),
+        },
+      });
+    }),
+  );
+}
+
+function readGateMark(
+  payload: unknown,
+  field: "gateRefusedAt" | "gateAllowedAt",
+): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>)[field];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export interface ArmObserveParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -169,6 +215,10 @@ export interface ArmObserveParams {
   // command's id is about the erased episode. Null on a resolve, which the reopen check covers (the
   // command reopens it).
   atMessageId?: number | null;
+  // WHEN THE GATE'S ALLOW WAS ASKED (`observerArmPermit`). A refusal asked at or after it has
+  // retired the row and left its own ask time there (`retireRefusedObserve`); this arm then arms
+  // nothing, since the newer answer is the refusal. Absent, the arm is not fenced.
+  gateAskedAt?: number;
 }
 
 function readBurstStart(payload: unknown): number | null {
@@ -217,6 +267,21 @@ export async function armObserve(
         // `mark`), read whatever the row's status. AT OR BELOW, not equal: the mark only moves
         // forward, so a lower one is a late echo of an older resolution, and arming on it would
         // bill the current one twice. A burst clears the mark.
+        // A refusal asked at or after this arm's allow is the newer answer, and it retired the row.
+        const gateRefusedAt = readGateMark(existing?.payload, "gateRefusedAt");
+        if (
+          p.gateAskedAt != null &&
+          gateRefusedAt !== null &&
+          gateRefusedAt >= p.gateAskedAt
+        ) {
+          armed = false;
+          return;
+        }
+        const allowedBefore = readGateMark(existing?.payload, "gateAllowedAt");
+        const gateAllowedAt =
+          p.gateAskedAt != null || allowedBefore !== null
+            ? Math.max(p.gateAskedAt ?? 0, allowedBefore ?? 0)
+            : null;
         const recordedMark = readResolveMark(existing?.payload);
         if (
           p.reason === "resolved" &&
@@ -224,6 +289,23 @@ export async function armObserve(
           recordedMark !== null &&
           recordedMark >= p.mark
         ) {
+          // Not re-armed, but a newer allow is kept: a refusal asked before it and landing late
+          // must still find the row authorized after it (`retireRefusedObserve`).
+          if (
+            gateAllowedAt !== null &&
+            gateAllowedAt !== allowedBefore &&
+            existing
+          ) {
+            await db.schedulerJob.updateMany({
+              where: { kind: "OBSERVE", dedupeKey },
+              data: {
+                payload: {
+                  ...(existing.payload as Record<string, unknown>),
+                  gateAllowedAt,
+                } as Prisma.InputJsonValue,
+              },
+            });
+          }
           armed = false;
           return;
         }
@@ -257,6 +339,12 @@ export async function armObserve(
               ? { resolveMark: p.mark }
               : {}),
             ...(p.attaching === true ? { attaching: true } : {}),
+            // Carried across re-arms, so an allow asked before the refusal and landing after a newer
+            // one still finds it.
+            ...(gateRefusedAt !== null ? { gateRefusedAt } : {}),
+            // The newest allow behind this row, so a refusal asked before it and landing late
+            // leaves the row runnable (`retireRefusedObserve`).
+            ...(gateAllowedAt !== null ? { gateAllowedAt } : {}),
             // NOTE: ...and the NEWEST message of the burst: the MAXIMUM, not the last to arrive.
             // Chatwoot delivers out of order, and a delayed older delivery pushing the id backwards
             // would let a reset between the two discard the whole burst, the valid new message with
@@ -827,10 +915,11 @@ export async function runObserve(
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
   const turnId = crypto.randomUUID();
 
-  // NOTE: THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR: a claimed row can wait seconds for a
+  // THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR: a claimed row can wait seconds for a
   // provider permit, and a message in that wait re-arms it. The tool-boundary fence would refuse
   // the write only after the model was paid. Unreadable proceeds: that fence is still ahead.
-  if (deps.claim !== undefined) {
+  const claimLost = async (): Promise<boolean> => {
+    if (deps.claim === undefined) return false;
     const claim = deps.claim;
     const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.schedulerJob.findUnique({
@@ -838,13 +927,12 @@ export async function runObserve(
         select: { status: true, claimSeq: true },
       }),
     ).catch(() => "unreadable" as const);
-    if (
+    return (
       row !== "unreadable" &&
       !(row?.status === "CLAIMED" && row.claimSeq === claim.claimSeq)
-    ) {
-      return { outcome: "done" };
-    }
-  }
+    );
+  };
+  if (await claimLost()) return { outcome: "done" };
 
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const agent = await db.agent.findUnique({
@@ -937,6 +1025,9 @@ export async function runObserve(
     },
     { emit: true },
   );
+  // The claim again, after the gate: an endpoint refusal at an arm retires this row
+  // (`retireRefusedObserve`), and one landing since the first look must still keep the model out.
+  if (ruled !== "unreadable" && (await claimLost())) return { outcome: "done" };
   if (ruled === "unreadable") {
     return {
       outcome: "fail",

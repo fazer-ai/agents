@@ -3117,7 +3117,7 @@ export function BehaviorTab({
               watcher
                 ? t(
                     "editor.contactAuthWatcherHelp",
-                    "Decides which conversations this agent observes. The rule is checked before an observation is scheduled, on every new message and when a conversation is resolved, so a conversation it refuses costs no analysis. Nothing is sent to the customer and no note is written.",
+                    "Decides which conversations this agent observes, so a conversation it refuses costs no analysis. Nothing is sent to the customer and no note is written.\n\nThe conditions, and the external endpoint when it is on, are checked before an observation is scheduled: on every new message and when a conversation is resolved.",
                   )
                 : t(
                     "editor.contactAuthHelp",
@@ -3168,54 +3168,47 @@ export function BehaviorTab({
                     )}
                   </p>
                 )}
-                {watcher && !contactAuthUsesRule && contactAuthAsksEndpoint && (
-                  <p className="text-warning text-xs">
-                    {t(
-                      "editor.contactAuthWatcherEndpointOnly",
-                      "On a monitoring agent an external endpoint is not asked, so this gate observes every conversation. Choose a rule to limit what it observes.",
-                    )}
-                  </p>
-                )}
                 {contactAuthEmpty && (
                   <p className="text-error text-xs">
-                    {watcher
-                      ? t(
-                          "editor.contactAuthWatcherEmpty",
-                          "Add at least one condition, or turn the gate off.",
-                        )
-                      : t(
-                          "editor.contactAuthEmpty",
-                          "Add at least one condition or turn on the external endpoint, or turn the gate off.",
-                        )}
+                    {t(
+                      "editor.contactAuthEmpty",
+                      "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+                    )}
                   </p>
                 )}
-                {!watcher && (
-                  <SwitchField
-                    checked={contactAuth.endpointEnabled}
-                    onCheckedChange={(v) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        endpointEnabled: v,
-                      })
-                    }
-                    label={t(
-                      "editor.contactAuthEndpoint",
-                      "Ask an external endpoint",
+                <SwitchField
+                  checked={contactAuth.endpointEnabled}
+                  onCheckedChange={(v) =>
+                    setContactAuth({
+                      ...contactAuth,
+                      endpointEnabled: v,
+                    })
+                  }
+                  label={t(
+                    "editor.contactAuthEndpoint",
+                    "Ask an external endpoint",
+                  )}
+                  help={
+                    contactAuthUsesRule
+                      ? t(
+                          "editor.contactAuthEndpointAfterHelp",
+                          "Asked after the conditions, only about what they let through: what they refuse is refused without calling it. The endpoint has the final word, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact.",
+                        )
+                      : t(
+                          "editor.contactAuthEndpointAloneHelp",
+                          "With no conditions, the endpoint decides alone, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact. It is asked after the other checks, and a failure refuses.",
+                        )
+                  }
+                />
+                {watcher && contactAuthAsksEndpoint && (
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthWatcherEndpoint",
+                      "On a monitoring agent, the endpoint's answer only decides which conversations this agent observes. It is asked once before each observation is scheduled, and a denial or a failure leaves the conversation unobserved, with nothing sent or noted.",
                     )}
-                    help={
-                      contactAuthUsesRule
-                        ? t(
-                            "editor.contactAuthEndpointAfterHelp",
-                            "Asked after the conditions, only about what they let through: what they refuse is refused without calling it. The endpoint has the final word, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact.",
-                          )
-                        : t(
-                            "editor.contactAuthEndpointAloneHelp",
-                            "With no conditions, the endpoint decides alone, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact. It is asked after the other checks, and a failure refuses.",
-                          )
-                    }
-                  />
+                  </p>
                 )}
-                {!watcher && contactAuthAsksEndpoint && (
+                {contactAuthAsksEndpoint && (
                   <>
                     <FormField
                       label={t("editor.contactAuthUrl", "Authorization URL")}
@@ -3272,10 +3265,17 @@ export function BehaviorTab({
                     </FormField>
                     <FormField
                       label={t("editor.contactAuthTimeout", "Timeout (ms)")}
-                      description={t(
-                        "editor.contactAuthTimeoutHint",
-                        "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
-                      )}
+                      description={
+                        watcher
+                          ? t(
+                              "editor.contactAuthWatcherTimeoutHint",
+                              "1,000-10,000. Past it the check counts as failed and the conversation is not observed.",
+                            )
+                          : t(
+                              "editor.contactAuthTimeoutHint",
+                              "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+                            )
+                      }
                     >
                       <Input
                         type="number"
@@ -4238,13 +4238,12 @@ export function BehaviorTab({
           fallbackBaseUrlInvalid ||
           fallbackBaseUrlUnsupported ||
           fallbackModelMissing ||
-          // NOTE: A watcher's gate draws the rule's fields, so a rule it cannot read is said there.
+          // NOTE: A watcher draws the gate's conditions and its endpoint's fields, so a rule or a url
+          // it cannot use is said there.
           contactAuthRuleBad ||
           contactAuthEmpty ||
-          (!watcher &&
-            (contactAuthUrlInvalid ||
-              normalizeBaseUrlInvalid ||
-              normalizeBaseUrlUnsupported))
+          contactAuthUrlInvalid ||
+          (!watcher && (normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))
         }
         onOpenPlayground={onOpenPlayground}
       />

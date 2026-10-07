@@ -78,7 +78,7 @@ const emptyError = () =>
   count(/^(Add at least one condition|Adicione pelo menos uma condição)/);
 const watcherEndpointNotice = () =>
   count(
-    /endpoint is not asked, so this gate observes every conversation|não é consultado, então este gate observa todas as conversas/,
+    /the endpoint's answer only decides which conversations this agent observes|a resposta do endpoint só decide quais conversas este agente observa/,
   );
 const saveBlocked = () =>
   screen
@@ -133,20 +133,20 @@ describe("the gate's section is conditions and one endpoint switch", () => {
     expect(saveBlocked()).toBe(true);
   });
 
-  test("a watcher gets the conditions only", () => {
+  test("a watcher gets the conditions and the endpoint switch, with the url only when it is on", () => {
     renderGate({ ruleConditions: [GROUP] }, "monitoring");
     expect(conditionsField() > 0).toBe(true);
-    expect(endpointSwitch()).toBe(0);
+    expect(endpointSwitch()).toBe(1);
     expect(urlField()).toBe(0);
   });
 
-  test("a watcher with a stored endpoint-only gate is told it observes everything", () => {
+  test("a watcher with a stored endpoint-only gate shows the endpoint, and is told what its answer decides", () => {
     renderGate(
       { ruleConditions: [], endpointEnabled: true, url: "https://a.test" },
       "monitoring",
     );
     expect(watcherEndpointNotice() > 0).toBe(true);
-    expect(urlField()).toBe(0);
+    expect(urlField()).toBe(1);
     expect(saveBlocked()).toBe(false);
   });
 

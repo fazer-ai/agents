@@ -54,7 +54,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
-import { observerRuleAllows } from "@/modules/contact-auth/observer";
+import { observerArmPermit } from "@/modules/contact-auth/observer";
 import {
   authorizeContact,
   type ContactAuthStage,
@@ -1176,6 +1176,8 @@ async function ingestObservedBurst(args: {
     return "unread";
   }
   let newest = armedLast;
+  // The newest handed-over message, whose text the watcher's endpoint gets when it forwards text.
+  let arming: { id: number; text: string | null } | null = null;
   // Hoisted so the watermark advance at the tail can name what it closed: one id per message
   // this route folded into memory.
   const handedIds: number[] = [];
@@ -1295,6 +1297,9 @@ async function ingestObservedBurst(args: {
         });
         handedIds.push(m.id);
         if (newest === null || m.id > newest) newest = m.id;
+        if (arming === null || m.id > arming.id) {
+          arming = { id: m.id, text: m.content ?? null };
+        }
       }
       // NOTE: Retire the ledger rows of what the observer now has, or the stranded-delivery sweep
       // would re-run a message already remembered. Best-effort, like the flush's.
@@ -1324,19 +1329,20 @@ async function ingestObservedBurst(args: {
         String(conversationId),
         burst.length,
       );
-      // NOTE: A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
-      // message: best-effort, after the memory has it, and only where the contact gate's rule lets
-      // the watcher observe this conversation.
-      if (
-        await observerRuleAllows({
-          tenantId,
-          instanceId,
-          conversationId,
-          agentId: ctx.agentId,
-          settings: ctx.settings,
-          base,
-        })
-      ) {
+      // A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
+      // message: best-effort, after the memory has it, and only where the contact gate (conditions,
+      // and the endpoint under the same rules) lets the watcher observe this conversation.
+      const permit = await observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId: ctx.agentId,
+        settings: ctx.settings,
+        base,
+        fetchImpl: deps?.contactAuthFetch,
+        message: arming,
+      });
+      if (permit) {
         await armObserve({
           tenantId,
           instanceId,
@@ -1346,6 +1352,7 @@ async function ingestObservedBurst(args: {
           cfg: readMonitoringConfig(ctx.settings),
           // NOTE: In Chatwoot's own id sequence, the order the tick's reset fence is asked in.
           atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
+          gateAskedAt: permit.askedAt,
           base,
         });
       }

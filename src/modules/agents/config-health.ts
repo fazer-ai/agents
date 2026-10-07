@@ -224,9 +224,9 @@ export interface ConfigHealthInput {
   // needs none), so an absent ref raises nothing; a ref that is pending or gone does, because the
   // gate fails closed and the agent goes silent for every contact.
   contactAuthEnabled?: boolean;
-  // A monitoring agent runs only the gate's rule, before it arms an observation: no endpoint is
-  // asked and nobody is answered or handed off, so every warning below is about something that does
-  // not happen for it.
+  // A monitoring agent answers nobody and hands nothing off, so the notice warnings below are about
+  // something that does not happen for it. It asks the endpoint under the same rules as a responder
+  // (docs/contact-auth.md, The observer path), so the endpoint's own warnings hold for it.
   agentMonitoring?: boolean;
   contactAuthCredentialRef?: string;
   // The endpoint itself. `readContactAuthConfig` normalizes a missing or malformed URL to null and
@@ -721,7 +721,6 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "contactAuth", tab: "behavior", sectionId: "contactAuth" },
     credIssue(
       Boolean(input.contactAuthEnabled) &&
-        !input.agentMonitoring &&
         !input.contactAuthRuleOnly &&
         Boolean(input.contactAuthCredentialRef),
       input.contactAuthCredentialRef ?? "",
@@ -761,7 +760,6 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // A rule with the endpoint asked after it still needs the endpoint: what the rule allows is refused.
   if (
     input.contactAuthEnabled &&
-    !input.agentMonitoring &&
     !input.contactAuthRuleOnly &&
     !(input.contactAuthUrl ?? "").trim()
   ) {

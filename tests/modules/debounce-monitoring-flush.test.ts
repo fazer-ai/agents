@@ -73,6 +73,7 @@ const CONV_CEILING_REMEMBERED = 9436;
 const CONV_REACTION = 9437;
 const CONV_RULE_REFUSED = 9438;
 const CONV_RULE_ALLOWED = 9439;
+const CONV_ENDPOINT_DENIED = 9440;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
@@ -326,6 +327,7 @@ describe.skipIf(!dbUp)(
       for (const [convId, type] of [
         [CONV_RULE_REFUSED, "individual"],
         [CONV_RULE_ALLOWED, "group"],
+        [CONV_ENDPOINT_DENIED, "individual"],
       ] as const) {
         const contact = await suDb.contact.create({
           data: {
@@ -333,6 +335,7 @@ describe.skipIf(!dbUp)(
             chatwootInstanceId: instanceId,
             chatwootContactId: convId,
             name: "Contato",
+            phone: `+5511900${convId}`,
           },
         });
         await suDb.conversation.create({
@@ -498,6 +501,73 @@ describe.skipIf(!dbUp)(
         ).toEqual([3]);
         expect(await observeRows(CONV_RULE_REFUSED)).toEqual([]);
         expect(await observeRows(CONV_RULE_ALLOWED)).toHaveLength(1);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: {
+            mode: "production",
+            settings: { debounce: { enabled: true, windowSeconds: 15 } },
+          },
+        });
+      }
+    });
+
+    // THE ENDPOINT on the hand-over: a watcher whose gate asks an endpoint asks it once before it arms
+    // the burst's observation, and a denial leaves the burst remembered but not observed.
+    test("a burst the watcher's endpoint denies is remembered but not observed, with one ask", async () => {
+      const job = await claimedJob(CONV_ENDPOINT_DENIED, 3);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          mode: "monitoring",
+          settings: {
+            debounce: { enabled: true, windowSeconds: 15 },
+            contactAuth: {
+              enabled: true,
+              url: "https://203.0.113.94:9443/check",
+            },
+          },
+        },
+      });
+      let asks = 0;
+      try {
+        const s = stub([page([{ id: 3, content: "bom dia" }])]);
+        const out = await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s.makeClient as never,
+            contactAuthFetch: (async () => {
+              asks += 1;
+              return new Response(JSON.stringify({ authorized: false }), {
+                status: 200,
+              });
+            }) as unknown as typeof fetch,
+          },
+        });
+        expect(out).toEqual({ outcome: "done" });
+        expect(s.sent).toEqual([]);
+        expect(s.notes).toEqual([]);
+        expect(s.toggles).toEqual([]);
+        expect(await watermarkOf(CONV_ENDPOINT_DENIED)).toBe(3);
+        expect(asks).toBe(1);
+        const rows = await suDb.schedulerJob.findMany({
+          where: {
+            tenantId,
+            kind: "OBSERVE",
+            // The denial leaves a retired row carrying its mark (`retireRefusedObserve`), never a
+            // runnable one.
+            status: { in: ["PENDING", "CLAIMED"] },
+            dedupeKey: {
+              startsWith: `observe:${threadOf(CONV_ENDPOINT_DENIED)}:`,
+            },
+          },
+          select: { id: true },
+        });
+        expect(rows).toEqual([]);
       } finally {
         await suDb.agent.update({
           where: { id: agentDbId },

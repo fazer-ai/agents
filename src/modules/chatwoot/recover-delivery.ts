@@ -1328,14 +1328,34 @@ function owesAReply(row: {
   );
 }
 
+// A row that answers the customer: public, outgoing or a template, from a person, a bot or the
+// phone paired to the inbox. Not a reaction (the fork stores an operator's emoji as a public
+// outgoing row) and not an imported one (old history written with new ids), the exclusions the
+// reply boundary makes (../debounce/watermark.ts, `foreignReplyBoundary`).
+function answersCustomer(
+  m: ReturnType<typeof parseChatwootMessages>[number],
+): boolean {
+  return (
+    (m.messageType === "outgoing" || m.messageType === "template") &&
+    !m.private &&
+    !m.isReaction &&
+    !m.imported &&
+    (m.senderType === "user" ||
+      m.senderType === "agent_bot" ||
+      m.externalSenderName !== null)
+  );
+}
+
+// How far past the stranded message the catch-up read walks before leaving the decision to the line.
+const SUPERSEDED_MAX_PAGES = 10;
+
 // Whether the conversation itself has moved past the stranded message, read live, because the row
-// cannot say: a later turn retires only the rows it ran over, and one that was still PENDING then,
-// or whose message reached the conversation by another road (an operator's re-engage, a person
-// replying), stays DEAD while the customer was answered long ago. Two answers that close it: a
-// public outgoing message after the stranded one from a person or a bot (a sender-less outgoing is
-// Chatwoot's own: an away message, an automation, a survey, and answers nothing), or the
-// conversation resolved. Null on anything the read cannot settle, which leaves the line as it was:
-// a page about a customer who was answered is noise, and silence about one who was not is the loss.
+// cannot say: a later turn retires only the rows it ran over, and one still PENDING then, or whose
+// message was answered by another road (an operator's re-engage, a person replying), stays DEAD.
+// Two answers close it: a row after the message that `answersCustomer` accepts (a sender-less
+// outgoing is Chatwoot's own, an away message, an automation, a survey, and answers nothing), or
+// the conversation resolved. Null on anything the read cannot settle, which leaves the line as it
+// was: a page about an answered customer is noise, and silence about a waiting one is the loss.
 async function supersededLive(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -1355,21 +1375,20 @@ async function supersededLive(params: {
     );
     const conv = await client.getConversation(params.conversationId);
     if (isRecord(conv) && conv.status === "resolved") return "resolved";
-    const after = parseChatwootMessages(
-      await client.getMessages(params.conversationId, {
-        after: params.messageId,
-      }),
-    );
-    const replied = after.some(
-      (m) =>
-        m.id > params.messageId &&
-        m.messageType === "outgoing" &&
-        !m.private &&
-        (m.senderType === "user" ||
-          m.senderType === "agent_bot" ||
-          m.externalSenderName !== null),
-    );
-    return replied ? "answered" : null;
+    // The catch-up read lists by id and stops at a page, so a reply behind a hundred notes or
+    // customer messages is on a later one: walked until a reply or a short page, and bounded, since
+    // a conversation that far ahead without one is left to the line as it was.
+    let cursor = params.messageId;
+    for (let page = 0; page < SUPERSEDED_MAX_PAGES; page++) {
+      const rows = parseChatwootMessages(
+        await client.getMessages(params.conversationId, { after: cursor }),
+      );
+      if (rows.some((m) => m.id > params.messageId && answersCustomer(m)))
+        return "answered";
+      if (rows.length < CATCH_UP_PAGE) return null;
+      cursor = rows.reduce((max, m) => Math.max(max, m.id), cursor);
+    }
+    return null;
   } catch (err) {
     logger.warn(
       "chatwoot recovery: could not read conversation %d to tell an unanswered message from a superseded one: %s",

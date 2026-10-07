@@ -5044,12 +5044,14 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     describe("a conversation that moved on is not reported unanswered", () => {
       type After = {
         id: number;
-        type: 0 | 1 | 2;
+        type: 0 | 1 | 2 | 3;
         private?: boolean;
         sender?: "contact" | "user" | "agent_bot" | null;
         // A person answering on the phone paired to the inbox: the fork stores the echo sender-less
         // and names them here.
         externalSender?: string;
+        reaction?: boolean;
+        imported?: boolean;
       };
       function afterPage(rows: After[]) {
         return {
@@ -5065,13 +5067,13 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
                 ? null
                 : { id: 41, name: "x", type: m.sender },
             attachments: [],
-            ...(m.externalSender
-              ? {
-                  content_attributes: {
-                    external_sender_name: m.externalSender,
-                  },
-                }
-              : {}),
+            content_attributes: {
+              ...(m.externalSender
+                ? { external_sender_name: m.externalSender }
+                : {}),
+              ...(m.reaction ? { is_reaction: true } : {}),
+              ...(m.imported ? { imported: true } : {}),
+            },
           })),
         };
       }
@@ -5166,6 +5168,79 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           appDb,
           depsWith(stub),
         );
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+      });
+
+      // A template a person sends is an answer; an emoji reaction and an imported row are not, though
+      // both are public outgoing rows with ids above the message.
+      test("a template answers it; a reaction or an imported row does not", async () => {
+        const { conv: answered, rowId: a } = await endedRow(28964, 29964);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(a) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([{ id: 29965, type: 3, sender: "user" }]),
+            }),
+          ),
+        );
+        expect(await outcomes(answered.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+        const { conv: notAnswered, rowId: b } = await endedRow(28966, 29966);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(b) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([
+                { id: 29967, type: 1, sender: "user", reaction: true },
+                { id: 29968, type: 1, sender: "user", imported: true },
+              ]),
+            }),
+          ),
+        );
+        expect(await outcomes(notAnswered.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // The catch-up read stops at a hundred rows, so a reply behind a full page of customer
+      // messages is on the next one.
+      test("a reply past a full catch-up page still supersedes it", async () => {
+        const { conv, rowId } = await endedRow(28969, 29969);
+        const stub = stubChatwoot({});
+        const inner = stub.makeClient;
+        const cursors: number[] = [];
+        const deps = {
+          ...depsWith(stub),
+          makeClient: async (...a: Parameters<Stub["makeClient"]>) => {
+            const client = await inner(...a);
+            return {
+              ...client,
+              getMessages: async (_c: number, o?: { after?: number }) => {
+                cursors.push(o?.after ?? -1);
+                if (o?.after === 29969)
+                  return afterPage(
+                    Array.from({ length: 100 }, (_, i) => ({
+                      id: 30000 + i,
+                      type: 0 as const,
+                      sender: "contact" as const,
+                    })),
+                  );
+                return afterPage([{ id: 30200, type: 1, sender: "agent_bot" }]);
+              },
+            } as unknown as ChatwootClient;
+          },
+        };
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          deps,
+        );
+        expect(cursors).toEqual([29969, 30099]);
         expect(await outcomes(conv.id)).toEqual([
           ["info", "superseded", "answered"],
         ]);

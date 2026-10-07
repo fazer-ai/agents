@@ -142,14 +142,14 @@ import {
 } from "@/modules/spend-ceiling/service";
 import {
   resolveSttConfig,
+  sttPreflight,
   transcribeInboundAudio,
 } from "@/modules/stt/service";
-import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import {
   extractMessageVisuals,
   hasUnextractedVisual,
 } from "@/modules/vision/extract-message";
-import { resolveVisionConfig } from "@/modules/vision/service";
+import { resolveVisionConfig, visionPreflight } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import {
   channelFailureOf,
@@ -1562,24 +1562,19 @@ async function mediaAdmitted(
 // Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
 // so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
 // to run it (production+enabled always, test only on the answer path, disabled never).
-// The first config of `watcherAgentIds` able to run, else the route's own. Able to run is enabled
-// with a key that resolves to a usable entry: the services read the key only after this choice and
-// skip on a bad one without trying another watcher, so a sibling with a stale reference would
-// otherwise silence media for the whole inbox. A null agent asks the inbox's responder, as always.
-async function firstMediaConfig<T extends { credentialRef: string | null }>(
-  tenantId: bigint,
+// The first config of `watcherAgentIds` able to run, else the route's own. "Able to run" is the
+// service's own preflight (`sttPreflight`, `visionPreflight`), never a copy of it: the services check
+// only after this choice and skip without trying another watcher, so a weaker test here would let a
+// sibling that cannot run silence media for the whole inbox. A null agent asks the inbox's responder,
+// as it always has.
+async function firstMediaConfig<T>(
   owner: EagerMediaOwner,
-  base: PrismaClient,
   resolve: (agentId: bigint | null) => Promise<T | null>,
+  canRun: (cfg: T) => Promise<boolean>,
 ): Promise<T | null> {
   for (const agentId of owner.watcherAgentIds ?? []) {
     const cfg = await resolve(agentId);
-    const ref = cfg?.credentialRef;
-    if (!ref) continue;
-    const key = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      tryResolveApiKeyEntry(db, ref),
-    ).catch(() => null);
-    if (key?.state === "ok") return cfg;
+    if (cfg && (await canRun(cfg).catch(() => false))) return cfg;
   }
   return resolve(owner.agentId);
 }
@@ -1666,9 +1661,7 @@ export async function runEagerMedia(
       });
       try {
         const sttCfg = await firstMediaConfig(
-          tenantId,
           owner,
-          base,
           (agentId) =>
             resolveSttConfig(
               tenantId,
@@ -1678,6 +1671,8 @@ export async function runEagerMedia(
               // NOTE: The route's agent, which on an observer's route is not the inbox's.
               { agentId },
             ),
+          async (cfg) =>
+            (await sttPreflight(tenantId, cfg, base)).state === "ok",
         );
         if (sttCfg && (await admitted())) {
           const text = await transcribeInboundAudio({
@@ -1725,9 +1720,7 @@ export async function runEagerMedia(
   if (visionPending) {
     try {
       const visionCfg = await firstMediaConfig(
-        tenantId,
         owner,
-        base,
         (agentId) =>
           resolveVisionConfig(
             tenantId,
@@ -1737,6 +1730,8 @@ export async function runEagerMedia(
             // NOTE: The route's agent, which on an observer's route is not the inbox's.
             { agentId },
           ),
+        async (cfg) =>
+          (await visionPreflight(tenantId, cfg, base)).state === "ok",
       );
       // Only a new extraction waits for the gate; metadata already on an attachment is reused. Email
       // body images are not counted as unread: telling them from an ornament needs the download.

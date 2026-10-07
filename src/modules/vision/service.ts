@@ -432,6 +432,46 @@ function extractInbound(
   });
 }
 
+// What a config needs before an extraction can run, asked by the extraction itself and by whoever
+// picks among configs before it (the watchers' shared media config, ../chatwoot/webhook.ts), so the
+// two cannot disagree about which config can run. Reads the vault; never calls a provider.
+export type VisionPreflight =
+  | {
+      state: "ok";
+      provider: NonNullable<ReturnType<typeof getVisionProvider>>;
+      entry: { secret: string; baseUrl: string | null };
+    }
+  | {
+      state: "skip";
+      reason:
+        | "unknown_provider"
+        | "no_credential"
+        | "credential_unusable"
+        | "credential_not_found";
+      kind?: string;
+    };
+
+export async function visionPreflight(
+  tenantId: bigint,
+  cfg: VisionConfig,
+  base: PrismaClient = basePrisma,
+): Promise<VisionPreflight> {
+  const provider = getVisionProvider(cfg.provider);
+  if (!provider) return { state: "skip", reason: "unknown_provider" };
+  const ref = cfg.credentialRef;
+  if (!ref) return { state: "skip", reason: "no_credential" };
+  const entry = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    tryResolveApiKeyEntry(db, ref),
+  );
+  if (entry.state === "unusable") {
+    return { state: "skip", reason: "credential_unusable", kind: entry.kind };
+  }
+  if (entry.state !== "ok") {
+    return { state: "skip", reason: "credential_not_found" };
+  }
+  return { state: "ok", provider, entry };
+}
+
 async function extractInboundOnce(
   params: ExtractInboundParams & {
     bodyImage?: boolean;
@@ -461,35 +501,29 @@ async function extractInboundOnce(
     return { unread: unreadCauseOf(reason) };
   };
 
-  const provider = getVisionProvider(cfg.provider);
-  if (!provider) {
-    logger.warn("vision: unknown provider %s", cfg.provider);
-    return skip("unknown_provider");
-  }
-  if (!cfg.credentialRef) {
-    logger.warn("vision: no credentialRef configured — skipping");
-    return skip("no_credential");
-  }
-  const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-    tryResolveApiKeyEntry(db, cfg.credentialRef as string),
-  );
-  if (entry.state !== "ok") {
+  const pre = await visionPreflight(params.tenantId, cfg, base);
+  if (pre.state === "skip") {
     // NOTE: Gone/unfilled and wrong-KIND are separate lines because the operator's move differs:
     // re-pick or fill one, move the other to the field it belongs on.
-    if (entry.state === "unusable") {
+    if (pre.reason === "unknown_provider") {
+      logger.warn("vision: unknown provider %s", cfg.provider);
+    } else if (pre.reason === "no_credential") {
+      logger.warn("vision: no credentialRef configured — skipping");
+    } else if (pre.reason === "credential_unusable") {
       logger.warn(
         "vision: credential %s is a %s credential, which cannot be used as an API key — skipping",
         cfg.credentialRef,
-        entry.kind,
+        pre.kind,
       );
-      return skip("credential_unusable");
+    } else {
+      logger.warn(
+        "vision: credential %s not found in the vault — skipping",
+        cfg.credentialRef,
+      );
     }
-    logger.warn(
-      "vision: credential %s not found in the vault — skipping",
-      cfg.credentialRef,
-    );
-    return skip("credential_not_found");
+    return skip(pre.reason);
   }
+  const { provider, entry } = pre;
 
   const client = await loadChatwootClient(params.tenantId, params.instanceId, {
     base,

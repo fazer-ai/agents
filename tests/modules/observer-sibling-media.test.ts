@@ -43,6 +43,7 @@ const DEAF_BOT = 431;
 const LISTENER_BOT = 432;
 const UNKEYED_BOT = 433;
 const STALE_KEY_BOT = 434;
+const NO_BASE_URL_BOT = 435;
 
 let tenantId: bigint;
 let instanceId: bigint;
@@ -51,6 +52,7 @@ let deafId: bigint;
 let listenerId: bigint;
 let unkeyedId: bigint;
 let staleKeyId: bigint;
+let noBaseUrlId: bigint;
 let seq = 0;
 
 async function watcher(
@@ -203,6 +205,15 @@ describe.skipIf(!dbUp)(
           credentialRef: `vault:${key.id}`,
         },
       });
+      // A provider that needs a base URL, with a usable key that carries none: the service skips it
+      // with `no_base_url` after the key resolves.
+      noBaseUrlId = await watcher("Sem base URL", NO_BASE_URL_BOT, {
+        stt: {
+          enabled: true,
+          provider: "openai-compatible",
+          credentialRef: `vault:${key.id}`,
+        },
+      });
       staleKeyId = await watcher("Chave apagada", STALE_KEY_BOT, {
         stt: {
           enabled: true,
@@ -303,6 +314,24 @@ describe.skipIf(!dbUp)(
       } finally {
         await suDb.inboxObserver.deleteMany({
           where: { tenantId, inboxId: inboxDbId, agentId: staleKeyId },
+        });
+      }
+    });
+
+    test("a sibling whose provider needs a base URL it does not have does not take the config", async () => {
+      await suDb.inboxObserver.create({
+        data: {
+          tenantId,
+          inboxId: inboxDbId,
+          agentId: noBaseUrlId,
+          attachedAt: new Date(),
+        },
+      });
+      try {
+        expect(await voiceNoteOnDeafRoute(9436)).toBe(0);
+      } finally {
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inboxDbId, agentId: noBaseUrlId },
         });
       }
     });

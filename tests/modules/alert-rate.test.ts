@@ -2,13 +2,16 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { runModelCall } from "@/graph/model-limit";
 import { alertLinks } from "@/modules/flowlog/alert-send";
 import { dispatchRateAlert, rateSubjectOf } from "@/modules/flowlog/alerts";
 import {
   type FlowContext,
   type FlowEvent,
+  withFlowStage,
   writeFlowEvent,
 } from "@/modules/flowlog/service";
+import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
 // A PROVIDER DEGRADED, NOT A FAILURE. A retried attempt is `info` and pages nobody alone, which is
@@ -386,6 +389,38 @@ describe.skipIf(!dbUp)("rate alerts", () => {
     const rows = await rateRows(ch);
     expect(rows.map((r) => r.causeKey)).toEqual(["rate:generate:openai"]);
     expect(rows[0]?.summary).toContain("5 transient failures");
+  });
+
+  // The real road, not a synthetic line: a model call timing out inside the stage that records it,
+  // through `runModelCall`'s own reduction of the error.
+  test("model calls timing out in their stage make a rate", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    const turns: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const ctx = flow(tenantId);
+      turns.push(ctx.turnId);
+      await withFlowStage(ctx, "generate", { provider: "openai" }, () =>
+        runModelCall<string>(
+          () =>
+            Promise.reject(
+              Object.assign(new Error("deadline"), { name: "TimeoutError" }),
+            ),
+          { primary: { provider: "openai", model: "gpt-5.4" } },
+        ),
+      ).catch(() => {});
+    }
+    // `flowLogRows` waits for the writes `withFlowStage` does not, and the rate is counted on each.
+    const lines = await flowLogRows(suDb, {
+      where: { tenantId, turnId: { in: turns }, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      lines.map((l) => (l.detail as Record<string, unknown> | null)?.failure),
+    ).toEqual(Array(5).fill("timeout"));
+    expect((await rateRows(ch)).map((r) => r.causeKey)).toEqual([
+      "rate:generate:openai",
+    ]);
   });
 
   test("concurrent failures across the threshold are one alert per channel", async () => {

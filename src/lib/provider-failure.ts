@@ -85,8 +85,18 @@ export function failureDetail(err: unknown): Record<string, string> {
     : { fallbackFailure: reported };
 }
 
+// The wrappers `asProviderFailure` built for a timeout: their name is plain "Error" and their message
+// is the word, so without this a second reading (`withFlowStage` around a model call) would call a
+// timeout a "provider error", and a provider timing out all day would never make a rate.
+const timedOutWrappers = new WeakSet<Error>();
+
 export function providerFailure(err: unknown, timedOut = false): string {
-  if (timedOut || namesATimeout(err)) return "timeout";
+  if (
+    timedOut ||
+    namesATimeout(err) ||
+    (err instanceof Error && timedOutWrappers.has(err))
+  )
+    return "timeout";
   // No `instanceof Error` guard of its own: `statusOf` asks that question already, so a second
   // copy here would be a clause no input can reach.
   const status = statusOf(err);
@@ -97,8 +107,8 @@ export function providerFailure(err: unknown, timedOut = false): string {
 // which is the only place provenance is known. Downstream nothing has to change and nothing has to
 // remember: the four stores above all read `.message`, and they get this one.
 //
-// Two things ride along on purpose. `cause` keeps the original for the process log. The numeric
-// status is copied onto the wrapper so this is IDEMPOTENT: a caller that reduces again (the
+// Three things ride along on purpose. `cause` keeps the original for the process log. A timeout is
+// remembered on the wrapper, and the numeric status is copied onto it, so this is IDEMPOTENT: a caller that reduces again (the
 // compaction job does, because it holds a better reading of "it timed out") still reports `HTTP 429`
 // rather than degrading it to "provider error" on the second pass.
 export function asProviderFailure(err: unknown, timedOut = false): Error {
@@ -110,7 +120,9 @@ export function asProviderFailure(err: unknown, timedOut = false): Error {
     { err },
     "provider call failed; reporting it without the provider's text",
   );
-  const out = new Error(providerFailure(err, timedOut), { cause: err });
+  const failure = providerFailure(err, timedOut);
+  const out = new Error(failure, { cause: err });
+  if (failure === "timeout") timedOutWrappers.add(out);
   const status = statusOf(err);
   if (status !== null) {
     (out as unknown as Record<string, unknown>).status = status;

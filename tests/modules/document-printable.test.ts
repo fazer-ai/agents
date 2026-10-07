@@ -16,7 +16,8 @@ import { renderDocumentPdf } from "@/modules/documents/render";
 
 const base = {
   fields: [],
-  style: DOCUMENT_STYLE_DEFAULTS,
+  // NOTE: page numbers off, so what is drawn is exactly the text under test.
+  style: { ...DOCUMENT_STYLE_DEFAULTS, showPageNumbers: false },
   values: {},
   company: {
     name: "ACME",

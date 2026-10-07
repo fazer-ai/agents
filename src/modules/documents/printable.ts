@@ -58,3 +58,14 @@ export function unprintableProblem(text: string, what: string): string | null {
   });
   return `${what} contains characters this document cannot print (${named.join(" ")}) — the PDF fonts cover Latin text only, and printing them anyway would put a different character in the document.`;
 }
+
+// Capitals for a label, raised only where the capital itself prints: "µ" has no WinAnsi capital (its
+// uppercase is the Greek "Μ"), so it stays as written instead of turning into an unrelated glyph.
+export function printableUpperCase(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const upper = ch.toUpperCase();
+    out += unprintableCharacters(upper).length === 0 ? upper : ch;
+  }
+  return out;
+}

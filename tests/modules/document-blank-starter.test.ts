@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DOCUMENT_STYLE_DEFAULTS } from "@/modules/documents/blocks";
+import { NEW_DOCUMENT_STYLE } from "@/modules/documents/blocks";
 import {
   documentStarter,
   documentStarters,
@@ -8,7 +8,7 @@ import { parseAuthoredTemplate } from "@/modules/documents/validate";
 
 // The blank starter is the one an operator (or an agent through MCP) configures from scratch, so it
 // carries nothing to delete: the single block validation requires (a template must print something,
-// or every issued document is a numbered blank page), no fields, the default style, no prefix.
+// or every issued document is a numbered blank page), no fields, the new-template style, no prefix.
 describe("the blank starter", () => {
   for (const locale of ["pt-BR", "en-US"] as const) {
     test(`is offered in ${locale}, after the three ready-made ones`, () => {
@@ -24,7 +24,7 @@ describe("the blank starter", () => {
       expect(blank.fields).toEqual([]);
       expect(blank.numberPrefix).toBe("");
       expect(blank.style).toEqual({
-        ...DOCUMENT_STYLE_DEFAULTS,
+        ...NEW_DOCUMENT_STYLE,
         locale,
         currency: locale === "pt-BR" ? "BRL" : "USD",
       });

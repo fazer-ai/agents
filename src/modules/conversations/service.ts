@@ -90,8 +90,10 @@ export interface ListConversationsFilter {
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
-  // Only conversations whose inbox is BOUND to this agent; an inbox it merely observes does not
-  // count. An id of another tenant, or of no agent, is an empty page under the caller's own scope.
+  // Conversations on every inbox this agent is attached to: bound as its responder, or observing it
+  // (a pending observer row included, as every reader of "does it observe" counts one). A monitoring
+  // agent is never bound, so this is what its filter can show. An id of another tenant, or of no
+  // agent, is an empty page under the caller's own scope.
   agentId?: bigint;
 }
 
@@ -154,7 +156,11 @@ function buildConversationsWhere(
 ): Prisma.ConversationWhereInput {
   const where: Prisma.ConversationWhereInput = {};
   if (status) where.status = status;
-  if (agentId !== undefined) where.inbox = { agentId };
+  if (agentId !== undefined) {
+    where.inbox = {
+      OR: [{ agentId }, { observers: { some: { agentId } } }],
+    };
+  }
   const term = q?.trim();
   if (term) {
     const or: Prisma.ConversationWhereInput[] = [

@@ -1175,6 +1175,133 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(providers.stt).toBe(0);
   });
 
+  // NOTE: an inbox carries several watchers (#1114), and each one's gate decides only what IT
+  // observes. The watcher bound as the inbox's agent refusing a conversation must not keep another
+  // watcher, whose own gate let the conversation through, from transcribing its audio.
+  async function withSecondWatcher(
+    run: (secondBot: number) => Promise<void>,
+  ): Promise<void> {
+    const SECOND_BOT = 89;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora",
+        systemPrompt: "…",
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          credentialRef: sttKeyRef,
+        },
+        enabled: true,
+        mode: "monitoring",
+        settings: {
+          stt: { enabled: true, provider: "openai", credentialRef: sttKeyRef },
+        },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `caobs-route-2-${process.pid}-${seq}`,
+        name: "Segunda observadora",
+      },
+    });
+    const bound = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: BOUND_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: bound.id, agentId: second.id },
+    });
+    try {
+      await run(SECOND_BOT);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, agentId: second.id },
+      });
+      await suDb.chatwootAgentBot.deleteMany({
+        where: { tenantId, agentId: second.id },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  }
+
+  async function deliverSameOn(
+    bot: number,
+    convId: number,
+    groupType: "group" | "individual",
+  ) {
+    seq -= 1;
+    const again = audioEvent(convId, groupType, false, BOUND_INBOX);
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `cao-${process.pid}-second-${seq}`,
+        event: again.event,
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: bot,
+      normalized: again,
+      base: appDb,
+      deps: deps() as never,
+    });
+    return again.message?.id as number;
+  }
+
+  // The other side: the bound watcher's conditions let the conversation through, so its route
+  // analyses the audio and the sibling stands down, rather than paying for the same transcription.
+  test("beside a bound watcher whose conditions allow the conversation, the audio is transcribed once for both watchers", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({
+        enabled: true,
+        rule: { kind: "conversation_type", type: "group" },
+      });
+      const messageId = await deliverMessage(45, "group", false, BOUND_INBOX);
+      expect(providers.stt).toBe(1);
+      expect(await deliverSameOn(secondBot, 45, "group")).toBe(messageId);
+      expect(providers.stt).toBe(1);
+    });
+  });
+
+  test("a bound watcher's refusal leaves another watcher of the same inbox free to transcribe", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({
+        enabled: true,
+        rule: { kind: "conversation_type", type: "group" },
+      });
+      const messageId = await deliverMessage(
+        44,
+        "individual",
+        false,
+        BOUND_INBOX,
+      );
+      expect(providers.stt).toBe(0);
+      // The same message, fanned by the fork to the second watcher's route.
+      expect(await deliverSameOn(secondBot, 44, "individual")).toBe(messageId);
+      expect(providers.stt).toBe(1);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 44 },
+        select: { mediaRefusedThroughMessageId: true },
+      });
+      // The watcher's refusal is its own: nothing is written on the conversation for the others.
+      expect(conv.mediaRefusedThroughMessageId).toBeNull();
+    });
+  });
+
   // With forwarding on, each message is its own question (the key carries its id, as a
   // responder's does); with it off, the text never travels.
   test("the observer forwards the arming message's text only when asked to, one question per message", async () => {

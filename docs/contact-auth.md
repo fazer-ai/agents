@@ -243,14 +243,21 @@ that does not run unless a later allow re-arms it (see "Asked once per arm").
   already running is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
   reached, since asking the whole gate again would put the same question to the endpoint twice. When
-  that verdict refuses, the pass is skipped and the refusal is recorded for the message as the pass
-  would record it (Media waits for the gate), so Chatwoot's late update of the same audio is not
-  transcribed by a later allow. An allowed message is remembered the same way, so that late update
+  that verdict refuses, the pass is skipped and the refusal is recorded for THAT watcher and the
+  message, in this process, so Chatwoot's late update of the same audio is not transcribed by a later
+  allow. It is never written on the conversation (Media waits for the gate): an inbox carries several
+  watchers, and one watcher's refusal decides only what that watcher observes. An allowed message is remembered the same way, so that late update
   does not ask the endpoint again. A pass
   that asks for itself under a watcher (an agent flipped to monitoring while its gate waited) asks the
   whole gate the way the arm does, with the arm's asking, so a concurrent arm and pass share one
   request. An observer beside a separate responder keeps the responder's `unverified` pass (Media
   waits for the gate).
+- **Several watchers on one inbox.** Each route asks its own watcher's gate, arms its own
+  observation and keeps its own fence. Beside a watcher bound as the inbox's agent, which remembers
+  and so analyses the media for both, another watcher stands down on the media pass only when that
+  analysis is known to happen: the bound watcher's conditions allow the conversation and no endpoint
+  follows them. Otherwise the route analyses for itself under its own gate, so a conversation the
+  bound watcher refuses is still transcribed for a sibling that observes it.
 - **Memory is not the gate's to decide.** The burst is still remembered and the handled watermark
   still moves; what the gate withholds is the observation. Remembering is what keeps a later flip to
   production from answering the observed backlog.

@@ -1124,8 +1124,9 @@ function callerValues(
   now: Date,
   // The document's own calendar day, so a generated sample date matches the date printed on it.
   day: string,
+  locale: DocumentStyle["locale"],
 ): DocumentValues {
-  if (raw === undefined) return sampleValues(fields, now, day);
+  if (raw === undefined) return sampleValues(fields, now, day, locale);
   const parsed = parseDocumentValues(fields, raw);
   if (!parsed.ok) {
     throw new AppError(parsed.reason, 400, "errors.invalidDocumentValues", {
@@ -1178,7 +1179,13 @@ export async function previewDocumentTemplate(
   // Computed ONCE and used for both the document's date and any generated sample date, so the two
   // cannot land on different sides of a day boundary.
   const previewDay = calendarDay(now, DEFAULT_TIMEZONE);
-  const values = callerValues(content.fields, input.values, now, previewDay);
+  const values = callerValues(
+    content.fields,
+    input.values,
+    now,
+    previewDay,
+    style.locale,
+  );
   const { company, logo } = await readRenderContext(ctx, base);
   const prefix =
     input.numberPrefix !== undefined ? input.numberPrefix : saved?.numberPrefix;

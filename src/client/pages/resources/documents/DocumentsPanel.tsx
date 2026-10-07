@@ -23,6 +23,7 @@ import {
   useModalController,
   useToast,
 } from "@/client/components";
+import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { mediaFetch } from "@/client/lib/media";
@@ -64,6 +65,9 @@ export function DocumentsPanel() {
   // route takes the two the starter table has, and the browser can hand us "en", "en-GB", "pt".
   const starterLocale = starterLocaleOf(i18n.language);
   const { showToast } = useToast();
+  // The account's name, offered for an empty letterhead. A fleet session (the admin created at setup)
+  // carries no tenant of its own, and the hook resolves the selected one.
+  const tenantName = useActiveTenantName();
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [starters, setStarters] = useState<Starter[]>([]);
   const [issued, setIssued] = useState<IssuedDocument[]>([]);
@@ -627,6 +631,7 @@ export function DocumentsPanel() {
           }}
           onDirtyChange={setCompanyDirty}
           session={companySession}
+          suggestedName={tenantName}
         />
       </Modal>
 

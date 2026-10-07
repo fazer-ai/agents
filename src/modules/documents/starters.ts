@@ -11,8 +11,14 @@ import {
 
 export interface DocumentStarter {
   key: string;
+  // What the menu calls it and says about it.
   name: string;
-  description: string;
+  summary: string;
+  // What a template made from it starts with. The name is what the agent's tool is called, and the
+  // description is appended to that tool's description, so neither may carry menu text: the blank
+  // one suggests no name and describes nothing.
+  suggestedName: string;
+  description: string | null;
   numberPrefix: string;
   blocks: DocumentBlock[];
   fields: DocumentField[];
@@ -56,7 +62,7 @@ const STRINGS: Record<DocumentStyle["locale"], Strings> = {
     investment: "Investimento",
     blankName: "Em branco",
     blankDescription:
-      "Só o cabeçalho com título e número, sem campos, para configurar do zero.",
+      "Só o cabeçalho, para montar com o seu assistente de IA pelo MCP.",
   },
   "en-US": {
     quoteName: "Quote",
@@ -92,7 +98,7 @@ const STRINGS: Record<DocumentStyle["locale"], Strings> = {
     investment: "Investment",
     blankName: "Blank",
     blankDescription:
-      "Only the header with the title and number, no fields, to set up from scratch.",
+      "Only the header, to build with your AI assistant over MCP.",
   },
 };
 
@@ -111,6 +117,8 @@ function starters(locale: DocumentStyle["locale"]): DocumentStarter[] {
     {
       key: "quote",
       name: s.quoteName as string,
+      summary: s.quoteDescription as string,
+      suggestedName: s.quoteName as string,
       description: s.quoteDescription as string,
       numberPrefix: s.quotePrefix as string,
       style: base,
@@ -161,6 +169,8 @@ function starters(locale: DocumentStyle["locale"]): DocumentStarter[] {
     {
       key: "proposal",
       name: s.proposalName as string,
+      summary: s.proposalDescription as string,
+      suggestedName: s.proposalName as string,
       description: s.proposalDescription as string,
       numberPrefix: s.proposalPrefix as string,
       style: base,
@@ -226,6 +236,8 @@ function starters(locale: DocumentStyle["locale"]): DocumentStarter[] {
     {
       key: "receipt",
       name: s.receiptName as string,
+      summary: s.receiptDescription as string,
+      suggestedName: s.receiptName as string,
       description: s.receiptDescription as string,
       numberPrefix: s.receiptPrefix as string,
       style: base,
@@ -280,7 +292,9 @@ function starters(locale: DocumentStyle["locale"]): DocumentStarter[] {
     {
       key: "blank",
       name: s.blankName as string,
-      description: s.blankDescription as string,
+      summary: s.blankDescription as string,
+      suggestedName: "",
+      description: null,
       numberPrefix: "",
       style: base,
       fields: [],

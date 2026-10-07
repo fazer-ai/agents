@@ -667,6 +667,34 @@ describe("footerReserve", () => {
     expect(drawn).toContain("TOLERÂNCIA (µM)");
   });
 
+  // The starters' footer joins the company name and the number. With no company name the
+  // separator would hang at the start of the line.
+  test("a footer whose company name is empty prints no leading separator", async () => {
+    const starter = documentStarters("pt-BR")[0];
+    if (!starter) throw new Error("no starter");
+    const parsed = parseTemplateContent(starter.blocks, starter.fields, {});
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const bytes = await renderDocumentPdf({
+      blocks: parsed.content.blocks,
+      fields: parsed.content.fields,
+      style: starter.style,
+      values: sampleValues(
+        parsed.content.fields,
+        new Date("2026-09-05T12:00:00Z"),
+      ),
+      company: { ...COMPANY, name: "" },
+      meta: META,
+    });
+    const pdf = await getDocumentProxy(new Uint8Array(bytes));
+    const page = await pdf.getPage(1);
+    const strings = (await page.getTextContent()).items
+      .filter((item) => "str" in item)
+      .map((item) => (item as { str: string }).str.trim())
+      .filter((str) => str.length > 0);
+    expect(strings.some((str) => str.startsWith("·"))).toBe(false);
+    expect(strings.some((str) => str === META.number)).toBe(true);
+  });
+
   // The footer text and the page number share one row: a long footer wraps in what the number
   // leaves, and never runs under it.
   test("a long footer wraps beside the page number instead of under it", async () => {

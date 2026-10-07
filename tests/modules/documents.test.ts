@@ -504,6 +504,39 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     expect(thrown?.statusCode).toBe(409);
   });
 
+  // The sample values are written in the document's language, so an English template does not
+  // preview with Portuguese line items.
+  test("a preview fills its samples in the template's language", async () => {
+    const draft = (locale: "pt-BR" | "en-US") => ({
+      name: "Amostra",
+      blocks: [
+        { id: "t", type: "text", text: "Olá {{cliente}}" },
+        { id: "i", type: "lineItems", field: "itens" },
+      ],
+      fields: [
+        { name: "cliente", label: "Cliente", type: "text" },
+        { name: "itens", label: "Itens", type: "lineItems" },
+      ],
+      style: { locale },
+    });
+    const text = async (bytes: Buffer) => {
+      const { getDocumentProxy } = await import("unpdf");
+      const pdf = await getDocumentProxy(new Uint8Array(bytes));
+      const page = await pdf.getPage(1);
+      return (await page.getTextContent()).items
+        .map((item) => ("str" in item ? item.str : ""))
+        .join(" ");
+    };
+    const en = await text(
+      await previewDocumentTemplate(ctx(tenantA), draft("en-US"), appDb),
+    );
+    const pt = await text(
+      await previewDocumentTemplate(ctx(tenantA), draft("pt-BR"), appDb),
+    );
+    expect(en.includes("Initial consultation")).toBe(true);
+    expect(pt.includes("Consultoria inicial")).toBe(true);
+  });
+
   test("previews an unsaved draft without issuing anything", async () => {
     const before = await listIssuedDocuments(ctx(tenantA), {}, appDb);
     const bytes = await previewDocumentTemplate(

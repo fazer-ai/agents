@@ -111,6 +111,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         {
           key: "quote",
           name: `modelo-${locale}`,
+          summary: "",
+          suggestedName: `modelo-${locale}`,
           description: "",
           blocks: 3,
           style: { locale },
@@ -118,6 +120,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         {
           key: "receipt",
           name: `recibo-${locale}`,
+          summary: "",
+          suggestedName: `recibo-${locale}`,
           description: "",
           blocks: 2,
           style: { locale },

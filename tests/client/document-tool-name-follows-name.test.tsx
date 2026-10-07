@@ -11,10 +11,10 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// The tool name follows the name, and the operator can still override it. The slug becomes the
-// agent's tool (`send_<slug>`), so the name is the source and every keystroke re-derives it; a slug
-// typed by hand survives until the name is edited again. That last clause is a deliberate asymmetry
-// (the name wins), invisible in the code: one `setSlug` call inside the name's onChange.
+// Renaming a template keeps its tool name, as an MCP or API rename does: the slug becomes the agent's
+// tool (`send_<slug>`), and a prompt that mentions it must not stop working because the template was
+// renamed. The tool name the new name would derive is offered, and taking it is an explicit click
+// that warns what stops working.
 
 const { DocumentTemplateModal } = await import(
   "@/client/pages/resources/documents/DocumentTemplateModal"
@@ -129,47 +129,54 @@ function slugValue(): string {
   return toolInput().value;
 }
 
-test("renaming the template re-derives the tool name as you type", async () => {
+test("renaming the template keeps the tool name and offers the new one", async () => {
   const name = await open();
 
   fireEvent.change(name, { target: { value: "Contrato de Prestação" } });
 
   await waitFor(() => {
-    expect(slugValue()).toBe("contrato_de_prestacao");
+    expect(document.body.textContent).toContain("send_contrato_de_prestacao");
   });
-  // And the resulting tool name is spelled out, because `contrato_de_prestacao` alone does not tell
-  // the operator what the model is offered.
-  expect(document.body.textContent).toContain("send_contrato_de_prestacao");
+  expect(slugValue()).toBe("orcamento");
 });
 
-test("the save carries the new slug, so the agent's tool is renamed too", async () => {
+test("a rename alone saves the same tool name", async () => {
   const name = await open();
   fireEvent.change(name, { target: { value: "Contrato" } });
-  await waitFor(() => {
-    expect(slugValue()).toBe("contrato");
-  });
 
   fireEvent.click(await screen.findByText(/^(Save|Salvar)$/));
 
   await waitFor(() => {
     expect(patches.length).toBe(1);
   });
+  expect(patches[0]?.name).toBe("Contrato");
+  expect(patches[0]?.slug ?? "orcamento").toBe("orcamento");
+});
+
+test("taking the offered tool name warns, and the save carries it", async () => {
+  const name = await open();
+  fireEvent.change(name, { target: { value: "Contrato" } });
+  fireEvent.click(await screen.findByText(/send_contrato/));
+
+  await waitFor(() => {
+    expect(slugValue()).toBe("contrato");
+  });
+  expect(document.body.textContent).toMatch(/send_orcamento/);
+
+  fireEvent.click(await screen.findByText(/^(Save|Salvar)$/));
+  await waitFor(() => {
+    expect(patches.length).toBe(1);
+  });
   expect(patches[0]).toMatchObject({ name: "Contrato", slug: "contrato" });
 });
 
-test("a slug typed by hand sticks, until the name is edited again", async () => {
+test("a tool name typed by hand survives a later rename", async () => {
   const name = await open();
 
   fireEvent.change(toolInput(), { target: { value: "proposta_v2" } });
-  await waitFor(() => {
-    expect(slugValue()).toBe("proposta_v2");
-  });
-  // NOTE: A DIFFERENT name, not the one already in the field: `fireEvent.change` with an unchanged value
-  // dispatches nothing, so the hand-typed slug would "survive" an event that never happened.
   fireEvent.change(name, { target: { value: "Recibo" } });
-  await waitFor(() => {
-    expect(slugValue()).toBe("recibo");
-  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(slugValue()).toBe("proposta_v2");
 });
 
 test("an unusable slug is refused in the field, and no request is made", async () => {

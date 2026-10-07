@@ -76,7 +76,10 @@ import {
   recordMediaRefusal,
   refusedCovers,
 } from "@/modules/contact-auth/media-refusal";
-import { observerArmPermit } from "@/modules/contact-auth/observer";
+import {
+  observerArmPermit,
+  observerRuleVerdict,
+} from "@/modules/contact-auth/observer";
 import {
   RULE_CONVERSATION_TYPE,
   RULE_LABEL,
@@ -4556,10 +4559,24 @@ export async function processChatwootDelivery(
       observing && observer === null && n.message?.id != null
         ? mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)
         : null;
+    // The endpoint's answer is what is reused; the conditions are asked again, since a label
+    // removed since then takes the conversation out of scope.
     const lateAdmitted =
       !isNewIncoming &&
       watcherAdmission !== null &&
-      mediaAlreadyAdmitted(watcherAdmission);
+      n.conversationId !== null &&
+      mediaAlreadyAdmitted(watcherAdmission) &&
+      (await observerRuleVerdict(
+        {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId,
+          agentId: rt.agentId,
+          settings: rt.settings,
+          base,
+        },
+        { emit: false },
+      )) === "allowed";
     if (gateAsksNext) {
       mediaAwaitsGate = true;
     } else if (

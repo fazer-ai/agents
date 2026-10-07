@@ -912,6 +912,27 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(await runnableObserveRows(37)).toEqual([]);
   });
 
+  // The allow the late update reuses is the endpoint's: the conditions are asked again, so an
+  // update arriving after the conversation left them is not transcribed.
+  test("a bound watcher's late update is not transcribed once the conditions no longer cover it", async () => {
+    await setGate({
+      enabled: true,
+      rule: GROUP_ONLY,
+      url: AUTH_URL,
+      askEndpointAfterRule: true,
+    });
+    const messageId = await deliverMessage(38, "group", false, BOUND_INBOX);
+    expect(providers.stt).toBe(1);
+    await deliverMessage(38, "individual", false, BOUND_INBOX, { messageId });
+    expect(providers.stt).toBe(1);
+    expect(providers.auth).toBe(1);
+    // The update was put to the conditions, which refused it.
+    expect((await gateLines(38)).map((l) => l.detail)).toEqual([
+      expect.objectContaining({ outcome: "allowed" }),
+      expect.objectContaining({ outcome: "denied", stage: "rule" }),
+    ]);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

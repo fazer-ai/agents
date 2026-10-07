@@ -1829,6 +1829,28 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(stub.calls.unassignConversation).toBe(0);
     });
 
+    // A transfer landing during the status call is past the last check that could refuse, so the
+    // read after it withholds the origin inbox's bot and the plain unassign removes the person.
+    test("a move during the status call does not hand it to the origin inbox's bot", async () => {
+      await held();
+      const stub = makeStub({
+        assigneeType: "User",
+        assigneeId: 7,
+        inboxId: 9,
+        movedTo: 91,
+        movedFromRead: 3,
+      });
+      await returnConversationToAgent(
+        ctx(tenant),
+        convId,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      expect(stub.calls.toggleStatus).toEqual(["pending"]);
+      expect(stub.calls.assignAgentBot).toEqual([]);
+      expect(stub.calls.unassignConversation).toBe(1);
+    });
+
     // ...and an unreadable confirmation is a blip, not a move: it fails open like every other live
     // answer on this path.
     test("an unreadable confirmation still hands back", async () => {

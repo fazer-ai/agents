@@ -2374,14 +2374,21 @@ export async function returnConversationToAgent(
   const nobodyToRemove =
     live !== null && live.assigneeStated === true && live.assigneeType === null;
   let handedToBot = alreadyOurs;
-  // The bot assignment also sets `pending`, so it is only sent while the read after the status call
-  // still says pending: somebody who resolved or opened it meanwhile keeps that status, and the plain
-  // unassign (which leaves the status alone) takes its place.
+  // The bot assignment also sets `pending` and names the bot of the inbox the hand-back was judged
+  // on, so it is only sent while the read after the status call still says pending on that inbox:
+  // a conversation resolved, opened or transferred meanwhile gets the plain unassign instead, which
+  // leaves the status alone and names no bot.
   let attempted = false;
+  const stillJudgedInbox =
+    live === null ||
+    live.inboxId === null ||
+    judgedInboxId === null ||
+    live.inboxId === judgedInboxId;
   if (newHolder === null && !alreadyOurs) {
     try {
       if (
         ourAgentBotId !== null &&
+        stillJudgedInbox &&
         (live === null || live.status === "pending")
       ) {
         attempted = true;

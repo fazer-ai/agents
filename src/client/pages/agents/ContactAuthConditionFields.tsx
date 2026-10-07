@@ -17,6 +17,7 @@ import {
   type ContactAuthConditionForm,
   type ContactAuthRuleForm,
   contactAuthConditionInvalid,
+  contactAuthRuleInvalid,
   newContactAuthConditionForm,
 } from "./contactAuthRuleForm";
 
@@ -245,6 +246,17 @@ export function ContactAuthConditionList({
           )}
         </p>
       )}
+      {showErrors &&
+        rows.length > 0 &&
+        !rows.some(contactAuthConditionInvalid) &&
+        contactAuthRuleInvalid(form) && (
+          <p className="text-error text-xs">
+            {t(
+              "editor.contactAuthRuleListsTooLong",
+              "The lists in this rule hold more than 500 entries in total.",
+            )}
+          </p>
+        )}
       {rows.length < CONTACT_AUTH_RULE_CONDITIONS_MAX && (
         <div>
           <Button

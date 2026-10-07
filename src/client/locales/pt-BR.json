@@ -1205,6 +1205,7 @@
     "contactAuthRuleLabel": "Etiqueta",
     "contactAuthRuleLabelHint": "A conversa tem esta etiqueta do Chatwoot. Maiúsculas e minúsculas não importam.",
     "contactAuthRuleListInvalid": "A lista precisa de 1 a 500 itens no total; cada telefone precisa de 8 a 15 dígitos e cada identificador de até 200 caracteres.",
+    "contactAuthRuleListsTooLong": "As listas desta regra somam mais de 500 itens.",
     "contactAuthRulePhones": "Telefones",
     "contactAuthRulePhonesHint": "Um por linha, com o código do país (+55 11 99999-0000). Comparados pelos dígitos, nunca pelo final do número.",
     "contactAuthRuleRemoveCondition": "Remover condição",

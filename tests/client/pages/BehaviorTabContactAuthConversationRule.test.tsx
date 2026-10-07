@@ -152,6 +152,33 @@ describe("the gate's section in the editor", () => {
     expect(saveBlocked()).toBe(true);
   });
 
+  test("lists that are each fine but exceed the rule's cap together say why the save is blocked", () => {
+    const ids = (from: number, n: number) =>
+      Array.from({ length: n }, (_, i) => `id-${from + i}`).join("\n");
+    const row = (identifiers: string) => ({
+      ...EMPTY_CONTACT_AUTH_RULE_FORM,
+      ruleKind: "allowlist",
+      ruleIdentifiers: identifiers,
+    });
+    const tooLong = () =>
+      count(
+        /^(The lists in this rule hold more than 500 entries in total\.|As listas desta regra somam mais de 500 itens\.)$/,
+      );
+    renderGate({
+      ruleKind: "any",
+      ruleConditions: [row(ids(0, 250)), row(ids(250, 251))],
+    });
+    expect(saveBlocked()).toBe(true);
+    expect(tooLong()).toBe(1);
+    cleanup();
+    renderGate({
+      ruleKind: "any",
+      ruleConditions: [row(ids(0, 250)), row(ids(250, 250))],
+    });
+    expect(saveBlocked()).toBe(false);
+    expect(tooLong()).toBe(0);
+  });
+
   test("a combination starts empty, says so, and grows a row per click", () => {
     renderGate({ ruleKind: "all" });
     expect(rowCount()).toBe(0);

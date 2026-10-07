@@ -1176,6 +1176,7 @@
     "contactAuthRuleLabel": "Label",
     "contactAuthRuleLabelHint": "The conversation carries this Chatwoot label. Compared without case.",
     "contactAuthRuleListInvalid": "The list needs 1 to 500 entries in total; each phone needs 8 to 15 digits and each identifier at most 200 characters.",
+    "contactAuthRuleListsTooLong": "The lists in this rule hold more than 500 entries in total.",
     "contactAuthRulePhones": "Phones",
     "contactAuthRulePhonesHint": "One per line, with the country code (+55 11 99999-0000). Compared by digits, never by the end of the number.",
     "contactAuthRuleRemoveCondition": "Remove condition",

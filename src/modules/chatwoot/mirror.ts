@@ -419,6 +419,7 @@ export async function mirrorChatwootEvent(
                       n.kanbanAttributes as Prisma.InputJsonValue,
                   }
                 : {}),
+              ...(n.labels !== undefined ? { labels: n.labels } : {}),
               ...(decision.redirectOrigin
                 ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
                 : {}),
@@ -507,6 +508,10 @@ export async function mirrorChatwootEvent(
               ? {
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
+              : {}),
+            // The label list, on the bags' terms: assigned whole, by recency, and only when carried.
+            ...(decision.unversioned && n.labels !== undefined
+              ? { labels: n.labels }
               : {}),
             // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget
             // conversation can be re-entered from a second WhatsApp thread, and every payload carries

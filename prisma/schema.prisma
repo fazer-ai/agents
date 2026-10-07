@@ -831,6 +831,9 @@ model Conversation {
   // attribute-context block. kanbanAttributes stays {} on upstream Chatwoot (no card in the payload).
   customAttributes             Json      @default("{}") @map("custom_attributes")
   kanbanAttributes             Json      @default("{}") @map("kanban_attributes")
+  // The conversation's Chatwoot label titles as the last applied event stated them (push_data.labels),
+  // for the dashboard's outcome-by-label view. Empty until an event carrying them arrives.
+  labels                       String[]  @default([])
   lastEventAt                  DateTime? @map("last_event_at")
   // Ordering watermark for conversation-level STATE (status + assignee), mirrored from the payload's
   // conversation `updated_at` — the source row's version stamp, which advances on every write to it,

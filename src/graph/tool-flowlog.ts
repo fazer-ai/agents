@@ -2,7 +2,8 @@ import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { Serialized } from "@langchain/core/load/serializable";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
-import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import { SKIP_REPLY_TOOL, skipReplyReasonOf } from "@/graph/silence";
+import { HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type DeclaredKeys, describeShape } from "@/modules/flowlog/shape";
@@ -126,6 +127,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   // transfer WITH a closing line from one with nothing to say. Absent where there is no turn to ask
   // (playground, observe runner), and absent is not `false`: the reader treats it as unknown.
   private readonly turnDelivered?: () => boolean;
+  private readonly handedOff?: () => boolean;
   private readonly starts = new Map<
     string,
     { tool: string; at: number; args: unknown }
@@ -147,11 +149,14 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       logValues?: boolean;
       tools?: readonly StructuredToolInterface[];
       turnDelivered?: () => boolean;
+      // Whether this turn's transfer to a person actually happened (`handoffState.completed`).
+      handedOff?: () => boolean;
     } = {},
   ) {
     super();
     this.flow = flow;
     this.turnDelivered = opts.turnDelivered;
+    this.handedOff = opts.handedOff;
     this.logValues = opts.logValues === true;
     this.describe = this.logValues ? (value) => value : describeShape;
     this.declaredKeys = declaredKeysByTool(opts.tools ?? []);
@@ -205,6 +210,8 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         // alongside the tool that speaks (the documented parallel batch), and ToolNode runs a batch
         // concurrently: at the start of a 0ms decision the companion has not recorded anything yet.
         ...this.deliveryStamp(s.tool),
+        ...skipReasonStamp(s.tool, output),
+        ...this.handoffStamp(s.tool),
       },
       ...(failed ? { errorMessage: cause } : {}),
     });
@@ -261,6 +268,14 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     return { turnDelivered: this.turnDelivered() };
   }
 
+  // `handoff_to_human` returns normally when it declines (the run was called off while its note was
+  // in flight), so a clean return is not a transfer. The turn's own mark is: the dashboard counts the
+  // agent's handoffs by it. Absent where nobody can answer, as the delivery stamp is.
+  private handoffStamp(tool: string): { handedOff?: boolean } {
+    if (tool !== HANDOFF_TOOL_NAME || !this.handedOff) return {};
+    return { handedOff: this.handedOff() };
+  }
+
   override handleToolError(err: unknown, runId: string): void {
     const s = this.starts.get(runId);
     if (!s) return;
@@ -276,4 +291,17 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       errorMessage: cause,
     });
   }
+}
+
+// `skip_reply`'s reason, recorded as its value: a closed vocabulary (acknowledged, not_for_us,
+// needs_human) the model picks, not text it writes, so it says nothing about the customer and the
+// shape rule for tool arguments (docs/logs.md) does not need to hide it. The dashboard counts the
+// silences by it. Absent on every other tool's line, and on a skip whose result carried no mark.
+function skipReasonStamp(
+  tool: string,
+  output: unknown,
+): { skipReason?: string } {
+  if (tool !== SKIP_REPLY_TOOL) return {};
+  const reason = skipReplyReasonOf(output);
+  return reason ? { skipReason: reason } : {};
 }

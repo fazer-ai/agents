@@ -3222,6 +3222,16 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       // The transfer did happen (its private note is filed), and nothing closed after it.
       expect(log.notes).toContain("cliente pediu atendimento humano");
       expect(statuses).toEqual(["open"]);
+      // ...and the tool's line says so, which is what the dashboard counts the handoff by.
+      const handoffLine = (await stageLines("tool"))
+        .filter(
+          (l) =>
+            (l.detail as { tool?: string } | null)?.tool === "handoff_to_human",
+        )
+        .at(-1);
+      expect(
+        (handoffLine?.detail as { handedOff?: boolean } | undefined)?.handedOff,
+      ).toBe(true);
       expect(log.publicSends).toBe(0);
       const conv = await suDb.conversation.findUnique({
         where: { id: convRowId },

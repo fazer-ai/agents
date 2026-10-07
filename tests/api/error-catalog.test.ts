@@ -123,6 +123,8 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
 
   // Acronyms, units and format strings: no letters to translate, or none outside a placeholder.
   "dashboard.absolute",
+  "dashboard.col.percentileMs",
+  "dashboard.exportCsv",
   "dashboard.percent",
   "dashboard.range.30d",
   "dashboard.range.7d",
@@ -151,6 +153,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "agents.statusLabel",
   "auth.email",
   "common.email",
+  "dashboard.col.total",
   "dashboard.source.inbox",
   "editor.contactAuthTimeout",
   "editor.promptEditorLabel",
@@ -189,9 +192,11 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "conversation.followUp.badge",
   "conversation.followUp.badgeN",
   "conversation.followUp.scheduled",
+  "dashboard.followups.title",
   "dashboard.inbox",
+  "dashboard.node.guardrail",
+  "dashboard.node.nudge",
   "dashboard.source.playground",
-  "dashboard.tokensHint",
   "editor.channelRedirect.navFollowup",
   "editor.channelRedirect.step4Title",
   "editor.observability",
@@ -929,7 +934,7 @@ describe("both languages answer, and answer differently", () => {
     expectWaiverLedger(
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
-      hasProOnlyKeys ? 104 : 102,
+      hasProOnlyKeys ? 109 : 107,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

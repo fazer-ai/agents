@@ -194,6 +194,9 @@ export interface NormalizedChatwootEvent {
   // The CONVERSATION's custom attributes (conversation.custom_attributes on EventDataPresenter
   // push_data). Mirrored for the agent's attribute context. `undefined` ⇒ absent from this payload.
   customAttributes?: Record<string, unknown>;
+  // The conversation's label titles (push_data.labels, the conversation's `label_list`). Mirrored for
+  // the dashboard's outcome-by-label view. `undefined` ⇒ absent from this payload; `[]` ⇒ no labels.
+  labels?: string[];
   // The linked kanban CARD's custom attributes (conversation.kanban_task.custom_attributes — the Pro
   // fork's FazerAi::Conversations::EventDataPresenter adds `kanban_task` to push_data, and
   // Kanban::Task#common_event_data carries `custom_attributes`). `undefined` ⇒ absent (upstream

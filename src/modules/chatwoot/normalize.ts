@@ -273,6 +273,12 @@ export function normalizeChatwootEvent(
   // and the fork's push_data.kanban_task), so the agent's attribute context needs NO extra API call.
   const convAttrs = conv ? attrs(conv.custom_attributes) : undefined;
   if (convAttrs) normalized.customAttributes = convAttrs;
+  // The whole list rides along with the bags, so it is assigned, never merged. A payload whose
+  // `labels` is not a list says nothing, and the stored list stays.
+  if (conv && Array.isArray(conv.labels))
+    normalized.labels = conv.labels.filter(
+      (l): l is string => typeof l === "string" && l.length > 0,
+    );
   const kanbanTask =
     conv && isRecord(conv.kanban_task) ? conv.kanban_task : null;
   const taskAttrs = kanbanTask

@@ -21,7 +21,7 @@ import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWrite } from "@/graph/tools/label-writes";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
-import { buildNativeTools } from "@/graph/tools/native";
+import { buildNativeTools, type HandoffTurnState } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
 import { failureDetail } from "@/lib/provider-failure";
@@ -1242,6 +1242,13 @@ export async function runObserve(
   // ...AND IT COVERS DISCOVERY, which is the one call that can hang forever: `buildToolset` contacts
   // every MCP server the agent has, and an SSE server that opens the stream and never emits its
   // endpoint waits with no timeout of its own.
+  // NOTE: not for delivering anything (a muted client cannot): it lets `resolve_conversation` see
+  // that THIS turn transferred the conversation, and refuse to close what the human queue now owns;
+  // and it is what the tool's flow line reads to say whether the transfer happened.
+  const handoffState: HandoffTurnState = {
+    customerMessage: null,
+    completed: false,
+  };
   let tools: Awaited<ReturnType<typeof buildToolset>>;
   try {
     tools = await underSignal(
@@ -1266,10 +1273,7 @@ export async function runObserve(
             if (counted.has(toolName)) noEffect++;
           },
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
-          // NOTE: not for delivering anything (a muted client cannot): it lets
-          // `resolve_conversation` see that THIS turn transferred the conversation, and refuse to
-          // close what the human queue now owns.
-          handoffState: { customerMessage: null, completed: false },
+          handoffState,
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
           // degradation if that fails too — one extra request on the failing path only.
           ...(current === null ? {} : { conversationLabels: current }),
@@ -1464,6 +1468,7 @@ export async function runObserve(
   const toolLogger = new ToolFlowLogger(flow, {
     logValues: cfg.logToolValues,
     tools,
+    handedOff: () => handoffState.completed === true,
   });
   // NOTE: A DEADLINE, because this tick runs on the SHARED scheduler (see `OBSERVE_TIMEOUT_MS`).
   // Both halves: the config's signal cancels the provider request, and `underSignal` guarantees

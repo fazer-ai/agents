@@ -95,6 +95,8 @@
      and let DOM order stack them, because several modals can be open at once and
      a lower overlay layer cannot dim a sibling modal's content. See docs/modals.md.
      The drawer keeps the two-token form: only one drawer is ever open. */
+  /* A page's own sticky header (the dashboard's filters): above the page's content, under everything. */
+  --z-page-sticky: 5;
   --z-sidebar: 10;
   --z-sidebar-toggle: 20;
   --z-drawer-overlay: 40;

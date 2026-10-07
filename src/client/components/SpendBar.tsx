@@ -83,14 +83,18 @@ export function SpendBar({
 // Everything the figure above cannot be trusted for, said beside it or said nowhere: when it was
 // last refreshed, whether the poll is failing, and which calls of the month it leaves out for want of
 // a price. With the ceiling off the figure is summed at read time, so only that last line applies.
+// `briefUnpriced` says only how many calls are left out, for a page that already names the models and
+// links to their prices beside the figure.
 export function SpendHealthLines({
   entry,
   when,
   enabled,
+  briefUnpriced,
 }: {
   entry: SpendUsageEntry | undefined;
   when: (iso: string) => string;
   enabled: boolean;
+  briefUnpriced?: boolean;
 }) {
   const { t } = useTranslation();
   if (!entry) return null;
@@ -126,7 +130,16 @@ export function SpendHealthLines({
           )}
         </span>
       )}
-      {entry.unpricedCalls > 0 && (
+      {entry.unpricedCalls > 0 && briefUnpriced && (
+        <span className="text-warning">
+          {t(
+            "spendCeiling.usage.unpricedBrief",
+            "{{n}} calls this month have no price and are not in this figure.",
+            { count: entry.unpricedCalls, n: entry.unpricedCalls },
+          )}
+        </span>
+      )}
+      {entry.unpricedCalls > 0 && !briefUnpriced && (
         <span className="text-warning">
           {t(
             "spendCeiling.usage.unpriced",

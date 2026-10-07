@@ -16,6 +16,7 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { codeOnly } from "@/tests/utils/source-text";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
@@ -672,5 +673,27 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       expect(logged?.caption).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("Maria");
     });
+  });
+});
+
+// EVERY TURN SETTLES ITS LOGGER. A tool that failed on every call is the turn's outcome only once
+// `settle()` runs, and only that line is `warn`: a logger built and never settled leaves those
+// failures at `info`, out of the health block and the alerts. So every logger the app builds is
+// held by name and settled in the same file.
+describe("every tool logger the app builds is settled", () => {
+  test("held by name, and that name settled", async () => {
+    const { Glob } = await import("bun");
+    const unsettled: string[] = [];
+    for await (const file of new Glob("src/**/*.ts").scan(".")) {
+      // Code only: a comment that names the class is not a logger.
+      const src = codeOnly(await Bun.file(file).text());
+      for (const m of src.matchAll(/new ToolFlowLogger\(/g)) {
+        const before = src.slice(0, m.index);
+        const bound = /const (\w+)\s*=\s*$/.exec(before);
+        if (!bound || !src.includes(`${bound[1]}.settle()`))
+          unsettled.push(`${file}:${before.split("\n").length}`);
+      }
+    }
+    expect(unsettled).toEqual([]);
   });
 });

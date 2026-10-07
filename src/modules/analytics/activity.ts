@@ -67,6 +67,9 @@ const CAUSE_SQL = Prisma.sql`(CASE
               SELECT 1 FROM llm_usage u
                WHERE u.conversation_id = l.conversation_id
                  AND u.source = 'inbox' AND ${agentTurnSql("u")}
+                 -- A LATER turn: the model call that follows the transfer inside its own turn
+                 -- (the graph goes back to the model after a tool) is not the agent resuming.
+                 AND u.turn_id IS DISTINCT FROM p.turn_id
                  AND u.created_at > p.created_at AND u.created_at < l.created_at))
     THEN 'person'
   END)`;

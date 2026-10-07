@@ -1337,9 +1337,36 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
           createdAt: new Date(at),
         },
       });
-    await line("2026-09-05T10:00:00Z", "tool", {
-      tool: "handoff_to_human",
-      handedOff: true,
+    const transferTurn = crypto.randomUUID();
+    await suDb.executionLog.create({
+      data: {
+        tenantId: ex.tenantId,
+        turnId: transferTurn,
+        conversationId: conv,
+        inboxId: ex.i1,
+        stage: "tool",
+        status: "ok",
+        source: "inbox",
+        detail: { tool: "handoff_to_human", handedOff: true },
+        createdAt: new Date("2026-09-05T10:00:00Z"),
+      },
+    });
+    // The graph goes back to the model after the tool, in the same turn: not the agent resuming.
+    await suDb.llmUsage.create({
+      data: {
+        tenantId: ex.tenantId,
+        agentId: ex.a1,
+        inboxId: ex.i1,
+        conversationId: conv,
+        source: "inbox",
+        model: "m1",
+        node: "agent",
+        turnId: transferTurn,
+        promptTokens: 1,
+        completionTokens: 1,
+        costUsd: 0,
+        createdAt: new Date("2026-09-05T10:00:01Z"),
+      },
     });
     // The customer writes again; the gate meets the person the agent handed the conversation to.
     await line("2026-09-06T10:00:00Z", "handoff", { outcome: "taken_over" });

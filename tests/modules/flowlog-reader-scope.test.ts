@@ -146,7 +146,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/ingest.test.ts": 2,
   "tests/graph/label-allowed-wiring.test.ts": 1,
   // NOTE: A turn a gate stopped writes no closing line, which only a read can show.
-  "tests/graph/nudge.test.ts": 6,
+  "tests/graph/nudge.test.ts": 7,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // NOTE: A withdrawn turn closes on no line.
   "tests/graph/read-receipt-turn.test.ts": 1,

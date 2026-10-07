@@ -1802,6 +1802,20 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(s.statuses).toEqual([[9690, "open"]]);
       expect(s.assignments).toEqual([[9690, "team:4"]]);
       expect(s.order.slice(0, 3)).toEqual(["resolve", "assign", "note"]);
+      // The follow-up's own tool call is on the flow log with its reason, as a reactive turn's is,
+      // so the dashboard counts this silence with the rest.
+      await settleFlowEvents();
+      const toolLines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "tool",
+          threadId: `${tenantId}:${instanceId}:9690`,
+        },
+        select: { detail: true },
+      });
+      expect(
+        toolLines.map((r) => (r.detail as { skipReason?: string }).skipReason),
+      ).toEqual(["needs_human"]);
     } finally {
       await suDb.agent.update({
         where: { id: agent.id },

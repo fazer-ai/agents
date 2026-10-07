@@ -100,6 +100,7 @@ import {
   resolvedThisTurn,
   skipHandoverKind,
 } from "./skip-handover";
+import { ToolFlowLogger } from "./tool-flowlog";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
 
@@ -1494,16 +1495,25 @@ async function runAgentNudgeBody(
         },
       }),
   });
-  const callbacks = buildCallbacks(cfg, {
-    tenantId,
-    threadId: params.threadId,
-    base,
-    persistUsage: params.deps?.persistUsage,
-    node: "nudge",
-    // Same id as the ExecutionLog turn → the Langfuse trace correlates 1:1 with our Logs.
-    turnId: flow.turnId,
-    tools,
-  });
+  const callbacks = [
+    ...buildCallbacks(cfg, {
+      tenantId,
+      threadId: params.threadId,
+      base,
+      persistUsage: params.deps?.persistUsage,
+      node: "nudge",
+      // Same id as the ExecutionLog turn → the Langfuse trace correlates 1:1 with our Logs.
+      turnId: flow.turnId,
+      tools,
+    }),
+    // Its tool calls on the flow log, as a reactive turn's are: a follow-up that hands over or stays
+    // silent is counted where every other one is (docs/dashboard.md).
+    new ToolFlowLogger(flow, {
+      logValues: cfg.logToolValues,
+      tools,
+      handedOff: () => handoffState.completed === true,
+    }),
+  ];
   const invokeConfig = {
     // LangGraph counts SUPER-STEPS and its default 25 runs out at about twelve tool rounds, so a
     // budget the operator is allowed to set (1-50) would throw instead of ending at the budget.

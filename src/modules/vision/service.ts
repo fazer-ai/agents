@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { recordDirectUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { shareInFlight } from "@/lib/locks";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   fileReadFor,
@@ -135,6 +136,25 @@ export async function extractWithRetry(args: {
   const now = args.now ?? (() => performance.now());
   const startedAt = now();
   let lastErr: unknown;
+  // The attempt whose failure line promised another one, while that promise is still open. The loop
+  // can still stop without keeping it (the wait overslept the budget, the caller's deadline came), and
+  // then the extraction ended unread with only an `info` line behind it.
+  let promisedAfter: number | null = null;
+  // Whether the loop will start another attempt after this one fails with `err`: the same three
+  // readings the top of the loop makes, taken before the wait instead of after it.
+  const retryFollows = (attempt: number, err: unknown): boolean => {
+    if (!isTransientVisionFailure(err) || args.signal?.aborted) return false;
+    const delayMs = retryDelayMs(attempt + 1);
+    if (delayMs === null) return false;
+    return (
+      attemptBudgetMs({
+        kind,
+        attempt: attempt + 1,
+        elapsedMs: now() - startedAt + delayMs,
+        customEndpoint,
+      }) !== null
+    );
+  };
   for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
     const delayMs = retryDelayMs(attempt);
     if (delayMs === null) break;
@@ -173,9 +193,17 @@ export async function extractWithRetry(args: {
           // do not carry the same number: the last attempt gets what is left of the total. Without
           // it a 39s timeout reads as a slow provider rather than as the budget running out.
           detail: { kind, attempt, budgetMs },
-          // NOTE: Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not
-          // a red error — same contract as TTS.
-          errorLevel: "warn",
+          // NOTE: An attempt followed by another is `info`, flagged `willRetry`. The one that ends
+          // the extraction is a `warn` naming what went unread: the turn recovers with the "couldn't
+          // extract" marker, so it is an advisory and not a red error, the same contract as TTS.
+          failureOf: (err) => {
+            if (retryFollows(attempt, err)) {
+              promisedAfter = attempt;
+              return { level: "info", detail: { willRetry: true } };
+            }
+            promisedAfter = null;
+            return { level: "warn", detail: { unread: kind } };
+          },
         },
         () => args.provider.extract({ ...args.req, timeoutMs: budgetMs }),
       );
@@ -185,6 +213,18 @@ export async function extractWithRetry(args: {
       if (!isTransientVisionFailure(err)) throw err;
       lastErr = err;
     }
+  }
+  // NOTE: The retry the last line announced did not happen, so this is the outcome line it deferred.
+  if (promisedAfter !== null && args.flow) {
+    emitFlowEvent(args.flow, {
+      stage: "vision",
+      level: "warn",
+      status: "error",
+      provider: args.providerName,
+      model: args.model,
+      detail: { kind, attempt: promisedAfter, unread: kind },
+      errorMessage: sanitizeErrorMessage(lastErr),
+    });
   }
   // NOTE: Reached when the attempts, the budget or the caller's deadline ran out, and by the loop's
   // own bound, so stopping never depends only on a rule that lives elsewhere. `lastErr` is unset

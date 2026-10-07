@@ -64,7 +64,7 @@ import {
 } from "@/modules/conversations/error";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import { armNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
-import { emitFlowEvent } from "@/modules/flowlog/service";
+import { emitFlowEvent, writeFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -74,6 +74,7 @@ import {
   type ClaimedJob,
   jobRetired,
   jobRetiredStrict,
+  jobRetriesAfterFailure,
 } from "@/modules/scheduler/service";
 import {
   type JobContext,
@@ -147,6 +148,9 @@ function err(e: unknown): string {
 export interface CoalesceTurnContext {
   // The scheduler job's signal when a flush runs this; the re-engage has none.
   signal?: AbortSignal;
+  // Handed straight to `runLoadedTurn`: what the job does with this burst if the turn throws. Only
+  // the flush has a job; see the field on `RunLoadedTurnParams`.
+  afterThrow?: "retry" | "dead_letter";
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -787,6 +791,7 @@ export async function coalesceAndRunTurn(
   let foldedIn = false;
   const outcome = await runLoadedTurn({
     signal: ctx.signal,
+    afterThrow: ctx.afterThrow,
     // NOTE: Media extraction turns the window between the re-engage's owner check and the invoke
     // into minutes, so the ownership gate runs again after the wait.
     waitedBeforeInvoke: waitedOnMedia,
@@ -2224,6 +2229,7 @@ export async function flushDebounceJob(
     const outcome = await coalesceAndRunTurn(
       {
         signal: params.signal,
+        afterThrow: jobRetriesAfterFailure(job) ? "retry" : "dead_letter",
         tenantId,
         instanceId,
         conversationId,
@@ -2388,6 +2394,7 @@ export async function announceDeadDebounceFlush(
   if (!threadId) return;
   const parsed = parseThreadId(threadId);
   if (!parsed || parsed.tenantId !== job.tenantId) return;
+  await writeUnansweredLine(job, threadId, parsed, base);
   await announceFailedTurn({
     tenantId: job.tenantId,
     instanceId: parsed.instanceId,
@@ -2408,6 +2415,68 @@ export async function announceDeadDebounceFlush(
     error,
     base,
   });
+}
+
+// The outcome line the runs' own `generate` lines left to the death: each of them was `info`, because
+// a run with another one behind it had not lost the customer yet. This is the one that alerts. Read
+// against the row, like the note, so a burst re-armed by a new message (a turn that is coming) is not
+// reported as lost. Best-effort: a failed read or write costs the line, never the note.
+async function writeUnansweredLine(
+  job: ClaimedJob,
+  threadId: string,
+  parsed: { instanceId: bigint; conversationId: number },
+  base: PrismaClient,
+): Promise<void> {
+  try {
+    const [row, conv] = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+      Promise.all([
+        db.schedulerJob.findUnique({
+          where: { id: job.id },
+          select: { status: true, attempts: true },
+        }),
+        db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId: job.tenantId,
+              chatwootInstanceId: parsed.instanceId,
+              chatwootConversationId: parsed.conversationId,
+            },
+          },
+          select: {
+            id: true,
+            inboxId: true,
+            inbox: { select: { agentId: true } },
+          },
+        }),
+      ]),
+    );
+    if (row?.status !== "DEAD") return;
+    await writeFlowEvent(
+      {
+        tenantId: job.tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: conv?.id ?? null,
+        agentId: conv?.inbox?.agentId ?? null,
+        inboxId: conv?.inboxId ?? null,
+        threadId,
+        base,
+      },
+      {
+        stage: "generate",
+        level: "error",
+        status: "error",
+        detail: { outcome: "unanswered", runs: row.attempts },
+        errorMessage: `The customer's message went unanswered: the turn failed on all ${row.attempts} runs.`,
+      },
+    );
+  } catch (e) {
+    logger.warn(
+      "debounce flush: could not write the unanswered line (thread=%s): %s",
+      threadId,
+      err(e),
+    );
+  }
 }
 
 let registered = false;

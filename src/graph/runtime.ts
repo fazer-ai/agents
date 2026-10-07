@@ -324,6 +324,13 @@ export interface RunLoadedTurnParams {
   conversationId: number;
   agentBotId: number | null;
   threadId: string;
+  // What happens to this turn if `graph.invoke` throws, from the caller that would run it again.
+  // `retry`: the debounce job has attempts left and runs the burst again. `dead_letter`: this is the
+  // job's last attempt, and its death writes the line that says the customer went unanswered
+  // (../modules/debounce/handler.ts, `announceDeadDebounceFlush`). Either way the `generate` failure
+  // line is `info`, so a turn the next run answers pages nobody and the lost one pages once. Absent
+  // (a direct turn, the re-engage): nothing runs the turn again, and the line stays `error`.
+  afterThrow?: "retry" | "dead_letter";
   // Optional turn correlation id. The debounce flush passes the same id it used for its own
   // `debounce` flow line, so the coalescing and the turn's stages group together in the logs.
   turnId?: string;
@@ -1954,6 +1961,14 @@ async function runTurnBody(
         // NOTE: The resolved prompt of this turn is audited, since it is where the contact's data
         // entered (./prompt-audit.ts).
         detail: { systemPrompt: loaded.systemPromptAudit },
+        ...(params.afterThrow
+          ? {
+              failureOf: () => ({
+                level: "info" as const,
+                detail: { willRetry: params.afterThrow === "retry" },
+              }),
+            }
+          : {}),
       },
       () =>
         graph.invoke(

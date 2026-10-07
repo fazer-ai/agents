@@ -311,6 +311,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
+  // The line a dead debounce flush writes: a fixed sentence and a count, never the job's error.
+  "src/modules/debounce/handler.ts": [1, "flow-event"],
   // Both roads to DEAD write through one `finalizeDead`.
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
   // The follow-up sweep's reading of the failure backoff: the type of the row it is handed. And the
@@ -339,7 +341,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/stt/service.ts": [2, "flow-event"],
   // The audio check's "unavailable" line: a closed `audio check unavailable (<code>)`.
   "src/modules/tts/service.ts": [1, "flow-event"],
-  "src/modules/vision/service.ts": [2, "flow-event"],
+  "src/modules/vision/service.ts": [3, "flow-event"],
   // Three reads of `lastError`, and none of them a write: the DTO field, the projection that feeds
   // it, and the type. The ledger surfaces the column an operator uses to decide whether to requeue
   // and the value was sanitized where the worker stored it.
@@ -371,6 +373,8 @@ const GUARD_CALLS: Record<string, number> = {
   "src/modules/scheduler/service.ts": 3,
   // The ledger read's error text, before it reaches `poll_error`.
   "src/modules/spend-ceiling/poll.ts": 1,
+  // The line the retry loop writes for a retry it announced and could not start.
+  "src/modules/vision/service.ts": 1,
   "src/modules/webhooks/outbound/worker.ts": 1,
 };
 

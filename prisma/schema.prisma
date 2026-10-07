@@ -671,13 +671,11 @@ model InboxObserver {
   inbox  Inbox  @relation(fields: [inboxId], references: [id], onDelete: Cascade)
   agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
-  // ONE WATCHER PER INBOX, and the unique is on the inbox rather than on the pair (issue #476 review,
-  // round 8). The graph's memory thread is keyed by contact-inbox, NOT by agent, so two observers of
-  // one inbox write the same thread — the very duplicate this feature already refuses between an
-  // observer and a responder — and everything downstream (which route transcribes the audio, which
-  // one folds the message in) becomes a coordination problem with no owner. One watcher answers all
-  // of it. Lifting the cap is a memory change first, not a binding one.
-  @@unique([tenantId, inboxId])
+  // ONE ROW PER (INBOX, AGENT): an inbox carries as many watchers as it has rows. Nothing about
+  // observing is shared per inbox: the OBSERVE tick is stateless and keyed per conversation and
+  // agent, and the ingestion two routes can share (memory, STT, vision) is keyed per message, so it
+  // lands once.
+  @@unique([tenantId, inboxId, agentId])
   @@index([inboxId])
   @@index([agentId])
   @@map("inbox_observers")

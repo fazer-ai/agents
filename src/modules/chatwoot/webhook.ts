@@ -210,6 +210,7 @@ import {
   verifyChatwootSignature,
 } from "./signing";
 import type { NormalizedChatwootEvent } from "./types";
+import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
 // Dedicated Chatwoot Agent Bot webhook receiver: resolve tenant and instance by the opaque routeToken
 // (constant-time hash probe), verify the HMAC with the bot's stored secret (auth AFTER resolution),
@@ -3643,6 +3644,14 @@ export async function processChatwootDelivery(
   // Whether the watcher answer came from the attach window rather than a row. Only that answer
   // can: "no row" on the binding read is also the post-detach state of a bot owning an old conversation.
   const observerAttaching = observer?.attaching === true;
+  // On an observer's route, the inbox's watchers (`inboxWatchers`), for the memory owner. Read once,
+  // and only by a reader that runs.
+  let watchersMemo: ReturnType<typeof inboxWatchers> | null = null;
+  const watchers = (): ReturnType<typeof inboxWatchers> => {
+    if (observer === null) return Promise.resolve(null);
+    watchersMemo ??= inboxWatchers(params.tenantId, observer.inboxId, base);
+    return watchersMemo;
+  };
 
   // tx1: CAS <claimFrom> to PROCESSING; a duplicate that finds nothing to claim skips. Stamped
   // with `claimed_at`, the clock the sweep measures an attempt by. "PENDING" is a delivery arriving;
@@ -5224,15 +5233,18 @@ export async function processChatwootDelivery(
     // Whose memory the append is filed under, which decides whose compaction settings summarise
     // the attendance. Both routes can arm the same job (the observer appends a colleague's reply until
     // the responder's delivery finishes) and the later arm wins, so it is the responder whenever it
-    // received the message and remembers continuously; otherwise the route's own agent.
-    const memoryOwner =
+    // received the message and remembers continuously; beside other watchers, the first of them
+    // (`inboxWatchers`), the same answer on every watcher's route; otherwise the route's own agent.
+    const memoryOwner: { agentId: bigint; settings: unknown } =
       observer !== null &&
       responderRt !== null &&
       responderCovers &&
       responderRt.enabled &&
       ingestsContinuously(responderRt.mode)
         ? responderRt
-        : rt;
+        : observer !== null
+          ? watcherMemoryOwner(await watchers(), rt)
+          : rt;
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,

@@ -189,27 +189,22 @@ describe("the Channels tab of a watcher", () => {
     );
   });
 
-  // NOTE: removal survives a disconnected account: `unobserveInbox` asks no account, and the observer row
-  // is what blocks switching this agent out of monitoring or deleting it, so plain text would lock
-  // the operator out. The second observer is refused by the write (`observeInbox` answers 422
-  // `errors.inboxAlreadyObserved`: one watcher per inbox, since the memory thread is the
-  // contact-inbox's), so the editor does not offer it, like the main Channels page.
-  test("a switch that would write a second observer is blocked and says why", () => {
-    const flat = readFileSync(
+  // NOTE: an inbox carries several watchers, so no switch is blocked because another
+  // agent already observes the inbox, and the main Channels page offers every monitoring agent not
+  // already on it.
+  test("another agent watching an inbox blocks neither the switch nor the add menu", () => {
+    const tab = readFileSync(
       "src/client/pages/agents/ChannelsTab.tsx",
       "utf8",
     ).replace(/\s+/g, " ");
-    // The predicate: another agent's observer row, on a switch that is not already this agent's.
-    expect(flat).toContain(
-      "const otherWatcher = !role.observes && ib.observerAgentIds.length > 0",
-    );
-    expect(flat).toContain(
-      "const observeBlocked = watcher && !mine && otherWatcher !== null;",
-    );
-    // ...on the switch itself, and NAMED beside it: a dead switch with nothing next to it reads as
-    // a bug rather than as a rule.
-    expect(flat).toContain("disabled={observeBlocked}");
-    expect(flat).toContain('"editor.channels.watchedBy"');
+    expect(tab).not.toContain("observerAgentIds[0]");
+    expect(tab).not.toContain("disabled={observeBlocked}");
+    const page = readFileSync(
+      "src/client/pages/ChannelsPage.tsx",
+      "utf8",
+    ).replace(/\s+/g, " ");
+    expect(page).toContain("!observerAgentIds.includes(a.id)");
+    expect(page).not.toContain("observerAgentIds.length > 0 ? []");
   });
 
   // NOTE: an observe can come back having done something else. Racing a bind of this same agent,

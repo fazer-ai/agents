@@ -1215,8 +1215,7 @@
       "reassignConfirm": "Reassign",
       "reassignTitle": "Reassign inbox",
       "title": "Inboxes",
-      "toggleAria": "Answer {{inbox}} with this agent",
-      "watchedBy": "Watched by {{name}}; remove it first"
+      "toggleAria": "Answer {{inbox}} with this agent"
     },
     "clone": "Clone",
     "cloned": "Agent cloned (disabled).",

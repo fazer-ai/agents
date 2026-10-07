@@ -276,7 +276,13 @@ function noteRefusal(key: string, askedAt: number): void {
   recentRefusals.set(key, Math.max(before, askedAt));
   if (recentRefusals.size > RECENT_ALLOWS_CAP) {
     const oldest = recentRefusals.keys().next().value;
-    if (oldest !== undefined) recentRefusals.delete(oldest);
+    if (oldest !== undefined) {
+      recentRefusals.delete(oldest);
+      // An admission must not outlive the refusal that revokes it.
+      for (const [k, a] of watcherAdmissions) {
+        if (a.refusalKey === oldest) watcherAdmissions.delete(k);
+      }
+    }
   }
 }
 
@@ -284,11 +290,27 @@ function noteRefusal(key: string, askedAt: number): void {
 // the same audio is not put to the endpoint again. It stands only while no refusal asked at or after
 // it is known for the conversation. In memory, like the media admissions it stands beside.
 const WATCHER_ADMISSION_TTL_MS = 15 * 60_000;
-const watcherAdmissions = new Map<string, { askedAt: number; at: number }>();
+const watcherAdmissions = new Map<
+  string,
+  { askedAt: number; at: number; refusalKey: string }
+>();
 
-export function rememberWatcherAdmission(key: string, askedAt: number): void {
+export function rememberWatcherAdmission(
+  key: string,
+  askedAt: number,
+  p: {
+    tenantId: bigint;
+    instanceId: bigint;
+    conversationId: number;
+    agentId: bigint;
+  },
+): void {
   watcherAdmissions.delete(key);
-  watcherAdmissions.set(key, { askedAt, at: Date.now() });
+  watcherAdmissions.set(key, {
+    askedAt,
+    at: Date.now(),
+    refusalKey: refusalKey(p),
+  });
   if (watcherAdmissions.size > RECENT_ALLOWS_CAP) {
     const oldest = watcherAdmissions.keys().next().value;
     if (oldest !== undefined) watcherAdmissions.delete(oldest);

@@ -4605,13 +4605,11 @@ export async function processChatwootDelivery(
     // Chatwoot follows a voice note with a `message_updated`: the bound watcher's allow for the
     // message already covers it, so the late update does not put the question to the endpoint again
     // (the pass still honours a refusal recorded since).
-    // Scoped to the watcher when it observes beside a responder: that admission is the watcher's
-    // own verdict, never the responder's media gate.
+    // Scoped to the watcher: that admission is its own verdict, never the responder's media gate
+    // nor another agent's that held the inbox before.
     const watcherAdmission =
       observing && n.message?.id != null
-        ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}${
-            observer === null ? "" : `:observer:${rt.agentId}`
-          }`
+        ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}:watcher:${rt.agentId}`
         : null;
     // The endpoint's answer is what is reused; the conditions are asked again, since a label
     // removed since then takes the conversation out of scope.
@@ -4658,8 +4656,17 @@ export async function processChatwootDelivery(
         );
       }
     } else {
-      if (watcherAdmission !== null && watcherPermit) {
-        rememberWatcherAdmission(watcherAdmission, watcherPermit.askedAt);
+      if (
+        watcherAdmission !== null &&
+        watcherPermit &&
+        n.conversationId !== null
+      ) {
+        rememberWatcherAdmission(watcherAdmission, watcherPermit.askedAt, {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId,
+          agentId: rt.agentId,
+        });
       }
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,

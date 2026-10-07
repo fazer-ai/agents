@@ -28,6 +28,8 @@ const BOUNDARIES: Record<string, Discharge> = {
   // The OpenAI client builds its message out of the response body (asserted in
   // tests/modules/rag-embeddings-failure.test.ts), so this one needs the wrapper.
   "src/modules/rag/embeddings.ts": "throughProvider",
+  // Never reads a response body into an error: `DecisionProviderError` carries the status alone.
+  "src/modules/decisions/providers.ts": "own-error-type",
   // OUR server, not a provider client: it matches on the API-key admin tools it exposes and on a
   // URL fetch that carries no operator credential to a model vendor.
   "src/modules/mcp/server.ts": "not-a-provider",

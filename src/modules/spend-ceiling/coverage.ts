@@ -41,6 +41,9 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     // The OBSERVE job: its own scheduler job, outside any turn, so it asks the ceiling itself right
     // before its one model call. A refusal leaves a label as it was, nothing a customer waits on.
     observer: "gated",
+    // The OBSERVE job on the `decisions` engine asks the same gate, in the same place, right before
+    // its one classification call.
+    decision: "gated",
     // The SUGGESTION_REVIEW job: its own scheduler job, outside any turn, so it asks the ceiling
     // itself right before its one model call. A refusal queues the proposal unreviewed.
     suggestion_review: "gated",

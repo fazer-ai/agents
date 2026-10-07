@@ -20,6 +20,7 @@ import {
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
+import { decisionsSchema } from "@/modules/decisions/config";
 import {
   FULL_DETAIL_MAX_HOURS,
   parseIsoInstant,
@@ -848,6 +849,15 @@ const toolPreconditions = nativeToolKeys(
 // What a monitoring agent does with what it reads. Descriptions kept short: the MCP schema ceiling
 // (tests/modules/mcp-tool-descriptions.test.ts) is a ratchet, and docs/chatwoot.md has the rest.
 const monitoring = z.looseObject({
+  engine: oneOf(["llm", "decisions"] as const)
+    .optional()
+    .describe("llm (prompt+tools, default) or decisions (docs/decisions.md)"),
+  decisions: decisionsSchema
+    .nullable()
+    .optional()
+    .describe(
+      "provider openai|typesafe, model, credentialRef, questions, rules, apply shadow|enforce",
+    ),
   analysis: oneOf(["incremental", "on_resolve"] as const)
     .optional()
     .describe(

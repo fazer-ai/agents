@@ -22,9 +22,10 @@ import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWrite } from "@/graph/tools/label-writes";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools, type HandoffTurnState } from "@/graph/tools/native";
+import { recordDirectUsage } from "@/graph/usage";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
-import { failureDetail } from "@/lib/provider-failure";
+import { failureDetail, providerFailure } from "@/lib/provider-failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText, clipTextEnd } from "@/lib/text";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -50,6 +51,16 @@ import {
 } from "@/modules/chatwoot/render";
 import { loadChatwootLabels } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
+import {
+  type DecisionsConfig,
+  readDecisionsConfig,
+} from "@/modules/decisions/config";
+import type { DecisionResult } from "@/modules/decisions/providers";
+import {
+  answersForLog,
+  applyDecisions,
+  askProvider,
+} from "@/modules/decisions/run";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -62,6 +73,7 @@ import {
   announceSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 
 // The OBSERVE job: a monitoring agent's turn on a conversation it does not answer
@@ -345,7 +357,27 @@ export interface ObserveDeps {
   // The fetch the outbound tools use, injectable like makeClient and makeModel, since the observer
   // runs the ordinary toolset. Production never passes it.
   outboundFetch?: typeof fetch;
+  // The fetch the `decisions` engine reaches its provider with. Production never passes it.
+  decisionFetch?: typeof fetch;
 }
+
+// What the `decisions` engine needs before the tick spends anything: the block it runs, and the key
+// it calls with. A problem stops the tick with a reason and never falls back to the `llm` engine: an
+// operator who chose classification did not choose to pay for a model turn when it is misconfigured.
+type DecisionsSetup =
+  | {
+      ok: true;
+      config: DecisionsConfig;
+      apiKey: string;
+      baseURL: string | null;
+    }
+  | {
+      ok: false;
+      skipped: "decisions_config_invalid" | "decisions_credential_unresolved";
+      problem?: string;
+      provider: string | null;
+      model: string | null;
+    };
 
 // A ROW THE TRANSCRIPT CAN USE. Factored out of `transcriptFromRows` so the paging below counts the
 // same thing the window measures: private notes, reactions and activity rows are not messages.
@@ -452,6 +484,21 @@ export function observeTurnText(
     "As notas abaixo são as que aparecem na janela que você está lendo; pode haver outras mais antigas que não estão aqui.",
     "Se nada precisa mudar em relação ao que já está registrado, não chame ferramenta nenhuma.",
     "",
+    observeEvidenceText(transcript, current, notes, labelChanges),
+  ].join("\n");
+}
+
+// WHAT THE TICK READ, without the frame that tells a model how to act on it: the evidence the
+// `decisions` engine hands a classification API (modules/decisions), which has no tools and no use
+// for instructions about them, and which reads worse with irrelevant text in its state. The SAME
+// blocks the LLM path renders, by construction, so the two engines decide on the same evidence.
+export function observeEvidenceText(
+  transcript: readonly TranscriptLine[],
+  current: readonly string[] | null,
+  notes: readonly string[] = [],
+  labelChanges: LabelHistoryForPrompt | null = null,
+): string {
+  return [
     // NOTE: stripped like the notes and the transcript: `set_labels` sends the model's strings to
     // Chatwoot, whose tag list accepts what the catalog refuses, so a label can carry this block's
     // closing tag. The tool's XML renderer escapes; this plain-text block strips.
@@ -886,7 +933,36 @@ export async function runObserve(
     // are operator states and end the job; this is a credential the vault cannot hand over, and it
     // retries. The CONV goes with it, so the stale-state fences below run before the retry.
     if (!cfg) return { noModel: true as const, conv };
-    return { mon, cfg, conv };
+    let decisions: DecisionsSetup | null = null;
+    if (mon.engine === "decisions") {
+      const read = readDecisionsConfig({ decisions: mon.decisions });
+      if (!read.ok) {
+        decisions = {
+          ok: false,
+          skipped: "decisions_config_invalid",
+          problem: read.problem,
+          provider: null,
+          model: null,
+        };
+      } else {
+        const key = await tryResolveApiKeyEntry(db, read.config.credentialRef);
+        decisions =
+          key.state === "ok"
+            ? {
+                ok: true,
+                config: read.config,
+                apiKey: key.secret,
+                baseURL: key.baseUrl ?? null,
+              }
+            : {
+                ok: false,
+                skipped: "decisions_credential_unresolved",
+                provider: read.config.provider,
+                model: read.config.model,
+              };
+      }
+    }
+    return { mon, cfg, conv, decisions };
   });
   if (loaded !== null && loaded.conv?.inboxId != null) {
     const onInbox = await agentStillOnInbox(
@@ -950,7 +1026,7 @@ export async function runObserve(
       error: "observe: the agent's model configuration could not be built",
     };
   }
-  const { mon, cfg, conv } = loaded;
+  const { mon, cfg, conv, decisions } = loaded;
   const flow: FlowContext = {
     tenantId,
     turnId,
@@ -1004,6 +1080,24 @@ export async function runObserve(
   if (reason === "resolved" && conv !== null && conv.status !== "resolved") {
     // NOTE: `info`, as its twin `reopened` at the fence: the tick is right to stop.
     line("skipped", { skipped: "conversation_reopened" }, "info");
+    return { outcome: "done" };
+  }
+  // A `decisions` agent that cannot run says why and stops, before Chatwoot is read or anything is
+  // spent; `warn`, since only the operator can fix it. The next burst asks again.
+  if (decisions !== null && !decisions.ok) {
+    emitFlowEvent(flow, {
+      stage: "observe",
+      level: "warn",
+      status: "skipped",
+      provider: decisions.provider,
+      model: decisions.model,
+      detail: {
+        reason,
+        engine: "decisions",
+        skipped: decisions.skipped,
+        ...(decisions.problem ? { problem: decisions.problem } : {}),
+      },
+    });
     return { outcome: "done" };
   }
 
@@ -1335,64 +1429,66 @@ export async function runObserve(
     return seen;
   });
 
-  let graph: Awaited<ReturnType<typeof buildModelAndGraph>>;
+  // THE `decisions` ENGINE BUILDS NO MODEL: its brain is the provider call below.
+  let graph: Awaited<ReturnType<typeof buildModelAndGraph>> | null = null;
   try {
-    graph = await buildModelAndGraph(cfg, fencedTools, {
-      makeModel: deps.makeModel,
-      checkpointer,
-      stillWanted: () => fence(),
-      // NOTE: the tick's frame says the model answers nobody, so the tool budget's wrap-up says the
-      // same: finish with a tool, or stop, never "responda ao cliente".
-      noReplyChannel: true,
-      // NOTE: Written before the retry runs, so `info` with `willRetry`: a second empty answer fails
-      // the tick, and that failure is the line.
-      onModelRetry: ({ attempt, provider, model }) =>
-        emitFlowEvent(flow, {
-          stage: "generate",
-          level: "info",
-          status: "ok",
-          provider,
-          model,
-          detail: { retry: attempt, node: "observer", willRetry: true },
-        }),
-      onModelFallback: ({ provider, model, reason: why, failure }) =>
-        emitFlowEvent(flow, {
-          stage: "observe",
-          level: "warn",
-          status: "ok",
-          provider,
-          model,
-          detail: {
-            fallbackFrom: cfg.mc.provider,
-            fallbackReason: why,
-            primaryFailure: failure,
-          },
-        }),
-      onModelFallbackFailed: ({ provider, model, reason: why, failure }) =>
-        emitFlowEvent(flow, {
-          stage: "observe",
-          level: "info",
-          status: "error",
-          provider,
-          model,
-          detail: { fallbackFailed: why, failure },
-          errorMessage: why,
-        }),
-      // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
-      // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
-      // nothing behind it, which is indistinguishable from having configured none. Reported at
-      // build time rather than on the failure, because by then it is too late to be the warning it
-      // needs to be, and a tick whose primary keeps answering would otherwise hide it forever.
-      onModelFallbackUnavailable: ({ provider, model, reason: why }) =>
-        emitFlowEvent(flow, {
-          stage: "observe",
-          level: "warn",
-          status: "ok",
-          provider,
-          model,
-          detail: { fallbackUnavailable: why },
-        }),
-    });
+    if (decisions === null)
+      graph = await buildModelAndGraph(cfg, fencedTools, {
+        makeModel: deps.makeModel,
+        checkpointer,
+        stillWanted: () => fence(),
+        // NOTE: the tick's frame says the model answers nobody, so the tool budget's wrap-up says the
+        // same: finish with a tool, or stop, never "responda ao cliente".
+        noReplyChannel: true,
+        // NOTE: Written before the retry runs, so `info` with `willRetry`: a second empty answer fails
+        // the tick, and that failure is the line.
+        onModelRetry: ({ attempt, provider, model }) =>
+          emitFlowEvent(flow, {
+            stage: "generate",
+            level: "info",
+            status: "ok",
+            provider,
+            model,
+            detail: { retry: attempt, node: "observer", willRetry: true },
+          }),
+        onModelFallback: ({ provider, model, reason: why, failure }) =>
+          emitFlowEvent(flow, {
+            stage: "observe",
+            level: "warn",
+            status: "ok",
+            provider,
+            model,
+            detail: {
+              fallbackFrom: cfg.mc.provider,
+              fallbackReason: why,
+              primaryFailure: failure,
+            },
+          }),
+        onModelFallbackFailed: ({ provider, model, reason: why, failure }) =>
+          emitFlowEvent(flow, {
+            stage: "observe",
+            level: "info",
+            status: "error",
+            provider,
+            model,
+            detail: { fallbackFailed: why, failure },
+            errorMessage: why,
+          }),
+        // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
+        // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
+        // nothing behind it, which is indistinguishable from having configured none. Reported at
+        // build time rather than on the failure, because by then it is too late to be the warning it
+        // needs to be, and a tick whose primary keeps answering would otherwise hide it forever.
+        onModelFallbackUnavailable: ({ provider, model, reason: why }) =>
+          emitFlowEvent(flow, {
+            stage: "observe",
+            level: "warn",
+            status: "ok",
+            provider,
+            model,
+            detail: { fallbackUnavailable: why },
+          }),
+      });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const failure = uncommittedFailure();
@@ -1402,6 +1498,115 @@ export async function runObserve(
       error: `observe: model could not be built: ${msg}`,
     };
   }
+
+  const runDecisionsTick = async (
+    setup: Extract<DecisionsSetup, { ok: true }>,
+  ): Promise<JobResult> => {
+    const { config } = setup;
+    const startedAt = Date.now();
+    const decisionLine = (
+      status: "ok" | "error",
+      detail: Record<string, unknown>,
+      level: "info" | "warn" | "error",
+    ) =>
+      emitFlowEvent(flow, {
+        stage: "observe",
+        level,
+        status,
+        provider: config.provider,
+        model: config.model,
+        durationMs: Date.now() - startedAt,
+        detail: {
+          reason,
+          engine: "decisions",
+          apply: config.apply,
+          ...detail,
+          ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
+        },
+      });
+    let result: DecisionResult;
+    try {
+      result = await underSignal(
+        askProvider(config, {
+          input: observeEvidenceText(transcript, currentForPrompt, notes, {
+            lines: labelChanges.lines,
+            complete:
+              vocabLabels !== null &&
+              current !== null &&
+              labelChanges.omitted === 0,
+          }),
+          apiKey: setup.apiKey,
+          baseURL: setup.baseURL,
+          ...(deps.decisionFetch ? { fetchImpl: deps.decisionFetch } : {}),
+          signal: deadline,
+        }),
+        deadline,
+      );
+    } catch (err) {
+      // Nothing ran yet, so this is the uncommitted-failure rule: `info` while the scheduler retries,
+      // `warn` on the last attempt. The closed vocabulary only: a provider body can echo the text.
+      const failure = uncommittedFailure();
+      const why = providerFailure(err);
+      decisionLine(
+        "error",
+        {
+          failed: "decision_call",
+          failure: why,
+          messagesRead: transcript.length,
+          ...failure.detail,
+        },
+        failure.level,
+      );
+      return {
+        outcome: "fail",
+        error: `observe: decision call failed (${why})`,
+      };
+    }
+    // Recorded on success only: a failed call bills nothing either provider documents, and a row
+    // with tokens nobody was charged for would inflate the cost the ceiling reads.
+    await recordDirectUsage(flow, {
+      provider: config.provider,
+      model: config.model,
+      node: "decision",
+      promptTokens: result.inputTokens,
+      completionTokens: 0,
+      durationMs: Date.now() - startedAt,
+    });
+    const toolLogger = new ToolFlowLogger(flow, {
+      logValues: cfg.logToolValues,
+      tools,
+      handedOff: () => handoffState.completed === true,
+    });
+    const report = await applyDecisions(
+      config,
+      result.answers,
+      fencedTools,
+      [toolLogger],
+      deadline,
+    );
+    toolLogger.settle();
+    if (refusal !== null) return endOnRefusal(refusal);
+    decisionLine(
+      "ok",
+      {
+        acted: report.actions.some((a) => a.outcome === "ran"),
+        // What the provider says answered: TypeSafe resolves the alias to a version; null when the
+        // body names none, and then the line claims only the model that was asked for.
+        modelVersion: result.modelVersion,
+        answers: answersForLog(result.answers),
+        actions: report.actions,
+        ...(report.missed.length > 0 ? { notFired: report.missed } : {}),
+        messagesRead: transcript.length,
+        labelsBefore: current === null ? null : current.length,
+      },
+      report.actions.some(
+        (a) => a.outcome === "failed" || a.outcome === "not_granted",
+      )
+        ? "warn"
+        : "info",
+    );
+    return { outcome: "done" };
+  };
 
   // GATED IMMEDIATELY BEFORE THE BILLED CALL (spend-ceiling/coverage.ts names this node), so
   // an exit that was never going to spend is not reported as a tenant hitting its budget.
@@ -1462,6 +1667,14 @@ export async function runObserve(
       error: `observe: a fence could not be re-read before writing (${why})`,
     };
   };
+
+  // THE `decisions` ENGINE: one classification call on the same evidence the model would read, then
+  // the rules' tool calls through the same fenced tools, then one line saying what was asked, what
+  // came back and what ran. Everything above (arming, fences, window, labels, ceiling) is shared.
+  if (graph === null) {
+    if (decisions === null || !decisions.ok) return { outcome: "done" };
+    return runDecisionsTick(decisions);
+  }
 
   const startedAt = Date.now();
   let toolCalls = 0;

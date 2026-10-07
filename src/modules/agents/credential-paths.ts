@@ -62,6 +62,13 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     sectionId: "modelFallback",
     use: "apiKey",
   },
+  // The classification API a monitoring agent on the `decisions` engine calls (modules/decisions).
+  {
+    path: ["monitoring", "decisions", "credentialRef"],
+    tab: "behavior",
+    sectionId: "observation",
+    use: "apiKey",
+  },
 ] as const satisfies ReadonlyArray<{
   path: readonly [keyof BehaviorSettingsPatch, ...string[]];
   tab: "behavior" | "guardrails" | "knowledge";

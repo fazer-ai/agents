@@ -13,10 +13,11 @@ import { credentialFieldTargets } from "@/modules/agents/transfer";
 describe("SETTINGS_CREDENTIAL_PATHS", () => {
   test("names every credential field the behavior readers produce, and nothing else", () => {
     const produced: string[] = [];
-    const settings = readBehaviorSettings({}) as unknown as Record<
-      string,
-      unknown
-    >;
+    // A block whose reader answers `null` when it is absent produces no field to walk, so it is
+    // given here: `monitoring.decisions` is carried as stored (observe/settings.ts).
+    const settings = readBehaviorSettings({
+      monitoring: { decisions: { credentialRef: "vault:1" } },
+    }) as unknown as Record<string, unknown>;
     // RECURSIVE, not one level. The walk used to stop at `block.field`, which made it blind to a
     // credential a block holds inside a sub-object — `memory.compaction.credentialRef` is one, and
     // it went in with this guard, the vault's reverse index and the MCP name↔ref translation all

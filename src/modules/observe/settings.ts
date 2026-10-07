@@ -5,7 +5,18 @@
 
 export type MonitoringAnalysis = "incremental" | "on_resolve";
 
+// HOW the watcher decides: `llm` is the ordinary graph with the agent's prompt and tools;
+// `decisions` asks a classification API typed questions and turns the answers
+// into tool calls by rule (modules/decisions, docs/decisions.md). Anything else reads as `llm`, so a
+// row written before the key existed, or with a value this build does not know, keeps today's path.
+export type MonitoringEngine = "llm" | "decisions";
+
 export interface MonitoringConfig {
+  engine: MonitoringEngine;
+  // The `decisions` engine's block, CARRIED as stored and validated where it is used
+  // (modules/decisions/config.ts): this reader is the one every rewrite of `monitoring` goes through
+  // (the MCP merge, the console's save), so a block it did not carry would be deleted by them.
+  decisions: Record<string, unknown> | null;
   // `incremental`: a turn per debounced burst of customer messages, and a final one on resolve.
   // `on_resolve`: the final one only.
   analysis: MonitoringAnalysis;
@@ -17,6 +28,8 @@ export interface MonitoringConfig {
 }
 
 export const MONITORING_DEFAULTS: Readonly<MonitoringConfig> = Object.freeze({
+  engine: "llm",
+  decisions: null,
   analysis: "incremental",
   window: { messages: 20 },
   debounce: { windowSeconds: 20, maxWindowSeconds: 60 },
@@ -67,6 +80,13 @@ export function readMonitoringConfig(settings: unknown): MonitoringConfig {
     Math.max(def.debounce.maxWindowSeconds, windowSeconds),
   );
   return {
+    engine: bag.engine === "decisions" ? "decisions" : "llm",
+    decisions:
+      bag.decisions &&
+      typeof bag.decisions === "object" &&
+      !Array.isArray(bag.decisions)
+        ? structuredClone(bag.decisions as Record<string, unknown>)
+        : null,
     analysis: bag.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: {
       messages: clampInt(

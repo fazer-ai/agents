@@ -308,6 +308,8 @@ const NOT_A_CAUSE: Record<string, string> = {
   command: "command: the command name; the drop's `reason` is the cause",
   corrupted:
     "tts_check: the line is warn only when true, so the level already says it",
+  engine:
+    "observe: which brain the watcher runs (llm or decisions); `skipped` is the printed cause",
   fallbackFrom: "the model given up on; `fallbackReason` says why",
   primaryFailure:
     "the class of the failure `fallbackReason` already prints, kept for the primary's rate",

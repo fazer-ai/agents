@@ -157,7 +157,8 @@ describe("declarationSchema", () => {
     });
   });
 
-  // NOTE: inlined without a bound, this fan-out of shared definitions builds 10^9 nodes.
+  // NOTE: inlined without a bound, this fan-out of shared definitions builds 10^9 nodes; with one,
+  // the arguments beside it still reach the declaration folded.
   test("shared definitions fanning out stay bounded", () => {
     const defs: Record<string, unknown> = { d9: { type: "string" } };
     for (let i = 0; i < 9; i++)
@@ -173,11 +174,19 @@ describe("declarationSchema", () => {
     const started = performance.now();
     const declared = declarationSchema({
       type: "object",
-      properties: { root: { $ref: "#/$defs/d0" } },
+      properties: { root: { $ref: "#/$defs/d0" }, q: { type: "string" } },
+      required: ["q"],
+      allOf: [{ properties: { n: { type: "number" } } }],
       $defs: defs,
     });
     expect(performance.now() - started).toBeLessThan(2000);
     expect(JSON.stringify(declared).length).toBeLessThan(1_000_000);
+    expect(declared).toMatchObject({
+      type: "object",
+      properties: { q: { type: "string" }, n: { type: "number" } },
+      required: ["q"],
+    });
+    expect(JSON.stringify(declared)).not.toContain("allOf");
   });
 
   test("the server's schema is not mutated", () => {

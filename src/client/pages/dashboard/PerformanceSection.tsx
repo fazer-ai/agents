@@ -7,7 +7,7 @@ import {
   TrendingUp,
   Zap,
 } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import {
@@ -148,6 +148,21 @@ function FunnelBar({
   );
 }
 
+// How the operator set the block up: counts or rates, the trend's split and its rate. Held by the
+// page, because the block unmounts while a new filter's headline figures load and these choices
+// must survive a change of period, agent, inbox or source.
+export interface PerformanceView {
+  mode: "rate" | "count";
+  metric: Metric;
+  breakdown: Breakdown;
+}
+
+export const DEFAULT_PERFORMANCE_VIEW: PerformanceView = {
+  mode: "rate",
+  metric: "resolution",
+  breakdown: "none",
+};
+
 export function PerformanceSection({
   filters,
   win,
@@ -155,6 +170,8 @@ export function PerformanceSection({
   kpis,
   prevKpis,
   onFilter,
+  view,
+  onView,
 }: {
   filters: DashboardFilters;
   win: Window;
@@ -162,12 +179,15 @@ export function PerformanceSection({
   kpis: Kpis;
   prevKpis: Kpis | null;
   onFilter: (patch: Partial<DashboardFilters>) => void;
+  view: PerformanceView;
+  onView: (patch: Partial<PerformanceView>) => void;
 }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"rate" | "count">("rate");
-  const [metric, setMetric] = useState<Metric>("resolution");
-  const [breakdown, setBreakdown] = useState<Breakdown>("none");
+  const { mode, metric, breakdown } = view;
+  const setMode = (m: PerformanceView["mode"]) => onView({ mode: m });
+  const setMetric = (m: Metric) => onView({ metric: m });
+  const setBreakdown = (b: Breakdown) => onView({ breakdown: b });
   const nf = new Intl.NumberFormat(i18n.language);
   const pf = (v: number) =>
     new Intl.NumberFormat(i18n.language, {

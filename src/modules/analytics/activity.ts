@@ -285,6 +285,9 @@ export async function getKnowledgeActivity(
     const until = filter.until ?? null;
     const agent = filter.agentId ?? null;
     const inbox = filter.inboxId ?? null;
+    const source = filter.source ?? null;
+    // A suggestion's segment is its thread's: a playground thread is `<tenant>:playground:<agent>:…`
+    // (`parseThreadOrigin`, src/modules/rag/service.ts); anything else is real traffic.
     // A suggestion's inbox is its conversation's, reached through the thread it was proposed in.
     // Under an inbox filter, one with no conversation (proposed outside any inbox) is not that
     // inbox's.
@@ -294,6 +297,9 @@ export async function getKnowledgeActivity(
        WHERE (${since}::timestamptz IS NULL OR q.created_at >= ${since})
          AND (${until}::timestamptz IS NULL OR q.created_at < ${until})
          AND (${agent}::bigint IS NULL OR q.agent_id = ${agent})
+         AND (${source}::text IS NULL
+              OR (split_part(COALESCE(q.thread_id, ''), ':', 2) = 'playground')
+                 = (${source}::text = 'playground'))
          AND (${inbox}::bigint IS NULL OR EXISTS (
                SELECT 1 FROM conversations c
                 WHERE c.thread_id = q.thread_id AND c.inbox_id = ${inbox}))

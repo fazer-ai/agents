@@ -1069,6 +1069,23 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect((await k()).proposed).toBe(4);
     expect((await k(ex.i2)).proposed).toBe(1);
     expect((await k(ex.i1)).proposed).toBe(2);
+    // One proposed in the playground: the source toggle separates it.
+    await suDb.approvalQueueItem.create({
+      data: {
+        tenantId: ex.tenantId,
+        knowledgeBaseId: kb.id,
+        agentId: ex.a1,
+        threadId: `${ex.tenantId}:playground:${ex.a1}:s1`,
+        proposedContent: "x",
+        normalizedHash: `e${h++}`,
+        createdAt: D1,
+      },
+    });
+    const bySource = async (source: "inbox" | "playground") =>
+      (await getKnowledgeActivity(ctx(ex.tenantId), { ...DAY, source }, appDb))
+        .proposed;
+    expect(await bySource("playground")).toBe(1);
+    expect(await bySource("inbox")).toBe(4);
   });
 
   test("a takeover logged with its conversation and no inbox is that conversation's inbox's", async () => {

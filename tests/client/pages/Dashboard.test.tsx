@@ -529,6 +529,33 @@ describe("every funnel tile opens the conversations it counts", () => {
   });
 });
 
+describe("the funnel's own controls", () => {
+  test("a split chosen on the trend survives a change of period", async () => {
+    await renderDash("/?range=7d");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("radio", { name: "By agent" }).length).toBe(
+        1,
+      );
+    });
+    fireEvent.click(screen.getByRole("radio", { name: "By agent" }));
+    await waitFor(() => {
+      expect(
+        asks("/metrics/outcomes").some(
+          (u) => u.searchParams.get("breakdown") === "agent",
+        ),
+      ).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("radio", { name: "90d" }));
+    await waitFor(() => {
+      expect(location).toBe("/?range=90d");
+      expect(
+        (screen.getByRole("radio", { name: "By agent" }) as HTMLInputElement)
+          .checked,
+      ).toBe(true);
+    });
+  });
+});
+
 describe("a block still loading", () => {
   test("offers no CSV until its figures arrive", async () => {
     const exportDaily = () =>

@@ -34,7 +34,12 @@ import {
   writeFilters,
 } from "./dashboard/filters";
 import { AutomationSection, HealthSection } from "./dashboard/HealthSection";
-import { type Kpis, PerformanceSection } from "./dashboard/PerformanceSection";
+import {
+  DEFAULT_PERFORMANCE_VIEW,
+  type Kpis,
+  PerformanceSection,
+  type PerformanceView,
+} from "./dashboard/PerformanceSection";
 import { ReasonsSection } from "./dashboard/ReasonsSection";
 import { useBlock } from "./dashboard/useBlock";
 
@@ -179,6 +184,9 @@ export function DashboardPage() {
   const [inboxes, setInboxes] = useState<{ id: string; name: string }[] | null>(
     null,
   );
+  const [perfView, setPerfView] = useState<PerformanceView>(
+    DEFAULT_PERFORMANCE_VIEW,
+  );
 
   const setFilters = useCallback(
     (patch: Partial<DashboardFilters>) => {
@@ -313,6 +321,8 @@ export function DashboardPage() {
                   kpis={kpis.data}
                   prevKpis={prevKpis.data}
                   onFilter={setFilters}
+                  view={perfView}
+                  onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
                 />
               )}
             </DataBoundary>

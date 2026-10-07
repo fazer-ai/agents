@@ -2,7 +2,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { ToolInputParsingException } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { recursionLimitFor } from "@/graph/graph";
@@ -289,6 +289,23 @@ export async function armObserve(
           recordedMark !== null &&
           recordedMark >= p.mark
         ) {
+          // Not re-armed, but a newer allow is kept: a refusal asked before it and landing late
+          // must still find the row authorized after it (`retireRefusedObserve`).
+          if (
+            gateAllowedAt !== null &&
+            gateAllowedAt !== allowedBefore &&
+            existing
+          ) {
+            await db.schedulerJob.updateMany({
+              where: { kind: "OBSERVE", dedupeKey },
+              data: {
+                payload: {
+                  ...(existing.payload as Record<string, unknown>),
+                  gateAllowedAt,
+                } as Prisma.InputJsonValue,
+              },
+            });
+          }
           armed = false;
           return;
         }

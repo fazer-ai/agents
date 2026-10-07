@@ -82,7 +82,9 @@ async function observerGateVerdict(
       inboxId: conv?.inbox?.chatwootInboxId ?? null,
       channelType: conv?.inbox?.channelType ?? null,
       messageText: null,
-      requestKey: "observe",
+      // Per conversation: the endpoint may answer by the conversation's inbox or id, so two
+      // conversations of one contact are two questions.
+      requestKey: `observe:${p.conversationId}`,
       stage: opts.stage,
       cfg,
       base: p.base,

@@ -1509,7 +1509,7 @@ async function mediaAdmitted(
       // arm's asking, so a concurrent arm and pass put one question to the endpoint.
       messageText: watcherPass ? null : (n.message?.content ?? null),
       requestKey: watcherPass
-        ? "observe"
+        ? `observe:${conversationId}`
         : cfg.includeMessageText
           ? `msg:${n.message?.id ?? "none"}`
           : "inbox",

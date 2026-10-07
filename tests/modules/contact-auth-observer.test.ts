@@ -615,6 +615,74 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(await runnableObserveRows(28)).toEqual([]);
   });
 
+  // One contact in two conversations at once: each conversation is its own question to the
+  // endpoint, which may answer by the conversation's inbox or id.
+  test("two conversations of one contact asked at once each ask the endpoint", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(30, "individual");
+    await deliverMessage(31, "individual");
+    const first = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 30 },
+      select: { contactId: true },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 31 },
+      data: { contactId: first?.contactId },
+    });
+    clearContactAuthState();
+    providers.auth = 0;
+    authBodies.length = 0;
+    const permit = (conversationId: number) =>
+      observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId: observerId,
+        settings,
+        base: appDb,
+        fetchImpl: deps().contactAuthFetch,
+      });
+    await Promise.all([permit(30), permit(31)]);
+    expect(providers.auth).toBe(2);
+    expect(
+      authBodies
+        .map((b) => (b.conversation as { id: number }).id)
+        .sort((a, b) => a - b),
+    ).toEqual([30, 31]);
+  });
+
+  // A resolution delivered again while its verdict is queued: the newer allow is kept on the row,
+  // so a refusal asked between the two allows and landing after both leaves it runnable.
+  test("a newer allow of a resolution already queued is kept against an older refusal", async () => {
+    await setGate(null);
+    await deliverMessage(32, "individual");
+    const arm = (gateAskedAt: number) =>
+      armObserve({
+        tenantId,
+        instanceId,
+        conversationId: 32,
+        agentId: observerId,
+        reason: "resolved",
+        cfg: readMonitoringConfig({}),
+        mark: 1_900_000_000,
+        gateAskedAt,
+        base: appDb,
+      });
+    const t = Date.now();
+    expect(await arm(t + 1_000)).toBe("armed");
+    expect(await arm(t + 3_000)).toBe("off");
+    await retireRefusedObserve({
+      tenantId,
+      instanceId,
+      conversationId: 32,
+      agentId: observerId,
+      askedAt: t + 2_000,
+      base: appDb,
+    });
+    expect(await runnableObserveRows(32)).toHaveLength(1);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

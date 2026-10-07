@@ -451,6 +451,8 @@ export interface ToolCtx {
     sign?: (text: string) => string;
     // The prompt's context variables, for the operator's opening and note templates.
     interpolate?: (template: string) => string;
+    // Where the origin's current attendance starts, for `carryAttachments.mode = attendance`.
+    attendanceStartedAt?: () => Promise<Date | null>;
   };
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
   // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
@@ -2523,6 +2525,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         screenCustomerMessage: ctx.screenCustomerText,
         signCustomerMessage: cic.sign,
         interpolate: cic.interpolate,
+        attendanceStartedAt: cic.attendanceStartedAt,
         // NOTE: The team this agent hands conversations to, when the operator pinned one: the case goes to
         // the same people. `ctx.handoff` is already the effective config, so a pin picked in another
         // account arrives here as `agent_choice` and no team is written. A pinned PERSON is not
@@ -2582,6 +2585,36 @@ function openCaseInInboxTool(ctx: ToolCtx) {
                 : "the case could not be read again before its team write; the bot was cleared and no team was written",
             ),
           });
+        }
+        // NOTE: What the files step did goes to the flow log, never to the model: the case is open either
+        // way, and a count in the result would invite the model to talk about it.
+        if (
+          (result.kind === "opened" ||
+            result.kind === "continued" ||
+            result.kind === "already_open" ||
+            result.kind === "appended") &&
+          result.attachments
+        ) {
+          const a = result.attachments;
+          if (a.carried + a.skipped + a.failed > 0 || a.unread) {
+            ctx.onSideEffectError?.({
+              tool: OPEN_CASE_TOOL_NAME,
+              phase: "case_attachments",
+              level: a.failed > 0 || a.unread ? "warn" : "info",
+              detail: {
+                caseId: result.caseId,
+                carried: a.carried,
+                skipped: a.skipped,
+                failed: a.failed,
+                ...(a.unread ? { unread: a.unread } : {}),
+              },
+              err: new Error(
+                a.unread
+                  ? `customer files not carried: the ${a.unread === "attendance" ? "attendance boundary" : "case"} could not be read`
+                  : `customer files: ${a.carried} carried, ${a.skipped} skipped, ${a.failed} failed`,
+              ),
+            });
+          }
         }
         const caseOpen =
           result.kind === "opened" ||

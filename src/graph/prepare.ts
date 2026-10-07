@@ -112,6 +112,7 @@ import {
   type SideEffectErrorReporter,
 } from "@/modules/integrations/toolpacks";
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
+import { attendanceStartedAt } from "@/modules/memory/attendance-start";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import {
@@ -1204,6 +1205,7 @@ export interface ToolBuildDeps {
         sign?: (text: string) => string;
         renderSubject?: (summary: string | null) => string | null;
         interpolate?: (template: string) => string;
+        attendanceStartedAt?: () => Promise<Date | null>;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1606,6 +1608,21 @@ export async function buildToolset(
           ? {
               config: cfg.crossInboxCaseConfig,
               contactId: cfg.chatwootContactId,
+              // NOTE: Read only when the files block asks for the attendance scope, and only on a real
+              // conversation of a known contact-inbox, which is what keys the compaction rows.
+              ...(ctx.conversationId > 0 &&
+              cfg.contactInboxId != null &&
+              cfg.crossInboxCaseConfig.carryAttachments.mode === "attendance"
+                ? {
+                    attendanceStartedAt: () =>
+                      attendanceStartedAt(ctx.base, {
+                        tenantId: ctx.tenantId,
+                        instanceId: ctx.instanceId,
+                        contactInboxId: cfg.contactInboxId as number,
+                        conversationId: ctx.conversationId,
+                      }),
+                  }
+                : {}),
               renderSubject: (summary: string | null) =>
                 renderCaseSubject(
                   cfg.crossInboxCaseConfig.subjectTemplate,

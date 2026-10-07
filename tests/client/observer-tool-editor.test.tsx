@@ -121,6 +121,9 @@ function renderEditor(observing: boolean) {
                 subjectTemplate: "",
                 openingTemplate: "",
                 noteTemplate: "",
+                carryMode: "off",
+                carryFileTypes: ["image", "file"],
+                carryMaxFiles: 10,
               }}
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}
@@ -269,6 +272,9 @@ function renderToolsTab(
                 subjectTemplate: "",
                 openingTemplate: "",
                 noteTemplate: "",
+                carryMode: "off",
+                carryFileTypes: ["image", "file"],
+                carryMaxFiles: 10,
               }}
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}

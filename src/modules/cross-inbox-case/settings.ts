@@ -4,6 +4,11 @@ import {
   markValue,
   replaceInOperatorText,
 } from "@/modules/chatwoot/liquid";
+import {
+  CARRY_ATTACHMENTS_DEFAULTS,
+  type CarryAttachmentsConfig,
+  readCarryAttachments,
+} from "./carry-attachments";
 
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
 // WHERE the case goes lives here, never in a tool argument, which the customer's words could steer
@@ -43,6 +48,10 @@ export interface CrossInboxCaseConfig {
   // `{{motivo}}`/`{{reason}}`, `{{link_origem}}`/`{{origin_url}}` and the context variables. Null ⇒
   // the default layout (`renderCaseNote`).
   noteTemplate: string | null;
+  // The customer's files carried from the origin into the case, as one private note after the case's
+  // own (./carry-attachments.ts). Off by default: it copies identity documents and receipts into
+  // another inbox, which the operator decides knowingly.
+  carryAttachments: CarryAttachmentsConfig;
 }
 
 export const CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE = "case_conversation_id";
@@ -63,6 +72,7 @@ export const CROSS_INBOX_CASE_DEFAULTS: CrossInboxCaseConfig = {
   subjectTemplate: null,
   openingTemplate: null,
   noteTemplate: null,
+  carryAttachments: CARRY_ATTACHMENTS_DEFAULTS,
 };
 
 // An email header: one line, and short enough to read in a list.
@@ -200,7 +210,10 @@ export function readCrossInboxCaseConfig(
       ? (settings as Record<string, unknown>).crossInboxCase
       : undefined;
   if (!s || typeof s !== "object" || Array.isArray(s)) {
-    return { ...CROSS_INBOX_CASE_DEFAULTS };
+    return {
+      ...CROSS_INBOX_CASE_DEFAULTS,
+      carryAttachments: readCarryAttachments(undefined),
+    };
   }
   const o = s as Record<string, unknown>;
   const label = typeof o.originLabel === "string" ? o.originLabel.trim() : "";
@@ -231,6 +244,7 @@ export function readCrossInboxCaseConfig(
       CROSS_INBOX_CASE_OPENING_TEMPLATE_MAX,
     ),
     noteTemplate: template(o.noteTemplate, CROSS_INBOX_CASE_NOTE_TEMPLATE_MAX),
+    carryAttachments: readCarryAttachments(o.carryAttachments),
   };
 }
 

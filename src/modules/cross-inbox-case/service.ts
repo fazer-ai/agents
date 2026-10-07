@@ -14,6 +14,7 @@ import {
 } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
+import { type CarryOutcome, carryCaseAttachments } from "./carry-attachments";
 import {
   CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE,
   type CrossInboxCaseConfig,
@@ -49,6 +50,9 @@ export type CaseClient = Pick<
   | "toggleStatus"
   | "unassignConversation"
   | "assignTeam"
+  | "isInstanceUrl"
+  | "downloadAttachment"
+  | "sendFilesAsAdmin"
 >;
 
 // What the turn's output check made of the opening message: send it, drop it, or the operator's
@@ -90,6 +94,9 @@ export interface OpenCaseInput {
   // this agent sends conversations for people to take. Null ⇒ no team is written, and Chatwoot's own
   // routing decides once the case has no owner.
   caseTeamId?: number | null;
+  // When the origin's current attendance started, for `carryAttachments.mode = attendance`
+  // (./carry-attachments.ts). Absent ⇒ the whole conversation is the current attendance.
+  attendanceStartedAt?: () => Promise<Date | null>;
 }
 
 export type OpenCaseResult =
@@ -117,6 +124,9 @@ export type OpenCaseResult =
       // The case could not be read to settle its owner, so nothing past that point was written:
       // `before_clear` wrote nothing, `before_team` cleared the bot and wrote no team.
       caseOwnerUnread?: CaseOwnerUnread;
+      // What `carryAttachments` did. Absent when the block is off. Reported to the flow log by the
+      // caller, never to the model.
+      attachments?: CarryOutcome;
     }
   | { kind: "not_configured" }
   | { kind: "unsupported_channel"; channelType: string | null }
@@ -272,6 +282,27 @@ export async function openCaseFor(
     );
   }
   return null;
+}
+
+// The files step, never able to fail the case: carryCaseAttachments catches its own errors, and this
+// catches whatever it did not.
+async function carryInto(
+  client: CaseClient,
+  input: OpenCaseInput,
+  caseId: number,
+): Promise<CarryOutcome | null> {
+  try {
+    return await carryCaseAttachments(client, {
+      config: input.config.carryAttachments,
+      originConversationId: input.originConversationId,
+      originContactId: input.originContactId,
+      caseId,
+      attendanceStartedAt: input.attendanceStartedAt,
+      stillWanted: input.stillWanted,
+    });
+  } catch {
+    return { carried: 0, skipped: 0, failed: 0, unread: "case" };
+  }
 }
 
 // What `/contacts/:id/conversations` answers at most: the newest page, never older ones.
@@ -442,6 +473,9 @@ async function run(
         } else {
           partial.push("called_off");
         }
+        const attachments = partial.includes("called_off")
+          ? null
+          : await carryInto(client, input, known);
         return {
           kind: "already_open",
           caseId: known,
@@ -450,6 +484,7 @@ async function run(
           partial,
           additionDelivered,
           ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
+          ...(attachments ? { attachments } : {}),
         };
       }
     }
@@ -750,6 +785,10 @@ async function run(
         );
         noteDelivered = true;
       });
+      // Right after the case's own note, so the team reads the reason and then the files.
+      const attachments = (await withdrawn())
+        ? null
+        : await carryInto(client, input, caseId);
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
       );
@@ -817,6 +856,7 @@ async function run(
         ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
         ...(unknownCaseLabels.length > 0 ? { unknownCaseLabels } : {}),
         ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
+        ...(attachments ? { attachments } : {}),
       };
     });
   } catch (error) {

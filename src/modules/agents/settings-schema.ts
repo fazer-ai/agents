@@ -19,6 +19,12 @@ import {
 } from "@/modules/agents/tool-guidance";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
+import {
+  CARRY_ATTACHMENTS_DEFAULTS,
+  CARRY_ATTACHMENTS_MAX_FILES,
+  CARRY_FILE_TYPES,
+  CARRY_MODES,
+} from "@/modules/cross-inbox-case/carry-attachments";
 import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
 import {
   FULL_DETAIL_MAX_HOURS,
@@ -509,6 +515,31 @@ const crossInboxCase = z.looseObject({
     .boolean()
     .optional()
     .describe("close the origin after the reply once the case is open"),
+  carryAttachments: z
+    .looseObject({
+      mode: z
+        .enum(CARRY_MODES)
+        .optional()
+        .describe(
+          "off (default); attendance = the contact's files of the origin's current attendance; conversation = all of the origin's",
+        ),
+      fileTypes: z
+        .array(z.string())
+        .optional()
+        .describe(
+          `subset of ${CARRY_FILE_TYPES.join(", ")}; unknown entries dropped; default image, file`,
+        ),
+      maxFiles: z
+        .number()
+        .optional()
+        .describe(
+          `newest N win; 1-${CARRY_ATTACHMENTS_MAX_FILES}, clamped; default ${CARRY_ATTACHMENTS_DEFAULTS.maxFiles}`,
+        ),
+    })
+    .optional()
+    .describe(
+      "the customer's files copied into the case as one private note; replaced as a unit",
+    ),
 });
 
 // The labels the agent's own close writes, merged into the conversation's set right

@@ -228,8 +228,12 @@ refuses costs no `OBSERVE` job, no media call and no model call.
   watcher, so the revoked conversation is not analyzed by the pending tick. The refusal leaves the
   time it was asked on the observation's row (a retired row is created when there is none), and an
   arm whose allow was asked before it arms nothing: a delivery that got its allow and is still in
-  its media pass cannot bring back what a later denial retired. A refusal by the conditions needs
-  none of this, since the tick asks them again. A tick already running is not stopped.
+  its media pass cannot bring back what a later denial retired. The arm also leaves its allow's ask
+  time on the row, so a refusal asked before that allow and landing after it leaves the newer
+  observation runnable. A gate that cannot be read at the arm, on an agent that asks an endpoint,
+  counts as the endpoint's no here, and a retirement that fails is tried three times before a
+  warning. A refusal by the conditions needs none of this, since the tick asks them again. A tick
+  already running is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
   reached, since asking the whole gate again would put the same question to the endpoint twice. When
   that verdict refuses, the pass is skipped and the refusal is recorded for the message as the pass

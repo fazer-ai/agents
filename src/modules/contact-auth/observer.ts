@@ -5,7 +5,11 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { retireRefusedObserve } from "@/modules/observe/job";
 import { authorizeContact, contactAuthFlowEvent } from "./service";
-import { contactAuthHasRuleStage, readContactAuthConfig } from "./settings";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+  readContactAuthConfig,
+} from "./settings";
 
 // The contact gate on the OBSERVER path (docs/contact-auth.md, The observer path). The gate decides
 // which conversations a monitoring agent observes, before an observation is armed or a medium
@@ -31,6 +35,8 @@ export interface ObserverRuleParams {
   base: PrismaClient;
   // Injectable for tests, as on every other caller of the gate.
   fetchImpl?: typeof fetch;
+  // The pause between retirement attempts (`observerArmPermit`), a seam for tests.
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // The gate's answer for the watcher. `stage: "rule"` is the conditions alone, the tick's question;
@@ -139,14 +145,43 @@ export async function observerArmPermit(
   const askedAt = Date.now();
   const verdict = await observerGateVerdict(p, { emit: true, stage: "both" });
   if (verdict === "allowed") return { askedAt };
-  if (verdict !== "endpoint_refused") return null;
-  await retireRefusedObserve({ ...p, askedAt }).catch((err) =>
-    logger.warn(
-      "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
-      String(p.conversationId),
-      String(p.agentId),
-      err instanceof Error ? err.message : String(err),
-    ),
-  );
+  // A gate that could not be read on one that asks an endpoint is taken as the endpoint's no: the
+  // tick will not ask it, so an earlier allow's observation would otherwise run on a verdict nobody
+  // could confirm.
+  const takesBack =
+    verdict === "endpoint_refused" ||
+    (verdict === "unreadable" &&
+      contactAuthHasEndpointStage(readContactAuthConfig(p.settings)));
+  if (takesBack) await retireWithRetries(p, askedAt);
   return null;
 }
+
+// The retirement is what keeps a queued tick from analyzing a refused conversation, so a write that
+// fails is tried again before it is given up on, with a warning: by then the database is down, and
+// the tick, which needs it too, waits on it as well.
+async function retireWithRetries(
+  p: ObserverRuleParams,
+  askedAt: number,
+): Promise<void> {
+  const nap =
+    p.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await retireRefusedObserve({ ...p, askedAt });
+      return;
+    } catch (err) {
+      if (attempt >= RETIRE_ATTEMPTS) {
+        logger.warn(
+          "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
+          String(p.conversationId),
+          String(p.agentId),
+          err instanceof Error ? err.message : String(err),
+        );
+        return;
+      }
+      await nap(100 * 4 ** (attempt - 1));
+    }
+  }
+}
+
+const RETIRE_ATTEMPTS = 3;

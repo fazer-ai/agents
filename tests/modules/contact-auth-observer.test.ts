@@ -20,7 +20,11 @@ import {
   observerRuleVerdict,
 } from "@/modules/contact-auth/observer";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
-import { armObserve, runObserve } from "@/modules/observe/job";
+import {
+  armObserve,
+  retireRefusedObserve,
+  runObserve,
+} from "@/modules/observe/job";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
@@ -554,6 +558,58 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     authAnswer = "allow";
     await deliverMessage(25, "individual");
     expect(await runnableObserveRows(25)).toHaveLength(1);
+  });
+
+  // The reverse interleaving: a refusal asked before an allow, whose bookkeeping lands after the
+  // allow armed, does not retire the newer observation.
+  test("a refusal asked before an allow that already armed leaves the newer observation runnable", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(27, "individual");
+    expect(await runnableObserveRows(27)).toHaveLength(1);
+    await retireRefusedObserve({
+      tenantId,
+      instanceId,
+      conversationId: 27,
+      agentId: observerId,
+      askedAt: Date.now() - 60_000,
+      base: appDb,
+    });
+    expect(await runnableObserveRows(27)).toHaveLength(1);
+  });
+
+  // An arm that cannot read the gate (the database failing under it) on a gate that asks an
+  // endpoint takes back the observation an earlier allow queued, since the tick will not ask the
+  // endpoint again.
+  test("an arm that cannot read an endpoint gate retires the observation an earlier allow queued", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(28, "individual");
+    expect(await runnableObserveRows(28)).toHaveLength(1);
+    let reads = 0;
+    const flaky = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        // The gate's first read fails; the retirement after it reaches the database.
+        if (prop === "$extends" && reads++ === 0) {
+          return () => ({
+            $transaction: () =>
+              Promise.reject(new Error("database unreachable")),
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as PrismaClient;
+    expect(
+      await observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId: 28,
+        agentId: observerId,
+        settings,
+        base: flaky,
+        fetchImpl: deps().contactAuthFetch,
+      }),
+    ).toBeNull();
+    expect(await runnableObserveRows(28)).toEqual([]);
   });
 
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the

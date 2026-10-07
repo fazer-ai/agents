@@ -12,8 +12,8 @@ import {
   readCarryAttachments,
 } from "@/modules/cross-inbox-case/carry-attachments-settings";
 
-// The origin conversation's messages as Chatwoot's REST list serves them: 20 a page, newest first,
-// `before` for the page older than a message id. Each file is an attachment with an id and a data_url
+// The origin conversation's messages as Chatwoot's REST list serves them: 20 a page, ordered by
+// (created_at, id), `before` for the page earlier than that pair of a message id. Each file is an attachment with an id and a data_url
 // on the instance's host unless the test says otherwise.
 interface Msg {
   id: number;
@@ -47,7 +47,9 @@ function fake(
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
   const caseAttrs: Record<string, unknown> = { ...(opts.caseAttrs ?? {}) };
-  const messages = [...(opts.messages ?? [])].sort((a, b) => a.id - b.id);
+  const messages = [...(opts.messages ?? [])].sort(
+    (a, b) => a.createdAt - b.createdAt || a.id - b.id,
+  );
   const bytesOf = (id: number) => {
     const d = opts.download?.[id];
     const n = typeof d === "number" ? d : 8;
@@ -65,8 +67,14 @@ function fake(
     },
     getMessages: async (id: number, o?: { before?: number }) => {
       calls.push({ fn: "getMessages", args: [id, o] });
+      const cursor = messages.find((m) => m.id === o?.before);
       const older = messages.filter(
-        (m) => o?.before == null || m.id < o.before,
+        (m) =>
+          o?.before == null ||
+          (cursor
+            ? m.createdAt < cursor.createdAt ||
+              (m.createdAt === cursor.createdAt && m.id < cursor.id)
+            : m.id < o.before),
       );
       return {
         payload: older.slice(-20).map((m) => ({
@@ -663,6 +671,24 @@ describe("carryCaseAttachments", () => {
     const out = await carryCaseAttachments(f.client, carryInput({}));
     expect(out?.carried).toBe(1);
     expect(uploadedNames(uploads(f.calls)[0])).toEqual(["first.pdf"]);
+  });
+
+  test("the walk follows time, not ids, past imported history", async () => {
+    // One live message, then 21 imported ones dated before it under newer ids; the document is the
+    // earliest imported message, on the second page, and no page is read twice.
+    const messages: Msg[] = [{ id: 1, createdAt: 1000 }];
+    for (let i = 0; i < 21; i += 1)
+      messages.push({
+        id: 200 + i,
+        createdAt: 900 + i,
+        imported: true,
+        ...(i === 0 ? { files: [{ id: 900, name: "first.pdf" }] } : {}),
+      });
+    const f = fake({ messages });
+    const out = await carryCaseAttachments(f.client, carryInput({}));
+    expect(out?.carried).toBe(1);
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["first.pdf"]);
+    expect(f.calls.filter((c) => c.fn === "getMessages")).toHaveLength(2);
   });
 
   test("a run called off before the note writes nothing", async () => {

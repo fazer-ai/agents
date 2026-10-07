@@ -147,13 +147,18 @@ async function originRows(
       if (Number.isFinite(id)) seen.set(id, m);
     }
     if (page.length < MESSAGES_PAGE) break;
-    const ids = page
-      .map((m) => Number(m.id))
-      .filter((id) => Number.isFinite(id));
-    if (ids.length === 0) break;
-    const oldest = Math.min(...ids);
-    if (before != null && oldest >= before) break;
-    before = oldest;
+    // The cursor is the page's EARLIEST message, by time and then id: Chatwoot pages on that pair, and
+    // an imported message has an old date under a new id, so the smallest id is not the page's end.
+    let oldest: { at: number; id: number } | null = null;
+    for (const m of page) {
+      const id = Number(m.id);
+      const at = Number(m.created_at);
+      if (!Number.isFinite(id) || !Number.isFinite(at)) continue;
+      if (!oldest || at < oldest.at || (at === oldest.at && id < oldest.id))
+        oldest = { at, id };
+    }
+    if (!oldest || oldest.id === before) break;
+    before = oldest.id;
   }
   return [...seen.values()];
 }

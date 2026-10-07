@@ -322,6 +322,36 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     ).toBe(true);
   });
 
+  // A call still running when the turn ended (a deadline rejects before LangChain delivers the
+  // tool's error) reports after `settle`, and is judged when it lands: a tool whose only call failed
+  // late still gets its `warn`, once, and a late success after an earlier failure gets none.
+  test("a call that ends after the turn settled is judged when it lands", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
+    const start = (id: string, tool: string) =>
+      logger.handleToolStart(
+        {} as never,
+        "{}",
+        id,
+        undefined,
+        undefined,
+        undefined,
+        tool,
+      );
+    start("late-1", "agenda");
+    start("late-2", "estoque");
+    logger.handleToolError(new Error("socket hang up"), "late-2");
+    start("late-3", "estoque");
+    logger.settle();
+    logger.handleToolError(new Error("deadline"), "late-1");
+    logger.handleToolEnd("ok", "late-3");
+    const rows = await pollToolRows(flow.turnId, 4);
+    const warns = rows.filter((r) => r.level === "warn");
+    expect(warns.map((r) => r.detail)).toEqual([
+      { tool: "agenda", failedCalls: 1 },
+    ]);
+  });
+
   // NOTE: The other half of that contract. An operator's HTTP tool returns `HTTP <status>\n<body>`,
   // and the body is the other end's (a business API answers a failed lookup with the customer's own
   // record). `errorMessage` must not keep whole what `detail.output` reduces to a shape; the part we

@@ -135,8 +135,11 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   // every call it made is the turn's degraded outcome.
   private readonly outcomes = new Map<
     string,
-    { failed: number; succeeded: number; cause: string }
+    { failed: number; succeeded: number; cause: string; warned: boolean }
   >();
+  // Set by the first `settle`. A call still running when the turn ended (a deadline rejects before
+  // LangChain delivers the tool's own end or error) reports after it, and is judged when it lands.
+  private settled = false;
 
   constructor(
     flow: FlowContext,
@@ -208,32 +211,46 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   }
 
   private tally(tool: string, failure: string | null): void {
-    const o = this.outcomes.get(tool) ?? { failed: 0, succeeded: 0, cause: "" };
+    const o = this.outcomes.get(tool) ?? {
+      failed: 0,
+      succeeded: 0,
+      cause: "",
+      warned: false,
+    };
     if (failure === null) o.succeeded += 1;
     else {
       o.failed += 1;
       o.cause = failure;
     }
     this.outcomes.set(tool, o);
+    if (this.settled) this.settleTool(tool, o);
   }
 
   // The turn's outcome per tool, called once the model is done calling them: one `warn` for each tool
   // that failed on every call it made, naming the tool, how many calls failed and the last cause. A
   // tool that failed and then succeeded leaves its `info` lines and nothing else. Idempotent.
   settle(): void {
-    for (const [tool, o] of this.outcomes) {
-      if (o.failed === 0 || o.succeeded > 0) continue;
-      emitFlowEvent(this.flow, {
-        stage: "tool",
-        level: "warn",
-        status: "error",
-        detail: { tool, failedCalls: o.failed },
-        errorMessage: sanitizeErrorMessage(
-          `${tool} failed on every call this turn (${o.failed}): ${o.cause}`,
-        ),
-      });
-    }
-    this.outcomes.clear();
+    this.settled = true;
+    for (const [tool, o] of this.outcomes) this.settleTool(tool, o);
+  }
+
+  private settleTool(
+    tool: string,
+    o: { failed: number; succeeded: number; cause: string; warned: boolean },
+  ): void {
+    if (o.warned || o.failed === 0 || o.succeeded > 0) return;
+    // A call of this tool still running may yet succeed; its own end judges the tool when it lands.
+    for (const s of this.starts.values()) if (s.tool === tool) return;
+    o.warned = true;
+    emitFlowEvent(this.flow, {
+      stage: "tool",
+      level: "warn",
+      status: "error",
+      detail: { tool, failedCalls: o.failed },
+      errorMessage: sanitizeErrorMessage(
+        `${tool} failed on every call this turn (${o.failed}): ${o.cause}`,
+      ),
+    });
   }
 
   // The stamp, as a fragment so the key is ABSENT rather than null on every other line: a reader

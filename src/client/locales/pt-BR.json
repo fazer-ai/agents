@@ -1728,7 +1728,7 @@
       "nativeContextNote": "A conversa e o contato são fornecidos automaticamente — a IA só decide usar a ferramenta e preenche os argumentos específicos de cada uma.",
       "nativeDesc": "Ações nativas que o agente pode executar. As ferramentas selecionadas ficam disponíveis para ele.",
       "noCode": "Nenhuma ferramenta de código ainda. Crie algumas em Componentes.",
-      "noDocuments": "Nenhum modelo de documento ainda. Crie um em Componentes.",
+      "noDocuments": "Nenhum modelo de documento ainda. Crie o primeiro pelo botão Nova.",
       "noHttp": "Nenhuma ferramenta HTTP ainda. Crie algumas em Componentes.",
       "noIntegrations": "Nenhuma integração ativada ainda.",
       "noMcp": "Nenhum servidor MCP conectado ainda.",

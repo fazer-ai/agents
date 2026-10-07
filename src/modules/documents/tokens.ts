@@ -144,27 +144,37 @@ export function resolveTokens(
   );
 }
 
-// The footer joins tokens that may resolve empty ("{{company_name}} · {{doc_number}}" on an account
-// with no company name), and resolved as plain text that leaves the separator hanging. A token that
-// resolves empty takes ONE adjacent separator (a middle dot, a bullet or a bar) with it, the one after
-// it if there is one, otherwise the one before. Punctuation the author wrote anywhere else stays.
+// A separator between two parts of a footer line: a middle dot, a bullet or a bar with space around.
+const FOOTER_SEPARATOR = /(\s+[·•|]\s+)/;
+const HAS_TOKEN = new RegExp(DOCUMENT_TOKEN_RE.source);
+
+// The footer joins parts that may resolve empty ("{{company_name}} · {{doc_number}}" on an account
+// with no company name), and resolved as plain text that leaves the separator hanging. Each line is
+// split at its separators; a part that holds a token and resolves to nothing is dropped with the
+// separator that led to it, and every other part and separator is printed as the author wrote it.
 export function resolveFooterText(
   text: string,
   vars: Record<string, string>,
 ): string {
-  let out = text;
-  for (;;) {
-    const empty = [...out.matchAll(DOCUMENT_TOKEN_RE)].find(
-      (m) => sanitizeDocumentValue(vars[m[1] as string] ?? "") === "",
-    );
-    if (!empty || empty.index === undefined) break;
-    const start = empty.index;
-    const end = start + empty[0].length;
-    const after = /^[ \t]*[·•|][ \t]*/.exec(out.slice(end));
-    const before = /[ \t]*[·•|][ \t]*$/.exec(out.slice(0, start));
-    if (after) out = out.slice(0, start) + out.slice(end + after[0].length);
-    else if (before) out = out.slice(0, before.index) + out.slice(end);
-    else out = out.slice(0, start) + out.slice(end);
-  }
-  return resolveTokens(out, vars);
+  return text
+    .split("\n")
+    .map((line) => {
+      const pieces = line.split(FOOTER_SEPARATOR);
+      const kept: { text: string; separatorAfter: string | undefined }[] = [];
+      for (let i = 0; i < pieces.length; i += 2) {
+        const raw = pieces[i] as string;
+        const resolved = resolveTokens(raw, vars);
+        if (HAS_TOKEN.test(raw) && resolved.trim() === "") continue;
+        kept.push({ text: resolved, separatorAfter: pieces[i + 1] });
+      }
+      return kept
+        .map((part, i) => {
+          if (i === kept.length - 1)
+            return i > 0 ? part.text.trimStart() : part.text;
+          const text = i > 0 ? part.text.trim() : part.text.trimEnd();
+          return text + (part.separatorAfter ?? " · ");
+        })
+        .join("");
+    })
+    .join("\n");
 }

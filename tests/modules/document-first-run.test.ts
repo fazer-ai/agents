@@ -145,6 +145,16 @@ describe("footer text", () => {
     ).toBe("Obrigado! · 7");
   });
 
+  test("an empty token sharing a part with a filled one keeps the separator", () => {
+    expect(
+      resolveFooterText("{{company_name}} {{company_phone}} | {{doc_number}}", {
+        company_name: "Acme",
+        company_phone: "",
+        doc_number: "0042",
+      }),
+    ).toBe("Acme | 0042");
+  });
+
   test("text that is not a separator is left alone", () => {
     expect(
       resolveFooterText("Obrigado! {{doc_number}}", { doc_number: "7" }),

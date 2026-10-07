@@ -1,4 +1,4 @@
-import { ArrowRightLeft, Tags } from "lucide-react";
+import { ArrowRightLeft, MessageSquareOff, Tags } from "lucide-react";
 import { lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/client/components";
@@ -91,6 +91,45 @@ export function ReasonsSection({
     rows: rows.map((r) => [r.day, ...series.map((s) => r[s.key] as number)]),
   };
 
+  const targetLabel: Record<string, string> = {
+    pinned: t("dashboard.target.pinned", "To the pinned agent or team"),
+    routing: t("dashboard.target.routing", "To Chatwoot's default routing"),
+    not_assigned: t("dashboard.target.notAssigned", "Not assigned"),
+  };
+  const targetTotals = (["pinned", "routing", "not_assigned"] as const)
+    .map((target) => ({
+      target,
+      conversations: (h?.targets ?? [])
+        .filter((x) => x.target === target)
+        .reduce((sum, x) => sum + x.conversations, 0),
+    }))
+    .filter((x) => x.conversations > 0);
+
+  const silenceSeries = (h?.silences ?? []).map((s, i) => ({
+    key: `s${i}`,
+    raw: s.reason,
+    label: silenceLabel[s.reason] ?? s.reason,
+  }));
+  const silenceRows: ChartRow[] = days.map((day) => {
+    const row: ChartRow = { day };
+    for (const s of silenceSeries)
+      row[s.key] =
+        h?.silenceDays.find((d) => d.date === day && d.reason === s.raw)
+          ?.turns ?? 0;
+    return row;
+  });
+  const silenceTable: BlockTable = {
+    name: "dashboard-silences-by-reason",
+    header: [
+      t("dashboard.col.day", "Day"),
+      ...silenceSeries.map((s) => s.label),
+    ],
+    rows: silenceRows.map((r) => [
+      r.day,
+      ...silenceSeries.map((s) => r[s.key] as number),
+    ]),
+  };
+
   const l = labels.data;
   const labelTable: BlockTable = {
     name: "dashboard-outcome-by-label",
@@ -129,7 +168,7 @@ export function ReasonsSection({
         table={handoffTable}
         footer={
           h &&
-          (h.totals.length > 0 || h.silences.length > 0) && (
+          h.totals.length > 0 && (
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5">
                 <p className="text-text-muted text-xs">
@@ -156,25 +195,22 @@ export function ReasonsSection({
               </div>
               <div className="flex flex-col gap-1.5">
                 <p className="text-text-muted text-xs">
-                  {t(
-                    "dashboard.handoffs.silences",
-                    "Turns the agent chose not to answer, by reason",
-                  )}
+                  {t("dashboard.handoffs.targets", "Where the transfers went")}
                 </p>
-                {h.silences.length === 0 ? (
+                {targetTotals.length === 0 ? (
                   <p className="text-sm text-text-muted">{"\u2014"}</p>
                 ) : (
                   <ul className="flex flex-col gap-1">
-                    {h.silences.map((s) => (
+                    {targetTotals.map((x) => (
                       <li
-                        key={s.reason}
+                        key={x.target}
                         className="flex items-center justify-between gap-4 text-sm"
                       >
                         <span className="text-text-secondary">
-                          {silenceLabel[s.reason] ?? s.reason}
+                          {targetLabel[x.target] ?? x.target}
                         </span>
                         <span className="font-medium text-text-primary tabular-nums">
-                          {nf.format(s.turns)}
+                          {nf.format(x.conversations)}
                         </span>
                       </li>
                     ))}
@@ -199,6 +235,58 @@ export function ReasonsSection({
               lang={i18n.language}
               format={(v) => nf.format(v)}
               height={220}
+            />
+          </Suspense>
+        )}
+      </Block>
+
+      <Block
+        error={handoffs.error}
+        loading={handoffs.loading && !h}
+        onRetry={handoffs.reload}
+        icon={MessageSquareOff}
+        title={t("dashboard.silences.title", "Silences by reason")}
+        help={t(
+          "dashboard.silences.help",
+          "Turns where the agent chose not to answer, each day, by the reason it picked. A silence that also handed the conversation over is counted in the handoffs above as well.",
+        )}
+        chart
+        table={silenceTable}
+        footer={
+          h &&
+          h.silences.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {h.silences.map((s) => (
+                <li
+                  key={s.reason}
+                  className="flex items-center justify-between gap-4 text-sm"
+                >
+                  <span className="text-text-secondary">
+                    {silenceLabel[s.reason] ?? s.reason}
+                  </span>
+                  <span className="font-medium text-text-primary tabular-nums">
+                    {nf.format(s.turns)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )
+        }
+      >
+        {handoffs.loading && !h ? (
+          <Skeleton className="h-48 w-full" />
+        ) : silenceSeries.length === 0 ? (
+          <p className="py-8 text-center text-sm text-text-muted">
+            {t("dashboard.silences.none", "No silences in this period.")}
+          </p>
+        ) : (
+          <Suspense fallback={<Skeleton className="h-48 w-full" />}>
+            <StackedBars
+              data={silenceRows}
+              series={silenceSeries}
+              lang={i18n.language}
+              format={(v) => nf.format(v)}
+              height={200}
             />
           </Suspense>
         )}

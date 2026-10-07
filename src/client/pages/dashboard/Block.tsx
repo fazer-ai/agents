@@ -107,33 +107,37 @@ export function Block({
         children
       )}
       {shown && footer}
+      {/* The wrapper is what hides it: a `<table>` keeps its content width whatever width it is
+          given, so `sr-only` on the table itself still widened the page into a horizontal scroll. */}
       {ready && chart && table && (
-        <table className="sr-only">
-          <caption>{title}</caption>
-          <thead>
-            <tr>
-              {table.header.map((h) => (
-                <th key={h} scope="col">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {(
-              table.display ??
-              table.rows.map((r) => r.map((c) => String(c ?? "")))
-            ).map((r, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id beyond their order
-              <tr key={i}>
-                {r.map((c, j) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: cells are positional
-                  <td key={j}>{c}</td>
+        <div className="sr-only">
+          <table>
+            <caption>{title}</caption>
+            <thead>
+              <tr>
+                {table.header.map((h) => (
+                  <th key={h} scope="col">
+                    {h}
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(
+                table.display ??
+                table.rows.map((r) => r.map((c) => String(c ?? "")))
+              ).map((r, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: rows have no id beyond their order
+                <tr key={i}>
+                  {r.map((c, j) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: cells are positional
+                    <td key={j}>{c}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   );

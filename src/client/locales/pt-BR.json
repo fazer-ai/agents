@@ -895,7 +895,7 @@
     "handoffs": {
       "help": "Conversas que saíram do agente a cada dia, por quem decidiu: o próprio agente, o silêncio dele com o motivo que deu, um guardrail, ou uma pessoa que respondeu ou assumiu a conversa. Uma conversa conta uma vez por causa e por dia. O motivo em texto livre do agente fica na nota privada da conversa, não aqui.",
       "none": "Nenhuma transferência neste período.",
-      "silences": "Turnos em que o agente escolheu não responder, por motivo",
+      "targets": "Para onde foram as transferências",
       "title": "Transferências por causa",
       "totals": "Conversas no período"
     },
@@ -992,6 +992,11 @@
       "notForUs": "Não é deste time",
       "unrecorded": "Motivo não registrado"
     },
+    "silences": {
+      "help": "Turnos em que o agente escolheu não responder, por dia, pelo motivo que ele deu. Um silêncio que também transferiu a conversa entra nas transferências acima também.",
+      "none": "Nenhum silêncio no período.",
+      "title": "Silêncios por motivo"
+    },
     "source": {
       "all": "Todos",
       "inbox": "Real",
@@ -999,6 +1004,11 @@
       "playground": "Playground"
     },
     "subtitle2": "Como os agentes estão indo, quanto custam e para onde vai o gasto.",
+    "target": {
+      "notAssigned": "Não atribuída",
+      "pinned": "Para o agente ou time fixado",
+      "routing": "Para o roteamento padrão do Chatwoot"
+    },
     "title": "Painel",
     "tokens": "Tokens (entrada / saída)",
     "totalCost": "Custo de LLM",

@@ -164,6 +164,10 @@ const stubFetch = (async (input: unknown) => {
         days: [{ date: "2026-10-01", cause: "person", conversations: 2 }],
         totals: [{ cause: "person", conversations: 2 }],
         silences: [{ reason: "needs_human", turns: 3 }],
+        silenceDays: [{ date: "2026-10-01", reason: "needs_human", turns: 3 }],
+        targets: [
+          { cause: "skip_needs_human", target: "pinned", conversations: 2 },
+        ],
       },
     });
   if (p.endsWith("/metrics/labels"))
@@ -573,6 +577,21 @@ describe("a block still loading", () => {
     await waitFor(() => {
       expect(exportDaily().length).toBe(1);
     });
+  });
+});
+
+describe("silences and where the transfers went", () => {
+  test("silences have their own block with a table per day, and the pinned target shows apart", async () => {
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Silences by reason")).toBe(true);
+      expect(has("To the pinned agent or team")).toBe(true);
+    });
+    // The per-day stand-in table names the reason as a column.
+    const tables = [
+      ...document.querySelectorAll(".sr-only > table caption"),
+    ].map((c) => c.textContent);
+    expect(tables).toContain("Silences by reason");
   });
 });
 

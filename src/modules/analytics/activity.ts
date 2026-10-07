@@ -39,6 +39,17 @@ export const HANDOFF_CAUSES = [
 ] as const;
 export type HandoffCause = (typeof HANDOFF_CAUSES)[number];
 
+export const HANDOFF_TARGETS = ["pinned", "routing", "not_assigned"] as const;
+export type HandoffTarget = (typeof HANDOFF_TARGETS)[number];
+
+const TARGET_SQL = Prisma.sql`(CASE l.detail->>'assigned'
+  WHEN 'agent' THEN 'pinned'
+  WHEN 'team' THEN 'pinned'
+  WHEN 'routing' THEN 'routing'
+  WHEN 'failed' THEN 'not_assigned'
+  WHEN 'withdrawn' THEN 'not_assigned'
+  END)`;
+
 export interface HandoffReasons {
   // Conversations per cause per local day. One conversation counts once per cause and day.
   days: { date: string; cause: HandoffCause; conversations: number }[];
@@ -46,6 +57,17 @@ export interface HandoffReasons {
   // skip_reply calls per reason, the silences whether or not they handed anything over. "unrecorded"
   // is a line written before the reason was logged.
   silences: { reason: string; turns: number }[];
+  // The same silences per local day.
+  silenceDays: { date: string; reason: string; turns: number }[];
+  // Where the transfers that record it went (`detail.assigned` on a silence's or a guardrail's
+  // hand-over): to the pinned agent or team, to Chatwoot's default routing, or not assigned (the
+  // assignment failed or the run was called off). Distinct conversations per cause and target; the
+  // agent's own tool and a person taking over record no target and are not here.
+  targets: {
+    cause: HandoffCause;
+    target: HandoffTarget;
+    conversations: number;
+  }[];
 }
 
 const CAUSE_SQL = Prisma.sql`(CASE
@@ -120,6 +142,30 @@ export async function getHandoffReasons(
          GROUP BY 1
          ORDER BY 2 DESC`),
     ];
+    const silenceDays = await db.$queryRaw<
+      { date: string; reason: string; turns: number }[]
+    >(Prisma.sql`
+      SELECT ${localDaySql(Prisma.sql`l.created_at`, tz)} AS date,
+             COALESCE(l.detail->>'skipReason', 'unrecorded') AS reason,
+             COUNT(*)::int AS turns
+        FROM execution_logs l
+       WHERE ${logWhereSql("l", filter)}
+         AND l.stage = 'tool'
+         AND l.detail->>'tool' = 'skip_reply'
+         AND l.status = 'ok'
+       GROUP BY 1, 2
+       ORDER BY 1, 2`);
+    const targets = await db.$queryRaw<
+      { cause: string; target: string; conversations: number }[]
+    >(Prisma.sql`
+      SELECT cause, target, COUNT(DISTINCT conversation_id)::int AS conversations
+        FROM (SELECT ${CAUSE_SQL} AS cause, ${TARGET_SQL} AS target, l.conversation_id
+                FROM execution_logs l
+               WHERE ${logWhereSql("l", filter)}
+                 AND l.conversation_id IS NOT NULL
+                 AND l.stage = 'handoff') x
+       WHERE cause IS NOT NULL AND target IS NOT NULL
+       GROUP BY 1, 2`);
     const known = (c: string): c is HandoffCause =>
       (HANDOFF_CAUSES as readonly string[]).includes(c);
     return {
@@ -141,6 +187,18 @@ export async function getHandoffReasons(
         reason: s.reason,
         turns: Number(s.turns),
       })),
+      silenceDays: silenceDays.map((s) => ({
+        date: s.date,
+        reason: s.reason,
+        turns: Number(s.turns),
+      })),
+      targets: targets
+        .filter((r) => known(r.cause))
+        .map((r) => ({
+          cause: r.cause as HandoffCause,
+          target: r.target as HandoffTarget,
+          conversations: Number(r.conversations),
+        })),
     };
   });
 }

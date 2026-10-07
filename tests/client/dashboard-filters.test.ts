@@ -244,6 +244,12 @@ describe("a block's CSV", () => {
     );
   });
 
+  test("a sum of cents reads as the screen shows it, not as its binary residue", () => {
+    expect(toCsv(["Total"], [[0.1 + 0.7], [1e-9], [123456.789]])).toBe(
+      "Total\r\n0.8\r\n1e-9\r\n123456.789",
+    );
+  });
+
   test("a header alone is a valid file", () => {
     expect(toCsv(["Day", "Cost"], [])).toBe("Day,Cost");
   });

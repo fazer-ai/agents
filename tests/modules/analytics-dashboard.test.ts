@@ -1399,6 +1399,65 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect(r.totals.find((t) => t.cause === "person")).toBeUndefined();
   });
 
+  test("silences come per day, and a transfer says where it went", async () => {
+    const conv = await seedConv(ex, "targets", { at: D1, inbox: ex.i1 });
+    const other = await seedConv(ex, "targets2", { at: D1, inbox: ex.i1 });
+    const line = (
+      c: bigint,
+      at: string,
+      stage: string,
+      detail: Record<string, unknown>,
+    ) =>
+      suDb.executionLog.create({
+        data: {
+          tenantId: ex.tenantId,
+          turnId: crypto.randomUUID(),
+          conversationId: c,
+          inboxId: ex.i1,
+          stage,
+          status: "ok",
+          source: "inbox",
+          detail: detail as Prisma.InputJsonObject,
+          createdAt: new Date(at),
+        },
+      });
+    await line(conv, "2026-09-20T10:00:00Z", "tool", {
+      tool: "skip_reply",
+      skipReason: "needs_human",
+    });
+    await line(conv, "2026-09-20T10:00:01Z", "handoff", {
+      outcome: "opened_after_skip",
+      reason: "needs_human",
+      assigned: "team",
+    });
+    await line(other, "2026-09-21T10:00:00Z", "tool", {
+      tool: "skip_reply",
+      skipReason: "not_for_us",
+    });
+    await line(other, "2026-09-21T10:00:01Z", "handoff", {
+      outcome: "opened_after_skip",
+      reason: "not_for_us",
+      assigned: "routing",
+    });
+    const r = await getHandoffReasons(
+      ctx(ex.tenantId),
+      {
+        since: new Date("2026-09-20T00:00:00Z"),
+        until: new Date("2026-09-22T00:00:00Z"),
+        tz: "UTC",
+      },
+      appDb,
+    );
+    expect(r.silenceDays).toEqual([
+      { date: "2026-09-20", reason: "needs_human", turns: 1 },
+      { date: "2026-09-21", reason: "not_for_us", turns: 1 },
+    ]);
+    expect(r.targets.sort((a, b) => a.cause.localeCompare(b.cause))).toEqual([
+      { cause: "skip_needs_human", target: "pinned", conversations: 1 },
+      { cause: "skip_not_for_us", target: "routing", conversations: 1 },
+    ]);
+  });
+
   test("an inbox filter narrows the ledger figures too", async () => {
     const rows = await getBreakdown(
       ctx(ex.tenantId),

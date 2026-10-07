@@ -11,7 +11,9 @@ function cell(v: CsvCell): string {
   const s =
     typeof v === "number"
       ? Number.isFinite(v)
-        ? String(v)
+        ? // Twelve significant digits: a sum of cents in binary floating point reads 0.79999…
+          // where the screen says 0.80, and no figure here carries more precision than that.
+          String(Number.parseFloat(v.toPrecision(12)))
         : ""
       : /^[=+\-@\t\r]/.test(v)
         ? `'${v}`

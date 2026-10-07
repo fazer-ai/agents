@@ -870,7 +870,7 @@
     "handoffs": {
       "help": "Conversations that left the agent each day, by who decided: the agent itself, its silence with the reason it gave, a guardrail, or a person who replied or took the conversation. A conversation counts once per cause and day. The agent's free-text reason is in the conversation's private note, not here.",
       "none": "No handoffs in this period.",
-      "silences": "Turns the agent chose not to answer, by reason",
+      "targets": "Where the transfers went",
       "title": "Handoffs by cause",
       "totals": "Conversations in the period"
     },
@@ -965,6 +965,11 @@
       "notForUs": "Not for this team",
       "unrecorded": "Reason not recorded"
     },
+    "silences": {
+      "help": "Turns where the agent chose not to answer, each day, by the reason it picked. A silence that also handed the conversation over is counted in the handoffs above as well.",
+      "none": "No silences in this period.",
+      "title": "Silences by reason"
+    },
     "source": {
       "all": "All",
       "inbox": "Real",
@@ -972,6 +977,11 @@
       "playground": "Playground"
     },
     "subtitle2": "How the agents are doing, what they cost and where it goes.",
+    "target": {
+      "notAssigned": "Not assigned",
+      "pinned": "To the pinned agent or team",
+      "routing": "To Chatwoot's default routing"
+    },
     "title": "Dashboard",
     "tokens": "Tokens (in / out)",
     "totalCost": "LLM cost",

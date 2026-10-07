@@ -888,7 +888,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: {
           tenantId,
           stage: "generate",
-          level: "warn",
+          // NOTE: Written before the retry, so `info` with `willRetry`: the recovered turn alerts nobody.
+          level: "info",
           threadId: `${tenantId}:${instanceId}:995`,
         },
         select: { detail: true },
@@ -896,7 +897,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       retryLogged = rows.some(
         (r) =>
           (r.detail as Record<string, unknown> | null)?.retriedEmptyResponse ===
-          1,
+            1 &&
+          (r.detail as Record<string, unknown> | null)?.willRetry === true,
       );
       if (!retryLogged) await new Promise((r) => setTimeout(r, 100));
     }
@@ -2421,6 +2423,87 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["toggleStatus", 91904, "resolved"],
       ]);
     });
+
+    // A case that could not be read holds the label, and the close still went through: the line is
+    // the record of it, not a failure, so it does not reach the alert.
+    test("a case that could not be read holds the label on an info line", async () => {
+      await seedConversation(91916, null);
+      const FINAL = "Certo, o time retorna pelo e-mail.";
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+        conversations: {
+          91916: {
+            id: 91916,
+            inbox_id: 1,
+            status: "pending",
+            meta: { assignee_type: null, assignee: null },
+            custom_attributes: { case_conversation_id: 91996 },
+          },
+        },
+      });
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: {
+          settings: {
+            split: { enabled: false },
+            resolveConversation: { assignLabels: ["resolvido-pela-ia"] },
+            crossInboxCase: { targetInboxId: 9 },
+          },
+        },
+      });
+      try {
+        const outcome = await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91916 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+            makeClient: cw.make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { settings: { split: { enabled: false } } },
+        });
+      }
+      expect(calls).toEqual([
+        ["sendMessage", 91916, FINAL],
+        ["toggleStatus", 91916, "resolved"],
+      ]);
+      let held: Array<{ level: string; status: string | null }> = [];
+      for (let i = 0; i < 30 && held.length === 0; i++) {
+        const rows = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "tool",
+            threadId: `${tenantId}:${instanceId}:91916`,
+          },
+          select: { level: true, status: true, detail: true },
+        });
+        held = rows.filter(
+          (r) =>
+            (r.detail as Record<string, unknown> | null)?.phase ===
+            "resolve_labels",
+        );
+        if (held.length === 0) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(held).toEqual(
+        [{ level: "info", status: "error" }].map((h) =>
+          expect.objectContaining(h),
+        ),
+      );
+    });
   });
 
   // NOTE: The deferred resolve fires AFTER delivery, and delivery on this path is not
@@ -3633,6 +3716,91 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // the resolve decision, which this branch already refused for the same reason.
     expect(outcome).toBe("posted-partial");
   });
+
+  // A tool that failed on every call it made is the turn's outcome, and the turn says so once it is
+  // done; a tool that failed and then worked says nothing past its `info` lines.
+  test.each([
+    ["fails on every call", 91921, [false, false], ["warn"]],
+    ["fails, then works", 91922, [false, true], []],
+  ] as const)(
+    "a tool that %s settles at the end of the turn",
+    async (_label, conversationId, works, expected) => {
+      await seedConversation(conversationId, null);
+      const calls: Array<[string, number, string]> = [];
+      let reacts = 0;
+      const client = {
+        ...(await makeResolveClient(calls)()),
+        getLatestIncomingMessage: async () => {
+          if (!works[reacts++]) throw new Error("chatwoot unreachable");
+          return { id: 1, isReaction: false };
+        },
+        addMessageReaction: async () => ({}),
+      } as unknown as ChatwootClient;
+      const model = {
+        invoke: async () => new AIMessage("Certo!"),
+        bindTools() {
+          let n = 0;
+          return {
+            invoke: async () =>
+              ++n <= works.length
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "react_to_message",
+                        args: { emoji: "👍" },
+                        id: `call_react_${n}`,
+                      },
+                    ],
+                  })
+                : new AIMessage("Certo!"),
+          };
+        },
+      };
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(reacts).toBe(works.length);
+      const lines = async () =>
+        (
+          await flowLogRows(suDb, {
+            where: {
+              tenantId,
+              stage: "tool",
+              threadId: `${tenantId}:${instanceId}:${conversationId}`,
+            },
+            select: { level: true, detail: true },
+          })
+        ).filter(
+          (r) =>
+            (r.detail as Record<string, unknown> | null)?.tool ===
+            "react_to_message",
+        );
+      let rows = await lines();
+      for (
+        let i = 0;
+        i < 30 && rows.length < works.length + expected.length;
+        i++
+      ) {
+        await new Promise((r) => setTimeout(r, 100));
+        rows = await lines();
+      }
+      expect(
+        rows.filter((r) => r.level !== "info").map((r) => r.level),
+      ).toEqual([...expected]);
+      expect(rows.filter((r) => r.level === "info")).toHaveLength(works.length);
+    },
+  );
 
   test("taken over mid-turn discards the resolve intent", async () => {
     await seedConversation(911, "User");

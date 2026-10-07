@@ -6510,7 +6510,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
 
   // A proactive send that only worked on the second attempt must not read like a clean turn: this
   // path can page an alert channel, so a recovered provider fault has to leave its warn behind.
-  test("a recovered empty completion leaves a warn on the nudge's trail", async () => {
+  test("a recovered empty completion leaves an info line with willRetry on the nudge's trail", async () => {
     await seedConv(913, null, new Date());
     const s = stub();
     const outcome = await runAgentNudge({
@@ -6533,7 +6533,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         where: {
           tenantId,
           stage: "generate",
-          level: "warn",
+          // NOTE: Written before the retry, so `info` with `willRetry`: the recovered turn alerts nobody.
+          level: "info",
           threadId: `${tenantId}:${instanceId}:913`,
         },
         select: { detail: true },
@@ -6541,7 +6542,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       logged = rows.some(
         (r) =>
           (r.detail as Record<string, unknown> | null)?.retriedEmptyResponse ===
-          1,
+            1 &&
+          (r.detail as Record<string, unknown> | null)?.willRetry === true,
       );
       if (!logged) await new Promise((r) => setTimeout(r, 100));
     }

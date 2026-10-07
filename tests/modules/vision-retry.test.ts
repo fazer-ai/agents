@@ -433,11 +433,14 @@ describe("extractWithRetry", () => {
   });
 });
 
-function stubClient(meta: Array<Record<string, unknown>>) {
+function stubClient(
+  meta: Array<Record<string, unknown>>,
+  contentType = "image/png",
+) {
   const client = {
     downloadAttachment: async () => ({
       bytes: new ArrayBuffer(16),
-      contentType: "image/png",
+      contentType,
     }),
     updateAttachmentMeta: async (
       conversationId: number,
@@ -643,5 +646,248 @@ describe.skipIf(!dbUp)("vision retry", () => {
     expect(calls.length).toBe(VISION_MAX_ATTEMPTS);
     expect(out).toBeNull();
     expect(meta).toEqual([]);
+  });
+  // THE LEVEL STATES THE OUTCOME, decided where the outcome is known: an attempt the loop is about
+  // to repeat is `info` with `willRetry`, and only the attempt that ends the extraction without
+  // content is a `warn`, naming what was left unread. `status` stays `error` on every failed
+  // attempt, since the attempt did fail.
+  async function visionLines(turnId: string) {
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, turnId, stage: "vision" },
+      select: { level: true, status: true, detail: true },
+    });
+    return rows
+      .map((r) => ({
+        level: r.level,
+        status: r.status,
+        detail: r.detail as Record<string, unknown>,
+      }))
+      .sort(
+        (a, b) => (a.detail.attempt as number) - (b.detail.attempt as number),
+      );
+  }
+
+  // A message id of its own per call: extractions are shared in flight and annotated by message.
+  let nextMessageId = 50;
+  async function extractWith(
+    statuses: number[],
+    turnId: string,
+    contentType = "image/png",
+  ) {
+    const { impl } = geminiFetch(statuses);
+    return extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 710,
+      messageId: nextMessageId++,
+      attachmentId: 7,
+      dataUrl: "https://chat.example.com/recibo",
+      cfg: await cfg(),
+      base: appDb,
+      flow: { tenantId, turnId, source: "inbox", base: appDb },
+      deps: {
+        makeClient: stubClient([], contentType),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+  }
+
+  test("an attempt the loop repeats is info with willRetry, and a recovered read leaves no warn", async () => {
+    const turnId = `vision-outcome-recovered-${process.pid}`;
+    const out = await extractWith([503, 200], turnId);
+    expect(out?.text).toBe(EXTRACTED);
+    const lines = await visionLines(turnId);
+    expect(lines.map((l) => [l.level, l.status])).toEqual([
+      ["info", "error"],
+      ["info", "ok"],
+    ]);
+    expect(lines[0]?.detail.willRetry).toBe(true);
+  });
+
+  test("the attempt that gives up is the one warn, and it names the image it left unread", async () => {
+    const turnId = `vision-outcome-down-${process.pid}`;
+    expect(await extractWith([503], turnId)).toBeNull();
+    const lines = await visionLines(turnId);
+    expect(lines.map((l) => l.level)).toEqual(["info", "warn"]);
+    expect(lines[0]?.detail.willRetry).toBe(true);
+    expect(lines[1]?.detail.willRetry).toBeUndefined();
+    expect(lines[1]?.detail.unread).toBe("image");
+  });
+
+  test("a permanent failure is a warn on the first attempt, naming the document", async () => {
+    const turnId = `vision-outcome-permanent-${process.pid}`;
+    expect(await extractWith([401], turnId, "application/pdf")).toBeNull();
+    const lines = await visionLines(turnId);
+    expect(lines.map((l) => l.level)).toEqual(["warn"]);
+    expect(lines[0]?.detail.willRetry).toBeUndefined();
+    expect(lines[0]?.detail.unread).toBe("document");
+  });
+
+  // The same reading the loop makes before waiting: an attempt that spent the budget has no retry
+  // behind it, so its own line is the outcome, and it is not announced as one more try.
+  test("an attempt that spent the budget is the warn itself, not a retry announced", async () => {
+    const turnId = `vision-outcome-spent-${process.pid}`;
+    let clock = 0;
+    const provider = {
+      defaultModel: "m",
+      extract: async () => {
+        clock += VISION_TOTAL_BUDGET_MS - 500;
+        throw new VisionError("gemini", 503);
+      },
+    } as VisionProvider;
+    await expect(
+      extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: {
+          bytes: new ArrayBuffer(4),
+          mimeType: "image/png",
+          kind: "image",
+          prompt: "Descreva.",
+          model: "m",
+          apiKey: "k",
+          baseURL: null,
+          fetchImpl: fetch,
+        },
+        flow: { tenantId, turnId, source: "inbox", base: appDb },
+        now: () => clock,
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow("vision gemini failed with 503");
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, turnId, stage: "vision" },
+      select: { level: true, detail: true },
+    });
+    expect(rows.map((r) => r.level)).toEqual(["warn"]);
+    expect(
+      (rows[0]?.detail as Record<string, unknown> | undefined)?.willRetry,
+    ).toBeUndefined();
+  });
+
+  // The wait is jittered, and the answer to "does a retry follow" is only true if the loop then waits
+  // the same wait: drawn twice, one draw can predict no retry at the edge of the budget and the other
+  // fund it, and the line would say the file went unread right before it is read.
+  test("the retry the line predicts is the one the loop makes, at the edge of the budget", async () => {
+    const turnId = `vision-outcome-jitter-${process.pid}`;
+    const longest = retryDelayMs(2, () => 1) as number;
+    const shortest = retryDelayMs(2, () => 0) as number;
+    // A point where the shortest wait still funds attempt 2 and the longest does not.
+    let edge = -1;
+    for (let e = 0; e < VISION_TOTAL_BUDGET_MS; e += 10) {
+      const funded = (wait: number) =>
+        attemptBudgetMs({
+          kind: "document",
+          attempt: 2,
+          elapsedMs: e + wait,
+          customEndpoint: false,
+        }) !== null;
+      if (funded(shortest) && !funded(longest)) {
+        edge = e;
+        break;
+      }
+    }
+    expect(edge).toBeGreaterThan(0);
+    let clock = 0;
+    let calls = 0;
+    // Attempt 1's own (zero) wait takes the first draw; the failure's question takes the second.
+    const draws = [0, 1, 0];
+    const realRandom = Math.random;
+    Math.random = () => draws.shift() ?? 0;
+    try {
+      const provider = {
+        defaultModel: "m",
+        extract: async () => {
+          calls += 1;
+          if (calls === 1) {
+            clock = edge;
+            throw new VisionError("gemini", 503);
+          }
+          return { text: "ok", usage: null };
+        },
+      } as VisionProvider;
+      const settled = await extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: {
+          bytes: new ArrayBuffer(4),
+          mimeType: "application/pdf",
+          kind: "document",
+          prompt: "Leia.",
+          model: "m",
+          apiKey: "k",
+          baseURL: null,
+          fetchImpl: fetch,
+        },
+        flow: { tenantId, turnId, source: "inbox", base: appDb },
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }).then(
+        () => "read",
+        () => "unread",
+      );
+      const rows = await flowLogRows(suDb, {
+        where: { tenantId, turnId, stage: "vision" },
+        select: { level: true },
+      });
+      const warned = rows.some((r) => r.level === "warn");
+      expect(warned).toBe(settled === "unread");
+      expect(calls).toBe(settled === "read" ? 2 : 1);
+    } finally {
+      Math.random = realRandom;
+    }
+  });
+
+  // The promise of a retry is read before the wait, and the wait can oversleep the budget: the loop
+  // then stops without the attempt it announced, and the extraction still ended unread. Without a
+  // line of its own, that outcome would be an `info` and nothing else.
+  test("a retry announced and then lost to the budget still ends on a warn", async () => {
+    const turnId = `vision-outcome-overslept-${process.pid}`;
+    let clock = 0;
+    let calls = 0;
+    const provider = {
+      defaultModel: "m",
+      extract: async () => {
+        calls += 1;
+        throw new VisionError("gemini", 503);
+      },
+    } as VisionProvider;
+    await expect(
+      extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: {
+          bytes: new ArrayBuffer(4),
+          mimeType: "image/png",
+          kind: "image",
+          prompt: "Descreva.",
+          model: "m",
+          apiKey: "k",
+          baseURL: null,
+          fetchImpl: fetch,
+        },
+        flow: { tenantId, turnId, source: "inbox", base: appDb },
+        now: () => clock,
+        sleep: async () => {
+          clock += VISION_TOTAL_BUDGET_MS - 1_000;
+        },
+      }),
+    ).rejects.toThrow("vision gemini failed with 503");
+    expect(calls).toBe(1);
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, turnId, stage: "vision" },
+      select: { level: true, detail: true },
+      orderBy: { id: "asc" },
+    });
+    expect(rows.map((r) => r.level).sort()).toEqual(["info", "warn"]);
+    const warn = rows.find((r) => r.level === "warn");
+    expect((warn?.detail as Record<string, unknown> | undefined)?.unread).toBe(
+      "image",
+    );
   });
 });

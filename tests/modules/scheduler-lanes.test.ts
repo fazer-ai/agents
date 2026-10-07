@@ -237,9 +237,9 @@ const EXPECTED_DEATH_LEVEL: Record<
   MEMORY_COMPACT: "error",
   INGEST_MESSAGE: "error",
   DELIVERY_SWEEP: "error",
-  // The only kind whose death is not an `error`, which is why writing it out matters more here than
-  // anywhere else in this file: the sweep already paged about this exact delivery at `error`, and
-  // the DEAD ledger row is still the operator's worklist. What died is the automatic second attempt.
+  // The only kind whose death is not an `error` for the customer's sake, which is why writing it out
+  // matters: the delivery's own line (`announceDeadRecovery`) is the `error` that says the message went
+  // unanswered, and what died here is the automatic second attempt.
   DELIVERY_RECOVERY: "warn",
   TAKEOVER_RECOVERY: "warn",
   // `warn`, by the same rule read the other way round: the receiver already reported this loss at

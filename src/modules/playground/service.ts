@@ -452,11 +452,13 @@ async function buildPlaygroundGraph(params: {
     provider: string;
     model: string;
     reason: string;
+    failure: string;
   }) => void;
   onModelFallbackFailed?: (info: {
     provider: string;
     model: string;
     reason: string;
+    failure: string;
   }) => void;
   onModelFallbackUnavailable?: (info: {
     provider: string;
@@ -762,14 +764,14 @@ async function runPlaygroundTurnOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason }) =>
+      onModelFallback: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
           provider,
           model,
-          detail: { fallbackReason: reason },
+          detail: { fallbackReason: reason, primaryFailure: failure },
         }),
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
@@ -779,14 +781,15 @@ async function runPlaygroundTurnOnce(
       // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
       // labelled with the primary by construction and would otherwise blame the model that never made
       // the second call. `status` stays "error": the call did fail.
-      onModelFallbackFailed: ({ provider, model, reason }) =>
+      onModelFallbackFailed: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "info",
           status: "error",
           provider,
           model,
-          detail: { fallbackFailed: reason },
+          detail: { fallbackFailed: reason, failure },
+          errorMessage: reason,
         }),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
@@ -902,6 +905,11 @@ async function runPlaygroundTurnOnce(
   });
 
   let result: Awaited<ReturnType<typeof graph.invoke>>;
+  // So playground tool calls land in the Logs page, as a real turn's do in runLoadedTurn.
+  const toolLogger = new ToolFlowLogger(flow, {
+    logValues: loaded.logToolValues,
+    tools,
+  });
   try {
     result = await withFlowStage(
       flow,
@@ -915,19 +923,15 @@ async function runPlaygroundTurnOnce(
             configurable: { thread_id: threadId },
             // ToolFlowLogger so playground tool calls land in the Logs page (item 3), same as a
             // real turn does in runLoadedTurn.
-            callbacks: [
-              ...callbacks,
-              new ToolFlowLogger(flow, {
-                logValues: loaded.logToolValues,
-                tools,
-              }),
-            ],
+            callbacks: [...callbacks, toolLogger],
           },
         ),
     );
   } catch (e) {
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
+  } finally {
+    toolLogger.settle();
   }
   // Screen the reply BEFORE anything renders it, so the TTS synthesizes what would be delivered.
   // Same sentinel rule as the inbox's reactive path, so a reproduced silence token is not rendered.
@@ -1252,14 +1256,14 @@ async function runPlaygroundFollowupOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason }) =>
+      onModelFallback: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
           provider,
           model,
-          detail: { fallbackReason: reason },
+          detail: { fallbackReason: reason, primaryFailure: failure },
         }),
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
@@ -1269,14 +1273,15 @@ async function runPlaygroundFollowupOnce(
       // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
       // labelled with the primary by construction and would otherwise blame the model that never made
       // the second call. `status` stays "error": the call did fail.
-      onModelFallbackFailed: ({ provider, model, reason }) =>
+      onModelFallbackFailed: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "info",
           status: "error",
           provider,
           model,
-          detail: { fallbackFailed: reason },
+          detail: { fallbackFailed: reason, failure },
+          errorMessage: reason,
         }),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
@@ -1315,6 +1320,13 @@ async function runPlaygroundFollowupOnce(
   };
 
   let result: Awaited<ReturnType<typeof graph.invoke>>;
+  // From the loaded config, which reads this block off the SAVED bag — never from `settings` here,
+  // which is the draft. Recording policy does not follow a draft (see `prepare.ts`), and this line
+  // reading it separately is how the follow-up path came to answer differently from the turn path.
+  const nudgeToolLogger = new ToolFlowLogger(flow, {
+    logValues: loaded.logToolValues,
+    tools,
+  });
   try {
     result = await graph.invoke(
       // HUMAN turn, not SystemMessage: the agent node prepends the only system prompt; a second
@@ -1340,22 +1352,14 @@ async function runPlaygroundFollowupOnce(
       {
         recursionLimit: recursionLimitFor(loadedConfig.maxToolCalls),
         configurable: { thread_id: threadId },
-        callbacks: [
-          ...callbacks,
-          new ToolFlowLogger(flow, {
-            // From the loaded config, which reads this block off the SAVED bag — never from
-            // `settings` here, which is the draft. Recording policy does not follow a draft (see
-            // `prepare.ts`), and this line reading it separately is how the follow-up path came to
-            // answer differently from the turn path for the same agent.
-            logValues: loaded.logToolValues,
-            tools,
-          }),
-        ],
+        callbacks: [...callbacks, nudgeToolLogger],
       },
     );
   } catch (e) {
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
+  } finally {
+    nudgeToolLogger.settle();
   }
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.

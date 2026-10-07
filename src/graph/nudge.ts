@@ -1419,46 +1419,53 @@ async function runAgentNudgeBody(
     // NOTE: to the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
-    // NOTE: the same warn line the reactive turn leaves: a proactive send that only worked on the
-    // second attempt must not read like a clean one, and this path can page an alert channel.
+    // NOTE: the same line the reactive turn leaves: a proactive send that only worked on the second
+    // attempt must not read like a clean one in the Logs.
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         // NOTE: the retry can happen on either model, and the row names the one that made it. The
         // labels ride on the event rather than being defaulted here, so there is no default to get
         // wrong.
         provider,
         model,
-        detail: { retriedEmptyResponse: attempt },
+        // NOTE: written before the retry runs; a retry that also comes back empty fails the send,
+        // and that is the line that alerts.
+        detail: { retriedEmptyResponse: attempt, willRetry: true },
       }),
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the
     // primary was down: the reply went out, the customer was served, and the only trace would be a
     // usage row under another model's name. Warn rather than info — this is the operator's one
     // signal that a provider they are paying for is not taking their traffic.
-    onModelFallback: ({ provider, model, reason }) =>
+    onModelFallback: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
         provider,
         model,
-        detail: { fallbackFrom: cfg.mc.provider, fallbackReason: reason },
+        detail: {
+          fallbackFrom: cfg.mc.provider,
+          fallbackReason: reason,
+          primaryFailure: failure,
+        },
       }),
     // NOTE: the turn's real ending when there was a second provider and it failed too. ATTRIBUTION,
     // not a second alarm, so `info` while `status` stays "error": the `generate` stage around this
     // call emits its OWN error when the turn throws, and alert coalescing keys on (channel, stage,
     // level), so a second `generate`/`error` would page twice for one outage. This line only says
     // WHICH model died, since the stage is labelled with the primary by construction.
-    onModelFallbackFailed: ({ provider, model, reason }) =>
+    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "info",
         status: "error",
         provider,
         model,
-        detail: { fallbackFailed: reason },
+        detail: { fallbackFailed: reason, failure },
+        errorMessage: reason,
       }),
     // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having

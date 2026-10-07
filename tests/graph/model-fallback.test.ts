@@ -375,11 +375,12 @@ describe("runModelCall with something behind the primary", () => {
               status: 500,
             }),
           ),
-        onFallback: ({ reason }) => took.push(reason),
+        onFallback: ({ reason, failure }) => took.push(`${reason}|${failure}`),
         onFallbackFailed: ({ reason }) => died.push(reason),
       },
     }).catch((e) => e)) as Error;
-    expect(took).toEqual(["HTTP 503"]);
+    // The primary's failure class rides along, for its rate (flowlog/alerts.ts).
+    expect(took).toEqual(["HTTP 503|HTTP 503"]);
     expect(died).toEqual(["HTTP 500"]);
     // What the turn reports is still the fallback's failure, redacted the same way.
     expect(err.message).toBe("HTTP 500");

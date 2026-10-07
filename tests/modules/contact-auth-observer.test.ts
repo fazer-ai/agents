@@ -935,6 +935,33 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     ]);
   });
 
+  // A pass that finds the inbox's agent observing takes the delivery's own ask of the watcher's
+  // gate, so the arm after it does not put the question to the endpoint a second time.
+  test("a pass handed the delivery's watcher ask uses it instead of asking the endpoint", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(43, "individual", false, BOUND_INBOX);
+    providers.auth = 0;
+    providers.stt = 0;
+    const asks: bigint[] = [];
+    const n = audioEvent(43, "individual", false, BOUND_INBOX);
+    await runEagerMedia(tenantId, instanceId, n, appDb, {
+      conversationId: null,
+      agentId: null,
+      inboxId: null,
+      chatwootInboxId: BOUND_INBOX,
+      deliveryRowId: null,
+      deps: deps() as never,
+      admission: "unverified",
+      watcherPermit: async (agentId) => {
+        asks.push(agentId);
+        return { askedAt: Date.now() };
+      },
+    });
+    expect(asks).toEqual([observerId]);
+    expect(providers.auth).toBe(0);
+    expect(providers.stt).toBe(1);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

@@ -1426,6 +1426,13 @@ export interface EagerMediaOwner {
   // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
   // a provider.
   admission: "allowed" | "refused" | "unverified";
+  // The delivery's own ask of a watcher's whole gate (`observerMayObserve`), for a pass that finds
+  // the inbox's agent observing: the pass and the observation's arm then share one verdict instead
+  // of asking the endpoint one after the other.
+  watcherPermit?: (
+    agentId: bigint,
+    settings: unknown,
+  ) => Promise<{ askedAt: number } | null>;
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1500,6 +1507,34 @@ async function mediaAdmitted(
       return true;
     }
     const watcherPass = isMonitoring(ctx.mode ?? "");
+    if (watcherPass && owner.watcherPermit) {
+      // The arm's verdict, asked once for both; it leaves its own line.
+      if (!(await owner.watcherPermit(agentId, ctx.settings))) {
+        await recordMediaRefusal(
+          tenantId,
+          convDbId,
+          n.message?.id,
+          base,
+          owner.sleep,
+        );
+        return false;
+      }
+      if (
+        convDbId !== null &&
+        refusedCovers(
+          await mediaRefusedThrough(tenantId, convDbId, base),
+          messageId,
+        )
+      ) {
+        return false;
+      }
+      if (messageId != null) {
+        rememberMediaAdmission(
+          mediaAdmissionKey(tenantId, instanceId, messageId),
+        );
+      }
+      return true;
+    }
     const verdict = await authorizeContact({
       tenantId,
       agentId,
@@ -4768,6 +4803,8 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: admissionFromGate(),
+        watcherPermit: (agentId, settings) =>
+          observerMayObserve({ agentId }, settings),
       });
     }
     if (!consumed) {
@@ -4784,6 +4821,8 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: admissionFromGate(),
+        watcherPermit: (agentId, settings) =>
+          observerMayObserve({ agentId }, settings),
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -5168,6 +5207,8 @@ export async function processChatwootDelivery(
       deps: params.deps,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
+      watcherPermit: (agentId, settings) =>
+        observerMayObserve({ agentId }, settings),
     });
   }
   // The observer marks only after its ingestion has the message (queued, or nothing to queue):

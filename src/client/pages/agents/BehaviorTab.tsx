@@ -193,6 +193,8 @@ interface SttState {
 // half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
 export interface ContactAuthState extends ContactAuthRuleForm {
   enabled: boolean;
+  // With a rule picked, also ask the endpoint about what the rule allows (the two-stage gate).
+  askEndpointAfterRule: boolean;
   url: string;
   credentialRef: string;
   timeoutMs: string;
@@ -208,6 +210,8 @@ export interface ContactAuthState extends ContactAuthRuleForm {
   // The ChatwootInstance the team above was picked from, recorded with it: a team id belongs to one
   // account, and the runtime only assigns it in that one.
   handoffTeamInstanceId: string;
+  // Whether a denial writes the operator's private note.
+  operatorNoteEnabled: boolean;
 }
 
 interface SplitState {
@@ -1442,11 +1446,20 @@ export function BehaviorTab({
   })();
   // With a local rule the endpoint is never asked, so an empty URL is not an error.
   const contactAuthUsesRule = contactAuth.ruleKind !== "";
+  // The endpoint is asked when there is no rule, or after the rule when the operator asked for both.
+  const contactAuthAsksEndpoint =
+    !contactAuthUsesRule || contactAuth.askEndpointAfterRule;
+  // The quiet refusal: no message, no note, and the conversation handed to humans. What a gate used
+  // as a scope filter looks like, said in the section so it reads as a setup rather than a gap.
+  const contactAuthQuietRefusal =
+    !contactAuth.denyMessage.trim() &&
+    !contactAuth.operatorNoteEnabled &&
+    contactAuth.handoffEnabled;
   const contactAuthRuleBad =
     contactAuth.enabled && contactAuthRuleInvalid(contactAuth);
   const contactAuthUrlInvalid =
     contactAuth.enabled &&
-    !contactAuthUsesRule &&
+    contactAuthAsksEndpoint &&
     (!contactAuth.url.trim() ||
       !isValidHttpUrl(contactAuth.url) ||
       contactAuthUrlHasCredentials);
@@ -1628,7 +1641,7 @@ export function BehaviorTab({
     {
       id: "contactAuth",
       icon: ShieldCheck,
-      label: t("editor.contactAuth", "Contact authorization"),
+      label: t("editor.contactAuth", "Who this agent serves"),
     },
     {
       id: "takeover",
@@ -3099,10 +3112,10 @@ export function BehaviorTab({
             id="contactAuth"
             hidden={watcher}
             icon={ShieldCheck}
-            title={t("editor.contactAuth", "Contact authorization")}
+            title={t("editor.contactAuth", "Who this agent serves")}
             help={t(
               "editor.contactAuthHelp",
-              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). By default every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+              "Decides, before the agent answers, whether this conversation is one it serves. Every message is checked again, and the check does not run in the Playground.\n\nA rule decides here, from what Chatwoot already holds (the conversation type, a label, a list, an attribute), before the other checks, so a conversation the agent does not serve gets no away message or redirect first.\n\nAn external endpoint decides from your own system, by the phone number, email and identifier Chatwoot holds for the contact, after the other checks. A rule can also hand what it lets through to the endpoint.",
             )}
           >
             <SwitchField
@@ -3121,7 +3134,7 @@ export function BehaviorTab({
                   label={t("editor.contactAuthSource", "Who decides")}
                   help={t(
                     "editor.contactAuthSourceHelp",
-                    'An external endpoint answers from your own system (a CRM, a customer list).\n\nA rule decides here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list, an attribute), with no service to host, and the endpoint is then never called. "All of these conditions" and "Any of these conditions" combine several.\n\nA rule is checked on every message, so an edit takes effect on the next message.',
+                    'An external endpoint answers from your own system (a CRM, a customer list).\n\nA rule decides here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list, an attribute), with no service to host. "All of these conditions" and "Any of these conditions" combine several.\n\nWith a rule, the endpoint is called only if you also turn on asking it after the rule. A rule is checked on every message, so an edit takes effect on the next message.',
                   )}
                 >
                   <Select
@@ -3171,7 +3184,26 @@ export function BehaviorTab({
                     invalid={contactAuthRuleBad}
                   />
                 )}
-                {!contactAuthUsesRule && (
+                {contactAuthUsesRule && (
+                  <SwitchField
+                    checked={contactAuth.askEndpointAfterRule}
+                    onCheckedChange={(v) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        askEndpointAfterRule: v,
+                      })
+                    }
+                    label={t(
+                      "editor.contactAuthAskEndpointAfterRule",
+                      "Then ask an external endpoint about what the rule lets through",
+                    )}
+                    help={t(
+                      "editor.contactAuthAskEndpointAfterRuleHelp",
+                      "The rule decides first and costs nothing: what it refuses is refused without calling the endpoint. What it lets through goes to the endpoint, which has the final word.",
+                    )}
+                  />
+                )}
+                {contactAuthAsksEndpoint && (
                   <>
                     <FormField
                       label={t("editor.contactAuthUrl", "Authorization URL")}
@@ -3400,6 +3432,28 @@ export function BehaviorTab({
                       })
                     }
                   />
+                )}
+                <SwitchField
+                  checked={contactAuth.operatorNoteEnabled}
+                  onCheckedChange={(v) =>
+                    setContactAuth({ ...contactAuth, operatorNoteEnabled: v })
+                  }
+                  label={t(
+                    "editor.contactAuthOperatorNote",
+                    "Write a private note when a contact is refused",
+                  )}
+                  help={t(
+                    "editor.contactAuthOperatorNoteHelp",
+                    "Turn it off when most conversations are refused on purpose, so each one does not get a note. A check that fails, or a contact with nothing to check, always gets a note, since those need fixing.",
+                  )}
+                />
+                {contactAuthQuietRefusal && (
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthQuietRefusal",
+                      "Quiet refusal: conversations this agent does not serve go to the human queue with no message to the customer and no note. This is the setup for an agent that should act on only part of an inbox.",
+                    )}
+                  </p>
                 )}
               </>
             )}

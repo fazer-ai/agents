@@ -86,9 +86,15 @@ import {
 import {
   authorizeContact,
   type ContactAuthOutcome,
+  type ContactAuthResult,
+  type ContactAuthStage,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
-import { readContactAuthConfig } from "@/modules/contact-auth/settings";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+  readContactAuthConfig,
+} from "@/modules/contact-auth/settings";
 import {
   type ContactAuthNotice,
   claimContactAuthNotice,
@@ -1500,6 +1506,8 @@ async function mediaAdmitted(
       requestKey: cfg.includeMessageText
         ? `msg:${n.message?.id ?? "none"}`
         : "inbox",
+      // The media pass asks at one place, so it asks the whole gate.
+      stage: "both",
       cfg,
       base,
       fetchImpl: owner.deps?.contactAuthFetch,
@@ -3086,6 +3094,234 @@ async function maybeConsumeCommandOrGate(params: {
     );
   }
 
+  // Contact authorization (docs/contact-auth.md), in two stages that this function asks at two
+  // positions. The identity is what Chatwoot mirrored, never customer text (under POST with
+  // includeMessageText the text rides in `message`, for unlock codes). EVERY message is re-checked.
+  // Denied: the operator's copy plus a handoff; cannot-tell: fail-closed silence plus a private note.
+  // Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict never does. Built once
+  // here, so both positions act on a verdict through the same code.
+  const contactAuth = (() => {
+    if (ctx.agentId === null || !ctx.agentEnabled || !isNewIncomingMessage(n)) {
+      return null;
+    }
+    const authCfg = readContactAuthConfig(ctx.agentSettings);
+    if (!authCfg.enabled) return null;
+    const agentId = ctx.agentId;
+    // Opens the conversation for the human queue (status `open` ends the bot's attribution; the
+    // team routes it); an assignment failure never undoes the open. A Chatwoot team id belongs to ONE
+    // account, and a value can arrive via REST, MCP, import or an agent moved between accounts, so the
+    // account recorded with it decides; counting accounts is only the fallback for an older value.
+    const teamTargetUsable = async (teamId: number): Promise<boolean> => {
+      const pinnedTo = authCfg.handoffTeamInstanceId;
+      if (pinnedTo !== null) {
+        if (pinnedTo === Number(instanceId)) return true;
+        logger.warn(
+          "chatwoot: contact-auth team target ignored (conv=%s team=%s) — it was picked in Chatwoot account %s and this conversation is in %s",
+          String(conversationId),
+          String(teamId),
+          String(pinnedTo),
+          String(instanceId),
+        );
+        return false;
+      }
+      const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.inbox.findMany({
+          where: { agentId },
+          select: { chatwootInstanceId: true },
+          distinct: ["chatwootInstanceId"],
+        }),
+      );
+      if (instances.length <= 1) return true;
+      logger.warn(
+        "chatwoot: contact-auth team target ignored (conv=%s team=%s) — the agent serves %s Chatwoot accounts and a team id belongs to one",
+        String(conversationId),
+        String(teamId),
+        String(instances.length),
+      );
+      return false;
+    };
+
+    const openForHumans = (teamId: number | null): Promise<boolean> =>
+      openConversationForHumans("contact-auth", teamId, teamTargetUsable);
+    const ask = (stage: ContactAuthStage) =>
+      authorizeContact({
+        tenantId,
+        agentId,
+        contactDbId: ctx.conv.contactId,
+        conversationDbId: ctx.conv.id,
+        conversationId,
+        inboxId: ctx.inboxChatwootId,
+        channelType: ctx.channelType,
+        messageText: n.message?.content ?? null,
+        // The message id under an unlock flow, where the verdict is a function of the text; the
+        // source otherwise. Never the text itself: it must not reach a cache key.
+        requestKey: authCfg.includeMessageText
+          ? `msg:${n.message?.id ?? "none"}`
+          : "inbox",
+        stage,
+        cfg: authCfg,
+        base,
+        fetchImpl: deps?.contactAuthFetch,
+      });
+    // Acts on a FINAL verdict: true = the delivery is consumed (refused, or the conversation left the
+    // bot while asking), false = the turn goes on. `silencedByTestMode`: a refusal in a conversation
+    // the test-mode gate would have kept quiet is only recorded (see the rule stage below).
+    const settle = async (
+      verdict: ContactAuthResult,
+      silencedByTestMode = false,
+    ): Promise<boolean> => {
+      const line = contactAuthFlowEvent(verdict);
+      emitFlowEvent(
+        {
+          tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: ctx.conv.id,
+          agentId,
+          inboxId: ctx.conv.inboxId,
+          threadId: chatwootThreadId(tenantId, instanceId, conversationId),
+          base,
+        },
+        silencedByTestMode
+          ? { ...line, detail: { ...line.detail, silencedBy: "test_mode" } }
+          : line,
+      );
+      params.onAuthVerdict?.(verdict.outcome === "allowed");
+      if (verdict.outcome === "allowed" && n.message?.id != null) {
+        rememberMediaAdmission(
+          mediaAdmissionKey(tenantId, instanceId, n.message.id),
+        );
+      }
+      if (verdict.outcome !== "allowed") {
+        await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
+        if (silencedByTestMode) {
+          logger.info(
+            "chatwoot: contact-auth refusal silenced by test mode (conv=%s outcome=%s)",
+            String(conversationId),
+            verdict.outcome,
+          );
+          return true;
+        }
+        // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
+        // contact, but copy, handoff and note belong to a CONVERSATION, and one contact can have two; the
+        // per-conversation notice claim below stops a double. Order: copy (after the open the fence would
+        // withhold it), handoff, note (so it says what happened). An ERROR hands nothing off: it is
+        // transient by contract, and escalating every blip would page humans the next message answers.
+        {
+          const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
+          const claim = (notice: ContactAuthNotice) =>
+            claimContactAuthNotice(
+              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
+              cooldownMs,
+            );
+          // The copy's window is claimed only when a copy goes out: a shared claim let an ERROR, which
+          // speaks to nobody, silence the denial after it.
+          const denyMessage =
+            verdict.outcome === "denied" ? authCfg.denyMessage : null;
+          const copyClaim = denyMessage ? claim("copy") : false;
+          // Tracked so the operator note can say what the CUSTOMER actually got, instead of
+          // claiming silence on top of a refusal that was just delivered.
+          let copyOutcome: ContactAuthCopyOutcome = denyMessage
+            ? copyClaim
+              ? "failed"
+              : "suppressed"
+            : "none";
+          if (denyMessage && copyClaim) {
+            // NOTE: Claimed before the send so two racing deliveries do not both speak, so a send that did not
+            // land gives the window back instead of silencing the next refusal.
+            if (await postPublicMessage(denyMessage)) {
+              copyOutcome = "sent";
+            } else {
+              releaseContactAuthNotice(copyClaim);
+            }
+          }
+          let handedOff = false;
+          if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
+            // NOTE: Outside the cooldown on purpose: the open is what ends the bot's
+            // attribution, and a first attempt that failed must be retried on the next refused
+            // message, notice or no notice.
+            handedOff = await openForHumans(authCfg.handoffTeamId);
+          }
+          // A DENIAL's note is the operator's to switch off (`operatorNoteEnabled`), for a gate
+          // used as a scope filter. An error and an unidentified contact always write theirs: those are
+          // things to fix, and the note is where the operator learns of them.
+          const noteClaim =
+            verdict.outcome === "denied" && !authCfg.operatorNoteEnabled
+              ? false
+              : claim("note");
+          if (noteClaim) {
+            if (
+              !(await postPrivateNote(
+                contactAuthNoteText(verdict, handedOff, copyOutcome),
+              ))
+            ) {
+              releaseContactAuthNotice(noteClaim);
+            }
+          }
+        }
+        logger.info(
+          "chatwoot: contact-auth silent (conv=%s outcome=%s shared=%s)",
+          String(conversationId),
+          verdict.outcome,
+          String(verdict.shared),
+        );
+        return true;
+      }
+      // Allowed, but up to ten seconds went by inside someone else's endpoint, and `runAgentTurn`
+      // re-checks ownership only after the model answers (withholding the reply, not the tools). A human
+      // who took over meanwhile would find the agent's tools writing on the conversation. This does not
+      // fence the turn's own window, only avoids widening it by the operator's network call.
+      const now = await ownershipNow();
+      if (!now.ours) {
+        // NOTE: The same exit as the gate on the way in, so it leaves the same line: the one `stillOurs`
+        // caller where a message that WOULD have been answered stops being answered.
+        if (now.closed !== null) {
+          emitFlowEvent(
+            {
+              tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              conversationId: ctx.conv.id,
+              agentId,
+              base,
+            },
+            { stage: "handoff", status: "ok", detail: now.closed },
+          );
+        }
+        logger.info(
+          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s reason=%s)",
+          String(conversationId),
+          now.closed?.outcome ?? "identity_unresolved",
+        );
+        return true;
+      }
+      // Allowed, and still ours: the facts the endpoint volunteered travel to the turn below.
+      params.onAuthContext(verdict.context ?? null);
+      return false;
+    };
+    return { cfg: authCfg, ask, settle };
+  })();
+
+  // NOTE: Contact authorization, RULE stage: free, so ahead of every gate that answers the customer
+  // (the test-mode notice, the WhatsApp redirect, availability, the spend ceiling); after the commands
+  // and the redirect cross-link, the operator's tooling. A test agent still must not speak to a real
+  // lead: where the test-mode gate would keep quiet (not activated with /teste) a refusal is only
+  // recorded, with no copy, handoff, note or test notice; an activated one is the operator testing the
+  // gate. An allow is final only with no endpoint stage, which otherwise has the last word below.
+  if (contactAuth && contactAuthHasRuleStage(contactAuth.cfg)) {
+    const verdict = await contactAuth.ask("rule");
+    if (
+      verdict.outcome !== "allowed" ||
+      !contactAuthHasEndpointStage(contactAuth.cfg)
+    ) {
+      const testModeSilent =
+        verdict.outcome !== "allowed" &&
+        ctx.mode === "test" &&
+        ctx.conv.testActivatedAt === null;
+      if (await contactAuth.settle(verdict, testModeSilent)) return true;
+    }
+  }
+
   // ── Test-mode gate: a "test" agent stays silent until the conversation is activated with /teste. ──
   if (ctx.mode === "test" && ctx.conv.testActivatedAt === null) {
     // One-shot private note (operator-only) so whoever watches the inbox knows WHY the bot is quiet
@@ -3366,180 +3602,11 @@ async function maybeConsumeCommandOrGate(params: {
     }
   }
 
-  // NOTE: Contact authorization gate (docs/contact-auth.md), last on purpose so a silenced
-  // conversation costs no call. The identity is what Chatwoot mirrored, never customer text (under
-  // POST with includeMessageText the text rides in `message`, for unlock codes). EVERY message is
-  // re-checked. Denied: the operator's copy plus a handoff; cannot-tell: fail-closed silence plus a
-  // private note. Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict never does.
-  if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
-    const authCfg = readContactAuthConfig(ctx.agentSettings);
-    if (authCfg.enabled) {
-      const agentId = ctx.agentId;
-      // Opens the conversation for the human queue (status `open` ends the bot's attribution; the
-      // team routes it); an assignment failure never undoes the open. A Chatwoot team id belongs to ONE
-      // account, and a value can arrive via REST, MCP, import or an agent moved between accounts, so the
-      // account recorded with it decides; counting accounts is only the fallback for an older value.
-      const teamTargetUsable = async (teamId: number): Promise<boolean> => {
-        const pinnedTo = authCfg.handoffTeamInstanceId;
-        if (pinnedTo !== null) {
-          if (pinnedTo === Number(instanceId)) return true;
-          logger.warn(
-            "chatwoot: contact-auth team target ignored (conv=%s team=%s) — it was picked in Chatwoot account %s and this conversation is in %s",
-            String(conversationId),
-            String(teamId),
-            String(pinnedTo),
-            String(instanceId),
-          );
-          return false;
-        }
-        const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.inbox.findMany({
-            where: { agentId },
-            select: { chatwootInstanceId: true },
-            distinct: ["chatwootInstanceId"],
-          }),
-        );
-        if (instances.length <= 1) return true;
-        logger.warn(
-          "chatwoot: contact-auth team target ignored (conv=%s team=%s) — the agent serves %s Chatwoot accounts and a team id belongs to one",
-          String(conversationId),
-          String(teamId),
-          String(instances.length),
-        );
-        return false;
-      };
-
-      const openForHumans = (teamId: number | null): Promise<boolean> =>
-        openConversationForHumans("contact-auth", teamId, teamTargetUsable);
-      const verdict = await authorizeContact({
-        tenantId,
-        agentId,
-        contactDbId: ctx.conv.contactId,
-        conversationDbId: ctx.conv.id,
-        conversationId,
-        inboxId: ctx.inboxChatwootId,
-        channelType: ctx.channelType,
-        messageText: n.message?.content ?? null,
-        // The message id under an unlock flow, where the verdict is a function of the text; the
-        // source otherwise. Never the text itself: it must not reach a cache key.
-        requestKey: authCfg.includeMessageText
-          ? `msg:${n.message?.id ?? "none"}`
-          : "inbox",
-        cfg: authCfg,
-        base,
-        fetchImpl: deps?.contactAuthFetch,
-      });
-      emitFlowEvent(
-        {
-          tenantId,
-          turnId: crypto.randomUUID(),
-          source: "inbox",
-          conversationId: ctx.conv.id,
-          agentId,
-          inboxId: ctx.conv.inboxId,
-          threadId: chatwootThreadId(tenantId, instanceId, conversationId),
-          base,
-        },
-        contactAuthFlowEvent(verdict),
-      );
-      params.onAuthVerdict?.(verdict.outcome === "allowed");
-      if (verdict.outcome === "allowed" && n.message?.id != null) {
-        rememberMediaAdmission(
-          mediaAdmissionKey(tenantId, instanceId, n.message.id),
-        );
-      }
-      if (verdict.outcome !== "allowed") {
-        await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
-        // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
-        // contact, but copy, handoff and note belong to a CONVERSATION, and one contact can have two; the
-        // per-conversation notice claim below stops a double. Order: copy (after the open the fence would
-        // withhold it), handoff, note (so it says what happened). An ERROR hands nothing off: it is
-        // transient by contract, and escalating every blip would page humans the next message answers.
-        {
-          const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
-          const claim = (notice: ContactAuthNotice) =>
-            claimContactAuthNotice(
-              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
-              cooldownMs,
-            );
-          // The copy's window is claimed only when a copy goes out: a shared claim let an ERROR, which
-          // speaks to nobody, silence the denial after it.
-          const denyMessage =
-            verdict.outcome === "denied" ? authCfg.denyMessage : null;
-          const copyClaim = denyMessage ? claim("copy") : false;
-          // Tracked so the operator note can say what the CUSTOMER actually got, instead of
-          // claiming silence on top of a refusal that was just delivered.
-          let copyOutcome: ContactAuthCopyOutcome = denyMessage
-            ? copyClaim
-              ? "failed"
-              : "suppressed"
-            : "none";
-          if (denyMessage && copyClaim) {
-            // NOTE: Claimed before the send so two racing deliveries do not both speak, so a send that did not
-            // land gives the window back instead of silencing the next refusal.
-            if (await postPublicMessage(denyMessage)) {
-              copyOutcome = "sent";
-            } else {
-              releaseContactAuthNotice(copyClaim);
-            }
-          }
-          let handedOff = false;
-          if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
-            // NOTE: Outside the cooldown on purpose: the open is what ends the bot's
-            // attribution, and a first attempt that failed must be retried on the next refused
-            // message, notice or no notice.
-            handedOff = await openForHumans(authCfg.handoffTeamId);
-          }
-          const noteClaim = claim("note");
-          if (noteClaim) {
-            if (
-              !(await postPrivateNote(
-                contactAuthNoteText(verdict, handedOff, copyOutcome),
-              ))
-            ) {
-              releaseContactAuthNotice(noteClaim);
-            }
-          }
-        }
-        logger.info(
-          "chatwoot: contact-auth silent (conv=%s outcome=%s shared=%s)",
-          String(conversationId),
-          verdict.outcome,
-          String(verdict.shared),
-        );
-        return true;
-      }
-      // Allowed, but up to ten seconds went by inside someone else's endpoint, and `runAgentTurn`
-      // re-checks ownership only after the model answers (withholding the reply, not the tools). A human
-      // who took over meanwhile would find the agent's tools writing on the conversation. This does not
-      // fence the turn's own window, only avoids widening it by the operator's network call.
-      const now = await ownershipNow();
-      if (!now.ours) {
-        // NOTE: The same exit as the gate on the way in, so it leaves the same line: the one `stillOurs`
-        // caller where a message that WOULD have been answered stops being answered.
-        if (now.closed !== null) {
-          emitFlowEvent(
-            {
-              tenantId,
-              turnId: crypto.randomUUID(),
-              source: "inbox",
-              conversationId: ctx.conv.id,
-              agentId,
-              base,
-            },
-            { stage: "handoff", status: "ok", detail: now.closed },
-          );
-        }
-        logger.info(
-          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s reason=%s)",
-          String(conversationId),
-          now.closed?.outcome ?? "identity_unresolved",
-        );
-        return true;
-      }
-      // Allowed, and still ours: the facts the endpoint volunteered travel to the turn below.
-      params.onAuthContext(verdict.context ?? null);
-    }
+  // NOTE: Contact authorization, ENDPOINT stage, last on purpose so a conversation an earlier gate
+  // silenced costs no call. With no rule this is the whole gate (and `not_configured` when there is no
+  // endpoint either); after a rule it decides what the rule allowed.
+  if (contactAuth && contactAuthHasEndpointStage(contactAuth.cfg)) {
+    return contactAuth.settle(await contactAuth.ask("endpoint"));
   }
   return false;
 }

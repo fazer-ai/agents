@@ -191,9 +191,10 @@ The standard fields of the Chatwoot contact (as opposed to its custom attributes
 
 Before a new incoming message reaches debounce/the runtime, `maybeConsumeCommandOrGate` evaluates
 the operator-facing gates in a fixed order: redirect **cross-link** → **test-mode** (`/teste`,
-`/reset`) → the WhatsApp→chat **redirect** ([`channel-redirect.md`](channel-redirect.md)) →
-**availability** (business hours + away message) → **contact authorization**
-([`contact-auth.md`](contact-auth.md), the external allowed/denied check). A gate that consumes the
+`/reset`) → **contact authorization, rule stage** → the WhatsApp→chat **redirect**
+([`channel-redirect.md`](channel-redirect.md)) → **availability** (business hours + away message) →
+spend ceiling → **contact authorization, endpoint stage** ([`contact-auth.md`](contact-auth.md),
+the agent's rule and the external allowed/denied check, each at its own position). A gate that consumes the
 delivery still advances the handled watermark, and the message is folded into the memory thread
 like any other unanswered one.
 

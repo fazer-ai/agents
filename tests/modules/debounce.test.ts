@@ -5769,6 +5769,95 @@ describe.skipIf(!dbUp)("debounce", () => {
       });
     });
 
+    // THE RULE STAGE COMES FIRST (docs/contact-auth.md, Two stages): ahead of the spend ceiling, so a
+    // burst this agent does not serve draws no ceiling sentence and no handoff, and the endpoint the
+    // operator put after the rule is never asked about it.
+    test("over the ceiling, a burst the rule refuses is dropped before the ceiling speaks", async () => {
+      const convId = 847;
+      await seedConversation(convId);
+      await seedContactOn(convId, 68);
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            contactAuth: {
+              enabled: true,
+              rule: { kind: "label", label: "nenhuma-conversa-tem" },
+              askEndpointAfterRule: true,
+              url: "https://203.0.113.9:9443/check",
+            },
+          },
+        },
+      });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+        },
+      });
+      const monthStart = new Date(
+        Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+      );
+      await suDb.spendCostSnapshot.upsert({
+        where: {
+          tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+        },
+        create: {
+          tenantId,
+          source: "inbox",
+          monthStart,
+          costUsd: 99,
+          polledAt: new Date(),
+        },
+        update: { costUsd: 99, polledAt: new Date() },
+      });
+      try {
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const auth = { n: 0 };
+        const out = await flushDebounceJob({
+          job: jobFor(convId, { lastMessageId: 8 }),
+          base: appDb,
+          deps: {
+            makeModel: fakeModel,
+            makeClient: makeResolveStub({
+              pages: [page([{ id: 8, content: "oi" }])],
+              sent,
+              calls: { getMessages: 0 },
+              toggles,
+              notes,
+            }) as never,
+            checkpointer: new MemorySaver(),
+            contactAuthFetch: answering(true, auth),
+          },
+        });
+        expect(out).toEqual({ outcome: "done" });
+        expect(auth.n).toBe(0);
+        expect(sent).toEqual([]);
+        expect(toggles).toEqual([]);
+        expect(notes).toEqual([]);
+        expect(await watermarkOf(convId)).toBe(8);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { settings: before.settings as object },
+        });
+        await suDb.tenant.update({
+          where: { id: tenantId },
+          data: { settings: {} },
+        });
+        await suDb.spendCostSnapshot.deleteMany({
+          where: { tenantId, source: "inbox" },
+        });
+      }
+    });
+
     test("a refused contact drops the burst: no fetch, no post, watermark advanced", async () => {
       await seedConversation(840);
       await seedContactOn(840, 61);

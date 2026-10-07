@@ -906,5 +906,32 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
         after.configHealth.issues.some((i) => i.severity === "advisory"),
       ).toBe(false);
     });
+
+    // The endpoint warnings follow the endpoint STAGE: a rule alone never asks it, a rule with the
+    // endpoint after it does, and then a missing URL refuses everything the rule lets through.
+    test("a rule with the endpoint after it and no URL is reported; the rule alone is not", async () => {
+      const noUrlAfter = async (askEndpointAfterRule: boolean) => {
+        const r = await agentSettingsSet(
+          principal(tenantId),
+          {
+            agent_id: String(healthyAgent),
+            contactAuth: {
+              enabled: true,
+              rule: { kind: "label", label: "suporte" },
+              askEndpointAfterRule,
+              url: null,
+            },
+            dry_run: false,
+          },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return null;
+        const health = r.data.configHealth as { issues: { key: string }[] };
+        return health.issues.some((i) => i.key === "contactAuthNoUrl");
+      };
+      expect(await noUrlAfter(true)).toBe(true);
+      expect(await noUrlAfter(false)).toBe(false);
+    });
   });
 });

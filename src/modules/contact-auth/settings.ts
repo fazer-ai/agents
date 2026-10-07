@@ -184,11 +184,16 @@ export function invalidContactAuthRule(raw: unknown): boolean {
 
 export interface ContactAuthConfig {
   enabled: boolean;
-  // The local rule, when the verdict comes from data we already hold. EITHER this or `url`: with a
-  // rule set the endpoint is never called, so a rule and a url together mean the rule. A rule is
-  // always evaluated per message and never stores a grant: a stored verdict exists to spare somebody's
-  // endpoint, and a rule reads our own rows.
+  // The local rule, when the verdict comes from data we already hold. A rule is always evaluated per
+  // message and never stores a grant: a stored verdict exists to spare somebody's endpoint, and a rule
+  // reads our own rows. With a rule set the endpoint is asked only under `askEndpointAfterRule`.
   rule: ContactAuthRule | null;
+  // The two-stage gate: the rule decides first, and what it allows is handed to the endpoint for the
+  // final verdict. A flag and not "a rule and a url together": the url stays stored when an operator
+  // switches to a rule, and the editor tells them it is not used, so reading the pair as two stages
+  // would call an endpoint they turned away from. Strict, like `enabled`: anything but `true` keeps
+  // the rule alone.
+  askEndpointAfterRule: boolean;
   // The authorization endpoint: a fixed origin, no placeholders (the identity travels in the body).
   // https in production; http only where the SSRF guard allows private targets, the same rule HTTP
   // tools follow. null = not configured, which an enabled gate treats as an error (fail-closed).
@@ -230,11 +235,18 @@ export interface ContactAuthConfig {
   // sees a single account and has nothing to warn about. null ⇒ a legacy value with no recorded
   // instance (applied under the weaker check).
   handoffTeamInstanceId: number | null;
+  // Whether a DENIAL writes the private note. Off is for a gate used as a scope filter, where a refusal
+  // is the ordinary case and one note per excluded conversation is noise. Only the denial: an endpoint
+  // that failed and a contact with nothing to ask about are things the operator has to fix, and the
+  // note is where they learn it. Strict the other way from `enabled`: anything but `false` writes it,
+  // so a malformed write can only bring a note back, never silence one.
+  operatorNoteEnabled: boolean;
 }
 
 export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   enabled: false,
   rule: null,
+  askEndpointAfterRule: false,
   url: null,
   credentialRef: null,
   timeoutMs: 5000,
@@ -246,7 +258,20 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   grantTtlSeconds: 86_400,
   handoffTeamId: null,
   handoffTeamInstanceId: null,
+  operatorNoteEnabled: true,
 };
+
+// Where the two stages sit. The rule stage runs first among the pre-turn gates, since it costs nothing
+// and a conversation the agent does not serve should not get an away message or a redirect first.
+// The endpoint stage stays last, since a conversation an earlier gate silenced costs no call. The
+// endpoint stage exists when there is no rule (that is where an enabled gate with neither is the
+// fail-closed `not_configured`) and when the operator asked for it after the rule.
+export function contactAuthHasRuleStage(cfg: ContactAuthConfig): boolean {
+  return cfg.rule !== null;
+}
+export function contactAuthHasEndpointStage(cfg: ContactAuthConfig): boolean {
+  return cfg.rule === null || cfg.askEndpointAfterRule;
+}
 
 export const CONTACT_AUTH_TIMEOUT_MIN_MS = 1000;
 export const CONTACT_AUTH_TIMEOUT_MAX_MS = 10_000;
@@ -306,6 +331,7 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
     // off, never start refusing customers nobody asked it to.
     enabled: b.enabled === true,
     rule: parseContactAuthRule(b.rule),
+    askEndpointAfterRule: b.askEndpointAfterRule === true,
     url: readContactAuthUrl(b.url),
     credentialRef: str(b.credentialRef),
     timeoutMs: clampInt(
@@ -335,5 +361,6 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
     ),
     handoffTeamId: posInt(b.handoffTeamId),
     handoffTeamInstanceId: posInt(b.handoffTeamInstanceId),
+    operatorNoteEnabled: b.operatorNoteEnabled !== false,
   };
 }

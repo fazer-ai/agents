@@ -27,8 +27,13 @@ import { recordSends } from "@/modules/chatwoot/record-sends";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
 import {
   authorizeContact,
+  type ContactAuthStage,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+} from "@/modules/contact-auth/settings";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
@@ -929,13 +934,71 @@ async function runAgentNudgeBody(
     return noteOperatorEvent();
   }
 
+  // Pre-invoke gate: may we message the customer (bot owns it), or only note (human owns it)?
+  // When the live gate ran, it already proved bot ownership with FRESH data (and reconciled the
+  // mirror), so the mirror-based check is subsumed.
+  const canMessagePre = params.requireLiveBotOwnership
+    ? true
+    : shouldBotHandle(
+        {
+          assigneeType: loaded.assigneeType,
+          status: loaded.status,
+          assigneeId: loaded.assigneeId,
+          resolvedBy: loaded.resolvedBy,
+        },
+        {
+          ourAgentBotId: cfg.agentBotId,
+          alsoResolved: params.deliverToResolved,
+        },
+      );
+
+  // The contact-authorization gate in two stages (docs/contact-auth.md): the RULE first, before the
+  // spend ceiling, since it costs nothing and a follow-up to a conversation this agent does not serve
+  // should not page the alert channels as a refused spend; the ENDPOINT where the gate always stood,
+  // below. Asked only where the gate below asks: not for a turn that is only post-actions (it reaches
+  // nobody) and not where a person owns the conversation (the nudge ends as their note).
+  const authCfg = cfg.contactAuthConfig;
+  const askAuth = (stage: ContactAuthStage) =>
+    authorizeContact({
+      tenantId,
+      agentId: cfg.agentId,
+      contactDbId: cfg.contactDbId,
+      conversationDbId: cfg.conversationDbId,
+      conversationId,
+      inboxId: loaded.chatwootInboxId,
+      channelType: loaded.channelType,
+      // A nudge is a turn the agent starts: there is no customer message to forward.
+      messageText: null,
+      // A nudge is its own asking: it carries no message text, so it must never join (or be
+      // joined by) the flight of an incoming message that does.
+      requestKey: "nudge",
+      stage,
+      cfg: cfg.contactAuthConfig,
+      base,
+      fetchImpl: params.deps?.contactAuthFetch,
+    });
+  const ruleVerdict =
+    !params.postActionsOnly &&
+    canMessagePre &&
+    authCfg.enabled &&
+    contactAuthHasRuleStage(authCfg)
+      ? await askAuth("rule")
+      : null;
+  // The rule's answer is the gate's when it refused, or when there is no endpoint stage after it.
+  const ruleFinal =
+    ruleVerdict !== null &&
+    (ruleVerdict.outcome !== "allowed" || !contactAuthHasEndpointStage(authCfg))
+      ? ruleVerdict
+      : null;
+  const ruleRefused = ruleFinal !== null && ruleFinal.outcome !== "allowed";
+
   // THE TENANT'S OWN CEILING, asked here for the reason the line above states: before any model
   // spend. A proactive nudge has nobody waiting on the other end, so there is no copy and no handoff
   // to arrange — it simply does not go out, and the caller reschedules it rather than burning the
   // occasion, because a month that turns over repairs this by itself.
   // NOTE: a turn that is only post-actions spends nothing, so the ceiling has nothing to refuse, and
   // refusing it would retry a close for two hours and then abandon it open.
-  if (!params.postActionsOnly) {
+  if (!params.postActionsOnly && !ruleRefused) {
     const ceiling = await spendCeilingVerdict({
       tenantId,
       source: "inbox",
@@ -965,24 +1028,6 @@ async function runAgentNudgeBody(
       return "over-ceiling";
     }
   }
-
-  // Pre-invoke gate: may we message the customer (bot owns it), or only note (human owns it)?
-  // When the live gate ran, it already proved bot ownership with FRESH data (and reconciled the
-  // mirror), so the mirror-based check is subsumed.
-  const canMessagePre = params.requireLiveBotOwnership
-    ? true
-    : shouldBotHandle(
-        {
-          assigneeType: loaded.assigneeType,
-          status: loaded.status,
-          assigneeId: loaded.assigneeId,
-          resolvedBy: loaded.resolvedBy,
-        },
-        {
-          ourAgentBotId: cfg.agentBotId,
-          alsoResolved: params.deliverToResolved,
-        },
-      );
 
   // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW. The hand-back note is written after the
   // drain, the queue and a claim that waits on leases and locks, so `canMessagePre` may be stale by
@@ -1247,23 +1292,8 @@ async function runAgentNudgeBody(
   // (`canMessagePre` false) it ends as a private note for the operator, and asking would spend a call
   // on someone else's endpoint and turn that documented note into silence.
   if (cfg.contactAuthConfig.enabled && canMessagePre) {
-    const auth = await authorizeContact({
-      tenantId,
-      agentId: cfg.agentId,
-      contactDbId: cfg.contactDbId,
-      conversationDbId: cfg.conversationDbId,
-      conversationId,
-      inboxId: loaded.chatwootInboxId,
-      channelType: loaded.channelType,
-      // A nudge is a turn the agent starts: there is no customer message to forward.
-      messageText: null,
-      // A nudge is its own asking: it carries no message text, so it must never join (or be
-      // joined by) the flight of an incoming message that does.
-      requestKey: "nudge",
-      cfg: cfg.contactAuthConfig,
-      base,
-      fetchImpl: params.deps?.contactAuthFetch,
-    });
+    const auth =
+      ruleFinal ?? (await askAuth(ruleVerdict ? "endpoint" : "both"));
     emitFlowEvent(flow, contactAuthFlowEvent(auth));
     if (auth.outcome !== "allowed") {
       logger.info(

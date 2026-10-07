@@ -255,7 +255,9 @@ hidden: a tenant past its ceiling keeps paying for compaction. Bounded (one job 
 summary each) and small beside a turn, but it is the one path on which "the ceiling bounds the month"
 is not literally true.
 
-**The gate stays in front of the contact-authorization call, not behind it.** Both orderings can
+**The gate stays in front of the contact-authorization call, not behind it.** (The call is the
+endpoint stage. The agent's rule, which costs nothing, is asked before this gate, for the reason
+`docs/contact-auth.md` gives in Two stages.) Both orderings can
 report a refusal the other would have made first — over-ceiling when authorization would have denied,
 or denied when the ceiling would have refused — and both verdicts are true and operative, since the
 turn does not run either way. What breaks the tie is that the ceiling is one indexed local read and

@@ -26,8 +26,13 @@ import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
+  type ContactAuthStage,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+} from "@/modules/contact-auth/settings";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { coalesceAndRunTurn, readBurstPage } from "@/modules/debounce/handler";
 import {
@@ -375,51 +380,11 @@ export async function reengageConversation(
     return recusaOcupada("cedo");
   }
 
-  // The spend ceiling, asked here for the reason every other turn seam asks it: this is a billed
-  // call, and nothing above it is. An operator re-engaging a conversation by hand is spending the
-  // same budget a customer's message spends, so the same wall applies — and unlike the customer
-  // paths, this one REPORTS rather than going quiet, because somebody is looking at the button.
-  const ceiling = await spendCeilingVerdict({
-    tenantId,
-    source: "inbox",
-    base,
-  });
-  // ...AND THE TAIL IS RE-READ BEFORE THE REFUSAL, because the verdict above is two database reads
-  // deep and this conversation is live the whole time. A delivery that answered the tail inside that
-  // window leaves nothing for this click to run, so the refusal would tell the operator to raise a
-  // ceiling for work that no longer exists — the same "nothing to answer ⇒ nothing to refuse" the
-  // pre-fetch above applies, asked again at the moment the answer is used. Only on the refusing
-  // path: `allowed` and `warning` both go on to coalesce for real, which re-reads anyway, and a
-  // warning is a statement about the MONTH rather than about this turn.
-  if (ceiling.state === "over") {
-    const freshTail = await selectPending(await readTail());
-    if (freshTail.length === 0) return { outcome: "empty" };
-  }
-  announceSpendCeiling(
-    {
-      tenantId,
-      turnId: crypto.randomUUID(),
-      source: "inbox",
-      conversationId: resolved.convDbId,
-      agentId: resolved.loaded.agentId,
-      inboxId: resolved.loaded.inboxDbId,
-      threadId: resolved.threadId,
-      base,
-    },
-    ceiling,
-    "inbox",
-    tenantId,
-  );
-  if (ceiling.state === "over") return { outcome: "over-ceiling" };
-
-  // The contact-authorization gate (docs/contact-auth.md) applies because this runs the model and
-  // sends: the operator's click is not the authorization, and the tail may be unanswered precisely
-  // because it was refused, or the contact revoked since. A refusal is only reported to the operator
-  // (there is no customer message for the refusal copy or a handoff to answer) and logged, so the
-  // click still leaves a trace in the flowlog.
-  let authContext: AuthContext | null = null;
-  if (authCfg.enabled) {
-    const auth = await authorizeContact({
+  // The contact-authorization gate in two stages (docs/contact-auth.md): the RULE first, before the
+  // spend ceiling, since it costs nothing and a conversation this agent does not serve should not be
+  // reported to the operator as over a budget; the ENDPOINT where the gate always stood, below.
+  const askAuth = (stage: ContactAuthStage) =>
+    authorizeContact({
       tenantId,
       agentId: resolved.loaded.agentId,
       contactDbId: resolved.loaded.contactDbId,
@@ -433,10 +398,73 @@ export async function reengageConversation(
       // Its own asking, for the reason the nudge has one: it carries no message text and must never
       // join (or be joined by) the flight of an incoming message that does.
       requestKey: "reengage",
+      stage,
       cfg: authCfg,
       base,
       fetchImpl: deps.contactAuthFetch,
     });
+  const ruleVerdict =
+    authCfg.enabled && contactAuthHasRuleStage(authCfg)
+      ? await askAuth("rule")
+      : null;
+  // The rule's answer is the gate's when it refused, or when there is no endpoint stage after it.
+  const ruleFinal =
+    ruleVerdict !== null &&
+    (ruleVerdict.outcome !== "allowed" || !contactAuthHasEndpointStage(authCfg))
+      ? ruleVerdict
+      : null;
+  const ruleRefused = ruleFinal !== null && ruleFinal.outcome !== "allowed";
+
+  // The spend ceiling, asked here for the reason every other turn seam asks it: this is a billed
+  // call, and nothing above it is. An operator re-engaging a conversation by hand is spending the
+  // same budget a customer's message spends, so the same wall applies — and unlike the customer
+  // paths, this one REPORTS rather than going quiet, because somebody is looking at the button.
+  const ceiling = ruleRefused
+    ? null
+    : await spendCeilingVerdict({
+        tenantId,
+        source: "inbox",
+        base,
+      });
+  // ...AND THE TAIL IS RE-READ BEFORE THE REFUSAL, because the verdict above is two database reads
+  // deep and this conversation is live the whole time. A delivery that answered the tail inside that
+  // window leaves nothing for this click to run, so the refusal would tell the operator to raise a
+  // ceiling for work that no longer exists — the same "nothing to answer ⇒ nothing to refuse" the
+  // pre-fetch above applies, asked again at the moment the answer is used. Only on the refusing
+  // path: `allowed` and `warning` both go on to coalesce for real, which re-reads anyway, and a
+  // warning is a statement about the MONTH rather than about this turn.
+  if (ceiling?.state === "over") {
+    const freshTail = await selectPending(await readTail());
+    if (freshTail.length === 0) return { outcome: "empty" };
+  }
+  if (ceiling) {
+    announceSpendCeiling(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: resolved.convDbId,
+        agentId: resolved.loaded.agentId,
+        inboxId: resolved.loaded.inboxDbId,
+        threadId: resolved.threadId,
+        base,
+      },
+      ceiling,
+      "inbox",
+      tenantId,
+    );
+  }
+  if (ceiling?.state === "over") return { outcome: "over-ceiling" };
+
+  // The contact-authorization gate (docs/contact-auth.md) applies because this runs the model and
+  // sends: the operator's click is not the authorization, and the tail may be unanswered precisely
+  // because it was refused, or the contact revoked since. A refusal is only reported to the operator
+  // (there is no customer message for the refusal copy or a handoff to answer) and logged, so the
+  // click still leaves a trace in the flowlog.
+  let authContext: AuthContext | null = null;
+  if (authCfg.enabled) {
+    const auth =
+      ruleFinal ?? (await askAuth(ruleVerdict ? "endpoint" : "both"));
     emitFlowEvent(
       {
         tenantId,

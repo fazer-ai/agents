@@ -56,8 +56,13 @@ import type { AuthContext } from "@/modules/contact-auth/check";
 import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
 import {
   authorizeContact,
+  type ContactAuthStage,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+} from "@/modules/contact-auth/settings";
 import {
   clearConversationError,
   recordConversationError,
@@ -1724,15 +1729,51 @@ export async function flushDebounceJob(
     armedLast !== null &&
     ctx.watermark !== null &&
     ctx.watermark >= armedLast;
+  // The contact-authorization gate in two stages (docs/contact-auth.md): the RULE first, before the
+  // spend ceiling, since it costs nothing and a burst this agent does not serve should not draw the
+  // ceiling's sentence, handoff and note; the ENDPOINT where the gate always stood, below.
+  const authCfg = ctx.loaded.contactAuthConfig;
+  const askAuth = (stage: ContactAuthStage) =>
+    authorizeContact({
+      tenantId,
+      agentId: ctx.loaded.agentId,
+      contactDbId: ctx.loaded.contactDbId,
+      conversationDbId: ctx.convDbId,
+      conversationId,
+      inboxId: ctx.inboxChatwootId,
+      channelType: ctx.loaded.channelType,
+      // The burst is many messages, not one: there is no single text to forward, and an unlock code
+      // is something the customer sends on a message of their own, which the webhook path checks.
+      messageText: null,
+      // Its own asking, for the reason the nudge has one: it carries no message text and must never
+      // join (or be joined by) the flight of an incoming message that does.
+      requestKey: "debounce",
+      stage,
+      cfg: ctx.loaded.contactAuthConfig,
+      base,
+      fetchImpl: deps?.contactAuthFetch,
+    });
+  const ruleVerdict =
+    authCfg.enabled && contactAuthHasRuleStage(authCfg)
+      ? await askAuth("rule")
+      : null;
+  // The rule's answer is the gate's when it refused, or when there is no endpoint stage after it.
+  const ruleFinal =
+    ruleVerdict !== null &&
+    (ruleVerdict.outcome !== "allowed" || !contactAuthHasEndpointStage(authCfg))
+      ? ruleVerdict
+      : null;
+  const ruleRefused = ruleFinal !== null && ruleFinal.outcome !== "allowed";
   // The ceiling is asked again at the turn, minutes after the webhook's ask, and a refusal here
   // is the first one, so this flush owes the whole contract (docs/spend-ceiling.md).
-  const flushCeiling = alreadyAnswered
-    ? null
-    : await spendCeilingVerdict({
-        tenantId,
-        source: "inbox",
-        base,
-      });
+  const flushCeiling =
+    alreadyAnswered || ruleRefused
+      ? null
+      : await spendCeilingVerdict({
+          tenantId,
+          source: "inbox",
+          base,
+        });
   // Every ceiling write, the flow line included (it pages alerts and spends the notice window),
   // first asks whether `/reset` retired the burst; a retired burst refused nobody and keeps its
   // watermark. Lenient `jobRetired`: an unreadable row costs a sentence sent once too often.
@@ -1981,24 +2022,8 @@ export async function flushDebounceJob(
   // belong to the webhook's refused delivery.
   let authContext: AuthContext | null = null;
   if (ctx.loaded.contactAuthConfig.enabled) {
-    const auth = await authorizeContact({
-      tenantId,
-      agentId: ctx.loaded.agentId,
-      contactDbId: ctx.loaded.contactDbId,
-      conversationDbId: ctx.convDbId,
-      conversationId,
-      inboxId: ctx.inboxChatwootId,
-      channelType: ctx.loaded.channelType,
-      // The burst is many messages, not one: there is no single text to forward, and an unlock code
-      // is something the customer sends on a message of their own, which the webhook path checks.
-      messageText: null,
-      // Its own asking, for the reason the nudge has one: it carries no message text and must never
-      // join (or be joined by) the flight of an incoming message that does.
-      requestKey: "debounce",
-      cfg: ctx.loaded.contactAuthConfig,
-      base,
-      fetchImpl: deps?.contactAuthFetch,
-    });
+    const auth =
+      ruleFinal ?? (await askAuth(ruleVerdict ? "endpoint" : "both"));
     emitFlowEvent(
       {
         tenantId,

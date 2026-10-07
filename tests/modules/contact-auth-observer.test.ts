@@ -845,6 +845,22 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     ).toBe("allowed");
   });
 
+  // Chatwoot follows a voice note with a `message_updated`: the bound watcher's allow for the
+  // message covers it, and the endpoint is not asked again.
+  test("a bound watcher's late update of an allowed audio does not ask the endpoint again", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    const messageId = await deliverMessage(
+      36,
+      "individual",
+      false,
+      BOUND_INBOX,
+    );
+    expect(providers.auth).toBe(1);
+    await deliverMessage(36, "individual", false, BOUND_INBOX, { messageId });
+    expect(providers.auth).toBe(1);
+    expect(await runnableObserveRows(36)).toHaveLength(1);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

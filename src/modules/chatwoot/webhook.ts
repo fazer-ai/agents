@@ -4549,9 +4549,24 @@ export async function processChatwootDelivery(
           watcherReads ||
           activatedTestLateMedia)))
   ) {
+    // Chatwoot follows a voice note with a `message_updated`: the bound watcher's allow for the
+    // message already covers it, so the late update does not put the question to the endpoint again
+    // (the pass still honours a refusal recorded since).
+    const watcherAdmission =
+      observing && observer === null && n.message?.id != null
+        ? mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)
+        : null;
+    const lateAdmitted =
+      !isNewIncoming &&
+      watcherAdmission !== null &&
+      mediaAlreadyAdmitted(watcherAdmission);
     if (gateAsksNext) {
       mediaAwaitsGate = true;
-    } else if (observing && !(await observerMayObserve(rt, rt.settings))) {
+    } else if (
+      observing &&
+      !lateAdmitted &&
+      !(await observerMayObserve(rt, rt.settings))
+    ) {
       // NOTE: A conversation the watcher's rule keeps it out of is not transcribed or described for
       // it: that analysis exists for the observation the rule just refused. The watcher bound as the
       // inbox's agent owns the media gate, so its refusal is remembered for the message as the pass
@@ -4567,6 +4582,7 @@ export async function processChatwootDelivery(
         );
       }
     } else {
+      if (watcherAdmission !== null) rememberMediaAdmission(watcherAdmission);
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
         agentId: rt.agentId,

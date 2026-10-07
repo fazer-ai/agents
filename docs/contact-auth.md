@@ -241,7 +241,8 @@ refuses costs no `OBSERVE` job, no media call and no model call.
   reached, since asking the whole gate again would put the same question to the endpoint twice. When
   that verdict refuses, the pass is skipped and the refusal is recorded for the message as the pass
   would record it (Media waits for the gate), so Chatwoot's late update of the same audio is not
-  transcribed by a later allow. A pass
+  transcribed by a later allow. An allowed message is remembered the same way, so that late update
+  does not ask the endpoint again. A pass
   that asks for itself under a watcher (an agent flipped to monitoring while its gate waited) asks the
   whole gate the way the arm does, with the arm's asking, so a concurrent arm and pass share one
   request. An observer beside a separate responder keeps the responder's `unverified` pass (Media

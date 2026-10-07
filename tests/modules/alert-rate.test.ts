@@ -359,6 +359,35 @@ describe.skipIf(!dbUp)("rate alerts", () => {
     expect(rows[0]?.summary).toContain("5 transient failures");
   });
 
+  // A primary the fallback keeps rescuing is degraded too, and its failures are on lines labelled
+  // with the fallback: `ok`, with the primary named in `fallbackFrom` and its class in
+  // `primaryFailure`. They count toward the primary's rate, never the fallback's.
+  test("turns a fallback took from a degraded primary count toward the primary's rate", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    const tookOver = (primaryFailure: string): FlowEvent => ({
+      stage: "generate",
+      level: "warn",
+      status: "ok",
+      provider: "anthropic",
+      detail: {
+        fallbackFrom: "openai",
+        fallbackReason: primaryFailure,
+        primaryFailure,
+      },
+    });
+    for (let i = 0; i < 3; i++)
+      await writeFlowEvent(flow(tenantId), failure({ stage: "generate" }));
+    // A request failure the primary made is not the provider's state, and does not count.
+    await writeFlowEvent(flow(tenantId), tookOver("provider error"));
+    await writeFlowEvent(flow(tenantId), tookOver("HTTP 503"));
+    expect(await rateRows(ch)).toEqual([]);
+    await writeFlowEvent(flow(tenantId), tookOver("timeout"));
+    const rows = await rateRows(ch);
+    expect(rows.map((r) => r.causeKey)).toEqual(["rate:generate:openai"]);
+    expect(rows[0]?.summary).toContain("5 transient failures");
+  });
+
   test("concurrent failures across the threshold are one alert per channel", async () => {
     const tenantId = await freshTenant();
     const one = await channel(tenantId);

@@ -330,7 +330,16 @@ const TRANSIENT_FAILURES: readonly string[] = [
 export function rateSubjectOf(
   ev: FlowEvent,
 ): { stage: FlowStage; provider: string | null } | null {
-  if (ev.status !== "error" || !RATE_STAGES.has(ev.stage)) return null;
+  if (!RATE_STAGES.has(ev.stage)) return null;
+  // A primary the fallback took the turn from: the line is `ok` and labelled with the fallback, and
+  // the failure it records is the primary's, so it counts toward the primary's rate.
+  const from = ev.detail?.fallbackFrom;
+  const primary = ev.detail?.primaryFailure;
+  if (typeof from === "string" && typeof primary === "string")
+    return TRANSIENT_FAILURES.includes(primary)
+      ? { stage: ev.stage, provider: from }
+      : null;
+  if (ev.status !== "error") return null;
   const failure = ev.detail?.failure;
   if (typeof failure !== "string" || !TRANSIENT_FAILURES.includes(failure))
     return null;
@@ -366,15 +375,34 @@ export async function dispatchRateAlert(
     db.executionLog.count({
       where: {
         stage: subject.stage,
-        provider: subject.provider,
-        status: "error",
         source: "inbox",
         createdAt: { gte: since },
         AND: [
           {
-            OR: TRANSIENT_FAILURES.map((failure) => ({
-              detail: { path: ["failure"], equals: failure },
-            })),
+            OR: [
+              // The provider's own failure lines.
+              {
+                provider: subject.provider,
+                status: "error",
+                OR: TRANSIENT_FAILURES.map((failure) => ({
+                  detail: { path: ["failure"], equals: failure },
+                })),
+              },
+              // The turns a fallback took from it, which are `ok` lines labelled with the fallback.
+              ...(subject.provider === null
+                ? []
+                : [
+                    {
+                      detail: {
+                        path: ["fallbackFrom"],
+                        equals: subject.provider,
+                      },
+                      OR: TRANSIENT_FAILURES.map((failure) => ({
+                        detail: { path: ["primaryFailure"], equals: failure },
+                      })),
+                    },
+                  ]),
+            ],
           },
           ...(excludeAgentIds.length > 0
             ? [

@@ -309,6 +309,8 @@ const NOT_A_CAUSE: Record<string, string> = {
   corrupted:
     "tts_check: the line is warn only when true, so the level already says it",
   fallbackFrom: "the model given up on; `fallbackReason` says why",
+  primaryFailure:
+    "the class of the failure `fallbackReason` already prints, kept for the primary's rate",
   messageId: "an id to find the message by, never a cause",
   mode: "tts_check: the check's configured mode, not an outcome",
   node: "which graph node retried; `retry` is the printed flag",

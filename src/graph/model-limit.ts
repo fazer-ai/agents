@@ -61,7 +61,7 @@ export interface ModelFallback<T> {
   // Fired when the fallback takes the turn, so the runtime can leave a warn on the trail. `reason`
   // is already the redacted word: the request carried the whole conversation, so the provider's own
   // sentence may be the customer's coming back.
-  onFallback?: (info: { reason: string }) => void;
+  onFallback?: (info: { reason: string; failure: string }) => void;
   // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
   // `generate` stage wrapping this call is labelled with the PRIMARY by construction: without it an
   // operator reads "the fallback took the turn (ok)" followed by an error attributed to the model
@@ -213,7 +213,7 @@ export async function runModelCall<T>(
           { err },
           "primary model provider failed; handing the turn to the fallback",
         );
-        fallback.onFallback?.({ reason });
+        fallback.onFallback?.({ reason, failure: providerFailure(err) });
         try {
           return await attemptOn(
             fallback.run,

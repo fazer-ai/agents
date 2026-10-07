@@ -190,3 +190,18 @@ describe("the fallback-failed line carries its failure class", () => {
     });
   }
 });
+
+// The line a fallback writes when it takes the turn is labelled with the fallback, so the primary's
+// failure class rides on it as `primaryFailure`, which is how a degraded primary still counts.
+describe("the took-the-turn line carries the primary's failure class", () => {
+  for (const file of [...FILES, "src/modules/observe/job.ts"]) {
+    test(`${file} writes primaryFailure on every took-the-turn line`, async () => {
+      const source = await Bun.file(file).text();
+      const bodies = allHandlerBodies(source, "onModelFallback").filter((b) =>
+        b.includes("emitFlowEvent"),
+      );
+      expect(bodies.length).toBeGreaterThanOrEqual(1);
+      for (const body of bodies) expect(body).toMatch(/\bprimaryFailure\b/);
+    });
+  }
+});

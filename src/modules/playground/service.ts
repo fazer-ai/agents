@@ -452,6 +452,7 @@ async function buildPlaygroundGraph(params: {
     provider: string;
     model: string;
     reason: string;
+    failure: string;
   }) => void;
   onModelFallbackFailed?: (info: {
     provider: string;
@@ -763,14 +764,14 @@ async function runPlaygroundTurnOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason }) =>
+      onModelFallback: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
           provider,
           model,
-          detail: { fallbackReason: reason },
+          detail: { fallbackReason: reason, primaryFailure: failure },
         }),
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
@@ -1254,14 +1255,14 @@ async function runPlaygroundFollowupOnce(
           model,
           detail: { retriedEmptyResponse: attempt },
         }),
-      onModelFallback: ({ provider, model, reason }) =>
+      onModelFallback: ({ provider, model, reason, failure }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
           provider,
           model,
-          detail: { fallbackReason: reason },
+          detail: { fallbackReason: reason, primaryFailure: failure },
         }),
       // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
       // describes is an error. The `generate` stage this call sits inside emits its OWN error when the

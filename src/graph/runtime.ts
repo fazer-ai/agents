@@ -1127,6 +1127,7 @@ async function runTurnBody(
         provider,
         model,
         detail: { fallbackFailed: reason, failure },
+        errorMessage: reason,
       }),
     // NOTE: A configured fallback that cannot be built, reported once per turn build rather than on
     // a failure, when it would be too late to warn.

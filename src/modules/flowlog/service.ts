@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { providerFailure } from "@/lib/provider-failure";
+import { providerFailure, wasReportedElsewhere } from "@/lib/provider-failure";
 import {
   MAX_STRING,
   redactSecretsDeep,
@@ -206,7 +206,7 @@ export async function withFlowStage<T>(
     // and the message beside it is free text no rule should parse.
     let detail: Record<string, unknown> = {
       ...meta.detail,
-      failure: providerFailure(err),
+      ...(wasReportedElsewhere(err) ? {} : { failure: providerFailure(err) }),
     };
     if (meta.failureOf) {
       try {

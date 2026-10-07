@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { runModelCall } from "@/graph/model-limit";
 import { alertLinks } from "@/modules/flowlog/alert-send";
 import { causeKeyOf } from "@/modules/flowlog/alerts";
 import {
@@ -248,6 +249,64 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
     expect(
       (rows[0]?.detail as Record<string, unknown> | undefined)?.failure,
     ).toBe("HTTP 401");
+  });
+
+  // The fallback's failure has its own line under the fallback's labels, so the stage around the
+  // call, labelled with the primary, must not classify it again: a dead fallback key would otherwise
+  // also be a cause on the primary that never made the call.
+  test("a fallback failure written on its own line is not classified again by the stage", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    const failures: string[] = [];
+    const turns: string[] = [];
+    for (const withLine of [true, false]) {
+      const ctx = flow(tenantId);
+      turns.push(ctx.turnId);
+      await withFlowStage(ctx, "generate", { provider: "openai" }, () =>
+        runModelCall<string>(
+          () =>
+            Promise.reject(
+              Object.assign(new Error("overloaded"), { status: 503 }),
+            ),
+          {
+            primary: { provider: "openai", model: "gpt-5.4" },
+            fallback: {
+              labels: { provider: "anthropic", model: "claude-sonnet-4-6" },
+              deadlineMs: 5_000,
+              run: () =>
+                Promise.reject(
+                  Object.assign(new Error("bad key"), { status: 401 }),
+                ),
+              ...(withLine
+                ? {
+                    onFallbackFailed: ({ failure }: { failure: string }) => {
+                      failures.push(failure);
+                    },
+                  }
+                : {}),
+            },
+          },
+        ),
+      ).catch(() => {});
+    }
+    expect(failures).toEqual(["HTTP 401"]);
+    const failureOn = async (turnId: string) =>
+      (
+        (
+          await flowLogRows(suDb, {
+            where: { tenantId, turnId, stage: "generate" },
+            select: { detail: true },
+          })
+        )[0]?.detail as Record<string, unknown> | undefined
+      )?.failure;
+    // With the fallback's own line written, the stage's line names no failure; without it, the
+    // stage's line is the only record and keeps it.
+    expect(await failureOn(turns[0] as string)).toBeUndefined();
+    expect(await failureOn(turns[1] as string)).toBe("HTTP 401");
+    // And only the second is a cause on the primary.
+    expect(
+      (await deliveries(ch)).map((d) => d.causeKey).filter((k) => k !== null),
+    ).toEqual(["generate:openai:HTTP 401"]);
   });
 
   test("six failures of one cause, spread past the coalesce window, are one delivery of six", async () => {

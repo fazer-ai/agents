@@ -56,6 +56,24 @@ function namesATimeout(err: unknown): boolean {
   );
 }
 
+// A failure already written on a line of its own, labelled with the provider that failed (a
+// fallback's): an enclosing stage labelled with the primary must not classify it again, or a dead
+// fallback key is also a cause on the primary that never made the call.
+const reportedElsewhere = new WeakSet<Error>();
+
+export function markReportedElsewhere(err: unknown): void {
+  if (err instanceof Error) reportedElsewhere.add(err);
+}
+
+export function wasReportedElsewhere(err: unknown): boolean {
+  let e: unknown = err;
+  for (let depth = 0; e instanceof Error && depth < 5; depth++) {
+    if (reportedElsewhere.has(e)) return true;
+    e = e.cause;
+  }
+  return false;
+}
+
 export function providerFailure(err: unknown, timedOut = false): string {
   if (timedOut || namesATimeout(err)) return "timeout";
   // No `instanceof Error` guard of its own: `statusOf` asks that question already, so a second

@@ -1459,6 +1459,7 @@ async function runAgentNudgeBody(
         provider,
         model,
         detail: { fallbackFailed: reason, failure },
+        errorMessage: reason,
       }),
     // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having

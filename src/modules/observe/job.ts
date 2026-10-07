@@ -1349,6 +1349,7 @@ export async function runObserve(
           provider,
           model,
           detail: { fallbackFailed: why, failure },
+          errorMessage: why,
         }),
       // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
       // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with

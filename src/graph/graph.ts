@@ -31,7 +31,7 @@ import {
   USAGE_MODEL_METADATA_KEY,
   USAGE_PROVIDER_METADATA_KEY,
 } from "@/graph/usage";
-import { providerFailure } from "@/lib/provider-failure";
+import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
 import { calledOffToolResult } from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
@@ -744,12 +744,13 @@ export function buildAgentGraph({
           });
         } catch (err) {
           // NOTE: a call the job's deadline ended failed on the job, not on the provider.
-          if (!jobSignal?.aborted) {
-            onModelFallbackFailed?.({
+          if (!jobSignal?.aborted && onModelFallbackFailed) {
+            onModelFallbackFailed({
               ...second.labels,
               reason: err instanceof Error ? err.message : "provider error",
               failure: providerFailure(err),
             });
+            markReportedElsewhere(err);
           }
           throw err;
         }

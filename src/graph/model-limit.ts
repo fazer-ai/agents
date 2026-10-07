@@ -1,6 +1,10 @@
 import logger from "@/api/lib/logger";
 import config from "@/config";
-import { asProviderFailure, providerFailure } from "@/lib/provider-failure";
+import {
+  asProviderFailure,
+  markReportedElsewhere,
+  providerFailure,
+} from "@/lib/provider-failure";
 import { Semaphore } from "@/lib/semaphore";
 import {
   EMPTY_COMPLETION_MESSAGE,
@@ -220,10 +224,13 @@ export async function runModelCall<T>(
           // The fallback is the last thing there is, so what it failed with is what the turn
           // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
           const out = describeProviderFault(fallbackErr);
-          fallback.onFallbackFailed?.({
-            reason: out instanceof Error ? out.message : "provider error",
-            failure: providerFailure(fallbackErr),
-          });
+          if (fallback.onFallbackFailed) {
+            fallback.onFallbackFailed({
+              reason: out instanceof Error ? out.message : "provider error",
+              failure: providerFailure(fallbackErr),
+            });
+            markReportedElsewhere(out);
+          }
           throw out;
         }
       };

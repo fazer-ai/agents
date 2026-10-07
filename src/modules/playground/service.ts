@@ -788,6 +788,7 @@ async function runPlaygroundTurnOnce(
           provider,
           model,
           detail: { fallbackFailed: reason, failure },
+          errorMessage: reason,
         }),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
@@ -1278,6 +1279,7 @@ async function runPlaygroundFollowupOnce(
           provider,
           model,
           detail: { fallbackFailed: reason, failure },
+          errorMessage: reason,
         }),
       onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {

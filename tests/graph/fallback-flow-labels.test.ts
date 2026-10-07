@@ -181,8 +181,12 @@ describe("the fallback-failed line carries its failure class", () => {
         (b) => b.includes("emitFlowEvent"),
       );
       expect(bodies.length).toBeGreaterThanOrEqual(1);
-      for (const body of bodies)
+      for (const body of bodies) {
         expect(body).toMatch(/detail:\s*\{[^}]*\bfailure\b/);
+        // And it says why: an account failure on the fallback is a cause alert, whose body is the
+        // message.
+        expect(body).toMatch(/errorMessage:/);
+      }
     });
   }
 });

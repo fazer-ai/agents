@@ -127,6 +127,24 @@ describe("footer text", () => {
     ).toBe("Acme Serviços Ltda · 0042");
   });
 
+  test("separators the author wrote stay when every token has a value", () => {
+    expect(
+      resolveFooterText("• Pagamento em 30 dias", { doc_number: "1" }),
+    ).toBe("• Pagamento em 30 dias");
+    expect(resolveFooterText("| {{doc_number}} |", { doc_number: "7" })).toBe(
+      "| 7 |",
+    );
+  });
+
+  test("an empty token next to authored text takes only its own separator", () => {
+    expect(
+      resolveFooterText("Obrigado! · {{company_name}} · {{doc_number}}", {
+        company_name: "",
+        doc_number: "7",
+      }),
+    ).toBe("Obrigado! · 7");
+  });
+
   test("text that is not a separator is left alone", () => {
     expect(
       resolveFooterText("Obrigado! {{doc_number}}", { doc_number: "7" }),

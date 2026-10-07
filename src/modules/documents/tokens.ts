@@ -144,30 +144,27 @@ export function resolveTokens(
   );
 }
 
-// A separator that joins two tokens on one line: a middle dot, a bullet or a bar, with space around.
-const LEADING_SEPARATOR = /^\s*[·•|](?:\s+|$)/;
-const TRAILING_SEPARATOR = /(?:^|\s+)[·•|]\s*$/;
-const DOUBLED_SEPARATOR = /\s+([·•|])(?:\s+[·•|])+\s+/g;
-
 // The footer joins tokens that may resolve empty ("{{company_name}} · {{doc_number}}" on an account
-// with no company name), and resolved as plain text that leaves the separator hanging at the edge of
-// the line. Each line drops a separator left at either end, and a run of them collapses to one.
+// with no company name), and resolved as plain text that leaves the separator hanging. A token that
+// resolves empty takes ONE adjacent separator (a middle dot, a bullet or a bar) with it, the one after
+// it if there is one, otherwise the one before. Punctuation the author wrote anywhere else stays.
 export function resolveFooterText(
   text: string,
   vars: Record<string, string>,
 ): string {
-  return resolveTokens(text, vars)
-    .split("\n")
-    .map((line) => {
-      let out = line.replace(DOUBLED_SEPARATOR, " $1 ");
-      let before: string;
-      do {
-        before = out;
-        out = out
-          .replace(LEADING_SEPARATOR, "")
-          .replace(TRAILING_SEPARATOR, "");
-      } while (out !== before);
-      return out.trim();
-    })
-    .join("\n");
+  let out = text;
+  for (;;) {
+    const empty = [...out.matchAll(DOCUMENT_TOKEN_RE)].find(
+      (m) => sanitizeDocumentValue(vars[m[1] as string] ?? "") === "",
+    );
+    if (!empty || empty.index === undefined) break;
+    const start = empty.index;
+    const end = start + empty[0].length;
+    const after = /^[ \t]*[·•|][ \t]*/.exec(out.slice(end));
+    const before = /[ \t]*[·•|][ \t]*$/.exec(out.slice(0, start));
+    if (after) out = out.slice(0, start) + out.slice(end + after[0].length);
+    else if (before) out = out.slice(0, before.index) + out.slice(end);
+    else out = out.slice(0, start) + out.slice(end);
+  }
+  return resolveTokens(out, vars);
 }

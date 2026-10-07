@@ -861,6 +861,57 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(await runnableObserveRows(36)).toHaveLength(1);
   });
 
+  // While the retirement is still being retried, a tick due in that window already hears the refusal.
+  test("a tick due while a refusal's retirement is retried is refused", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(37, "individual");
+    authAnswer = "deny";
+    let asked = false;
+    const askingFetch = (async (url: unknown, init?: unknown) => {
+      asked = true;
+      return (authFetch as (u: unknown, i?: unknown) => Promise<Response>)(
+        url,
+        init,
+      );
+    }) as unknown as typeof fetch;
+    // Down from the ask until the first pause, so the first retirement fails and the second lands.
+    let paused = false;
+    const flakyAfterAsk = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop === "$extends" && asked && !paused) {
+          return () => ({
+            $transaction: () =>
+              Promise.reject(new Error("database unreachable")),
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as PrismaClient;
+    const tickDuringRetry: string[] = [];
+    const ruleParams = {
+      tenantId,
+      instanceId,
+      conversationId: 37,
+      agentId: observerId,
+      settings,
+      base: appDb,
+    };
+    await observerArmPermit({
+      ...ruleParams,
+      base: flakyAfterAsk,
+      fetchImpl: askingFetch,
+      sleep: async () => {
+        paused = true;
+        tickDuringRetry.push(
+          await observerRuleVerdict(ruleParams, { emit: false }),
+        );
+      },
+    });
+    expect(tickDuringRetry).toEqual(["refused"]);
+    expect(await runnableObserveRows(37)).toEqual([]);
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

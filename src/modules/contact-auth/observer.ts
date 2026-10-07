@@ -178,28 +178,27 @@ async function retireWithRetries(
 ): Promise<void> {
   const nap =
     p.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  // Fenced in memory before the first write, so a tick due while the writes retry already hears
+  // the refusal. Ordered by when the verdicts were asked, not when their bookkeeping ends: an allow
+  // asked after this refusal already answered for the conversation.
+  const key = refusalKey(p);
+  if ((recentAllows.get(key) ?? 0) < askedAt) {
+    unretiredRefusals.set(
+      key,
+      Math.max(unretiredRefusals.get(key) ?? 0, askedAt),
+    );
+  }
   for (let attempt = 1; ; attempt++) {
     try {
       await retireRefusedObserve({ ...p, askedAt });
       // Only what this retirement covers: a refusal asked after it keeps its own mark.
-      const kept = unretiredRefusals.get(refusalKey(p));
-      if (kept !== undefined && kept <= askedAt) {
-        unretiredRefusals.delete(refusalKey(p));
-      }
+      const kept = unretiredRefusals.get(key);
+      if (kept !== undefined && kept <= askedAt) unretiredRefusals.delete(key);
       return;
     } catch (err) {
       if (attempt >= RETIRE_ATTEMPTS) {
-        // Kept in this process, where the tick asks it (`observerRuleVerdict`): the database that
-        // refused the write is the one the tick will be claimed from once it is back.
-        // Ordered by when the verdicts were asked, not when their bookkeeping ends: an allow asked
-        // after this refusal already answered for the conversation.
-        const key = refusalKey(p);
-        if ((recentAllows.get(key) ?? 0) < askedAt) {
-          unretiredRefusals.set(
-            key,
-            Math.max(unretiredRefusals.get(key) ?? 0, askedAt),
-          );
-        }
+        // The fence stays in this process, where the tick asks it (`observerRuleVerdict`): the
+        // database that refused the write is the one the tick will be claimed from once it is back.
         logger.warn(
           "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
           String(p.conversationId),

@@ -53,6 +53,11 @@ describe.skipIf(!dbUp)("the Logs reader filters by tool and inbox", () => {
         line("consultar_pedido", 1n),
         line("consultar_pedido", 2n),
         line("buscar_evento", 1n),
+        // A tool warning written before any tool was known: no `detail.tool` at all.
+        {
+          ...line("x", 1n),
+          detail: { server: "crm", error: "listing failed" },
+        },
       ],
     });
   });
@@ -85,7 +90,7 @@ describe.skipIf(!dbUp)("the Logs reader filters by tool and inbox", () => {
   test("one inbox, alone and with the tool", async () => {
     expect(
       (await listExecutionLogs(ctx(), { inboxId: 1n }, appDb)).items,
-    ).toHaveLength(3);
+    ).toHaveLength(4);
     expect(
       (
         await listExecutionLogs(
@@ -95,5 +100,17 @@ describe.skipIf(!dbUp)("the Logs reader filters by tool and inbox", () => {
         )
       ).items,
     ).toHaveLength(2);
+  });
+
+  test("the lines that name no tool, and only them", async () => {
+    const r = await listExecutionLogs(
+      ctx(),
+      { stage: "tool", noTool: true },
+      appDb,
+    );
+    expect(r.items).toHaveLength(1);
+    expect(
+      (r.items[0]?.detail as { server?: string } | undefined)?.server,
+    ).toBe("crm");
   });
 });

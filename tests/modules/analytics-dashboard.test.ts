@@ -1238,6 +1238,21 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     );
     expect(u.costPerConversation).toBeNull();
     expect(u.days[0]?.costPerConversation).toBeNull();
+    // The breakdown reads the same rule: a model with no price is no cost per conversation.
+    const byModel = await getBreakdown(
+      ctx(ex.tenantId),
+      {
+        since: new Date("2026-09-10T00:00:00Z"),
+        until: new Date("2026-09-12T00:00:00Z"),
+        tz: "UTC",
+      },
+      "model",
+      appDb,
+    );
+    expect(
+      byModel.find((r) => r.key === "m-unknown")?.costPerConversation,
+    ).toBeNull();
+    expect(byModel.find((r) => r.key === "m1")?.costPerConversation).toBe(0);
   });
 
   test("a skip_reply the schema refused silenced nothing", async () => {
@@ -1257,6 +1272,50 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     });
     const r = await getHandoffReasons(ctx(ex.tenantId), DAY, appDb);
     expect(r.silences).toEqual([]);
+  });
+
+  test("a person taking over counts once, not at every message the gate sees them holding it", async () => {
+    const conv = await seedConv(ex, "heldByPerson", { at: D1, inbox: ex.i1 });
+    const takeover = (at: string, via?: string) =>
+      suDb.executionLog.create({
+        data: {
+          tenantId: ex.tenantId,
+          turnId: crypto.randomUUID(),
+          conversationId: conv,
+          inboxId: ex.i1,
+          stage: "handoff",
+          level: "warn",
+          source: "inbox",
+          detail: { outcome: "taken_over", ...(via ? { via } : {}) },
+          createdAt: new Date(at),
+        },
+      });
+    await takeover("2026-09-02T13:00:00Z", "reply");
+    // The next customer message meets the person still holding it.
+    await takeover("2026-09-03T13:00:00Z");
+    // Handed back: the agent answers again, and a person takes over a second time.
+    await row(ex, {
+      conv,
+      agent: ex.a1,
+      inbox: ex.i1,
+      node: "agent",
+      at: new Date("2026-09-04T10:00:00Z"),
+    });
+    await takeover("2026-09-04T13:00:00Z");
+    const person = async (since: string, until: string) =>
+      (
+        await getHandoffReasons(
+          ctx(ex.tenantId),
+          { since: new Date(since), until: new Date(until), tz: "UTC" },
+          appDb,
+        )
+      ).totals.find((t) => t.cause === "person")?.conversations ?? 0;
+    expect(await person("2026-09-03T00:00:00Z", "2026-09-04T00:00:00Z")).toBe(
+      0,
+    );
+    expect(await person("2026-09-04T00:00:00Z", "2026-09-05T00:00:00Z")).toBe(
+      1,
+    );
   });
 
   test("an inbox filter narrows the ledger figures too", async () => {

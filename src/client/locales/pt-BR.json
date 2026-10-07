@@ -2380,6 +2380,7 @@
     "page": "Página {{n}}",
     "scopedConversation": "Conversa #{{id}}",
     "scopedFromDashboard": "Do painel",
+    "scopedFromDashboardNoTool": "Do painel: linhas sem ferramenta",
     "scopedFromDashboardTool": "Do painel: {{tool}}",
     "scopedRange": "{{from}} a {{to}}",
     "search": "Buscar",

@@ -105,6 +105,8 @@ export async function getBreakdown(
     }
     return rows
       .map((r) => {
+        // No priced call in the group is no known cost: nothing to divide (a priced zero divides).
+        const priced = r.cost !== null && r.cost !== undefined;
         const cost = Number(r.cost ?? 0);
         const conversations = Number(r.conversations);
         const resolved = Number(r.resolved);
@@ -126,7 +128,8 @@ export async function getBreakdown(
           requests: Number(r.requests),
           costUsd: Number.isFinite(cost) ? cost : 0,
           unpricedRequests: Number(r.unpriced),
-          costPerConversation: conversations > 0 ? cost / conversations : null,
+          costPerConversation:
+            priced && conversations > 0 ? cost / conversations : null,
           resolvedConversations: resolved,
           resolutionRate: conversations > 0 ? resolved / conversations : null,
           promptTokens: prompt,

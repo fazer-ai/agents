@@ -327,7 +327,10 @@ export function LogsPage() {
   const agentId = searchParams.get("agentId") ?? "";
   const inboxId = searchParams.get("inboxId") ?? "";
   const tool = searchParams.get("tool") ?? "";
-  const fromDashboard = Boolean(since || until || agentId || inboxId || tool);
+  const noTool = searchParams.get("noTool") === "true";
+  const fromDashboard = Boolean(
+    since || until || agentId || inboxId || tool || noTool,
+  );
 
   const exportModal = useModalController();
 
@@ -373,6 +376,7 @@ export function LogsPage() {
     agentId,
     inboxId,
     tool,
+    noTool,
   ]);
 
   const setFilter = (key: string, value: string) => {
@@ -404,6 +408,7 @@ export function LogsPage() {
       if (agentId) query.agentId = agentId;
       if (inboxId) query.inboxId = inboxId;
       if (tool) query.tool = tool;
+      if (noTool) query.noTool = "true";
       if (cursor) query.cursor = cursor;
       const { data, error: err } = await api.api.v1.logs.get({ query });
       if (err || !data) {
@@ -429,6 +434,7 @@ export function LogsPage() {
     agentId,
     inboxId,
     tool,
+    noTool,
     cursor,
   ]);
 
@@ -460,6 +466,7 @@ export function LogsPage() {
     if (agentId) f.agentId = agentId;
     if (inboxId) f.inboxId = inboxId;
     if (tool) f.tool = tool;
+    if (noTool) f.noTool = "true";
     return f;
   }, [
     source,
@@ -473,6 +480,7 @@ export function LogsPage() {
     agentId,
     inboxId,
     tool,
+    noTool,
   ]);
 
   return (
@@ -569,7 +577,12 @@ export function LogsPage() {
                     tool,
                   },
                 )
-              : t("logs.scopedFromDashboard", "From the dashboard")}
+              : noTool
+                ? t(
+                    "logs.scopedFromDashboardNoTool",
+                    "From the dashboard: lines that name no tool",
+                  )
+                : t("logs.scopedFromDashboard", "From the dashboard")}
             {since && until
               ? ` · ${t("logs.scopedRange", "{{from}} to {{to}}", {
                   from: new Date(since).toLocaleDateString(),
@@ -588,6 +601,7 @@ export function LogsPage() {
                       "agentId",
                       "inboxId",
                       "tool",
+                      "noTool",
                     ])
                       next.delete(k);
                     return next;

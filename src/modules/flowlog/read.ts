@@ -38,6 +38,9 @@ export interface ListLogsOpts {
   turnId?: string;
   // A tool line's `detail.tool`, which is how the dashboard's health block opens one tool's failures.
   tool?: string;
+  // Only lines that name no tool (`detail.tool` absent): the health block's group of tool warnings
+  // written before any tool was known (an MCP server that could not be listed).
+  noTool?: boolean;
   // undefined → "inbox" (real traffic); "all" → no source filter; else exact match.
   source?: string;
   // Case-insensitive substring match on errorMessage.
@@ -110,6 +113,9 @@ export function buildLogWhere(
         }
       : {}),
     ...(opts.tool ? { detail: { path: ["tool"], equals: opts.tool } } : {}),
+    ...(opts.noTool && !opts.tool
+      ? { detail: { path: ["tool"], equals: Prisma.AnyNull } }
+      : {}),
     ...(opts.conversationId !== undefined
       ? { conversationId: opts.conversationId }
       : {}),

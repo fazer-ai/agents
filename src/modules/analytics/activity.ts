@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   agentRanSql,
+  agentTurnSql,
   cohortWhereSql,
   type DashboardFilter,
   localDaySql,
@@ -29,7 +30,10 @@ export const HANDOFF_CAUSES = [
   "skip_unanswered",
   // A guardrail stopped the reply and handed the conversation over.
   "guardrail",
-  // A person replied or took the conversation in Chatwoot.
+  // A person replied or took the conversation in Chatwoot. Every gate that meets a human owner logs
+  // `taken_over` again (each new customer message on a conversation a person holds), so a line counts
+  // only when the agent took a turn since the conversation's previous one: the takeover, not each
+  // later sighting of it. A takeover after the conversation was handed back still counts.
   "person",
 ] as const;
 export type HandoffCause = (typeof HANDOFF_CAUSES)[number];
@@ -49,7 +53,18 @@ const CAUSE_SQL = Prisma.sql`(CASE
   WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'opened_after_skip'
     THEN 'skip_' || COALESCE(l.detail->>'reason', 'unanswered')
   WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'guardrail_handoff' THEN 'guardrail'
-  WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'taken_over' THEN 'person'
+  WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'taken_over'
+       AND NOT EXISTS (
+         SELECT 1 FROM execution_logs p
+          WHERE p.conversation_id = l.conversation_id
+            AND p.stage = 'handoff' AND p.detail->>'outcome' = 'taken_over'
+            AND p.created_at < l.created_at
+            AND NOT EXISTS (
+              SELECT 1 FROM llm_usage u
+               WHERE u.conversation_id = l.conversation_id
+                 AND u.source = 'inbox' AND ${agentTurnSql("u")}
+                 AND u.created_at > p.created_at AND u.created_at < l.created_at))
+    THEN 'person'
   END)`;
 
 export async function getHandoffReasons(

@@ -21,6 +21,8 @@ export function logsHref(
   p.set("stage", row.stage);
   p.set("level", row.level);
   if (row.tool) p.set("tool", row.tool);
+  // A tool line that names no tool is its own group; without this the link would open every tool's.
+  else if (row.stage === "tool") p.set("noTool", "true");
   p.set("source", f.source);
   if (w.since) p.set("since", w.since.toISOString());
   // The Logs page reads `until` inclusive; the window is half-open.

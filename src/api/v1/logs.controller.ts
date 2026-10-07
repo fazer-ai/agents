@@ -48,6 +48,7 @@ export const logsController = new Elysia({
         agentId: parseQueryId(query.agentId, "agentId"),
         inboxId: parseQueryId(query.inboxId, "inboxId"),
         tool: parseQueryText(query.tool, "tool"),
+        noTool: query.noTool === "true",
         conversationId: parseQueryId(query.conversationId, "conversationId"),
         turnId: parseQueryText(query.turnId, "turnId"),
         source: query.source,
@@ -85,6 +86,12 @@ export const logsController = new Elysia({
           t.String({
             description:
               "Filter tool lines by the tool's name (the line's detail.tool).",
+          }),
+        ),
+        noTool: t.Optional(
+          t.String({
+            description:
+              "true: only lines that name no tool (detail.tool absent), the tool warnings written before any tool was known. Ignored with tool.",
           }),
         ),
         conversationId: t.Optional(
@@ -139,6 +146,7 @@ export const logsController = new Elysia({
         agentId: parseQueryId(query.agentId, "agentId"),
         inboxId: parseQueryId(query.inboxId, "inboxId"),
         tool: parseQueryText(query.tool, "tool"),
+        noTool: query.noTool === "true",
         conversationId: parseQueryId(query.conversationId, "conversationId"),
         turnId: parseQueryText(query.turnId, "turnId"),
         source: query.source,
@@ -176,6 +184,12 @@ export const logsController = new Elysia({
           t.String({
             description:
               "Filter tool lines by the tool's name (the line's detail.tool).",
+          }),
+        ),
+        noTool: t.Optional(
+          t.String({
+            description:
+              "true: only lines that name no tool (detail.tool absent), the tool warnings written before any tool was known. Ignored with tool.",
           }),
         ),
         conversationId: t.Optional(

@@ -2310,6 +2310,7 @@
     "page": "Page {{n}}",
     "scopedConversation": "Conversation #{{id}}",
     "scopedFromDashboard": "From the dashboard",
+    "scopedFromDashboardNoTool": "From the dashboard: lines that name no tool",
     "scopedFromDashboardTool": "From the dashboard: {{tool}}",
     "scopedRange": "{{from}} to {{to}}",
     "search": "Search",

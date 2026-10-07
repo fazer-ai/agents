@@ -31582,6 +31582,15 @@
             }
           },
           {
+            "name": "noTool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "true: only lines that name no tool (detail.tool absent), the tool warnings written before any tool was known. Ignored with tool.",
+              "type": "string"
+            }
+          },
+          {
             "name": "conversationId",
             "in": "query",
             "required": false,
@@ -31824,6 +31833,15 @@
             "required": false,
             "schema": {
               "description": "Filter tool lines by the tool's name (the line's detail.tool).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "noTool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "true: only lines that name no tool (detail.tool absent), the tool warnings written before any tool was known. Ignored with tool.",
               "type": "string"
             }
           },

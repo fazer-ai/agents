@@ -115,6 +115,24 @@ describe("the Logs page opened from the health block", () => {
   });
 });
 
+describe("the Logs page opened on the tool warnings that name no tool", () => {
+  test("asks for exactly those lines, and says so", async () => {
+    mount("/logs?stage=tool&level=warn&noTool=true&source=inbox", <LogsPage />);
+    await waitFor(() => {
+      expect(asked.some((u) => u.pathname.endsWith("/logs"))).toBe(true);
+    });
+    const q = asked.find((u) => u.pathname.endsWith("/logs"))?.searchParams;
+    expect(q?.get("noTool")).toBe("true");
+    expect(q?.get("tool")).toBeNull();
+    await waitFor(() => {
+      expect(
+        screen.queryAllByText(/From the dashboard: lines that name no tool/)
+          .length,
+      ).toBe(1);
+    });
+  });
+});
+
 describe("the conversation list opened from a dashboard figure", () => {
   test("asks for the figure's window, inbox and outcome, and says so", async () => {
     mount(

@@ -1250,8 +1250,7 @@
       "reassignConfirm": "Reatribuir",
       "reassignTitle": "Reatribuir caixa",
       "title": "Caixas de entrada",
-      "toggleAria": "Atender {{inbox}} com este agente",
-      "watchedBy": "Observada por {{name}}; remova antes"
+      "toggleAria": "Atender {{inbox}} com este agente"
     },
     "clone": "Clonar",
     "cloned": "Agente clonado (desativado).",

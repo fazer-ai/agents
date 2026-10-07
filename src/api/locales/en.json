@@ -91,7 +91,6 @@
     "imageDimensionsUnreadable": "The image header could not be read, so its size cannot be checked. Export the file again.",
     "imageTooLarge": "Image is too large",
     "imageTooManyPixels": "The image has too many pixels: at most {{max}} in total (about {{dimensions}})",
-    "inboxAlreadyObserved": "This inbox already has an observer. Remove it before adding another.",
     "inboxGoneRemote": "This inbox no longer exists in Chatwoot. Remove its mirror.",
     "inboxNotBound": "This inbox has no agent to reconnect.",
     "inboxNotFound": "Inbox not found.",

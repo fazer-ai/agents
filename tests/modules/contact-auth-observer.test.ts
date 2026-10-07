@@ -245,11 +245,14 @@ async function deliverMessage(
 async function deliverResolve(
   convId: number,
   groupType: "group" | "individual",
+  // Pins the conversation's version, for several deliveries of ONE resolution.
+  version?: number,
 ) {
   seq += 1;
   const n = normalizeChatwootEvent({
     event: "conversation_status_changed",
     ...conversation(convId, groupType, "resolved"),
+    ...(version != null ? { updated_at: version } : {}),
   });
   if (!n) throw new Error("the fixture did not normalize");
   const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -889,6 +892,22 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       "resolved",
     );
     expect(customerFacing).toEqual([]);
+  });
+
+  // Two deliveries of one resolution: the first allowed queues the verdict, a failure retires it
+  // before it ran, and a later allow of the same resolution brings it back.
+  test("a resolution whose queued verdict an endpoint failure retired is armed again by a later allow", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(29, "individual");
+    const version = 1_800_000_000;
+    await deliverResolve(29, "individual", version);
+    expect(await runnableObserveRows(29)).toHaveLength(1);
+    authAnswer = "error";
+    await deliverResolve(29, "individual", version);
+    expect(await runnableObserveRows(29)).toEqual([]);
+    authAnswer = "allow";
+    await deliverResolve(29, "individual", version);
+    expect(await runnableObserveRows(29)).toHaveLength(1);
   });
 
   test("the resolve arm asks the endpoint too: a denial arms no verdict", async () => {

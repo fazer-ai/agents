@@ -232,7 +232,8 @@ refuses costs no `OBSERVE` job, no media call and no model call.
   time on the row, so a refusal asked before that allow and landing after it leaves the newer
   observation runnable. A gate that cannot be read at the arm, on an agent that asks an endpoint,
   counts as the endpoint's no here, and a retirement that fails is tried three times before a
-  warning. A refusal by the conditions needs none of this, since the tick asks them again. A tick
+  warning. A resolution's verdict retired before it ran can be armed again by a later allow of the
+  same resolution. A refusal by the conditions needs none of this, since the tick asks them again. A tick
   already running is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
   reached, since asking the whole gate again would put the same question to the endpoint twice. When

@@ -439,13 +439,20 @@ export async function retireUnlessAllowedLaterOn(
     allowedField: string;
     refusedField: string;
     createPayload: Record<string, unknown>;
+    // Fields a PENDING row loses on retirement, for the marks that say its work already happened
+    // (the observer's `resolveMark`): work retired before it ran must stay armable by a later yes.
+    // A CLAIMED row keeps them, since its run may have done the work.
+    unrunFields?: string[];
   },
 ): Promise<void> {
   const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+  const unrun = p.unrunFields ?? [];
   await db.$executeRaw`
       UPDATE scheduler_jobs
          SET status = 'DONE',
-             payload = payload || ${stamp}::jsonb,
+             payload = (CASE WHEN status = 'PENDING'
+                             THEN payload - ${unrun}::text[]
+                             ELSE payload END) || ${stamp}::jsonb,
              claim_seq = claim_seq + 1,
              updated_at = now()
        WHERE tenant_id = ${p.tenantId}

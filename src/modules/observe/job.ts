@@ -166,6 +166,8 @@ export async function retireRefusedObserve(p: {
         at: p.askedAt,
         allowedField: "gateAllowedAt",
         refusedField: "gateRefusedAt",
+        // A resolution's verdict retired before it ran is not one this resolution already has.
+        unrunFields: ["resolveMark"],
         createPayload: {
           instanceId: String(p.instanceId),
           conversationId: p.conversationId,

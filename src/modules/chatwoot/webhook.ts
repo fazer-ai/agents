@@ -142,14 +142,13 @@ import {
 } from "@/modules/spend-ceiling/service";
 import {
   resolveSttConfig,
-  sttPreflight,
   transcribeInboundAudio,
 } from "@/modules/stt/service";
 import {
   extractMessageVisuals,
   hasUnextractedVisual,
 } from "@/modules/vision/extract-message";
-import { resolveVisionConfig, visionPreflight } from "@/modules/vision/service";
+import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import {
   channelFailureOf,
@@ -1412,13 +1411,6 @@ export interface EagerMediaOwner {
   // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
   // a provider.
   admission: "allowed" | "refused" | "unverified";
-  // On an observer's route, the inbox's switched-on watchers in their fixed order (`inboxWatchers`),
-  // whose settings answer before the route's own: the first one able to run is the config. Every
-  // watcher appends the same message to the one contact-inbox thread and the first append wins, so
-  // the rendering cannot depend on whose delivery ran first; asked of the same list, every route
-  // renders with the same config. The provider call stays one per message (`shareInFlight`, the
-  // annotation stash). Absent, or with no config able to run, the route's own answers, as alone.
-  watcherAgentIds?: bigint[];
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1557,22 +1549,6 @@ async function mediaAdmitted(
   }
 }
 
-// The first config of `watcherAgentIds` able to run, else the route's own. "Able to run" is the
-// service's own preflight (`sttPreflight`, `visionPreflight`), never a copy of it: the services check
-// only after this choice and skip without trying another watcher, so a weaker test here would let a
-// sibling that cannot run silence media for the whole inbox. A null agent asks the inbox's responder.
-async function firstMediaConfig<T>(
-  owner: EagerMediaOwner,
-  resolve: (agentId: bigint | null) => Promise<T | null>,
-  canRun: (cfg: T) => Promise<boolean>,
-): Promise<T | null> {
-  for (const agentId of owner.watcherAgentIds ?? []) {
-    const cfg = await resolve(agentId);
-    if (cfg && (await canRun(cfg).catch(() => false))) return cfg;
-  }
-  return resolve(owner.agentId);
-}
-
 // Eager media analysis: transcribe an incoming voice note and extract an incoming image or document
 // BEFORE arming or answering, writing back to Chatwoot and stashing it on the in-memory event.
 // Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
@@ -1659,19 +1635,13 @@ export async function runEagerMedia(
         messageId: n.message.id,
       });
       try {
-        const sttCfg = await firstMediaConfig(
-          owner,
-          (agentId) =>
-            resolveSttConfig(
-              tenantId,
-              instanceId,
-              chatwootInboxId,
-              base,
-              // NOTE: The route's agent, which on an observer's route is not the inbox's.
-              { agentId },
-            ),
-          async (cfg) =>
-            (await sttPreflight(tenantId, cfg, base)).state === "ok",
+        const sttCfg = await resolveSttConfig(
+          tenantId,
+          instanceId,
+          chatwootInboxId,
+          base,
+          // NOTE: The route's agent, which on an observer's route is not the inbox's.
+          { agentId: owner.agentId },
         );
         if (sttCfg && (await admitted())) {
           const text = await transcribeInboundAudio({
@@ -1718,19 +1688,13 @@ export async function runEagerMedia(
   // shared with the turn that re-reads a thread; this side keeps the decision to run and where results go.
   if (visionPending) {
     try {
-      const visionCfg = await firstMediaConfig(
-        owner,
-        (agentId) =>
-          resolveVisionConfig(
-            tenantId,
-            instanceId,
-            chatwootInboxId,
-            base,
-            // NOTE: The route's agent, which on an observer's route is not the inbox's.
-            { agentId },
-          ),
-        async (cfg) =>
-          (await visionPreflight(tenantId, cfg, base)).state === "ok",
+      const visionCfg = await resolveVisionConfig(
+        tenantId,
+        instanceId,
+        chatwootInboxId,
+        base,
+        // NOTE: The route's agent, which on an observer's route is not the inbox's.
+        { agentId: owner.agentId },
       );
       // Only a new extraction waits for the gate; metadata already on an attachment is reused. Email
       // body images are not counted as unread: telling them from an ornament needs the download.
@@ -3680,16 +3644,14 @@ export async function processChatwootDelivery(
   // Whether the watcher answer came from the attach window rather than a row. Only that answer
   // can: "no row" on the binding read is also the post-detach state of a bot owning an old conversation.
   const observerAttaching = observer?.attaching === true;
-  // On an observer's route, the inbox's watchers (`inboxWatchers`), for the media pass and the memory
-  // owner. Read once, and only by a reader that runs.
+  // On an observer's route, the inbox's watchers (`inboxWatchers`), for the memory owner. Read once,
+  // and only by a reader that runs.
   let watchersMemo: ReturnType<typeof inboxWatchers> | null = null;
   const watchers = (): ReturnType<typeof inboxWatchers> => {
     if (observer === null) return Promise.resolve(null);
     watchersMemo ??= inboxWatchers(params.tenantId, observer.inboxId, base);
     return watchersMemo;
   };
-  const watcherAgentIds = async (): Promise<bigint[] | undefined> =>
-    (await watchers())?.map((w) => w.agentId);
 
   // tx1: CAS <claimFrom> to PROCESSING; a duplicate that finds nothing to claim skips. Stamped
   // with `claimed_at`, the clock the sweep measures an attempt by. "PENDING" is a delivery arriving;
@@ -4478,7 +4440,6 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: "unverified",
-        watcherAgentIds: await watcherAgentIds(),
       });
     }
   }
@@ -5022,7 +4983,6 @@ export async function processChatwootDelivery(
       deps: params.deps,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
-      watcherAgentIds: await watcherAgentIds(),
     });
   }
   // The observer marks only after its ingestion has the message (queued, or nothing to queue):

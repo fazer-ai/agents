@@ -15,8 +15,8 @@ function errMsg(err: unknown): string {
 }
 
 // The switched-on watchers of an inbox, Chatwoot-confirmed, in agent order: every route reads the
-// same list, so the first one is the same memory owner and media config on all of them. Null when
-// unreadable; callers then keep the route's own agent, as a lone watcher does.
+// same list, so the first one is the same memory owner on all of them. Null when unreadable; callers
+// then keep the route's own agent, as a lone watcher does.
 export async function inboxWatchers(
   tenantId: bigint,
   inboxId: bigint,

@@ -74,56 +74,6 @@ export async function resolveSttConfig(
   return cfg;
 }
 
-// What a config needs before a transcription can run, asked by the transcription itself and by
-// whoever picks among configs before it (the watchers' shared media config, ../chatwoot/webhook.ts),
-// so the two cannot disagree about which config can run. Reads the vault; never calls a provider.
-export type SttPreflight =
-  | {
-      state: "ok";
-      provider: NonNullable<ReturnType<typeof getSttProvider>>;
-      entry: { secret: string; baseUrl: string | null };
-      baseURL: string | null;
-    }
-  | {
-      state: "skip";
-      reason:
-        | "unknown_provider"
-        | "no_credential"
-        | "credential_unusable"
-        | "credential_not_found"
-        | "no_base_url";
-      kind?: string;
-    };
-
-export async function sttPreflight(
-  tenantId: bigint,
-  cfg: SttConfig,
-  base: PrismaClient = basePrisma,
-): Promise<SttPreflight> {
-  const provider = getSttProvider(cfg.provider);
-  if (!provider) return { state: "skip", reason: "unknown_provider" };
-  const ref = cfg.credentialRef;
-  if (!ref) return { state: "skip", reason: "no_credential" };
-  const entry = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    tryResolveApiKeyEntry(db, ref),
-  );
-  // NOTE: kept apart because the operator's move differs: gone or unfilled is a credential to re-pick,
-  // the wrong KIND belongs on another field.
-  if (entry.state === "unusable") {
-    return { state: "skip", reason: "credential_unusable", kind: entry.kind };
-  }
-  if (entry.state !== "ok") {
-    return { state: "skip", reason: "credential_not_found" };
-  }
-  // Credential baseUrl takes precedence over the agent config baseURL (config is a fallback).
-  // The requiresBaseURL check uses the effective value so a credential-stored URL satisfies the guard.
-  const baseURL = entry.baseUrl ?? cfg.baseURL;
-  if (provider.requiresBaseURL && !baseURL) {
-    return { state: "skip", reason: "no_base_url" };
-  }
-  return { state: "ok", provider, entry, baseURL };
-}
-
 export interface TranscribeInboundParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -182,32 +132,42 @@ async function transcribeOnce(
     return null;
   };
 
-  const pre = await sttPreflight(params.tenantId, cfg, base);
-  if (pre.state === "skip") {
-    if (pre.reason === "unknown_provider") {
-      logger.warn("stt: unknown provider %s", cfg.provider);
-    } else if (pre.reason === "no_credential") {
-      logger.warn("stt: no credentialRef configured — skipping");
-    } else if (pre.reason === "credential_unusable") {
+  const provider = getSttProvider(cfg.provider);
+  if (!provider) {
+    logger.warn("stt: unknown provider %s", cfg.provider);
+    return skip("unknown_provider");
+  }
+  if (!cfg.credentialRef) {
+    logger.warn("stt: no credentialRef configured — skipping");
+    return skip("no_credential");
+  }
+  const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    tryResolveApiKeyEntry(db, cfg.credentialRef as string),
+  );
+  if (entry.state !== "ok") {
+    // NOTE: kept apart because the operator's move differs: gone or unfilled is a credential to re-pick,
+    // the wrong KIND belongs on another field.
+    if (entry.state === "unusable") {
       logger.warn(
         "stt: credential %s is a %s credential, which cannot be used as an API key — skipping",
         cfg.credentialRef,
-        pre.kind,
+        entry.kind,
       );
-    } else if (pre.reason === "credential_not_found") {
-      logger.warn(
-        "stt: credential %s not found in the vault — skipping",
-        cfg.credentialRef,
-      );
-    } else {
-      logger.warn(
-        "stt: provider %s requires a baseURL — skipping",
-        cfg.provider,
-      );
+      return skip("credential_unusable");
     }
-    return skip(pre.reason);
+    logger.warn(
+      "stt: credential %s not found in the vault — skipping",
+      cfg.credentialRef,
+    );
+    return skip("credential_not_found");
   }
-  const { provider, entry, baseURL: effectiveBaseURL } = pre;
+  // Credential baseUrl takes precedence over the agent config baseURL (config is a fallback).
+  // The requiresBaseURL check uses the effective value so a credential-stored URL satisfies the guard.
+  const effectiveBaseURL = entry.baseUrl ?? cfg.baseURL;
+  if (provider.requiresBaseURL && !effectiveBaseURL) {
+    logger.warn("stt: provider %s requires a baseURL — skipping", cfg.provider);
+    return skip("no_base_url");
+  }
 
   const client = await loadChatwootClient(params.tenantId, params.instanceId, {
     base,

@@ -783,6 +783,68 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     ).toBe("allowed");
   });
 
+  // The in-memory fallback follows the verdicts' ask order: a denial asked before an allow, whose
+  // retries run out after it, does not fence the newer observation.
+  test("a denial whose retries end after a newer allow does not fence the tick", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(35, "individual");
+    authAnswer = "deny";
+    let asked = false;
+    let releaseRetries: () => void = () => {};
+    const retriesHeld = new Promise<void>((r) => {
+      releaseRetries = r;
+    });
+    const askingFetch = (async (url: unknown, init?: unknown) => {
+      asked = true;
+      return (authFetch as (u: unknown, i?: unknown) => Promise<Response>)(
+        url,
+        init,
+      );
+    }) as unknown as typeof fetch;
+    const downAfterAsk = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop === "$extends" && asked) {
+          return () => ({
+            $transaction: () =>
+              Promise.reject(new Error("database unreachable")),
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as PrismaClient;
+    const denial = observerArmPermit({
+      tenantId,
+      instanceId,
+      conversationId: 35,
+      agentId: observerId,
+      settings,
+      base: downAfterAsk,
+      fetchImpl: askingFetch,
+      sleep: () => retriesHeld,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    authAnswer = "allow";
+    clearContactAuthState();
+    await new Promise((r) => setTimeout(r, 5));
+    await deliverMessage(35, "individual");
+    releaseRetries();
+    expect(await denial).toBeNull();
+    expect(
+      await observerRuleVerdict(
+        {
+          tenantId,
+          instanceId,
+          conversationId: 35,
+          agentId: observerId,
+          settings,
+          base: appDb,
+        },
+        { emit: false },
+      ),
+    ).toBe("allowed");
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

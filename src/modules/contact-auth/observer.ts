@@ -151,6 +151,7 @@ export async function observerArmPermit(
   const verdict = await observerGateVerdict(p, { emit: true, stage: "both" });
   if (verdict === "allowed") {
     const key = refusalKey(p);
+    rememberAllow(key, askedAt);
     const refusedAt = unretiredRefusals.get(key);
     if (refusedAt !== undefined && refusedAt < askedAt) {
       unretiredRefusals.delete(key);
@@ -180,16 +181,25 @@ async function retireWithRetries(
   for (let attempt = 1; ; attempt++) {
     try {
       await retireRefusedObserve({ ...p, askedAt });
-      unretiredRefusals.delete(refusalKey(p));
+      // Only what this retirement covers: a refusal asked after it keeps its own mark.
+      const kept = unretiredRefusals.get(refusalKey(p));
+      if (kept !== undefined && kept <= askedAt) {
+        unretiredRefusals.delete(refusalKey(p));
+      }
       return;
     } catch (err) {
       if (attempt >= RETIRE_ATTEMPTS) {
         // Kept in this process, where the tick asks it (`observerRuleVerdict`): the database that
         // refused the write is the one the tick will be claimed from once it is back.
-        unretiredRefusals.set(
-          refusalKey(p),
-          Math.max(unretiredRefusals.get(refusalKey(p)) ?? 0, askedAt),
-        );
+        // Ordered by when the verdicts were asked, not when their bookkeeping ends: an allow asked
+        // after this refusal already answered for the conversation.
+        const key = refusalKey(p);
+        if ((recentAllows.get(key) ?? 0) < askedAt) {
+          unretiredRefusals.set(
+            key,
+            Math.max(unretiredRefusals.get(key) ?? 0, askedAt),
+          );
+        }
         logger.warn(
           "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
           String(p.conversationId),
@@ -209,6 +219,22 @@ const RETIRE_ATTEMPTS = 3;
 // each was asked. Cleared by a retirement that lands or by an allow asked after it. In memory: a
 // tick claimed by another replica does not see it (docs/contact-auth.md, The observer path).
 const unretiredRefusals = new Map<string, number>();
+
+// The newest allow asked per watcher and conversation, so a refusal whose retries end after a newer
+// allow does not fence it. Bounded, oldest first out: an allow older than the cap's reach is older
+// than any retirement still retrying.
+const recentAllows = new Map<string, number>();
+const RECENT_ALLOWS_CAP = 10_000;
+
+function rememberAllow(key: string, askedAt: number): void {
+  const before = recentAllows.get(key) ?? 0;
+  recentAllows.delete(key);
+  recentAllows.set(key, Math.max(before, askedAt));
+  if (recentAllows.size > RECENT_ALLOWS_CAP) {
+    const oldest = recentAllows.keys().next().value;
+    if (oldest !== undefined) recentAllows.delete(oldest);
+  }
+}
 
 function refusalKey(p: {
   tenantId: bigint;

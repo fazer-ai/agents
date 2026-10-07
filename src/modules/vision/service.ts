@@ -140,11 +140,16 @@ export async function extractWithRetry(args: {
   // can still stop without keeping it (the wait overslept the budget, the caller's deadline came), and
   // then the extraction ended unread with only an `info` line behind it.
   let promisedAfter: number | null = null;
+  // The next attempt's wait, drawn once when a failure asks whether a retry follows, and spent by the
+  // loop as drawn: the delay is jittered, and a second draw could answer the other way at the edge of
+  // the budget, which is a line saying the file went unread followed by the read.
+  let plannedDelayMs: number | null | undefined;
   // Whether the loop will start another attempt after this one fails with `err`: the same three
   // readings the top of the loop makes, taken before the wait instead of after it.
   const retryFollows = (attempt: number, err: unknown): boolean => {
     if (!isTransientVisionFailure(err) || args.signal?.aborted) return false;
     const delayMs = retryDelayMs(attempt + 1);
+    plannedDelayMs = delayMs;
     if (delayMs === null) return false;
     return (
       attemptBudgetMs({
@@ -156,7 +161,9 @@ export async function extractWithRetry(args: {
     );
   };
   for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
-    const delayMs = retryDelayMs(attempt);
+    const delayMs =
+      plannedDelayMs !== undefined ? plannedDelayMs : retryDelayMs(attempt);
+    plannedDelayMs = undefined;
     if (delayMs === null) break;
     // NOTE: Two readings of the same question, because the wait sits between them. The first asks
     // whether waiting is worth it AT ALL — a wait that lands past the total costs the turn hundreds

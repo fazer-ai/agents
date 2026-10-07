@@ -766,6 +766,82 @@ describe.skipIf(!dbUp)("vision retry", () => {
     ).toBeUndefined();
   });
 
+  // The wait is jittered, and the answer to "does a retry follow" is only true if the loop then waits
+  // the same wait: drawn twice, one draw can predict no retry at the edge of the budget and the other
+  // fund it, and the line would say the file went unread right before it is read.
+  test("the retry the line predicts is the one the loop makes, at the edge of the budget", async () => {
+    const turnId = `vision-outcome-jitter-${process.pid}`;
+    const longest = retryDelayMs(2, () => 1) as number;
+    const shortest = retryDelayMs(2, () => 0) as number;
+    // A point where the shortest wait still funds attempt 2 and the longest does not.
+    let edge = -1;
+    for (let e = 0; e < VISION_TOTAL_BUDGET_MS; e += 10) {
+      const funded = (wait: number) =>
+        attemptBudgetMs({
+          kind: "document",
+          attempt: 2,
+          elapsedMs: e + wait,
+          customEndpoint: false,
+        }) !== null;
+      if (funded(shortest) && !funded(longest)) {
+        edge = e;
+        break;
+      }
+    }
+    expect(edge).toBeGreaterThan(0);
+    let clock = 0;
+    let calls = 0;
+    // Attempt 1's own (zero) wait takes the first draw; the failure's question takes the second.
+    const draws = [0, 1, 0];
+    const realRandom = Math.random;
+    Math.random = () => draws.shift() ?? 0;
+    try {
+      const provider = {
+        defaultModel: "m",
+        extract: async () => {
+          calls += 1;
+          if (calls === 1) {
+            clock = edge;
+            throw new VisionError("gemini", 503);
+          }
+          return { text: "ok", usage: null };
+        },
+      } as VisionProvider;
+      const settled = await extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: {
+          bytes: new ArrayBuffer(4),
+          mimeType: "application/pdf",
+          kind: "document",
+          prompt: "Leia.",
+          model: "m",
+          apiKey: "k",
+          baseURL: null,
+          fetchImpl: fetch,
+        },
+        flow: { tenantId, turnId, source: "inbox", base: appDb },
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }).then(
+        () => "read",
+        () => "unread",
+      );
+      const rows = await flowLogRows(suDb, {
+        where: { tenantId, turnId, stage: "vision" },
+        select: { level: true },
+      });
+      const warned = rows.some((r) => r.level === "warn");
+      expect(warned).toBe(settled === "unread");
+      expect(calls).toBe(settled === "read" ? 2 : 1);
+    } finally {
+      Math.random = realRandom;
+    }
+  });
+
   // The promise of a retry is read before the wait, and the wait can oversleep the budget: the loop
   // then stops without the attempt it announced, and the extraction still ended unread. Without a
   // line of its own, that outcome would be an `info` and nothing else.

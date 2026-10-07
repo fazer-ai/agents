@@ -479,6 +479,10 @@ describe.skipIf(!dbUp)("the contact gate in two stages (webhook e2e)", () => {
     });
     expect(ep.calls()).toBe(0);
     expect(cw.publicOn(convId)).toEqual(["Oi!"]);
+    // With no endpoint after it, the rule's allow is the gate's answer, and its line says so.
+    expect(await gateLines(convId)).toEqual([
+      expect.objectContaining({ outcome: "allowed", stage: "rule" }),
+    ]);
   });
 
   test("the quiet refusal comes before the away message: no copy, no note, opened for humans", async () => {

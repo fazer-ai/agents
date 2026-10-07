@@ -1330,7 +1330,17 @@ describe.skipIf(!dbUp)("reengage", () => {
         },
       });
       try {
-        const id = await seedConversation(924);
+        // A contact the endpoint could ask about, so an endpoint asked here would answer, and allow.
+        const contact = await suDb.contact.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootContactId: 97,
+            phone: "+5511988887797",
+          },
+          select: { id: true },
+        });
+        const id = await seedConversation(924, { contactId: contact.id });
         const sent: Array<[number, string]> = [];
         const asked: string[] = [];
         const res = await reengageConversation(

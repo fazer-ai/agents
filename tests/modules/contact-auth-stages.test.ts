@@ -188,6 +188,7 @@ function ask(
   conversationDbId: bigint,
   stage: ContactAuthStage,
   fetchImpl: typeof fetch,
+  requestKey?: string,
 ) {
   seq += 1;
   return authorizeContact({
@@ -199,7 +200,7 @@ function ask(
     inboxId: 87,
     channelType: "Channel::Whatsapp",
     messageText: null,
-    requestKey: `stages:${seq}`,
+    requestKey: requestKey ?? `stages:${seq}`,
     stage,
     cfg: config,
     base: appDb,
@@ -368,6 +369,37 @@ describe.skipIf(!dbUp)("asking each stage", () => {
       reason: "not_configured",
       stage: "endpoint",
     });
+  });
+
+  // The webhook asks the endpoint stage while a late update of the same message asks the whole gate
+  // (the media pass): one question to the operator's endpoint, so one request, whichever stage each
+  // caller named.
+  test("two callers asking the endpoint at once, by different stages, share one request", async () => {
+    for (const config of [
+      cfg({ rule: null }),
+      cfg({ askEndpointAfterRule: true }),
+    ]) {
+      // A fresh latch per shape: the endpoint answers only after both callers are in.
+      let calls = 0;
+      let release: () => void = () => {};
+      const latch = new Promise<void>((r) => {
+        release = r;
+      });
+      const slow = (async () => {
+        calls += 1;
+        await latch;
+        return new Response('{"authorized":true}', { status: 200 });
+      }) as unknown as typeof fetch;
+      const key = `coalesce:${seq}`;
+      const both = ask(config, groupConv, "both", slow, key);
+      const endpointOnly = ask(config, groupConv, "endpoint", slow, key);
+      await new Promise((r) => setTimeout(r, 50));
+      release();
+      const [a, b] = await Promise.all([both, endpointOnly]);
+      expect(calls).toBe(1);
+      expect([a.outcome, b.outcome]).toEqual(["allowed", "allowed"]);
+      expect([a.shared, b.shared].filter(Boolean)).toHaveLength(1);
+    }
   });
 
   test("under once, only the endpoint's allow is stored, never the rule's", async () => {

@@ -208,68 +208,74 @@ export async function authorizeContact(
     return { outcome: "no_identity", shared: false, reason: "no_contact" };
   }
   const contactDbId = params.contactDbId;
-  // A conversation-scoped rule answers about the CONVERSATION, so two conversations of one contact
-  // are two questions: sharing a flight would hand the marked one's allow to the unmarked one.
   const { stage } = params;
   const rule = stage === "endpoint" ? null : cfg.rule;
   const askEndpoint = stage !== "rule" && contactAuthHasEndpointStage(cfg);
-  const conversationScoped = rule !== null && ruleReadsConversation(rule);
-  // The stage is part of the question: the rule's allow and the endpoint's are not the same answer,
-  // and a flight shared across them would hand one stage's verdict to a caller asking the other.
-  const asking = `${params.requestKey}:${stage}`;
-  const key = contactAuthFlightKey(
-    tenantId,
-    agentId,
-    contactDbId,
-    conversationScoped
-      ? `${asking}:conv:${params.conversationDbId ?? "none"}`
-      : asking,
-  );
-  const { verdict, shared } = await singleFlight(
-    key,
-    async (): Promise<ContactAuthVerdict> => {
-      // Read inside the single-flight, so a burst resolves the identity once too. Everything
-      // under `contact` is what Chatwoot mirrored; nothing the customer typed can stand in for it.
-      const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.contact.findUnique({
-          where: { id: contactDbId },
-          select: {
-            phone: true,
-            name: true,
-            email: true,
-            chatwootContactId: true,
-            attributes: true,
-            customAttributes: true,
-          },
-        }),
-      );
-      const phone = trimmed(contact?.phone);
-      const email = trimmed(contact?.email);
-      const identifier = mirroredContactIdentifier(contact?.attributes);
-      // NOTE: a local rule answers here and the endpoint is never asked. Only a plain allowlist waits
-      // for the identity check below: every other rule reads facts a contact with no phone or email
-      // still has (a group, a label, a marked conversation), which is the whole point of reading them.
-      // No grant is read, written or dropped: a rule reads our own rows every message, and a stored
-      // verdict would only make an edit take effect late.
-      if (rule) {
-        const ruled = await ruleVerdict(rule, {
+  // Read inside each flight, so a burst resolves the identity once too. Everything under `contact` is
+  // what Chatwoot mirrored; nothing the customer typed can stand in for it.
+  const readContact = () =>
+    runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.contact.findUnique({
+        where: { id: contactDbId },
+        select: {
+          phone: true,
+          name: true,
+          email: true,
+          chatwootContactId: true,
+          attributes: true,
+          customAttributes: true,
+        },
+      }),
+    );
+  // NOTE: a local rule answers in its own flight, and a refusal there never reaches the endpoint. No
+  // grant is read, written or dropped: a rule reads our own rows every message, and a stored verdict
+  // would only make an edit take effect late.
+  if (rule) {
+    // A conversation-scoped rule answers about the CONVERSATION, so two conversations of one contact
+    // are two questions: sharing a flight would hand the marked one's allow to the unmarked one.
+    const conversationScoped = ruleReadsConversation(rule);
+    const asking = `${params.requestKey}:rule`;
+    const ruled = await singleFlight(
+      contactAuthFlightKey(
+        tenantId,
+        agentId,
+        contactDbId,
+        conversationScoped
+          ? `${asking}:conv:${params.conversationDbId ?? "none"}`
+          : asking,
+      ),
+      async (): Promise<ContactAuthVerdict> => {
+        const contact = await readContact();
+        return ruleVerdict(rule, {
           base,
           tenantId,
           conversationDbId: conversationScoped ? params.conversationDbId : null,
-          phone,
-          email,
-          identifier,
+          phone: trimmed(contact?.phone),
+          email: trimmed(contact?.email),
+          identifier: mirroredContactIdentifier(contact?.attributes),
           contactAttributes: bagOf(contact?.customAttributes),
         });
-        // A refusal is the gate's answer whatever comes after; an allow is final only when there is
-        // no endpoint stage to hand it to.
-        if (ruled.outcome !== "allowed" || !askEndpoint) {
-          return { ...ruled, stage: "rule" };
-        }
-      }
-      // The rule position asked with no rule set: nothing to refuse here, and the endpoint stage, if
-      // the agent has one, answers at its own position.
-      if (!askEndpoint) return { outcome: "allowed", stage: "rule" };
+      },
+    );
+    // A refusal is the gate's answer whatever comes after, and so is an allow with no endpoint stage
+    // to hand it to.
+    if (ruled.verdict.outcome !== "allowed" || !askEndpoint) {
+      return { ...ruled.verdict, stage: "rule", shared: ruled.shared };
+    }
+  }
+  // The rule position asked with no rule set: nothing to refuse here, and the endpoint stage, if the
+  // agent has one, answers at its own position.
+  if (!askEndpoint) return { outcome: "allowed", stage: "rule", shared: false };
+  // The endpoint's flight is keyed by the asking alone, whichever stage the caller named: the webhook
+  // at the endpoint position and the media pass asking the whole gate put the same question to the
+  // operator's endpoint, and two flights would send it twice.
+  const { verdict, shared } = await singleFlight(
+    contactAuthFlightKey(tenantId, agentId, contactDbId, params.requestKey),
+    async (): Promise<ContactAuthVerdict> => {
+      const contact = await readContact();
+      const phone = trimmed(contact?.phone);
+      const email = trimmed(contact?.email);
+      const identifier = mirroredContactIdentifier(contact?.attributes);
       const endpointVerdict = (v: ContactAuthVerdict): ContactAuthVerdict => ({
         ...v,
         stage: "endpoint",

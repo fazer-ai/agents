@@ -252,11 +252,15 @@ rule with the flag off shows the switch off, as the runtime treats it; with no c
 is on when there is a url, since that endpoint is what decides.
 
 An enabled gate with no condition and no endpoint is the fail-closed `not_configured` at runtime, so
-the editor refuses to save it and says why. The API and MCP still accept it, as before.
+no editor save writes it (`contactAuthGateEmpty`): the Behavior tab's Save is disabled with the
+reason, and Save and export refuses before writing any section and does not export. The API and MCP
+still accept it, as before.
 
 A monitoring agent's editor shows the conditions only: no switch, no endpoint fields, no notices. A
-stored endpoint-only gate there says that the observer then watches every conversation, and saving
-keeps the stored url and switch as they were.
+stored endpoint-only gate there says that the observer then watches every conversation. Saving keeps
+the stored url, and writes the stored `askEndpointAfterRule` back while the switch still holds the
+value inferred from the stored bag (`contactAuthAskEndpointToSave`); a switch the operator changed
+before moving the agent to monitoring is written as set.
 
 ## Request / response contract
 

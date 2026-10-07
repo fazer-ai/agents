@@ -1,1302 +1,347 @@
 import {
+  Activity,
   ArrowRightLeft,
   Bot,
   Coins,
-  ExternalLink,
   Gauge,
-  Hash,
-  MessagesSquare,
+  Table2,
   Target,
-  Timer,
-  TrendingUp,
-  TriangleAlert,
 } from "lucide-react";
-import {
-  lazy,
-  type ReactNode,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router";
+import { useSearchParams } from "react-router";
 import {
-  Card,
   DataBoundary,
-  HelpPopover,
+  Input,
   PageContainer,
+  SegmentedControl,
+  Select,
   Skeleton,
-  SpendBar,
-  SpendHealthLines,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { formatDuration } from "@/client/lib/duration";
 import { cn } from "@/client/lib/utils";
-import { CostByModelCard } from "./dashboard/CostByModel";
-import type { TrendPoint } from "./dashboard/CostTrendChart";
+import { SectionNav } from "./agents/SectionNav";
+import { BreakdownSection } from "./dashboard/BreakdownSection";
+import { CostSection } from "./dashboard/CostSection";
+import {
+  apiQuery,
+  type DashboardFilters,
+  localDayKey,
+  previousWindow,
+  type Range,
+  readFilters,
+  type Source,
+  windowOf,
+  writeFilters,
+} from "./dashboard/filters";
+import { AutomationSection, HealthSection } from "./dashboard/HealthSection";
+import {
+  DEFAULT_PERFORMANCE_VIEW,
+  KPI_GRID,
+  KPI_SPANS,
+  type Kpis,
+  PerformanceSection,
+  type PerformanceView,
+} from "./dashboard/PerformanceSection";
+import { ReasonsSection } from "./dashboard/ReasonsSection";
+import { useBlock } from "./dashboard/useBlock";
 
-// recharts is heavy and only the dashboard needs it → lazy-load the chart so it splits into its own
-// chunk (fetched on first dashboard view, not in the initial bundle).
-const CostTrendChart = lazy(() => import("./dashboard/CostTrendChart"));
+// THE OPERATOR'S DASHBOARD, organised by the question an operator brings: is the agent
+// doing its job, why does it hand over and what are people asking, what does it cost, is it healthy,
+// and what else does it do on its own. One filter (period, agent, inbox, source) in the URL drives
+// every block; every figure is summed from this app's own records, and which query each block runs is
+// mapped in docs/dashboard.md.
 
-// Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
-type MetricsData = Awaited<ReturnType<typeof api.api.v1.metrics.get>>["data"];
-type Metrics = NonNullable<MetricsData>["metrics"];
-type KpisData = Awaited<ReturnType<typeof api.api.v1.metrics.kpis.get>>["data"];
-type Kpis = NonNullable<KpisData>["kpis"];
-type TimeseriesData = Awaited<
-  ReturnType<typeof api.api.v1.metrics.timeseries.get>
->["data"];
-type Point = NonNullable<TimeseriesData>["points"][number];
-type CostsData = Awaited<
-  ReturnType<typeof api.api.v1.metrics.costs.get>
->["data"];
-type Costs = NonNullable<CostsData>["costs"];
-type CeilingData = Awaited<
-  ReturnType<
-    (typeof api.api.v1)["tenant-settings"]["spend-ceiling"]["usage"]["get"]
-  >
->["data"];
-type Ceiling = NonNullable<CeilingData>;
-
-// How often the page asks again for the ceiling when no read has yet said the poll's period.
-const CEILING_RETRY_MS = 60_000;
-
-type Range = "7d" | "30d" | "90d" | "all";
-const RANGE_DAYS: Record<Range, number | null> = {
-  "7d": 7,
-  "30d": 30,
-  "90d": 90,
-  all: null,
-};
-
-// Usage segment: "inbox" (real customer traffic) | "playground" (operator test turns) | "all".
-// Defaults to "inbox" so test turns never inflate the headline figures.
-type Source = "inbox" | "playground" | "all";
-
-function sinceFor(range: Range): string | undefined {
-  const days = RANGE_DAYS[range];
-  if (days === null) return undefined;
-  return new Date(Date.now() - days * 86_400_000).toISOString();
-}
-
-function KpiCard({
-  icon: Icon,
-  label,
-  primary,
-  secondary,
-  accent,
-  help,
+function FilterBar({
+  filters,
+  onChange,
+  agents,
+  inboxes,
 }: {
-  icon: typeof Coins;
-  label: string;
-  primary: string;
-  secondary: string;
-  accent?: boolean;
-  // How the number is measured, for the operator who wants to trust it. Behind the `?` and not
-  // under the card: methodology is read once, and this panel is scanned every day (docs/ui.md →
-  // Where help goes).
-  help?: ReactNode;
+  filters: DashboardFilters;
+  onChange: (patch: Partial<DashboardFilters>) => void;
+  agents: { id: string; name: string }[];
+  inboxes: { id: string; name: string }[];
 }) {
+  const { t } = useTranslation();
+  const today = localDayKey(new Date());
+  const ranges: { value: Range; label: string }[] = [
+    { value: "7d", label: t("dashboard.range.7d", "7d") },
+    { value: "30d", label: t("dashboard.range.30d", "30d") },
+    { value: "90d", label: t("dashboard.range.90d", "90d") },
+    { value: "all", label: t("dashboard.range.all", "All") },
+    { value: "custom", label: t("dashboard.range.custom", "Dates") },
+  ];
+  const sources: { value: Source; label: string }[] = [
+    { value: "inbox", label: t("dashboard.source.inbox", "Real") },
+    {
+      value: "playground",
+      label: t("dashboard.source.playground", "Playground"),
+    },
+    { value: "all", label: t("dashboard.source.all", "All") },
+  ];
   return (
-    <Card className="flex flex-col gap-2">
-      <div className="flex items-center gap-2 text-text-muted text-xs">
-        <Icon
-          className={cn("h-4 w-4", accent ? "text-accent" : "text-text-muted")}
-          aria-hidden="true"
-        />
-        {label}
-        {help ? <HelpPopover content={help} label={label} /> : null}
-      </div>
-      <p className="font-semibold text-2xl text-text-primary tabular-nums">
-        {primary}
-      </p>
-      <p className="text-text-muted text-xs">{secondary}</p>
-    </Card>
-  );
-}
-
-function FunnelBar({
-  label,
-  count,
-  total,
-  nf,
-}: {
-  label: string;
-  count: number;
-  total: number;
-  nf: Intl.NumberFormat;
-}) {
-  const pct = total > 0 ? (count / total) * 100 : 0;
-  const pctLabel = `(${pct.toFixed(0)}%)`;
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-text-secondary">{label}</span>
-        <span className="font-medium text-text-primary tabular-nums">
-          {nf.format(count)}
-          <span className="ml-1 text-text-muted text-xs">{pctLabel}</span>
-        </span>
-      </div>
-      <div className="h-2.5 w-full overflow-hidden rounded-full bg-bg-tertiary">
-        <div
-          className="h-full rounded-full bg-accent-solid transition-all"
-          style={{ width: `${Math.max(pct, count > 0 ? 2 : 0)}%` }}
-        />
-      </div>
+    <div className="flex flex-wrap items-end gap-3">
+      <SegmentedControl
+        aria-label={t("dashboard.range.label", "Period")}
+        value={filters.range}
+        onChange={(range) =>
+          onChange(
+            range === "custom"
+              ? {
+                  range,
+                  from: filters.from ?? today,
+                  to: filters.to ?? today,
+                }
+              : { range, from: null, to: null },
+          )
+        }
+        options={ranges}
+      />
+      {filters.range === "custom" && (
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            aria-label={t("dashboard.range.from", "From")}
+            value={filters.from ?? ""}
+            max={filters.to ?? today}
+            onChange={(e) =>
+              e.target.value && onChange({ from: e.target.value })
+            }
+            className="w-36"
+          />
+          <Input
+            type="date"
+            aria-label={t("dashboard.range.to", "To")}
+            value={filters.to ?? ""}
+            min={filters.from ?? undefined}
+            max={today}
+            onChange={(e) => e.target.value && onChange({ to: e.target.value })}
+            className="w-36"
+          />
+        </div>
+      )}
+      <Select
+        aria-label={t("dashboard.filter.agent", "Agent")}
+        value={filters.agentId ?? ""}
+        onChange={(e) => onChange({ agentId: e.target.value || null })}
+        wrapperClassName="max-w-44"
+      >
+        <option value="">
+          {t("dashboard.filter.allAgents", "All agents")}
+        </option>
+        {agents.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.name}
+          </option>
+        ))}
+      </Select>
+      <Select
+        aria-label={t("dashboard.filter.inbox", "Inbox")}
+        value={filters.inboxId ?? ""}
+        onChange={(e) => onChange({ inboxId: e.target.value || null })}
+        wrapperClassName="max-w-44"
+      >
+        <option value="">
+          {t("dashboard.filter.allInboxes", "All inboxes")}
+        </option>
+        {inboxes.map((i) => (
+          <option key={i.id} value={i.id}>
+            {i.name}
+          </option>
+        ))}
+      </Select>
+      <SegmentedControl
+        aria-label={t("dashboard.source.label", "Usage segment")}
+        value={filters.source}
+        onChange={(source) => onChange({ source })}
+        options={sources}
+      />
     </div>
   );
 }
 
-// CostDay is derived from the costs response: the ledger's cost per local day, in the same buckets
-// as the calls series.
-type CostDay = Costs["days"][number];
+const SKELETON_KEYS = ["k0", "k1", "k2", "k3", "k4"];
 
-// The operator's IANA timezone. The daily buckets are computed in THIS zone, both here (the
-// zero-fill window) and on the backend (the SQL date_trunc gets `?tz=`), so a late-night turn lands
-// on the right LOCAL day instead of on "tomorrow" in UTC. Never reason in UTC for days.
-export const OPERATOR_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-// Local day key (YYYY-MM-DD) of a Date in the operator's zone. Browser Date getters already read in
-// OPERATOR_TZ (it IS the browser zone), so a manual format avoids any UTC round-trip.
-function localDayKey(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-// Builds the continuous daily chart series spanning the SELECTED range: the backend returns only days
-// with data, but the chart should show every day in the window (0 where missing) so the bars reflect
-// the filter, not just what happened. Days are LOCAL — "today" is the operator's today, never
-// tomorrow-in-UTC. For "all" the span runs from the oldest data day to today. Cost, calls and
-// conversations all come from local-day buckets of the ledger; costPerConv = cost ÷ conversations
-// (null when either is 0).
-export function buildCostTrend(
-  points: Point[],
-  costDays: CostDay[],
-  range: Range,
-  // The segment, not a flag, so the rule lives here: the divisor is our own conversation count and a
-  // playground turn has no conversation, so only the real segment's cost can be divided by it.
-  source: Source,
-): TrendPoint[] {
-  const withRatio = source === "inbox";
-  const callsByDay = new Map(points.map((p) => [p.bucket, p.calls]));
-  const convsByDay = new Map(points.map((p) => [p.bucket, p.conversations]));
-  const costByDay = new Map(costDays.map((d) => [d.date, d.costUsd]));
-  const days = RANGE_DAYS[range];
-  const now = new Date();
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  let cur: Date;
-  if (days != null) {
-    cur = new Date(
-      end.getFullYear(),
-      end.getMonth(),
-      end.getDate() - (days - 1),
-    );
-  } else {
-    // "YYYY-MM-DD" with no offset parses as LOCAL midnight → the right day in the operator's zone.
-    const firstKey = [
-      ...points.map((p) => p.bucket),
-      ...costDays.map((d) => d.date),
-    ].sort()[0];
-    cur = firstKey ? new Date(`${firstKey}T00:00:00`) : new Date(end);
-  }
-  const out: TrendPoint[] = [];
-  while (cur.getTime() <= end.getTime()) {
-    const key = localDayKey(cur);
-    const cost = costByDay.get(key) ?? 0;
-    const conversations = convsByDay.get(key) ?? 0;
-    const calls = callsByDay.get(key) ?? 0;
-    const costPerConv =
-      withRatio && cost > 0 && conversations > 0 ? cost / conversations : null;
-    out.push({
-      key,
-      labelMs: cur.getTime(),
-      cost,
-      conversations,
-      calls,
-      costPerConv,
-    });
-    cur.setDate(cur.getDate() + 1);
-  }
-  return out;
-}
-
-function RangeToggle({
-  value,
-  onChange,
-}: {
-  value: Range;
-  onChange: (r: Range) => void;
-}) {
-  const { t } = useTranslation();
-  const ranges: { key: Range; label: string }[] = [
-    { key: "7d", label: t("dashboard.range.7d", "7d") },
-    { key: "30d", label: t("dashboard.range.30d", "30d") },
-    { key: "90d", label: t("dashboard.range.90d", "90d") },
-    { key: "all", label: t("dashboard.range.all", "All") },
-  ];
-  return (
-    <fieldset
-      className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
-      aria-label={t("dashboard.range.label", "Period")}
-    >
-      {ranges.map((r) => (
-        <button
-          key={r.key}
-          type="button"
-          onClick={() => onChange(r.key)}
-          className={cn(
-            "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
-            value === r.key
-              ? "bg-bg-secondary text-text-primary"
-              : "text-text-muted hover:text-text-secondary",
-          )}
-        >
-          {r.label}
-        </button>
-      ))}
-    </fieldset>
-  );
-}
-
-function SourceToggle({
-  value,
-  onChange,
-}: {
-  value: Source;
-  onChange: (s: Source) => void;
-}) {
-  const { t } = useTranslation();
-  const sources: { key: Source; label: string }[] = [
-    { key: "inbox", label: t("dashboard.source.inbox", "Real") },
-    {
-      key: "playground",
-      label: t("dashboard.source.playground", "Playground"),
-    },
-    { key: "all", label: t("dashboard.source.all", "All") },
-  ];
-  return (
-    <fieldset
-      className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
-      aria-label={t("dashboard.source.label", "Usage segment")}
-    >
-      {sources.map((s) => (
-        <button
-          key={s.key}
-          type="button"
-          onClick={() => onChange(s.key)}
-          className={cn(
-            "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
-            value === s.key
-              ? "bg-bg-secondary text-text-primary"
-              : "text-text-muted hover:text-text-secondary",
-          )}
-        >
-          {s.label}
-        </button>
-      ))}
-    </fieldset>
-  );
-}
-
-// Static keys so the skeleton placeholders don't key off the array index.
-const DASH_KPI_KEYS = ["kpi-0", "kpi-1", "kpi-2", "kpi-3"];
-const DASH_FUNNEL_KEYS = ["funnel-0", "funnel-1", "funnel-2"];
-const DASH_COST_KEYS = ["cost-0", "cost-1", "cost-2"];
-const DASH_AGENT_KEYS = ["agent-0", "agent-1", "agent-2"];
-const DASH_BARS = Array.from({ length: 24 }, (_, i) => ({
-  key: `bar-${i}`,
-  height: `${30 + ((i * 37) % 70)}%`,
-}));
-
-// Bespoke loading placeholder mirroring the dashboard's multi-block layout
-// (KPI grid + funnel bars + cost chart + cost summary + cost-by-agent list).
 function DashboardSkeleton() {
   return (
     <div className="flex flex-col gap-6" aria-hidden="true">
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-5 w-40" />
-          <Skeleton className="h-7 w-20" />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {DASH_KPI_KEYS.map((key) => (
-            <Card key={key} className="flex flex-col gap-2">
-              <Skeleton className="h-4 w-24" />
-              <Skeleton className="h-8 w-20" />
-              <Skeleton className="h-3 w-28" />
-            </Card>
+      <div className="@container">
+        <div className={KPI_GRID}>
+          {SKELETON_KEYS.map((k, i) => (
+            <Skeleton key={k} className={cn("h-24 w-full", KPI_SPANS[i])} />
           ))}
         </div>
-        <Card className="flex flex-col gap-3">
-          {DASH_FUNNEL_KEYS.map((key) => (
-            <div key={key} className="flex flex-col gap-1">
-              <div className="flex items-center justify-between">
-                <Skeleton className="h-4 w-28" />
-                <Skeleton className="h-4 w-16" />
-              </div>
-              <Skeleton className="h-2.5 w-full rounded-full" />
-            </div>
-          ))}
-        </Card>
-      </section>
-      <Card className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-5 w-32" />
-          <Skeleton className="h-7 w-24" />
-        </div>
-        <div className="flex h-44 items-end gap-1">
-          {DASH_BARS.map(({ key, height }) => (
-            <div
-              key={key}
-              className="flex h-full flex-1 flex-col items-center justify-end"
-            >
-              <Skeleton className="w-full rounded-t" style={{ height }} />
-            </div>
-          ))}
-        </div>
-      </Card>
-      <div className="grid gap-4 sm:grid-cols-3">
-        {DASH_COST_KEYS.map((key) => (
-          <Card key={key} className="flex flex-col gap-2">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-8 w-28" />
-            <Skeleton className="h-3 w-32" />
-          </Card>
-        ))}
       </div>
-      <Card className="flex flex-col gap-3">
-        <Skeleton className="h-5 w-36" />
-        <ul className="flex flex-col gap-2">
-          {DASH_AGENT_KEYS.map((key) => (
-            <li key={key} className="flex items-center justify-between gap-4">
-              <Skeleton className="h-4 w-32" />
-              <Skeleton className="h-4 w-16" />
-            </li>
-          ))}
-        </ul>
-      </Card>
-    </div>
-  );
-}
-
-// Loading placeholder for just the "LLM usage" section (chart + cost/token summary + by-agent
-// list), shown while a traffic-source switch reloads. Mirrors the lower half of DashboardSkeleton.
-function UsageSkeleton() {
-  return (
-    <div className="flex flex-col gap-6" aria-hidden="true">
-      <Card className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-5 w-32" />
-          <Skeleton className="h-7 w-24" />
-        </div>
-        <div className="flex h-44 items-end gap-1">
-          {DASH_BARS.map(({ key, height }) => (
-            <div
-              key={key}
-              className="flex h-full flex-1 flex-col items-center justify-end"
-            >
-              <Skeleton className="w-full rounded-t" style={{ height }} />
-            </div>
-          ))}
-        </div>
-      </Card>
-      <div className="grid gap-4 sm:grid-cols-3">
-        {DASH_COST_KEYS.map((key) => (
-          <Card key={key} className="flex flex-col gap-2">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-8 w-28" />
-            <Skeleton className="h-3 w-32" />
-          </Card>
-        ))}
-      </div>
-      <Card className="flex flex-col gap-3">
-        <Skeleton className="h-5 w-36" />
-        <ul className="flex flex-col gap-2">
-          {DASH_AGENT_KEYS.map((key) => (
-            <li key={key} className="flex items-center justify-between gap-4">
-              <Skeleton className="h-4 w-32" />
-              <Skeleton className="h-4 w-16" />
-            </li>
-          ))}
-        </ul>
-      </Card>
+      <Skeleton className="h-28 w-full" />
+      <Skeleton className="h-72 w-full" />
     </div>
   );
 }
 
 export function DashboardPage() {
-  const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [kpis, setKpis] = useState<Kpis | null>(null);
-  const [points, setPoints] = useState<Point[]>([]);
-  const [costs, setCosts] = useState<Costs | "error" | null>(null);
-  // The cost's own pending state: keeping the previous value while it loads would pair another
-  // segment's cost with these figures. The slot shows a skeleton instead.
-  const [costsLoading, setCostsLoading] = useState(true);
-  const [ceiling, setCeiling] = useState<Ceiling | null>(null);
-  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const [errorStatus, setErrorStatus] = useState<number | null>(null);
-  // The "LLM usage" section reloads on its own when the operator switches traffic source, so it has
-  // its own loading/error state (a source switch must not blank the whole page).
-  const [usageLoading, setUsageLoading] = useState(true);
-  const [usageError, setUsageError] = useState(false);
-  const [usageErrorStatus, setUsageErrorStatus] = useState<number | null>(null);
-  const [range, setRange] = useState<Range>("30d");
-  const [source, setSource] = useState<Source>("inbox");
-  const [kpiMode, setKpiMode] = useState<"rate" | "count">("rate");
-  const [chartMetric, setChartMetric] = useState<"cost" | "calls">("cost");
+  const { t } = useTranslation();
+  const [params, setParams] = useSearchParams();
+  const filters = useMemo(() => readFilters(params), [params]);
+  const [agents, setAgents] = useState<{ id: string; name: string }[] | null>(
+    null,
+  );
+  const [inboxes, setInboxes] = useState<{ id: string; name: string }[] | null>(
+    null,
+  );
+  const [perfView, setPerfView] = useState<PerformanceView>(
+    DEFAULT_PERFORMANCE_VIEW,
+  );
 
-  // Page-level (source-independent): funnel KPIs, agent-name map. Only re-runs on
-  // range change.
-  const load = useCallback(async (r: Range) => {
-    setLoading(true);
-    setError(false);
-    setErrorStatus(null);
-    const since = sinceFor(r);
-    const query = since ? { since } : {};
-    try {
-      const [k, agents] = await Promise.all([
-        api.api.v1.metrics.kpis.get({ query }),
-        api.api.v1.agents.get(),
-      ]);
-      if (k.error || !k.data) {
-        setError(true);
-        setErrorStatus(k.error?.status ?? null);
-        return;
-      }
-      setKpis(k.data.kpis);
-      if (agents.data) {
-        const map: Record<string, string> = {};
-        for (const a of agents.data.agents) map[a.id] = a.name;
-        setAgentNames(map);
-      }
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const setFilters = useCallback(
+    (patch: Partial<DashboardFilters>) => {
+      setParams(writeFilters({ ...filters, ...patch }));
+    },
+    [filters, setParams],
+  );
 
-  // Usage section (source-dependent): token figures + timeseries follow the selected segment,
-  // with a skeleton while reloading. Each load takes a sequence number and only the latest one's
-  // answer reaches the state, so an older segment's answer landing last cannot mix two segments.
-  const usageSeq = useRef(0);
-  const loadUsage = useCallback(async (r: Range, src: Source) => {
-    const seq = ++usageSeq.current;
-    setUsageLoading(true);
-    setUsageError(false);
-    setUsageErrorStatus(null);
-    const since = sinceFor(r);
-    const query = since ? { since } : {};
-    // tz drives the backend's daily bucketing (operator-local days, not UTC).
-    const usageQuery = {
-      ...query,
-      ...(src === "all" ? {} : { source: src }),
-      tz: OPERATOR_TZ,
-    };
-    // The cost follows the segment and the timezone, summed from the same ledger as the calls
-    // beside it. Its failing does not blank the section: the cost slot says so on its own, and only
-    // the latest segment's answer is taken.
-    setCostsLoading(true);
-    void api.api.v1.metrics.costs
-      .get({ query: usageQuery })
-      .then((res) => {
-        if (seq !== usageSeq.current) return;
-        setCosts(res.data ? res.data.costs : "error");
-        setCostsLoading(false);
+  // An unreadable list leaves both null: the selects show only "All", and a link's ids are kept
+  // rather than dropped against a list that never arrived.
+  useEffect(() => {
+    void api.api.v1.metrics["filter-options"]
+      .get()
+      .then((r) => {
+        if (!r.data) return;
+        setAgents(r.data.agents);
+        setInboxes(r.data.inboxes);
       })
-      .catch(() => {
-        if (seq !== usageSeq.current) return;
-        setCosts("error");
-        setCostsLoading(false);
-      });
-    // The ceiling's number is reserved when the request goes out, not when it commits: its answer
-    // can wait inside the `Promise.all` for a slower sibling, and a periodic refresh landing meanwhile
-    // would otherwise be overwritten by this older read.
-    const cseq = ++ceilingSeq.current;
-    try {
-      const [m, ts, ceilingRes] = await Promise.all([
-        api.api.v1.metrics.get({ query: usageQuery }),
-        api.api.v1.metrics.timeseries.get({ query: usageQuery }),
-        api.api.v1["tenant-settings"]["spend-ceiling"].usage
-          .get()
-          .catch(() => ({ data: null })),
-      ]);
-      if (seq !== usageSeq.current) return;
-      if (m.error || !m.data || ts.error || !ts.data) {
-        setUsageError(true);
-        setUsageErrorStatus(m.error?.status ?? ts.error?.status ?? null);
-        return;
-      }
-      setMetrics(m.data.metrics);
-      setPoints(ts.data.points);
-      if (cseq === ceilingSeq.current) setCeiling(ceilingRes.data ?? null);
-    } catch {
-      if (seq !== usageSeq.current) return;
-      setUsageError(true);
-    } finally {
-      if (seq === usageSeq.current) setUsageLoading(false);
-    }
+      .catch(() => {});
   }, []);
 
+  // A link naming an agent or inbox this account does not have opens on every agent or inbox,
+  // with the parameter dropped, rather than on an empty page that looks like that id's numbers.
   useEffect(() => {
-    void load(range);
-  }, [load, range]);
+    const patch: Partial<DashboardFilters> = {};
+    if (
+      agents &&
+      filters.agentId &&
+      !agents.some((a) => a.id === filters.agentId)
+    )
+      patch.agentId = null;
+    if (
+      inboxes &&
+      filters.inboxId &&
+      !inboxes.some((i) => i.id === filters.inboxId)
+    )
+      patch.inboxId = null;
+    if (Object.keys(patch).length > 0)
+      setParams(writeFilters({ ...filters, ...patch }), { replace: true });
+  }, [agents, inboxes, filters, setParams]);
 
-  // The ceiling re-reads while the page stays open, since the poll writes a new figure every
-  // period and a wall-screen dashboard would otherwise keep its first read. It is its own quiet read:
-  // going through `loadUsage` would put the usage section back in its skeleton every period. Its own
-  // sequence number keeps a slow refresh from landing over a segment switch's read.
-  const ceilingSeq = useRef(0);
-  const loadCeiling = useCallback(async () => {
-    const seq = ++ceilingSeq.current;
-    try {
-      const res =
-        await api.api.v1["tenant-settings"]["spend-ceiling"].usage.get();
-      if (seq !== ceilingSeq.current) return;
-      setCeiling(res.data ?? null);
-    } catch {
-      if (seq !== ceilingSeq.current) return;
-      setCeiling(null);
-    }
-  }, []);
-  // The period is the poll's own, as the usage reports it, and a minute until a read has said one,
-  // which is also the retry for a first read that failed.
-  const ceilingRefreshMs = ceiling?.pollIntervalMs ?? CEILING_RETRY_MS;
-  useEffect(() => {
-    const timer = setInterval(() => void loadCeiling(), ceilingRefreshMs);
-    return () => clearInterval(timer);
-  }, [loadCeiling, ceilingRefreshMs]);
-
-  useEffect(() => {
-    void loadUsage(range, source);
-  }, [loadUsage, range, source]);
-
-  const nf = new Intl.NumberFormat(i18n.language);
-  const cf = new Intl.NumberFormat(i18n.language, {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 4,
+  // The window is recomputed per render from the filters; its day keys are stable within a day.
+  const win = windowOf(filters);
+  const prev = previousWindow(win);
+  const query = apiQuery(filters, win);
+  const kpis = useBlock<Kpis>(JSON.stringify(["kpis", query]), async () => {
+    const res = await api.api.v1.metrics.kpis.get({ query });
+    return { data: res.data?.kpis ?? null, status: res.error?.status };
   });
-  const pf = (v: number) =>
-    new Intl.NumberFormat(i18n.language, {
-      style: "percent",
-      maximumFractionDigits: 1,
-    }).format(v);
+  const prevQuery = prev ? apiQuery(filters, prev) : null;
+  const prevKpis = useBlock<Kpis>(
+    JSON.stringify(["kpis-prev", prevQuery]),
+    async () => {
+      if (!prevQuery) return { data: null };
+      const res = await api.api.v1.metrics.kpis.get({ query: prevQuery });
+      return { data: res.data?.kpis ?? null };
+    },
+  );
 
-  // The funnel KPIs are REAL traffic only, so cost-per-conversation stays in that segment. The
-  // cost itself follows the segment and shows in all three: playground spend is real money and the
-  // ceiling refuses on it.
-  const realView = source === "inbox";
-  const costsOk = costs !== null && costs !== "error" ? costs : null;
-  const showCost = costsOk !== null;
-  const costsError = costs === "error";
-  // The month the ceiling covers, formatted in UTC: `periodStart` is that month's UTC midnight, and
-  // a browser west of UTC would otherwise print the month before it.
-  const ceilingMonth = ceiling
-    ? new Intl.DateTimeFormat(i18n.language, {
-        month: "long",
-        year: "numeric",
-        timeZone: "UTC",
-      }).format(new Date(ceiling.periodStart))
-    : null;
-  // Which halves of the ceiling this segment is asking about: one, or both under "All", because
-  // the ceiling is enforced per half and there is no combined number to show.
-  const ceilingSources: ("inbox" | "playground")[] =
-    source === "all" ? ["inbox", "playground"] : [source];
-  const ceilingEntry = (src: string) =>
-    ceiling?.entries.find((e) => e.source === src);
-  const ceilingWhen = (iso: string) =>
-    new Date(iso).toLocaleString(i18n.language, {
-      dateStyle: "short",
-      timeStyle: "short",
-    });
-  // "Open in Langfuse" target, when the tenant has Langfuse: its project page once the project id
-  // is known, else the instance root. A link only; no figure on this page comes from there.
-  const langfuseUrl = costsOk?.langfuse
-    ? (costsOk.langfuse.projectUrl ?? costsOk.langfuse.baseUrl)
-    : null;
-  const costDays = costsOk?.days ?? [];
-  const totalCostUsd = costsOk?.totalCostUsd ?? 0;
-  const costByModel =
-    costsOk && costsOk.byModel.length > 0 ? costsOk.byModel : null;
-  const unpriced =
-    costsOk && costsOk.unpriced.calls > 0 ? costsOk.unpriced : null;
-
-  // Fall back to call volume when cost is selected but the period has no priced cost, so the panel
-  // does not draw bars of height 0 over real usage.
-  const costHasData = costDays.some((d) => d.costUsd > 0);
-  const effectiveChartMetric =
-    showCost && (chartMetric === "calls" || costHasData)
-      ? chartMetric
-      : "calls";
-  // True when the operator picked cost but we fell back to calls (so we can explain the panel).
-  const costFellBackToCalls =
-    showCost && chartMetric === "cost" && !costHasData;
-
-  // Merged daily series for the recharts trend (cost + conversations + cost/conversation). Genuinely
-  // empty (no usage AND no cost) → the "no data" placeholder instead of an axes-only empty chart.
-  const chartData = buildCostTrend(points, costDays, range, source);
-  const hasChartData = points.length > 0 || costDays.length > 0;
-  // Cost per conversation across the whole window: total cost / total conversations. Real segment
-  // only, because the divisor `kpis.totalConversations` counts real traffic and is not re-read per
-  // segment.
-  const costPerConversation =
-    realView &&
-    showCost &&
-    totalCostUsd > 0 &&
-    kpis &&
-    kpis.totalConversations > 0
-      ? totalCostUsd / kpis.totalConversations
-      : null;
+  const sections = [
+    {
+      id: "performance",
+      icon: Target,
+      label: t("dashboard.nav.performance", "Performance"),
+    },
+    {
+      id: "reasons",
+      icon: ArrowRightLeft,
+      label: t("dashboard.nav.reasons", "Handoffs and topics"),
+    },
+    { id: "cost", icon: Coins, label: t("dashboard.nav.cost", "Cost") },
+    {
+      id: "health",
+      icon: Activity,
+      label: t("dashboard.nav.health", "Health"),
+    },
+    {
+      id: "automation",
+      icon: Bot,
+      label: t("dashboard.nav.automation", "Follow-ups and knowledge"),
+    },
+    {
+      id: "breakdown",
+      icon: Table2,
+      label: t("dashboard.nav.breakdown", "Where the usage goes"),
+    },
+  ];
 
   return (
     <PageContainer className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Gauge className="h-6 w-6 text-accent" aria-hidden="true" />
-          <div>
-            <h1 className="font-semibold text-text-primary text-xl">
-              {t("dashboard.title", "Dashboard")}
-            </h1>
-            <p className="mt-0.5 text-sm text-text-muted">
-              {t(
-                "dashboard.subtitle",
-                "Automation funnel, LLM cost and conversation volume.",
-              )}
-            </p>
-          </div>
+      <header className="flex items-center gap-3">
+        <Gauge className="h-6 w-6 text-accent" aria-hidden="true" />
+        <div>
+          <h1 className="font-semibold text-text-primary text-xl">
+            {t("dashboard.title", "Dashboard")}
+          </h1>
+          <p className="mt-0.5 text-sm text-text-muted">
+            {t(
+              "dashboard.subtitle2",
+              "How the agents are doing, what they cost and where it goes.",
+            )}
+          </p>
         </div>
-        <RangeToggle value={range} onChange={setRange} />
       </header>
 
-      <DataBoundary
-        loading={loading}
-        error={error || !kpis}
-        errorStatus={errorStatus ?? undefined}
-        onRetry={() => load(range)}
-        loadingLabel={t("dashboard.loading", "Loading metrics…")}
-        errorLabel={t("dashboard.error", "Could not load metrics.")}
-        skeleton={<DashboardSkeleton />}
-      >
-        {kpis && (
-          <>
-            {/* Automation funnel KPIs */}
-            <section className="flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <h2 className="font-medium text-sm text-text-primary">
-                  {t("dashboard.funnel", "Automation funnel")}
-                </h2>
-                <fieldset
-                  className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
-                  aria-label={t("dashboard.funnel", "Automation funnel")}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setKpiMode("rate")}
-                    className={cn(
-                      "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
-                      kpiMode === "rate"
-                        ? "bg-bg-secondary text-text-primary"
-                        : "text-text-muted hover:text-text-secondary",
-                    )}
-                  >
-                    {t("dashboard.percent", "%")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setKpiMode("count")}
-                    className={cn(
-                      "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
-                      kpiMode === "count"
-                        ? "bg-bg-secondary text-text-primary"
-                        : "text-text-muted hover:text-text-secondary",
-                    )}
-                  >
-                    {t("dashboard.absolute", "#")}
-                  </button>
-                </fieldset>
-              </div>
+      {/* The filter and the section index stay on screen while the page scrolls, as a band across
+          the top rather than a column beside it: at a laptop's width a column took a quarter of
+          the room the blocks need. -mx-6/px-6 cover the scroll container's padding, so the blocks
+          pass under the band and not beside it. */}
+      <div className="z-[var(--z-page-sticky)] -mx-6 -mt-3 flex flex-col gap-3 border-border border-b bg-bg-secondary px-6 py-3 lg:sticky lg:-top-6">
+        <FilterBar
+          filters={filters}
+          onChange={setFilters}
+          agents={agents ?? []}
+          inboxes={inboxes ?? []}
+        />
+        <SectionNav sections={sections} layout="bar" />
+      </div>
 
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <KpiCard
-                  icon={MessagesSquare}
-                  label={t("dashboard.kpi.total", "Conversations")}
-                  primary={nf.format(kpis.totalConversations)}
-                  secondary={t("dashboard.kpi.totalHint", "in the period")}
-                />
-                <KpiCard
-                  icon={Bot}
-                  accent
-                  label={t("dashboard.kpi.involvement", "Involvement")}
-                  primary={
-                    kpiMode === "rate"
-                      ? pf(kpis.involvementRate)
-                      : nf.format(kpis.involved)
-                  }
-                  secondary={t(
-                    "dashboard.kpi.involvementHint",
-                    "{{involved}} of {{total}} handled by AI",
-                    {
-                      involved: nf.format(kpis.involved),
-                      total: nf.format(kpis.totalConversations),
-                    },
-                  )}
-                />
-                <KpiCard
-                  icon={Target}
-                  accent
-                  label={t("dashboard.kpi.resolution", "Resolution")}
-                  primary={
-                    kpiMode === "rate"
-                      ? pf(kpis.resolutionRate)
-                      : nf.format(kpis.resolvedByBot)
-                  }
-                  secondary={t(
-                    "dashboard.kpi.resolutionHint",
-                    "{{resolved}} closed by the agent itself",
-                    { resolved: nf.format(kpis.resolvedByBot) },
-                  )}
-                />
-                <KpiCard
-                  icon={ArrowRightLeft}
-                  label={t("dashboard.kpi.handoff", "Handoffs")}
-                  primary={
-                    kpiMode === "rate"
-                      ? pf(
-                          kpis.totalConversations > 0
-                            ? kpis.handoff / kpis.totalConversations
-                            : 0,
-                        )
-                      : nf.format(kpis.handoff)
-                  }
-                  secondary={t(
-                    "dashboard.kpi.handoffHint",
-                    "{{handoff}} escalated to a human",
-                    { handoff: nf.format(kpis.handoff) },
-                  )}
-                />
-              </div>
-
-              <Card className="flex flex-col gap-3">
-                <FunnelBar
-                  label={t("dashboard.kpi.total", "Conversations")}
-                  count={kpis.totalConversations}
-                  total={kpis.totalConversations}
-                  nf={nf}
-                />
-                <FunnelBar
-                  label={t("dashboard.kpi.involvement", "Involvement")}
-                  count={kpis.involved}
-                  total={kpis.totalConversations}
-                  nf={nf}
-                />
-                <FunnelBar
-                  label={t("dashboard.kpi.resolution", "Resolution")}
-                  count={kpis.resolvedByBot}
-                  total={kpis.totalConversations}
-                  nf={nf}
-                />
-                {/* Conversations resolved before this instance started recording WHO closed them
-                    cannot be attributed either way. Saying so is the difference between a funnel
-                    that looks lower for a historical window and an operator concluding the agent
-                    got worse the day they upgraded. Disappears once the window moves past them. */}
-                {kpis.resolvedBeforeTracking > 0 && (
-                  <p className="text-text-tertiary text-xs">
-                    {t(
-                      "dashboard.kpi.resolutionUntracked",
-                      "{{untracked}} more were resolved before this instance began recording who closed a conversation, so they are not counted here.",
-                      { untracked: nf.format(kpis.resolvedBeforeTracking) },
-                    )}
-                  </p>
-                )}
-              </Card>
-            </section>
-
-            {/* The human half of an attendance. Everything above is derived from LlmUsage, so on an
-                inbox the agent never touched the whole funnel reads zero, which reads as failure
-                rather than as "the agent was not here". This one number is Chatwoot's own
-                first-response SLA, mirrored onto the conversation, and it still answers there.
-                Rendered even with no sample, and saying so: an absent median that showed up as 0 s
-                would be the same lie in a new place. */}
-            <section className="flex flex-col gap-3">
-              <h2 className="font-medium text-sm text-text-primary">
-                {t("dashboard.attendance", "Team response")}
-              </h2>
-              <div className="grid gap-4 sm:grid-cols-3">
-                <KpiCard
-                  icon={Timer}
-                  label={t("dashboard.kpi.firstResponse", "First response")}
-                  primary={
-                    formatDuration(kpis.firstResponseSeconds, i18n.language) ??
-                    "\u2014"
-                  }
-                  secondary={
-                    kpis.firstResponseSampled > 0
-                      ? t(
-                          "dashboard.kpi.firstResponseHint",
-                          "median over {{sampled}} answered conversations",
-                          { sampled: nf.format(kpis.firstResponseSampled) },
-                        )
-                      : t(
-                          "dashboard.kpi.firstResponseNone",
-                          "no data for this period yet",
-                        )
-                  }
-                  help={t(
-                    "dashboard.kpi.firstResponseHelp",
-                    "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
-                  )}
-                />
-              </div>
-            </section>
-
-            {/* Usage section: segmented by traffic source (real / playground / all). The toggle
-                stays outside the inner boundary so it is interactive while the section reloads. */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="font-medium text-sm text-text-primary">
-                {t("dashboard.usageTitle", "LLM usage")}
-              </h2>
-              <SourceToggle value={source} onChange={setSource} />
-            </div>
-
-            <DataBoundary
-              loading={usageLoading}
-              error={usageError || !metrics}
-              errorStatus={usageErrorStatus ?? undefined}
-              onRetry={() => loadUsage(range, source)}
-              errorLabel={t("dashboard.error", "Could not load metrics.")}
-              skeleton={<UsageSkeleton />}
-            >
-              {metrics && (
-                <>
-                  {/* Usage timeseries */}
-                  <Card className="flex flex-col gap-4">
-                    <div className="flex items-center justify-between">
-                      <h2 className="flex items-center gap-2 font-medium text-text-primary">
-                        <TrendingUp
-                          className="h-4 w-4 text-accent"
-                          aria-hidden
-                        />
-                        {t("dashboard.timeseries", "Daily usage")}
-                      </h2>
-                      <div className="flex items-center gap-3">
-                        {langfuseUrl && (
-                          <a
-                            href={langfuseUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 text-text-muted text-xs hover:text-text-primary"
-                          >
-                            <ExternalLink
-                              className="h-3.5 w-3.5"
-                              aria-hidden="true"
-                            />
-                            {t("dashboard.openInLangfuse", "Open in Langfuse")}
-                          </a>
-                        )}
-                        {showCost && (
-                          <fieldset
-                            className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
-                            aria-label={t(
-                              "dashboard.chart.label",
-                              "Chart metric",
-                            )}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setChartMetric("cost")}
-                              className={cn(
-                                "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
-                                chartMetric === "cost"
-                                  ? "bg-bg-secondary text-text-primary"
-                                  : "text-text-muted hover:text-text-secondary",
-                              )}
-                            >
-                              {t("dashboard.metric.cost", "Cost")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setChartMetric("calls")}
-                              className={cn(
-                                "rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
-                                chartMetric === "calls"
-                                  ? "bg-bg-secondary text-text-primary"
-                                  : "text-text-muted hover:text-text-secondary",
-                              )}
-                            >
-                              {t("dashboard.metric.calls", "Requests")}
-                            </button>
-                          </fieldset>
-                        )}
-                      </div>
-                    </div>
-                    {hasChartData ? (
-                      <Suspense fallback={<Skeleton className="h-72 w-full" />}>
-                        <CostTrendChart
-                          data={chartData}
-                          metric={effectiveChartMetric}
-                          i18nLang={i18n.language}
-                        />
-                      </Suspense>
-                    ) : (
-                      <p className="py-8 text-center text-sm text-text-muted">
-                        {t("dashboard.noData", "No data yet.")}
-                      </p>
-                    )}
-                    {costFellBackToCalls && (
-                      <p className="text-text-muted text-xs">
-                        {t(
-                          "dashboard.costFallback",
-                          "No cost data for this period yet; showing request volume.",
-                        )}
-                      </p>
-                    )}
-                  </Card>
-
-                  {/* Cost + token summary. The cost slot is ALWAYS present: the value, or a compact error
-                      state in the SAME slot, so switching tabs keeps the block height stable. It follows
-                      the segment, so the playground is priced too. */}
-                  <div
-                    className={cn(
-                      "grid gap-4",
-                      costPerConversation != null
-                        ? "sm:grid-cols-2 lg:grid-cols-4"
-                        : "sm:grid-cols-3",
-                    )}
-                  >
-                    {costsLoading ? (
-                      <Card className="flex flex-col gap-2" aria-hidden="true">
-                        <Skeleton className="h-4 w-24" />
-                        <Skeleton className="h-8 w-28" />
-                        <Skeleton className="h-3 w-32" />
-                      </Card>
-                    ) : showCost ? (
-                      <KpiCard
-                        icon={Coins}
-                        label={t("dashboard.totalCost", "LLM cost")}
-                        primary={cf.format(totalCostUsd)}
-                        secondary={t("dashboard.calls", "{{n}} requests", {
-                          // BOTH, and the pair is the point: `count` picks the
-                          // plural form and only a NUMBER can do that, while
-                          // `n` carries the thousands-separated string the
-                          // reader actually sees. Passing the formatted value
-                          // as `count` makes i18next resolve the plural of a
-                          // string, which is always the `other` form.
-                          count: metrics.llm.calls,
-                          n: nf.format(metrics.llm.calls),
-                        })}
-                      />
-                    ) : (
-                      <Card className="flex flex-col gap-2">
-                        <div className="flex items-center gap-2 text-text-muted text-xs">
-                          <Coins className="h-4 w-4" aria-hidden="true" />
-                          {t("dashboard.totalCost", "LLM cost")}
-                        </div>
-                        {costsError && (
-                          <p className="flex items-start gap-1.5 text-sm text-text-muted">
-                            <TriangleAlert
-                              className="mt-0.5 h-4 w-4 shrink-0"
-                              aria-hidden="true"
-                            />
-                            {t(
-                              "dashboard.costsError",
-                              "Could not read the cost.",
-                            )}
-                          </p>
-                        )}
-                      </Card>
-                    )}
-                    {costPerConversation != null && (
-                      <KpiCard
-                        icon={Coins}
-                        accent
-                        label={t(
-                          "dashboard.costPerConversation",
-                          "Cost / conversation",
-                        )}
-                        primary={cf.format(costPerConversation)}
-                        secondary={t(
-                          "dashboard.costPerConversationHint",
-                          "across {{n}} conversations",
-                          {
-                            count: kpis.totalConversations,
-                            n: nf.format(kpis.totalConversations),
-                          },
-                        )}
-                      />
-                    )}
-                    <KpiCard
-                      icon={Hash}
-                      label={t("dashboard.tokens", "Tokens (in / out)")}
-                      primary={`${nf.format(metrics.llm.promptTokens)} / ${nf.format(
-                        metrics.llm.completionTokens,
-                      )}`}
-                      secondary={
-                        metrics.llm.cachedReadTokens > 0 ||
-                        metrics.llm.cacheCreationTokens > 0
-                          ? t(
-                              "dashboard.tokensCachedHint",
-                              "{{cached}} cached · {{written}} cache-write",
-                              {
-                                cached: nf.format(metrics.llm.cachedReadTokens),
-                                written: nf.format(
-                                  metrics.llm.cacheCreationTokens,
-                                ),
-                              },
-                            )
-                          : t("dashboard.tokensHint", "prompt / completion")
-                      }
-                    />
-                    <KpiCard
-                      icon={MessagesSquare}
-                      label={t("dashboard.conversations", "Conversations")}
-                      primary={nf.format(metrics.conversations.total)}
-                      secondary={metrics.conversations.byStatus
-                        .map(
-                          (s) =>
-                            // biome-ignore lint/plugin/no-dynamic-i18n-key: status keys defined via magic comments in ConversationsPage
-                            `${t(`conversations.status.${s.status}`, s.status)}: ${nf.format(s.count)}`,
-                        )
-                        .join(" · ")}
-                    />
-                  </div>
-
-                  {/* Calls the ledger could not price are in the request count and in no cost figure, so
-                      the page says how many and what fixes it rather than letting the cost read low. */}
-                  {unpriced && (
-                    <p
-                      className="flex items-start gap-1.5 text-warning text-xs"
-                      data-testid="cost-unpriced"
-                    >
-                      <TriangleAlert
-                        className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span>
-                        {t(
-                          "dashboard.unpriced",
-                          "{{n}} requests in this period have no price and are not in the cost: {{models}}. Set this account's own price for the model in Advanced > Model prices, then re-price the calls already made.",
-                          {
-                            count: unpriced.calls,
-                            n: nf.format(unpriced.calls),
-                            models: unpriced.models.join(", "),
-                          },
-                        )}{" "}
-                        <button
-                          type="button"
-                          onClick={() => navigate("/resources/advanced")}
-                          className="text-accent hover:underline"
-                        >
-                          {t("dashboard.unpricedCta", "Open model prices")}
-                        </button>
-                      </span>
-                    </p>
-                  )}
-
-                  {/* The spend ceiling, on its own row: a progress bar reads by length and its caveats are
-                      sentences. Under "All" both halves stack, since the ceiling is enforced per half. The bar
-                      is the Advanced panel's component, coloured by the gate's own verdict, so this page cannot
-                      say "fine" while the runtime refuses. The period is the CALENDAR MONTH, not the range
-                      selector's, so the card names it. */}
-                  <Card className="flex flex-col gap-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
-                        <Gauge
-                          className="h-4 w-4 text-accent"
-                          aria-hidden="true"
-                        />
-                        {t("dashboard.ceiling.title", "Spend ceiling")}
-                      </h3>
-                      <div className="flex items-center gap-3">
-                        {ceilingMonth && (
-                          <span className="text-text-muted text-xs">
-                            {t(
-                              "dashboard.ceiling.period",
-                              "{{month}} · the calendar month, not the selected period",
-                              { month: ceilingMonth },
-                            )}
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => navigate("/resources/advanced")}
-                          className="text-accent text-xs hover:underline"
-                        >
-                          {t("dashboard.ceiling.cta", "Set the ceiling")}
-                        </button>
-                      </div>
-                    </div>
-                    {ceiling === null ? (
-                      <p className="text-sm text-text-muted">
-                        {t(
-                          "dashboard.ceiling.unread",
-                          "The ceiling could not be read.",
-                        )}
-                      </p>
-                    ) : (
-                      <div className="flex flex-col gap-4">
-                        {ceilingSources.map((src) => (
-                          <div key={src} className="flex flex-col gap-1">
-                            <SpendBar
-                              label={
-                                src === "playground"
-                                  ? t(
-                                      "dashboard.source.playground",
-                                      "Playground",
-                                    )
-                                  : t("dashboard.source.inbox", "Real")
-                              }
-                              entry={ceilingEntry(src)}
-                              money={cf}
-                              enabled={ceiling.enabled}
-                            />
-                            <SpendHealthLines
-                              entry={ceilingEntry(src)}
-                              when={ceilingWhen}
-                              enabled={ceiling.enabled}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </Card>
-
-                  {/* Usage by agent */}
-                  <Card className="flex flex-col gap-3">
-                    <h2 className="font-medium text-text-primary">
-                      {t("dashboard.usageByAgent", "Usage by agent")}
-                    </h2>
-                    {metrics.llm.byAgent.length === 0 ? (
-                      <p className="text-sm text-text-muted">
-                        {t("dashboard.noData", "No data yet.")}
-                      </p>
-                    ) : (
-                      <ul className="flex flex-col gap-2">
-                        {metrics.llm.byAgent.map((a) => (
-                          <li
-                            key={a.agentId ?? "none"}
-                            className="flex items-center justify-between gap-4 text-sm"
-                          >
-                            <span className="truncate text-text-secondary">
-                              {a.agentId
-                                ? (agentNames[a.agentId] ??
-                                  t("dashboard.agent", "Agent #{{id}}", {
-                                    id: a.agentId,
-                                  }))
-                                : t("dashboard.noAgent", "Unattributed")}
-                            </span>
-                            <span className="shrink-0 font-medium text-text-primary tabular-nums">
-                              {t(
-                                "dashboard.agentCallsTokens",
-                                "{{calls}} requests · {{tokens}} tokens",
-                                {
-                                  calls: nf.format(a.calls),
-                                  tokens: nf.format(
-                                    a.promptTokens + a.completionTokens,
-                                  ),
-                                },
-                              )}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </Card>
-
-                  {/* Usage by inbox + by model (token/call based, follows the selected segment) */}
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <Card className="flex flex-col gap-3">
-                      <h2 className="font-medium text-text-primary">
-                        {t("dashboard.usageByInbox", "Usage by inbox")}
-                      </h2>
-                      {metrics.llm.byInbox.length === 0 ? (
-                        <p className="text-sm text-text-muted">
-                          {t("dashboard.noData", "No data yet.")}
-                        </p>
-                      ) : (
-                        <ul className="flex flex-col gap-2">
-                          {metrics.llm.byInbox.map((ib) => (
-                            <li
-                              key={ib.inboxId}
-                              className="flex items-center justify-between gap-4 text-sm"
-                            >
-                              <span className="truncate text-text-secondary">
-                                {ib.name ??
-                                  t("dashboard.inbox", "Inbox #{{id}}", {
-                                    id: ib.inboxId,
-                                  })}
-                              </span>
-                              <span className="shrink-0 font-medium text-text-primary tabular-nums">
-                                {t(
-                                  "dashboard.agentCallsTokens",
-                                  "{{calls}} requests · {{tokens}} tokens",
-                                  {
-                                    calls: nf.format(ib.calls),
-                                    tokens: nf.format(
-                                      ib.promptTokens + ib.completionTokens,
-                                    ),
-                                  },
-                                )}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </Card>
-
-                    <Card className="flex flex-col gap-3">
-                      <h2 className="font-medium text-text-primary">
-                        {t("dashboard.usageByModel", "Usage by model")}
-                      </h2>
-                      {metrics.llm.byModel.length === 0 ? (
-                        <p className="text-sm text-text-muted">
-                          {t("dashboard.noData", "No data yet.")}
-                        </p>
-                      ) : (
-                        <ul className="flex flex-col gap-2">
-                          {metrics.llm.byModel.map((m) => (
-                            <li
-                              key={m.model}
-                              className="flex items-center justify-between gap-4 text-sm"
-                            >
-                              <span className="truncate text-text-secondary">
-                                {m.model}
-                              </span>
-                              <span className="shrink-0 font-medium text-text-primary tabular-nums">
-                                {t(
-                                  "dashboard.agentCallsTokens",
-                                  "{{calls}} requests · {{tokens}} tokens",
-                                  {
-                                    calls: nf.format(m.calls),
-                                    tokens: nf.format(
-                                      m.promptTokens + m.completionTokens,
-                                    ),
-                                  },
-                                )}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </Card>
-                  </div>
-
-                  {costByModel && <CostByModelCard byModel={costByModel} />}
-                </>
-              )}
-            </DataBoundary>
-          </>
-        )}
-      </DataBoundary>
+      <div className="flex min-w-0 flex-col gap-8">
+        <div id="performance" className="scroll-mt-4 lg:scroll-mt-32">
+          <DataBoundary
+            loading={kpis.loading && !kpis.data}
+            error={kpis.error}
+            errorStatus={kpis.status ?? undefined}
+            onRetry={kpis.reload}
+            loadingLabel={t("dashboard.loading", "Loading metrics…")}
+            errorLabel={t("dashboard.error", "Could not load metrics.")}
+            skeleton={<DashboardSkeleton />}
+          >
+            {kpis.data && (
+              <PerformanceSection
+                filters={filters}
+                win={win}
+                prev={prev}
+                kpis={kpis.data}
+                prevKpis={prevKpis.data}
+                onFilter={setFilters}
+                view={perfView}
+                onView={(patch) => setPerfView((v) => ({ ...v, ...patch }))}
+              />
+            )}
+          </DataBoundary>
+        </div>
+        <ReasonsSection filters={filters} win={win} />
+        <CostSection filters={filters} win={win} prev={prev} />
+        <HealthSection filters={filters} win={win} />
+        <AutomationSection filters={filters} win={win} />
+        <BreakdownSection filters={filters} win={win} onFilter={setFilters} />
+      </div>
     </PageContainer>
   );
 }

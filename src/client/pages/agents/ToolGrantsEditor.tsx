@@ -13,7 +13,7 @@ import {
   Webhook,
   Wrench,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Badge,
@@ -45,6 +45,12 @@ import {
 import { cn } from "@/client/lib/utils";
 import { CodeToolEditModal } from "@/client/pages/resources/CodeToolEditModal";
 import {
+  DocumentStarterModal,
+  type Starter,
+  starterLocaleOf,
+} from "@/client/pages/resources/documents/DocumentStarterModal";
+import {
+  type DocumentTemplate,
   DocumentTemplateModal,
   type TemplateModalPayload,
 } from "@/client/pages/resources/documents/DocumentTemplateModal";
@@ -306,14 +312,18 @@ function CollapsibleSection({
 function CreateButton({
   label,
   onClick,
+  busy,
 }: {
   label: string;
   onClick: () => void;
+  // Set while opening costs a round trip (the document flow fetches its starters first).
+  busy?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={busy}
       className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-accent text-xs hover:underline"
     >
       <Plus className="h-3.5 w-3.5" aria-hidden="true" />
@@ -324,7 +334,8 @@ function CreateButton({
 
 // SelectableCard (a <button>) can't nest an edit button, so the pencil is an absolutely-positioned
 // sibling overlay sitting just left of the card's check indicator. stopPropagation keeps a pencil
-// click from toggling the grant selection.
+// click from toggling the grant selection. The card's content column is padded by the pencil's width
+// so the title and badge end before it instead of running underneath.
 function EditableCard({
   onEdit,
   editLabel,
@@ -340,7 +351,7 @@ function EditableCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative">
+    <div className="relative [&_[data-selectable-content]]:pr-7">
       {children}
       {/* Vertically center the pencil on the card's selection check (mt-0.5 h-5): top-3.5 + an
           h-5 button put both centers at the same y. */}
@@ -557,7 +568,7 @@ export function ToolGrantsEditor({
   integrationCollapsed,
   setIntegrationCollapsed,
 }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { showToast } = useToast();
   // Create/edit a resource without leaving the agent editor. On save the catalog refetches; a
   // newly-created one is auto-granted to this agent (still needs the Tools-tab save to persist).
@@ -571,6 +582,21 @@ export function ToolGrantsEditor({
   // from where the decision is being made.
   const documentModal = useModalController<TemplateModalPayload>();
   const [openingDocument, setOpeningDocument] = useState<string | null>(null);
+  // The starter list is asked for when the operator opens the create flow, in the console's
+  // language, the way Components → Documents asks for it on load.
+  const starterModal = useModalController();
+  const [starters, setStarters] = useState<Starter[]>([]);
+  // The language the list on hand was loaded in. The picker only shows a list in the console's
+  // current one, so cards from a superseded language are never on screen to be picked.
+  const [startersLocale, setStartersLocale] = useState<string | null>(null);
+  const [startersError, setStartersError] = useState(false);
+  const [loadingStarters, setLoadingStarters] = useState(false);
+  // The language last ASKED for (not the one on screen: a request can be in flight), and which request
+  // is the current one. A list in another language also carries another currency, so a stale one
+  // creates a wrong template.
+  const startersAsked = useRef<string | null>(null);
+  const startersSession = useRef(0);
+  const starterLocale = starterLocaleOf(i18n.language);
   // A just-created integration is auto-granted with ALL its tools (matching the manual toggle), but
   // its tool list only arrives once the catalog refetches: defer the grant until the instance shows
   // up in the refreshed catalog (the effect below applies it then).
@@ -1009,6 +1035,59 @@ export function ToolGrantsEditor({
           )
         : [...nonRag, { source: "DOCUMENT", documentTemplateId: id }],
     );
+  }
+
+  // Idempotent grant-on (used to auto-select a just-created template, vs the toggle above).
+  function selectDocument(id: string) {
+    if (hasGrant((g) => g.source === "DOCUMENT" && g.documentTemplateId === id))
+      return;
+    addGrant({ source: "DOCUMENT", documentTemplateId: id });
+  }
+
+  const loadStarters = useCallback(async (locale: string) => {
+    const session = ++startersSession.current;
+    startersAsked.current = locale;
+    setLoadingStarters(true);
+    try {
+      const { data, error: err } = await api.api.v1[
+        "document-templates"
+      ].starters.get({ query: { locale } });
+      if (session !== startersSession.current) return;
+      setStarters(data ? [...data.starters] : []);
+      setStartersLocale(locale);
+      setStartersError(!!err);
+    } catch {
+      if (session !== startersSession.current) return;
+      setStarters([]);
+      setStartersLocale(locale);
+      setStartersError(true);
+    } finally {
+      if (session === startersSession.current) setLoadingStarters(false);
+    }
+  }, []);
+
+  async function openDocumentCreate() {
+    // One session for both ways into the editor, so the last click wins. Creating drops an
+    // existing template still being fetched, and opening one while the starters load drops this.
+    const session = ++documentSession.current;
+    setOpeningDocument(null);
+    await loadStarters(starterLocale);
+    if (session !== documentSession.current) return;
+    starterModal.open();
+  }
+
+  // The operator switched language with the picker open: the list on screen is the other language's.
+  useEffect(() => {
+    if (starterModal.isOpen && startersAsked.current !== starterLocale)
+      void loadStarters(starterLocale);
+  }, [starterModal.isOpen, starterLocale, loadStarters]);
+
+  // Granted first, then refreshed (the reason is on `onToolSaved`), and opened in its editor
+  // on the body the POST answered: a template is created in order to be edited.
+  function onDocumentCreated(template: DocumentTemplate) {
+    selectDocument(template.id);
+    documentModal.open({ template });
+    void onCatalogChange();
   }
 
   function toggleIntegration(id: string, allTools: string[]) {
@@ -1466,12 +1545,19 @@ export function ToolGrantsEditor({
             "editor.tools.documentsDesc",
             "Templates this agent may issue and attach to a reply. Each one becomes a tool of its own.",
           )}
+          action={
+            <CreateButton
+              label={t("editor.tools.createNew", "New")}
+              busy={loadingStarters}
+              onClick={() => void openDocumentCreate()}
+            />
+          }
         >
           {catalog.documentTemplates.length === 0 ? (
             <p className="text-text-muted text-xs">
               {t(
                 "editor.tools.noDocuments",
-                "No document templates yet. Create one under Components.",
+                "No document templates yet. Create the first one with New.",
               )}
             </p>
           ) : (
@@ -1495,7 +1581,11 @@ export function ToolGrantsEditor({
                     onToggle={() => toggleDocument(tpl.id)}
                     icon={FileText}
                     title={tpl.name}
-                    badge={<Badge variant="secondary">{tpl.toolName}</Badge>}
+                    badge={
+                      <Badge variant="secondary" className="break-all">
+                        {tpl.toolName}
+                      </Badge>
+                    }
                     // NOTE: AVAILABLE, not merely enabled. Assembly skips a template for two
                     // reasons with different remedies (a switch on this template, or content this
                     // build cannot read, edited from the client that wrote it), so each gets its own
@@ -2041,6 +2131,12 @@ export function ToolGrantsEditor({
       <DocumentTemplateModal
         modal={documentModal}
         onSaved={() => void onCatalogChange()}
+      />
+      <DocumentStarterModal
+        modal={starterModal}
+        starters={startersLocale === starterLocale ? starters : []}
+        startersError={startersError}
+        onCreated={onDocumentCreated}
       />
     </div>
   );

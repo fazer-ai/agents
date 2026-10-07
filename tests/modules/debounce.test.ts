@@ -52,6 +52,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import {
   EmptyThenReplyModel,
+  FailingModel,
   guardrailModel,
   PromptCapturingModel,
   ResolveThenReplyModel,
@@ -6713,6 +6714,51 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(row.lastError).not.toContain("generations[0][0]");
     expect(row.lastErrorAt).not.toBeNull();
   });
+
+  // A run that throws is not the outcome while the job has attempts left: the scheduler runs the
+  // burst again, and the next run usually answers. So the run's `generate` line is `info`, flagged
+  // whether another run follows, and the alarm is the death's to raise (announceDeadDebounceFlush).
+  for (const [attempts, willRetry] of [
+    [0, true],
+    [4, false],
+  ] as const) {
+    test(`a run that throws on attempt ${attempts + 1} logs generate at info, willRetry ${willRetry}`, async () => {
+      const conv = 10900 + attempts;
+      await seedConversation(conv);
+      const sent: Array<[number, string]> = [];
+      await expect(
+        flushDebounceJob({
+          job: { ...jobFor(conv), attempts },
+          base: appDb,
+          deps: {
+            makeModel: () => new FailingModel(new Error("upstream 503")),
+            makeClient: makeStub({
+              pages: [page([{ id: 1, content: "oi" }])],
+              sent,
+              calls: { getMessages: 0 },
+            }),
+            checkpointer: new MemorySaver(),
+          },
+        }),
+      ).rejects.toThrow();
+      expect(sent).toEqual([]);
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          threadId: threadOf(conv),
+          stage: "generate",
+          status: "error",
+        },
+        select: { level: true, detail: true },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.level).toBe("info");
+      expect(
+        (rows[0]?.detail as Record<string, unknown> | undefined)?.willRetry,
+      ).toBe(willRetry);
+      await clearFlowLog(suDb, { tenantId, threadId: threadOf(conv) });
+    });
+  }
 
   test("issue #49: a newer attachment-only message (voice note) supersedes the flush", async () => {
     await seedConversation(832);

@@ -420,22 +420,6 @@ export function ChannelsTab({
                           ? (agents.find((a) => a.id === ib.agentId)?.name ??
                             t("editor.channels.otherAgent", "another agent"))
                           : null;
-                      // The observer slot is single: `observeInbox` refuses a second one with 422
-                      // `errors.inboxAlreadyObserved`, since the memory thread is the contact-inbox's. On an inbox
-                      // another agent watches, the switch is blocked AND names that agent, because a merely dead
-                      // switch reads as a bug rather than as a rule.
-                      const otherWatcher =
-                        !role.observes && ib.observerAgentIds.length > 0
-                          ? (agents.find((a) => a.id === ib.observerAgentIds[0])
-                              ?.name ??
-                            t("editor.channels.otherAgent", "another agent"))
-                          : null;
-                      // Only the switch that would WRITE an observer binding is blocked. A watcher
-                      // that is this inbox's responder keeps its own switch live, since turning it
-                      // off is the removal path; and a production agent's switch writes the
-                      // responder slot, which the observer does not occupy.
-                      const observeBlocked =
-                        watcher && !mine && otherWatcher !== null;
                       return (
                         <InboxRow
                           key={ib.id}
@@ -517,15 +501,6 @@ export function ChannelsTab({
                                   )}
                                 </span>
                               )}
-                              {observeBlocked && (
-                                <span className="text-text-muted text-xs">
-                                  {t(
-                                    "editor.channels.watchedBy",
-                                    "Watched by {{name}}; remove it first",
-                                    { name: otherWatcher },
-                                  )}
-                                </span>
-                              )}
                               {pending === ib.id ? (
                                 <Loader2
                                   className="h-5 w-5 animate-spin text-text-muted"
@@ -534,7 +509,6 @@ export function ChannelsTab({
                               ) : (
                                 <Switch
                                   checked={mine}
-                                  disabled={observeBlocked}
                                   onCheckedChange={(next) => onToggle(ib, next)}
                                   aria-label={
                                     role.observes || (watcher && !role.responds)

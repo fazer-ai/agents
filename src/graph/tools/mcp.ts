@@ -1,16 +1,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import { type Connection, loadMcpTools } from "@langchain/mcp-adapters";
 import {
-  type Connection,
-  loadMcpTools,
-  MultiServerMCPClient,
-} from "@langchain/mcp-adapters";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+  Client,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import logger from "@/api/lib/logger";
 import config from "@/config";
+import { normalizeTupleItems } from "@/graph/gemini-tools";
+import { declarationSchema } from "@/graph/tools/mcp-schema";
 import {
   hasSafeStdioCommandChars,
   isMcpStdioLauncher,
@@ -29,8 +30,8 @@ import {
 // MCP-consumed tools. A McpServerConnection's tools are discovered at connect time, then ONLY the
 // per-agent allowlisted subset (AgentToolSelection.enabledTools) is exposed to the model
 // (fail-closed: a new upstream tool is never auto-granted). Network transports (http/sse) pass
-// the SSRF guard; stdio (local process = RCE) is gated by config.mcpStdioEnabled. The
-// MultiServerMCPClient is cached per tenant+connection so we don't reconnect every turn; a config
+// the SSRF guard; stdio (local process = RCE) is gated by config.mcpStdioEnabled. The SDK client
+// is cached per tenant+connection so we don't reconnect every turn; a config
 // or credential change yields a fresh client. A connection that fails to load is skipped (a down
 // MCP server must never silence the bot), never thrown into the reply path.
 
@@ -54,7 +55,7 @@ export interface McpSelection {
   credentialParamName?: string | null;
   credentialRef?: string | null;
   // The connection's declared headers, as templates (modules/mcp-connections/headers.ts). Absent or
-  // empty ⇒ the connection goes through MultiServerMCPClient exactly as before.
+  // empty ⇒ no header is added to the call.
   headers?: McpHeaders;
 }
 
@@ -71,7 +72,7 @@ function normalizeTransport(t: string): "http" | "sse" | "stdio" {
   return "http"; // streamablehttp | http | anything else
 }
 
-// Builds the MultiServerMCPClient connection config for one selection. Throws (caller skips the
+// Builds the adapter connection config for one selection. Throws (caller skips the
 // connection) on a disabled stdio transport, a missing url/command, or an SSRF-blocked url.
 export async function buildConnConfig(
   sel: McpSelection,
@@ -357,8 +358,15 @@ function fetchWithCallHeaders(key: string): typeof fetch {
 
 export const __callHeadersForTest = { callHeaders, fetchWithCallHeaders };
 
-function httpErrorCode(err: unknown): number | null {
-  const e = err as { code?: unknown; message?: unknown };
+// The SDK's HTTP error carries the status in `data.status` (its `code` is a string category), and
+// older errors carry it as a numeric `code` or in the message.
+export function httpErrorCode(err: unknown): number | null {
+  const e = err as {
+    code?: unknown;
+    message?: unknown;
+    data?: { status?: unknown };
+  };
+  if (typeof e?.data?.status === "number") return e.data.status;
   if (typeof e?.code === "number") return e.code;
   const m = String(e?.message ?? "").match(/\(HTTP (\d\d\d)\)/);
   return m ? Number(m[1]) : null;
@@ -376,13 +384,96 @@ function sseFallbackUrls(url: string): string[] {
   return [url, u.toString()];
 }
 
-// A network connection that declares headers, on its own SDK client, since MultiServerMCPClient
-// takes headers only per connection (a per-call header set is a new connection and session each).
-async function connectWithCallHeaders(
+// A tool result with its `structuredContent` visible to the model. The adapter keeps it in the
+// artifact only, which no node of the graph projects back into a message, so a tool answering a
+// one-line summary plus structured data would show the model the summary alone. When the text is
+// not already that data serialized, the data is appended to it as JSON.
+export function withStructuredContent(result: unknown): unknown {
+  if (!Array.isArray(result) || result.length !== 2) return result;
+  const [content, artifacts] = result as [unknown, unknown];
+  if (typeof content !== "string" || !Array.isArray(artifacts)) return result;
+  const structured = (
+    artifacts as Array<{ type?: unknown; data?: unknown }>
+  ).find((a) => a?.type === "mcp_structured_content");
+  if (structured?.data === undefined) return result;
+  const json = JSON.stringify(structured.data);
+  try {
+    if (JSON.stringify(JSON.parse(content)) === json) return result;
+  } catch {}
+  return [content ? `${content}\n\n${json}` : json, artifacts];
+}
+
+// A schema in the dialect the SDK validates it with. One that declares `$schema` is compiled by that
+// dialect's engine and kept as is. One that declares none is compiled as 2020-12, which refuses a
+// draft-07 tuple (`items` as an array), so those are rewritten to `prefixItems`.
+function forSdkValidator<T>(schema: T): T {
+  if (!schema || typeof schema !== "object" || "$schema" in schema)
+    return schema;
+  return normalizeTupleItems(schema) as T;
+}
+
+// The server's tool list with each input and output schema in that dialect: the adapter validates a
+// call's arguments against the input schema, and the SDK compiles the output schema inside
+// `callTool`, both before the server is reached.
+function withDraft2020Tuples(client: Client): void {
+  const listTools = client.listTools.bind(client);
+  client.listTools = (async (...args: Parameters<Client["listTools"]>) => {
+    const listed = await listTools(...args);
+    return {
+      ...listed,
+      tools: listed.tools.map((t) => ({
+        ...t,
+        inputSchema: forSdkValidator(t.inputSchema),
+        ...(t.outputSchema
+          ? { outputSchema: forSdkValidator(t.outputSchema) }
+          : {}),
+      })),
+    };
+  }) as Client["listTools"];
+}
+
+// One connection on its own SDK client, for every transport. An SDK 2 `Client` negotiates the legacy
+// protocol by default, so no elicitation request can turn into an interrupt no turn resumes. Its HTTP
+// transports get a `fetch` that adds the declared headers of the tool call in flight.
+async function connectClient(
   sel: McpSelection,
   connConfig: Connection,
   key: string,
 ): Promise<{ client: Client; tools: StructuredToolInterface[] }> {
+  const open = async (
+    transport:
+      | StreamableHTTPClientTransport
+      | SSEClientTransport
+      | StdioClientTransport,
+  ) => {
+    const client = new Client({ name: "fazer-ai-agents", version: "1" });
+    withDraft2020Tuples(client);
+    try {
+      await client.connect(transport);
+      const tools = await loadMcpTools(sel.name, client, {
+        throwOnLoadError: true,
+        prefixToolNameWithServerName: false,
+        additionalToolNamePrefix: "",
+        afterToolCall: ({ result }) => ({
+          result: withStructuredContent(result) as typeof result,
+        }),
+      });
+      for (const tool of tools)
+        (tool as { schema: unknown }).schema = declarationSchema(tool.schema);
+      return { client, tools };
+    } catch (err) {
+      void client.close().catch(() => {});
+      throw err;
+    }
+  };
+  if (connConfig.transport === "stdio") {
+    const { command, args, env } = connConfig as {
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+    };
+    return open(new StdioClientTransport({ command, args, env }));
+  }
   const { url, headers } = connConfig as {
     url: string;
     headers?: Record<string, string>;
@@ -390,24 +481,6 @@ async function connectWithCallHeaders(
   const opts = {
     ...(headers ? { requestInit: { headers } } : {}),
     fetch: fetchWithCallHeaders(key),
-  };
-  const open = async (
-    transport: StreamableHTTPClientTransport | SSEClientTransport,
-  ) => {
-    const client = new Client({ name: "fazer-ai-agents", version: "1" });
-    try {
-      await client.connect(transport);
-      const tools = await loadMcpTools(sel.name, client, {
-        throwOnLoadError: true,
-        prefixToolNameWithServerName: false,
-        additionalToolNamePrefix: "",
-        useStandardContentBlocks: true,
-      });
-      return { client, tools };
-    } catch (err) {
-      void client.close().catch(() => {});
-      throw err;
-    }
   };
   if (normalizeTransport(sel.transport) === "sse") {
     return open(new SSEClientTransport(new URL(url), opts));
@@ -425,7 +498,42 @@ async function connectWithCallHeaders(
         last = e;
       }
     }
-    throw last;
+    const sseCode = httpErrorCode(last);
+    // NOTE: only the statuses go in the message: a response body can echo the request URL, where a
+    // query-injected credential lives, and this error reaches the logs and the alert channels.
+    throw Object.assign(
+      new Error(
+        `streamable HTTP failed with HTTP ${code}${code === 401 ? " (authentication failed)" : ""}; the SSE fallback failed too${sseCode === null ? "" : ` with HTTP ${sseCode}`}`,
+        { cause: last },
+      ),
+      {
+        data: {
+          status: sseCode === 401 || sseCode === 403 ? sseCode : code,
+        },
+      },
+    );
+  }
+}
+
+// A one-off connection for the console's discovery: the same client a turn uses, closed after
+// listing, so a server the console can list is one a turn can call.
+export async function discoverMcpServer(
+  sel: McpSelection,
+  connConfig: Connection,
+): Promise<{ tools: StructuredToolInterface[]; instructions: string | null }> {
+  const { client, tools } = await connectClient(
+    sel,
+    connConfig,
+    `discover:${sel.connId}`,
+  );
+  try {
+    const raw = client.getInstructions();
+    return {
+      tools,
+      instructions: typeof raw === "string" && raw.trim() ? raw.trim() : null,
+    };
+  } finally {
+    await client.close().catch(() => {});
   }
 }
 
@@ -458,65 +566,28 @@ async function defaultConnect(
     const evict = () => {
       if (cache.get(key) === created) cache.delete(key);
     };
-    if (declared) {
-      let own: { client: Client; tools: StructuredToolInterface[] } | null =
-        null;
-      created.tools = async () => own?.tools ?? [];
-      created.close = async () => {
-        await own?.client.close();
-      };
-      created.connecting = (async () => {
-        try {
-          own = await connectWithCallHeaders(sel, connConfig, key);
-          // NOTE: a dropped session is not reused: the next turn opens a new one.
-          own.client.onclose = evict;
-          const raw = own.client.getInstructions();
-          created.instructions =
-            typeof raw === "string" && raw.trim() ? raw.trim() : null;
-        } catch (err) {
-          evict();
-          throw err;
-        }
-      })();
-    } else {
-      const client = new MultiServerMCPClient({
-        throwOnLoadError: true,
-        prefixToolNameWithServerName: false,
-        additionalToolNamePrefix: "",
-        useStandardContentBlocks: true,
-        mcpServers: { [sel.name]: connConfig },
-      });
-      created.tools = () => client.getTools();
-      created.close = () => client.close();
-      created.connecting = (async () => {
-        try {
-          // First getTools() establishes the connection (spawns the stdio process / opens the HTTP
-          // session) and loads the tool list. Run exactly once; concurrent callers await this promise.
-          await client.getTools();
-          // Best-effort: capture the server's native `instructions` (MCP initialize result) once, for
-          // the prompt-context section. getClient returns the already-connected SDK client.
-          try {
-            const raw = (await client.getClient(sel.name))?.getInstructions();
-            created.instructions =
-              typeof raw === "string" && raw.trim() ? raw.trim() : null;
-          } catch {
-            created.instructions = null;
-          }
-        } catch (err) {
-          // Evict so the next turn rebuilds (no dead client cached) and close the orphaned
-          // transport/process. Guard the delete so a newer entry under this key is not clobbered.
-          evict();
-          void client.close().catch(() => {});
-          throw err;
-        }
-      })();
-    }
+    let own: { client: Client; tools: StructuredToolInterface[] } | null = null;
+    created.tools = async () => own?.tools ?? [];
+    created.close = async () => {
+      await own?.client.close();
+    };
+    // Run exactly once; concurrent cold-start callers await this promise and share one transport.
+    created.connecting = (async () => {
+      try {
+        own = await connectClient(sel, connConfig, key);
+        // NOTE: a dropped session or exited process is not reused: the next turn opens a new one.
+        own.client.onclose = evict;
+        const raw = own.client.getInstructions();
+        created.instructions =
+          typeof raw === "string" && raw.trim() ? raw.trim() : null;
+      } catch (err) {
+        evict();
+        throw err;
+      }
+    })();
     entry = created;
     cache.set(key, entry);
   }
-  // Single-flight the first connect (concurrent cold-start callers share it → one transport), then
-  // return the warm tools. getTools() on an already-connected client returns its cached list (no new
-  // spawn) and re-runs the connection check, so a reconnect recovers without a config change.
   await entry.connecting;
   return entry.tools();
 }

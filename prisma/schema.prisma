@@ -671,13 +671,11 @@ model InboxObserver {
   inbox  Inbox  @relation(fields: [inboxId], references: [id], onDelete: Cascade)
   agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
-  // ONE WATCHER PER INBOX, and the unique is on the inbox rather than on the pair (issue #476 review,
-  // round 8). The graph's memory thread is keyed by contact-inbox, NOT by agent, so two observers of
-  // one inbox write the same thread — the very duplicate this feature already refuses between an
-  // observer and a responder — and everything downstream (which route transcribes the audio, which
-  // one folds the message in) becomes a coordination problem with no owner. One watcher answers all
-  // of it. Lifting the cap is a memory change first, not a binding one.
-  @@unique([tenantId, inboxId])
+  // ONE ROW PER (INBOX, AGENT): an inbox carries as many watchers as it has rows. Nothing about
+  // observing is shared per inbox: the OBSERVE tick is stateless and keyed per conversation and
+  // agent, and the ingestion two routes can share (memory, STT, vision) is keyed per message, so it
+  // lands once.
+  @@unique([tenantId, inboxId, agentId])
   @@index([inboxId])
   @@index([agentId])
   @@map("inbox_observers")
@@ -831,11 +829,14 @@ model Conversation {
   // attribute-context block. kanbanAttributes stays {} on upstream Chatwoot (no card in the payload).
   customAttributes             Json      @default("{}") @map("custom_attributes")
   kanbanAttributes             Json      @default("{}") @map("kanban_attributes")
-  // The fork's `conversation.group_type` ("group" | "individual") and the conversation's label list,
-  // mirrored under the same rule as the bags above: written only when the payload carried them, and
-  // the list assigned wholesale. Read by the contact gate's local rule (docs/contact-auth.md). NULL
-  // type = the payload never said (a Chatwoot without the field).
+  // The fork's `conversation.group_type` ("group" | "individual"), mirrored under the same rule as
+  // the bags above: written only when the payload carried it. Read by the contact gate's local rule
+  // (docs/contact-auth.md). NULL = the payload never said (a Chatwoot without the field).
   conversationType             String?   @map("conversation_type")
+  // The conversation's Chatwoot label titles as the last applied event stated them (push_data.labels),
+  // assigned wholesale on the bags' terms. Read by the dashboard's outcome-by-label view and by the
+  // contact gate's `label` condition, which compares ignoring case. Empty until an event carrying
+  // them arrives.
   labels                       String[]  @default([])
   lastEventAt                  DateTime? @map("last_event_at")
   // Ordering watermark for conversation-level STATE (status + assignee), mirrored from the payload's
@@ -2353,6 +2354,14 @@ model AlertDelivery {
   // knew the conversation. No FK: an alert outlives the conversation it was about.
   turnId         String?               @map("turn_id")
   conversationId BigInt?               @map("conversation_id")
+  // The agent the first event ran as, which the alert names: not the inbox's, since an observer
+  // runs as another agent and an inbox can be rebound before the send. No FK, like the two above.
+  agentId        BigInt?               @map("agent_id")
+  // Set on a CAUSE alert (issue #1091): what an operator has to fix, such as `tts:elevenlabs:HTTP 401`
+  // or `spend_ceiling:over`. A later event with the same key on the same channel inside
+  // `ALERT_CAUSE_WINDOW_MS` bumps this row's `count` instead of opening another delivery, whatever
+  // the row's status. Null on every other alert, which coalesces by (channel, stage, level) only.
+  causeKey       String?               @map("cause_key")
   createdAt      DateTime              @default(now()) @map("created_at")
   updatedAt      DateTime              @updatedAt @map("updated_at")
 
@@ -2361,6 +2370,7 @@ model AlertDelivery {
 
   @@index([tenantId])
   @@index([status, nextAttemptAt])
+  @@index([channelId, causeKey, createdAt])
   @@map("alert_deliveries")
 }
 

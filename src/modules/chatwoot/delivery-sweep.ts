@@ -336,6 +336,7 @@ interface StrandedRow {
   // (see `armReplyMemory`).
   humanReplyMessageId: number | null;
   routeObserved: boolean | null;
+  routeAgentBotId: number | null;
   routeRemembers: boolean | null;
 }
 
@@ -378,6 +379,9 @@ async function mirrorOf(
   conversationRowId: bigint;
   inboxId: bigint | null;
   agentId: bigint | null;
+  // The agent the delivery was FOR, which the flow line is filed under: the responder, except on an
+  // observer's route, where it is the agent behind the route's bot (null when no persona carries it).
+  lineAgentId: bigint | null;
   // Whether that responder has a ROUTE of its own — a bot row the fork could have delivered to.
   // Null when it was not asked (the loss verdict does not need it) or could not be read.
   responderHasRoute: boolean | null;
@@ -403,10 +407,28 @@ async function mirrorOf(
         })
       : null;
     const agentId = inbox?.agentId ?? null;
+    const observerBotId =
+      row.routeObserved === true ? row.routeAgentBotId : null;
+    const lineAgentId =
+      row.routeObserved !== true
+        ? agentId
+        : observerBotId === null
+          ? null
+          : ((
+              await db.chatwootAgentBot.findFirst({
+                where: {
+                  tenantId,
+                  chatwootInstanceId: row.chatwootInstanceId,
+                  chatwootAgentBotId: observerBotId,
+                },
+                select: { agentId: true },
+              })
+            )?.agentId ?? null);
     return {
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
       agentId,
+      lineAgentId,
       responderHasRoute:
         !withResponderRoute || agentId === null
           ? null
@@ -504,6 +526,7 @@ export async function sweepStrandedDeliveries(
         humanReplyShape: true,
         humanReplyMessageId: true,
         routeObserved: true,
+        routeAgentBotId: true,
         routeRemembers: true,
       },
     }),
@@ -723,14 +746,17 @@ async function record(
     return;
   }
 
+  let recoveryArmed = false;
   // NOTE: the recovery is armed now, the only moment anything knows the row became recoverable (the
   // query reads PENDING and PROCESSING). Rows already DEAD before recovery existed are never
   // recovered, deliberately: a backfill would arm a whole backlog of model calls and real replies
   // at once, and those rows are already on the DEAD worklist. Best-effort and logged loudly (the
   // row is already reported). Armed before the line, so the alert is never newer than the attempt.
   try {
-    if (isRecoverableStrand(row))
+    if (isRecoverableStrand(row)) {
       await armDeliveryRecovery(tenantId, row.id, base);
+      recoveryArmed = true;
+    }
   } catch (error) {
     logger.error(
       { error },
@@ -746,13 +772,16 @@ async function record(
       // Filed WITHOUT a conversation when the mirror does not know it. The line is worth writing
       // unattached: the DEAD row carries the delivery id, this carries everything else about it.
       conversationId: mirror?.conversationRowId ?? null,
-      agentId: mirror?.agentId ?? null,
+      agentId: mirror?.lineAgentId ?? null,
       inboxId: mirror?.inboxId ?? null,
       base,
     },
     {
       stage: "delivery",
-      level: "error",
+      // NOTE: With a recovery armed the message is not lost yet: the recovery either closes it with
+      // its own line or ends with the one that says nobody answered (./recover-delivery.ts). Without
+      // one, this is the loss.
+      level: recoveryArmed ? "info" : "error",
       status: "error",
       detail: {
         outcome: "stranded",
@@ -761,6 +790,7 @@ async function record(
         messageId: row.inboundMessageId,
         conversationId: row.conversationId,
         knownToMirror: mirror !== null,
+        willRetry: recoveryArmed,
       },
     },
   );

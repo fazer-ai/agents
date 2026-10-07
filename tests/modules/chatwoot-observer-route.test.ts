@@ -548,6 +548,62 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  test("beside other watchers, the memory is filed under the first of them, whichever route arms it", async () => {
+    requests.length = 0;
+    const SECOND_BOT = 962;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora (memória)",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: { memory: { compaction: { enabled: false } } },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `obr-route-${SECOND_BOT}-${process.pid}`,
+        name: "Segunda observadora (memória)",
+      },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inbox.id, agentId: second.id },
+    });
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { enabled: false },
+    });
+    try {
+      expect(second.id > observerId).toBe(true);
+      // The later watcher's route arms first: the row is still the first watcher's.
+      const { messageId } = await deliver(SECOND_BOT, 47, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(agentOf(await ingestRowFor(messageId))).toBe(String(observerId));
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { enabled: true },
+      });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inbox.id, agentId: second.id },
+      });
+    }
+  });
+
   // The persona bot deleted out-of-band on Chatwoot leaves the binding standing and the responder's
   // route dead — the state the console shows as "missing", with a Reconnect beside it. Standing
   // down for a delivery that never comes would lose the message from memory entirely.
@@ -2905,6 +2961,258 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       await suDb.agent.update({
         where: { id: observerId },
         data: { settings: before.settings ?? {} },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  });
+
+  // NOTE: an inbox carries several observers. The fork fans one message to every
+  // observer bot's route; each route resolves its own runtime and arms its own OBSERVE row, keyed by
+  // agent, and on an inbox nobody of ours answers neither route folds the message into memory.
+  test("two observers on one inbox: the same message reaches both routes, each arms its own OBSERVE row, nothing remembered or posted", async () => {
+    const SECOND_BOT = 961;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `obr-route-${SECOND_BOT}-${process.pid}`,
+        name: "Segunda observadora",
+      },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inbox.id, agentId: second.id },
+    });
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    requests.length = 0;
+    const CONV = 7_111;
+    try {
+      const first = await deliver(OBSERVER_BOT, CONV, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      // The same message, fanned by the fork to the second observer's route.
+      messageSeq -= 1;
+      const again = await deliver(SECOND_BOT, CONV, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(again.messageId).toBe(first.messageId);
+
+      const thread = chatwootThreadId(tenantId, instanceId, CONV);
+      expect((await observeRows()).map((r) => r.dedupeKey).sort()).toEqual(
+        [
+          `observe:${thread}:${observerId}`,
+          `observe:${thread}:${second.id}`,
+        ].sort(),
+      );
+      expect(await routeObservedOf(first.deliveryRowId)).toBe(true);
+      expect(await routeObservedOf(again.deliveryRowId)).toBe(true);
+      expect(await ingestArmedFor(first.messageId)).toBe(false);
+      expect(customerFacing()).toEqual([]);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inbox.id, agentId: second.id },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  });
+
+  // Each watcher asks its OWN contact gate (docs/contact-auth.md, The observer path). One watcher's
+  // refusal arms nothing for it and leaves the other's observation alone, and the gate decides what is
+  // observed, never what is remembered: the memory owner stays the inbox's first watcher whatever its
+  // gate said about this conversation.
+  const REFUSING_GATE = {
+    contactAuth: {
+      enabled: true,
+      rule: { kind: "label", label: "nunca-aplicada" },
+    },
+  };
+
+  test("two observers on one inbox, the second refused by its own gate: only the first arms, nothing remembered or posted", async () => {
+    const SECOND_BOT = 963;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora (recusa)",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: REFUSING_GATE,
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `obr-route-${SECOND_BOT}-${process.pid}`,
+        name: "Segunda observadora (recusa)",
+      },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inbox.id, agentId: second.id },
+    });
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    requests.length = 0;
+    const CONV = 7_113;
+    try {
+      const first = await deliver(OBSERVER_BOT, CONV, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      messageSeq -= 1;
+      const again = await deliver(SECOND_BOT, CONV, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(again.messageId).toBe(first.messageId);
+
+      const thread = chatwootThreadId(tenantId, instanceId, CONV);
+      expect((await observeRows()).map((r) => r.dedupeKey)).toEqual([
+        `observe:${thread}:${observerId}`,
+      ]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV },
+        select: { id: true },
+      });
+      const lines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          conversationId: conv.id,
+          stage: "contact_auth",
+          agentId: second.id,
+        },
+        select: { detail: true },
+      });
+      expect(
+        lines.map((l) => (l.detail as { outcome?: string }).outcome),
+      ).toEqual(["denied"]);
+      expect(await ingestArmedFor(first.messageId)).toBe(false);
+      expect(customerFacing()).toEqual([]);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inbox.id, agentId: second.id },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  });
+
+  test("beside other watchers, a memory owner refused by its own gate still owns the memory, and only the allowed watcher arms", async () => {
+    requests.length = 0;
+    const SECOND_BOT = 964;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora (memória, permitida)",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: { memory: { compaction: { enabled: false } } },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `obr-route-${SECOND_BOT}-${process.pid}`,
+        name: "Segunda observadora (memória, permitida)",
+      },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: inbox.id, agentId: second.id },
+    });
+    const ownerBefore = await suDb.agent.findUniqueOrThrow({
+      where: { id: observerId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          ...((ownerBefore.settings as Record<string, unknown>) ?? {}),
+          ...REFUSING_GATE,
+        },
+      },
+    });
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { enabled: false },
+    });
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    try {
+      const { messageId } = await deliver(SECOND_BOT, 48, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      messageSeq -= 1;
+      await deliver(OBSERVER_BOT, 48, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(agentOf(await ingestRowFor(messageId))).toBe(String(observerId));
+      const thread = chatwootThreadId(tenantId, instanceId, 48);
+      expect((await observeRows()).map((r) => r.dedupeKey)).toEqual([
+        `observe:${thread}:${second.id}`,
+      ]);
+      expect(customerFacing()).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: ownerBefore.settings ?? {} },
+      });
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { enabled: true },
+      });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inbox.id, agentId: second.id },
       });
       await suDb.schedulerJob.deleteMany({
         where: { tenantId, kind: "OBSERVE" },

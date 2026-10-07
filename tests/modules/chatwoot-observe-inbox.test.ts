@@ -1080,11 +1080,17 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       observing,
       onAttach: async () => {
         // NOTE: The other call's row, COMMITTED while this one's attach is in flight, and so
-        // stamped: the two calls share one row (the unique is on the inbox), and the stamp separates
+        // stamped: the two calls share one row (the unique is on the pair), and the stamp separates
         // "a call completed and depends on this attachment" from "a call is still in flight".
         // Written directly: what is under test is the compensation, not a second observe's path.
         await suDb.inboxObserver.upsert({
-          where: { tenantId_inboxId: { tenantId, inboxId: spare.id } },
+          where: {
+            tenantId_inboxId_agentId: {
+              tenantId,
+              inboxId: spare.id,
+              agentId: vigia.id,
+            },
+          },
           create: {
             tenantId,
             inboxId: spare.id,
@@ -1161,7 +1167,7 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
   });
 
-  test("an inbox takes ONE watcher: a second agent is refused, and its attachment taken back", async () => {
+  test("an inbox takes several watchers: a second agent observes beside the first, on both sides", async () => {
     const second = await suDb.agent.create({
       data: {
         tenantId,
@@ -1172,18 +1178,217 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       select: { id: true },
     });
     const observing = new Set<string>();
-    const cw = fakeChatwoot({ observerRoute: true, observing });
+    const cw = fakeChatwoot({ observerRoute: true, observing, firstBot: 300 });
     await observeInbox(ctx(tenantId), inboxRowId, monitoringAgent, cw, appDb);
-    expect(observing.size).toBe(1);
+    const dto = await observeInbox(
+      ctx(tenantId),
+      inboxRowId,
+      second.id,
+      cw,
+      appDb,
+    );
 
+    expect(dto.observerAgentIds.map(String).sort()).toEqual(
+      [String(monitoringAgent), String(second.id)].sort(),
+    );
+    const rows = await suDb.inboxObserver.findMany({
+      where: { tenantId, inboxId: inboxRowId },
+      select: { agentId: true, attachedAt: true },
+    });
+    expect(rows.map((r) => String(r.agentId)).sort()).toEqual(
+      [String(monitoringAgent), String(second.id)].sort(),
+    );
+    expect(rows.every((r) => r.attachedAt !== null)).toBe(true);
+    expect(observing.size).toBe(2);
+
+    // Observing again with two watchers changes nothing.
+    await observeInbox(ctx(tenantId), inboxRowId, second.id, cw, appDb);
+    expect((await observerRows(inboxRowId)).length).toBe(2);
+
+    // Detaching one leaves the other attached, here and upstream.
+    await unobserveInbox(ctx(tenantId), inboxRowId, second.id, cw, appDb);
+    expect((await observerRows(inboxRowId)).map((r) => r.agentId)).toEqual([
+      monitoringAgent,
+    ]);
+    expect(observing.size).toBe(1);
+  });
+
+  test("two agents observing the same inbox at once both land", async () => {
+    const watcher = (name: string) =>
+      suDb.agent.create({
+        data: { tenantId, name, systemPrompt: "x", mode: "monitoring" },
+        select: { id: true },
+      });
+    const a = await watcher("Paralela A");
+    const b = await watcher("Paralela B");
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({ observerRoute: true, observing, firstBot: 400 });
+    const results = await Promise.allSettled([
+      observeInbox(ctx(tenantId), otherInboxRowId, a.id, cw, appDb),
+      observeInbox(ctx(tenantId), otherInboxRowId, b.id, cw, appDb),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    const rows = await suDb.inboxObserver.findMany({
+      where: {
+        tenantId,
+        inboxId: otherInboxRowId,
+        agentId: { in: [a.id, b.id] },
+      },
+      select: { agentId: true, attachedAt: true },
+    });
+    expect(rows.map((r) => String(r.agentId)).sort()).toEqual(
+      [String(a.id), String(b.id)].sort(),
+    );
+    expect(rows.every((r) => r.attachedAt !== null)).toBe(true);
+
+    for (const id of [a.id, b.id]) {
+      await unobserveInbox(ctx(tenantId), otherInboxRowId, id, cw, appDb);
+    }
+  });
+
+  test("the audit trail names only the watchers Chatwoot confirmed, not another agent's attach in flight", async () => {
+    const watcher = (name: string) =>
+      suDb.agent.create({
+        data: { tenantId, name, systemPrompt: "x", mode: "monitoring" },
+        select: { id: true },
+      });
+    const settled = await watcher("Confirmada");
+    const inFlight = await watcher("Em voo");
+    // Another observe's intent, written before its Chatwoot call: unstamped, and its attach may
+    // still fail and take the row back with no line of its own.
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: otherInboxRowId,
+        agentId: inFlight.id,
+        attachedAt: null,
+      },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({ observerRoute: true, observing, firstBot: 450 });
+    const lastAudit = (action: string) =>
+      suDb.auditLog.findFirst({
+        where: { tenantId, action, target: `inbox:${otherInboxRowId}` },
+        orderBy: { id: "desc" },
+        select: { before: true, after: true },
+      });
+    // Whatever an earlier case left watching this inbox, confirmed: the trail names it on both sides.
+    const standing = (
+      await suDb.inboxObserver.findMany({
+        where: {
+          tenantId,
+          inboxId: otherInboxRowId,
+          attachedAt: { not: null },
+        },
+        select: { agentId: true },
+        orderBy: { id: "asc" },
+      })
+    ).map((r) => String(r.agentId));
+    try {
+      await observeInbox(ctx(tenantId), otherInboxRowId, settled.id, cw, appDb);
+      expect(await lastAudit("inbox.observe")).toEqual({
+        before: { observerAgentIds: standing },
+        after: { observerAgentIds: [...standing, String(settled.id)] },
+      });
+      await unobserveInbox(
+        ctx(tenantId),
+        otherInboxRowId,
+        settled.id,
+        cw,
+        appDb,
+      );
+      expect(await lastAudit("inbox.unobserve")).toEqual({
+        before: { observerAgentIds: [...standing, String(settled.id)] },
+        after: { observerAgentIds: standing },
+      });
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: {
+          tenantId,
+          inboxId: otherInboxRowId,
+          agentId: { in: [inFlight.id, settled.id] },
+        },
+      });
+    }
+  });
+
+  test("the table keys a binding by inbox AND agent: a pair repeats nowhere, two agents share an inbox", async () => {
+    const watcher = (name: string) =>
+      suDb.agent.create({
+        data: { tenantId, name, systemPrompt: "x", mode: "monitoring" },
+        select: { id: true },
+      });
+    const a = await watcher("Índice A");
+    const b = await watcher("Índice B");
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: otherInboxRowId, agentId: a.id },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: otherInboxRowId, agentId: b.id },
+    });
     await expect(
-      observeInbox(ctx(tenantId), inboxRowId, second.id, cw, appDb),
+      (async () =>
+        suDb.inboxObserver.create({
+          data: { tenantId, inboxId: otherInboxRowId, agentId: a.id },
+        }))(),
+    ).rejects.toMatchObject({ code: "P2002" });
+    await suDb.inboxObserver.deleteMany({
+      where: {
+        tenantId,
+        inboxId: otherInboxRowId,
+        agentId: { in: [a.id, b.id] },
+      },
+    });
+  });
+
+  test("a production agent that already holds a confirmed observer row can observe again, which is the repair", async () => {
+    const promoted = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Promovida",
+        systemPrompt: "x",
+        mode: "production",
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: otherInboxRowId,
+        agentId: promoted.id,
+        attachedAt: new Date(),
+      },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({ observerRoute: true, observing, firstBot: 500 });
+    try {
+      await observeInbox(
+        ctx(tenantId),
+        otherInboxRowId,
+        promoted.id,
+        cw,
+        appDb,
+      );
+      expect(observing.size).toBe(1);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: otherInboxRowId, agentId: promoted.id },
+      });
+    }
+  });
+
+  test("a production agent is still refused on an inbox another agent observes", async () => {
+    const cw = fakeChatwoot({ observerRoute: true, observing: new Set() });
+    await observeInbox(ctx(tenantId), inboxRowId, monitoringAgent, cw, appDb);
+    await expect(
+      observeInbox(ctx(tenantId), inboxRowId, productionAgent, cw, appDb),
     ).rejects.toMatchObject({
       statusCode: 422,
-      translationKey: "errors.inboxAlreadyObserved",
+      translationKey: "errors.observerNotMonitoring",
     });
-    expect((await observerRows(inboxRowId)).length).toBe(1);
-    expect(observing.size).toBe(1);
+    expect((await observerRows(inboxRowId)).map((r) => r.agentId)).toEqual([
+      monitoringAgent,
+    ]);
   });
 
   test("the responder binding refuses an agent that observes the inbox, and observing refuses the responder", async () => {

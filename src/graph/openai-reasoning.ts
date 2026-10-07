@@ -52,3 +52,34 @@ export function planOpenAITransport(
   }
   return { responses: true, effort: requested };
 }
+
+// The lowest effort a model accepts, read off its refusal of the tool pin. Measured on 2026-10-07:
+// gpt-6-astra and gpt-6.1-sol refuse "none" on both endpoints (400, code "unsupported_value", param
+// `reasoning_effort` or `reasoning.effort`) and name what they take ("Supported values are: 'low',
+// 'medium', 'high', and 'xhigh'."), while gpt-6-luna and gpt-6-sol take it. So which models refuse it is
+// the API's answer, not a list kept here: the refusal says the floor. Null for anything else (another
+// status, another code, a refusal of the parameter itself, a list naming no effort we know), which is
+// left to fail as it did.
+export function toolEffortFloorOf(err: unknown): ReasoningEffort | null {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as {
+    status?: unknown;
+    code?: unknown;
+    param?: unknown;
+    message?: unknown;
+  };
+  if (e.status !== 400 || e.code !== "unsupported_value") return null;
+  if (e.param !== "reasoning_effort" && e.param !== "reasoning.effort") {
+    return null;
+  }
+  const listed = /Supported values are:([^\n]*)/i.exec(String(e.message ?? ""));
+  if (!listed?.[1]) return null;
+  const named = new Set(
+    [...listed[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]),
+  );
+  return (
+    REASONING_EFFORTS.find(
+      (effort) => effort !== "none" && named.has(effort),
+    ) ?? null
+  );
+}

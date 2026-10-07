@@ -73,7 +73,7 @@ function normalizeSchemaMap(node: unknown, depth: number): unknown {
 // @langchain/mcp-adapters passes it through; `prefixItems` is the exact 2020-12 translation. Always
 // returns fresh objects: `toJsonSchema` memoizes per schema, so editing in place would corrupt what
 // the other providers declare for the rest of the process.
-function normalizeTupleItems(node: unknown, depth = 0): unknown {
+export function normalizeTupleItems(node: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return node;
   if (!node || typeof node !== "object" || Array.isArray(node)) return node;
   const source = node as Record<string, unknown>;

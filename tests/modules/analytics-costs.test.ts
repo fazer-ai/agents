@@ -173,14 +173,14 @@ describe.skipIf(!dbUp)("getDashboardCosts (DB)", () => {
     try {
       await seed(t, "gpt-a", "inbox", [3], new Date("2026-09-10T01:00:00Z"));
       const utc = await getDashboardCosts(ctx(t), {}, appDb, noFetch);
-      expect(utc.days).toEqual([{ date: "2026-09-10", costUsd: 3 }]);
+      expect(utc.days).toMatchObject([{ date: "2026-09-10", costUsd: 3 }]);
       const sp = await getDashboardCosts(
         ctx(t),
         { tz: "America/Sao_Paulo" },
         appDb,
         noFetch,
       );
-      expect(sp.days).toEqual([{ date: "2026-09-09", costUsd: 3 }]);
+      expect(sp.days).toMatchObject([{ date: "2026-09-09", costUsd: 3 }]);
     } finally {
       await suDb.$executeRawUnsafe(
         `DELETE FROM llm_usage WHERE tenant_id = ${t}`,

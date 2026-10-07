@@ -122,7 +122,7 @@ export const documentTemplatesController = new Elysia({
       }),
       detail: doc(
         "List starter templates",
-        "Ready-made templates (quote, proposal, receipt) to create one from.",
+        "Ready-made templates (quote, proposal, receipt, and a blank one) to create one from.",
       ),
       response: errors(401, 403),
     },

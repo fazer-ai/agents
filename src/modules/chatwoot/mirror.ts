@@ -422,7 +422,7 @@ export async function mirrorChatwootEvent(
               ...(n.conversationType
                 ? { conversationType: n.conversationType }
                 : {}),
-              ...(n.labels ? { labels: n.labels } : {}),
+              ...(n.labels !== undefined ? { labels: n.labels } : {}),
               ...(decision.redirectOrigin
                 ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
                 : {}),
@@ -515,7 +515,10 @@ export async function mirrorChatwootEvent(
             ...(decision.unversioned && n.conversationType
               ? { conversationType: n.conversationType }
               : {}),
-            ...(decision.unversioned && n.labels ? { labels: n.labels } : {}),
+            // The label list, on the bags' terms: assigned whole, by recency, and only when carried.
+            ...(decision.unversioned && n.labels !== undefined
+              ? { labels: n.labels }
+              : {}),
             // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget
             // conversation can be re-entered from a second WhatsApp thread, and every payload carries
             // the pairing as of when it was SERIALIZED — a retried delivery (3 attempts, 3s apart)

@@ -22,7 +22,12 @@ import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  announceJobDeath,
+  type JobResult,
+  registerDeadLetterHandler,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
 import { maxIncomingId, parseChatwootMessages } from "./messages";
 import {
@@ -311,10 +316,7 @@ async function runRecovery(params: {
   // reply is coming, the newest page and the freshness fence (which reasons about a reply arriving
   // late) are neither asked nor paid for. Decided off the ledger's event rather than the rebuild,
   // because the rebuild is two REST reads further down and one of them is what this decides.
-  const replayPosts =
-    row.routeObserved !== true &&
-    row.event === TURN_BEARING_EVENT &&
-    row.owesMemoryOnly !== true;
+  const replayPosts = owesAReply(row);
 
   const conv = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
@@ -1073,6 +1075,9 @@ async function runRecovery(params: {
         row.deliveryId,
         conversationId,
       );
+      await announceUnanswered(params.tenantId, row.id, base, {
+        leftProcessed: true,
+      });
     }
     logger.warn(
       "chatwoot recovery: the turn %s on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
@@ -1223,9 +1228,18 @@ function readDeliveryRowId(payload: unknown): bigint | null {
   return typeof v === "string" ? parseDbId(v) : null;
 }
 
-async function deliveryRecoveryHandler(
+function deliveryRecoveryHandler(
   job: ClaimedJob,
   base: PrismaClient,
+): Promise<JobResult> {
+  return runRecoveryJob(job, base);
+}
+
+// The handler's body, with `deps` for a test that drives a claimed job minus the network.
+export async function runRecoveryJob(
+  job: ClaimedJob,
+  base: PrismaClient,
+  deps?: RuntimeDeps,
 ): Promise<JobResult> {
   const deliveryRowId = readDeliveryRowId(job.payload);
   // Nothing to work on, and no attempt can produce one. Failing would spend five attempts and then
@@ -1242,7 +1256,19 @@ async function deliveryRecoveryHandler(
     tenantId: job.tenantId,
     deliveryRowId,
     base,
+    ...(deps ? { deps } : {}),
   });
+  // NOTE: Every outcome that ends the job without retrying it is where the loss is decided: a row
+  // still DEAD now stays DEAD, and the sweep's line about it was `info` because this job was coming.
+  // A retrying outcome decides it too when the scheduler already gave up on this claim: a last
+  // attempt past its deadline is dead-lettered while the row is still PROCESSING, so the dead-letter
+  // hook found nothing to announce, and nothing runs after this.
+  if (
+    (outcome !== "deferred" && outcome !== "unreachable") ||
+    (await schedulerGaveUp(job, base))
+  ) {
+    await announceUnanswered(job.tenantId, deliveryRowId, base);
+  }
   // NOTE: the two retrying outcomes take DIFFERENT roads. BUSY reschedules, which CLEARS the failure
   // budget: a turn is deliberately unbounded (the sweep waits thirty minutes) while this kind's
   // backoffs are spent in eighteen (`JOB_RETRY_BASE_MS`), so as `fail` a conversation's second
@@ -1264,16 +1290,188 @@ async function deliveryRecoveryHandler(
   return { outcome: "done" };
 }
 
-// No dead-letter hook of its own: `dispatchDeadLetter` already announces every kind's death with the
-// kind, the job id and the dedupe key (here the delivery row id), re-reads the row so a re-armed job
-// is not announced as a loss, and takes its level from `JOB_DEATH_LEVEL`. That level is `warn`: the
-// operator has their own way back to the work, since the sweep already announced this delivery at
-// `error` and the row is still on the `DEAD` worklist, and a second `error` would page twice.
+// The line that alerts on a stranded message nobody answered, written when its recovery ends with
+// the row still DEAD, when the recovery job dies with it still DEAD, or when the recovery left it on
+// PROCESSED with nobody answered because putting it back failed (`leftProcessed`), the state nothing
+// revisits. Once per delivery: a re-run of the same job finds the line and writes nothing.
+// Best-effort, like every line here: the row stays where it is either way.
+// Whether the scheduler already dead-lettered this very claim, read rather than assumed: false on
+// any doubt, which leaves the announcement to the hook or the next attempt.
+async function schedulerGaveUp(
+  job: ClaimedJob,
+  base: PrismaClient,
+): Promise<boolean> {
+  const row = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+    db.schedulerJob.findUnique({
+      where: { id: job.id },
+      select: { status: true, claimSeq: true },
+    }),
+  ).catch(() => null);
+  return row?.status === "DEAD" && row.claimSeq === job.claimSeq;
+}
+
+// Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a
+// transcription write-back (`message_updated`) and a row marked `owesMemoryOnly` replay into memory and
+// post nothing.
+function owesAReply(row: {
+  routeObserved: boolean | null;
+  event: string;
+  owesMemoryOnly: boolean | null;
+}): boolean {
+  return (
+    row.routeObserved !== true &&
+    row.event === TURN_BEARING_EVENT &&
+    row.owesMemoryOnly !== true
+  );
+}
+
+export async function announceUnanswered(
+  tenantId: bigint,
+  deliveryRowId: bigint,
+  base: PrismaClient,
+  opts: { leftProcessed?: boolean } = {},
+): Promise<void> {
+  try {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.chatwootWebhookDelivery.findUnique({
+        where: { id: deliveryRowId },
+        select: {
+          status: true,
+          deliveryId: true,
+          event: true,
+          chatwootInstanceId: true,
+          conversationId: true,
+          inboundMessageId: true,
+          routeObserved: true,
+          routeAgentBotId: true,
+          owesMemoryOnly: true,
+        },
+      }),
+    );
+    if (row?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD")) return;
+    // A delivery that owed only the agent's memory leaves nobody unanswered: what was lost is the
+    // words in the memory, a degraded turn later and not a customer waiting, so it is a `warn` with its
+    // own outcome.
+    const reply = owesAReply(row);
+    const outcome = reply ? "unanswered" : "memory_unrecovered";
+    // An observer's delivery belongs to the observer, named by the bot route the receiver recorded; the
+    // inbox names the responder. A route bot no persona carries any more names nobody.
+    const observerBotId =
+      row.routeObserved === true ? row.routeAgentBotId : null;
+    const [conv, observer] = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      Promise.all([
+        row.conversationId === null
+          ? null
+          : db.conversation.findUnique({
+              where: {
+                tenantId_chatwootInstanceId_chatwootConversationId: {
+                  tenantId,
+                  chatwootInstanceId: row.chatwootInstanceId,
+                  chatwootConversationId: row.conversationId,
+                },
+              },
+              select: {
+                id: true,
+                inboxId: true,
+                inbox: { select: { agentId: true } },
+              },
+            }),
+        observerBotId === null
+          ? null
+          : db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: row.chatwootInstanceId,
+                chatwootAgentBotId: observerBotId,
+              },
+              select: { agentId: true },
+            }),
+      ]),
+    );
+    await writeFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: conv?.id ?? null,
+        agentId:
+          row.routeObserved === true
+            ? (observer?.agentId ?? null)
+            : (conv?.inbox?.agentId ?? null),
+        inboxId: conv?.inboxId ?? null,
+        base,
+      },
+      {
+        stage: "delivery",
+        level: reply ? "error" : "warn",
+        status: "error",
+        detail: {
+          outcome,
+          deliveryEvent: row.event,
+          deliveryId: row.deliveryId,
+          deliveryRowId: String(deliveryRowId),
+          messageId: row.inboundMessageId,
+          conversationId: row.conversationId,
+        },
+        errorMessage: !reply
+          ? "The message never reached the agent's memory: its recovery ended without replaying it. Nobody was owed a reply."
+          : opts.leftProcessed
+            ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
+            : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
+      },
+      {
+        // Once per ledger row (not `deliveryId`: Chatwoot's id is unique per instance only), checked
+        // and written under one lock: a late attempt and the dead-letter hook can race for it.
+        once: {
+          lockKey: `delivery-unanswered:${deliveryRowId}`,
+          already: async (db) =>
+            (await db.executionLog.findFirst({
+              where: {
+                stage: "delivery",
+                AND: [
+                  { detail: { path: ["outcome"], equals: outcome } },
+                  {
+                    detail: {
+                      path: ["deliveryRowId"],
+                      equals: String(deliveryRowId),
+                    },
+                  },
+                ],
+              },
+              select: { id: true },
+            })) !== null,
+        },
+      },
+    );
+  } catch (err) {
+    logger.error(
+      { err },
+      "chatwoot recovery: could not write the unanswered line for delivery row %s",
+      String(deliveryRowId),
+    );
+  }
+}
+
+// A recovery that died never reached `announceUnanswered` (an account it could not read on every
+// attempt, a crash), and the sweep's line was `info` because it was coming. Its death is announced like
+// every kind's, re-arm suppression included (`announceJobDeath`), and when that line was owed and the
+// row is still DEAD, the delivery's own line says the customer went unanswered.
+export async function announceDeadRecovery(
+  job: ClaimedJob,
+  error: string,
+  base: PrismaClient,
+): Promise<void> {
+  if (!(await announceJobDeath(job, error, base))) return;
+  const deliveryRowId = readDeliveryRowId(job.payload);
+  if (deliveryRowId !== null)
+    await announceUnanswered(job.tenantId, deliveryRowId, base);
+}
 
 let registered = false;
 export function registerDeliveryRecoveryHandler(): void {
   if (registered) return;
   registerJobHandler("DELIVERY_RECOVERY", deliveryRecoveryHandler);
+  registerDeadLetterHandler("DELIVERY_RECOVERY", announceDeadRecovery);
   registered = true;
 }
 

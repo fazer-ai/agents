@@ -273,7 +273,7 @@ const TABLE: Record<string, Row> = {
     args: { inbox_id: NOPE, agent_id: NOPE },
     why: "inbox does not exist",
     pastOwnership:
-      "measured on an inbox that EXISTS: the preview runs every check `observeInbox` makes before it touches Chatwoot (`readObserveTarget`), so a non-monitoring agent, the inbox's own responder, a second observer and a disconnected account are refused by both halves.",
+      "measured on an inbox that EXISTS: the preview runs every check `observeInbox` makes before it touches Chatwoot (`readObserveTarget`), so a non-monitoring agent, the inbox's own responder and a disconnected account are refused by both halves, and a second observer is accepted by both.",
   },
   inbox_unobserve: {
     args: { inbox_id: NOPE, agent_id: NOPE },

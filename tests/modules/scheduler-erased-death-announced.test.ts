@@ -22,6 +22,14 @@ const ANNOUNCE = "announceErasedDeaths";
 // se cerca.
 const REGISTRA = /registerDeadLetterHandler\(\s*"([A-Z_]+)"/g;
 
+// Os kinds `JOB_DELETE_ON_DONE` cujo gancho reivindica a morte por `announceJobDeath`, a mesma marca
+// (DEAD_LETTER_ANNOUNCED) que o revoke lê para devolver só as mortes não anunciadas: a morte sai no
+// máximo uma vez, e nenhum revoke apaga linhas desses kinds hoje. O que o gancho acrescenta (a linha
+// de entrega dizendo que o cliente ficou sem resposta) não sairia numa morte apagada.
+const GANCHO_QUE_REIVINDICA: Record<string, string> = {
+  DELIVERY_RECOVERY: "src/modules/chatwoot/recover-delivery.ts",
+};
+
 // Chama o revoke. O nome basta, e o import conta: um arquivo que só importa o símbolo e nunca o usa
 // não tem dívida, mas também não passa por aqui sem anunciar, e o custo de um falso positivo é uma
 // linha a mais num arquivo que já mexe com isso.
@@ -90,13 +98,23 @@ describe("quem revoga uma ingestão anuncia as mortes que apagou", () => {
     // estaria passando sobre um conjunto vazio.
     expect(comHook.sort()).toEqual([
       "DEBOUNCE",
+      "DELIVERY_RECOVERY",
       "MEMORY_COMPACT",
       "SUGGESTION_REVIEW",
     ]);
     const conflito = comHook.filter(
-      (k) => JOB_DELETE_ON_DONE[k as keyof typeof JOB_DELETE_ON_DONE],
+      (k) =>
+        JOB_DELETE_ON_DONE[k as keyof typeof JOB_DELETE_ON_DONE] &&
+        !(k in GANCHO_QUE_REIVINDICA),
     );
     expect(conflito).toEqual([]);
+    // A exceção só vale enquanto o gancho reivindicar a morte pela mesma marca que o revoke lê.
+    for (const [kind, arquivo] of Object.entries(GANCHO_QUE_REIVINDICA)) {
+      const code = withoutComments(await Bun.file(join(root, arquivo)).text());
+      expect(
+        `${kind}: ${/\bannounceJobDeath\(job, error, base\)/.test(code)}`,
+      ).toBe(`${kind}: true`);
+    }
   });
 
   test("todo chamador do revoke também anuncia", async () => {

@@ -16,6 +16,7 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { codeOnly } from "@/tests/utils/source-text";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
@@ -232,7 +233,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(details.filter((d) => "retries" in d)).toHaveLength(1);
   });
 
-  test("a ToolMessage with status error logs ONE warn/error line carrying the message", async () => {
+  test("a ToolMessage with status error logs ONE info/error line carrying the message", async () => {
     const flow = flowCtx();
     const logger = new ToolFlowLogger(flow);
     logger.handleToolStart(
@@ -255,7 +256,8 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     );
     const rows = await pollToolRows(flow.turnId, 1);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.level).toBe("warn");
+    // NOTE: `info`: the model may call the tool again and succeed; the turn's outcome is `settle`'s.
+    expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.status).toBe("error");
     expect(rows[0]?.errorMessage).toContain(
       "Google Calendar returned HTTP 500.",
@@ -266,6 +268,89 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect((rows[0]?.detail as Record<string, unknown> | null)?.output).toBe(
       "string(34)",
     );
+  });
+
+  // THE TURN'S OUTCOME PER TOOL. A failed call is `info` when it ends, because the model may call the
+  // tool again; `settle` writes one `warn` for each tool that failed on every call it made, and
+  // nothing for one that failed and then worked.
+  test("a tool that failed and then worked leaves no warn; one that always failed leaves one", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
+    let run = 0;
+    const call = (tool: string, failed: boolean, thrown = false) => {
+      const id = `run-outcome-${run++}`;
+      logger.handleToolStart(
+        {} as never,
+        "{}",
+        id,
+        undefined,
+        undefined,
+        undefined,
+        tool,
+      );
+      if (thrown) logger.handleToolError(new Error("socket hang up"), id);
+      else
+        logger.handleToolEnd(
+          failed
+            ? new ToolMessage({
+                status: "error",
+                content: "HTTP 502",
+                tool_call_id: id,
+                name: tool,
+              })
+            : "ok",
+          id,
+        );
+    };
+    call("consulta_pedido", true);
+    call("consulta_pedido", false);
+    call("agenda", true);
+    call("agenda", true, true);
+    call("estoque", false);
+    logger.settle();
+    // Settling again writes nothing more: the outcome is the turn's, said once.
+    logger.settle();
+    const rows = await pollToolRows(flow.turnId, 6);
+    expect(rows).toHaveLength(6);
+    const warns = rows.filter((r) => r.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.detail).toEqual({ tool: "agenda", failedCalls: 2 });
+    expect(warns[0]?.errorMessage).toBe(
+      "agenda failed on every call this turn (2): socket hang up",
+    );
+    expect(
+      rows.filter((r) => r.level !== "warn").every((r) => r.level === "info"),
+    ).toBe(true);
+  });
+
+  // A call still running when the turn ended (a deadline rejects before LangChain delivers the
+  // tool's error) reports after `settle`, and is judged when it lands: a tool whose only call failed
+  // late still gets its `warn`, once, and a late success after an earlier failure gets none.
+  test("a call that ends after the turn settled is judged when it lands", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
+    const start = (id: string, tool: string) =>
+      logger.handleToolStart(
+        {} as never,
+        "{}",
+        id,
+        undefined,
+        undefined,
+        undefined,
+        tool,
+      );
+    start("late-1", "agenda");
+    start("late-2", "estoque");
+    logger.handleToolError(new Error("socket hang up"), "late-2");
+    start("late-3", "estoque");
+    logger.settle();
+    logger.handleToolError(new Error("deadline"), "late-1");
+    logger.handleToolEnd("ok", "late-3");
+    const rows = await pollToolRows(flow.turnId, 4);
+    const warns = rows.filter((r) => r.level === "warn");
+    expect(warns.map((r) => r.detail)).toEqual([
+      { tool: "agenda", failedCalls: 1 },
+    ]);
   });
 
   // NOTE: The other half of that contract. An operator's HTTP tool returns `HTTP <status>\n<body>`,
@@ -294,14 +379,16 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       }),
       "run-body",
     );
-    const rows = await pollToolRows(flow.turnId, 1);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.level).toBe("warn");
+    logger.settle();
+    const rows = await pollToolRows(flow.turnId, 2);
+    expect(rows.map((r) => r.level).sort()).toEqual(["info", "warn"]);
     // Still enough to alert on and to diagnose: which tool, and what the other end answered.
-    expect(rows[0]?.errorMessage).toBe("HTTP 422");
-    expect(rows[0]?.errorMessage).not.toContain("Zebrafina");
-    expect(rows[0]?.errorMessage).not.toContain("12345678900");
-    expect(JSON.stringify(rows[0]?.detail)).not.toContain("12345678900");
+    expect(rows.find((r) => r.level === "info")?.errorMessage).toBe("HTTP 422");
+    expect(rows.find((r) => r.level === "warn")?.errorMessage).toBe(
+      "consulta_paciente failed on every call this turn (1): HTTP 422",
+    );
+    expect(JSON.stringify(rows)).not.toContain("Zebrafina");
+    expect(JSON.stringify(rows)).not.toContain("12345678900");
   });
 
   // `logToolValues` is the escape hatch the repo already gives an operator investigating one agent,
@@ -360,7 +447,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(detail?.output).toBe("object(2 keys)");
   });
 
-  test("e2e through the graph: one warn line AND the model sees the exact friendly string", async () => {
+  test("e2e through the graph: the call's info line, the turn's warn, AND the model sees the exact friendly string", async () => {
     const MSG = "The payment provider rejected the request (HTTP 503).";
     const probe = failableTool(async () => toolFailure(MSG), {
       name: "probe_fail",
@@ -376,13 +463,15 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       tools: [probe],
     });
     const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
     await graph.invoke(
       { messages: [new HumanMessage("oi")] },
       {
         configurable: { thread_id: `tfl-${process.pid}` },
-        callbacks: [new ToolFlowLogger(flow)],
+        callbacks: [logger],
       },
     );
+    logger.settle();
 
     const second = model.seen[1] ?? [];
     const toolMsg = second.find((m) => m.getType() === "tool") as
@@ -393,11 +482,12 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(toolMsg?.status).toBe("error");
     expect(toolMsg?.tool_call_id).toBe("call_f1");
 
-    const rows = await pollToolRows(flow.turnId, 1);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.level).toBe("warn");
-    expect(rows[0]?.status).toBe("error");
-    expect(rows[0]?.errorMessage).toContain("HTTP 503");
+    const rows = await pollToolRows(flow.turnId, 2);
+    expect(rows.map((r) => [r.level, r.status]).sort()).toEqual([
+      ["info", "error"],
+      ["warn", "error"],
+    ]);
+    for (const r of rows) expect(r.errorMessage).toContain("HTTP 503");
   });
 
   test("the issue's full loop: a marked failure creates an alert delivery for a minLevel:warn channel", async () => {
@@ -428,13 +518,15 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       tools: [probe],
     });
     const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
     await graph.invoke(
       { messages: [new HumanMessage("oi")] },
       {
         configurable: { thread_id: `tfl-alert-${process.pid}` },
-        callbacks: [new ToolFlowLogger(flow)],
+        callbacks: [logger],
       },
     );
+    logger.settle();
 
     // The delivery row is what the alert worker POSTs from, so a failure logged info/ok would
     // never reach a channel.
@@ -581,5 +673,27 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       expect(logged?.caption).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("Maria");
     });
+  });
+});
+
+// EVERY TURN SETTLES ITS LOGGER. A tool that failed on every call is the turn's outcome only once
+// `settle()` runs, and only that line is `warn`: a logger built and never settled leaves those
+// failures at `info`, out of the health block and the alerts. So every logger the app builds is
+// held by name and settled in the same file.
+describe("every tool logger the app builds is settled", () => {
+  test("held by name, and that name settled", async () => {
+    const { Glob } = await import("bun");
+    const unsettled: string[] = [];
+    for await (const file of new Glob("src/**/*.ts").scan(".")) {
+      // Code only: a comment that names the class is not a logger.
+      const src = codeOnly(await Bun.file(file).text());
+      for (const m of src.matchAll(/new ToolFlowLogger\(/g)) {
+        const before = src.slice(0, m.index);
+        const bound = /const (\w+)\s*=\s*$/.exec(before);
+        if (!bound || !src.includes(`${bound[1]}.settle()`))
+          unsettled.push(`${file}:${before.split("\n").length}`);
+      }
+    }
+    expect(unsettled).toEqual([]);
   });
 });

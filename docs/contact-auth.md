@@ -100,7 +100,7 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
 | `allowlist` | a contact whose mirrored phone is in `phones` (compared by digits: `+55 (11) 98888-7777` is `5511988887777`), or whose identifier is in `identifiers` (exact) | the contact row the gate already reads |
 | `attribute` | a contact or conversation whose mirrored attribute `key` is set, or equals `equals`. The same shape and the same evaluator as a tool precondition (`tool-preconditions.ts`) | one indexed read of the conversation row, for `scope: "conversation"` |
 | `conversation_type` | a conversation whose `type` is `group` (a WhatsApp group) or `individual`, as the fork's `conversation.group_type` marks it. A conversation whose payload never stated the type is a group when its contact's identifier ends in `@g.us` (the group's JID), and individual otherwise | the conversation row |
-| `label` | a conversation carrying `label`. Stored lowercased and compared without case, since Chatwoot keeps label titles lowercased | the conversation row |
+| `label` | a conversation carrying `label`. The condition's label is stored lowercased; the conversation's titles are mirrored as Chatwoot stated them (the same column the dashboard reads) and compared without case | the conversation row |
 | `all` / `any` | every condition in `conditions` holds / at least one does. 1 to 10 conditions of the four kinds above; a combination inside a combination is refused | what its conditions read |
 
 ```json
@@ -243,14 +243,21 @@ that does not run unless a later allow re-arms it (see "Asked once per arm").
   already running is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm
   reached, since asking the whole gate again would put the same question to the endpoint twice. When
-  that verdict refuses, the pass is skipped and the refusal is recorded for the message as the pass
-  would record it (Media waits for the gate), so Chatwoot's late update of the same audio is not
-  transcribed by a later allow. An allowed message is remembered the same way, so that late update
+  that verdict refuses, the pass is skipped and the refusal is recorded for THAT watcher and the
+  message, in this process, so Chatwoot's late update of the same audio is not transcribed by a later
+  allow. It is never written on the conversation (Media waits for the gate): an inbox carries several
+  watchers, and one watcher's refusal decides only what that watcher observes. An allowed message is remembered the same way, so that late update
   does not ask the endpoint again. A pass
   that asks for itself under a watcher (an agent flipped to monitoring while its gate waited) asks the
   whole gate the way the arm does, with the arm's asking, so a concurrent arm and pass share one
   request. An observer beside a separate responder keeps the responder's `unverified` pass (Media
   waits for the gate).
+- **Several watchers on one inbox.** Each route asks its own watcher's gate, arms its own
+  observation and keeps its own fence. Beside a watcher bound as the inbox's agent, which remembers
+  and so analyses the media for both, another watcher stands down on the media pass only when that
+  analysis is known to happen: the bound watcher has not refused the message and its conditions
+  allow the conversation, with no endpoint following them. Otherwise the route analyses for itself under its own gate, so a conversation the
+  bound watcher refuses is still transcribed for a sibling that observes it.
 - **Memory is not the gate's to decide.** The burst is still remembered and the handled watermark
   still moves; what the gate withholds is the observation. Remembering is what keeps a later flip to
   production from answering the observed backlog.

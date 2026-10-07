@@ -183,7 +183,7 @@ function audioEvent(
   groupType: "group" | "individual",
   anonymous: boolean,
   inboxId: number,
-  update?: { messageId?: number; text?: string },
+  update?: { messageId?: number; text?: string; noMedia?: boolean },
 ) {
   seq += 1;
   const messageId = update?.messageId ?? 108_000 + seq;
@@ -194,13 +194,15 @@ function audioEvent(
     message_type: "incoming",
     private: false,
     sender: { id: 8800 + convId, name: "Cliente", type: null },
-    attachments: [
-      {
-        id: messageId * 10 + 1,
-        file_type: "audio",
-        data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
-      },
-    ],
+    attachments: update?.noMedia
+      ? []
+      : [
+          {
+            id: messageId * 10 + 1,
+            file_type: "audio",
+            data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
+          },
+        ],
     conversation: conversation(
       convId,
       groupType,
@@ -218,7 +220,7 @@ async function deliverMessage(
   groupType: "group" | "individual",
   anonymous = false,
   inboxId = OBSERVED_INBOX,
-  update?: { messageId?: number; text?: string },
+  update?: { messageId?: number; text?: string; noMedia?: boolean },
 ) {
   const n = audioEvent(convId, groupType, anonymous, inboxId, update);
   const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -1173,6 +1175,195 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     authAnswer = "allow";
     await deliverMessage(26, "individual", false, BOUND_INBOX, { messageId });
     expect(providers.stt).toBe(0);
+  });
+
+  // An inbox carries several watchers, and each one's gate decides only what IT
+  // observes. The watcher bound as the inbox's agent refusing a conversation must not keep another
+  // watcher, whose own gate let the conversation through, from transcribing its audio.
+  async function withSecondWatcher(
+    run: (secondBot: number) => Promise<void>,
+  ): Promise<void> {
+    const SECOND_BOT = 89;
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda observadora",
+        systemPrompt: "…",
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          credentialRef: sttKeyRef,
+        },
+        enabled: true,
+        mode: "monitoring",
+        settings: {
+          stt: { enabled: true, provider: "openai", credentialRef: sttKeyRef },
+        },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: SECOND_BOT,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `caobs-route-2-${process.pid}-${seq}`,
+        name: "Segunda observadora",
+      },
+    });
+    const bound = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: BOUND_INBOX },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: bound.id, agentId: second.id },
+    });
+    try {
+      await run(SECOND_BOT);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, agentId: second.id },
+      });
+      await suDb.chatwootAgentBot.deleteMany({
+        where: { tenantId, agentId: second.id },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  }
+
+  async function deliverSameOn(
+    bot: number,
+    convId: number,
+    groupType: "group" | "individual",
+    update?: { messageId?: number; noMedia?: boolean },
+  ) {
+    if (update?.messageId == null) seq -= 1;
+    const again = audioEvent(convId, groupType, false, BOUND_INBOX, update);
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `cao-${process.pid}-second-${seq}`,
+        event: again.event,
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: bot,
+      normalized: again,
+      base: appDb,
+      deps: deps() as never,
+    });
+    return again.message?.id as number;
+  }
+
+  // The other side: the bound watcher's conditions let the conversation through, so its route
+  // analyses the audio and the sibling stands down, rather than paying for the same transcription.
+  test("beside a bound watcher whose conditions allow the conversation, the audio is transcribed once for both watchers", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({
+        enabled: true,
+        rule: { kind: "conversation_type", type: "group" },
+      });
+      const messageId = await deliverMessage(45, "group", false, BOUND_INBOX);
+      expect(providers.stt).toBe(1);
+      expect(await deliverSameOn(secondBot, 45, "group")).toBe(messageId);
+      expect(providers.stt).toBe(1);
+    });
+  });
+
+  // The refusal mark covers every earlier message of the conversation for this watcher, and it
+  // outranks an allow cached for one of them: a later refusal is the newer question answered.
+  test("a watcher's refusal outranks the allow it cached for an earlier message's late audio", async () => {
+    await setGate({
+      enabled: true,
+      rule: GROUP_ONLY,
+      url: AUTH_URL,
+      askEndpointAfterRule: true,
+    });
+    const earlier = await deliverMessage(46, "group", false, BOUND_INBOX, {
+      noMedia: true,
+    });
+    await deliverMessage(46, "individual", false, BOUND_INBOX);
+    expect(providers.stt).toBe(0);
+    await deliverMessage(46, "group", false, BOUND_INBOX, {
+      messageId: earlier,
+    });
+    expect(providers.stt).toBe(0);
+  });
+
+  // A sibling stands down only when the bound watcher will analyze: an audio the bound watcher
+  // already refused is not one it will analyze, whatever its conditions say by the late update.
+  test("a sibling still analyzes a late audio the bound watcher refused before its conditions changed", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({ enabled: true, rule: GROUP_ONLY });
+      const messageId = await deliverMessage(
+        47,
+        "individual",
+        false,
+        BOUND_INBOX,
+        { noMedia: true },
+      );
+      await deliverSameOn(secondBot, 47, "individual", { noMedia: true });
+      expect(providers.stt).toBe(0);
+      // The conversation becomes a group, and the audio arrives on the late update.
+      await deliverMessage(47, "group", false, BOUND_INBOX, { messageId });
+      expect(providers.stt).toBe(0);
+      await deliverSameOn(secondBot, 47, "group", { messageId });
+      expect(providers.stt).toBe(1);
+    });
+  });
+
+  test("a sibling still analyzes a late audio the bound watcher refused before its gate was turned off", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({ enabled: true, rule: GROUP_ONLY });
+      const messageId = await deliverMessage(
+        50,
+        "individual",
+        false,
+        BOUND_INBOX,
+        { noMedia: true },
+      );
+      await deliverSameOn(secondBot, 50, "individual", { noMedia: true });
+      await setGate({ enabled: false, rule: GROUP_ONLY });
+      await deliverMessage(50, "individual", false, BOUND_INBOX, { messageId });
+      expect(providers.stt).toBe(0);
+      await deliverSameOn(secondBot, 50, "individual", { messageId });
+      expect(providers.stt).toBe(1);
+    });
+  });
+
+  test("a bound watcher's refusal leaves another watcher of the same inbox free to transcribe", async () => {
+    await withSecondWatcher(async (secondBot) => {
+      await setGate({
+        enabled: true,
+        rule: { kind: "conversation_type", type: "group" },
+      });
+      const messageId = await deliverMessage(
+        44,
+        "individual",
+        false,
+        BOUND_INBOX,
+      );
+      expect(providers.stt).toBe(0);
+      // The same message, fanned by the fork to the second watcher's route.
+      expect(await deliverSameOn(secondBot, 44, "individual")).toBe(messageId);
+      expect(providers.stt).toBe(1);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 44 },
+        select: { mediaRefusedThroughMessageId: true },
+      });
+      // The watcher's refusal is its own: nothing is written on the conversation for the others.
+      expect(conv.mediaRefusedThroughMessageId).toBeNull();
+    });
   });
 
   // With forwarding on, each message is its own question (the key carries its id, as a

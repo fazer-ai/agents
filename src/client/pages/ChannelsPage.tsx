@@ -183,14 +183,14 @@ function InboxObserversStrip({
   const observing = observerAgentIds
     .map((id) => agents.find((a) => a.id === id))
     .filter((a): a is AgentLite => a !== undefined);
-  // An inbox has ONE watcher (the memory thread is the contact-inbox's, not the agent's), so the
-  // menu offers nothing while one is bound: the write would refuse it.
-  const candidates =
-    observerAgentIds.length > 0
-      ? []
-      : agents.filter(
-          (a) => a.mode === "monitoring" && a.id !== responderAgentId,
-        );
+  // An inbox carries several watchers: the menu offers every monitoring agent not already on it,
+  // in either role.
+  const candidates = agents.filter(
+    (a) =>
+      a.mode === "monitoring" &&
+      a.id !== responderAgentId &&
+      !observerAgentIds.includes(a.id),
+  );
 
   async function run(action: () => Promise<void>) {
     setPending(true);

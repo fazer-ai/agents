@@ -49,7 +49,6 @@ import {
 // translate('errors.inboxGoneRemote', 'This inbox no longer exists in Chatwoot. Remove its mirror.')
 // translate('errors.agentAlreadyObserves', 'This agent already observes this inbox. Remove it as an observer before making it the answering agent.')
 // translate('errors.observerNotMonitoring', 'Only an agent in monitoring mode can observe an inbox.')
-// translate('errors.inboxAlreadyObserved', 'This inbox already has an observer. Remove it before adding another.')
 // translate('errors.observeTakenBack', 'This observe was undone while the attachment was still in flight. Try again.')
 // translate('errors.observeRacedAnother', 'Another observe of this inbox was in flight and did not complete. Try again.')
 // translate('errors.agentIsResponder', 'This agent already answers this inbox; it cannot observe it too.')

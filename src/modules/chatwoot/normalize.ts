@@ -273,27 +273,26 @@ export function normalizeChatwootEvent(
   // and the fork's push_data.kanban_task), so the agent's attribute context needs NO extra API call.
   const convAttrs = conv ? attrs(conv.custom_attributes) : undefined;
   if (convAttrs) normalized.customAttributes = convAttrs;
+  // The whole list rides along with the bags, so it is assigned, never merged. A payload whose
+  // `labels` is not a list says nothing, and the stored list stays.
+  if (conv && Array.isArray(conv.labels))
+    normalized.labels = conv.labels.filter(
+      (l): l is string => typeof l === "string" && l.length > 0,
+    );
   const kanbanTask =
     conv && isRecord(conv.kanban_task) ? conv.kanban_task : null;
   const taskAttrs = kanbanTask
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
-  // NOTE: the fork's `group_type` and the label list (`label_list`), read by the contact gate's rule.
-  // A value outside the two types, or a list holding anything but strings, says nothing rather than
-  // something wrong: absent leaves the stored value alone, and `[]` is a real clear.
+  // NOTE: the fork's `group_type`, read by the contact gate's rule. A value outside the two types says
+  // nothing rather than something wrong: absent leaves the stored value alone. The label list is read
+  // above, once, for the dashboard and the gate alike.
   if (
     conv &&
     (conv.group_type === "group" || conv.group_type === "individual")
   ) {
     normalized.conversationType = conv.group_type;
-  }
-  if (
-    conv &&
-    Array.isArray(conv.labels) &&
-    conv.labels.every((l) => typeof l === "string")
-  ) {
-    normalized.labels = (conv.labels as string[]).map((l) => l.toLowerCase());
   }
   // NOTE: the redirect episode's other half, when the fork wrote one. PRESENCE of the key is the
   // statement: the fork always ships it (nil included) and a Chatwoot without it never does, so a

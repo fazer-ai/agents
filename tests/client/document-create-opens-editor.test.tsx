@@ -93,6 +93,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         {
           key: "quote",
           name: "Orçamento",
+          summary: "",
+          suggestedName: "Orçamento",
           description: "",
           blocks: [{ id: "corpo", type: "text", text: "Olá." }],
           fields: [],

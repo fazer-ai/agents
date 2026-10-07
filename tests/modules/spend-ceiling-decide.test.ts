@@ -5,6 +5,7 @@ import {
   decideSpend,
   monthEnd,
   monthStart,
+  projectMonthEnd,
 } from "@/modules/spend-ceiling/decide";
 import {
   announceSpendCeilingOnConversation,
@@ -408,6 +409,44 @@ describe("the window", () => {
     expect(monthEnd(new Date("2026-12-31T23:59:59.999Z")).toISOString()).toBe(
       "2027-01-01T00:00:00.000Z",
     );
+  });
+});
+
+// WHERE THE MONTH IS HEADED: the dashboard puts this next to the ceiling, so it has to
+// be a straight line from the pace so far, never below what was spent, and never a multiplication of
+// the first hour of the month into a month of such hours.
+describe("the month-end projection", () => {
+  test("stretches the pace of the days elapsed to the whole month", () => {
+    // Ten days into a 30-day September at $30: $90 at that pace.
+    expect(projectMonthEnd(30, new Date("2026-09-11T00:00:00Z"))).toBeCloseTo(
+      90,
+    );
+  });
+
+  test("is never below what was already spent", () => {
+    for (const at of [
+      "2026-09-01T00:00:00Z",
+      "2026-09-15T12:00:00Z",
+      "2026-09-30T23:59:59Z",
+    ])
+      expect(projectMonthEnd(30, new Date(at))).toBeGreaterThanOrEqual(30);
+  });
+
+  test("counts at least one day elapsed, so the month's first hour does not explode", () => {
+    // An hour into the month: the same as one whole day, $10 → $300 over 30 days, not $7200.
+    expect(projectMonthEnd(10, new Date("2026-09-01T01:00:00Z"))).toBeCloseTo(
+      300,
+    );
+  });
+
+  test("on the month's last instant it is the spend itself", () => {
+    expect(
+      projectMonthEnd(42, new Date("2026-09-30T23:59:59.999Z")),
+    ).toBeCloseTo(42, 2);
+  });
+
+  test("nothing spent projects nothing", () => {
+    expect(projectMonthEnd(0, new Date("2026-09-11T00:00:00Z"))).toBe(0);
   });
 });
 

@@ -74,7 +74,9 @@ import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   mediaRefusedThrough,
   recordMediaRefusal,
+  recordWatcherMediaRefusal,
   refusedCovers,
+  watcherMediaRefusedThrough,
 } from "@/modules/contact-auth/media-refusal";
 import {
   observerArmPermit,
@@ -227,6 +229,7 @@ import {
   verifyChatwootSignature,
 } from "./signing";
 import type { NormalizedChatwootEvent } from "./types";
+import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
 // Dedicated Chatwoot Agent Bot webhook receiver: resolve tenant and instance by the opaque routeToken
 // (constant-time hash probe), verify the HMAC with the bot's stored secret (auth AFTER resolution),
@@ -1508,6 +1511,12 @@ async function mediaAdmitted(
       return true;
     }
     const watcherPass = isMonitoring(ctx.mode ?? "");
+    // NOTE: Another watcher's route (several can observe one inbox): its own gate already let this
+    // conversation through before the pass, and the bound watcher's verdict decides only what the
+    // BOUND watcher observes.
+    if (watcherPass && owner.agentId !== null && owner.agentId !== agentId) {
+      return true;
+    }
     if (watcherPass) {
       // The watcher's whole gate, with the retirement bookkeeping an arm's ask does: the delivery's
       // own ask when the caller shares it, asked once for both, or a fresh one. It leaves its own line.
@@ -1528,13 +1537,7 @@ async function mediaAdmitted(
                 : null,
           }));
       if (!(await permitOf(agentId, ctx.settings))) {
-        await recordMediaRefusal(
-          tenantId,
-          convDbId,
-          n.message?.id,
-          base,
-          owner.sleep,
-        );
+        recordWatcherMediaRefusal(tenantId, convDbId, agentId, n.message?.id);
         return false;
       }
       if (
@@ -3785,6 +3788,14 @@ export async function processChatwootDelivery(
   // Whether the watcher answer came from the attach window rather than a row. Only that answer
   // can: "no row" on the binding read is also the post-detach state of a bot owning an old conversation.
   const observerAttaching = observer?.attaching === true;
+  // On an observer's route, the inbox's watchers (`inboxWatchers`), for the memory owner. Read once,
+  // and only by a reader that runs.
+  let watchersMemo: ReturnType<typeof inboxWatchers> | null = null;
+  const watchers = (): ReturnType<typeof inboxWatchers> => {
+    if (observer === null) return Promise.resolve(null);
+    watchersMemo ??= inboxWatchers(params.tenantId, observer.inboxId, base);
+    return watchersMemo;
+  };
 
   // tx1: CAS <claimFrom> to PROCESSING; a duplicate that finds nothing to claim skips. Stamped
   // with `claimed_at`, the clock the sweep measures an attempt by. "PENDING" is a delivery arriving;
@@ -4523,10 +4534,54 @@ export async function processChatwootDelivery(
       rt.mode,
       base,
     )) !== null;
+  // A WATCHER bound as the inbox's agent remembers, but analyses media only for a conversation
+  // its own contact gate lets it observe. Another watcher of the inbox stands down on its pass
+  // only when that is known to happen: the bound watcher's conditions allow the conversation and no
+  // endpoint follows them. Otherwise this route analyses for itself, under its own gate, since one
+  // watcher's refusal decides only what that watcher observes. The conditions are asked without a
+  // line: the bound watcher's own route leaves it.
+  const boundWatcherMayRefuseMedia =
+    responderRemembers &&
+    observer !== null &&
+    responderRt !== null &&
+    isMonitoring(responderRt.mode) &&
+    n.conversationId !== null &&
+    (await (async () => {
+      // NOTE: An audio the bound watcher already refused is one it will not analyze, whatever its
+      // gate says now, turned off included.
+      if (
+        refusedCovers(
+          watcherMediaRefusedThrough(
+            params.tenantId,
+            mirror.conversationRowId,
+            responderRt.agentId,
+          ),
+          n.message?.id,
+        )
+      )
+        return true;
+      const cfg = readContactAuthConfig(responderRt.settings);
+      if (!cfg.enabled) return false;
+      if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
+        return true;
+      return (
+        (await observerRuleVerdict(
+          {
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId: n.conversationId as number,
+            agentId: responderRt.agentId,
+            settings: responderRt.settings,
+            base,
+          },
+          { emit: false },
+        )) !== "allowed"
+      );
+    })());
   // A TEST responder analyses media too, on the answer path of an activated conversation, so the
   // observer stands down there as well. Asked only on an observer route beside a test responder.
   const responderAnalysesMedia =
-    responderRemembers ||
+    (responderRemembers && !boundWatcherMayRefuseMedia) ||
     (responderCovers &&
       responderRt?.enabled === true &&
       responderRt.mode === "test" &&
@@ -4614,9 +4669,23 @@ export async function processChatwootDelivery(
       observing && n.message?.id != null
         ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}:watcher:${rt.agentId}`
         : null;
+    // A message this watcher already refused stays refused for it, a refusal of a later message
+    // included: its late update is not transcribed by a yes given since, nor by an allow cached for it
+    // before that refusal, and its gate is not asked again.
+    const refusedForWatcher =
+      observing &&
+      refusedCovers(
+        watcherMediaRefusedThrough(
+          params.tenantId,
+          mirror.conversationRowId,
+          rt.agentId,
+        ),
+        n.message?.id,
+      );
     // The endpoint's answer is what is reused; the conditions are asked again, since a label
     // removed since then takes the conversation out of scope.
     const lateAdmitted =
+      !refusedForWatcher &&
       !isNewIncoming &&
       watcherAdmission !== null &&
       n.conversationId !== null &&
@@ -4638,26 +4707,23 @@ export async function processChatwootDelivery(
         { emit: false },
       )) === "allowed";
     const watcherPermit =
-      !gateAsksNext && observing && !lateAdmitted
+      !gateAsksNext && observing && !lateAdmitted && !refusedForWatcher
         ? await observerMayObserve(rt, rt.settings)
         : null;
     if (gateAsksNext) {
       mediaAwaitsGate = true;
     } else if (observing && !lateAdmitted && !watcherPermit) {
-      // NOTE: A conversation the watcher's rule keeps it out of is not transcribed or described for
-      // it: that analysis exists for the observation the rule just refused. The watcher bound as the
-      // inbox's agent owns the media gate, so its refusal is remembered for the message as the pass
-      // would remember it: a late update of the same audio is not transcribed by a later yes. An
-      // observer beside a responder leaves the mark alone, since the responder's gate decides there.
-      if (observer === null) {
-        await recordMediaRefusal(
-          params.tenantId,
-          mirror.conversationRowId,
-          n.message?.id,
-          base,
-          params.deps?.sleep,
-        );
-      }
+      // NOTE: A conversation the watcher's gate keeps it out of is not transcribed or described for
+      // it: that analysis exists for the observation the gate just refused. The refusal is remembered
+      // for THIS watcher only (a late update of the same audio is not transcribed by a later yes), never
+      // on the conversation: another watcher of the inbox decides its own media by its own gate, and a
+      // responder's media gate is the responder's.
+      recordWatcherMediaRefusal(
+        params.tenantId,
+        mirror.conversationRowId,
+        rt.agentId,
+        n.message?.id,
+      );
     } else {
       if (
         watcherAdmission !== null &&
@@ -5482,15 +5548,18 @@ export async function processChatwootDelivery(
     // Whose memory the append is filed under, which decides whose compaction settings summarise
     // the attendance. Both routes can arm the same job (the observer appends a colleague's reply until
     // the responder's delivery finishes) and the later arm wins, so it is the responder whenever it
-    // received the message and remembers continuously; otherwise the route's own agent.
-    const memoryOwner =
+    // received the message and remembers continuously; beside other watchers, the first of them
+    // (`inboxWatchers`), the same answer on every watcher's route; otherwise the route's own agent.
+    const memoryOwner: { agentId: bigint; settings: unknown } =
       observer !== null &&
       responderRt !== null &&
       responderCovers &&
       responderRt.enabled &&
       ingestsContinuously(responderRt.mode)
         ? responderRt
-        : rt;
+        : observer !== null
+          ? watcherMemoryOwner(await watchers(), rt)
+          : rt;
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,

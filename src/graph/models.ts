@@ -3,12 +3,15 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatDeepSeek } from "@langchain/deepseek";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
+import logger from "@/api/lib/logger";
 import { AppError } from "@/lib/errors";
 import { toGeminiTools } from "./gemini-tools";
 import type { ModelConfig } from "./model-config";
 import {
   type OpenAITransportPlan,
   planOpenAITransport,
+  type ReasoningEffort,
+  toolEffortFloorOf,
 } from "./openai-reasoning";
 
 // Per-agent/per-node model factory. The config SCHEMA lives in ./model-config (LangChain-free, so
@@ -138,11 +141,57 @@ function makeOpenAIChat(
     onCompletions,
   ) as BindTools;
   const bindResponses = onResponses.bindTools.bind(onResponses) as BindTools;
-  chat.bindTools = ((tools, kwargs) =>
+  const bindPinned = ((tools, kwargs) =>
     usesResponsesEndpoint(chat, { ...kwargs, tools })
       ? bindResponses(tools, kwargs)
       : bindCompletions(tools, kwargs)) as BindTools;
+  // A model that refuses the pin itself (see `toolEffortFloorOf`) gets the lowest effort it named
+  // instead, on /v1/responses: completions refuses every effort above "none" alongside tools. Learned
+  // from the first refusal and kept for the process: the call that met it is answered by a second
+  // request on that shape, and every later call goes there directly. Read per call, not per bind,
+  // because the graph binds once per turn and calls once per round of tool calls. Only `invoke` does
+  // this, being the only method the graph calls on a bound model.
+  const key = `${fields?.configuration?.baseURL ?? ""} ${fields?.model ?? ""}`;
+  const bindFloor = (floor: ReasoningEffort): BindTools => {
+    const onFloor = new ChatOpenAI({
+      ...withPlan,
+      useResponsesApi: true,
+      modelKwargs: { ...withPlan?.modelKwargs, reasoning: { effort: floor } },
+    });
+    return onFloor.bindTools.bind(onFloor) as BindTools;
+  };
+  chat.bindTools = ((tools, kwargs) => {
+    const bound = bindPinned(tools, kwargs);
+    const invoke = bound.invoke.bind(bound);
+    bound.invoke = (async (input, options) => {
+      const known = toolEffortFloors.get(key);
+      if (known) return bindFloor(known)(tools, kwargs).invoke(input, options);
+      try {
+        return await invoke(input, options);
+      } catch (err) {
+        const floor = toolEffortFloorOf(err);
+        if (floor === null) throw err;
+        if (!toolEffortFloors.has(key)) {
+          logger.warn(
+            { model: fields?.model, effort: floor },
+            "the model refuses reasoning effort none with tools; its tool calls run at the lowest effort it accepts",
+          );
+        }
+        toolEffortFloors.set(key, floor);
+        return bindFloor(floor)(tools, kwargs).invoke(input, options);
+      }
+    }) as typeof bound.invoke;
+    return bound;
+  }) as BindTools;
   return chat;
+}
+
+// What each model refused the tool pin with, keyed by endpoint and model id. Per process: a restart
+// pays one refused request per model, which is cheaper than a list of model ids to keep.
+const toolEffortFloors = new Map<string, ReasoningEffort>();
+
+export function forgetToolEffortFloorsForTest(): void {
+  toolEffortFloors.clear();
 }
 
 export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {

@@ -73,3 +73,18 @@ export function monthStart(now: Date): Date {
 export function monthEnd(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 }
+
+// WHERE THE MONTH IS HEADED, at the pace it has run so far: the month's spend over the days already
+// elapsed, stretched to the whole calendar month (UTC, the ceiling's own month). The elapsed span is
+// floored at one day, so the first hours of a month do not multiply one early call into a month of
+// them; the projection is never below what was already spent. A straight line, labelled as one on
+// screen: a campaign starting on the 20th is not in it.
+export function projectMonthEnd(usedUsd: number, now: Date): number {
+  const start = monthStart(now).getTime();
+  const end = monthEnd(now).getTime();
+  const day = 86_400_000;
+  const elapsed = Math.max(now.getTime() - start, day);
+  const span = end - start;
+  if (elapsed >= span) return usedUsd;
+  return (usedUsd * span) / elapsed;
+}

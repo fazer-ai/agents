@@ -31,6 +31,7 @@ import {
   USAGE_MODEL_METADATA_KEY,
   USAGE_PROVIDER_METADATA_KEY,
 } from "@/graph/usage";
+import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
 import { calledOffToolResult } from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
@@ -82,11 +83,16 @@ export interface BuildAgentGraphParams {
     provider: string;
     model: string;
     reason: string;
+    // The PRIMARY's failure, in `providerFailure`'s closed word: the line is labelled with the
+    // fallback, and a degraded primary still has to count toward its own rate (flowlog/alerts.ts).
+    failure: string;
   }) => void;
   onModelFallbackFailed?: (info: {
     provider: string;
     model: string;
     reason: string;
+    // `providerFailure`'s closed word, for the line's `detail.failure` (flowlog/alerts.ts).
+    failure: string;
   }) => void;
   // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
   // null/undefined sends the whole thread.
@@ -741,11 +747,14 @@ export function buildAgentGraph({
           });
         } catch (err) {
           // NOTE: a call the job's deadline ended failed on the job, not on the provider.
-          if (!jobSignal?.aborted) {
-            onModelFallbackFailed?.({
+          if (!jobSignal?.aborted && onModelFallbackFailed) {
+            const failure = providerFailure(err);
+            onModelFallbackFailed({
               ...second.labels,
               reason: err instanceof Error ? err.message : "provider error",
+              failure,
             });
+            markReportedElsewhere(err, failure);
           }
           throw err;
         }
@@ -779,14 +788,18 @@ export function buildAgentGraph({
                 deadlineMs: second.deadlineMs,
                 // NOTE: after the job's deadline no fallback starts (see `second.run`), so there is no
                 // failover to report and no failed provider: the primary failed on the job's deadline.
-                onFallback: ({ reason }) => {
+                onFallback: ({ reason, failure }) => {
                   if (jobSignal?.aborted) return;
                   fallbackHasTheTurn = true;
-                  onModelFallback?.({ ...second.labels, reason });
+                  onModelFallback?.({ ...second.labels, reason, failure });
                 },
-                onFallbackFailed: ({ reason }) => {
+                onFallbackFailed: ({ reason, failure }) => {
                   if (jobSignal?.aborted) return;
-                  onModelFallbackFailed?.({ ...second.labels, reason });
+                  onModelFallbackFailed?.({
+                    ...second.labels,
+                    reason,
+                    failure,
+                  });
                 },
               }
             : undefined,

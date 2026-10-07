@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import { DOCUMENT_STYLE_DEFAULTS } from "@/modules/documents/blocks";
+
+// The question is whether the BODY prints: page numbers would draw on every page, blank or not.
+const BODY_ONLY = { ...DOCUMENT_STYLE_DEFAULTS, showPageNumbers: false };
+
 import { documentDraws } from "@/modules/documents/draws";
 import { renderDocumentPdf } from "@/modules/documents/render";
 import type { CompanySettings } from "@/modules/tenant-settings/service";
@@ -38,7 +42,7 @@ async function drawn(input: {
   const buf = await renderDocumentPdf({
     blocks: input.blocks,
     fields: input.fields ?? [],
-    style: DOCUMENT_STYLE_DEFAULTS,
+    style: BODY_ONLY,
     values: input.values ?? {},
     company: input.company ?? EMPTY_COMPANY,
     logo: input.logo ?? null,
@@ -211,7 +215,7 @@ describe("documentDraws agrees with the renderer", () => {
       const answer = documentDraws({
         blocks: c.blocks,
         fields: c.fields ?? [],
-        style: DOCUMENT_STYLE_DEFAULTS,
+        style: BODY_ONLY,
         values: (c.values ?? {}) as never,
         company: c.company ?? EMPTY_COMPANY,
         hasLogo: (c.logo ?? null) !== null,

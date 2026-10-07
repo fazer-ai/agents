@@ -1332,6 +1332,35 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect(r.silences).toEqual([]);
   });
 
+  test("a call a precondition refused transferred nothing and silenced nothing", async () => {
+    const before = await getHandoffReasons(ctx(ex.tenantId), DAY, appDb);
+    // What a precondition writes when it refuses: `status: ok`, the call's tool, and its phase.
+    for (const [conv, tool] of [
+      [ex.conv.noEvent1, "handoff_to_human"],
+      [ex.conv.noEvent2, "skip_reply"],
+    ] as const)
+      await suDb.executionLog.create({
+        data: {
+          tenantId: ex.tenantId,
+          turnId: crypto.randomUUID(),
+          conversationId: conv ?? null,
+          inboxId: ex.i1,
+          stage: "tool",
+          status: "ok",
+          source: "inbox",
+          detail: {
+            tool,
+            phase: "precondition",
+            preconditionKind: "attribute",
+          },
+          createdAt: D1,
+        },
+      });
+    const r = await getHandoffReasons(ctx(ex.tenantId), DAY, appDb);
+    expect(r.totals).toEqual(before.totals);
+    expect(r.silences).toEqual(before.silences);
+  });
+
   test("a person taking over counts once, not at every message the gate sees them holding it", async () => {
     const conv = await seedConv(ex, "heldByPerson", { at: D1, inbox: ex.i1 });
     const takeover = (at: string, via?: string) =>
@@ -1515,5 +1544,12 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     );
     expect(m.llm.byInbox.map((r) => r.inboxId)).toEqual([String(ex.i2)]);
     expect(m.llm.byInbox[0]?.calls).toBe(m.llm.calls);
+    // The conversations beside that usage are the same inbox's, by their status now.
+    const inInbox = await suDb.conversation.count({
+      where: { tenantId: ex.tenantId, inboxId: ex.i2 },
+    });
+    expect(m.conversations.total).toBe(inInbox);
+    const all = await getInstanceMetrics(ctx(ex.tenantId), DAY, appDb);
+    expect(all.conversations.total).toBeGreaterThan(inInbox);
   });
 });

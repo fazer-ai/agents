@@ -70,8 +70,14 @@ export interface HandoffReasons {
   }[];
 }
 
+// The line a tool call writes for its own result carries no `phase`; the lines that do are written
+// around the call (a precondition that refused it, a side effect that failed), and a refused call
+// logs `status: ok` with nothing having run.
+const callRanSql = (a: string) =>
+  Prisma.sql`${Prisma.raw(a)}.status = 'ok' AND ${Prisma.raw(a)}.detail->>'phase' IS NULL`;
+
 const CAUSE_SQL = Prisma.sql`(CASE
-  WHEN l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human' AND l.status = 'ok'
+  WHEN l.stage = 'tool' AND l.detail->>'tool' = 'handoff_to_human' AND ${callRanSql("l")}
        AND COALESCE(l.detail->>'handedOff', 'true') = 'true' THEN 'agent'
   WHEN l.stage = 'handoff' AND l.detail->>'outcome' = 'opened_after_skip'
     THEN 'skip_' || COALESCE(l.detail->>'reason', 'unanswered')
@@ -82,7 +88,7 @@ const CAUSE_SQL = Prisma.sql`(CASE
           WHERE p.conversation_id = l.conversation_id
             AND ((p.stage = 'handoff'
                   AND p.detail->>'outcome' IN ('taken_over', 'opened_after_skip', 'guardrail_handoff'))
-                 OR (p.stage = 'tool' AND p.detail->>'tool' = 'handoff_to_human' AND p.status = 'ok'
+                 OR (p.stage = 'tool' AND p.detail->>'tool' = 'handoff_to_human' AND ${callRanSql("p")}
                      AND COALESCE(p.detail->>'handedOff', 'true') = 'true'))
             AND p.created_at < l.created_at
             AND NOT EXISTS (
@@ -136,9 +142,9 @@ export async function getHandoffReasons(
          WHERE ${logWhereSql("l", filter)}
            AND l.stage = 'tool'
            AND l.detail->>'tool' = 'skip_reply'
-           -- Only a call that ran: a refused one (arguments that failed the schema) is logged as
-           -- skipped and silenced nothing.
-           AND l.status = 'ok'
+           -- Only a call that ran: a refused one (arguments that failed the schema, a precondition
+           -- that did not hold) silenced nothing.
+           AND ${callRanSql("l")}
          GROUP BY 1
          ORDER BY 2 DESC`),
     ];
@@ -152,7 +158,7 @@ export async function getHandoffReasons(
        WHERE ${logWhereSql("l", filter)}
          AND l.stage = 'tool'
          AND l.detail->>'tool' = 'skip_reply'
-         AND l.status = 'ok'
+         AND ${callRanSql("l")}
        GROUP BY 1, 2
        ORDER BY 1, 2`);
     const targets = await db.$queryRaw<

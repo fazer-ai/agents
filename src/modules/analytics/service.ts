@@ -177,10 +177,16 @@ export async function getInstanceMetrics(
       for (const ib of inboxes) inboxNames.set(String(ib.id), ib.name);
     }
 
-    const byStatus = await db.conversation.groupBy({
-      by: ["status"],
-      _count: { _all: true },
-    });
+    // Where the conversations stand now, so the window does not apply (it never did: a status is
+    // today's, not the period's). The agent and the inbox do, by the same rule as every
+    // conversation figure, or one inbox's usage would sit beside every inbox's conversations.
+    const byStatus = (
+      await db.$queryRaw<{ status: string; count: number }[]>(Prisma.sql`
+        SELECT c.status::text AS status, COUNT(*)::int AS count
+          FROM conversations c
+         WHERE ${cohortWhereSql("c", { agentId: filter.agentId, inboxId: filter.inboxId })}
+         GROUP BY 1`)
+    ).map((r) => ({ status: r.status, _count: { _all: r.count } }));
 
     const convTotal = byStatus.reduce((acc, s) => acc + s._count._all, 0);
 

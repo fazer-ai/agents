@@ -105,6 +105,7 @@ import {
   resolvedThisTurn,
   skipHandoverKind,
 } from "./skip-handover";
+import { ToolFlowLogger } from "./tool-flowlog";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
 
@@ -1449,46 +1450,53 @@ async function runAgentNudgeBody(
     // NOTE: to the graph's model call and tool boundary, never to `graph.invoke` (see
     // BuildAgentGraphParams.signal).
     signal: params.signal,
-    // NOTE: the same warn line the reactive turn leaves: a proactive send that only worked on the
-    // second attempt must not read like a clean one, and this path can page an alert channel.
+    // NOTE: the same line the reactive turn leaves: a proactive send that only worked on the second
+    // attempt must not read like a clean one in the Logs.
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "warn",
+        level: "info",
         status: "ok",
         // NOTE: the retry can happen on either model, and the row names the one that made it. The
         // labels ride on the event rather than being defaulted here, so there is no default to get
         // wrong.
         provider,
         model,
-        detail: { retriedEmptyResponse: attempt },
+        // NOTE: written before the retry runs; a retry that also comes back empty fails the send,
+        // and that is the line that alerts.
+        detail: { retriedEmptyResponse: attempt, willRetry: true },
       }),
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the
     // primary was down: the reply went out, the customer was served, and the only trace would be a
     // usage row under another model's name. Warn rather than info — this is the operator's one
     // signal that a provider they are paying for is not taking their traffic.
-    onModelFallback: ({ provider, model, reason }) =>
+    onModelFallback: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
         provider,
         model,
-        detail: { fallbackFrom: cfg.mc.provider, fallbackReason: reason },
+        detail: {
+          fallbackFrom: cfg.mc.provider,
+          fallbackReason: reason,
+          primaryFailure: failure,
+        },
       }),
     // NOTE: the turn's real ending when there was a second provider and it failed too. ATTRIBUTION,
     // not a second alarm, so `info` while `status` stays "error": the `generate` stage around this
     // call emits its OWN error when the turn throws, and alert coalescing keys on (channel, stage,
     // level), so a second `generate`/`error` would page twice for one outage. This line only says
     // WHICH model died, since the stage is labelled with the primary by construction.
-    onModelFallbackFailed: ({ provider, model, reason }) =>
+    onModelFallbackFailed: ({ provider, model, reason, failure }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "info",
         status: "error",
         provider,
         model,
-        detail: { fallbackFailed: reason },
+        detail: { fallbackFailed: reason, failure },
+        errorMessage: reason,
       }),
     // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having
@@ -1517,16 +1525,27 @@ async function runAgentNudgeBody(
         },
       }),
   });
-  const callbacks = buildCallbacks(cfg, {
-    tenantId,
-    threadId: params.threadId,
-    base,
-    persistUsage: params.deps?.persistUsage,
-    node: "nudge",
-    // Same id as the ExecutionLog turn → the Langfuse trace correlates 1:1 with our Logs.
-    turnId: flow.turnId,
+  // Its tool calls on the flow log, as a reactive turn's are: a follow-up that hands over or stays
+  // silent is counted where every other one is (docs/dashboard.md). Settled when the turn ends,
+  // however it ends, so a tool that failed on every call is the turn's one `warn`.
+  const toolLogger = new ToolFlowLogger(flow, {
+    logValues: cfg.logToolValues,
     tools,
+    handedOff: () => handoffState.completed === true,
   });
+  const callbacks = [
+    ...buildCallbacks(cfg, {
+      tenantId,
+      threadId: params.threadId,
+      base,
+      persistUsage: params.deps?.persistUsage,
+      node: "nudge",
+      // Same id as the ExecutionLog turn → the Langfuse trace correlates 1:1 with our Logs.
+      turnId: flow.turnId,
+      tools,
+    }),
+    toolLogger,
+  ];
   const invokeConfig = {
     // LangGraph counts SUPER-STEPS and its default 25 runs out at about twelve tool rounds, so a
     // budget the operator is allowed to set (1-50) would throw instead of ending at the budget.
@@ -2084,6 +2103,7 @@ async function runAgentNudgeBody(
         throw e;
       });
   } finally {
+    toolLogger.settle();
     // NOTE: best-effort, for the reason ../graph/runtime.ts states at its own release: a throw here
     // would leave through a `finally` that runs after the customer post, turning a delivered nudge
     // into a failure the caller retries. The lease is the recovery path.

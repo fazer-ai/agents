@@ -1802,6 +1802,20 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(s.statuses).toEqual([[9690, "open"]]);
       expect(s.assignments).toEqual([[9690, "team:4"]]);
       expect(s.order.slice(0, 3)).toEqual(["resolve", "assign", "note"]);
+      // The follow-up's own tool call is on the flow log with its reason, as a reactive turn's is,
+      // so the dashboard counts this silence with the rest.
+      await settleFlowEvents();
+      const toolLines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "tool",
+          threadId: `${tenantId}:${instanceId}:9690`,
+        },
+        select: { detail: true },
+      });
+      expect(
+        toolLines.map((r) => (r.detail as { skipReason?: string }).skipReason),
+      ).toEqual(["needs_human"]);
     } finally {
       await suDb.agent.update({
         where: { id: agent.id },
@@ -6510,7 +6524,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
 
   // A proactive send that only worked on the second attempt must not read like a clean turn: this
   // path can page an alert channel, so a recovered provider fault has to leave its warn behind.
-  test("a recovered empty completion leaves a warn on the nudge's trail", async () => {
+  test("a recovered empty completion leaves an info line with willRetry on the nudge's trail", async () => {
     await seedConv(913, null, new Date());
     const s = stub();
     const outcome = await runAgentNudge({
@@ -6533,7 +6547,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         where: {
           tenantId,
           stage: "generate",
-          level: "warn",
+          // NOTE: Written before the retry, so `info` with `willRetry`: the recovered turn alerts nobody.
+          level: "info",
           threadId: `${tenantId}:${instanceId}:913`,
         },
         select: { detail: true },
@@ -6541,7 +6556,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       logged = rows.some(
         (r) =>
           (r.detail as Record<string, unknown> | null)?.retriedEmptyResponse ===
-          1,
+            1 &&
+          (r.detail as Record<string, unknown> | null)?.willRetry === true,
       );
       if (!logged) await new Promise((r) => setTimeout(r, 100));
     }

@@ -742,6 +742,15 @@
       "ai": "IA",
       "human": "Humano #{{id}}"
     },
+    "drill": {
+      "all": "todas as conversas",
+      "clear": "Limpar o filtro do painel",
+      "handoff": "transferidas para uma pessoa",
+      "involved": "atendidas pelo agente",
+      "label": "Do painel: {{outcome}}",
+      "range": "iniciadas de {{from}} a {{to}}",
+      "resolved": "resolvidas pelo agente"
+    },
     "empty": "Nenhuma conversa ainda.",
     "error": "Não foi possível carregar as conversas.",
     "errorBadge": "Erro",
@@ -784,69 +793,207 @@
   "dashboard": {
     "absolute": "#",
     "agent": "Agente #{{id}}",
-    "agentCallsTokens": "{{calls}} requisições · {{tokens}} tokens",
-    "attendance": "Resposta do time",
+    "automation": {
+      "title": "O que o agente faz por conta própria"
+    },
+    "breakdown": {
+      "dimension": "Agrupar por",
+      "help": "As chamadas de modelo do período, agrupadas pela dimensão escolhida. Conversas são aquelas a que essas chamadas pertencem, e a taxa de resolução é a parte delas que o próprio agente encerrou. Clique num agente ou numa caixa de entrada para filtrar a página inteira por ele.",
+      "noInbox": "Sem caixa de entrada (playground)",
+      "title": "Para onde vai o uso"
+    },
+    "cache": {
+      "help": "A parte dos tokens de entrada de cada agente que o provedor serviu do cache, cobrada com desconto. Em prompts longos é a maior alavanca de custo; um agente sem entrada no período fica sem número.",
+      "title": "Entrada em cache por agente"
+    },
     "calls_zero": "{{n}} requisições",
     "calls_one": "{{n}} requisição",
     "calls_many": "{{n}} requisições",
     "calls_other": "{{n}} requisições",
+    "cause": {
+      "agent": "O agente transferiu",
+      "guardrail": "Um guardrail barrou a resposta",
+      "person": "Uma pessoa assumiu",
+      "skipNeedsHuman": "O agente ficou em silêncio: precisa de uma pessoa",
+      "skipNotForUs": "O agente ficou em silêncio: não é deste time",
+      "skipUnanswered": "O agente terminou sem responder"
+    },
     "ceiling": {
       "cta": "Definir o teto",
+      "of": "teto {{ceiling}}",
       "period": "{{month}} · o mês-calendário, não o período selecionado",
+      "projection": "Até agora {{used}}; neste ritmo o mês fecha perto de {{projected}}",
       "title": "Teto de gasto",
       "unread": "Não foi possível ler o teto."
     },
-    "chart": {
-      "ariaCalls": "Requisições de LLM e conversas por dia ao longo do tempo",
-      "ariaCost": "Custo de LLM, conversas e custo por conversa por dia ao longo do tempo",
-      "calls": "Requisições de LLM",
+    "col": {
+      "agent": "Agente",
+      "cacheShare": "Entrada em cache",
+      "calls": "Requisições",
       "conversations": "Conversas",
-      "cost": "Custo (USD)",
+      "cost": "Custo",
       "costPerConversation": "Custo / conversa",
-      "label": "Métrica do gráfico"
+      "day": "Dia",
+      "figure": "Indicador",
+      "handoffs": "Transferências",
+      "inbox": "Caixa de entrada",
+      "involved": "Atendidas pelo agente",
+      "label": "Etiqueta",
+      "level": "Nível",
+      "lines": "Linhas de log",
+      "model": "Modelo",
+      "node": "Tipo de chamada",
+      "percentileMs": "{{p}} (ms)",
+      "previousOf": "{{label}} (período anterior)",
+      "promptTokens": "Tokens de entrada",
+      "resolution": "Resolução",
+      "stage": "Etapa",
+      "tool": "Ferramenta",
+      "total": "Total",
+      "value": "Valor"
     },
-    "conversations": "Conversas",
-    "costByModel": "Custo por modelo",
-    "costFallback": "Ainda sem dados de custo no período; mostrando o volume de requisições.",
-    "costPerConversation": "Custo / conversa",
-    "costPerConversationHint_zero": "em {{n}} conversas",
-    "costPerConversationHint_one": "em {{n}} conversa",
-    "costPerConversationHint_many": "em {{n}} conversas",
-    "costPerConversationHint_other": "em {{n}} conversas",
+    "cost": {
+      "acrossConversations_zero": "em {{n}} conversas",
+      "acrossConversations_one": "em {{n}} conversa",
+      "acrossConversations_many": "em {{n}} conversas",
+      "acrossConversations_other": "em {{n}} conversas",
+      "acrossResolved_zero": "em {{n}} resolvidas",
+      "acrossResolved_one": "em {{n}} resolvida",
+      "acrossResolved_many": "em {{n}} resolvidas",
+      "acrossResolved_other": "em {{n}} resolvidas",
+      "byModel": "Modelo",
+      "byNode": "Tipo de chamada",
+      "daily": "Custo diário",
+      "dailyHelp": "Somado do registro que o próprio app faz de cada chamada de modelo, precificada no momento da chamada. Divida por modelo ou pelo motivo da chamada: uma troca no leitor de imagens e uma mudança no prompt do agente aparecem em cores diferentes.",
+      "perConversation": "Custo / conversa",
+      "perConversationHelp": "O custo de cada dia dividido pelas conversas que tiveram chamada de modelo naquele dia, e pelas que o agente resolveu entre elas. Um dia sem nada para dividir fica em branco.",
+      "perConversationTrend": "Custo por conversa",
+      "perResolved": "Custo / conversa resolvida pelo agente",
+      "splitBy": "Dividir o custo por",
+      "title": "Custo"
+    },
     "costsError": "Não foi possível ler o custo.",
     "error": "Não foi possível carregar as métricas.",
+    "exportCsv": "CSV",
+    "exportCsvOf": "Exportar {{title}} em CSV",
+    "filter": {
+      "agent": "Agente",
+      "allAgents": "Todos os agentes",
+      "allInboxes": "Todas as caixas",
+      "inbox": "Caixa de entrada"
+    },
+    "followups": {
+      "cameBack": "Cliente voltou a escrever",
+      "closed": "Encerradas pelo último passo",
+      "conversations": "Conversas alcançadas",
+      "help": "Passos de follow-up que chegaram ao cliente no período (mensagem ou template; um passo que ficou em silêncio não conta), as conversas que alcançaram, quantos clientes voltaram a escrever depois de um deles e quantas o último passo encerrou.",
+      "steps": "Passos entregues",
+      "title": "Follow-ups"
+    },
     "funnel": "Funil de automação",
+    "funnelMode": "Mostrar o funil como",
+    "handoffs": {
+      "help": "Conversas que saíram do agente a cada dia, por quem decidiu: o próprio agente, o silêncio dele com o motivo que deu, um guardrail, ou uma pessoa que respondeu ou assumiu a conversa. Uma conversa conta uma vez por causa e por dia. O motivo em texto livre do agente fica na nota privada da conversa, não aqui.",
+      "none": "Nenhuma transferência neste período.",
+      "targets": "Para onde foram as transferências",
+      "title": "Transferências por causa",
+      "totals": "Conversas no período"
+    },
+    "health": {
+      "error": "Erro",
+      "latency": "Latência das chamadas de modelo",
+      "latencyHelp": "Quanto tempo cada chamada de modelo levou, medido pelo próprio app: metade das chamadas levou menos que o p50, nove em cada dez menos que o p90. Chamadas feitas antes de o tempo ser registrado não entram.",
+      "noProblems": "Nenhum aviso ou erro neste período.",
+      "problems": "Avisos e erros",
+      "problemsHelp": "Linhas do log de execução em nível de aviso ou erro, por etapa e, numa ferramenta, por ferramenta. Abra uma linha para ver esses registros na página de Logs com os mesmos filtros.",
+      "title": "Saúde",
+      "warn": "Aviso"
+    },
     "inbox": "Inbox #{{id}}",
+    "knowledge": {
+      "approved": "Aprovadas",
+      "discarded": "Descartadas pelo revisor",
+      "help": "Entradas que os agentes propuseram para as bases de conhecimento no período, e onde cada uma está agora: aguardando uma pessoa, descartada pelo modelo revisor, aprovada ou rejeitada.",
+      "proposed": "Propostas",
+      "rejected": "Rejeitadas",
+      "title": "Sugestões de conhecimento",
+      "waiting": "Aguardando revisão"
+    },
     "kpi": {
+      "automation": "Automação",
       "firstResponse": "Primeira resposta",
       "firstResponseHelp": "Mede o tempo entre a criação da conversa e a primeira resposta de uma pessoa. As respostas do agente aparecem no funil acima, não aqui.\n\nSe a empresa iniciou a conversa, a mensagem de abertura conta como a primeira resposta, assim como no painel do Chatwoot.\n\nConversas antigas só entram quando o Chatwoot envia um novo evento. Um período vazio significa que não há dados.",
-      "firstResponseHint": "mediana sobre {{sampled}} conversas respondidas",
+      "firstResponseHint3": "mediana; p90 {{p90}}, de {{sampled}} conversas respondidas",
       "firstResponseNone": "ainda sem dado para este período",
       "handoff": "Transferências",
       "handoffHint": "{{handoff}} escaladas para um humano",
       "involvement": "Envolvimento",
       "involvementHint": "{{involved}} de {{total}} atendidas pela IA",
       "resolution": "Resolução",
-      "resolutionHint": "{{resolved}} encerradas pelo próprio agente",
+      "resolutionHelp": "Das conversas que o agente assumiu, a parte que ele encerrou sozinho. Sobre todas as conversas do período, os mesmos encerramentos são a taxa de automação (envolvimento × resolução), que o funil ao longo do tempo também mostra.",
+      "resolutionHint2": "{{resolved}} encerradas pelo próprio agente, {{automation}} de todas as conversas",
       "resolutionUntracked": "Outras {{untracked}} foram resolvidas antes de esta instância passar a registrar quem encerra uma conversa, então não entram nesta conta.",
       "total": "Conversas",
       "totalHint": "no período"
     },
+    "labels": {
+      "help": "As conversas do período agrupadas pelas etiquetas do Chatwoot, como o último evento do Chatwoot as informou. Uma conversa com duas etiquetas conta nas duas linhas. As etiquetas são registradas a partir desta versão, então conversas antigas aparecem aqui depois do próximo evento delas.",
+      "none": "Nenhuma conversa com etiqueta neste período.",
+      "title": "Desfecho por etiqueta",
+      "unlabeled_zero": "{{n}} conversas sem etiqueta",
+      "unlabeled_one": "{{n}} conversa sem etiqueta",
+      "unlabeled_many": "{{n}} conversas sem etiqueta",
+      "unlabeled_other": "{{n}} conversas sem etiqueta"
+    },
     "loading": "Carregando métricas…",
-    "metric": {
-      "calls": "Requisições",
-      "cost": "Custo"
+    "nav": {
+      "automation": "Follow-ups e conhecimento",
+      "breakdown": "Para onde vai o uso",
+      "cost": "Custo",
+      "health": "Saúde",
+      "performance": "Desempenho",
+      "reasons": "Transferências e assuntos"
     },
     "noAgent": "Não atribuído",
     "noData": "Sem dados ainda.",
+    "node": {
+      "agent": "Resposta do agente",
+      "guardrail": "Guardrail",
+      "memoryCompact": "Compactação de memória",
+      "nudge": "Follow-up",
+      "observer": "Observador",
+      "suggestionReview": "Revisão de sugestão de conhecimento",
+      "ttsNormalize": "Preparo do texto para voz",
+      "vision": "Leitura de imagem"
+    },
     "openInLangfuse": "Abrir no Langfuse",
     "percent": "%",
+    "previous": "anterior: {{value}}",
+    "previousPeriod": "período anterior",
     "range": {
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",
       "all": "Tudo",
-      "label": "Período"
+      "custom": "Datas",
+      "from": "De",
+      "label": "Período",
+      "to": "Até"
+    },
+    "reasons": {
+      "title": "Por que transfere, e o que as pessoas perguntam"
+    },
+    "retry": "Tentar de novo",
+    "silence": {
+      "acknowledged": "Nada a responder",
+      "needsHuman": "Precisa de uma pessoa",
+      "notForUs": "Não é deste time",
+      "unrecorded": "Motivo não registrado"
+    },
+    "silences": {
+      "help": "Turnos em que o agente escolheu não responder, por dia, pelo motivo que ele deu. Um silêncio que também transferiu a conversa entra nas transferências acima também.",
+      "none": "Nenhum silêncio no período.",
+      "title": "Silêncios por motivo"
     },
     "source": {
       "all": "Todos",
@@ -854,22 +1001,33 @@
       "label": "Segmento de uso",
       "playground": "Playground"
     },
-    "subtitle": "Funil de automação, custo de LLM e volume de conversas.",
-    "timeseries": "Uso diário",
+    "subtitle2": "Como os agentes estão indo, quanto custam e para onde vai o gasto.",
+    "target": {
+      "notAssigned": "Não atribuída",
+      "pinned": "Para o agente ou time fixado",
+      "routing": "Para o roteamento padrão do Chatwoot"
+    },
     "title": "Painel",
     "tokens": "Tokens (entrada / saída)",
-    "tokensCachedHint": "{{cached}} em cache · {{written}} gravados em cache",
-    "tokensHint": "prompt / completion",
     "totalCost": "Custo de LLM",
+    "trend": {
+      "breakdown": "Dividir por",
+      "byAgent": "Por agente",
+      "byInbox": "Por caixa",
+      "help": "Um ponto por dia, com as conversas iniciadas naquele dia, então um período de um dia mostra a mesma taxa no card e na linha. Clique num ponto para abrir essas conversas. Um dia sem conversas não tem taxa e fica em branco.",
+      "metric": "Taxa",
+      "ofConversations_zero": "{{n}} conversas",
+      "ofConversations_one": "{{n}} conversa",
+      "ofConversations_many": "{{n}} conversas",
+      "ofConversations_other": "{{n}} conversas",
+      "perSeries": "{{metric}} no período",
+      "title": "Funil ao longo do tempo"
+    },
     "unpriced_zero": "{{n}} requisições deste período não têm preço e estão fora do custo: {{models}}. Defina o preço próprio da conta para o modelo em Avançado > Preços dos modelos e depois reprecifique as chamadas já feitas.",
     "unpriced_one": "{{n}} requisição deste período não tem preço e está fora do custo: {{models}}. Defina o preço próprio da conta para o modelo em Avançado > Preços dos modelos e depois reprecifique as chamadas já feitas.",
     "unpriced_many": "{{n}} requisições deste período não têm preço e estão fora do custo: {{models}}. Defina o preço próprio da conta para o modelo em Avançado > Preços dos modelos e depois reprecifique as chamadas já feitas.",
     "unpriced_other": "{{n}} requisições deste período não têm preço e estão fora do custo: {{models}}. Defina o preço próprio da conta para o modelo em Avançado > Preços dos modelos e depois reprecifique as chamadas já feitas.",
-    "unpricedCta": "Abrir preços dos modelos",
-    "usageByAgent": "Uso por agente",
-    "usageByInbox": "Uso por inbox",
-    "usageByModel": "Uso por modelo",
-    "usageTitle": "Uso de LLM"
+    "unpricedCta": "Abrir preços dos modelos"
   },
   "documents": {
     "add": "Novo modelo",
@@ -877,6 +1035,9 @@
     "blockCount_one": "{{count}} bloco",
     "blockCount_many": "{{count}} blocos",
     "blockCount_other": "{{count}} blocos",
+    "buildWithAiBody": "Peça ao seu assistente de IA conectado por MCP (Claude, Codex, Cursor) para adicionar o que o agente preenche e o texto em volta, por exemplo: \"monte um orçamento com o nome do cliente, uma lista de serviços e a data de validade\". A prévia daqui se atualiza quando você abrir o modelo de novo.",
+    "buildWithAiLink": "Conectar um assistente de IA em Configurações > MCP",
+    "buildWithAiTitle": "Monte este modelo com IA",
     "company": {
       "address": "Endereço",
       "discardMessage": "O timbre tem alterações não salvas. Fechar mesmo assim?",
@@ -909,15 +1070,26 @@
     "deleteTitle": "Excluir modelo de documento",
     "description": "Descrição",
     "editTitle": "Editar modelo de documento",
-    "emptyDesc": "Comece por um orçamento, proposta ou recibo pronto e edite o texto.",
+    "emptyDesc": "Comece por um orçamento, proposta ou recibo pronto, ou por um em branco, e edite o texto.",
     "emptyTitle": "Nenhum modelo de documento ainda",
     "enabled": "Agentes podem emitir este documento",
+    "fieldRequiredShort": "obrigatório",
     "fields": "Campos que o agente preenche",
+    "fieldType": {
+      "currency": "valor",
+      "date": "data",
+      "lineItems": "lista de itens",
+      "number": "número",
+      "text": "texto"
+    },
     "issuedEmptyDesc": "Os documentos que seus agentes emitem a partir de um modelo aparecem aqui, com o PDF que o cliente recebeu.",
     "issuedEmptyTitle": "Nenhum documento emitido ainda",
+    "mcpHowToConnect": "Como conectar",
     "name": "Nome",
     "nameHint": "É assim que a ferramenta do agente se chama, então cada modelo precisa do seu próprio nome.",
+    "namePlaceholder": "ex.: Contrato de serviço",
     "nameTitle": "Dê um nome a este modelo",
+    "noFields": "Nenhum campo ainda.",
     "noTextBlocks": "Este modelo não tem bloco de texto.",
     "numberPrefix": "Prefixo da numeração",
     "numberPrefixHint": "ex.: \"ORC-\" → ORC-0001",
@@ -937,14 +1109,21 @@
     "revokeMessage": "Revogar \"{{name}}\"? O PDF dele deixa de ser servido, e isso não tem volta.",
     "revokeTitle": "Revogar documento",
     "saveError": "Não foi possível salvar este modelo.",
-    "starterHint": "Escolha um para copiar para a sua conta e depois edite o texto.",
+    "starterBuildHint": "Escolha um para copiar para a sua conta e depois edite o texto aqui. Campos e blocos novos se adicionam pedindo ao seu assistente de IA conectado por MCP.",
+    "starterPickTitle": "Escolha um ponto de partida",
     "startersError": "Não foi possível carregar os modelos prontos.",
-    "starterTitle": "Começar por um modelo pronto",
     "style": {
       "accent": "Cor de destaque",
       "currency": "Moeda",
       "font": "Fonte",
+      "fontMono": "Monoespaçada",
+      "fontSans": "Sem serifa",
+      "fontSerif": "Com serifa",
       "margin": "Margens",
+      "marginNarrow": "Estreitas",
+      "marginNormal": "Normais",
+      "marginWide": "Largas",
+      "pageLetter": "Carta",
       "pageSize": "Tamanho da página",
       "size": "Tamanho base da fonte"
     },
@@ -954,10 +1133,14 @@
       "templates": "Modelos"
     },
     "templateGone": "Modelo excluído",
+    "textBlockLabel": "Texto {{n}}",
     "textBlocks": "Texto",
-    "textBlocksHint": "Só o texto é editável aqui. Adicionar, remover ou reordenar blocos é feito pela API ou pelo MCP.",
+    "textBlocksBuildHint": "Só o texto é editável aqui. Para adicionar, remover ou reordenar blocos e campos, peça ao seu assistente de IA conectado por MCP.",
     "toolName": "Ferramenta do agente",
     "toolNameHint": "O agente chama de {{tool}}",
+    "toolNameKept": "Renomear o modelo mantém este nome de ferramenta, então prompts que o citam continuam funcionando.",
+    "toolRenamedWarning": "Prompts que citam {{old}} deixam de funcionar quando você salvar.",
+    "toolRenameTo": "Usar {{tool}}",
     "use": "Usar"
   },
   "edition": {
@@ -1092,8 +1275,7 @@
       "reassignConfirm": "Reatribuir",
       "reassignTitle": "Reatribuir caixa",
       "title": "Caixas de entrada",
-      "toggleAria": "Atender {{inbox}} com este agente",
-      "watchedBy": "Observada por {{name}}; remova antes"
+      "toggleAria": "Atender {{inbox}} com este agente"
     },
     "clone": "Clonar",
     "cloned": "Agente clonado (desativado).",
@@ -1754,7 +1936,7 @@
       "nativeContextNote": "A conversa e o contato são fornecidos automaticamente — a IA só decide usar a ferramenta e preenche os argumentos específicos de cada uma.",
       "nativeDesc": "Ações nativas que o agente pode executar. As ferramentas selecionadas ficam disponíveis para ele.",
       "noCode": "Nenhuma ferramenta de código ainda. Crie algumas em Componentes.",
-      "noDocuments": "Nenhum modelo de documento ainda. Crie um em Componentes.",
+      "noDocuments": "Nenhum modelo de documento ainda. Crie o primeiro pelo botão Nova.",
       "noHttp": "Nenhuma ferramenta HTTP ainda. Crie algumas em Componentes.",
       "noIntegrations": "Nenhuma integração ativada ainda.",
       "noMcp": "Nenhum servidor MCP conectado ainda.",
@@ -2255,6 +2437,10 @@
     "openConversation": "Abrir conversa",
     "page": "Página {{n}}",
     "scopedConversation": "Conversa #{{id}}",
+    "scopedFromDashboard": "Do painel",
+    "scopedFromDashboardNoTool": "Do painel: linhas sem ferramenta",
+    "scopedFromDashboardTool": "Do painel: {{tool}}",
+    "scopedRange": "{{from}} a {{to}}",
     "search": "Buscar",
     "searchPlaceholder": "Buscar nas mensagens de erro…",
     "source": {
@@ -2807,6 +2993,10 @@
       "unpriced_one": "{{n}} chamada deste mês não tem preço e está fora do valor: {{models}}. Defina o preço próprio da conta para o modelo e depois reprecifique.",
       "unpriced_many": "{{n}} chamadas deste mês não têm preço e estão fora do valor: {{models}}. Defina o preço próprio da conta para o modelo e depois reprecifique.",
       "unpriced_other": "{{n}} chamadas deste mês não têm preço e estão fora do valor: {{models}}. Defina o preço próprio da conta para o modelo e depois reprecifique.",
+      "unpricedBrief_zero": "{{n}} chamadas deste mês não têm preço e ficam fora deste valor.",
+      "unpricedBrief_one": "{{n}} chamada deste mês não tem preço e fica fora deste valor.",
+      "unpricedBrief_many": "{{n}} chamadas deste mês não têm preço e ficam fora deste valor.",
+      "unpricedBrief_other": "{{n}} chamadas deste mês não têm preço e ficam fora deste valor.",
       "updated": "Atualizado {{when}}"
     },
     "usdHint": "Dólares (USD) por mês corrente, como os registros de uso deste app precificam as chamadas. 0 significa sem teto nesta metade.",

@@ -89,6 +89,8 @@ filters as the requests beside it (period, segment, and the operator's timezone 
 says how many of the period's calls had no price. The Langfuse-vs-local comparison of #868 is gone
 with the second source; the "Open in Langfuse" link stays, and resolving it never holds a figure.
 
+**Where the month is headed.** Each half of the usage read carries `projectedUsd` (`projectMonthEnd`, `src/modules/spend-ceiling/decide.ts`): the month's spend over the days elapsed, stretched to the whole calendar month in UTC. A straight line, and labelled as one on the dashboard. The elapsed span is floored at one day, so the first hour of a month does not multiply one early call into a month of them, and the projection is never below what was already spent.
+
 **A block written in tokens is no ceiling, and says so.** A `spendCeiling` block saved before this
 change carries `monthlyInboxTokens` / `monthlyPlaygroundTokens`, and there is no price to convert
 them with. The reader answers `0` on both dollar halves and sets `legacyTokens` with the numbers,

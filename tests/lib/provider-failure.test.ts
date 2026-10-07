@@ -169,6 +169,19 @@ describe("providerFailure", () => {
     expect(asProviderFailure(once).message).toBe("HTTP 429");
   });
 
+  // And a timeout: the wrapper's name is plain "Error", so a second reading (the stage around a model
+  // call) would otherwise call it a "provider error", and a provider timing out would never be a rate.
+  test("reducing an already-reduced timeout keeps the timeout", () => {
+    const once = asProviderFailure(
+      Object.assign(new Error("deadline"), { name: "TimeoutError" }),
+    );
+    expect(once.name).toBe("Error");
+    expect(providerFailure(once)).toBe("timeout");
+    expect(asProviderFailure(once).message).toBe("timeout");
+    // Only the wrapper built for a timeout: an error that merely says the word is not one.
+    expect(providerFailure(new Error("timeout"))).toBe("provider error");
+  });
+
   // A failure with no status at all stays anonymous through the wrapper, so nothing downstream can
   // read a status that never existed.
   test("a connection that never opened carries no status", () => {

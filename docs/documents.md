@@ -36,6 +36,12 @@ for a sum: it will eventually get one wrong in front of a customer, and the numb
 price. A discount larger than the subtotal is clamped, and the CLAMPED value is what is printed — so
 the three numbers on the page always add up to each other.
 
+**The minimum is one block that prints** (`header`, `text`, `fields`, `lineItems` or `totals`), and no
+fields at all. A template with nothing printable is refused, because every document it issued would
+be a numbered blank page. The `blank` starter is exactly that minimum: one `header` with
+`{{doc_title}} {{doc_number}}`, no fields, the default style and no number prefix, so a template
+built from scratch starts with nothing to delete.
+
 ## Fields and tokens
 
 `fields` is the contract: `{name, label, type, required?, description?}` with
@@ -67,6 +73,17 @@ that is legitimately several lines.
 
 `font` (`sans`/`serif`/`mono`), `baseFontSize`, `accentColor`, `margin`, `pageSize`, `locale`,
 `currency`, `footerText`, `showPageNumbers`.
+
+**A new template starts from one object, `NEW_DOCUMENT_STYLE`**: sans at 10pt, a navy accent
+(`#1e3a8a`), normal margins, A4, page numbers on, and the `{{company_name}} · {{doc_number}}` footer.
+Every starter, the blank one included, spreads it and sets only `locale` and `currency`, and a create
+that names no `footerText` gets the footer too (`newTemplateStyle`; an empty `footerText` is how a
+template has none), so the look changes in one place. A stored template keeps its stored values: on
+read, `DOCUMENT_STYLE_DEFAULTS` (the same object without the footer) fills only a key the row never
+had, since a row saved without a footer would otherwise grow one it never asked for. The accent
+colours the title, the rule under the header, the table head (over a 90% tint of itself) and the
+grand total. No line height is set on the page: inherited by the fixed footer, it pushes the footer
+off the page whenever page numbers are on.
 
 The three families are `@react-pdf/renderer`'s built-ins. There is no `Font.register` and no bundled
 TTF: a face resolves from a path that differs between the dev tree and the container, the registry it
@@ -278,7 +295,7 @@ take a whole agent down), and the names that lost are logged for the operator wh
 ## Transports
 
 - **Console** — Components → Document templates. Create from a ready-made starter (quote, proposal,
-  receipt), edit the letterhead, edit the **wording** of `text` blocks, and watch a live PDF preview.
+  receipt, or blank), edit the letterhead, edit the **wording** of `text` blocks, and watch a live PDF preview.
   Adding, removing and reordering blocks is API/MCP only. The panel is split in two: **Templates**
   (the letterhead as a one-line summary that opens an editor, then the templates) and **Issued** (the
   documents that went out, with the template each came from — and the only place a document can be

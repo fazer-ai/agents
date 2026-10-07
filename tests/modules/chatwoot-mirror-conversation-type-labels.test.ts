@@ -56,7 +56,9 @@ describe("normalizing the conversation's type and labels", () => {
       }),
     );
     expect(n?.conversationType).toBe("group");
-    expect(n?.labels).toEqual(["suporte", "vip"]);
+    // Titles as Chatwoot stated them: the dashboard shows them, and the gate's `label` condition
+    // compares ignoring case when it reads them.
+    expect(n?.labels).toEqual(["Suporte", "vip"]);
   });
 
   test("an absent key says nothing, and an empty list is a clear", () => {
@@ -69,19 +71,25 @@ describe("normalizing the conversation's type and labels", () => {
     expect(cleared?.labels).toEqual([]);
   });
 
-  test("a value that is not one of the two types, or a list that is not one of strings, says nothing", () => {
+  test("a value that is not one of the two types, or a labels value that is not a list, says nothing", () => {
     for (const groupType of ["channel", 1, null, "Group"]) {
       expect(
         normalizeChatwootEvent(message(1, 1, { lastActivityAt: 1, groupType }))
           ?.conversationType,
       ).toBeUndefined();
     }
-    for (const labels of ["vip", { 0: "vip" }, null, [1, "vip"]]) {
+    for (const labels of ["vip", { 0: "vip" }, null]) {
       expect(
         normalizeChatwootEvent(message(1, 1, { lastActivityAt: 1, labels }))
           ?.labels,
       ).toBeUndefined();
     }
+    // A list keeps its usable titles: an entry that is not a non-empty string is dropped alone.
+    expect(
+      normalizeChatwootEvent(
+        message(1, 1, { lastActivityAt: 1, labels: [1, "vip", ""] }),
+      )?.labels,
+    ).toEqual(["vip"]);
   });
 
   test("a conversation event carries them at the top level", () => {

@@ -100,7 +100,7 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
 | `allowlist` | a contact whose mirrored phone is in `phones` (compared by digits: `+55 (11) 98888-7777` is `5511988887777`), or whose identifier is in `identifiers` (exact) | the contact row the gate already reads |
 | `attribute` | a contact or conversation whose mirrored attribute `key` is set, or equals `equals`. The same shape and the same evaluator as a tool precondition (`tool-preconditions.ts`) | one indexed read of the conversation row, for `scope: "conversation"` |
 | `conversation_type` | a conversation whose `type` is `group` (a WhatsApp group) or `individual`, as the fork's `conversation.group_type` marks it. A conversation whose payload never stated the type is a group when its contact's identifier ends in `@g.us` (the group's JID), and individual otherwise | the conversation row |
-| `label` | a conversation carrying `label`. Stored lowercased and compared without case, since Chatwoot keeps label titles lowercased | the conversation row |
+| `label` | a conversation carrying `label`. The condition's label is stored lowercased; the conversation's titles are mirrored as Chatwoot stated them (the same column the dashboard reads) and compared without case | the conversation row |
 | `all` / `any` | every condition in `conditions` holds / at least one does. 1 to 10 conditions of the four kinds above; a combination inside a combination is refused | what its conditions read |
 
 ```json

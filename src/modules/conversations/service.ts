@@ -18,6 +18,10 @@ import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
+import {
+  type DrillOutcome,
+  drillDownPageIds,
+} from "@/modules/analytics/drilldown";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
   exceptionInForceAt,
@@ -90,9 +94,21 @@ export interface ListConversationsFilter {
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
-  // Only conversations whose inbox is BOUND to this agent; an inbox it merely observes does not
-  // count. An id of another tenant, or of no agent, is an empty page under the caller's own scope.
+  // Conversations on every inbox this agent is attached to: bound as its responder, or observing it
+  // (a pending observer row included, as every reader of "does it observe" counts one). A monitoring
+  // agent is never bound, so this is what its filter can show. An id of another tenant, or of no
+  // agent, is an empty page under the caller's own scope.
+  // Under a `drillDown` it reads as the dashboard's agent filter instead (bound, or the agent ran on
+  // it), the one the clicked figure was counted with.
   agentId?: bigint;
+  // A dashboard figure's conversations: its view (window of creation, inbox) and the outcome it
+  // counts. See src/modules/analytics/drilldown.ts.
+  drillDown?: {
+    createdSince?: Date;
+    createdUntil?: Date;
+    inboxId?: bigint;
+    outcome: DrillOutcome;
+  };
 }
 
 export interface ConversationListItem {
@@ -154,7 +170,11 @@ function buildConversationsWhere(
 ): Prisma.ConversationWhereInput {
   const where: Prisma.ConversationWhereInput = {};
   if (status) where.status = status;
-  if (agentId !== undefined) where.inbox = { agentId };
+  if (agentId !== undefined) {
+    where.inbox = {
+      OR: [{ agentId }, { observers: { some: { agentId } } }],
+    };
+  }
   const term = q?.trim();
   if (term) {
     const or: Prisma.ConversationWhereInput[] = [
@@ -194,10 +214,31 @@ export async function listConversations(
   const take = clampLimit(filter.limit);
   const status = normalizeStatus(filter.status);
   const cursorId = filter.cursor ?? null;
-  const where = buildConversationsWhere(status, filter.q, filter.agentId);
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.conversation.findMany({
-      where,
+  const drill = filter.drillDown;
+  const where: Prisma.ConversationWhereInput = drill
+    ? {}
+    : buildConversationsWhere(status, filter.q, filter.agentId);
+  const rows = await runScopedOn(base, ctx, async (db) => {
+    // The drill-down's page is chosen in SQL (same predicate as the figure); the rows are then read
+    // by id in that order, with the same selection as the plain list.
+    const pageIds = drill
+      ? await drillDownPageIds(
+          db,
+          {
+            view: {
+              since: drill.createdSince,
+              until: drill.createdUntil,
+              inboxId: drill.inboxId,
+              agentId: filter.agentId,
+            },
+            outcome: drill.outcome,
+          },
+          { status, q: filter.q, cursor: cursorId ?? undefined, take },
+        )
+      : null;
+    if (pageIds && pageIds.length === 0) return [];
+    const found = await db.conversation.findMany({
+      where: pageIds ? { id: { in: pageIds } } : where,
       // lastEventAt is the canonical recency signal (nulls sort last); id breaks ties.
       orderBy: [
         { lastEventAt: { sort: "desc", nulls: "last" } },
@@ -205,7 +246,9 @@ export async function listConversations(
       ],
       take,
       // Keyset: seek past the cursor row in the ordering above (id is unique → a stable anchor).
-      ...(cursorId != null ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      ...(cursorId != null && !pageIds
+        ? { cursor: { id: cursorId }, skip: 1 }
+        : {}),
       select: {
         id: true,
         threadId: true,
@@ -227,8 +270,13 @@ export async function listConversations(
         },
         contact: { select: { name: true } },
       },
-    }),
-  );
+    });
+    if (!pageIds) return found;
+    const byId = new Map(found.map((r) => [String(r.id), r]));
+    return pageIds
+      .map((id) => byId.get(String(id)))
+      .filter((r): r is (typeof found)[number] => r !== undefined);
+  });
   // Resolve the bound persona names for this page in one batch (Inbox carries agentId, no relation).
   const agentIds = [
     ...new Set(
@@ -1386,6 +1434,9 @@ export async function getConversationDetail(
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
     const detail = (r.detail ?? null) as Record<string, unknown> | null;
+    // The turn's summary of a tool that failed on every call (`failedCalls`) is not a call: its calls
+    // are already on the trail, each with its own row.
+    if (r.stage === "tool" && detail?.failedCalls !== undefined) continue;
     if (r.stage === "tool") {
       const rawOutput = detail?.output;
       trail.push({

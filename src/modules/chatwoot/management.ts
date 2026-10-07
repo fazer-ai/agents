@@ -1078,7 +1078,9 @@ const INBOX_SELECT = {
   },
 } as const;
 
-// The observers Chatwoot has actually agreed to, for the one reading that cannot count an intent.
+// The observers Chatwoot has actually agreed to, for the readings that cannot count an intent: every
+// observer list on the audit trail. Another agent's observe can hold a pending row on the same inbox,
+// and its attach may still fail and take the row back without a line of its own.
 function confirmedObserverIds(row: {
   observers: { agentId: bigint; attachedAt: Date | null }[];
 }): string[] {
@@ -2089,7 +2091,7 @@ export async function bindInbox(
           where: { inboxId, agentId },
         });
         if (retired.count > 0) {
-          const was = toInboxDto(pre).observerAgentIds;
+          const was = confirmedObserverIds(pre);
           await auditMutation(db, ctx, {
             action: "inbox.unobserve",
             target: `inbox:${inboxId}`,
@@ -2207,29 +2209,22 @@ export async function readObserveTarget(
         "errors.agentIsResponder",
       );
     }
-    // One watcher per inbox: the memory thread is keyed by contact-inbox, not agent, so a
-    // second observer would write the same thread. The unique index enforces it under the race.
-    const other = await db.inboxObserver.findFirst({
-      where: { tenantId, inboxId },
+    // This agent's own row, never another watcher's: an inbox carries several, and reading theirs
+    // as ours would skip this call's pending row and fail its stamp.
+    const own = await db.inboxObserver.findFirst({
+      where: { tenantId, inboxId, agentId },
       // NOTE: the stamp as well: the row is written ahead of the fork, so "a row exists" is not "a
       // call completed" (see `alreadyObserving` below).
-      select: { agentId: true, attachedAt: true },
+      select: { attachedAt: true },
     });
     // NOTE: the mode is asked of a new observer only: a production agent can hold an observer row
     // from a promotion inside an attach window, and refusing here would 422 the Reconnect that
     // repairs it.
-    if (!isMonitoring(agent.mode) && other?.agentId !== agentId) {
+    if (!isMonitoring(agent.mode) && own === null) {
       throw new AppError(
         "only a monitoring agent can observe an inbox",
         422,
         "errors.observerNotMonitoring",
-      );
-    }
-    if (other !== null && other.agentId !== agentId) {
-      throw new AppError(
-        "this inbox already has an observer; remove it first",
-        422,
-        "errors.inboxAlreadyObserved",
       );
     }
     return {
@@ -2239,7 +2234,7 @@ export async function readObserveTarget(
       // attachment this call did not create. A confirmed row only: reading an overlapping observe's
       // pending row as "already" would write no row and skip the detach, leaving an attachment
       // nothing names if the first call fails. As not-yet, its insert loses to the unique index.
-      alreadyObserving: other !== null && other.attachedAt !== null,
+      alreadyObserving: own !== null && own.attachedAt !== null,
     };
   });
 }
@@ -2349,7 +2344,7 @@ export async function observeInbox(
               inboxId,
               agentId,
               // NOTE: every row of this pair except this call's own while unstamped. A concurrent
-              // call that completed did so by stamping this row (the unique is on the inbox), so
+              // call that completed did so by stamping this row (the unique is on the pair), so
               // excluding by id alone would miss the winner's commit; an unstamped row that is not
               // ours is another call in flight.
               ...(pendingRowId === null
@@ -2395,9 +2390,10 @@ export async function observeInbox(
     // delivery arriving then needs a row to read), and written only once this call holds a client
     // and a bot id, so a pending row always means a call that can still take its attachment back.
     // Nothing is attached for this inbox before this point (`skipInboxId`). A unique violation means
-    // another observe won the inbox; the cap re-asked under the lock below refuses. Not written when
-    // already observing (this call is the repair, and must not delete a row it never made). Its id
-    // is kept, because `(tenantId, inboxId)` names a slot, not a row, across an unobserve.
+    // another observe of this same agent wrote the pair first; this call settles that row by the
+    // pair below. Not written when already observing (this call is the repair, and must not delete
+    // a row it never made). Its id is kept, because `(tenantId, inboxId, agentId)` names a slot, not
+    // a row, across an unobserve.
     if (!alreadyObserving) {
       try {
         const created = await runScopedOn(base, ctx, async (db) => {
@@ -2596,17 +2592,6 @@ export async function observeInbox(
         });
         return { dto: toInboxDto(settled), responderWon: true };
       }
-      // The cap, re-asked under the lock: the read at the top predates the Chatwoot calls, and a
-      // second observe fits in the window. The loser takes its attachment back the way the responder
-      // race does.
-      const taken = before.observers.find((o) => o.agentId !== agentId);
-      if (taken !== undefined) {
-        throw new AppError(
-          "this inbox already has an observer; remove it first",
-          422,
-          "errors.inboxAlreadyObserved",
-        );
-      }
       // Already observing means a confirmed row: this call's own pending row is in `before`,
       // and counting it would make every first observe look like a repeat.
       const already =
@@ -2614,7 +2599,7 @@ export async function observeInbox(
           where: { tenantId, inboxId, agentId, attachedAt: { not: null } },
           select: { id: true },
         })) !== null;
-      // The stamp, on the row this call wrote, by id: `(tenantId, inboxId)` names a slot, and an
+      // The stamp, on the row this call wrote, by id: `(tenantId, inboxId, agentId)` names a slot, and an
       // unobserve plus a second observe in the attach window would put a stranger's intent there.
       // Where no row was written, the pair is the right address: this call is settling the row it
       // deferred to (the confirmed one it repairs, or the unique violation's winner), which names
@@ -2664,7 +2649,7 @@ export async function observeInbox(
           // NOTE: the state before this call, not the rows before this write: this call's own pending
           // row is in `before` too.
           before: { observerAgentIds: confirmedObserverIds(before) },
-          after: { observerAgentIds: dto.observerAgentIds },
+          after: { observerAgentIds: confirmedObserverIds(row) },
         });
       }
       return { dto, responderWon: false };
@@ -2783,8 +2768,8 @@ export async function unobserveInbox(
       await auditMutation(db, ctx, {
         action: "inbox.unobserve",
         target: `inbox:${inboxId}`,
-        before: { observerAgentIds: toInboxDto(before).observerAgentIds },
-        after: { observerAgentIds: dto.observerAgentIds },
+        before: { observerAgentIds: confirmedObserverIds(before) },
+        after: { observerAgentIds: confirmedObserverIds(row) },
       });
     }
     return dto;
@@ -2894,7 +2879,7 @@ export async function removeInbox(
         // NOTE: the watchers go with it (`InboxObserver` cascades on the inbox), so they are in the
         // projection, read under the same lock: the trail names who was watching, on the one
         // action that cannot be undone.
-        observers: { select: { agentId: true } },
+        observers: { select: { agentId: true, attachedAt: true } },
       },
     });
     const { count } = await db.inbox.deleteMany({ where: { id: inboxId } });
@@ -2912,7 +2897,7 @@ export async function removeInbox(
           agentId: current.agentId === null ? null : String(current.agentId),
           // NOTE: the cascade's casualties, on the removal's row rather than a separate
           // `inbox.unobserve`: one action happened.
-          observerAgentIds: current.observers.map((o) => String(o.agentId)),
+          observerAgentIds: confirmedObserverIds(current),
         },
       });
     }

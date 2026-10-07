@@ -143,3 +143,41 @@ export function resolveTokens(
     sanitizeDocumentValue(vars[name] ?? ""),
   );
 }
+
+// A separator between two parts of a footer line: a middle dot, a bullet or a bar with space around.
+const FOOTER_SEPARATOR = /(\s+[·•|]\s+)/;
+const HAS_TOKEN = new RegExp(DOCUMENT_TOKEN_RE.source);
+
+// The footer joins parts that may resolve empty ("{{company_name}} · {{doc_number}}" on an account
+// with no company name), and resolved as plain text that leaves the separator hanging. Each line is
+// split at its separators; a part that holds a token and resolves to nothing is dropped with the
+// separator that led to it, and every other part and separator is printed as the author wrote it.
+export function resolveFooterText(
+  text: string,
+  vars: Record<string, string>,
+): string {
+  // Tokens are written compactly first: one may legally carry whitespace, newlines included, and
+  // splitting into lines must not cut it in half.
+  return text
+    .replace(DOCUMENT_TOKEN_RE, (_match, name: string) => `{{${name}}}`)
+    .split("\n")
+    .map((line) => {
+      const pieces = line.split(FOOTER_SEPARATOR);
+      const kept: { text: string; separatorAfter: string | undefined }[] = [];
+      for (let i = 0; i < pieces.length; i += 2) {
+        const raw = pieces[i] as string;
+        const resolved = resolveTokens(raw, vars);
+        if (HAS_TOKEN.test(raw) && resolved.trim() === "") continue;
+        kept.push({ text: resolved, separatorAfter: pieces[i + 1] });
+      }
+      return kept
+        .map((part, i) => {
+          if (i === kept.length - 1)
+            return i > 0 ? part.text.trimStart() : part.text;
+          const text = i > 0 ? part.text.trim() : part.text.trimEnd();
+          return text + (part.separatorAfter ?? " · ");
+        })
+        .join("");
+    })
+    .join("\n");
+}

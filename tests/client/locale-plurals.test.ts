@@ -24,6 +24,7 @@ const IDENTICAL_ON_PURPOSE: Record<string, string> = {
   // carries real forms.
   "editor.tools.mcpSelected": "en: no noun agrees with the count",
   "editor.tools.nativeActiveCount": "en: no noun agrees with the count",
+  "dashboard.cost.acrossResolved": "en: no noun agrees with the count",
 };
 
 // Keys that interpolate `{{count}}` and are still FLAT. Each one would be a call site the extractor

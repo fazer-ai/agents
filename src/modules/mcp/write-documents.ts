@@ -102,7 +102,7 @@ export async function documentTemplateCreate(
     // Normalized HERE, once, because every use below is downstream of it: the gate, the rendered
     // preview's title and the reported name. The apply trims, so anything shown untrimmed is a
     // value the write does not keep.
-    name: normalizeTemplateName(args.name ?? starter?.name ?? ""),
+    name: normalizeTemplateName(args.name ?? starter?.suggestedName ?? ""),
     slug: args.slug,
     description:
       args.description !== undefined

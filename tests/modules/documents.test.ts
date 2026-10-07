@@ -132,6 +132,28 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     await rm(DIR, { recursive: true, force: true });
   });
 
+  // The issue's contract: change the default, not each starter. A template created with no style, or
+  // with only its language, reads back exactly as the starters of that language.
+  test("a template created without a style reads back as the starters' style", async () => {
+    for (const [name, style, locale] of [
+      ["Sem estilo", undefined, "pt-BR"],
+      ["No style en", { locale: "en-US", currency: "USD" }, "en-US"],
+    ] as const) {
+      const created = await createDocumentTemplate(
+        ctx(tenantA),
+        {
+          name,
+          blocks: [{ id: "header", type: "header", title: "{{doc_title}}" }],
+          fields: [],
+          ...(style ? { style } : {}),
+        },
+        appDb,
+      );
+      const starter = documentStarter("quote", locale);
+      expect(created.style).toEqual(starter?.style as never);
+    }
+  });
+
   test("creates a template and derives the agent's tool name from it", async () => {
     const tpl = await getDocumentTemplate(ctx(tenantA), templateId, appDb);
     expect(tpl.slug).toBe("orcamento");
@@ -480,6 +502,39 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       (e: unknown) => e as { statusCode?: number },
     );
     expect(thrown?.statusCode).toBe(409);
+  });
+
+  // The sample values are written in the document's language, so an English template does not
+  // preview with Portuguese line items.
+  test("a preview fills its samples in the template's language", async () => {
+    const draft = (locale: "pt-BR" | "en-US") => ({
+      name: "Amostra",
+      blocks: [
+        { id: "t", type: "text", text: "Olá {{cliente}}" },
+        { id: "i", type: "lineItems", field: "itens" },
+      ],
+      fields: [
+        { name: "cliente", label: "Cliente", type: "text" },
+        { name: "itens", label: "Itens", type: "lineItems" },
+      ],
+      style: { locale },
+    });
+    const text = async (bytes: Buffer) => {
+      const { getDocumentProxy } = await import("unpdf");
+      const pdf = await getDocumentProxy(new Uint8Array(bytes));
+      const page = await pdf.getPage(1);
+      return (await page.getTextContent()).items
+        .map((item) => ("str" in item ? item.str : ""))
+        .join(" ");
+    };
+    const en = await text(
+      await previewDocumentTemplate(ctx(tenantA), draft("en-US"), appDb),
+    );
+    const pt = await text(
+      await previewDocumentTemplate(ctx(tenantA), draft("pt-BR"), appDb),
+    );
+    expect(en.includes("Initial consultation")).toBe(true);
+    expect(pt.includes("Consultoria inicial")).toBe(true);
   });
 
   test("previews an unsaved draft without issuing anything", async () => {

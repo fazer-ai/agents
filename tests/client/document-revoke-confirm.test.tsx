@@ -54,7 +54,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const held = holdStarters[locale];
     if (held) await held;
     return json({
-      starters: [{ key: "quote", name: `starter-${locale}`, description: "" }],
+      starters: [
+        {
+          key: "quote",
+          name: `starter-${locale}`,
+          summary: "",
+          suggestedName: `starter-${locale}`,
+          description: "",
+        },
+      ],
     });
   }
   if (url.pathname.endsWith("/document-templates"))

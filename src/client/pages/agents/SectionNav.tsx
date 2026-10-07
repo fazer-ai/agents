@@ -225,17 +225,31 @@ function useScrollSpy(ids: string[]): {
   return { active: active ?? ids[0] ?? null, pin };
 }
 
-// The left-rail index: desktop-only (the tab already stacks vertically on mobile), sticky within the
-// scroll container. Clicking an entry smooth-scrolls to its section; the active section is highlighted.
-export function SectionNav({ sections }: { sections: SectionDef[] }) {
+// The section index, desktop-only (the tab already stacks vertically on mobile). As a left rail it is
+// sticky within the scroll container; as a bar it is a row of entries for a page that cannot spare a
+// column, and the page makes the bar sticky. Clicking an entry smooth-scrolls to its section; the
+// active section is highlighted.
+export function SectionNav({
+  sections,
+  layout = "rail",
+}: {
+  sections: SectionDef[];
+  layout?: "rail" | "bar";
+}) {
   const { t } = useTranslation();
   const { active, pin } = useScrollSpy(sections.map((s) => s.id));
+  const bar = layout === "bar";
   return (
     <nav
-      className="hidden w-56 shrink-0 lg:block"
+      className={cn("hidden lg:block", !bar && "w-56 shrink-0")}
       aria-label={t("editor.sectionsNav", "Sections")}
     >
-      <ul className="sticky top-4 flex flex-col gap-0.5">
+      <ul
+        className={cn(
+          "flex gap-0.5",
+          bar ? "flex-wrap" : "sticky top-4 flex-col",
+        )}
+      >
         {sections.map((s) => {
           const Icon = s.icon;
           const isActive = active === s.id;
@@ -259,7 +273,11 @@ export function SectionNav({ sections }: { sections: SectionDef[] }) {
                 aria-current={isActive ? "true" : undefined}
               >
                 <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="truncate">{s.label}</span>
+                <span
+                  className={cn(!bar && "truncate", bar && "whitespace-nowrap")}
+                >
+                  {s.label}
+                </span>
               </a>
             </li>
           );

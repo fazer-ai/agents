@@ -7,6 +7,7 @@ import {
   Text,
   View,
 } from "@react-pdf/renderer";
+import PDFDocument from "pdfkit";
 import type { CompanySettings } from "@/modules/tenant-settings/service";
 import {
   type DocumentBlock,
@@ -18,7 +19,8 @@ import {
 } from "./blocks";
 import { formatMoney, formatNumber } from "./format";
 import { type InlineSpan, parseSimpleMarkdown } from "./markdown";
-import { resolveTokens } from "./tokens";
+import { printableUpperCase } from "./printable";
+import { resolveFooterText, resolveTokens } from "./tokens";
 import { computeTotals, lineTotal } from "./totals";
 import type { DocumentValues, LineItemValue } from "./validate";
 import { buildDocumentVars, type DocumentMeta } from "./vars";
@@ -57,6 +59,40 @@ export function footerReserve(style: DocumentStyle): number {
   if (!style.footerText && !style.showPageNumbers) return 0;
   return FOOTER_MAX_LINES * Math.round((style.baseFontSize - 2) * 1.4);
 }
+
+// The header prints the document's title, number and meta values, which are identifiers as often as
+// words, and labels print in spaced capitals wider than what was typed. A word that fits a full line is never given a break point, because the line breaker would
+// use one (and draw a hyphen) to fill a line rather than move the word down. A word wider than any
+// line gets one every few characters, since the renderer drops whatever a line cannot hold. The width
+// is measured by the same engine, in the same built-in font, the page is drawn with.
+const PAGE_WIDTH: Record<DocumentStyle["pageSize"], number> = {
+  A4: 595.28,
+  LETTER: 612,
+};
+
+const BOLD_FONT: Record<DocumentStyle["font"], string> = {
+  sans: "Helvetica-Bold",
+  serif: "Times-Bold",
+  mono: "Courier-Bold",
+};
+
+const measurer = new PDFDocument({ autoFirstPage: false });
+
+function headerBreaks(
+  font: string,
+  fontSize: number,
+  lineWidth: number,
+  letterSpacing = 0,
+) {
+  return (word: string) =>
+    measurer.font(font).fontSize(fontSize).widthOfString(word) +
+      letterSpacing * [...word].length <=
+    lineWidth
+      ? [word]
+      : (word.match(/.{1,12}/gsu) ?? [word]);
+}
+
+const LABEL_SPACING = 0.4;
 
 const SPACE_AFTER: Record<"none" | "sm" | "md" | "lg", number> = {
   none: 0,
@@ -109,6 +145,16 @@ export interface DocumentRenderInput {
   logo?: { data: Buffer; format: "png" | "jpg" } | null;
 }
 
+/** `#rrggbb` mixed toward white by `amount` (0..1): the table head's fill, derived from the accent. */
+export function tint(hex: string, amount: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m?.[1]) return "#f3f4f6";
+  const n = Number.parseInt(m[1], 16);
+  const mix = (c: number) => Math.round(c + (255 - c) * amount);
+  const [r, g, b] = [mix((n >> 16) & 255), mix((n >> 8) & 255), mix(n & 255)];
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
 function styles(style: DocumentStyle) {
   const size = style.baseFontSize;
   return StyleSheet.create({
@@ -118,40 +164,94 @@ function styles(style: DocumentStyle) {
       paddingHorizontal: MARGIN[style.margin],
       fontSize: size,
       fontFamily: FONT_FAMILY[style.font],
-      color: "#111827",
+      color: "#1f2937",
     },
-    headerRow: { flexDirection: "row", alignItems: "flex-start" },
+    header: {
+      borderBottomWidth: 2,
+      borderColor: style.accentColor,
+      paddingBottom: 10,
+    },
+    // The letterhead (logo, company) is its own band, so the title and the meta below it get the
+    // full width: a document number never shares a row with a multiline address.
+    letterhead: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      marginBottom: 10,
+    },
     logo: { width: 96, maxHeight: 48, objectFit: "contain", marginRight: 14 },
-    headerText: { flex: 1 },
-    title: { fontSize: size + 8, color: style.accentColor },
-    subtitle: { fontSize: size + 1, color: "#4b5563", marginTop: 2 },
-    company: { fontSize: size - 1, color: "#6b7280", marginTop: 6 },
-    metaRow: { flexDirection: "row", marginTop: 2 },
-    metaLabel: { fontSize: size - 1, color: "#6b7280" },
-    metaValue: { fontSize: size - 1 },
-    heading: { fontSize: size + 3, color: style.accentColor },
+    title: {
+      fontSize: size + 10,
+      fontWeight: 700,
+      color: style.accentColor,
+    },
+    subtitle: { fontSize: size + 1, color: "#4b5563", marginTop: 3 },
+    companyBlock: { flex: 1, alignItems: "flex-end" },
+    companyName: {
+      fontSize: size + 1,
+      fontWeight: 700,
+      textAlign: "right",
+    },
+    company: { fontSize: size - 1, color: "#6b7280", textAlign: "right" },
+    // Label over value, two to a row: a long label wraps in its own line and never leaves the
+    // value without width. A value too long for half a row (an email, a URL) has no space to break
+    // at, so its cell grows to the whole row instead of painting over the next one.
+    metaGrid: { flexDirection: "row", flexWrap: "wrap", marginTop: 4 },
+    metaCell: { flexGrow: 1, minWidth: "50%", paddingRight: 12, marginTop: 4 },
+    metaLabel: {
+      fontSize: size - 2,
+      color: "#6b7280",
+      letterSpacing: LABEL_SPACING,
+    },
+    metaValue: { fontSize: size - 1, fontWeight: 700 },
+    heading: {
+      fontSize: size + 3,
+      fontWeight: 700,
+      color: style.accentColor,
+    },
     muted: { color: "#6b7280" },
     bulletRow: { flexDirection: "row" },
-    bulletMark: { width: 10 },
-    pairRow: { flexDirection: "row", marginBottom: 2 },
-    pairLabel: { color: "#6b7280" },
+    bulletMark: { width: 10, color: style.accentColor },
+    pairRow: { marginBottom: 6, paddingRight: 12 },
+    pairLabel: {
+      fontSize: size - 2,
+      color: "#6b7280",
+      letterSpacing: LABEL_SPACING,
+    },
     tableHead: {
       flexDirection: "row",
-      borderBottomWidth: 1.5,
-      borderColor: style.accentColor,
-      paddingBottom: 3,
+      backgroundColor: tint(style.accentColor, 0.9),
+      paddingVertical: 5,
+      paddingHorizontal: 6,
+    },
+    tableHeadCell: {
+      fontSize: size - 1,
+      fontWeight: 700,
+      color: style.accentColor,
     },
     tableRow: {
       flexDirection: "row",
       borderBottomWidth: 0.5,
       borderColor: "#e5e7eb",
-      paddingVertical: 3,
+      paddingVertical: 5,
+      paddingHorizontal: 6,
     },
-    totalsRow: { flexDirection: "row", justifyContent: "flex-end" },
-    totalsLabel: { width: 110, textAlign: "right", color: "#6b7280" },
-    totalsValue: { width: 90, textAlign: "right" },
-    grandTotal: { fontSize: size + 2, color: style.accentColor },
-    divider: { borderBottomWidth: 1, borderColor: "#e5e7eb" },
+    totals: { alignSelf: "flex-end", width: 230, paddingHorizontal: 6 },
+    totalsRow: { flexDirection: "row", paddingVertical: 1.5 },
+    totalsGrandRow: {
+      flexDirection: "row",
+      borderTopWidth: 1.5,
+      borderColor: style.accentColor,
+      marginTop: 4,
+      paddingTop: 5,
+    },
+    totalsLabel: { flex: 1, textAlign: "right", color: "#6b7280" },
+    totalsValue: { width: 100, textAlign: "right" },
+    grandTotal: {
+      fontSize: size + 3,
+      fontWeight: 700,
+      color: style.accentColor,
+    },
+    divider: { borderBottomWidth: 0.75, borderColor: "#d1d5db" },
     footer: {
       position: "absolute",
       bottom: MARGIN[style.margin] - 12,
@@ -165,7 +265,16 @@ function styles(style: DocumentStyle) {
     // Clipped to what footerReserve reserves for. `maxLines` is a STYLE property in @react-pdf (the
     // layout reads `node.style.maxLines`) — passed as a prop it is accepted, ignored, and the footer
     // grows past the space the page held for it.
+    // A `render` text is drawn after layout, so the row cannot measure it: it gets a fixed width,
+    // enough for "Página 999/999", and the footer text wraps in what is left.
+    pageNumber: {
+      width: Math.ceil(
+        (LABELS[style.locale].page.length + 8) * (size - 2) * 0.6,
+      ),
+      textAlign: "right",
+    },
     footerText: {
+      flex: 1,
       marginRight: 8,
       maxLines: FOOTER_MAX_LINES,
       textOverflow: "ellipsis",
@@ -231,31 +340,109 @@ function renderBlock(
       const contactLine = [company.phone, company.email, company.website]
         .filter(Boolean)
         .join(" · ");
+      const showCompany =
+        block.showCompany !== false && (!!companyLine || !!contactLine);
+      const line = PAGE_WIDTH[style.pageSize] - 2 * MARGIN[style.margin];
+      const size = style.baseFontSize;
+      const bold = BOLD_FONT[style.font];
+      const showLogo = block.showLogo !== false && !!logo;
+      // The logo's box (width plus its right margin) is what the company block does not get.
+      const companyWidth = line - (showLogo ? 96 + 14 : 0);
       return (
-        <View style={sheet.headerRow}>
-          {block.showLogo !== false && logo ? (
-            <Image style={sheet.logo} src={logo} />
+        <View style={sheet.header}>
+          {(showLogo && logo) || showCompany ? (
+            <View style={sheet.letterhead}>
+              {showLogo && logo ? (
+                <Image style={sheet.logo} src={logo} />
+              ) : null}
+              {showCompany ? (
+                <View style={sheet.companyBlock}>
+                  {company.name ? (
+                    <Text
+                      style={sheet.companyName}
+                      hyphenationCallback={headerBreaks(
+                        bold,
+                        size + 1,
+                        companyWidth,
+                      )}
+                    >
+                      {company.name}
+                    </Text>
+                  ) : null}
+                  {[
+                    company.document,
+                    company.address,
+                    company.phone,
+                    company.email,
+                    company.website,
+                  ]
+                    .filter(Boolean)
+                    .map((entry) => (
+                      <Text
+                        key={entry}
+                        style={sheet.company}
+                        hyphenationCallback={headerBreaks(
+                          FONT_FAMILY[style.font],
+                          size - 1,
+                          companyWidth,
+                        )}
+                      >
+                        {entry}
+                      </Text>
+                    ))}
+                </View>
+              ) : null}
+            </View>
           ) : null}
-          <View style={sheet.headerText}>
-            {block.title ? (
-              <Text style={sheet.title}>{text(block.title)}</Text>
-            ) : null}
-            {block.subtitle ? (
-              <Text style={sheet.subtitle}>{text(block.subtitle)}</Text>
-            ) : null}
-            {block.showCompany !== false && companyLine ? (
-              <Text style={sheet.company}>{companyLine}</Text>
-            ) : null}
-            {block.showCompany !== false && contactLine ? (
-              <Text style={sheet.company}>{contactLine}</Text>
-            ) : null}
-            {(block.meta ?? []).map((row) => (
-              <View key={row.label} style={sheet.metaRow}>
-                <Text style={sheet.metaLabel}>{`${text(row.label)}: `}</Text>
-                <Text style={sheet.metaValue}>{text(row.value)}</Text>
-              </View>
-            ))}
-          </View>
+          {block.title ? (
+            <Text
+              style={sheet.title}
+              hyphenationCallback={headerBreaks(bold, size + 10, line)}
+            >
+              {text(block.title)}
+            </Text>
+          ) : null}
+          {block.subtitle ? (
+            <Text
+              style={sheet.subtitle}
+              hyphenationCallback={headerBreaks(
+                FONT_FAMILY[style.font],
+                size + 1,
+                line,
+              )}
+            >
+              {text(block.subtitle)}
+            </Text>
+          ) : null}
+          {block.meta?.length ? (
+            <View style={sheet.metaGrid}>
+              {block.meta.map((row) => (
+                <View key={row.label} style={sheet.metaCell}>
+                  <Text
+                    style={sheet.metaLabel}
+                    hyphenationCallback={headerBreaks(
+                      FONT_FAMILY[style.font],
+                      size - 2,
+                      line - 12,
+                      LABEL_SPACING,
+                    )}
+                  >
+                    {printableUpperCase(text(row.label))}
+                  </Text>
+                  <Text
+                    style={sheet.metaValue}
+                    hyphenationCallback={headerBreaks(
+                      bold,
+                      size - 1,
+                      line - 12,
+                    )}
+                  >
+                    {text(row.value)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
         </View>
       );
     }
@@ -303,6 +490,8 @@ function renderBlock(
 
     case "fields": {
       const columns = block.columns ?? 1;
+      const cellWidth =
+        (PAGE_WIDTH[style.pageSize] - 2 * MARGIN[style.margin]) / columns - 12;
       return (
         <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
           {block.rows.map((row) => (
@@ -310,7 +499,17 @@ function renderBlock(
               key={row.label}
               style={[sheet.pairRow, { width: `${100 / columns}%` }]}
             >
-              <Text style={sheet.pairLabel}>{`${text(row.label)}: `}</Text>
+              <Text
+                style={sheet.pairLabel}
+                hyphenationCallback={headerBreaks(
+                  FONT_FAMILY[style.font],
+                  style.baseFontSize - 2,
+                  cellWidth,
+                  LABEL_SPACING,
+                )}
+              >
+                {printableUpperCase(text(row.label))}
+              </Text>
               <Text>{text(row.value)}</Text>
             </View>
           ))}
@@ -332,7 +531,7 @@ function renderBlock(
           {block.showHeader === false ? null : (
             <View style={sheet.tableHead}>
               {columns.map((col) => (
-                <Text key={col} style={cell(col)}>
+                <Text key={col} style={[sheet.tableHeadCell, cell(col)]}>
                   {L[col]}
                 </Text>
               ))}
@@ -393,9 +592,12 @@ function renderBlock(
         total: L.grandTotal,
       };
       return (
-        <View>
+        <View style={sheet.totals}>
           {rows.map((row) => (
-            <View key={row} style={sheet.totalsRow}>
+            <View
+              key={row}
+              style={row === "total" ? sheet.totalsGrandRow : sheet.totalsRow}
+            >
               <Text
                 style={[
                   sheet.totalsLabel,
@@ -454,11 +656,12 @@ export async function renderDocumentPdf(
           <View style={sheet.footer} fixed>
             <Text style={sheet.footerText}>
               {input.style.footerText
-                ? resolveTokens(input.style.footerText, vars)
+                ? resolveFooterText(input.style.footerText, vars)
                 : ""}
             </Text>
             {input.style.showPageNumbers ? (
               <Text
+                style={sheet.pageNumber}
                 render={({ pageNumber, totalPages }) =>
                   `${L.page} ${pageNumber}/${totalPages}`
                 }

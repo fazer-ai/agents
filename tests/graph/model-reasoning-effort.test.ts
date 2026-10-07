@@ -3,10 +3,11 @@ import { tool } from "@langchain/core/tools";
 import type { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 import { parseModelConfig } from "@/graph/model-config";
-import { createChatModel } from "@/graph/models";
+import { createChatModel, forgetToolEffortFloorsForTest } from "@/graph/models";
 import {
   planOpenAITransport,
   type ReasoningEffort,
+  toolEffortFloorOf,
 } from "@/graph/openai-reasoning";
 
 // With no reasoning effort sent, a gpt-5.6 agent's tools collide with the provider's own default:
@@ -39,6 +40,35 @@ function completionsRejects(model: string, body: Record<string, unknown>) {
 
 const TOOL_CALL_ARGS = '{"timezone":"America/Sao_Paulo"}';
 
+// Measured on the live API on 2026-10-07: these two refuse "none" itself, on both endpoints, and
+// name what they take; completions spells the list without "max", responses with it. A test can widen
+// it to stand in for a model whose lowest accepted effort is higher.
+const refusesNone: Record<string, ReasoningEffort[]> = {
+  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+  "gpt-6.1-sol": ["low", "medium", "high", "xhigh", "max"],
+};
+
+function refusalOfNone(model: string, onResponses: boolean) {
+  const accepted = (refusesNone[model] ?? []).filter(
+    (e) => onResponses || e !== "max",
+  );
+  const listed = accepted.map((e) => `'${e}'`);
+  const values = `${listed.slice(0, -1).join(", ")}, and ${listed.at(-1)}`;
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: onResponses
+          ? `Unsupported value: 'none' is not supported with the '${model}' model. Supported values are: ${values}.`
+          : `Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: ${values}.`,
+        type: "invalid_request_error",
+        param: onResponses ? "reasoning.effort" : "reasoning_effort",
+        code: "unsupported_value",
+      },
+    }),
+    { status: 400, headers: { "content-type": "application/json" } },
+  );
+}
+
 function fakeOpenAI(): FakeOpenAI {
   const requests: Record<string, unknown>[] = [];
   const urls: string[] = [];
@@ -51,7 +81,14 @@ function fakeOpenAI(): FakeOpenAI {
     requests.push(body);
     urls.push(String(url));
     const model = String(body.model ?? "");
-    if (String(url).includes("/responses")) {
+    const onResponses = String(url).includes("/responses");
+    const sentEffort = onResponses
+      ? (body.reasoning as { effort?: string } | undefined)?.effort
+      : body.reasoning_effort;
+    if (refusesNone[model] && sentEffort === "none") {
+      return refusalOfNone(model, onResponses);
+    }
+    if (onResponses) {
       // NOTE: The live API refuses the parameter by name on a model with no reasoning to constrain
       // ("Unsupported parameter: 'reasoning.effort' ..." on gpt-4o), and rejects the completions
       // spelling by name, saying where it moved (what a model the ADAPTER routes here would hit).
@@ -169,6 +206,7 @@ let fake: FakeOpenAI | null = null;
 afterEach(() => {
   fake?.restore();
   fake = null;
+  forgetToolEffortFloorsForTest();
 });
 
 async function turn(
@@ -796,5 +834,173 @@ describe("the completions spelling never leaves for the responses endpoint", () 
     expect(fake.urls[0]).toContain("/responses");
     expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
     expect(fake.requests[0]?.reasoning).toEqual({ effort: "medium" });
+  });
+});
+
+// A model that refuses the tool pin itself is answered at the lowest effort it names, on
+// the endpoint that takes an effort alongside tools, and the refusal is paid once per process.
+describe("a model that refuses the tool pin", () => {
+  async function bindAndCall(
+    model: string,
+    opts: { reasoningEffort?: ReasoningEffort } = {},
+  ) {
+    const chat = createChatModel({
+      provider: "openai",
+      model,
+      apiKey: "test",
+      temperature: 0.3,
+      maxRetries: 0,
+      ...opts,
+    });
+    const bound = chat.bindTools?.([getCurrentTime]) ?? chat;
+    return bound.invoke([{ role: "user", content: "que horas são?" }]);
+  }
+  const sentAt = (i: number) => ({
+    url: fake?.urls[i] ?? "",
+    effort: effortOf(fake?.requests[i] ?? {}, fake?.urls[i] ?? ""),
+  });
+
+  test("is answered at its lowest accepted effort, on responses", async () => {
+    for (const model of ["gpt-6-astra", "gpt-6.1-sol"]) {
+      fake?.restore();
+      forgetToolEffortFloorsForTest();
+      fake = fakeOpenAI();
+      const reply = await bindAndCall(model);
+      expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
+      expect([sentAt(0).effort, sentAt(1).effort]).toEqual(["none", "low"]);
+      expect(sentAt(1).url).toContain("/responses");
+      expect(fake.requests).toHaveLength(2);
+      expectStoreOff(fake.requests[1] ?? {}, sentAt(1).url);
+    }
+  });
+
+  test("pays the refusal once: the next turn binds the working shape directly", async () => {
+    fake = fakeOpenAI();
+    await bindAndCall("gpt-6-astra");
+    await bindAndCall("gpt-6-astra");
+    expect(fake.requests).toHaveLength(3);
+    expect(sentAt(2)).toEqual({
+      url: expect.stringContaining("/responses"),
+      effort: "low",
+    });
+  });
+
+  // The graph binds once per turn and invokes once per round of tool calls.
+  test("pays the refusal once within a turn too: a later round goes straight to the floor", async () => {
+    fake = fakeOpenAI();
+    const chat = createChatModel({
+      provider: "openai",
+      model: "gpt-6-astra",
+      apiKey: "test",
+      maxRetries: 0,
+    });
+    const bound = chat.bindTools?.([getCurrentTime]) ?? chat;
+    for (let round = 0; round < 2; round++) {
+      await bound.invoke([{ role: "user", content: "que horas são?" }]);
+    }
+    expect(fake.requests).toHaveLength(3);
+    expect(sentAt(2)).toEqual({
+      url: expect.stringContaining("/responses"),
+      effort: "low",
+    });
+  });
+
+  test("a refusal naming a higher floor gets that floor, with no list of models", async () => {
+    refusesNone["gpt-6-future"] = ["medium", "high", "xhigh"];
+    try {
+      fake = fakeOpenAI();
+      await bindAndCall("gpt-6-future");
+      expect(sentAt(1).effort).toBe("medium");
+    } finally {
+      delete refusesNone["gpt-6-future"];
+    }
+  });
+
+  test("a model that takes the pin sends what it sent before, once", async () => {
+    fake = fakeOpenAI();
+    await bindAndCall("gpt-6-astra");
+    await bindAndCall("gpt-6-luna");
+    expect(fake.requests).toHaveLength(3);
+    expect(sentAt(2).effort).toBe("none");
+    expect(sentAt(2).url).toContain("/chat/completions");
+  });
+
+  test("an effort the operator chose is not second-guessed", async () => {
+    fake = fakeOpenAI();
+    await expect(
+      bindAndCall("gpt-6-astra", { reasoningEffort: "none" }),
+    ).rejects.toThrow(/not supported/);
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  test("any other failure is left to fail as before, after one request", async () => {
+    const original = globalThis.fetch;
+    for (const [status, error] of [
+      [503, { message: "overloaded", type: "server_error", code: null }],
+      [
+        400,
+        {
+          message: "Unsupported parameter: 'reasoning_effort'.",
+          type: "invalid_request_error",
+          param: "reasoning_effort",
+          code: "unsupported_parameter",
+        },
+      ],
+    ] as const) {
+      let n = 0;
+      globalThis.fetch = (async () => {
+        n++;
+        return new Response(JSON.stringify({ error }), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch;
+      try {
+        await expect(bindAndCall("gpt-6-astra")).rejects.toThrow();
+        expect(n).toBe(1);
+      } finally {
+        globalThis.fetch = original;
+      }
+    }
+  });
+});
+
+describe("toolEffortFloorOf", () => {
+  const refusal = (over: Record<string, unknown>) => ({
+    status: 400,
+    code: "unsupported_value",
+    param: "reasoning_effort",
+    message:
+      "Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'.",
+    ...over,
+  });
+
+  test("names the lowest effort the refusal lists, in either spelling", () => {
+    expect(toolEffortFloorOf(refusal({}))).toBe("low");
+    expect(toolEffortFloorOf(refusal({ param: "reasoning.effort" }))).toBe(
+      "low",
+    );
+    expect(
+      toolEffortFloorOf(
+        refusal({
+          message: "Supported values are: 'xhigh', 'high' and 'medium'.",
+        }),
+      ),
+    ).toBe("medium");
+  });
+
+  test("anything but that refusal is not a floor", () => {
+    for (const over of [
+      { status: 503 },
+      { code: "unsupported_parameter" },
+      { param: "tools" },
+      { message: "Unsupported value without a list" },
+      { message: "Supported values are: 'none'." },
+      { message: "Supported values are: 'minimal', 'turbo'." },
+    ]) {
+      expect(toolEffortFloorOf(refusal(over))).toBeNull();
+    }
+    expect(toolEffortFloorOf(null)).toBeNull();
+    expect(toolEffortFloorOf("400")).toBeNull();
   });
 });

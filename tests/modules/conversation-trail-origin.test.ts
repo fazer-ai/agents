@@ -316,4 +316,31 @@ describe.skipIf(!dbUp)("where a proactive turn came from (issue #846)", () => {
     expect(e?.messageId).toBeNull();
     expect(e?.integrationName).toBeNull();
   });
+
+  // The turn's summary of a tool that failed on every call is not another call: the trail shows the
+  // call once, not twice.
+  test("a tool's failed-on-every-call summary is not a call on the trail", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    for (const detail of [
+      { tool: "consulta_pedido" },
+      { tool: "consulta_pedido", failedCalls: 1 },
+    ]) {
+      await suDb.executionLog.create({
+        data: {
+          tenantId,
+          conversationId: convId,
+          turnId: "t-tool-summary",
+          source: "inbox",
+          stage: "tool",
+          level: "failedCalls" in detail ? "warn" : "info",
+          status: "error",
+          detail,
+        },
+      });
+    }
+    const entries = await trail();
+    expect(entries.map((e) => [e.kind, e.name])).toEqual([
+      ["tool", "consulta_pedido"],
+    ]);
+  });
 });

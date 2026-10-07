@@ -1506,6 +1506,10 @@ function reportResolveLabels(ctx: ToolCtx, result: ResolveLabelsResult) {
       tool: "resolve_conversation",
       phase: "resolve_labels",
       err: result.error,
+      // NOTE: Labels held back because the contact's open case could not be ruled out are `info`:
+      // the conversation closed and the customer was answered, and nobody can act on a contact with
+      // that many conversations. A label write that failed stays a `warn`.
+      ...(result.outcome !== "failed" ? { level: "info" as const } : {}),
     });
   }
 }

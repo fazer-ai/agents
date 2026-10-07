@@ -16,6 +16,7 @@ import {
   decideSpend,
   monthEnd,
   monthStart,
+  projectMonthEnd,
   type SpendVerdict,
 } from "./decide";
 import {
@@ -405,6 +406,8 @@ export interface SpendCeilingUsageEntry {
   // Calls this month the ledger could not price, which the figure leaves out, and their models.
   unpricedCalls: number;
   unpricedModels: string[];
+  // The month-end figure at the pace of the days elapsed (`projectMonthEnd`), from `usedUsd`.
+  projectedUsd: number;
 }
 
 export interface SpendCeilingUsageDto {
@@ -480,6 +483,7 @@ export async function spendCeilingUsage(params: {
             pollFailedAt: null,
             stale: false,
             ...unpricedFields,
+            projectedUsd: projectMonthEnd(usedUsd, at),
           };
         }
         const row = await db.spendCostSnapshot.findUnique({
@@ -515,6 +519,7 @@ export async function spendCeilingUsage(params: {
           // Nothing read is nothing fresh: a month with no row is one the gate lets through.
           stale: health?.stale ?? true,
           ...unpricedFields,
+          projectedUsd: projectMonthEnd(snapshot?.costUsd ?? 0, at),
         };
       }),
     ),

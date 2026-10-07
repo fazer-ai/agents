@@ -21,9 +21,10 @@ import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWrite } from "@/graph/tools/label-writes";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
-import { buildNativeTools } from "@/graph/tools/native";
+import { buildNativeTools, type HandoffTurnState } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
+import { failureDetail } from "@/lib/provider-failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText, clipTextEnd } from "@/lib/text";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -53,6 +54,7 @@ import { observerRuleVerdict } from "@/modules/contact-auth/observer";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
+  jobRetriesAfterFailure,
   type Rearm,
   retireUnlessAllowedLaterOn,
   upsertJobRow,
@@ -424,6 +426,10 @@ export interface ObserveDeps {
   // The row this tick is running FOR, so the generation fence can ask whether it still is. Optional
   // because `runObserve` is callable without the scheduler.
   claim?: { jobId: bigint; claimSeq: number };
+  // What the scheduler does with this tick if it fails with nothing committed: `retry` while the job
+  // has attempts left, `dead_letter` on its last. Sets the failure line's level (`info` with
+  // `willRetry`, or `warn`); absent where no scheduler stands behind the tick, which keeps `error`.
+  afterFailure?: "retry" | "dead_letter";
   // The turn's deadline, injectable so a test can assert the tick gives up without waiting a
   // minute for it. Production never passes it.
   timeoutMs?: number;
@@ -1102,6 +1108,18 @@ export async function runObserve(
       },
     });
 
+  // A failure the scheduler will run again is not the tick's outcome yet, and the last one is
+  // degraded labelling, never a lost message: the observer answers nobody.
+  const uncommittedFailure = (): {
+    level: "info" | "warn" | "error";
+    detail: Record<string, unknown>;
+  } =>
+    deps.afterFailure === "retry"
+      ? { level: "info", detail: { willRetry: true } }
+      : deps.afterFailure === "dead_letter"
+        ? { level: "warn", detail: { willRetry: false } }
+        : { level: "error", detail: {} };
+
   // NOTE: A RESOLVE TICK IS ABOUT A RESOLVED CONVERSATION, asked BEFORE anything is spent: on an
   // `on_resolve` agent the reopening message arms nothing, so the old row survives. Asked again
   // before writing, for a reopening mid-call. A mirror row that vanished is not a reopening.
@@ -1372,6 +1390,13 @@ export async function runObserve(
   // ...AND IT COVERS DISCOVERY, which is the one call that can hang forever: `buildToolset` contacts
   // every MCP server the agent has, and an SSE server that opens the stream and never emits its
   // endpoint waits with no timeout of its own.
+  // NOTE: not for delivering anything (a muted client cannot): it lets `resolve_conversation` see
+  // that THIS turn transferred the conversation, and refuse to close what the human queue now owns;
+  // and it is what the tool's flow line reads to say whether the transfer happened.
+  const handoffState: HandoffTurnState = {
+    customerMessage: null,
+    completed: false,
+  };
   let tools: Awaited<ReturnType<typeof buildToolset>>;
   try {
     tools = await underSignal(
@@ -1396,10 +1421,7 @@ export async function runObserve(
             if (counted.has(toolName)) noEffect++;
           },
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
-          // NOTE: not for delivering anything (a muted client cannot): it lets
-          // `resolve_conversation` see that THIS turn transferred the conversation, and refuse to
-          // close what the human queue now owns.
-          handoffState: { customerMessage: null, completed: false },
+          handoffState,
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
           // degradation if that fails too — one extra request on the failing path only.
           ...(current === null ? {} : { conversationLabels: current }),
@@ -1470,32 +1492,39 @@ export async function runObserve(
       // NOTE: the tick's frame says the model answers nobody, so the tool budget's wrap-up says the
       // same: finish with a tool, or stop, never "responda ao cliente".
       noReplyChannel: true,
+      // NOTE: Written before the retry runs, so `info` with `willRetry`: a second empty answer fails
+      // the tick, and that failure is the line.
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
-          level: "warn",
+          level: "info",
           status: "ok",
           provider,
           model,
-          detail: { retry: attempt, node: "observer" },
+          detail: { retry: attempt, node: "observer", willRetry: true },
         }),
-      onModelFallback: ({ provider, model, reason: why }) =>
+      onModelFallback: ({ provider, model, reason: why, failure }) =>
         emitFlowEvent(flow, {
           stage: "observe",
           level: "warn",
           status: "ok",
           provider,
           model,
-          detail: { fallbackFrom: cfg.mc.provider, fallbackReason: why },
+          detail: {
+            fallbackFrom: cfg.mc.provider,
+            fallbackReason: why,
+            primaryFailure: failure,
+          },
         }),
-      onModelFallbackFailed: ({ provider, model, reason: why }) =>
+      onModelFallbackFailed: ({ provider, model, reason: why, failure }) =>
         emitFlowEvent(flow, {
           stage: "observe",
           level: "info",
           status: "error",
           provider,
           model,
-          detail: { fallbackFailed: why },
+          detail: { fallbackFailed: why, failure },
+          errorMessage: why,
         }),
       // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
       // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
@@ -1514,7 +1543,8 @@ export async function runObserve(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    line("error", { failed: "model_build" }, "error");
+    const failure = uncommittedFailure();
+    line("error", { failed: "model_build", ...failure.detail }, failure.level);
     return {
       outcome: "fail",
       error: `observe: model could not be built: ${msg}`,
@@ -1569,7 +1599,12 @@ export async function runObserve(
       );
       return { outcome: "done" };
     }
-    line("error", { failed: why, messagesRead: transcript.length }, "error");
+    const failure = uncommittedFailure();
+    line(
+      "error",
+      { failed: why, messagesRead: transcript.length, ...failure.detail },
+      failure.level,
+    );
     return {
       outcome: "fail",
       error: `observe: a fence could not be re-read before writing (${why})`,
@@ -1578,6 +1613,11 @@ export async function runObserve(
 
   const startedAt = Date.now();
   let toolCalls = 0;
+  const toolLogger = new ToolFlowLogger(flow, {
+    logValues: cfg.logToolValues,
+    tools,
+    handedOff: () => handoffState.completed === true,
+  });
   // NOTE: A DEADLINE, because this tick runs on the SHARED scheduler (see `OBSERVE_TIMEOUT_MS`).
   // Both halves: the config's signal cancels the provider request, and `underSignal` guarantees
   // this function stops waiting whatever a link in the chain does with the signal.
@@ -1629,7 +1669,7 @@ export async function runObserve(
               base,
               tools,
             }),
-            new ToolFlowLogger(flow, { logValues: cfg.logToolValues, tools }),
+            toolLogger,
           ],
         },
       ),
@@ -1642,6 +1682,7 @@ export async function runObserve(
       if (Array.isArray(calls)) toolCalls += calls.length;
     }
   } catch (err) {
+    toolLogger.settle();
     const msg = err instanceof Error ? err.message : String(err);
     // A REFUSED FENCE IS NOT A MODEL FAILURE. `stillWanted` stops the turn by refusing the tool
     // node, and whatever that surfaces as, the exception is not what went wrong — the world moved.
@@ -1653,9 +1694,10 @@ export async function runObserve(
     // a write repeats it. An `on_resolve` agent has no next burst, the declared price
     // (docs/chatwoot.md).
     const committed = toolsRan - noEffect > 0;
+    const failure = uncommittedFailure();
     emitFlowEvent(flow, {
       stage: "observe",
-      level: committed ? "warn" : "error",
+      level: committed ? "warn" : failure.level,
       status: "error",
       provider: cfg.mc.provider,
       model: cfg.mc.model,
@@ -1663,8 +1705,9 @@ export async function runObserve(
       detail: {
         reason,
         failed: "model_call",
+        ...failureDetail(err),
         toolCalls: toolsRan - noEffect,
-        ...(committed ? { retried: false } : {}),
+        ...(committed ? { retried: false } : failure.detail),
         ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
       },
       errorMessage: msg,
@@ -1672,6 +1715,7 @@ export async function runObserve(
     if (committed) return { outcome: "done" };
     return { outcome: "fail", error: `observe: ${msg}` };
   }
+  toolLogger.settle();
   if (refusal !== null) return endOnRefusal(refusal);
   emitFlowEvent(flow, {
     stage: "observe",
@@ -1692,14 +1736,25 @@ export async function runObserve(
   return { outcome: "done" };
 }
 
-export async function observeHandler(
+export function observeHandler(
   job: ClaimedJob,
   base: PrismaClient,
+): Promise<JobResult> {
+  return runObserveJob(job, base);
+}
+
+// The handler's body, with `deps` for a test that drives a claimed job minus the network.
+export async function runObserveJob(
+  job: ClaimedJob,
+  base: PrismaClient,
+  deps: Pick<ObserveDeps, "makeModel" | "makeClient"> = {},
 ): Promise<JobResult> {
   const p = parseObservePayload(job.payload);
   if (!p) return { outcome: "done" };
   return runObserve(job.tenantId, p, base, {
+    ...deps,
     claim: { jobId: job.id, claimSeq: job.claimSeq },
+    afterFailure: jobRetriesAfterFailure(job) ? "retry" : "dead_letter",
   });
 }
 

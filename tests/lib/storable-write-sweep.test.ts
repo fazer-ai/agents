@@ -299,18 +299,23 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
 type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
-  "src/graph/nudge.ts": [1, "flow-event"],
+  "src/graph/nudge.ts": [2, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
-  "src/graph/runtime.ts": [5, "flow-event"],
-  "src/graph/tool-flowlog.ts": [2, "flow-event"],
-  // A playground turn that failed unhandled: a fixed sentence, never the error's text.
-  "src/modules/playground/service.ts": [1, "flow-event"],
+  "src/graph/runtime.ts": [6, "flow-event"],
+  "src/graph/tool-flowlog.ts": [3, "flow-event"],
+  // A playground turn that failed unhandled: a fixed sentence, never the error's text. And the two
+  // fallback-failed lines, the redacted reason.
+  "src/modules/playground/service.ts": [3, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
+  // The line a recovery writes when it ends with the delivery still DEAD: a fixed sentence.
+  "src/modules/chatwoot/recover-delivery.ts": [1, "flow-event"],
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
+  // The line a dead debounce flush writes: a fixed sentence and a count, never the job's error.
+  "src/modules/debounce/handler.ts": [1, "flow-event"],
   // Both roads to DEAD write through one `finalizeDead`.
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
   // The follow-up sweep's reading of the failure backoff: the type of the row it is handed. And the
@@ -325,7 +330,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/guardrails/handoff.ts": [1, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
-  "src/modules/observe/job.ts": [1, "flow-event"],
+  "src/modules/observe/job.ts": [2, "flow-event"],
   // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
   // that stood down: a select and the type it is handed as.
   "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],
@@ -339,7 +344,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/stt/service.ts": [2, "flow-event"],
   // The audio check's "unavailable" line: a closed `audio check unavailable (<code>)`.
   "src/modules/tts/service.ts": [1, "flow-event"],
-  "src/modules/vision/service.ts": [2, "flow-event"],
+  "src/modules/vision/service.ts": [3, "flow-event"],
   // Three reads of `lastError`, and none of them a write: the DTO field, the projection that feeds
   // it, and the type. The ledger surfaces the column an operator uses to decide whether to requeue
   // and the value was sanitized where the worker stored it.
@@ -352,7 +357,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
 // `summary`) far too common to grep for. Pinning where the guard is CALLED reaches them, and catches
 // the removal of a call that the ledger above would read as an ordinary `read`.
 const GUARD_CALLS: Record<string, number> = {
-  "src/graph/tool-flowlog.ts": 2,
+  // The cause of a failed call, the cause of a thrown one, and the turn's outcome line per tool.
+  "src/graph/tool-flowlog.ts": 3,
   "src/lib/redact.ts": 1,
   "src/modules/conversations/error.ts": 1,
   "src/modules/conversations/failure-note.ts": 1,
@@ -360,7 +366,8 @@ const GUARD_CALLS: Record<string, number> = {
   // column it guards (`alert_deliveries.last_error`) is written by the worker, from a string this
   // file built.
   "src/modules/flowlog/alert-send.ts": 1,
-  "src/modules/flowlog/alerts.ts": 1,
+  // The body of an alert and of a rate alert, each a line posted to the channel.
+  "src/modules/flowlog/alerts.ts": 2,
   "src/modules/flowlog/service.ts": 2,
   "src/modules/rag/documents.ts": 1,
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
@@ -371,6 +378,8 @@ const GUARD_CALLS: Record<string, number> = {
   "src/modules/scheduler/service.ts": 3,
   // The ledger read's error text, before it reaches `poll_error`.
   "src/modules/spend-ceiling/poll.ts": 1,
+  // The line the retry loop writes for a retry it announced and could not start.
+  "src/modules/vision/service.ts": 1,
   "src/modules/webhooks/outbound/worker.ts": 1,
 };
 

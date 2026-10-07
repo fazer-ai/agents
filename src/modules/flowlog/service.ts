@@ -2,13 +2,19 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { failureDetail } from "@/lib/provider-failure";
 import {
   MAX_STRING,
   redactSecretsDeep,
   sanitizeErrorMessage,
 } from "@/lib/redact";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { dispatchAlertsForEvent } from "./alerts";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import {
+  causeKeyOf,
+  dispatchAlertsForEvent,
+  dispatchRateAlert,
+  rateSubjectOf,
+} from "./alerts";
 import { trackFlowWrite } from "./scheduled";
 import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
 
@@ -78,16 +84,29 @@ export function emitFlowEvent(ctx: FlowContext, ev: FlowEvent): void {
 // The same write, awaited, for a caller whose line is the only record left: the stranded-delivery
 // sweep writes the line FIRST and retires its ledger row only if it landed. Failures are still
 // swallowed; what awaiting buys is ORDERING, and the outcome comes back in `delivered`.
+// A line written at most once per key: the check and the insert run in one transaction under an
+// advisory lock on `lockKey`, so two writers racing for the same fact cannot both find it missing.
+export interface WriteOnce {
+  lockKey: string;
+  already: (db: ScopedDb) => Promise<boolean>;
+}
+
 export async function writeFlowEvent(
   ctx: FlowContext,
   ev: FlowEvent,
-): Promise<{ delivered: boolean }> {
+  opts: { once?: WriteOnce } = {},
+): Promise<{ delivered: boolean; skipped?: true }> {
   const base = ctx.base ?? basePrisma;
   const level: FlowLevel = ev.level ?? "info";
   let delivered = true;
   try {
-    await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
-      db.executionLog.create({
+    const wrote = await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
+      const once = opts.once;
+      if (once) {
+        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${once.lockKey}, 0))`;
+        if (await once.already(db)) return false;
+      }
+      await db.executionLog.create({
         data: {
           tenantId: ctx.tenantId,
           turnId: ctx.turnId,
@@ -123,18 +142,35 @@ export async function writeFlowEvent(
             ? sanitizeErrorMessage(ev.errorMessage)
             : undefined,
         },
-      }),
-    );
+      });
+      return true;
+    });
+    // NOTE: Already written by another writer: nothing new happened, so nothing alerts either.
+    if (!wrote) return { delivered: false, skipped: true };
   } catch (err) {
     delivered = false;
     logger.warn({ err, turnId: ctx.turnId }, "flowlog emit failed");
   }
-  // Alerting: only warn/error, and only real (inbox) traffic — a playground error must not page.
-  if ((level === "warn" || level === "error") && ctx.source === "inbox") {
+  // Alerting: only warn/error, plus a cause alert at any level (a run the job retries against a dead
+  // key is an `info`, and the key still needs a person), and only real (inbox) traffic — a playground
+  // error must not page.
+  if (
+    (level === "warn" || level === "error" || causeKeyOf(ev) !== null) &&
+    ctx.source === "inbox"
+  ) {
     try {
       await dispatchAlertsForEvent(ctx, { ...ev, level }, base);
     } catch (err) {
       logger.warn({ err, turnId: ctx.turnId }, "flowlog alert dispatch failed");
+    }
+  }
+  // A transient provider failure also counts toward that provider's rate, at any level: the attempt
+  // a retry recovers is `info` and pages nobody alone, and many of them are a degraded provider.
+  if (ctx.source === "inbox" && rateSubjectOf(ev) !== null) {
+    try {
+      await dispatchRateAlert(ctx, ev, base);
+    } catch (err) {
+      logger.warn({ err, turnId: ctx.turnId }, "flowlog rate alert failed");
     }
   }
   return { delivered };
@@ -160,6 +196,14 @@ export async function withFlowStage<T>(
     // RECOVERS from (e.g. TTS → text fallback) pass "warn" so the conversation/Logs show an advisory
     // rather than a red error. The status stays "error" (the stage itself did fail).
     errorLevel?: FlowLevel;
+    // The failure line's level and extra detail, decided by the caller from the error, for a caller
+    // that knows what comes next: a retry it is about to make is `info` with `willRetry`, and only the
+    // failure that ends the work keeps the severity. Wins over `errorLevel`. A throw here falls back
+    // to `errorLevel`, for the same reason `detailOf` is guarded.
+    failureOf?: (err: unknown) => {
+      level: FlowLevel;
+      detail?: Record<string, unknown>;
+    };
   },
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -186,14 +230,31 @@ export async function withFlowStage<T>(
     });
     return out;
   } catch (err) {
+    let level = meta.errorLevel ?? "error";
+    // What kind of failure it was, in the closed vocabulary (`timeout`, `HTTP <nnn>`,
+    // `provider error`), never the server's text: the alert dispatcher keys causes and rates on it,
+    // and the message beside it is free text no rule should parse.
+    let detail: Record<string, unknown> = {
+      ...meta.detail,
+      ...failureDetail(err),
+    };
+    if (meta.failureOf) {
+      try {
+        const failure = meta.failureOf(err);
+        level = failure.level;
+        if (failure.detail) detail = { ...detail, ...failure.detail };
+      } catch (e) {
+        logger.warn({ err: e, stage }, "flow stage failureOf failed");
+      }
+    }
     emitFlowEvent(ctx, {
       stage,
-      level: meta.errorLevel ?? "error",
+      level,
       status: "error",
       provider: meta.provider ?? null,
       model: meta.model ?? null,
       durationMs: Date.now() - start,
-      detail: meta.detail,
+      detail,
       errorMessage: sanitizeErrorMessage(err),
     });
     throw err;

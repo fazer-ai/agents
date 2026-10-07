@@ -133,6 +133,12 @@ describe("an MCP connection's declared headers", () => {
     expect(ra).toMatchObject({ contact: "+5511999990001", inbox: "inbox-7" });
     expect(rb).toMatchObject({ contact: "+5511999990002", inbox: "inbox-8" });
 
+    // The fixture logs each request on stdout, which reaches this process on its own schedule,
+    // after the response may already have; the assertions read the log once every call is in it.
+    const calls = () =>
+      seen.slice(from).filter((l) => l.request && l.method === "tools/call");
+    const deadline = Date.now() + 5_000;
+    while (calls().length < 3 && Date.now() < deadline) await Bun.sleep(10);
     const lines = seen.slice(from).filter((l) => l.request);
     expect(lines.filter((l) => l.method === "initialize")).toHaveLength(1);
     expect(new Set(lines.map((l) => l.session).filter(Boolean)).size).toBe(1);

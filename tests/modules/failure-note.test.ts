@@ -32,6 +32,7 @@ import {
   runSchedulerTick,
 } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // A turn that dies leaves the customer with no reply and the operator with nothing to see inside
 // Chatwoot. Knowing the turn is DEFINITIVELY lost is the hard part, and getting it wrong is worse than
@@ -548,6 +549,68 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     });
     expect(after.status).toBe("PENDING");
   });
+
+  // The runs' own `generate` lines are `info` (a run with another behind it had not lost the customer
+  // yet), so the death writes the one line that alerts: on `generate`, at `error`, linked to the
+  // conversation, saying how many runs failed. A row re-armed by a new message is a turn that is
+  // coming, and gets no line.
+  for (const status of ["DEAD", "PENDING"] as const) {
+    test(`a ${status} row ${status === "DEAD" ? "writes" : "does not write"} the unanswered line`, async () => {
+      const conv = await seedConversation();
+      const threadId = `${tenantId}:${instanceId}:${conv}`;
+      const row = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: KIND,
+          dedupeKey: `failnote-unanswered-${status}-${process.pid}`,
+          payload: { threadId },
+          runAt: new Date(),
+          status,
+          attempts: 5,
+          claimSeq: 0,
+        },
+        select: { id: true },
+      });
+      await announceDeadDebounceFlush(
+        {
+          id: row.id,
+          tenantId,
+          kind: KIND,
+          payload: { threadId },
+          attempts: 4,
+          claimSeq: 0,
+        },
+        "upstream 503",
+        appDb,
+      );
+      const lines = await flowLogRows(suDb, {
+        where: { tenantId, threadId, stage: "generate" },
+        select: {
+          level: true,
+          status: true,
+          detail: true,
+          errorMessage: true,
+          conversationId: true,
+        },
+      });
+      if (status === "PENDING") {
+        expect(lines).toEqual([]);
+        return;
+      }
+      const mirror = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { id: true },
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.level).toBe("error");
+      expect(lines[0]?.status).toBe("error");
+      expect(lines[0]?.conversationId).toBe(mirror.id);
+      expect(lines[0]?.detail).toEqual({ outcome: "unanswered", runs: 5 });
+      expect(lines[0]?.errorMessage).toContain("unanswered");
+      expect(lines[0]?.errorMessage).not.toContain("503");
+      await clearFlowLog(suDb, { tenantId, threadId });
+    });
+  }
 
   test("a DEAD row re-armed before the note is posted is a live turn again", async () => {
     const conv = await seedConversation();

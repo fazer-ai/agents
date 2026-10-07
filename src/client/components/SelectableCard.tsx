@@ -54,12 +54,19 @@ export function SelectableCard({
           <Icon className="h-5 w-5" aria-hidden="true" />
         </span>
       )}
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex items-center gap-2">
-          <span className="truncate font-medium text-sm text-text-primary">
+      {/* `data-selectable-content` lets a wrapper that overlays a control on the card (EditableCard's
+          pencil) reserve room for it without reaching into this layout. The title wraps rather than
+          truncates, and the badge drops to its own line when the two do not fit side by side, so a
+          long tool name never cuts the title down to a few letters. */}
+      <span
+        data-selectable-content
+        className="flex min-w-0 flex-1 flex-col gap-0.5"
+      >
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="min-w-0 break-words font-medium text-sm text-text-primary">
             {title}
           </span>
-          {badge}
+          {badge && <span className="min-w-0 max-w-full">{badge}</span>}
         </span>
         {description && (
           <span className="text-text-muted text-xs">{description}</span>

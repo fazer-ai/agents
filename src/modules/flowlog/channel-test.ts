@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { type AlertSendDeps, sendAlert } from "./alert-send";
+import { type AlertSendDeps, loadAlertContext, sendAlert } from "./alert-send";
 
 // Posts a sample alert through the same `sendAlert` the worker uses, so a green result is evidence
 // about the path a real alert takes. It leaves no trace of a real one: no `AlertDelivery` row (a
@@ -76,6 +76,13 @@ export async function sendAlertChannelTest(
       tenantId: ctx.tenantId,
       turnId: null,
       conversationId: null,
+      causeKey: null,
+      // The tenant's name, so the probe shows the header a real alert will.
+      context: await loadAlertContext(base, {
+        tenantId: ctx.tenantId,
+        conversationId: null,
+        agentId: null,
+      }).catch(() => null),
     },
     deps,
   );

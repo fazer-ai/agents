@@ -30,6 +30,12 @@ import { runningJobIds } from "./running";
 
 const MAX_ATTEMPTS = 5;
 
+// Whether a failure of this run puts the job back to PENDING rather than to DEAD: the run's own line
+// can then say the work will be tried again, and leave the alarm to the death (when it comes).
+export function jobRetriesAfterFailure(job: { attempts: number }): boolean {
+  return job.attempts + 1 < MAX_ATTEMPTS;
+}
+
 // The lane's kinds as a SQL fragment, derived from lanes.ts (the one table that assigns them) so a kind
 // lands in exactly one lane. The values are enum members from a compile-time map, never user input, so
 // embedding them is safe. Exported so tests run the real claim statement with the lanes' own filter.

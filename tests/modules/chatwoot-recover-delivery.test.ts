@@ -20,16 +20,21 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
+  announceUnanswered,
   deliveryRecoveryDedupeKey,
   MAX_RECOVERY_AGE_MS,
   MAX_RECOVERY_ATTEMPTS,
   putRowBack,
   recoverStrandedDelivery,
   registerDeliveryRecoveryHandler,
+  runRecoveryJob,
 } from "@/modules/chatwoot/recover-delivery";
 import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import type { ClaimedJob } from "@/modules/scheduler/service";
-import { getJobHandler } from "@/modules/scheduler/worker";
+import {
+  getDeadLetterHandler,
+  getJobHandler,
+} from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { burnSchedulerJobId } from "../utils/scheduler";
@@ -2066,6 +2071,55 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // NOTE: no closing line: the operator's page stays open. Keyed by the mirror's ROW id, which the
     // writer files against; the Chatwoot number would match nothing and pass vacuously.
     expect(await deliveryLines(conv.id)).toEqual([]);
+  });
+
+  // The row left on PROCESSED with nobody answered, because putting it back failed: the state nothing
+  // revisits, so the recovery says the loss itself instead of leaving it to a DEAD row that is not.
+  test("a row that cannot be put back says the message went unanswered", async () => {
+    const convId = 18935;
+    const messageId = 19445;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const fn = `refuse_put_back_${rowId}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id = ${rowId} AND OLD.status = 'PROCESSED' AND NEW.status = 'DEAD' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE UPDATE ON chatwoot_webhook_deliveries FOR EACH ROW EXECUTE FUNCTION ${fn}()`,
+    );
+    try {
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: {
+          ...depsWith(stub),
+          sleep: async () => {},
+          makeModel: () => {
+            throw new Error("provider 500");
+          },
+        },
+      });
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS ${fn} ON chatwoot_webhook_deliveries`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${fn}()`);
+    }
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
+    const lines = await deliveryLines(conv.id);
+    expect(
+      lines.map((l) => [
+        l.level,
+        (l.detail as Record<string, unknown> | null)?.outcome,
+      ]),
+    ).toEqual([["error", "unanswered"]]);
   });
 
   test("a BURST stranded together is answered once, and the older row stays on the page", async () => {
@@ -4753,6 +4807,276 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     });
 
+    // THE LOSS IS DECIDED WHERE THE RECOVERY ENDS. The sweep's line for an armed row is `info`, so a
+    // recovery that ends with the row still DEAD writes the one `error` that says nobody answered,
+    // once: the same job run again finds that line and writes nothing.
+    test("a recovery that ends with the row still DEAD says the message went unanswered, once", async () => {
+      const convId = 18931;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19441,
+        attempts: MAX_RECOVERY_ATTEMPTS,
+      });
+      const { deliveryId } =
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { deliveryId: true },
+        });
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      for (let run = 0; run < 2; run++) {
+        const result = await handler(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+        );
+        expect(result.outcome).toBe("done");
+      }
+      // flowlog-scope: tenant-wide. The line has no turn of its own to read by; it names its delivery,
+      // whose id is this test's alone, and the subject is how many lines that delivery got.
+      const lines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "delivery",
+          detail: { path: ["deliveryId"], equals: deliveryId },
+        },
+        select: {
+          level: true,
+          detail: true,
+          errorMessage: true,
+          conversationId: true,
+        },
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.level).toBe("error");
+      expect(
+        (lines[0]?.detail as Record<string, unknown> | undefined)?.outcome,
+      ).toBe("unanswered");
+      expect(lines[0]?.errorMessage).toContain("unanswered");
+      expect(lines[0]?.conversationId).not.toBeNull();
+    });
+
+    // A delivery that owed only the agent's memory (a transcription write-back, an observer's route)
+    // leaves nobody unanswered when its recovery gives up: the line says the words never reached the
+    // memory, at `warn`.
+    test("a memory-only delivery given up on says the memory, not an unanswered customer", async () => {
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      for (const [convId, messageId, over] of [
+        [18936, 19446, { event: "message_updated" }],
+        [18937, 19447, { routeObserved: true }],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+          ...over,
+        });
+        await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+        const lines = await deliveryLines(conv.id);
+        expect(
+          lines.map((l) => [
+            l.level,
+            (l.detail as Record<string, unknown> | null)?.outcome,
+          ]),
+        ).toEqual([["warn", "memory_unrecovered"]]);
+      }
+    });
+
+    // An observer's memory is the observer's: the line names the agent behind the route's bot, not the
+    // inbox's responder, so the alert says who lost it and a channel excluding the observer stays quiet.
+    test("an observer's lost memory is attributed to the observer, not the responder", async () => {
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      const cases = [
+        [18960, 19470, OBSERVER_BOT_ID, watcherAgentDbId],
+        // A route bot no persona carries any more names nobody, rather than the responder.
+        [18961, 19471, OBSERVER_BOT_ID + 91, null],
+      ] as const;
+      for (const [convId, messageId, bot, agent] of cases) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+          routeAgentBotId: bot,
+          routeObserved: true,
+        });
+        await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+        const lines = await deliveryLines(conv.id);
+        expect(lines.map((l) => [l.level, l.agentId])).toEqual([
+          ["warn", agent],
+        ]);
+      }
+    });
+
+    // Chatwoot's delivery id is unique per instance only: a loss on another instance with the same id
+    // is its own loss, and the line already written for the first must not stand in for it.
+    test("two instances' deliveries sharing an id each get their own unanswered line", async () => {
+      const other = await seedChatwootInstance(suDb, {
+        tenantId,
+        accountId: 72,
+        baseUrl: "https://chat.recover-other.example",
+        adminToken: encryptJson("ADMIN"),
+      });
+      const rows = [];
+      for (const [inst, convId] of [
+        [instanceId, 18938],
+        [other.id, 18939],
+      ] as const) {
+        rows.push(
+          (
+            await suDb.chatwootWebhookDelivery.create({
+              data: {
+                tenantId,
+                chatwootInstanceId: inst,
+                deliveryId: `shared-${process.pid}`,
+                event: "message_created",
+                status: "DEAD",
+                receivedAt: new Date(Date.now() - 60 * 60 * 1000),
+                attempts: MAX_RECOVERY_ATTEMPTS,
+                conversationId: convId,
+                inboundMessageId: convId + 1000,
+              },
+              select: { id: true },
+            })
+          ).id,
+        );
+      }
+      try {
+        for (const rowId of rows)
+          await announceUnanswered(tenantId, rowId, appDb);
+        // flowlog-scope: tenant-wide. The lines name their ledger rows, whose ids are this test's alone.
+        const lines = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "delivery",
+            OR: rows.map((id) => ({
+              detail: { path: ["deliveryRowId"], equals: String(id) },
+            })),
+          },
+          select: { level: true },
+        });
+        expect(lines.map((l) => l.level)).toEqual(["error", "error"]);
+      } finally {
+        await suDb.chatwootWebhookDelivery.deleteMany({
+          where: { id: { in: rows } },
+        });
+        await suDb.chatwootInstance.delete({ where: { id: other.id } });
+      }
+    });
+
+    // A last attempt past its deadline is dead-lettered while the row is still PROCESSING, so the hook
+    // finds nothing to announce; the attempt that finishes afterwards with the row back on DEAD is the
+    // only one left to say it. Not while the claim is still live: then the retry decides.
+    test("a retrying outcome the scheduler already gave up on says the message went unanswered", async () => {
+      for (const [convId, messageId, status, expected] of [
+        [18940, 19450, "DEAD", [["error", "unanswered"]]],
+        [18941, 19451, "CLAIMED", []],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+        });
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status,
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true },
+        });
+        try {
+          const result = await runRecoveryJob(
+            {
+              id: job.id,
+              tenantId,
+              kind: "DELIVERY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              attempts: 4,
+              claimSeq: job.claimSeq,
+            },
+            appDb,
+            depsWith(stubChatwoot({ throwOnRead: true })),
+          );
+          expect(result.outcome).toBe("fail");
+          const lines = await deliveryLines(conv.id);
+          expect(
+            lines.map((l) => [
+              l.level,
+              (l.detail as Record<string, unknown> | null)?.outcome,
+            ]),
+          ).toEqual(expected.map((e) => [...e]));
+        } finally {
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+      }
+    });
+
+    // A late attempt and the dead-letter hook can announce the same delivery at once; the check and
+    // the write run under one lock, so the line still comes out once.
+    test("concurrent announcements of one delivery write one line", async () => {
+      const convId = 18942;
+      const conv = await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19452,
+      });
+      await Promise.all(
+        Array.from({ length: 16 }, () =>
+          announceUnanswered(tenantId, rowId, appDb),
+        ),
+      );
+      expect((await deliveryLines(conv.id)).map((l) => l.level)).toEqual([
+        "error",
+      ]);
+    });
+
+    test("a recovery that is still coming, or a row someone else took, writes no unanswered line", async () => {
+      const convId = 18932;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 9442,
+      });
+      const { deliveryId } =
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { deliveryId: true },
+        });
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      // Busy: rescheduled, the loss is not decided.
+      markTurnInFlight(threadOf(convId));
+      try {
+        await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+      } finally {
+        clearTurnInFlight(threadOf(convId));
+      }
+      // Taken by something else: no longer DEAD.
+      await suDb.chatwootWebhookDelivery.update({
+        where: { id: rowId },
+        data: { status: "PROCESSED" },
+      });
+      await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+      // flowlog-scope: tenant-wide. The line has no turn of its own to read by; it names its delivery,
+      // whose id is this test's alone, and the subject is how many lines that delivery got.
+      const lines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "delivery",
+          detail: { path: ["deliveryId"], equals: deliveryId },
+        },
+        select: { id: true },
+      });
+      expect(lines).toEqual([]);
+    });
+
     test("a row id that is not plainly decimal names no row at all", async () => {
       // `BigInt` accepts more spellings than `String(bigint)` ever produces — "0x10" is sixteen,
       // " 12 " is twelve, "" is zero — so a lenient parse turns a malformed payload into a
@@ -4790,17 +5114,137 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
-    test("its death is announced by the scheduler, at a level that does not page twice", () => {
-      // No hook of its own: `dispatchDeadLetter` announces every kind, and its generic line already
-      // carries the delivery row id — the dedupe key IS it. What a hook here would lose is the
-      // re-arm suppression that path does, and the level living next to the other twelve answers.
-      //
-      // `warn` because the operator has their own way back: the sweep paged at `error` when it
-      // declared this row DEAD, and the row is still in the `WHERE status = 'DEAD'` worklist.
-      expect(deliveryRecoveryDedupeKey(987_654n)).toBe(
-        "delivery-recovery:987654",
-      );
-      expect(JOB_DEATH_LEVEL.DELIVERY_RECOVERY).toBe("warn");
+    // A recovery that DIES never reached the line its ending would have written (an account it could
+    // not read on every attempt), and the sweep's line was `info`. The death is announced like every
+    // kind's, at `warn`, and the delivery's own line says the customer went unanswered, once, and
+    // only while the death is this claim's and the row is still DEAD.
+    test("its death says the message went unanswered, through the delivery's own line", async () => {
+      const convId = 18933;
+      const conv = await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19443,
+      });
+      const job = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+          status: "DEAD",
+          runAt: new Date(),
+          payload: { deliveryRowId: String(rowId) },
+        },
+        select: { id: true, claimSeq: true, dedupeKey: true },
+      });
+      const hook = getDeadLetterHandler("DELIVERY_RECOVERY");
+      if (!hook)
+        throw new Error("the recovery's dead-letter hook is not registered");
+      const claimed: ClaimedJob = {
+        id: job.id,
+        tenantId,
+        kind: "DELIVERY_RECOVERY",
+        payload: { deliveryRowId: String(rowId) },
+        dedupeKey: job.dedupeKey,
+        attempts: 5,
+        claimSeq: job.claimSeq,
+      };
+      try {
+        await hook(
+          claimed,
+          "recovery: the Chatwoot account could not be read",
+          appDb,
+        );
+        // The same death announced again (a second reaper) writes nothing more.
+        await hook(
+          claimed,
+          "recovery: the Chatwoot account could not be read",
+          appDb,
+        );
+        const lines = await deliveryLines(conv.id);
+        expect(
+          lines.map((l) => [
+            l.level,
+            (l.detail as Record<string, unknown> | null)?.outcome,
+          ]),
+        ).toEqual([["error", "unanswered"]]);
+        // flowlog-scope: tenant-wide. The dead letter names its job, whose id is this test's alone.
+        const deaths = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "dead_letter",
+            detail: { path: ["jobId"], equals: String(job.id) },
+          },
+          select: { level: true },
+        });
+        expect(deaths.map((d) => d.level)).toEqual([
+          JOB_DEATH_LEVEL.DELIVERY_RECOVERY,
+        ]);
+        expect(JOB_DEATH_LEVEL.DELIVERY_RECOVERY).toBe("warn");
+      } finally {
+        await suDb.schedulerJob.delete({ where: { id: job.id } });
+      }
+    });
+
+    test("a death that was re-armed, or of a row someone else took, says nothing", async () => {
+      const convId = 18934;
+      const conv = await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19444,
+      });
+      const hook = getDeadLetterHandler("DELIVERY_RECOVERY");
+      if (!hook)
+        throw new Error("the recovery's dead-letter hook is not registered");
+      // Re-armed: the row is PENDING again, so no death is owed.
+      const rearmed = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+          status: "PENDING",
+          runAt: new Date(),
+          payload: { deliveryRowId: String(rowId) },
+        },
+        select: { id: true, claimSeq: true },
+      });
+      try {
+        await hook(
+          {
+            id: rearmed.id,
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            payload: { deliveryRowId: String(rowId) },
+            attempts: 5,
+            claimSeq: rearmed.claimSeq,
+          },
+          "x",
+          appDb,
+        );
+        // A real death, but the delivery is no longer DEAD.
+        await suDb.schedulerJob.update({
+          where: { id: rearmed.id },
+          data: { status: "DEAD" },
+        });
+        await suDb.chatwootWebhookDelivery.update({
+          where: { id: rowId },
+          data: { status: "PROCESSED" },
+        });
+        await hook(
+          {
+            id: rearmed.id,
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            payload: { deliveryRowId: String(rowId) },
+            attempts: 5,
+            claimSeq: rearmed.claimSeq,
+          },
+          "x",
+          appDb,
+        );
+        expect(await deliveryLines(conv.id)).toEqual([]);
+      } finally {
+        await suDb.schedulerJob.delete({ where: { id: rearmed.id } });
+      }
     });
   });
 

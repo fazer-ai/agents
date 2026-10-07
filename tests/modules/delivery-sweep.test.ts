@@ -106,6 +106,8 @@ async function seedStrandedDelivery(over: {
   humanReplyShape?: string;
   // Whose route it arrived on.
   routeObserved?: boolean | null;
+  // The Chatwoot bot id of that route.
+  routeAgentBotId?: number | null;
   // Whether that route's claim said it folds into memory what it does not answer.
   routeRemembers?: boolean | null;
   // The reply's own id, which is what makes its lost memory append recoverable.
@@ -129,6 +131,7 @@ async function seedStrandedDelivery(over: {
       humanReplyShape: over.humanReplyShape ?? null,
       humanReplyMessageId: over.humanReplyMessageId ?? null,
       routeObserved: over.routeObserved ?? null,
+      routeAgentBotId: over.routeAgentBotId ?? null,
       routeRemembers: over.routeRemembers ?? null,
     },
     select: { id: true },
@@ -153,7 +156,13 @@ async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
   while (true) {
     const rows = await flowLogRows(suDb, {
       where: { tenantId, stage: "delivery", conversationId: convDbId },
-      select: { level: true, status: true, source: true, detail: true },
+      select: {
+        level: true,
+        status: true,
+        source: true,
+        detail: true,
+        agentId: true,
+      },
     });
     if (rows.length > 0 || Date.now() - started > waitMs) return rows;
     await Bun.sleep(25);
@@ -482,6 +491,45 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
   });
 
+  // The line is filed under the agent the delivery was for: on an observer's route that is the agent
+  // behind the route's bot, not the inbox's responder, so a channel excluding one is not paged for the
+  // other. A route bot no persona carries any more names nobody.
+  test("an observer's stranded delivery is filed under the observer", async () => {
+    const watcher = await suDb.agent.create({
+      data: { tenantId, name: "Observadora", systemPrompt: "x", settings: {} },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: watcher.id,
+        chatwootAgentBotId: AGENT_BOT_ID + 40,
+        accessToken: encryptJson("BOT-W"),
+        webhookSecret: encryptJson("S-W"),
+        webhookRouteTokenHash: `swp-route-w-${process.pid}`,
+        name: "Observadora",
+      },
+    });
+    const cases = [
+      [8850, 9150, AGENT_BOT_ID + 40, watcher.id],
+      [8851, 9151, AGENT_BOT_ID + 41, null],
+    ] as const;
+    for (const [convId, messageId, bot, agent] of cases) {
+      const conv = await seedConversation(convId);
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs: STALE_MS * 2,
+        inboundMessageId: messageId,
+        routeObserved: true,
+        routeAgentBotId: bot,
+      });
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      const lines = await deliveryLines(conv.id);
+      expect(lines.map((l) => l.agentId)).toEqual([agent]);
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    }
+  });
+
   test("is recorded as a loss the operator can find", async () => {
     const convId = 8802;
     const messageId = 9101;
@@ -502,13 +550,16 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(row.status).toBe("DEAD");
     expect(row.processedAt).not.toBeNull();
 
-    // The half an operator actually reads: an error line ON the conversation, which is what the
-    // Logs page renders and what the alert channels dispatch.
+    // The half an operator actually reads: a line ON the conversation, which is what the Logs page
+    // renders. `info` with `willRetry`, because a recovery is armed below and the loss is not
+    // decided yet: the recovery ends with its own line, a `warn` that closes it or an `error` that
+    // says nobody answered.
     const lines = await deliveryLines(conv.id);
     expect(lines).toHaveLength(1);
     const line = lines[0];
     if (line === undefined) throw new Error("no delivery line was written");
-    expect(line.level).toBe("error");
+    expect(line.level).toBe("info");
+    expect((line.detail as Record<string, unknown>).willRetry).toBe(true);
     // `inbox`, and it is load-bearing: `dispatchAlertsForEvent` fans out warn/error lines to the
     // Discord and webhook channels ONLY for inbox traffic, because a playground error must not
     // page. Filed as playground, the row would still render on the Logs page and reach nobody.
@@ -581,9 +632,23 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       inboundMessageId: null,
       status: "PROCESSING",
     });
+    const sweptAt = new Date();
 
     await sweepStrandedDeliveries({ tenantId, base: appDb });
     expect((await statusOf(rowId)).status).toBe("DEAD");
+    // Nothing will retry it, so the sweep's own line is the loss: `error`, and no retry promised.
+    // flowlog-scope: tenant-wide. A strand with no conversation has no turn or thread to read by;
+    // the sweep runs alone in this test, and what it wrote since `sweptAt` is its line.
+    const lines = await flowLogRows(suDb, {
+      where: { tenantId, stage: "delivery", createdAt: { gte: sweptAt } },
+      select: { level: true, detail: true },
+    });
+    expect(
+      lines.map((l) => [
+        l.level,
+        (l.detail as Record<string, unknown>).willRetry,
+      ]),
+    ).toEqual([["error", false]]);
     expect(
       await suDb.schedulerJob.findFirst({
         where: {
@@ -649,7 +714,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
     expect(counts.lost).toBe(1);
     expect((await statusOf(rowId)).status).toBe("DEAD");
-    expect((await deliveryLines(conv.id))[0]?.level).toBe("error");
+    expect((await deliveryLines(conv.id))[0]?.level).toBe("info");
   });
 
   test("leaves a delivery that is still in flight alone", async () => {
@@ -886,6 +951,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       humanReplyShape: null,
       humanReplyMessageId: null,
       routeObserved: false,
+      routeAgentBotId: null,
       routeRemembers: null,
     };
     // Somebody else claimed it.

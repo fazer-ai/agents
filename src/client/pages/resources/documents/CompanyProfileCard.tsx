@@ -1,7 +1,7 @@
-import { Building2, ImageUp, Trash2 } from "lucide-react";
+import { ImageUp, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, Card, FormField, Input, useToast } from "@/client/components";
+import { Button, FormField, Input, useToast } from "@/client/components";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
@@ -30,6 +30,7 @@ export function CompanyProfileCard({
   onSaved,
   onDirtyChange,
   session,
+  suggestedName,
 }: {
   company: CompanyProfile | null;
   onChanged: (next: CompanyProfile) => void;
@@ -46,6 +47,9 @@ export function CompanyProfileCard({
   // modal's BODY and remounts per opening, so a guard it owned would compare stale against stale;
   // only the parent, which stays mounted, can tell. A number, so a template id cannot be passed.
   session?: number;
+  // The company name the account was set up with, offered while the profile has none. Typed into the
+  // form rather than saved, so the letterhead still says only what the operator confirmed.
+  suggestedName?: string | null;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -56,9 +60,24 @@ export function CompanyProfileCard({
   // render rather than only where it is read, so it can never be one keystroke behind.
   const formRef = useRef(form);
   formRef.current = form;
-  const draft = form.draft;
-  // The same `companyChanges` the save sends is what "unsaved" means for the nav guard (a
-  // click on another tab, a tenant switch), so the two cannot disagree.
+  // The account's name, SHOWN in an empty name box until the operator types there or the stored
+  // profile gets a name. Kept out of the draft, so the form still reads as untouched and adopts a
+  // profile another client saves meanwhile; it joins what Save sends while it is on screen.
+  const [nameTouched, setNameTouched] = useState(false);
+  const suggestion = suggestedName?.trim() ?? "";
+  // Checked against the LATEST stored profile too: a draft kept for an edit in another field still
+  // carries the old empty name after another client saves one.
+  const suggesting = (f: typeof form) =>
+    !nameTouched &&
+    suggestion !== "" &&
+    !company?.name?.trim() &&
+    f.draft.name === "" &&
+    f.seededFrom.name === "";
+  const shown = (f: typeof form) =>
+    suggesting(f) ? { ...f, draft: { ...f.draft, name: suggestion } } : f;
+  // What the operator typed is what "unsaved" means for the nav guard (a click on another tab, a
+  // tenant switch) and for the modal's close. A suggestion nobody typed is not an edit to lose, so
+  // opening the letterhead and closing it again asks nothing.
   const dirty = Object.keys(companyChanges(form)).length > 0;
   // The six patch keys ARE the six names the server refuses by: `updateCompanySettings` names the key
   // of the patch it rejected, and that key was chosen to be this form's input name. Declared from the
@@ -103,7 +122,13 @@ export function CompanyProfileCard({
     setBusy("profile");
     // Only what this form changed, captured before the await: the operator can type during it, and
     // a field they never touched is not this request's to write.
-    const sent = companyChanges(form);
+    // A suggestion on screen is saved as if typed, so it becomes the operator's from here on.
+    if (suggesting(formRef.current)) {
+      formRef.current = shown(formRef.current);
+      setForm(formRef.current);
+      setNameTouched(true);
+    }
+    const sent = companyChanges(formRef.current);
     try {
       const { data, error } =
         await api.api.v1["tenant-settings"].company.put(sent);
@@ -218,19 +243,14 @@ export function CompanyProfileCard({
   }
 
   return (
-    <Card className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <Building2 className="h-4 w-4 text-accent" aria-hidden="true" />
-        <h2 className="font-medium text-sm text-text-primary">
-          {t("documents.company.title", "Company profile")}
-        </h2>
-        <span className="text-text-muted text-xs">
-          {t(
-            "documents.company.subtitle",
-            "Printed on every document you issue.",
-          )}
-        </span>
-      </div>
+    // The modal around it carries the title, so the body opens on what the profile is for.
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-text-muted">
+        {t(
+          "documents.company.subtitle",
+          "Printed on every document you issue.",
+        )}
+      </p>
 
       {/* ONE PER LINE, deliberately. This card lives in a `md` modal (max-w-md), so a second
           column leaves each input under 200px — and the six fields are not the same length:
@@ -243,16 +263,17 @@ export function CompanyProfileCard({
             label={label[field]}
             // The value the mark is keyed on: the message shows while this box still holds what the
             // server refused, and stops the keystroke it changes. No `onChange` line to forget.
-            error={refusal.at(field, draft[field])}
+            error={refusal.at(field, shown(form).draft[field])}
           >
             <Input
-              value={draft[field]}
-              onChange={(e) =>
+              value={shown(form).draft[field]}
+              onChange={(e) => {
+                if (field === "name") setNameTouched(true);
                 setForm((current) => ({
                   ...current,
                   draft: { ...current.draft, [field]: e.target.value },
-                }))
-              }
+                }));
+              }}
             />
           </FormField>
         ))}
@@ -317,6 +338,6 @@ export function CompanyProfileCard({
           {t("common.save", "Save")}
         </Button>
       </div>
-    </Card>
+    </div>
   );
 }

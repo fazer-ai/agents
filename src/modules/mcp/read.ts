@@ -386,7 +386,7 @@ export async function documentStarterList(
     starters: starters.map((s) => ({
       key: s.key,
       name: s.name,
-      description: s.description,
+      description: s.summary,
       blocks: s.blocks.length,
       fields: s.fields.map(
         (f) => `${f.name}:${f.type}${f.required ? "*" : ""}`,

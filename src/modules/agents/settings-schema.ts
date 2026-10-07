@@ -24,7 +24,7 @@ import {
   CARRY_ATTACHMENTS_MAX_FILES,
   CARRY_FILE_TYPES,
   CARRY_MODES,
-} from "@/modules/cross-inbox-case/carry-attachments";
+} from "@/modules/cross-inbox-case/carry-attachments-settings";
 import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
 import {
   FULL_DETAIL_MAX_HOURS,

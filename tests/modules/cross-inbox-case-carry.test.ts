@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { ChatwootApiError } from "@/modules/chatwoot/client";
 import {
-  CARRY_ATTACHMENTS_DEFAULTS,
-  type CarryAttachmentsConfig,
   type CarryClient,
   type CarryInput,
-  CROSS_INBOX_CASE_CARRIED_ATTRIBUTE,
   carryCaseAttachments,
-  readCarryAttachments,
 } from "@/modules/cross-inbox-case/carry-attachments";
+import {
+  CARRY_ATTACHMENTS_DEFAULTS,
+  type CarryAttachmentsConfig,
+  CROSS_INBOX_CASE_CARRIED_ATTRIBUTE,
+  readCarryAttachments,
+} from "@/modules/cross-inbox-case/carry-attachments-settings";
 
 // The origin conversation's messages as Chatwoot's REST list serves them: 20 a page, newest first,
 // `before` for the page older than a message id. Each file is an attachment with an id and a data_url
@@ -559,5 +561,67 @@ describe("carryCaseAttachments", () => {
       unread: "case",
     });
     expect(uploads(f.calls)).toHaveLength(0);
+  });
+
+  test("two origins feeding one case at once both keep their record", async () => {
+    // One shared case; each origin has its own file, and every read and write waits a little, so
+    // two unserialized carries would both read the empty record before either wrote.
+    const caseAttrs: Record<string, unknown> = {};
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    const forOrigin = (origin: number, fileId: number) => {
+      const f = fake({
+        messages: [{ id: origin * 10, createdAt: 1, files: [{ id: fileId }] }],
+      });
+      return {
+        ...f.client,
+        getConversation: async (id: number) => {
+          await tick();
+          return { id, custom_attributes: { ...caseAttrs } };
+        },
+        setConversationCustomAttributes: async (
+          _id: number,
+          attrs: Record<string, unknown>,
+        ) => {
+          await tick();
+          Object.assign(caseAttrs, attrs);
+          return {};
+        },
+      } as CarryClient;
+    };
+    const [a, b] = await Promise.all([
+      carryCaseAttachments(
+        forOrigin(7, 11),
+        carryInput({}, { originConversationId: 7 }),
+      ),
+      carryCaseAttachments(
+        forOrigin(8, 12),
+        carryInput({}, { originConversationId: 8 }),
+      ),
+    ]);
+    expect(a?.carried).toBe(1);
+    expect(b?.carried).toBe(1);
+    expect(
+      String(caseAttrs[CROSS_INBOX_CASE_CARRIED_ATTRIBUTE]).split(",").sort(),
+    ).toEqual(["70:11", "80:12"]);
+  });
+
+  test("a run withdrawn while the upload was in flight posts no fallback note when it fails", async () => {
+    let wanted = true;
+    const f = fake({
+      messages: [{ id: 1, createdAt: 1, files: [{ id: 11 }] }],
+    });
+    const client = {
+      ...f.client,
+      sendFilesAsAdmin: async () => {
+        wanted = false;
+        throw new ChatwootApiError(500, "POST files");
+      },
+    } as CarryClient;
+    const out = await carryCaseAttachments(
+      client,
+      carryInput({}, { stillWanted: async () => wanted }),
+    );
+    expect(out?.failed).toBe(1);
+    expect(f.calls.some((c) => c.fn === "sendMessageAsAdmin")).toBe(false);
   });
 });

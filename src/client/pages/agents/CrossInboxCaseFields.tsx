@@ -14,7 +14,7 @@ import {
   type CarryFileType,
   type CarryMode,
   readCarryAttachments,
-} from "@/modules/cross-inbox-case/carry-attachments";
+} from "@/modules/cross-inbox-case/carry-attachments-settings";
 import {
   CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE,
   CROSS_INBOX_CASE_NOTE_TEMPLATE_MAX,

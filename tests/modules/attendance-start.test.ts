@@ -4,8 +4,8 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { attendanceStartedAt } from "@/modules/memory/attendance-start";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Where the current attendance of a conversation starts, read from the compaction rows (issue #1128,
-// the `attendance` scope of carrying a customer's files into a case).
+// Where the current attendance of a conversation starts, read from the compaction rows: the
+// `attendance` scope of carrying a customer's files into a case.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

@@ -8,7 +8,7 @@ import {
   CARRY_ATTACHMENTS_DEFAULTS,
   type CarryAttachmentsConfig,
   readCarryAttachments,
-} from "./carry-attachments";
+} from "./carry-attachments-settings";
 
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
 // WHERE the case goes lives here, never in a tool argument, which the customer's words could steer

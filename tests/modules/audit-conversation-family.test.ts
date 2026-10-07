@@ -664,6 +664,53 @@ describe.skipIf(!dbUp)(
       expect(row?.after).toEqual({ status: "resolved" });
     });
 
+    // A status read that omits the assignee says nothing about it: a holder cleared by a webhook
+    // after the conversation was loaded stays cleared, rather than coming back from that load.
+    test("a status change whose read omits the assignee keeps the holder the mirror has now", async () => {
+      await clearAudit();
+      const id = await seedConversation(4026, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      const version = Math.floor(Date.now() / 1000);
+      const stub = stubClient({
+        toggleStatus: async () => {
+          await suDb.conversation.update({
+            where: { id },
+            data: {
+              assigneeType: null,
+              assigneeId: null,
+              chatwootStatusAt: version - 60,
+              chatwootAssigneeAt: version - 60,
+            },
+          });
+          return {};
+        },
+        getConversation: async () => ({
+          id: 4026,
+          status: "resolved",
+          updated_at: version,
+        }),
+      });
+      await setConversationStatus(
+        ctx(),
+        id,
+        "resolved",
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      const mirrored = await suDb.conversation.findUnique({
+        where: { id },
+        select: { status: true, assigneeType: true, assigneeId: true },
+      });
+      expect(mirrored).toEqual({
+        status: "resolved",
+        assigneeType: null,
+        assigneeId: null,
+      });
+    });
+
     // The row follows the EFFECT, and this is the half a service that recorded first would get wrong:
     // Chatwoot refused the send, the customer got nothing, and a row saying otherwise is worse than no
     // row at all.

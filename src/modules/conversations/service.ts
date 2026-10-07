@@ -835,8 +835,9 @@ function readLiveBeforeConsoleWrite(
   }
 }
 
-// A versioned read that omitted the assignee, completed with the holder the action asked for (or the
-// stored one when it asked for none), named only when that holder is the stored one.
+// A versioned read that omitted the assignee, completed with the holder the action asked for and
+// named only when that holder is the stored one. An action that asked for no holder passes the read
+// as it is, and the reconcile leaves the stored holder alone under its lock.
 function withHolderOf(
   live: LiveConversationState,
   conv: {
@@ -846,18 +847,15 @@ function withHolderOf(
   },
   fallback: { assigneeId?: number | null; assigneeType?: string | null },
 ): LiveConversationState {
-  const assigneeType =
-    fallback.assigneeType === undefined
-      ? conv.assigneeType
-      : fallback.assigneeType;
-  const assigneeId =
-    fallback.assigneeId === undefined ? conv.assigneeId : fallback.assigneeId;
+  if (fallback.assigneeType === undefined || fallback.assigneeId === undefined)
+    return live;
   const kept =
-    assigneeType === conv.assigneeType && assigneeId === conv.assigneeId;
+    fallback.assigneeType === conv.assigneeType &&
+    fallback.assigneeId === conv.assigneeId;
   return {
     ...live,
-    assigneeType,
-    assigneeId,
+    assigneeType: fallback.assigneeType,
+    assigneeId: fallback.assigneeId,
     assigneeName: kept ? conv.assigneeName : null,
     assigneeStated: true,
   };
@@ -938,8 +936,8 @@ async function mirrorConsoleWrite(
     // NOTE: a snapshot with no version is not reconciled: the reconcile would apply the WHOLE
     // snapshot, so a status click could carry back an assignee a webhook has since changed. The
     // fallback writes exactly the fields this action meant to change. One that did not state the
-    // assignee keeps its version: the holder it is silent on is the one this action wrote, else the
-    // stored one, so the reconcile never reads the silence as nobody.
+    // assignee keeps its version: the holder it is silent on is the one this action wrote, and with
+    // none written the reconcile leaves the stored holder, so the silence is never read as nobody.
     if (live && live.updatedAt !== null) {
       const outcome = await reconcileMirrorFromLive({
         tenantId,

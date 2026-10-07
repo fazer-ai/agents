@@ -1032,7 +1032,9 @@ describe("ChatwootClient", () => {
 });
 
 describe("parseLiveConversation states the assignee only when the payload does", () => {
-  test("an explicit null assignee is stated; an omitted one is not", async () => {
+  // The REST show renders `meta` on every conversation and leaves `assignee_type` out of it when
+  // nobody holds the conversation, so a `meta` without the key is the unassigned shape.
+  test("a meta without an assignee says nobody; a payload without meta says nothing", async () => {
     const { parseLiveConversation } = await import(
       "@/modules/chatwoot/normalize"
     );
@@ -1041,14 +1043,17 @@ describe("parseLiveConversation states the assignee only when the payload does",
       status: "pending",
       meta: { assignee_type: null, assignee: null },
     });
-    const omittedType = parseLiveConversation({
+    const unassigned = parseLiveConversation({
       id: 1,
       status: "pending",
-      meta: {},
+      meta: { channel: "Channel::Api" },
     });
     const omittedMeta = parseLiveConversation({ id: 1, status: "pending" });
     expect(stated?.assigneeStated).toBe(true);
-    expect(omittedType?.assigneeStated).toBe(false);
+    expect([unassigned?.assigneeStated, unassigned?.assigneeType]).toEqual([
+      true,
+      null,
+    ]);
     expect(omittedMeta?.assigneeStated).toBe(false);
   });
 });

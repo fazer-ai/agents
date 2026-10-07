@@ -187,7 +187,11 @@ export async function reconcileMirrorFromLive(
             deferredAt > current.chatwootStatusAt);
         const statusRanked = orderedBy(current.chatwootStatusAt);
         const statusOrdered = !claimed && !deferredWins && statusRanked;
-        const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);
+        // A read that did not state the assignee says nothing about it, so the stored holder stands
+        // whatever the version: only the fields the read stated are ordered.
+        const assigneeStated = live.assigneeStated !== false;
+        const assigneeRanked = orderedBy(current.chatwootAssigneeAt);
+        const assigneeOrdered = assigneeStated && assigneeRanked;
         // NOTE: a field the snapshot lost while a version could rank it: the row holds a strictly
         // newer write. The version comparison and not `statusOrdered`, so a claim is not reported as
         // one: folded in, the console would return early and its own unversioned fallback (the write
@@ -195,8 +199,10 @@ export async function reconcileMirrorFromLive(
         result.outrankedByVersion =
           liveVersion !== null &&
           ((!statusRanked && current.chatwootStatusAt !== null) ||
-            (!assigneeOrdered && current.chatwootAssigneeAt !== null));
-        result.applied = statusOrdered && assigneeOrdered;
+            (assigneeStated &&
+              !assigneeRanked &&
+              current.chatwootAssigneeAt !== null));
+        result.applied = statusOrdered && (assigneeOrdered || !assigneeStated);
         // The recency this write leaves in the row, computed once so the caller announces the
         // same value the row holds. It is NOT gated by the ordering marks: those order status and
         // assignee, while activity is monotonic on its own terms.

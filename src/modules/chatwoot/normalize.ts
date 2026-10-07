@@ -354,9 +354,10 @@ export interface LiveConversationState {
   // because each is a message that DEMONSTRABLY exists and this mark may only ever be too low. null
   // when the payload names none.
   latestMessageId: number | null;
-  // Whether the payload STATED the assignee (`meta.assignee_type` present, null included). A payload
-  // that omitted it reads `assigneeType: null` too, and "nobody holds it" is a claim only the first
-  // one makes. Optional only for hand-built states; the parser always sets it.
+  // Whether the payload STATED the assignee, which is whether it carried `meta` at all: the REST show
+  // always renders `meta` and leaves `assignee_type` out when nobody holds the conversation, so inside
+  // `meta` silence means nobody. A payload with no `meta` reads `assigneeType: null` too without
+  // saying so. Optional only for hand-built states; the parser always sets it.
   assigneeStated?: boolean;
 }
 
@@ -387,7 +388,7 @@ export function parseLiveConversation(
     inboxId: num(raw.inbox_id),
     updatedAt: num(raw.updated_at),
     latestMessageId: latestMessageId(raw),
-    assigneeStated: meta !== null && "assignee_type" in meta,
+    assigneeStated: meta !== null,
   };
 }
 

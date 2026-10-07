@@ -1495,6 +1495,14 @@ async function runAgentNudgeBody(
         },
       }),
   });
+  // Its tool calls on the flow log, as a reactive turn's are: a follow-up that hands over or stays
+  // silent is counted where every other one is (docs/dashboard.md). Settled when the turn ends,
+  // however it ends, so a tool that failed on every call is the turn's one `warn`.
+  const toolLogger = new ToolFlowLogger(flow, {
+    logValues: cfg.logToolValues,
+    tools,
+    handedOff: () => handoffState.completed === true,
+  });
   const callbacks = [
     ...buildCallbacks(cfg, {
       tenantId,
@@ -1506,13 +1514,7 @@ async function runAgentNudgeBody(
       turnId: flow.turnId,
       tools,
     }),
-    // Its tool calls on the flow log, as a reactive turn's are: a follow-up that hands over or stays
-    // silent is counted where every other one is (docs/dashboard.md).
-    new ToolFlowLogger(flow, {
-      logValues: cfg.logToolValues,
-      tools,
-      handedOff: () => handoffState.completed === true,
-    }),
+    toolLogger,
   ];
   const invokeConfig = {
     // LangGraph counts SUPER-STEPS and its default 25 runs out at about twelve tool rounds, so a
@@ -2071,6 +2073,7 @@ async function runAgentNudgeBody(
         throw e;
       });
   } finally {
+    toolLogger.settle();
     // NOTE: best-effort, for the reason ../graph/runtime.ts states at its own release: a throw here
     // would leave through a `finally` that runs after the customer post, turning a delivered nudge
     // into a failure the caller retries. The lease is the recovery path.

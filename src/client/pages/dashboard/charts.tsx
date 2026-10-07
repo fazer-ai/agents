@@ -171,7 +171,6 @@ export function LineTrend({
                   hitSeries.current = s.key;
                 },
               }}
-              connectNulls
               isAnimationActive={false}
             />
           ))}

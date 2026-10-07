@@ -254,3 +254,12 @@ describe("a block's CSV", () => {
     expect(toCsv(["Day", "Cost"], [])).toBe("Day,Cost");
   });
 });
+
+describe("a day with no figure", () => {
+  // The blocks send null for a day with no conversations or no priced call and say it is left
+  // blank; a line drawn across it would show a rate or a cost nobody measured.
+  test("is a gap in every line chart, never bridged", async () => {
+    const src = await Bun.file("src/client/pages/dashboard/charts.tsx").text();
+    expect(src).not.toMatch(/connectNulls(?!=\{false\})/);
+  });
+});

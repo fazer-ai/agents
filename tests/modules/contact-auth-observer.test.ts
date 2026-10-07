@@ -683,6 +683,106 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(await runnableObserveRows(32)).toHaveLength(1);
   });
 
+  // A conversation the gate cannot tie to a contact is refused before either stage; on an
+  // endpoint-only gate the tick has no condition to ask again, so the arm takes back what was queued.
+  test("a refusal for want of a contact retires an observation queued before the gate was on", async () => {
+    // A conversation not mirrored yet has no contact: the gate refuses before either stage.
+    expect(
+      await armObserve({
+        tenantId,
+        instanceId,
+        conversationId: 33,
+        agentId: observerId,
+        reason: "burst",
+        cfg: readMonitoringConfig({}),
+        base: appDb,
+      }),
+    ).toBe("armed");
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    expect(
+      await observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId: 33,
+        agentId: observerId,
+        settings,
+        base: appDb,
+        fetchImpl: deps().contactAuthFetch,
+      }),
+    ).toBeNull();
+    expect(await runnableObserveRows(33)).toEqual([]);
+  });
+
+  // A refusal whose retirement never reaches the database is still heard by this process's tick.
+  test("a refusal whose retirement keeps failing still stops the queued tick in this process", async () => {
+    const settings = { contactAuth: { enabled: true, url: AUTH_URL } };
+    await setGate(settings.contactAuth);
+    await deliverMessage(34, "individual");
+    expect(await runnableObserveRows(34)).toHaveLength(1);
+    authAnswer = "deny";
+    let asked = false;
+    const askingFetch = (async (url: unknown, init?: unknown) => {
+      asked = true;
+      return (authFetch as (u: unknown, i?: unknown) => Promise<Response>)(
+        url,
+        init,
+      );
+    }) as unknown as typeof fetch;
+    const downAfterAsk = new Proxy(appDb, {
+      get(target, prop, receiver) {
+        if (prop === "$extends" && asked) {
+          return () => ({
+            $transaction: () =>
+              Promise.reject(new Error("database unreachable")),
+          });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as PrismaClient;
+    expect(
+      await observerArmPermit({
+        tenantId,
+        instanceId,
+        conversationId: 34,
+        agentId: observerId,
+        settings,
+        base: downAfterAsk,
+        fetchImpl: askingFetch,
+        sleep: async () => {},
+      }),
+    ).toBeNull();
+    expect(await runnableObserveRows(34)).toHaveLength(1);
+    expect(
+      await observerRuleVerdict(
+        {
+          tenantId,
+          instanceId,
+          conversationId: 34,
+          agentId: observerId,
+          settings,
+          base: appDb,
+        },
+        { emit: false },
+      ),
+    ).toBe("refused");
+    // A later allow clears it.
+    authAnswer = "allow";
+    await deliverMessage(34, "individual");
+    expect(
+      await observerRuleVerdict(
+        {
+          tenantId,
+          instanceId,
+          conversationId: 34,
+          agentId: observerId,
+          settings,
+          base: appDb,
+        },
+        { emit: false },
+      ),
+    ).toBe("allowed");
+  });
+
   // The bound watcher's media pass is skipped on a refusal, and the refusal is remembered for the
   // message, so Chatwoot's late update of the same audio is not transcribed by a later allow.
   test("a bound watcher's refused audio stays untranscribed when its late update is allowed", async () => {

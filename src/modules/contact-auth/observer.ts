@@ -110,7 +110,9 @@ async function observerGateVerdict(
       );
     }
     if (verdict.outcome === "allowed") return "allowed";
-    return verdict.stage === "endpoint" ? "endpoint_refused" : "refused";
+    // Only a refusal by the conditions is one the tick can reach again; the endpoint's, and one
+    // reached before either stage (a conversation with no contact yet), are not.
+    return verdict.stage === "rule" ? "refused" : "endpoint_refused";
   } catch (err) {
     logger.warn(
       "contact-auth: the observer's gate could not be evaluated (conv=%s agent=%s): %s",
@@ -128,6 +130,7 @@ export function observerRuleVerdict(
   p: ObserverRuleParams,
   opts: { emit: boolean },
 ): Promise<"allowed" | "refused" | "unreadable"> {
+  if (unretiredRefusals.has(refusalKey(p))) return Promise.resolve("refused");
   return observerGateVerdict(p, { ...opts, stage: "rule" }).then((v) =>
     v === "endpoint_refused" ? "refused" : v,
   );
@@ -146,7 +149,14 @@ export async function observerArmPermit(
 ): Promise<{ askedAt: number } | null> {
   const askedAt = Date.now();
   const verdict = await observerGateVerdict(p, { emit: true, stage: "both" });
-  if (verdict === "allowed") return { askedAt };
+  if (verdict === "allowed") {
+    const key = refusalKey(p);
+    const refusedAt = unretiredRefusals.get(key);
+    if (refusedAt !== undefined && refusedAt < askedAt) {
+      unretiredRefusals.delete(key);
+    }
+    return { askedAt };
+  }
   // A gate that could not be read on one that asks an endpoint is taken as the endpoint's no: the
   // tick will not ask it, so an earlier allow's observation would otherwise run on a verdict nobody
   // could confirm.
@@ -170,9 +180,16 @@ async function retireWithRetries(
   for (let attempt = 1; ; attempt++) {
     try {
       await retireRefusedObserve({ ...p, askedAt });
+      unretiredRefusals.delete(refusalKey(p));
       return;
     } catch (err) {
       if (attempt >= RETIRE_ATTEMPTS) {
+        // Kept in this process, where the tick asks it (`observerRuleVerdict`): the database that
+        // refused the write is the one the tick will be claimed from once it is back.
+        unretiredRefusals.set(
+          refusalKey(p),
+          Math.max(unretiredRefusals.get(refusalKey(p)) ?? 0, askedAt),
+        );
         logger.warn(
           "contact-auth: could not retire the refused conversation's queued observation (conv=%s agent=%s): %s",
           String(p.conversationId),
@@ -187,3 +204,17 @@ async function retireWithRetries(
 }
 
 const RETIRE_ATTEMPTS = 3;
+
+// Refusals whose retirement never reached the database, by watcher and conversation, with the time
+// each was asked. Cleared by a retirement that lands or by an allow asked after it. In memory: a
+// tick claimed by another replica does not see it (docs/contact-auth.md, The observer path).
+const unretiredRefusals = new Map<string, number>();
+
+function refusalKey(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  agentId: bigint;
+}): string {
+  return `${p.tenantId}:${p.instanceId}:${p.conversationId}:${p.agentId}`;
+}

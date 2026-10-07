@@ -231,8 +231,10 @@ refuses costs no `OBSERVE` job, no media call and no model call.
   its media pass cannot bring back what a later denial retired. The arm also leaves its allow's ask
   time on the row, so a refusal asked before that allow and landing after it leaves the newer
   observation runnable. A gate that cannot be read at the arm, on an agent that asks an endpoint,
-  counts as the endpoint's no here, and a retirement that fails is tried three times before a
-  warning. A resolution's verdict retired before it ran can be armed again by a later allow of the
+  counts as the endpoint's no here, as does a refusal reached before either stage (a conversation
+  with no contact yet), and a retirement that fails is tried three times before a warning; the
+  refusal is then kept in the process's memory, where its tick asks it, until a later allow or a
+  retirement that lands. A tick claimed by another replica does not see that memory. A resolution's verdict retired before it ran can be armed again by a later allow of the
   same resolution. A refusal by the conditions needs none of this, since the tick asks them again. A tick
   already running is not stopped.
 - **The media pass of a watcher bound as the inbox's agent** runs as `allowed` on the verdict the arm

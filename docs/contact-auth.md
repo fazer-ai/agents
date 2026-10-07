@@ -65,14 +65,15 @@ cooldown, `service.ts` the orchestration both callers share).
 
 ## Configuration (`agent.settings.contactAuth`)
 
-Per agent, on the shared behavior surface (editor Behavior tab → "Contact authorization", REST
+Per agent, on the shared behavior surface (editor Behavior tab → "Who this agent serves", REST
 `PATCH /v1/agents/:id`, MCP `agent_settings_set`). Defaults in parentheses; every field clamps on
 read, so a malformed bag can never break the webhook.
 
 | Field                   | Default | Meaning                                                             |
 | ----------------------- | ------- | ------------------------------------------------------------------- |
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
-| `rule`                  | `null`  | A local verdict instead of the endpoint (see [Deciding locally](#deciding-locally-rule)): a list, an attribute, the conversation type, a label, or `all` / `any` of those. With a rule the endpoint is never called. |
+| `rule`                  | `null`  | A local verdict (see [Deciding locally](#deciding-locally-rule)): a list, an attribute, the conversation type, a label, or `all` / `any` of those. With a rule the endpoint is called only under `askEndpointAfterRule`. |
+| `askEndpointAfterRule`  | `false` | With a rule set, hand what the rule allows to the endpoint for the final verdict (see [Two stages](#two-stages-rule-then-endpoint)). Strict boolean: anything else keeps the rule alone, so a url left behind from before a rule was set stays unused. |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
 | `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. The grant bookkeeping AFTER the answer is awaited without it, and that is deliberate: walking away from a Prisma statement does not stop it, so an abandoned upsert can commit after a later refusal deleted the row and revive an authorization the endpoint has withdrawn. A write nobody waits for is a write nobody can order. It costs one indexed single-statement transaction on the way out, and a failure there marks the contact unconfirmed. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
@@ -82,6 +83,7 @@ read, so a malformed bag can never break the webhook.
 | `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
 | `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
+| `operatorNoteEnabled`   | `true`  | Whether a DENIAL writes the operator's private note. Off is for a gate used as a scope filter, where a refusal is the ordinary case. An `error` and a `no_identity` always write theirs: those are things to fix. Only an explicit `false` turns it off. |
 | `mode`                  | `"perMessage"` | `perMessage` re-checks every message. `once` stores the first positive verdict per contact and reuses it until it expires. Strict, like `enabled`: anything else reads as `perMessage`, so a malformed write can only ever make the gate ask MORE often. |
 | `grantTtlSeconds`       | `86400` | How long a stored verdict counts for under `once`. Clamped 60-2592000 (one minute to thirty days). It is part of the POLICY a grant is written under, so a stored verdict stops counting while a different value is in force — a match rule, not a way to clear them (see [Reusing a verdict](#reusing-a-verdict-mode-once)). |
 
@@ -113,11 +115,11 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
 
 The type and the labels come from the mirror (`Conversation.conversationType`, `Conversation.labels`), written from the conversation block every message and conversation event carries, so no condition costs a Chatwoot round trip and the callers that run with no payload in hand (the debounce flush, a nudge, a re-engagement) read the same values. They follow the mirror's rule for the attribute bags (`docs/chatwoot.md`, Mirror sync): written only when the payload carried them, the label list assigned wholesale, ordered by `last_activity_at`. That rule has one known window: a retried message delivery carries the snapshot of when it was serialized, so a label added in the seconds between the message and its retry can be undone until the next event on the conversation.
 
-- **Either the rule or the endpoint.** With a rule set, `url`, `credentialRef`, `timeoutMs`,
-  `includeMessageText` and `mode` are kept but not used, and the editor hides them. The
-  endpoint-only health warnings (`contactAuthNoUrl`, the credential, the unlock-versus-handoff
-  conflict) do not fire. A two-stage version (the rule answers first, the endpoint sees the rest)
-  was left out: it is what spares an expensive endpoint, and nobody has asked for it yet.
+- **The rule alone, unless asked otherwise.** With a rule set and `askEndpointAfterRule` off,
+  `url`, `credentialRef`, `timeoutMs`, `includeMessageText` and `mode` are kept but not used, and
+  the editor hides them. The endpoint-only health warnings (`contactAuthNoUrl`, the credential, the
+  unlock-versus-handoff conflict) do not fire. With it on, the endpoint decides what the rule
+  allows: see [Two stages](#two-stages-rule-then-endpoint).
 - **Always per message, never stored.** A stored verdict exists to spare somebody's endpoint, and a
   rule reads our own rows. A rule neither reads nor writes a grant, under either `mode`, so taking a
   number off the list refuses that number's very next message. A grant the endpoint gave before the
@@ -146,6 +148,49 @@ The type and the labels come from the mirror (`Conversation.conversationType`, `
   `rule_none_met`. The operator note names the agent's rule instead of the external check.
 - **The audit trail keeps a list's shape inside a combination too.** Each `allowlist` condition is
   recorded as its kind and counts, exactly as a plain list is.
+
+## Two stages (rule, then endpoint)
+
+A rule and an endpoint answer different questions at different prices. The rule reads our own rows
+and costs nothing; the endpoint is a call to somebody else's system with a timeout on the webhook
+path. `askEndpointAfterRule: true` puts both in front of the turn: the rule decides first, a refusal
+there is the gate's answer and the endpoint is never asked, and an allow is handed to the endpoint,
+whose verdict is final. Grants under `mode: "once"` belong to the endpoint stage only: the rule runs
+on every message in front of a stored grant, so taking a conversation out of the rule's scope
+refuses its next message whatever the endpoint said before.
+
+It is a flag rather than "a rule and a url together" on purpose. Before two stages existed, a url
+left behind when an operator switched to a rule was kept and documented as unused, and agents in
+that state exist; reading the pair as two stages would start calling an endpoint on them.
+
+**Two positions.** The stages are asked at different points of each caller, because what makes the
+endpoint right to ask last (a conversation an earlier gate silenced costs no call) does not apply to
+a rule:
+
+- **Rule stage**: ahead of every gate that answers the customer or reports a refusal, so a
+  conversation this agent does not serve gets its refusal and nothing else. In the webhook that is
+  ahead of the WhatsApp→chat redirect, availability (the away message) and the spend ceiling; in the
+  debounce flush, the nudge and the re-engage it is ahead of the spend ceiling. It stays AFTER the
+  test-mode gate: that gate is what keeps a test agent from speaking to real leads, and a refusal
+  speaks (the deny copy) and opens conversations, while the test-mode gate only writes an
+  operator-only note. It stays after the commands (`/teste`, `/reset`) and the redirect cross-link
+  too, which are the operator's tooling and an episode's bookkeeping.
+- **Endpoint stage**: where the gate always stood, last.
+
+With only one of the two configured, only that stage runs, at its own position: a rule-only agent
+now refuses before the away message (the rule used to run last), and an endpoint-only agent is
+unchanged. An allow at the rule position is final when no endpoint follows it. The media pass asks
+the whole gate in one call (`stage: "both"`), since it asks at one place.
+
+One flow line per message, carrying `stage` (`rule` or `endpoint`): a refusal at the rule is the
+rule's line, and an allow there is not written when the endpoint follows, whose verdict is the line.
+
+**The quiet refusal is the scope filter.** No `denyMessage`, `operatorNoteEnabled: false` and the
+handoff on reads as "this conversation is not for this agent, leave it to humans": the customer gets
+nothing from the agent, the conversation is opened for the human queue (so it is not stranded in
+`pending`), and no note is written per excluded conversation. The editor says so when the three line
+up. `contactAuthSilentRefusal` still fires only for no message AND no handoff, which is the pair that
+leaves a customer with nothing.
 
 ## Request / response contract
 
@@ -330,10 +375,12 @@ stale one after an unlink means asking about a customer this contact is no longe
 
 ## Where the gate runs
 
-**Webhook** (`maybeConsumeCommandOrGate` in `src/modules/chatwoot/webhook.ts`): the last of the
-pre-turn gates, in this order: redirect cross-link → test-mode (`/teste`, `/reset`) → WhatsApp→chat
-redirect → availability → **contact auth**. Last on purpose: a conversation an earlier gate already
-silenced costs no authorization call. It runs only for a new incoming message on an enabled,
+**Webhook** (`maybeConsumeCommandOrGate` in `src/modules/chatwoot/webhook.ts`): in this order:
+redirect cross-link → test-mode (`/teste`, `/reset`) → **contact auth, rule stage** → WhatsApp→chat
+redirect → availability → spend ceiling → **contact auth, endpoint stage**. The endpoint stage is
+last on purpose: a conversation an earlier gate already silenced costs no authorization call. The
+rule stage is early on purpose: it costs nothing, and a conversation the agent does not serve should
+not get an away message first (see [Two stages](#two-stages-rule-then-endpoint)). It runs only for a new incoming message on an enabled,
 agent-bound inbox that the bot still owns (the attribution gate runs first, so a conversation in
 human hands never triggers a check). Consuming outcomes advance the handled watermark and the
 message is folded into the memory thread like any other unanswered one.
@@ -341,7 +388,8 @@ message is folded into the memory thread like any other unanswered one.
 - **allowed** → the delivery proceeds (debounce / turn).
 - **denied** → the `denyMessage` (when set) goes to the customer under the same `stillOurs` fence and
   persona token every gate message uses; the conversation is opened for humans (+ team) when
-  `handoffEnabled`; a pt-BR private note tells the operator, with the `reason` code when one came.
+  `handoffEnabled`; a pt-BR private note tells the operator, with the `reason` code when one came
+  (unless `operatorNoteEnabled` is `false`, which silences the note for a denial and only for one).
   That note carries what is **not** on the operator's screen, so what it says about the customer's
   copy depends on what the customer actually got: when the copy was delivered the note says nothing
   about it (the message is one line above; it keeps the reason code, which is the invisible part),
@@ -398,7 +446,8 @@ human to take it from here — so the runtime does not resolve the contradiction
 raises a configuration warning (`contactAuthUnlockHandoff`) when both are on.
 
 **Proactive nudge** (`runAgentNudge` in `src/graph/nudge.ts`): the same check before any tool or
-model work: a follow-up is a turn the agent starts, and a contact the reactive gate would refuse
+model work, the rule stage before the spend ceiling (a refused follow-up is not reported as a refused
+spend, which pages and reschedules): a follow-up is a turn the agent starts, and a contact the reactive gate would refuse
 must not be reached out to either. Denied/error/no-identity all end as the `silent` outcome (no
 note downgrade: the nudge's text was written FOR the customer), with the same flow line. A nudge
 has no triggering message, so it never carries `message` — and for the same reason it never shares
@@ -409,7 +458,8 @@ the check is a round-trip with a ten-second ceiling, and stamping labels on a co
 took during it would be writing on theirs.
 
 **Debounce flush** (`flushDebounceJob` in `src/modules/debounce/handler.ts`): checked again, after
-the assignee gate and before the model, and the burst is selected against the handled watermark as
+the assignee gate and before the model (the rule stage before the spend ceiling, the endpoint stage
+after it), and the burst is selected against the handled watermark as
 it stands AFTER that check: the check is a round-trip to somebody else's endpoint, and a message
 that arrived and was refused during it has already had the watermark advanced past it by its own
 delivery. The webhook checks every incoming message, but a turn is not
@@ -423,7 +473,8 @@ refused. The flow line is what tells the operator the burst was dropped.
 
 **Manual re-engage** (`reengageConversation` in `src/modules/conversations/reengage.ts`, behind the
 console button, `POST /v1/conversations/:id/reengage` and the MCP write action): the same check,
-after the assignee gate and before the model. Re-engage answers the unanswered tail, which may be
+after the assignee gate and before the model, the rule stage before the spend ceiling, so a click on
+a conversation the rule does not serve reports `not-authorized`, not `over-ceiling`. Re-engage answers the unanswered tail, which may be
 unanswered precisely BECAUSE the contact was refused when it arrived, and the operator pressing the
 button is not the authorization — the endpoint is. A refusal ends as the `not-authorized` outcome,
 reported to whoever pressed it (a toast in the console, the outcome in the API/MCP result) and
@@ -655,7 +706,7 @@ would put a phone number in a `detail` that alert channels are promised to be PI
 in the operator's own Chatwoot, on the conversation it describes.
 
 One `contact_auth` flow line per evaluation (`src/modules/flowlog/stages.ts`), `detail` =
-`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, reused?, status?, reason? }` (`reason`
+`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, reused?, stage?, status?, reason? }` (`stage` is `rule` or `endpoint`, the stage that answered; `reason`
 is OUR own failure code, from a fixed list in this repository): enums, two
 booleans (`shared` = this call was coalesced into another's request; `reused` = present only when the
 endpoint was NOT asked, the answer coming from a stored grant), a status and a slug; no PII

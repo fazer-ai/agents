@@ -1829,7 +1829,7 @@ describe("issueHasAction", () => {
         computeConfigIssues({
           ...base,
           contactAuthEnabled: true,
-          contactAuthHasRule: true,
+          contactAuthRuleOnly: true,
           contactAuthIncludeMessageText: true,
           contactAuthHandoffEnabled: true,
           contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",

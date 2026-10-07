@@ -323,6 +323,7 @@ async function ask(
     channelType: "Channel::Whatsapp",
     messageText: null,
     requestKey: `rule:${seq}`,
+    stage: "both",
     cfg: config,
     base: appDb,
     fetchImpl,
@@ -517,6 +518,7 @@ describe.skipIf(!dbUp)("a local rule decides without the endpoint", () => {
         messageText: null,
         // The SAME asking key on purpose: the webhook's default when no text is forwarded.
         requestKey: "inbox",
+        stage: "both",
         cfg: cfg(rule),
         base: appDb,
         fetchImpl: ep.fetchImpl,

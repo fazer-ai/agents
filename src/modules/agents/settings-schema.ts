@@ -346,7 +346,7 @@ const availability = z.looseObject({
     ),
 });
 
-// The local rule. Either this or `url`: with a rule, the endpoint is never called.
+// The local rule. With a rule, the endpoint is called only under `askEndpointAfterRule`.
 const contactAuthCondition = z.union([
   z.object({
     kind: z.literal("allowlist"),
@@ -397,6 +397,7 @@ const contactAuthRule = z
 const contactAuth = z.looseObject({
   enabled: z.boolean().optional(),
   rule: contactAuthRule,
+  askEndpointAfterRule: z.boolean().optional(),
   url: z
     .string()
     .nullable()
@@ -422,6 +423,7 @@ const contactAuth = z.looseObject({
     .optional()
     .describe("what a REFUSED contact receives; null = say nothing"),
   handoffEnabled: z.boolean().optional(),
+  operatorNoteEnabled: z.boolean().optional(),
   mode: z
     .enum(["perMessage", "once"])
     .optional()

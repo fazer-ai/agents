@@ -39,6 +39,8 @@ let contactDbId = 0n;
 const cfg = (over: Partial<ContactAuthConfig> = {}): ContactAuthConfig => ({
   enabled: true,
   rule: null,
+  askEndpointAfterRule: false,
+  operatorNoteEnabled: true,
   url: "https://ops.example.com/authorize",
   credentialRef: "vault:1",
   timeoutMs: 1000,
@@ -91,6 +93,7 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
       channelType: "Channel::Whatsapp",
       messageText: null,
       requestKey: "inbox",
+      stage: "both",
       cfg: cfg({ timeoutMs: 1000 }),
       base: appDb,
       // Never settles: the vault's own ceiling is ten seconds, so without the gate's deadline
@@ -121,6 +124,7 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
       channelType: "Channel::Whatsapp",
       messageText: null,
       requestKey: "inbox2",
+      stage: "both",
       cfg: cfg({ timeoutMs: 1200 }),
       base: appDb,
       // Slow but not fatal: most of the budget goes here, and the rest belongs to the request.

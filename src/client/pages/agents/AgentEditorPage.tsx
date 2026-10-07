@@ -474,6 +474,8 @@ function readBehaviorState(a: Agent) {
     contactAuth: {
       ...readContactAuthRuleForm(ca.rule),
       enabled: ca.enabled === true,
+      // NOTE: Strict like the reader: only `true` asks the endpoint after the rule.
+      askEndpointAfterRule: ca.askEndpointAfterRule === true,
       url: str(ca.url),
       credentialRef: str(ca.credentialRef),
       timeoutMs: num(ca.timeoutMs) || "5000",
@@ -490,6 +492,8 @@ function readBehaviorState(a: Agent) {
         typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
       handoffTeamId: num(ca.handoffTeamId),
       handoffTeamInstanceId: num(ca.handoffTeamInstanceId),
+      // NOTE: Only an explicit `false` turns the note off, as in the reader.
+      operatorNoteEnabled: ca.operatorNoteEnabled !== false,
     },
     tts: readTtsFormState(tt),
     split: {
@@ -812,6 +816,7 @@ function AgentEditor() {
   const [contactAuth, setContactAuth] = useState<ContactAuthState>({
     ...EMPTY_CONTACT_AUTH_RULE_FORM,
     enabled: false,
+    askEndpointAfterRule: false,
     url: "",
     credentialRef: "",
     timeoutMs: "5000",
@@ -823,6 +828,7 @@ function AgentEditor() {
     handoffEnabled: true,
     handoffTeamId: "",
     handoffTeamInstanceId: "",
+    operatorNoteEnabled: true,
   });
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
@@ -1674,6 +1680,9 @@ function AgentEditor() {
       contactAuth: {
         enabled: contactAuth.enabled,
         rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled),
+        // NOTE: Saved as chosen even with no rule picked, like the url under a rule: switching the
+        // source back and forth does not lose it, and the reader only reads it beside a rule.
+        askEndpointAfterRule: contactAuth.askEndpointAfterRule,
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,
@@ -1705,6 +1714,7 @@ function AgentEditor() {
         handoffTeamInstanceId: contactAuth.handoffTeamId
           ? Number(contactAuth.handoffTeamInstanceId) || null
           : null,
+        operatorNoteEnabled: contactAuth.operatorNoteEnabled,
       },
       tts: ttsSettingsFrom(tts),
       split: {
@@ -2010,7 +2020,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.contactAuth', 'The contact-authorization credential no longer exists, so the check fails and the agent stays silent.')
   // t('editor.configIssue.contactAuthUnlockHandoff', 'The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI\'s, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.')
   // t('editor.configIssue.contactAuthSilentRefusal', 'A refused contact is left with nothing: no message is sent and the conversation is not opened for anyone, so their message goes unanswered and only a private note records it. Write the refusal message, or turn on the handoff to humans.')
-  // t('editor.configIssue.contactAuthNoUrl', 'The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, choose a list or an attribute to decide instead, or turn the check off.')
+  // t('editor.configIssue.contactAuthNoUrl', 'The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, let a rule decide alone, or turn the check off.')
   // t('editor.configIssue.embedding', 'A knowledge base needs indexing, but the tenant embedding is not configured.')
   // t('editor.configIssuePending.embedding', 'A knowledge base needs indexing, but the embedding credential is not filled in yet.')
   // t('editor.configIssue.redirect', 'Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.')
@@ -2105,7 +2115,8 @@ function AgentEditor() {
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
     contactAuthUrl: contactAuth.url,
-    contactAuthHasRule: contactAuth.ruleKind !== "",
+    contactAuthRuleOnly:
+      contactAuth.ruleKind !== "" && !contactAuth.askEndpointAfterRule,
     contactAuthCredentialRef: contactAuth.credentialRef,
     contactAuthIncludeMessageText: contactAuth.includeMessageText,
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,

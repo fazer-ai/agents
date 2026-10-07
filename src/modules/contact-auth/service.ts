@@ -32,7 +32,11 @@ import {
   type RuleFacts,
   ruleReadsConversation,
 } from "./rule";
-import type { ContactAuthConfig } from "./settings";
+import {
+  type ContactAuthConfig,
+  type ContactAuthRule,
+  contactAuthHasEndpointStage,
+} from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
@@ -88,6 +92,13 @@ export interface AuthorizeContactParams {
   // part of the question, the caller's own name otherwise ("nudge"). Two different askings must not
   // share a verdict — see contactAuthFlightKey.
   requestKey: string;
+  // Which half of the gate this call is (docs/contact-auth.md, Two stages). `rule` answers from the
+  // rule alone and is what a caller asks FIRST, before any other pre-turn gate; with no rule set it
+  // allows, since there is nothing to refuse at that position. `endpoint` skips the rule, for the
+  // caller that already asked it at the first position, and allows when the agent has a rule and no
+  // endpoint stage. `both` is the whole gate in one call, for the callers that ask it at one place
+  // only (the media pass). REQUIRED, so a new caller says which one it is.
+  stage: ContactAuthStage;
   cfg: ContactAuthConfig;
   base?: PrismaClient;
   fetchImpl?: typeof fetch;
@@ -145,6 +156,49 @@ async function ruleFacts(
   };
 }
 
+// The rule stage's verdict, the one place it is decided. Only a plain allowlist waits for the identity
+// check: every other rule reads facts a contact with no phone or email still has (a group, a label, a
+// marked conversation), which is the whole point of reading them. No grant is read, written or
+// dropped: a rule reads our own rows every message, and a stored verdict would only make an edit take
+// effect late.
+async function ruleVerdict(
+  rule: ContactAuthRule,
+  at: {
+    base: PrismaClient;
+    tenantId: bigint;
+    conversationDbId: bigint | null;
+    phone: string | null;
+    email: string | null;
+    identifier: string | null;
+    contactAttributes: Record<string, unknown>;
+  },
+): Promise<ContactAuthVerdict> {
+  if (rule.kind !== "allowlist") {
+    return evaluateContactAuthRule(
+      rule,
+      await ruleFacts(at.base, at.tenantId, at.conversationDbId, {
+        phone: at.phone,
+        identifier: at.identifier,
+        contactAttributes: at.contactAttributes,
+      }),
+    );
+  }
+  // NOTE: The Chatwoot contact id alone is NOT identity, for the list as for the endpoint.
+  if (!at.phone && !at.email && !at.identifier) {
+    return { outcome: "no_identity", reason: "no_identifiers" };
+  }
+  // The list compares the phone and the identifier. A contact that has only an email has something
+  // an endpoint could ask about, and nothing this list can match: refused as not listed.
+  return evaluateContactAuthRule(rule, {
+    ...NO_CONVERSATION_FACTS,
+    phone: at.phone,
+    identifier: at.identifier,
+    contactAttributes: {},
+  });
+}
+
+export type ContactAuthStage = "rule" | "endpoint" | "both";
+
 export async function authorizeContact(
   params: AuthorizeContactParams,
 ): Promise<ContactAuthResult> {
@@ -156,15 +210,20 @@ export async function authorizeContact(
   const contactDbId = params.contactDbId;
   // A conversation-scoped rule answers about the CONVERSATION, so two conversations of one contact
   // are two questions: sharing a flight would hand the marked one's allow to the unmarked one.
-  const rule = cfg.rule;
+  const { stage } = params;
+  const rule = stage === "endpoint" ? null : cfg.rule;
+  const askEndpoint = stage !== "rule" && contactAuthHasEndpointStage(cfg);
   const conversationScoped = rule !== null && ruleReadsConversation(rule);
+  // The stage is part of the question: the rule's allow and the endpoint's are not the same answer,
+  // and a flight shared across them would hand one stage's verdict to a caller asking the other.
+  const asking = `${params.requestKey}:${stage}`;
   const key = contactAuthFlightKey(
     tenantId,
     agentId,
     contactDbId,
     conversationScoped
-      ? `${params.requestKey}:conv:${params.conversationDbId ?? "none"}`
-      : params.requestKey,
+      ? `${asking}:conv:${params.conversationDbId ?? "none"}`
+      : asking,
   );
   const { verdict, shared } = await singleFlight(
     key,
@@ -192,39 +251,41 @@ export async function authorizeContact(
       // still has (a group, a label, a marked conversation), which is the whole point of reading them.
       // No grant is read, written or dropped: a rule reads our own rows every message, and a stored
       // verdict would only make an edit take effect late.
-      if (rule && rule.kind !== "allowlist") {
-        return evaluateContactAuthRule(
-          rule,
-          await ruleFacts(
-            base,
-            tenantId,
-            conversationScoped ? params.conversationDbId : null,
-            {
-              phone,
-              identifier,
-              contactAttributes: bagOf(contact?.customAttributes),
-            },
-          ),
-        );
+      if (rule) {
+        const ruled = await ruleVerdict(rule, {
+          base,
+          tenantId,
+          conversationDbId: conversationScoped ? params.conversationDbId : null,
+          phone,
+          email,
+          identifier,
+          contactAttributes: bagOf(contact?.customAttributes),
+        });
+        // A refusal is the gate's answer whatever comes after; an allow is final only when there is
+        // no endpoint stage to hand it to.
+        if (ruled.outcome !== "allowed" || !askEndpoint) {
+          return { ...ruled, stage: "rule" };
+        }
       }
+      // The rule position asked with no rule set: nothing to refuse here, and the endpoint stage, if
+      // the agent has one, answers at its own position.
+      if (!askEndpoint) return { outcome: "allowed", stage: "rule" };
+      const endpointVerdict = (v: ContactAuthVerdict): ContactAuthVerdict => ({
+        ...v,
+        stage: "endpoint",
+      });
       // NOTE: The Chatwoot contact id alone is NOT identity: it names the row to us and says
       // nothing to the operator's system. Without a phone, an email or an operator identifier
       // there is nothing to ask about.
       if (!phone && !email && !identifier) {
-        return { outcome: "no_identity", reason: "no_identifiers" };
-      }
-      // The list compares the phone and the identifier. A contact that has only an email has
-      // something the endpoint could ask about, and nothing this list can match: refused as not
-      // listed, which is what it is.
-      if (rule) {
-        return evaluateContactAuthRule(rule, {
-          ...NO_CONVERSATION_FACTS,
-          phone,
-          identifier,
-          contactAttributes: {},
+        return endpointVerdict({
+          outcome: "no_identity",
+          reason: "no_identifiers",
         });
       }
-      if (!cfg.url) return { outcome: "error", reason: "not_configured" };
+      if (!cfg.url) {
+        return endpointVerdict({ outcome: "error", reason: "not_configured" });
+      }
       // The stored verdict, read after the identity (a grant is about the identity the mirror
       // holds now) and before the credential, so a reuse costs neither the vault read nor a
       // managed-OAuth refresh.
@@ -277,7 +338,7 @@ export async function authorizeContact(
             fingerprints,
             { signal: ctrl.signal },
           );
-          if (stored) return reusedVerdict(stored.context);
+          if (stored) return endpointVerdict(reusedVerdict(stored.context));
         }
         let credential: InjectableCredential | null = null;
         if (cfg.credentialRef) {
@@ -301,12 +362,17 @@ export async function authorizeContact(
           }
           // A budget spent before the endpoint was even asked is a timeout, not an unreadable
           // credential: the operator's key may be perfectly fine and merely slower than the gate.
-          if (timedOut) return { outcome: "error", reason: "timeout" };
+          if (timedOut) {
+            return endpointVerdict({ outcome: "error", reason: "timeout" });
+          }
           // A missing, pending or unreadable credential is an error, not a request without it: the
           // endpoint would answer 401 and the gate would read that as "denied", telling the customer
           // they are not registered because of a key the operator has not filled in.
           if (!credential) {
-            return { outcome: "error", reason: "credential_unavailable" };
+            return endpointVerdict({
+              outcome: "error",
+              reason: "credential_unavailable",
+            });
           }
           // A kind whose rule says it never travels in an outbound request (mcp_env is read by the
           // stdio loader, langfuse by observability). The request builder falls back to a generic
@@ -319,7 +385,10 @@ export async function authorizeContact(
               String(credential.kind),
               String(agentId),
             );
-            return { outcome: "error", reason: "credential_not_injectable" };
+            return endpointVerdict({
+              outcome: "error",
+              reason: "credential_not_injectable",
+            });
           }
         }
         const verdict = await checkContactAuthorization(
@@ -365,7 +434,7 @@ export async function authorizeContact(
             { askedAt },
           );
         }
-        return verdict;
+        return endpointVerdict(verdict);
       } finally {
         clearTimeout(timer);
       }
@@ -393,6 +462,10 @@ export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
       // Only when true: the ordinary line is an ask, and a key on every line to say "this was the
       // ordinary case" is a key readers learn to skip.
       ...(result.reused ? { reused: true } : {}),
+      // Which stage answered: with both configured, an allow at the rule is not on the line (the
+      // endpoint's verdict is), so a reader can tell "the rule refused" from "the endpoint refused"
+      // without knowing the reason codes.
+      ...(result.stage ? { stage: result.stage } : {}),
       ...(result.status !== undefined ? { status: result.status } : {}),
       ...(reason ? { reason } : {}),
     },

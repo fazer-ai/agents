@@ -502,6 +502,7 @@ async function ask(
     channelType: "Channel::Whatsapp",
     messageText: null,
     requestKey: requestKey ?? `conv-rule:${seq}`,
+    stage: "both",
     cfg: config,
     base: appDb,
     fetchImpl,

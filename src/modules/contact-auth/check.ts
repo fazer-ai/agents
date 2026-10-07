@@ -53,6 +53,9 @@ export interface ContactAuthVerdict {
   // WROTE the grant. A reused verdict carries no `status` or endpoint `reason`: neither is a fact
   // about this message.
   reused?: boolean;
+  // Which stage gave the answer (docs/contact-auth.md, Two stages): the agent's rule, or the endpoint
+  // the operator configured. Set by the orchestration, never by the endpoint.
+  stage?: "rule" | "endpoint";
 }
 
 // The identity the request carries. ALWAYS from trusted context (the mirrored Chatwoot contact),

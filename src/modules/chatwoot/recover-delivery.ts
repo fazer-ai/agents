@@ -1353,24 +1353,8 @@ export async function announceUnanswered(
     // own outcome.
     const reply = owesAReply(row);
     const outcome = reply ? "unanswered" : "memory_unrecovered";
-    const [already, conv] = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    const [conv] = await runScopedOn(base, sysCtx(tenantId), (db) =>
       Promise.all([
-        db.executionLog.findFirst({
-          where: {
-            stage: "delivery",
-            AND: [
-              { detail: { path: ["outcome"], equals: outcome } },
-              // The ledger row, not `deliveryId`: Chatwoot's id is unique per instance only.
-              {
-                detail: {
-                  path: ["deliveryRowId"],
-                  equals: String(deliveryRowId),
-                },
-              },
-            ],
-          },
-          select: { id: true },
-        }),
         row.conversationId === null
           ? null
           : db.conversation.findUnique({
@@ -1389,7 +1373,6 @@ export async function announceUnanswered(
             }),
       ]),
     );
-    if (already) return;
     await writeFlowEvent(
       {
         tenantId,
@@ -1417,6 +1400,29 @@ export async function announceUnanswered(
           : opts.leftProcessed
             ? "The customer's message went unanswered: its recovery could not put the delivery back to DEAD, and nothing revisits it."
             : "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
+      },
+      {
+        // Once per ledger row (not `deliveryId`: Chatwoot's id is unique per instance only), checked
+        // and written under one lock: a late attempt and the dead-letter hook can race for it.
+        once: {
+          lockKey: `delivery-unanswered:${deliveryRowId}`,
+          already: async (db) =>
+            (await db.executionLog.findFirst({
+              where: {
+                stage: "delivery",
+                AND: [
+                  { detail: { path: ["outcome"], equals: outcome } },
+                  {
+                    detail: {
+                      path: ["deliveryRowId"],
+                      equals: String(deliveryRowId),
+                    },
+                  },
+                ],
+              },
+              select: { id: true },
+            })) !== null,
+        },
       },
     );
   } catch (err) {

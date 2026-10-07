@@ -4991,6 +4991,25 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
+    // A late attempt and the dead-letter hook can announce the same delivery at once; the check and
+    // the write run under one lock, so the line still comes out once.
+    test("concurrent announcements of one delivery write one line", async () => {
+      const convId = 18942;
+      const conv = await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19452,
+      });
+      await Promise.all(
+        Array.from({ length: 16 }, () =>
+          announceUnanswered(tenantId, rowId, appDb),
+        ),
+      );
+      expect((await deliveryLines(conv.id)).map((l) => l.level)).toEqual([
+        "error",
+      ]);
+    });
+
     test("a recovery that is still coming, or a row someone else took, writes no unanswered line", async () => {
       const convId = 18932;
       await seedConversation(convId);

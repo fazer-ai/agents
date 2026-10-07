@@ -1386,6 +1386,9 @@ export async function getConversationDetail(
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
     const detail = (r.detail ?? null) as Record<string, unknown> | null;
+    // The turn's summary of a tool that failed on every call (`failedCalls`) is not a call: its calls
+    // are already on the trail, each with its own row.
+    if (r.stage === "tool" && detail?.failedCalls !== undefined) continue;
     if (r.stage === "tool") {
       const rawOutput = detail?.output;
       trail.push({

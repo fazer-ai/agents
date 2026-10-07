@@ -8,7 +8,7 @@ import {
   redactSecretsDeep,
   sanitizeErrorMessage,
 } from "@/lib/redact";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   causeKeyOf,
   dispatchAlertsForEvent,
@@ -84,16 +84,29 @@ export function emitFlowEvent(ctx: FlowContext, ev: FlowEvent): void {
 // The same write, awaited, for a caller whose line is the only record left: the stranded-delivery
 // sweep writes the line FIRST and retires its ledger row only if it landed. Failures are still
 // swallowed; what awaiting buys is ORDERING, and the outcome comes back in `delivered`.
+// A line written at most once per key: the check and the insert run in one transaction under an
+// advisory lock on `lockKey`, so two writers racing for the same fact cannot both find it missing.
+export interface WriteOnce {
+  lockKey: string;
+  already: (db: ScopedDb) => Promise<boolean>;
+}
+
 export async function writeFlowEvent(
   ctx: FlowContext,
   ev: FlowEvent,
-): Promise<{ delivered: boolean }> {
+  opts: { once?: WriteOnce } = {},
+): Promise<{ delivered: boolean; skipped?: true }> {
   const base = ctx.base ?? basePrisma;
   const level: FlowLevel = ev.level ?? "info";
   let delivered = true;
   try {
-    await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
-      db.executionLog.create({
+    const wrote = await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
+      const once = opts.once;
+      if (once) {
+        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${once.lockKey}, 0))`;
+        if (await once.already(db)) return false;
+      }
+      await db.executionLog.create({
         data: {
           tenantId: ctx.tenantId,
           turnId: ctx.turnId,
@@ -129,8 +142,11 @@ export async function writeFlowEvent(
             ? sanitizeErrorMessage(ev.errorMessage)
             : undefined,
         },
-      }),
-    );
+      });
+      return true;
+    });
+    // NOTE: Already written by another writer: nothing new happened, so nothing alerts either.
+    if (!wrote) return { delivered: false, skipped: true };
   } catch (err) {
     delivered = false;
     logger.warn({ err, turnId: ctx.turnId }, "flowlog emit failed");

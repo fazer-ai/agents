@@ -1855,11 +1855,24 @@ describe("issueHasAction", () => {
     });
   });
 
-  // A monitoring agent runs only the gate's RULE (before it arms an observation): no endpoint is
-  // asked, nobody is answered or handed off, so the endpoint and notice warnings are about controls
-  // that do nothing for it.
+  // A monitoring agent answers nobody and hands nothing off, so the notice warnings are about controls
+  // that do nothing for it; but it asks the endpoint under the same rules as a responder, so the
+  // endpoint's own warnings (no url, an unusable credential) hold for it too.
   describe("a monitoring agent's gate", () => {
-    test("raises none of the endpoint or notice warnings", () => {
+    test("raises none of the notice warnings", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          agentMonitoring: true,
+          contactAuthEnabled: true,
+          contactAuthRuleOnly: true,
+          contactAuthIncludeMessageText: true,
+          contactAuthHandoffEnabled: false,
+        }).map((i) => i.key),
+      ).toEqual([]);
+    });
+
+    test("raises the endpoint warnings when it asks an endpoint", () => {
       expect(
         computeConfigIssues({
           ...base,
@@ -1870,7 +1883,7 @@ describe("issueHasAction", () => {
           contactAuthCredentialRef: "vault:999",
           pendingRefs: new Set(["vault:999"]),
         }).map((i) => i.key),
-      ).toEqual([]);
+      ).toEqual(["contactAuth", "contactAuthNoUrl"]);
     });
 
     test("the same settings on an agent that answers still raise them", () => {

@@ -140,7 +140,7 @@ describe("the Behavior save", () => {
 
   test("carries both new fields as the form holds them", () => {
     expect(src.replace(/\s+/g, " ")).toContain(
-      "askEndpointAfterRule: contactAuthAskEndpointToSave( contactAuth.endpointEnabled, watcher,",
+      "askEndpointAfterRule: contactAuth.endpointEnabled,",
     );
     expect(src).toContain(
       "operatorNoteEnabled: contactAuth.operatorNoteEnabled,",

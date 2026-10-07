@@ -76,7 +76,7 @@ import {
   recordMediaRefusal,
   refusedCovers,
 } from "@/modules/contact-auth/media-refusal";
-import { observerRuleAllows } from "@/modules/contact-auth/observer";
+import { observerArmAllows } from "@/modules/contact-auth/observer";
 import {
   RULE_CONVERSATION_TYPE,
   RULE_LABEL,
@@ -1495,6 +1495,7 @@ async function mediaAdmitted(
     ) {
       return true;
     }
+    const watcherPass = isMonitoring(ctx.mode ?? "");
     const verdict = await authorizeContact({
       tenantId,
       agentId,
@@ -1503,14 +1504,17 @@ async function mediaAdmitted(
       conversationId,
       inboxId: chatwootInboxId,
       channelType: ctx.inbox.channelType,
-      messageText: n.message?.content ?? null,
-      requestKey: cfg.includeMessageText
-        ? `msg:${n.message?.id ?? "none"}`
-        : "inbox",
-      // The media pass asks at one place, so it asks the whole gate; a watcher, read fresh because
-      // the agent may have been flipped since the delivery began, only ever has the rule stage
-      // (docs/contact-auth.md, The observer path), so no pass reaches the endpoint for it.
-      stage: isMonitoring(ctx.mode ?? "") ? "rule" : "both",
+      // A watcher, read fresh because the agent may have been flipped since the delivery began, asks
+      // the way its arm does (docs/contact-auth.md, The observer path): no message text, and the
+      // arm's asking, so a concurrent arm and pass put one question to the endpoint.
+      messageText: watcherPass ? null : (n.message?.content ?? null),
+      requestKey: watcherPass
+        ? "observe"
+        : cfg.includeMessageText
+          ? `msg:${n.message?.id ?? "none"}`
+          : "inbox",
+      // The media pass asks at one place, so it asks the whole gate.
+      stage: "both",
       cfg,
       base,
       fetchImpl: owner.deps?.contactAuthFetch,
@@ -4214,13 +4218,14 @@ export async function processChatwootDelivery(
         ) {
           seen.add(watcher.agentId);
           if (
-            !(await observerRuleAllows({
+            !(await observerArmAllows({
               tenantId: params.tenantId,
               instanceId: params.instanceId,
               conversationId,
               agentId: watcher.agentId,
               settings: watcher.settings,
               base,
+              fetchImpl: params.deps?.contactAuthFetch,
             }))
           ) {
             continue;
@@ -4499,8 +4504,9 @@ export async function processChatwootDelivery(
   // memory. A ROW-BACKED observer analyses whatever its mode, as its ingestion does: a watcher that
   // remembers an audio as a marker remembers nothing of it.
   const watcherReads = observer !== null;
-  // The contact gate's rule on the observer path, asked once per watcher per delivery: the media
-  // pass and the arm below put the same question, and two asks would leave two lines.
+  // The contact gate on the observer path, asked once per watcher per delivery: the media pass and
+  // the arm below put the same question, and two asks would leave two lines (and, with an endpoint,
+  // call it twice).
   const observeVerdicts = new Map<string, Promise<boolean>>();
   const observerMayObserve = (
     watcher: { agentId: bigint },
@@ -4510,13 +4516,14 @@ export async function processChatwootDelivery(
     const key = String(watcher.agentId);
     let verdict = observeVerdicts.get(key);
     if (!verdict) {
-      verdict = observerRuleAllows({
+      verdict = observerArmAllows({
         tenantId: params.tenantId,
         instanceId: params.instanceId,
         conversationId: n.conversationId,
         agentId: watcher.agentId,
         settings,
         base,
+        fetchImpl: params.deps?.contactAuthFetch,
       });
       observeVerdicts.set(key, verdict);
     }
@@ -4554,8 +4561,8 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
-        // NOTE: On the responder's route the watcher IS the inbox's agent, and its rule just
-        // answered: the pass's own ask would run the endpoint stage an observer never runs, and
+        // NOTE: On the responder's route the watcher IS the inbox's agent, and its gate just
+        // answered: the pass's own ask would put the same question again (to the endpoint too), and
         // leave a second line.
         admission: observing && observer === null ? "allowed" : "unverified",
       });

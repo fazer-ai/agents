@@ -16,7 +16,7 @@ import {
   runEagerMedia,
 } from "@/modules/chatwoot/webhook";
 import {
-  observerRuleAllows,
+  observerArmAllows,
   observerRuleVerdict,
 } from "@/modules/contact-auth/observer";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
@@ -24,11 +24,11 @@ import { runObserve } from "@/modules/observe/job";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// THE CONTACT GATE'S RULE ON THE OBSERVER PATH. A monitoring agent watching an inbox runs
-// the rule stage before it arms an observation, so a conversation the rule refuses costs no OBSERVE
-// job, no transcription and no model call; the refusal speaks to nobody (nothing sent, opened or
-// noted) and leaves one `contact_auth` line. The endpoint stage never runs for an observer: an
-// endpoint-only gate observes as before, with the endpoint never asked.
+// THE CONTACT GATE ON THE OBSERVER PATH. A monitoring agent watching an inbox asks the gate before
+// it arms an observation: the conditions, and the endpoint under the same rules as a responder (after
+// the conditions when asked, alone when there are none). A conversation the gate refuses costs no
+// OBSERVE job, no transcription and no model call; the refusal speaks to nobody (nothing sent, opened
+// or noted) and leaves one `contact_auth` line. The tick re-checks the conditions only.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -69,6 +69,10 @@ let seq = 0;
 let stamp = Math.floor(Date.now() / 1000);
 
 const providers = { stt: 0, auth: 0 };
+// What the authorization endpoint answers.
+let authAnswer: "allow" | "deny" | "error" = "allow";
+// The bodies the endpoint received, parsed.
+const authBodies: Record<string, unknown>[] = [];
 const customerFacing: string[] = [];
 
 const sttFetch = (async () => {
@@ -78,9 +82,13 @@ const sttFetch = (async () => {
     headers: { "content-type": "application/json" },
   });
 }) as unknown as typeof fetch;
-const authFetch = (async () => {
+const authFetch = (async (_url: unknown, init?: { body?: unknown }) => {
   providers.auth += 1;
-  return new Response(JSON.stringify({ authorized: true }), { status: 200 });
+  if (typeof init?.body === "string") authBodies.push(JSON.parse(init.body));
+  if (authAnswer === "error") return new Response("boom", { status: 500 });
+  return new Response(JSON.stringify({ authorized: authAnswer === "allow" }), {
+    status: 200,
+  });
 }) as unknown as typeof fetch;
 
 function stubClient() {
@@ -350,6 +358,8 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
   beforeEach(async () => {
     providers.stt = 0;
     providers.auth = 0;
+    authAnswer = "allow";
+    authBodies.length = 0;
     customerFacing.length = 0;
     clearContactAuthState();
   });
@@ -420,16 +430,60 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect(customerFacing).toEqual([]);
   });
 
-  test("an endpoint-only gate observes as before, and the endpoint is never asked", async () => {
+  test("an endpoint-only gate asks the endpoint once before arming, and its allow is observed", async () => {
     await setGate({ enabled: true, url: AUTH_URL });
     await deliverMessage(4, "individual");
     expect(await observeRows(4)).toHaveLength(1);
-    expect(providers.auth).toBe(0);
+    expect(providers.auth).toBe(1);
     expect(customerFacing).toEqual([]);
-    expect(await gateLines(4)).toEqual([]);
+    const lines = await gateLines(4);
+    expect(lines.map((l) => l.detail)).toEqual([
+      expect.objectContaining({ outcome: "allowed", stage: "endpoint" }),
+    ]);
+    // The request carries the conversation's inbox, as a responder's does, and never the text.
+    expect(authBodies).toHaveLength(1);
+    expect(authBodies[0]?.conversation).toMatchObject({
+      id: 4,
+      inboxId: OBSERVED_INBOX,
+    });
+    expect(authBodies[0]).not.toHaveProperty("message");
   });
 
-  test("a rule with the endpoint after it runs only the rule on the observer path", async () => {
+  test("an endpoint denial is not observed, speaks to nobody, and leaves one endpoint line", async () => {
+    authAnswer = "deny";
+    await setGate({
+      enabled: true,
+      url: AUTH_URL,
+      denyMessage: "Atendemos apenas clientes cadastrados.",
+      handoffEnabled: true,
+      includeMessageText: true,
+    });
+    await deliverMessage(17, "individual");
+    expect(await observeRows(17)).toEqual([]);
+    expect(providers.stt).toBe(0);
+    expect(providers.auth).toBe(1);
+    // ...and the text stays out even with forwarding switched on: an observer unlocks nobody.
+    expect(authBodies[0]).not.toHaveProperty("message");
+    expect(customerFacing).toEqual([]);
+    const lines = await gateLines(17);
+    expect(lines.map((l) => l.detail)).toEqual([
+      expect.objectContaining({ outcome: "denied", stage: "endpoint" }),
+    ]);
+  });
+
+  test("an endpoint that fails leaves the conversation unobserved, with an error line", async () => {
+    authAnswer = "error";
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(18, "individual");
+    expect(await observeRows(18)).toEqual([]);
+    expect(customerFacing).toEqual([]);
+    const lines = await gateLines(18);
+    expect(lines.map((l) => l.detail)).toEqual([
+      expect.objectContaining({ outcome: "error", stage: "endpoint" }),
+    ]);
+  });
+
+  test("with conditions and the endpoint after them, the endpoint is asked only about what they let through", async () => {
     await setGate({
       enabled: true,
       rule: GROUP_ONLY,
@@ -438,9 +492,51 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     });
     await deliverMessage(5, "group");
     expect(await observeRows(5)).toHaveLength(1);
+    expect(providers.auth).toBe(1);
     await deliverMessage(6, "individual");
     expect(await observeRows(6)).toEqual([]);
+    expect(providers.auth).toBe(1);
+  });
+
+  test("a rule with a url left beside it and the switch off asks only the rule", async () => {
+    await setGate({ enabled: true, rule: GROUP_ONLY, url: AUTH_URL });
+    await deliverMessage(22, "group");
+    expect(await observeRows(22)).toHaveLength(1);
     expect(providers.auth).toBe(0);
+  });
+
+  test("under mode once, the endpoint's allow is reused on the next message", async () => {
+    await setGate({ enabled: true, url: AUTH_URL, mode: "once" });
+    await deliverMessage(20, "individual");
+    await deliverMessage(20, "individual");
+    expect(await observeRows(20)).toHaveLength(1);
+    expect(providers.auth).toBe(1);
+  });
+
+  test("the tick does not ask the endpoint again", async () => {
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverMessage(19, "individual");
+    expect(await observeRows(19)).toHaveLength(1);
+    expect(providers.auth).toBe(1);
+    authAnswer = "deny";
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: 19,
+        agentId: observerId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeModel: () => {
+          throw new Error("no model in this test");
+        },
+        makeClient: stubClient() as never,
+      },
+    ).catch(() => {});
+    expect(providers.auth).toBe(1);
   });
 
   test("a contact the list cannot identify is not observed, and nothing is opened even with the handoff on", async () => {
@@ -469,7 +565,7 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       },
     ) as PrismaClient;
     expect(
-      await observerRuleAllows({
+      await observerArmAllows({
         tenantId,
         instanceId,
         conversationId: 11,
@@ -494,29 +590,32 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     ).toBe("unreadable");
   });
 
-  // The watcher bound as the inbox's own agent: its media pass is admitted by the rule it just
-  // asked, so an endpoint-only gate does not reach the endpoint there either, and a rule-only gate
-  // leaves one line, not a second one from the pass asking again.
-  test("a watcher bound as the inbox's agent transcribes what it observes without asking the endpoint", async () => {
+  // The watcher bound as the inbox's own agent: its media pass is admitted by the verdict the arm
+  // just reached, so the endpoint is asked once per delivery and leaves one line, not a second one
+  // from the pass asking again.
+  test("a watcher bound as the inbox's agent asks the endpoint once for the media pass and the arm", async () => {
     await setGate({ enabled: true, url: AUTH_URL });
     await deliverMessage(12, "individual", false, BOUND_INBOX);
     expect(await observeRows(12)).toHaveLength(1);
     expect(providers.stt).toBe(1);
-    expect(providers.auth).toBe(0);
+    expect(providers.auth).toBe(1);
+    expect((await gateLines(12)).length).toBe(1);
     await setGate({ enabled: true, rule: GROUP_ONLY });
     await deliverMessage(13, "group", false, BOUND_INBOX);
     expect(await observeRows(13)).toHaveLength(1);
     expect(providers.stt).toBe(2);
-    expect(providers.auth).toBe(0);
+    expect(providers.auth).toBe(1);
     expect((await gateLines(13)).length).toBe(1);
   });
 
   // A pass that asks for itself (an agent flipped to monitoring while its gate waited, a hand-over)
-  // reads the inbox's agent fresh: a watcher has the rule stage only, so its endpoint is never asked.
-  test("a media pass that asks for itself under a watcher never asks the endpoint", async () => {
+  // reads the inbox's agent fresh and asks the whole gate a watcher has: here, the endpoint.
+  test("a media pass that asks for itself under a watcher asks the watcher's endpoint", async () => {
     await setGate({ enabled: true, url: AUTH_URL });
     await deliverMessage(15, "individual", false, BOUND_INBOX);
     expect(providers.stt).toBe(1);
+    expect(providers.auth).toBe(1);
+    authAnswer = "deny";
     const n = audioEvent(15, "individual", false, BOUND_INBOX);
     await runEagerMedia(tenantId, instanceId, n, appDb, {
       conversationId: null,
@@ -527,8 +626,9 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
       deps: deps() as never,
       admission: "unverified",
     });
-    expect(providers.stt).toBe(2);
-    expect(providers.auth).toBe(0);
+    expect(providers.auth).toBe(2);
+    expect(providers.stt).toBe(1);
+    expect(customerFacing).toEqual([]);
   });
 
   // An observation armed while the rule allowed it is asked again when it runs: a label removed or a
@@ -642,6 +742,20 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     expect((rows[0]?.payload as { reason?: string } | undefined)?.reason).toBe(
       "resolved",
     );
+    expect(customerFacing).toEqual([]);
+  });
+
+  test("the resolve arm asks the endpoint too: a denial arms no verdict", async () => {
+    await setGate(null);
+    await deliverMessage(21, "individual");
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    authAnswer = "deny";
+    await setGate({ enabled: true, url: AUTH_URL });
+    await deliverResolve(21, "individual");
+    expect(await observeRows(21)).toEqual([]);
+    expect(providers.auth).toBe(1);
     expect(customerFacing).toEqual([]);
   });
 });

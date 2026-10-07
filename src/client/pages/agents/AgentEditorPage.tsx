@@ -130,7 +130,6 @@ import {
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
 import {
-  contactAuthAskEndpointToSave,
   contactAuthGateEmpty,
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
@@ -1087,9 +1086,11 @@ function AgentEditor() {
     ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
     ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
-    // NOTE: A watcher's section draws the rule alone, so the fields a refusal names (the deny copy,
-    // the credential) are not on its screen.
+    // NOTE: A watcher's section draws no deny copy; its endpoint's fields, the credential among them,
+    // are drawn wherever the endpoint switch is on.
     contactAuthEnabled: contactAuth.enabled && agentMode !== "monitoring",
+    contactAuthEndpointShown:
+      contactAuth.enabled && contactAuth.endpointEnabled,
     memoryCompactionEnabled: memory.compactionEnabled,
     modelFallbackChosen: !!modelFallback.provider,
     guardrailsEnabled: guardrails.enabled,
@@ -1691,18 +1692,8 @@ function AgentEditor() {
         enabled: contactAuth.enabled,
         rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled),
         // NOTE: The endpoint switch. Beside conditions it is the two-stage flag; with none the reader
-        // ignores it (no rule means the endpoint decides). A monitoring agent's editor has no switch,
-        // so its stored flag is kept.
-        askEndpointAfterRule: contactAuthAskEndpointToSave(
-          contactAuth.endpointEnabled,
-          watcher,
-          (
-            syncedAgentRef.current?.settings as
-              | { contactAuth?: unknown }
-              | null
-              | undefined
-          )?.contactAuth,
-        ),
+        // ignores it (no rule means the endpoint decides). Drawn for every mode, so written as shown.
+        askEndpointAfterRule: contactAuth.endpointEnabled,
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,
@@ -3410,15 +3401,10 @@ function AgentEditor() {
     // button, so it refuses the same state before writing any section.
     if (dirty.behavior && contactAuthGateEmpty(contactAuth)) {
       showToast(
-        watcher
-          ? t(
-              "editor.contactAuthWatcherEmpty",
-              "Add at least one condition, or turn the gate off.",
-            )
-          : t(
-              "editor.contactAuthEmpty",
-              "Add at least one condition or turn on the external endpoint, or turn the gate off.",
-            ),
+        t(
+          "editor.contactAuthEmpty",
+          "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+        ),
         "error",
       );
       return false;

@@ -273,9 +273,9 @@ describe("the Channels tab of a watcher", () => {
     ).replace(/\s+/g, " ");
     // NOTE: only the fields a watcher does NOT draw sit behind the exemption. The fallback's
     // validators are asked because its section is drawn for a watcher, and so are the contact gate's
-    // conditions and the refusal of a gate with nothing to decide (its endpoint is not).
+    // conditions, the refusal of a gate with nothing to decide, and its endpoint's url.
     expect(behavior).toContain(
-      "contactAuthRuleBad || contactAuthEmpty || (!watcher && (contactAuthUrlInvalid || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
+      "contactAuthRuleBad || contactAuthEmpty || contactAuthUrlInvalid || (!watcher && (normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
     );
     expect(behavior).toContain(
       "fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing ||",

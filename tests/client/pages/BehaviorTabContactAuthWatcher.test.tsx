@@ -19,9 +19,9 @@ import {
 } from "@/client/pages/agents/contactAuthRuleForm";
 import { behaviorTabProps } from "./behaviorTabProps";
 
-// A monitoring agent's gate: only the rule runs on the observer path, so the section is drawn with
-// the rule alone, says that the rule decides which conversations are observed, and says it when an
-// endpoint-only gate does nothing here. Every assertion reduces to a number or a boolean BEFORE
+// A monitoring agent's gate: the conditions and the endpoint switch are drawn, and the endpoint's
+// fields when it is on, with copy saying its answer only decides what is observed; what only makes
+// sense when answering a customer (deny message, handoff, the message text) stays hidden. Every assertion reduces to a number or a boolean BEFORE
 // expect (a failing expectation holding a DOM node serializes a cyclic happy-dom tree).
 
 const realFetch = globalThis.fetch;
@@ -69,9 +69,13 @@ const observedHint = () =>
   count(
     /(the rule decides which conversations it observes|a regra decide quais conversas ele observa)/,
   );
-const endpointOnlyWarning = () =>
+const endpointObservedHint = () =>
   count(
-    /(an external endpoint is not asked|o endpoint externo não é consultado)/,
+    /(only decides which conversations this agent observes|só decide quais conversas este agente observa)/,
+  );
+const messageTextSwitch = () =>
+  count(
+    /^(Send the customer's message text|Enviar o texto da mensagem do cliente)$/,
   );
 const saveBlocked = () =>
   screen
@@ -87,24 +91,32 @@ describe("the gate in a monitoring agent's editor", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("is drawn with the rule alone and says the rule decides what is observed", () => {
+  test("is drawn with the conditions and the endpoint switch, and says the rule decides what is observed", () => {
     renderWatcher(label("suporte"));
     expect(sectionShown()).toBe(true);
     expect(observedHint() > 0).toBe(true);
+    expect(askAfterSwitch()).toBe(1);
     expect(urlField()).toBe(0);
-    expect(askAfterSwitch()).toBe(0);
     expect(denyMessage()).toBe(0);
     expect(handoff()).toBe(0);
-    expect(endpointOnlyWarning()).toBe(0);
     expect(saveBlocked()).toBe(false);
   });
 
-  test("an endpoint-only gate is flagged as doing nothing here, and does not block the save", () => {
+  test("with the endpoint on, its fields are drawn and say its answer only decides what is observed", () => {
     renderWatcher({ endpointEnabled: true, url: "https://a.test" });
     expect(sectionShown()).toBe(true);
-    expect(endpointOnlyWarning() > 0).toBe(true);
-    expect(urlField()).toBe(0);
+    expect(askAfterSwitch()).toBe(1);
+    expect(urlField()).toBe(1);
+    expect(endpointObservedHint() > 0).toBe(true);
+    expect(messageTextSwitch()).toBe(0);
+    expect(denyMessage()).toBe(0);
+    expect(handoff()).toBe(0);
     expect(saveBlocked()).toBe(false);
+  });
+
+  test("an endpoint switched on with no url blocks the save, since the url field is on screen", () => {
+    renderWatcher({ endpointEnabled: true, url: "" });
+    expect(saveBlocked()).toBe(true);
   });
 
   test("a rule the form cannot read blocks the save, since its fields are on screen", () => {

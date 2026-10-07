@@ -143,6 +143,7 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     ttsTextChoiceShown: true,
     visionEnabled: true,
     contactAuthEnabled: true,
+    contactAuthEndpointShown: true,
     memoryCompactionEnabled: true,
     modelFallbackChosen: true,
     guardrailsEnabled: true,
@@ -260,9 +261,10 @@ describe("editorRefusalFields", () => {
       [{ sttEnabled: false }, ["settings.stt.credentialRef"]],
       [{ ttsOn: false }, ["settings.tts.credentialRef"]],
       [{ ttsNormalize: false }, ["settings.tts.normalizeCredentialRef"]],
+      [{ contactAuthEnabled: false }, ["contactAuth.denyMessage"]],
       [
-        { contactAuthEnabled: false },
-        ["settings.contactAuth.credentialRef", "contactAuth.denyMessage"],
+        { contactAuthEndpointShown: false },
+        ["settings.contactAuth.credentialRef"],
       ],
       [
         { memoryCompactionEnabled: false },

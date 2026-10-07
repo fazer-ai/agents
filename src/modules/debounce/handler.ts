@@ -54,7 +54,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
-import { observerRuleAllows } from "@/modules/contact-auth/observer";
+import { observerArmAllows } from "@/modules/contact-auth/observer";
 import {
   authorizeContact,
   type ContactAuthStage,
@@ -1325,16 +1325,17 @@ async function ingestObservedBurst(args: {
         burst.length,
       );
       // NOTE: A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
-      // message: best-effort, after the memory has it, and only where the contact gate's rule lets
-      // the watcher observe this conversation.
+      // message: best-effort, after the memory has it, and only where the contact gate (conditions,
+      // and the endpoint under the same rules) lets the watcher observe this conversation.
       if (
-        await observerRuleAllows({
+        await observerArmAllows({
           tenantId,
           instanceId,
           conversationId,
           agentId: ctx.agentId,
           settings: ctx.settings,
           base,
+          fetchImpl: deps?.contactAuthFetch,
         })
       ) {
         await armObserve({

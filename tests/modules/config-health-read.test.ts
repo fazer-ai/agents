@@ -933,5 +933,38 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(await noUrlAfter(true)).toBe(true);
       expect(await noUrlAfter(false)).toBe(false);
     });
+
+    // A monitoring agent runs only the rule, before it arms an observation: no endpoint is asked, so
+    // an endpoint-only gate with no URL is not a gate that refuses everything there.
+    test("a monitoring agent's endpoint-only gate with no URL is not reported", async () => {
+      const noUrlOn = async (mode: "monitoring" | "production") => {
+        await suDb.agent.update({
+          where: { id: healthyAgent },
+          data: { mode },
+        });
+        const r = await agentSettingsSet(
+          principal(tenantId),
+          {
+            agent_id: String(healthyAgent),
+            contactAuth: { enabled: true, rule: null, url: null },
+            dry_run: false,
+          },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return null;
+        const health = r.data.configHealth as { issues: { key: string }[] };
+        return health.issues.some((i) => i.key === "contactAuthNoUrl");
+      };
+      try {
+        expect(await noUrlOn("monitoring")).toBe(false);
+        expect(await noUrlOn("production")).toBe(true);
+      } finally {
+        await suDb.agent.update({
+          where: { id: healthyAgent },
+          data: { mode: "production" },
+        });
+      }
+    });
   });
 });

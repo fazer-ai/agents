@@ -71,6 +71,8 @@ const CONV_CEILING_CLIENT = 9432;
 const CONV_PAST_BOUND = 9433;
 const CONV_CEILING_REMEMBERED = 9436;
 const CONV_REACTION = 9437;
+const CONV_RULE_REFUSED = 9438;
+const CONV_RULE_ALLOWED = 9439;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
@@ -321,6 +323,34 @@ describe.skipIf(!dbUp)(
       await seedConversation(CONV_CEILING_CLIENT, 94_320);
       await seedConversation(CONV_PAST_BOUND, 94_330);
       await seedConversation(CONV_REACTION, 94_370);
+      for (const [convId, type] of [
+        [CONV_RULE_REFUSED, "individual"],
+        [CONV_RULE_ALLOWED, "group"],
+      ] as const) {
+        const contact = await suDb.contact.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootContactId: convId,
+            name: "Contato",
+          },
+        });
+        await suDb.conversation.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: convId,
+            status: "pending",
+            assigneeType: null,
+            inboxId: inboxDbId,
+            contactId: contact.id,
+            contactInboxId: convId * 10,
+            threadId: threadOf(convId),
+            lastEventAt: new Date(),
+            conversationType: type,
+          },
+        });
+      }
     });
 
     afterAll(async () => {
@@ -406,6 +436,75 @@ describe.skipIf(!dbUp)(
         await suDb.agent.update({
           where: { id: agentDbId },
           data: { mode: "production" },
+        });
+      }
+    });
+
+    // THE CONTACT GATE'S RULE decides whether the handed-over burst is OBSERVED, not whether it is
+    // remembered: the memory still gets every message and the watermark moves, while a conversation
+    // the rule refuses arms no OBSERVE row (no tick, no model call) and gets nothing posted.
+    test("a burst the agent's rule refuses is remembered but not observed; one it lets through is observed", async () => {
+      const refused = await claimedJob(CONV_RULE_REFUSED, 3);
+      const allowed = await claimedJob(CONV_RULE_ALLOWED, 3);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          mode: "monitoring",
+          settings: {
+            debounce: { enabled: true, windowSeconds: 15 },
+            contactAuth: {
+              enabled: true,
+              rule: { kind: "conversation_type", type: "group" },
+            },
+          },
+        },
+      });
+      const observeRows = (convId: number) =>
+        suDb.schedulerJob.findMany({
+          where: {
+            tenantId,
+            kind: "OBSERVE",
+            dedupeKey: { startsWith: `observe:${threadOf(convId)}:` },
+          },
+          select: { id: true },
+        });
+      try {
+        for (const [job, convId] of [
+          [refused, CONV_RULE_REFUSED],
+          [allowed, CONV_RULE_ALLOWED],
+        ] as const) {
+          const s = stub([page([{ id: 3, content: "bom dia" }])]);
+          const out = await flushDebounceJob({
+            job,
+            base: appDb,
+            deps: {
+              makeModel: () => {
+                throw new Error("a monitoring agent must not reach the model");
+              },
+              makeClient: s.makeClient as never,
+            },
+          });
+          expect(out).toEqual({ outcome: "done" });
+          expect(s.sent).toEqual([]);
+          expect(s.notes).toEqual([]);
+          expect(s.toggles).toEqual([]);
+          expect(await watermarkOf(convId)).toBe(3);
+        }
+        expect(
+          ingestedIds(
+            (await ingestJobs()).map((j) => j.dedupeKey),
+            CONV_RULE_REFUSED * 10,
+          ),
+        ).toEqual([3]);
+        expect(await observeRows(CONV_RULE_REFUSED)).toEqual([]);
+        expect(await observeRows(CONV_RULE_ALLOWED)).toHaveLength(1);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: {
+            mode: "production",
+            settings: { debounce: { enabled: true, windowSeconds: 15 } },
+          },
         });
       }
     });

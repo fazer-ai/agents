@@ -69,6 +69,8 @@ describe("the editor of a monitoring agent", () => {
     expect([...MONITORING_SECTIONS].sort()).toEqual([
       // NOTE: the prompt block built on every turn, this one included.
       "attributeContext",
+      // NOTE: the contact gate's rule decides which conversations a watcher observes.
+      "contactAuth",
       // NOTE: ...and the ceiling on the tool calls a watcher actually makes.
       "limits",
       "memory",
@@ -269,10 +271,11 @@ describe("the Channels tab of a watcher", () => {
       "src/client/pages/agents/BehaviorTab.tsx",
       "utf8",
     ).replace(/\s+/g, " ");
-    // NOTE: only the sections a watcher does NOT draw sit behind the exemption. The fallback's
-    // validators are asked because its section is drawn for a watcher.
+    // NOTE: only the fields a watcher does NOT draw sit behind the exemption. The fallback's
+    // validators are asked because its section is drawn for a watcher, and so is the contact gate's
+    // rule (its endpoint is not).
     expect(behavior).toContain(
-      "(!watcher && (contactAuthUrlInvalid || contactAuthRuleBad || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
+      "contactAuthRuleBad || (!watcher && (contactAuthUrlInvalid || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
     );
     expect(behavior).toContain(
       "fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing ||",

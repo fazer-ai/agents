@@ -3500,6 +3500,53 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
+  test("a conversation the contact gate's rule stops covering while the model answered acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () =>
+            new LabellingModel(["cancelamento"], () =>
+              suDb.agent.update({
+                where: { id: agentId },
+                data: {
+                  settings: {
+                    monitoring: MONITORING,
+                    contactAuth: {
+                      enabled: true,
+                      rule: { kind: "label", label: "fora-do-escopo" },
+                    },
+                  },
+                },
+              }),
+            ) as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      expect(log.labelsWritten).toEqual([]);
+      const lines = await observeLines();
+      expect(detailOf(lines, -1).skipped).toBe("contact_auth_refused");
+      expect(lines.at(-1)?.level).toBe("info");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
   test("a burst whose agent moved to on_resolve while the model answered acts on nothing", async () => {
     await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };

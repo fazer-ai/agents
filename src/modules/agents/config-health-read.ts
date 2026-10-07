@@ -257,6 +257,7 @@ export async function readAgentConfigHealth(
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef ?? "",
     contactAuthEnabled: contactAuth.enabled,
+    agentMonitoring: agent.mode === "monitoring",
     contactAuthUrl: contactAuth.url ?? "",
     contactAuthRuleOnly:
       contactAuth.rule !== null && !contactAuth.askEndpointAfterRule,

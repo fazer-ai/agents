@@ -49,6 +49,7 @@ import {
 } from "@/modules/chatwoot/render";
 import { loadChatwootLabels } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
+import { observerRuleVerdict } from "@/modules/contact-auth/observer";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -96,6 +97,8 @@ const REFUSAL_ENDING = {
   analysis_changed: "info",
   agent_no_longer_observes: "info",
   agent_no_longer_on_inbox: "info",
+  contact_auth_refused: "info",
+  contact_auth_unreadable: "retry",
 } as const satisfies Record<string, "retry" | "info" | "warn">;
 type Refusal = keyof typeof REFUSAL_ENDING;
 
@@ -849,6 +852,7 @@ export async function runObserve(
       select: { name: true, enabled: true, mode: true, settings: true },
     });
     if (!agent?.enabled || !isMonitoring(agent.mode)) return null;
+    const settings = agent.settings;
     const mon = readMonitoringConfig(agent.settings);
     // NOTE: THE ARM'S OWN REFUSAL, asked again against the configuration now: a burst queued while
     // the agent was `incremental` outlives a flip to `on_resolve`, which does not retire the row.
@@ -879,8 +883,8 @@ export async function runObserve(
     // NOTE: A CONFIG THAT DOES NOT BUILD IS NOT AN AGENT THAT STOPPED OBSERVING: the checks above
     // are operator states and end the job; this is a credential the vault cannot hand over, and it
     // retries. The CONV goes with it, so the stale-state fences below run before the retry.
-    if (!cfg) return { noModel: true as const, conv };
-    return { mon, cfg, conv };
+    if (!cfg) return { noModel: true as const, conv, settings };
+    return { mon, cfg, conv, settings };
   });
   if (loaded !== null && loaded.conv?.inboxId != null) {
     const onInbox = await agentStillOnInbox(
@@ -915,6 +919,33 @@ export async function runObserve(
   if (!loaded) {
     logger.info(
       "observe: nothing to do (conv=%s): the agent no longer observes, or this burst is refused by its `analysis` setting",
+      String(conversationId),
+    );
+    return { outcome: "done" };
+  }
+  // THE CONTACT GATE'S RULE, asked again before anything is spent and before the model's own
+  // configuration is required: the arm asked it, but a label removed or a rule tightened since then
+  // leaves this row runnable, and an excluded conversation must complete even when no model could run.
+  const ruled = await observerRuleVerdict(
+    {
+      tenantId,
+      instanceId,
+      conversationId,
+      agentId,
+      settings: loaded.settings,
+      base,
+    },
+    { emit: true },
+  );
+  if (ruled === "unreadable") {
+    return {
+      outcome: "fail",
+      error: "observe: the contact gate's rule could not be evaluated",
+    };
+  }
+  if (ruled === "refused" && "noModel" in loaded) {
+    logger.info(
+      "observe: the contact gate's rule no longer covers this conversation (conv=%s); nothing to do",
       String(conversationId),
     );
     return { outcome: "done" };
@@ -986,6 +1017,11 @@ export async function runObserve(
   if (reason === "resolved" && conv !== null && conv.status !== "resolved") {
     // NOTE: `info`, as its twin `reopened` at the fence: the tick is right to stop.
     line("skipped", { skipped: "conversation_reopened" }, "info");
+    return { outcome: "done" };
+  }
+
+  if (ruled === "refused") {
+    line("skipped", { skipped: "contact_auth_refused" }, "info");
     return { outcome: "done" };
   }
 
@@ -1112,17 +1148,18 @@ export async function runObserve(
     // ONE ROW ANSWERS BOTH QUESTIONS: re-reading the switch and mode here narrows the window
     // to this read, and catches an agent deleted mid-turn, which a `settings`-only select read as
     // no config.
+    let settingsNow: unknown = null;
     const monNow = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.agent.findUnique({
         where: { id: agentId },
         select: { enabled: true, mode: true, settings: true },
       }),
     )
-      .then((row) =>
-        !row?.enabled || !isMonitoring(row.mode)
-          ? ("gone" as const)
-          : readMonitoringConfig(row.settings),
-      )
+      .then((row) => {
+        if (!row?.enabled || !isMonitoring(row.mode)) return "gone" as const;
+        settingsNow = row.settings;
+        return readMonitoringConfig(row.settings);
+      })
       .catch(() => "unreadable" as const);
     if (monNow === "unreadable") {
       refusal = "settings_unreadable";
@@ -1140,6 +1177,26 @@ export async function runObserve(
       monNow.analysis !== "incremental"
     ) {
       refusal = "analysis_changed";
+      return false;
+    }
+    // The contact gate's rule, against the settings and the conversation as they are now: a label
+    // removed while the model answers takes the conversation out of scope before the next write.
+    const ruledNow = await observerRuleVerdict(
+      {
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId,
+        settings: settingsNow,
+        base,
+      },
+      { emit: false },
+    );
+    if (ruledNow !== "allowed") {
+      refusal =
+        ruledNow === "unreadable"
+          ? "contact_auth_unreadable"
+          : "contact_auth_refused";
       return false;
     }
     const rows = await runScopedOn(base, sysCtx(tenantId), async (db) => {

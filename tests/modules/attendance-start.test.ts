@@ -1,17 +1,27 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { MemorySaver } from "@langchain/langgraph";
+import {
+  END,
+  MemorySaver,
+  MessagesAnnotation,
+  START,
+  StateGraph,
+} from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import {
+  burstStartStamp,
   conversationStamp,
   memoryHeadMessage,
   sentAtStamp,
 } from "@/graph/markers";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
+import { oldestCreatedAt } from "@/modules/debounce/handler";
 import {
   attendanceStartedAt,
+  liveThreadMessages,
   openAttendanceStart,
 } from "@/modules/memory/attendance-start";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -73,6 +83,20 @@ describe("openAttendanceStart", () => {
     ).toBe("2026-10-05T10:00:00.000Z");
   });
 
+  test("a coalesced turn starts where its burst did, not at its newest message", () => {
+    const turn = new HumanMessage({
+      content: "segue o comprovante\nconseguem ver?",
+      additional_kwargs: {
+        ...conversationStamp(7),
+        ...sentAtStamp(new Date("2026-10-06T09:00:40Z")),
+        ...burstStartStamp(new Date("2026-10-06T09:00:05Z")),
+      },
+    });
+    expect(openAttendanceStart([turn])?.toISOString()).toBe(
+      "2026-10-06T09:00:05.000Z",
+    );
+  });
+
   test("a summary still waiting for its rewrite ends the attendance it covers", () => {
     const thread = [
       said(7, "2026-10-01T10:00:00Z"),
@@ -89,6 +113,46 @@ describe("openAttendanceStart", () => {
     expect(openAttendanceStart(thread, "gone")?.toISOString()).toBe(
       "2026-10-01T10:00:00.000Z",
     );
+  });
+});
+
+describe("oldestCreatedAt", () => {
+  const row = (id: number, at: string | null) =>
+    ({
+      id,
+      content: "x",
+      createdAt: at === null ? null : new Date(at),
+      messageType: "incoming",
+      private: false,
+    }) as unknown as ChatwootMessageRow;
+  test("a burst starts at its oldest dated message; one message has no separate start", () => {
+    expect(
+      oldestCreatedAt([
+        row(2, "2026-10-06T09:00:40Z"),
+        row(1, "2026-10-06T09:00:05Z"),
+        row(3, null),
+      ])?.toISOString(),
+    ).toBe("2026-10-06T09:00:05.000Z");
+    expect(
+      oldestCreatedAt([row(1, "2026-10-06T09:00:05Z"), row(2, null)]),
+    ).toBeNull();
+  });
+});
+
+describe("liveThreadMessages", () => {
+  test("inside a graph node it reads the running state; outside one, nothing", async () => {
+    let seen: unknown = "unset";
+    const graph = new StateGraph(MessagesAnnotation)
+      .addNode("probe", () => {
+        seen = liveThreadMessages()?.map((m) => m.content);
+        return {};
+      })
+      .addEdge(START, "probe")
+      .addEdge("probe", END)
+      .compile();
+    await graph.invoke({ messages: [said(7, null)] });
+    expect(seen).toEqual(["oi"]);
+    expect(liveThreadMessages()).toBeNull();
   });
 });
 
@@ -207,5 +271,21 @@ describe.skipIf(!dbUp)("attendanceStartedAt", () => {
         contactInboxId: 303,
       }),
     ).toBeNull();
+    // Inside a run, the running state wins over a saver that lags it.
+    let live: Date | null | undefined;
+    await new StateGraph(MessagesAnnotation)
+      .addNode("tool", async () => {
+        live = await attendanceStartedAt(deps, {
+          tenantId,
+          instanceId,
+          contactInboxId: 301,
+        });
+        return {};
+      })
+      .addEdge(START, "tool")
+      .addEdge("tool", END)
+      .compile()
+      .invoke({ messages: [said(7, "2026-10-07T08:00:00Z")] });
+    expect(live?.toISOString()).toBe("2026-10-07T08:00:00.000Z");
   });
 });

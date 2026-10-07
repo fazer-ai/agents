@@ -15,7 +15,7 @@ import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 
 // The `attendance` scope of carrying files reaches the case tool through the toolset the runtime
-// builds: read off the saver the turn's graph runs on, with the agent's debounce ceiling beside it.
+// builds: read off the saver the turn's graph runs on.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -59,7 +59,6 @@ function config(): AgentConfig {
         maxFiles: 10,
       },
     },
-    burstSeconds: 45,
     chatwootContactId: 5,
     httpToolContext: {},
     codeToolDefs: [],
@@ -93,7 +92,7 @@ describe.skipIf(!dbUp)("carrying files reaches the case tool", () => {
     await app?.$disconnect();
   });
 
-  test("the attendance is read off the turn's own saver, with the debounce ceiling", async () => {
+  test("the attendance is read off the turn's own saver", async () => {
     const saver = new MemorySaver();
     await buildThreadStateGraph(saver).invoke(
       {
@@ -134,9 +133,7 @@ describe.skipIf(!dbUp)("carrying files reaches the case tool", () => {
     );
     const cic = seen?.crossInboxCase as {
       attendanceStartedAt?: () => Promise<Date | null>;
-      burstSeconds?: number;
     };
-    expect(cic.burstSeconds).toBe(45);
     expect((await cic.attendanceStartedAt?.())?.toISOString()).toBe(
       "2026-10-06T09:00:00.000Z",
     );

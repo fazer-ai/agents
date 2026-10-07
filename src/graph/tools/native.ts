@@ -453,8 +453,6 @@ export interface ToolCtx {
     interpolate?: (template: string) => string;
     // Where the origin's current attendance starts, for `carryAttachments.mode = attendance`.
     attendanceStartedAt?: () => Promise<Date | null>;
-    // How far before the attendance's stamp the customer's burst can reach.
-    burstSeconds?: number;
   };
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
   // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
@@ -2528,7 +2526,6 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         signCustomerMessage: cic.sign,
         interpolate: cic.interpolate,
         attendanceStartedAt: cic.attendanceStartedAt,
-        burstSeconds: cic.burstSeconds,
         // NOTE: The team this agent hands conversations to, when the operator pinned one: the case goes to
         // the same people. `ctx.handoff` is already the effective config, so a pin picked in another
         // account arrives here as `agent_choice` and no team is written. A pinned PERSON is not

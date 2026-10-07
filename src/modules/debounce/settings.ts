@@ -72,9 +72,3 @@ export function readDebounceConfig(settings: unknown): DebounceConfig {
   );
   return { enabled, windowSeconds, maxMessagesPerBurst, maxWindowSeconds };
 }
-
-// How far before a coalesced turn's stamp its burst can reach: the anti-starvation ceiling, since a
-// burst is flushed at most that long after it started. Zero with debounce off (one message, one turn).
-export function burstReachSeconds(config: DebounceConfig): number {
-  return config.enabled ? config.maxWindowSeconds : 0;
-}

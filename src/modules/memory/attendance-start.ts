@@ -1,9 +1,11 @@
 import type { BaseMessage } from "@langchain/core/messages";
+import { getCurrentTaskInput } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import {
   isMemoryHead,
+  stampedBurstStart,
   stampedConversationId,
   stampedSentAt,
 } from "@/graph/markers";
@@ -42,27 +44,47 @@ export function openAttendanceStart(
     // Only a turn stamped with its conversation belongs to an attendance: a late message from an
     // earlier one is ingested with its date and without the stamp (../../graph/ingest.ts).
     if (stampedConversationId(m) === null) continue;
-    const at = stampedSentAt(m);
+    // A coalesced turn starts where its burst did, not at the newest message it is dated by.
+    const at = stampedBurstStart(m) ?? stampedSentAt(m);
     if (at && (first === null || at < first)) first = at;
   }
   return first;
+}
+
+// The running graph's own messages, when asked from inside one of its nodes (a tool call): the saver
+// can lag the turn, which on the first turn after a compaction holds only the memory head. Null
+// outside a graph run.
+export function liveThreadMessages(): BaseMessage[] | null {
+  try {
+    const state = getCurrentTaskInput() as { messages?: unknown } | undefined;
+    return Array.isArray(state?.messages)
+      ? (state.messages as BaseMessage[])
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function attendanceStartedAt(
   deps: { checkpointer: BaseCheckpointSaver; base: PrismaClient },
   p: { tenantId: bigint; instanceId: bigint; contactInboxId: number },
 ): Promise<Date | null> {
-  const state = await buildThreadStateGraph(deps.checkpointer).getState({
-    configurable: {
-      thread_id: contactInboxThreadId(
-        p.tenantId,
-        p.instanceId,
-        p.contactInboxId,
-      ),
-    },
-  });
   const messages =
-    (state.values as { messages?: BaseMessage[] } | undefined)?.messages ?? [];
+    liveThreadMessages() ??
+    (
+      (
+        await buildThreadStateGraph(deps.checkpointer).getState({
+          configurable: {
+            thread_id: contactInboxThreadId(
+              p.tenantId,
+              p.instanceId,
+              p.contactInboxId,
+            ),
+          },
+        })
+      ).values as { messages?: BaseMessage[] } | undefined
+    )?.messages ??
+    [];
   const owed = await runScopedOn(deps.base, sysCtx(p.tenantId), (db) =>
     db.attendanceSummary.findFirst({
       where: {

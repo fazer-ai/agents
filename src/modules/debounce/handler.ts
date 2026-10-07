@@ -624,6 +624,20 @@ function newestCreatedAt(rows: ChatwootMessageRow[]): Date | null {
   return newest;
 }
 
+// The instant of the OLDEST message in the turn's input: where the burst, and so an attendance it
+// opens, started. Null with fewer than two dated messages, where it is the newest.
+export function oldestCreatedAt(rows: ChatwootMessageRow[]): Date | null {
+  let oldest: Date | null = null;
+  let dated = 0;
+  for (const row of rows) {
+    const at = row.createdAt ?? null;
+    if (!at) continue;
+    dated += 1;
+    if (oldest === null || at < oldest) oldest = at;
+  }
+  return dated > 1 ? oldest : null;
+}
+
 export async function coalesceAndRunTurn(
   ctx: CoalesceTurnContext,
   base: PrismaClient,
@@ -821,7 +835,10 @@ export async function coalesceAndRunTurn(
     // NOTE: The age of what the model reads, resolved here because both callers load the config
     // before fetching the thread. From `inTurn`, not `pending`: a voice note still waiting on its
     // transcription is not what the age describes. The re-render runs on every burst; it is cheap.
-    loaded: withMessageAge(loaded, newestCreatedAt(inTurn)),
+    loaded: {
+      ...withMessageAge(loaded, newestCreatedAt(inTurn)),
+      burstStartedAt: oldestCreatedAt(inTurn),
+    },
     authContext: ctx.authContext,
     tenantId,
     instanceId,

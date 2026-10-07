@@ -97,7 +97,6 @@ export interface OpenCaseInput {
   // When the origin's current attendance started, for `carryAttachments.mode = attendance`
   // (./carry-attachments.ts). Absent ⇒ the whole conversation is the current attendance.
   attendanceStartedAt?: () => Promise<Date | null>;
-  burstSeconds?: number;
 }
 
 export type OpenCaseResult =
@@ -299,7 +298,6 @@ async function carryInto(
       originContactId: input.originContactId,
       caseId,
       attendanceStartedAt: input.attendanceStartedAt,
-      ...(input.burstSeconds ? { burstSeconds: input.burstSeconds } : {}),
       stillWanted: input.stillWanted,
     });
   } catch {

@@ -39,8 +39,6 @@ export interface CarryInput {
   // When the origin's current attendance started, as memory compaction cuts the thread. Null ⇒ the
   // whole conversation is the current attendance. Asked only under `attendance`.
   attendanceStartedAt?: () => Promise<Date | null>;
-  // How far before that instant a coalesced turn's burst can start (the debounce ceiling). Absent ⇒ 0.
-  burstSeconds?: number;
   // The per-file ceiling. Absent ⇒ CARRY_MAX_FILE_BYTES.
   maxFileBytes?: number;
   stillWanted?: () => Promise<boolean>;
@@ -179,47 +177,6 @@ function isContactIncoming(m: Record<string, unknown>): boolean {
   );
 }
 
-function isImported(m: Record<string, unknown>): boolean {
-  const ca = m.content_attributes;
-  return (
-    !!ca &&
-    typeof ca === "object" &&
-    (ca as Record<string, unknown>).imported === true
-  );
-}
-
-// Where the attendance starts in the origin's own timeline. A turn is stamped with the NEWEST message
-// of the customer's burst, so the contact's messages right before it, with no public answer between,
-// are the same burst and start the attendance with it. Private notes and activity rows do not end a
-// burst; imported messages are not the timeline.
-function attendanceSince(
-  all: Record<string, unknown>[],
-  since: number,
-  burstSeconds: number,
-): number {
-  const timeline = all
-    .filter((m) => !isImported(m))
-    .sort((a, b) => Number(a.id) - Number(b.id));
-  const first = timeline.findIndex((m) => Number(m.created_at) >= since);
-  let start = since;
-  for (let i = first - 1; first > 0 && i >= 0; i -= 1) {
-    const m = timeline[i];
-    if (!m) break;
-    if (
-      m.private === true ||
-      m.message_type === 2 ||
-      m.message_type === "activity"
-    )
-      continue;
-    if (!isContactIncoming(m)) break;
-    const at = Number(m.created_at);
-    // NOTE: a burst is flushed within the debounce ceiling of its start; anything older is not it.
-    if (Number.isFinite(at) && at < since - burstSeconds) break;
-    if (Number.isFinite(at)) start = Math.min(start, at);
-  }
-  return start;
-}
-
 // The files the contact sent, newest first by when they were sent (an imported message carries an old
 // date under a new id, so the id does not order them). Under `attendance`, only those since the
 // attendance started.
@@ -234,13 +191,7 @@ async function candidatesOf(
     input.originConversationId,
   );
   // Chatwoot dates a message to the second.
-  const since = boundary
-    ? attendanceSince(
-        all,
-        Math.floor(boundary.getTime() / 1000),
-        input.burstSeconds ?? 0,
-      )
-    : null;
+  const since = boundary ? Math.floor(boundary.getTime() / 1000) : null;
   const newestFirst = all
     .map((m) => ({ m, at: Number(m.created_at), id: Number(m.id) }))
     .sort((x, y) => (y.at || 0) - (x.at || 0) || y.id - x.id);

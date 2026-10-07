@@ -68,6 +68,26 @@ export function stampedSentAt(message: BaseMessage): Date | null {
   return Number.isFinite(at.getTime()) ? at : null;
 }
 
+// When the customer's burst behind a coalesced turn STARTED: its oldest member. The sent-at stamp is
+// the newest, which is what the age variable reads; where an attendance begins is the other end.
+// Absent on a turn of one message, where the two are the same instant.
+const BURST_START_KWARG = "fazerBurstStartedAt";
+
+export function burstStartStamp(
+  at: Date | null | undefined,
+): Record<string, unknown> {
+  return at instanceof Date && Number.isFinite(at.getTime())
+    ? { [BURST_START_KWARG]: at.toISOString() }
+    : {};
+}
+
+export function stampedBurstStart(message: BaseMessage): Date | null {
+  const raw = message.additional_kwargs?.[BURST_START_KWARG];
+  if (typeof raw !== "string") return null;
+  const at = new Date(raw);
+  return Number.isFinite(at.getTime()) ? at : null;
+}
+
 // Which attendance the thread is on: the last stamped message's, not "any message stamped with X". A
 // conversation can be REOPENED after another ran on this thread (an operator picking an old one back
 // up, a human agent replying in it), so an earlier stamp says nothing about where the thread is now.

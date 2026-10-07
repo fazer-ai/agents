@@ -102,6 +102,7 @@ import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
 import {
+  burstStartStamp,
   conversationDividerMessage,
   conversationStamp,
   humanHandbackMessage,
@@ -2005,6 +2006,7 @@ async function runTurnBody(
                 additional_kwargs: {
                   ...conversationStamp(conversationId),
                   ...sentAtStamp(loaded.promptOpts.messageAt),
+                  ...burstStartStamp(loaded.burstStartedAt),
                 },
               }),
             ],

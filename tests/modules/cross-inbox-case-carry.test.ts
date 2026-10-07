@@ -11,10 +11,6 @@ import {
   CROSS_INBOX_CASE_CARRIED_ATTRIBUTE,
   readCarryAttachments,
 } from "@/modules/cross-inbox-case/carry-attachments-settings";
-import {
-  burstReachSeconds,
-  DEBOUNCE_DEFAULTS,
-} from "@/modules/debounce/settings";
 
 // The origin conversation's messages as Chatwoot's REST list serves them: 20 a page, ordered by
 // (created_at, id), `before` for the page earlier than that pair of a message id. Each file is an attachment with an id and a data_url
@@ -22,7 +18,7 @@ import {
 interface Msg {
   id: number;
   createdAt: number;
-  type?: "in" | "out" | "activity";
+  type?: "in" | "out";
   private?: boolean;
   senderType?: "contact" | "user" | "agent_bot";
   senderId?: number;
@@ -84,7 +80,7 @@ function fake(
         payload: older.slice(-20).map((m) => ({
           id: m.id,
           created_at: m.createdAt,
-          message_type: m.type === "out" ? 1 : m.type === "activity" ? 2 : 0,
+          message_type: m.type === "out" ? 1 : 0,
           private: m.private ?? false,
           sender_type:
             m.senderType === "user"
@@ -151,13 +147,6 @@ const uploads = (calls: Array<{ fn: string; args: unknown[] }>) =>
   calls.filter((c) => c.fn === "sendFilesAsAdmin");
 const uploadedNames = (call: { args: unknown[] } | undefined) =>
   ((call?.args[1] ?? []) as Array<{ fileName: string }>).map((f) => f.fileName);
-
-test("a burst reaches back the debounce ceiling, and nothing with debounce off", () => {
-  expect(
-    burstReachSeconds({ ...DEBOUNCE_DEFAULTS, maxWindowSeconds: 90 }),
-  ).toBe(90);
-  expect(burstReachSeconds({ ...DEBOUNCE_DEFAULTS, enabled: false })).toBe(0);
-});
 
 describe("readCarryAttachments", () => {
   test("off by default, images and documents, ten files", () => {
@@ -289,122 +278,6 @@ describe("carryCaseAttachments", () => {
     );
     expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
     expect(uploadedNames(uploads(f.calls)[0])).toEqual(["doc-12.pdf"]);
-  });
-
-  test("attendance: the customer's burst before the stamped message is part of it", async () => {
-    // A turn is stamped with the burst's newest message: the receipt sent right before the text is
-    // the same attendance.
-    const f = fake({
-      messages: [
-        { id: 1, createdAt: 100, files: [{ id: 11 }] },
-        { id: 2, createdAt: 200, type: "out" },
-        { id: 3, createdAt: 495, files: [{ id: 13, name: "recibo.pdf" }] },
-        { id: 4, createdAt: 500 },
-      ],
-    });
-    const out = await carryCaseAttachments(
-      f.client,
-      carryInput(
-        { mode: "attendance" },
-        {
-          burstSeconds: 60,
-          attendanceStartedAt: async () => new Date(500 * 1000),
-        },
-      ),
-    );
-    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
-    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["recibo.pdf"]);
-  });
-
-  test("attendance: a private note or an activity row inside the burst does not end it", async () => {
-    const f = fake({
-      messages: [
-        { id: 1, createdAt: 100, files: [{ id: 11 }] },
-        { id: 2, createdAt: 200, type: "out" },
-        { id: 3, createdAt: 480, files: [{ id: 13, name: "recibo.pdf" }] },
-        { id: 4, createdAt: 485, type: "out", private: true },
-        { id: 5, createdAt: 490, type: "activity" },
-        { id: 6, createdAt: 500 },
-      ],
-    });
-    const out = await carryCaseAttachments(
-      f.client,
-      carryInput(
-        { mode: "attendance" },
-        {
-          burstSeconds: 60,
-          attendanceStartedAt: async () => new Date(500 * 1000),
-        },
-      ),
-    );
-    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
-    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["recibo.pdf"]);
-  });
-
-  test("attendance: the burst reaches back only as far as debounce can coalesce", async () => {
-    // The file was the last thing of an attendance the team resolved; the customer came back an hour
-    // later.
-    const f = fake({
-      messages: [
-        { id: 1, createdAt: 1000, files: [{ id: 11, name: "antigo.pdf" }] },
-        { id: 2, createdAt: 1100, type: "activity" },
-        { id: 3, createdAt: 4600 },
-      ],
-    });
-    const out = await carryCaseAttachments(
-      f.client,
-      carryInput(
-        { mode: "attendance" },
-        {
-          burstSeconds: 60,
-          attendanceStartedAt: async () => new Date(4600 * 1000),
-        },
-      ),
-    );
-    expect(out).toEqual({ carried: 0, skipped: 0, failed: 0 });
-    const withoutDebounce = fake({
-      messages: [
-        { id: 1, createdAt: 4590, files: [{ id: 11, name: "rajada.pdf" }] },
-        { id: 3, createdAt: 4600 },
-      ],
-    });
-    expect(
-      await carryCaseAttachments(
-        withoutDebounce.client,
-        carryInput(
-          { mode: "attendance" },
-          { attendanceStartedAt: async () => new Date(4600 * 1000) },
-        ),
-      ),
-    ).toEqual({ carried: 0, skipped: 0, failed: 0 });
-  });
-
-  test("attendance: an imported message is not part of the burst", async () => {
-    const f = fake({
-      messages: [
-        { id: 1, createdAt: 200, type: "out" },
-        { id: 2, createdAt: 660, files: [{ id: 12, name: "atual.pdf" }] },
-        {
-          id: 3,
-          createdAt: 650,
-          imported: true,
-          files: [{ id: 13, name: "antigo.pdf" }],
-        },
-        { id: 4, createdAt: 700 },
-      ],
-    });
-    const out = await carryCaseAttachments(
-      f.client,
-      carryInput(
-        { mode: "attendance" },
-        {
-          burstSeconds: 60,
-          attendanceStartedAt: async () => new Date(700 * 1000),
-        },
-      ),
-    );
-    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
-    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["atual.pdf"]);
   });
 
   test("the limit keeps the newest by when they were sent, not by id", async () => {

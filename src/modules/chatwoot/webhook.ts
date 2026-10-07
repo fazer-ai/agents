@@ -1557,16 +1557,10 @@ async function mediaAdmitted(
   }
 }
 
-// Eager media analysis: transcribe an incoming voice note and extract an incoming image or document
-// BEFORE arming or answering, writing back to Chatwoot and stashing it on the in-memory event.
-// Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
-// so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
-// to run it (production+enabled always, test only on the answer path, disabled never).
 // The first config of `watcherAgentIds` able to run, else the route's own. "Able to run" is the
 // service's own preflight (`sttPreflight`, `visionPreflight`), never a copy of it: the services check
 // only after this choice and skip without trying another watcher, so a weaker test here would let a
-// sibling that cannot run silence media for the whole inbox. A null agent asks the inbox's responder,
-// as it always has.
+// sibling that cannot run silence media for the whole inbox. A null agent asks the inbox's responder.
 async function firstMediaConfig<T>(
   owner: EagerMediaOwner,
   resolve: (agentId: bigint | null) => Promise<T | null>,
@@ -1579,6 +1573,11 @@ async function firstMediaConfig<T>(
   return resolve(owner.agentId);
 }
 
+// Eager media analysis: transcribe an incoming voice note and extract an incoming image or document
+// BEFORE arming or answering, writing back to Chatwoot and stashing it on the in-memory event.
+// Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
+// so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
+// to run it (production+enabled always, test only on the answer path, disabled never).
 export async function runEagerMedia(
   tenantId: bigint,
   instanceId: bigint,

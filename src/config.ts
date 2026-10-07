@@ -33,6 +33,8 @@ const {
   ALERT_WORKER_INTERVAL_MS,
   ALERT_COALESCE_WINDOW_MS,
   ALERT_CAUSE_WINDOW_MS,
+  ALERT_RATE_THRESHOLD,
+  ALERT_RATE_WINDOW_MS,
   FLOWLOG_RETENTION_DAYS,
   HEARTBEAT_INTERVAL_MS,
   SPEND_CEILING_POLL_INTERVAL_MS,
@@ -504,6 +506,23 @@ const config = {
       "ALERT_CAUSE_WINDOW_MS",
       10_800_000,
       "It is how long one cause stays one alert per channel; later events with the same cause are counted on it.",
+      MAX_DURATION_MS,
+    ),
+    // NOTE: A provider degraded by transient failures (timeouts, 5xx, 429) that retries recover: one
+    // alert when this many failures of one stage and provider land within the window, then again once
+    // the window has passed while it stays degraded.
+    rateThreshold: parseIntSetting(
+      ALERT_RATE_THRESHOLD,
+      "ALERT_RATE_THRESHOLD",
+      5,
+      "It is how many transient failures of one stage and provider within ALERT_RATE_WINDOW_MS make a rate alert.",
+      MAX_COUNT,
+    ),
+    rateWindowMs: parseIntSetting(
+      ALERT_RATE_WINDOW_MS,
+      "ALERT_RATE_WINDOW_MS",
+      900_000,
+      "It is the window ALERT_RATE_THRESHOLD counts transient failures over.",
       MAX_DURATION_MS,
     ),
   },

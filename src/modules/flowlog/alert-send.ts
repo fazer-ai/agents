@@ -121,7 +121,8 @@ export function alertLinks(
   a: AlertBodyInput,
 ): { label: string; url: string }[] {
   const opts = { tenantId: a.tenantId };
-  if (a.count > 1) {
+  // A rate alert is about many failures from the start, so its link is the list even at count 1.
+  if (a.count > 1 || a.causeKey?.startsWith("rate:")) {
     const q = new URLSearchParams();
     if (a.stage) q.set("stage", a.stage);
     if (a.causeKey === null) q.set("level", a.level);

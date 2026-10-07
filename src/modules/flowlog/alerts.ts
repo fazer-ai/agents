@@ -1,9 +1,10 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { isTransientProviderStatus } from "@/lib/provider-failure";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext, FlowEvent } from "./service";
-import { ALERT_DELIVERY_UNIT, type FlowLevel } from "./stages";
+import { ALERT_DELIVERY_UNIT, type FlowLevel, type FlowStage } from "./stages";
 
 // Alert fan-out for a warn/error execution-flow event. Called fire-and-forget from emitFlowEvent
 // (real traffic only). Matches enabled channels by minLevel + stage allowlist, then COALESCES: a
@@ -188,7 +189,34 @@ export async function dispatchAlertsForEvent(
   // NOTE: A turn whose fallback died on its account: the fallback's own line is the cause alert,
   // deduplicated for the window, so this line paging every 30 seconds beside it would undo that.
   if (coveredByCause(ev)) return;
-  const rank = LEVEL_RANK[ev.level] ?? 0;
+  const causeKey = causeKeyOf(ev);
+  await deliverAlert(ctx, base, {
+    stage: ev.stage,
+    // A cause alert is at least a `warn` on the row: the line can be an `info` (a run the job will
+    // retry against a dead key), and what the operator reads is that something needs fixing.
+    level: causeKey !== null && ev.level === "info" ? "warn" : ev.level,
+    rank: LEVEL_RANK[ev.level] ?? 0,
+    summary: alertSummary(ev),
+    cause:
+      causeKey === null ? null : { key: causeKey, windowMs: causeWindowMs },
+  });
+}
+
+interface AlertToDeliver {
+  stage: FlowStage;
+  level: FlowLevel;
+  // The rank the channel's `minLevel` is compared with; a cause skips that comparison.
+  rank: number;
+  summary: string;
+  cause: { key: string; windowMs: number } | null;
+}
+
+async function deliverAlert(
+  ctx: FlowContext,
+  base: PrismaClient,
+  alert: AlertToDeliver,
+): Promise<void> {
+  const { stage, level, cause } = alert;
   await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
     const channels = await db.alertChannel.findMany({
       where: { enabled: true },
@@ -199,36 +227,30 @@ export async function dispatchAlertsForEvent(
         excludeAgentIds: true,
       },
     });
-    if (channels.length === 0) return;
-    const summary = alertSummary(ev);
-    const causeKey = causeKeyOf(ev);
-    // A cause alert is at least a `warn` on the row: the line can be an `info` (a run the job
-    // will retry against a dead key), and what the operator reads is that something needs fixing.
-    const level: FlowLevel =
-      causeKey !== null && ev.level === "info" ? "warn" : ev.level;
     for (const ch of channels) {
       // minLevel gate: a channel set to "error" ignores "warn" events (default rank = error = 2). A
       // cause passes it: the stage allowlist and the excluded agents below still apply, because those
       // name the stage and the agent, where the level is only a threshold.
-      if (causeKey === null && (LEVEL_RANK[ch.minLevel] ?? 2) > rank) continue;
+      if (cause === null && (LEVEL_RANK[ch.minLevel] ?? 2) > alert.rank)
+        continue;
       // stage allowlist (empty = all stages).
-      if (ch.stages.length > 0 && !ch.stages.includes(ev.stage)) continue;
+      if (ch.stages.length > 0 && !ch.stages.includes(stage)) continue;
       // NOTE: Agents this channel leaves out. A line with no agent is never excluded: the list
       // names agents, and an unrouted or tenant-wide line belongs to none of them.
       if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))
         continue;
-      if (causeKey !== null) {
+      if (cause !== null) {
         // One delivery per (channel, cause) per window, whatever its status: a sent alert keeps
         // counting the repeats instead of a second one going out. Serialized per (channel, cause)
         // for the transaction, because the window is not a key a unique index can hold, and two
         // concurrent failures of a dead key are the normal case, not a rare one.
-        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`alert-cause:${ch.id}:${causeKey}`}, 0))`;
+        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`alert-cause:${ch.id}:${cause.key}`}, 0))`;
         const open = await db.alertDelivery.findFirst({
           where: {
             channelId: ch.id,
-            causeKey,
+            causeKey: cause.key,
             status: { not: "DEAD" },
-            createdAt: { gte: new Date(Date.now() - causeWindowMs) },
+            createdAt: { gte: new Date(Date.now() - cause.windowMs) },
           },
           orderBy: { createdAt: "desc" },
           select: { id: true },
@@ -246,7 +268,7 @@ export async function dispatchAlertsForEvent(
         const bumped = await db.alertDelivery.updateMany({
           where: {
             channelId: ch.id,
-            stage: ev.stage,
+            stage,
             level,
             status: "PENDING",
             causeKey: null,
@@ -259,10 +281,10 @@ export async function dispatchAlertsForEvent(
         data: {
           tenantId: ctx.tenantId,
           channelId: ch.id,
-          stage: ev.stage,
+          stage,
           level,
-          causeKey,
-          summary,
+          causeKey: cause?.key ?? null,
+          summary: alert.summary,
           // NOTE: Where the event happened, so the alert can link to it. Only here: the bump
           // above leaves them naming the first event, like `summary`.
           turnId: ctx.turnId,
@@ -270,5 +292,92 @@ export async function dispatchAlertsForEvent(
         },
       });
     }
+  });
+}
+
+// The stages that call a model provider, where a timeout or an overloaded endpoint is the provider's
+// state rather than our request. `tool` is not one: an HTTP tool's 502 is the operator's own API.
+const RATE_STAGES: ReadonlySet<string> = new Set([
+  "generate",
+  "vision",
+  "stt",
+  "tts",
+  "normalize",
+  "embed",
+]);
+
+// Every `failure` word that counts toward a provider's rate: `timeout`, and each `HTTP <nnn>` the
+// shared set calls the endpoint's momentary state. Enumerated once, so the count is a plain `IN`.
+const TRANSIENT_FAILURES: readonly string[] = [
+  "timeout",
+  ...Array.from({ length: 500 }, (_, i) => i + 100)
+    .filter(isTransientProviderStatus)
+    .map((status) => `HTTP ${status}`),
+];
+
+// The provider a line's failure counts against, when it is a transient failure on a model stage:
+// recovered or not, and whatever its level, since a retried attempt is `info` and still a failure.
+export function rateSubjectOf(
+  ev: FlowEvent,
+): { stage: FlowStage; provider: string | null } | null {
+  if (ev.status !== "error" || !RATE_STAGES.has(ev.stage)) return null;
+  const failure = ev.detail?.failure;
+  if (typeof failure !== "string" || !TRANSIENT_FAILURES.includes(failure))
+    return null;
+  return { stage: ev.stage, provider: ev.provider ?? null };
+}
+
+export interface RateOptions {
+  threshold: number;
+  windowMs: number;
+}
+
+// A provider failing now and then is recovered by retries and alerts nobody; one failing every few
+// minutes slows every turn it touches. Counted from the flow log itself, which already holds every
+// failure line with its stage, provider and `failure` word (indexed on tenant, stage and time), so
+// there is no counter to keep in step. At the threshold the alert is a cause keyed on the stage and
+// provider, deduplicated over the same window: a provider that stays degraded alerts again once the
+// window has passed, and the failures in between are counted on the delivery.
+export async function dispatchRateAlert(
+  ctx: FlowContext,
+  ev: FlowEvent,
+  base: PrismaClient,
+  opts: RateOptions = {
+    threshold: config.alertWorker.rateThreshold,
+    windowMs: config.alertWorker.rateWindowMs,
+  },
+): Promise<void> {
+  const subject = rateSubjectOf(ev);
+  if (subject === null) return;
+  const since = new Date(Date.now() - opts.windowMs);
+  const failures = await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
+    db.executionLog.count({
+      where: {
+        stage: subject.stage,
+        provider: subject.provider,
+        status: "error",
+        source: "inbox",
+        createdAt: { gte: since },
+        OR: TRANSIENT_FAILURES.map((failure) => ({
+          detail: { path: ["failure"], equals: failure },
+        })),
+      },
+    }),
+  );
+  if (failures < opts.threshold) return;
+  const via = subject.provider ? ` via ${subject.provider}` : "";
+  const minutes = Math.max(1, Math.round(opts.windowMs / 60_000));
+  await deliverAlert(ctx, base, {
+    stage: subject.stage,
+    level: "warn",
+    rank: LEVEL_RANK.warn as number,
+    summary: sanitizeErrorMessage(
+      `[${subject.stage}${via}] provider degraded: ${failures} transient failures in ${minutes} min`,
+      300,
+    ),
+    cause: {
+      key: `rate:${subject.stage}:${vocabulary("provider", subject.provider) ?? "-"}`,
+      windowMs: opts.windowMs,
+    },
   });
 }

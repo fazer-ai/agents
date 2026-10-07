@@ -81,6 +81,7 @@ export async function sendAlertChannelTest(
       context: await loadAlertContext(base, {
         tenantId: ctx.tenantId,
         conversationId: null,
+        agentId: null,
       }).catch(() => null),
     },
     deps,

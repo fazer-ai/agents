@@ -2347,6 +2347,9 @@ model AlertDelivery {
   // knew the conversation. No FK: an alert outlives the conversation it was about.
   turnId         String?               @map("turn_id")
   conversationId BigInt?               @map("conversation_id")
+  // The agent the first event ran as, which the alert names: not the inbox's, since an observer
+  // runs as another agent and an inbox can be rebound before the send. No FK, like the two above.
+  agentId        BigInt?               @map("agent_id")
   // Set on a CAUSE alert (issue #1091): what an operator has to fix, such as `tts:elevenlabs:HTTP 401`
   // or `spend_ceiling:over`. A later event with the same key on the same channel inside
   // `ALERT_CAUSE_WINDOW_MS` bumps this row's `count` instead of opening another delivery, whatever

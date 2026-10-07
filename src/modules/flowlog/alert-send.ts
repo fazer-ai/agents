@@ -83,7 +83,12 @@ export interface AlertContext {
 // the alert as it was, never undelivered.
 export async function loadAlertContext(
   base: PrismaClient,
-  a: { tenantId: bigint; conversationId: bigint | null; firstAt?: Date | null },
+  a: {
+    tenantId: bigint;
+    conversationId: bigint | null;
+    agentId: bigint | null;
+    firstAt?: Date | null;
+  },
 ): Promise<AlertContext> {
   const ctx: TenantContext = {
     tenantId: a.tenantId,
@@ -91,7 +96,7 @@ export async function loadAlertContext(
     role: "TENANT_ADMIN",
   };
   return runScopedOn(base, ctx, async (db) => {
-    const [tenant, conv] = await Promise.all([
+    const [tenant, conv, agent] = await Promise.all([
       db.tenant.findUnique({
         where: { id: a.tenantId },
         select: { name: true },
@@ -102,18 +107,16 @@ export async function loadAlertContext(
             where: { id: a.conversationId },
             select: {
               chatwootConversationId: true,
-              inbox: { select: { name: true, agentId: true } },
+              inbox: { select: { name: true } },
             },
           }),
-    ]);
-    const agentId = conv?.inbox?.agentId ?? null;
-    const agent =
-      agentId == null
+      a.agentId == null
         ? null
-        : await db.agent.findUnique({
-            where: { id: agentId },
+        : db.agent.findUnique({
+            where: { id: a.agentId },
             select: { name: true },
-          });
+          }),
+    ]);
     return {
       tenantName: tenant?.name ?? null,
       agentName: agent?.name ?? null,

@@ -310,6 +310,7 @@ async function deliverAlert(
           // above leaves them naming the first event, like `summary`.
           turnId: ctx.turnId,
           conversationId: ctx.conversationId ?? null,
+          agentId: ctx.agentId ?? null,
         },
       });
     }

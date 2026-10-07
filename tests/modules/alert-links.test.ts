@@ -282,8 +282,10 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
     return BigInt(ch.id);
   }
 
-  // The worker reads the names when it sends, from the conversation the row names.
-  test("the posted body names the tenant, agent, inbox and conversation", async () => {
+  // The worker reads the names when it sends: the inbox and number from the conversation the row
+  // names, the agent from the one the event ran as. An observer runs as another agent than the one
+  // the inbox answers with, and its failure names the observer.
+  test("the posted body names the tenant, the event's agent, inbox and conversation", async () => {
     const inst = await seedChatwootInstance(suDb, {
       tenantId,
       accountId: 665,
@@ -321,16 +323,19 @@ describe.skipIf(!dbUp)("alert links through the ledger", () => {
         lastEventAt: new Date(),
       },
     });
+    const observer = await suDb.agent.create({
+      data: { tenantId, name: "Observador", systemPrompt: "x" },
+    });
     const id = await channel("named", "vision");
     await dispatchAlertsForEvent(
-      flow("turn-665-named", conv.id),
+      { ...flow("turn-665-named", conv.id), agentId: observer.id },
       { stage: "vision", level: "error", errorMessage: "timeout" },
       appDb,
     );
     const [c] = await deliver(id);
     expect(c?.split("\n")[0]).toBe("🔴 **Links665** · `vision` error");
     expect(c).toContain(
-      "-# Agent: Secretária · Inbox: WhatsApp · Conversation #4512",
+      "-# Agent: Observador · Inbox: WhatsApp · Conversation #4512",
     );
     // And no customer's name.
     expect(c).not.toContain("Alice");

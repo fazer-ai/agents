@@ -55,6 +55,7 @@ interface ClaimedAlert {
   count: number;
   turnId: string | null;
   conversationId: bigint | null;
+  agentId: bigint | null;
   causeKey: string | null;
   createdAt: Date;
   attempts: number;
@@ -155,6 +156,7 @@ async function claimDue(
         a.count,
         a.turn_id         AS "turnId",
         a.conversation_id AS "conversationId",
+        a.agent_id        AS "agentId",
         a.cause_key       AS "causeKey",
         a.created_at      AS "createdAt",
         a.attempts,
@@ -266,6 +268,7 @@ async function deliverClaimed(
   const context = await loadAlertContext(base, {
     tenantId: a.tenantId,
     conversationId: a.conversationId,
+    agentId: a.agentId,
     firstAt: a.createdAt,
   }).catch((err) => {
     logger.warn({ err, alertId: String(a.id) }, "alert context unreadable");

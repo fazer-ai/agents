@@ -4753,6 +4753,95 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     });
 
+    // THE LOSS IS DECIDED WHERE THE RECOVERY ENDS. The sweep's line for an armed row is `info`, so a
+    // recovery that ends with the row still DEAD writes the one `error` that says nobody answered,
+    // once: the same job run again finds that line and writes nothing.
+    test("a recovery that ends with the row still DEAD says the message went unanswered, once", async () => {
+      const convId = 18931;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 19441,
+        attempts: MAX_RECOVERY_ATTEMPTS,
+      });
+      const { deliveryId } =
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { deliveryId: true },
+        });
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      for (let run = 0; run < 2; run++) {
+        const result = await handler(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+        );
+        expect(result.outcome).toBe("done");
+      }
+      // flowlog-scope: tenant-wide. The line has no turn of its own to read by; it names its delivery,
+      // whose id is this test's alone, and the subject is how many lines that delivery got.
+      const lines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "delivery",
+          detail: { path: ["deliveryId"], equals: deliveryId },
+        },
+        select: {
+          level: true,
+          detail: true,
+          errorMessage: true,
+          conversationId: true,
+        },
+      });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.level).toBe("error");
+      expect(
+        (lines[0]?.detail as Record<string, unknown> | undefined)?.outcome,
+      ).toBe("unanswered");
+      expect(lines[0]?.errorMessage).toContain("unanswered");
+      expect(lines[0]?.conversationId).not.toBeNull();
+    });
+
+    test("a recovery that is still coming, or a row someone else took, writes no unanswered line", async () => {
+      const convId = 18932;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 9442,
+      });
+      const { deliveryId } =
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { deliveryId: true },
+        });
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      // Busy: rescheduled, the loss is not decided.
+      markTurnInFlight(threadOf(convId));
+      try {
+        await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+      } finally {
+        clearTurnInFlight(threadOf(convId));
+      }
+      // Taken by something else: no longer DEAD.
+      await suDb.chatwootWebhookDelivery.update({
+        where: { id: rowId },
+        data: { status: "PROCESSED" },
+      });
+      await handler(jobFor({ deliveryRowId: String(rowId) }), appDb);
+      // flowlog-scope: tenant-wide. The line has no turn of its own to read by; it names its delivery,
+      // whose id is this test's alone, and the subject is how many lines that delivery got.
+      const lines = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "delivery",
+          detail: { path: ["deliveryId"], equals: deliveryId },
+        },
+        select: { id: true },
+      });
+      expect(lines).toEqual([]);
+    });
+
     test("a row id that is not plainly decimal names no row at all", async () => {
       // `BigInt` accepts more spellings than `String(bigint)` ever produces — "0x10" is sixteen,
       // " 12 " is twelve, "" is zero — so a lenient parse turns a malformed payload into a
@@ -4790,17 +4879,17 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
-    test("its death is announced by the scheduler, at a level that does not page twice", () => {
+    test("its death is announced by the scheduler, at error, since nothing else said the message was lost", () => {
       // No hook of its own: `dispatchDeadLetter` announces every kind, and its generic line already
       // carries the delivery row id — the dedupe key IS it. What a hook here would lose is the
       // re-arm suppression that path does, and the level living next to the other twelve answers.
       //
-      // `warn` because the operator has their own way back: the sweep paged at `error` when it
-      // declared this row DEAD, and the row is still in the `WHERE status = 'DEAD'` worklist.
+      // `error` because the sweep's line for a row with a recovery armed is `info`: a job that dies
+      // never reached the line its ending would have written, and the customer is still unanswered.
       expect(deliveryRecoveryDedupeKey(987_654n)).toBe(
         "delivery-recovery:987654",
       );
-      expect(JOB_DEATH_LEVEL.DELIVERY_RECOVERY).toBe("warn");
+      expect(JOB_DEATH_LEVEL.DELIVERY_RECOVERY).toBe("error");
     });
   });
 

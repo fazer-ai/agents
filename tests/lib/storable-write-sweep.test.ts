@@ -302,12 +302,14 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/graph/nudge.ts": [2, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
   "src/graph/runtime.ts": [6, "flow-event"],
-  "src/graph/tool-flowlog.ts": [2, "flow-event"],
+  "src/graph/tool-flowlog.ts": [3, "flow-event"],
   // A playground turn that failed unhandled: a fixed sentence, never the error's text. And the two
   // fallback-failed lines, the redacted reason.
   "src/modules/playground/service.ts": [3, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
+  // The line a recovery writes when it ends with the delivery still DEAD: a fixed sentence.
+  "src/modules/chatwoot/recover-delivery.ts": [1, "flow-event"],
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
@@ -355,7 +357,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
 // `summary`) far too common to grep for. Pinning where the guard is CALLED reaches them, and catches
 // the removal of a call that the ledger above would read as an ordinary `read`.
 const GUARD_CALLS: Record<string, number> = {
-  "src/graph/tool-flowlog.ts": 2,
+  // The cause of a failed call, the cause of a thrown one, and the turn's outcome line per tool.
+  "src/graph/tool-flowlog.ts": 3,
   "src/lib/redact.ts": 1,
   "src/modules/conversations/error.ts": 1,
   "src/modules/conversations/failure-note.ts": 1,

@@ -1243,6 +1243,11 @@ async function deliveryRecoveryHandler(
     deliveryRowId,
     base,
   });
+  // NOTE: Every outcome that ends the job without retrying it is where the loss is decided: a row
+  // still DEAD now stays DEAD, and the sweep's line about it was `info` because this job was coming.
+  if (outcome !== "deferred" && outcome !== "unreachable") {
+    await announceUnanswered(job.tenantId, deliveryRowId, base);
+  }
   // NOTE: the two retrying outcomes take DIFFERENT roads. BUSY reschedules, which CLEARS the failure
   // budget: a turn is deliberately unbounded (the sweep waits thirty minutes) while this kind's
   // backoffs are spent in eighteen (`JOB_RETRY_BASE_MS`), so as `fail` a conversation's second
@@ -1264,11 +1269,98 @@ async function deliveryRecoveryHandler(
   return { outcome: "done" };
 }
 
+// The line that alerts on a stranded message nobody answered, written when its recovery ends with
+// the row still DEAD. Once per delivery: a re-run of the same job finds the line and writes nothing.
+// Best-effort, like every line here: the DEAD row stays on the worklist either way.
+export async function announceUnanswered(
+  tenantId: bigint,
+  deliveryRowId: bigint,
+  base: PrismaClient,
+): Promise<void> {
+  try {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.chatwootWebhookDelivery.findUnique({
+        where: { id: deliveryRowId },
+        select: {
+          status: true,
+          deliveryId: true,
+          event: true,
+          chatwootInstanceId: true,
+          conversationId: true,
+          inboundMessageId: true,
+        },
+      }),
+    );
+    if (row?.status !== "DEAD") return;
+    const [already, conv] = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      Promise.all([
+        db.executionLog.findFirst({
+          where: {
+            stage: "delivery",
+            AND: [
+              { detail: { path: ["outcome"], equals: "unanswered" } },
+              { detail: { path: ["deliveryId"], equals: row.deliveryId } },
+            ],
+          },
+          select: { id: true },
+        }),
+        row.conversationId === null
+          ? null
+          : db.conversation.findUnique({
+              where: {
+                tenantId_chatwootInstanceId_chatwootConversationId: {
+                  tenantId,
+                  chatwootInstanceId: row.chatwootInstanceId,
+                  chatwootConversationId: row.conversationId,
+                },
+              },
+              select: {
+                id: true,
+                inboxId: true,
+                inbox: { select: { agentId: true } },
+              },
+            }),
+      ]),
+    );
+    if (already) return;
+    await writeFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: conv?.id ?? null,
+        agentId: conv?.inbox?.agentId ?? null,
+        inboxId: conv?.inboxId ?? null,
+        base,
+      },
+      {
+        stage: "delivery",
+        level: "error",
+        status: "error",
+        detail: {
+          outcome: "unanswered",
+          deliveryEvent: row.event,
+          deliveryId: row.deliveryId,
+          messageId: row.inboundMessageId,
+          conversationId: row.conversationId,
+        },
+        errorMessage:
+          "The customer's message went unanswered: its recovery ended and the delivery stays DEAD.",
+      },
+    );
+  } catch (err) {
+    logger.error(
+      { err },
+      "chatwoot recovery: could not write the unanswered line for delivery row %s",
+      String(deliveryRowId),
+    );
+  }
+}
+
 // No dead-letter hook of its own: `dispatchDeadLetter` already announces every kind's death with the
 // kind, the job id and the dedupe key (here the delivery row id), re-reads the row so a re-armed job
-// is not announced as a loss, and takes its level from `JOB_DEATH_LEVEL`. That level is `warn`: the
-// operator has their own way back to the work, since the sweep already announced this delivery at
-// `error` and the row is still on the `DEAD` worklist, and a second `error` would page twice.
+// is not announced as a loss, and takes its level from `JOB_DEATH_LEVEL`. That level is `error`: a job
+// that died never reached `announceUnanswered`, and the sweep's own line was `info`.
 
 let registered = false;
 export function registerDeliveryRecoveryHandler(): void {

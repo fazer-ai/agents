@@ -502,13 +502,16 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(row.status).toBe("DEAD");
     expect(row.processedAt).not.toBeNull();
 
-    // The half an operator actually reads: an error line ON the conversation, which is what the
-    // Logs page renders and what the alert channels dispatch.
+    // The half an operator actually reads: a line ON the conversation, which is what the Logs page
+    // renders. `info` with `willRetry`, because a recovery is armed below and the loss is not
+    // decided yet: the recovery ends with its own line, a `warn` that closes it or an `error` that
+    // says nobody answered.
     const lines = await deliveryLines(conv.id);
     expect(lines).toHaveLength(1);
     const line = lines[0];
     if (line === undefined) throw new Error("no delivery line was written");
-    expect(line.level).toBe("error");
+    expect(line.level).toBe("info");
+    expect((line.detail as Record<string, unknown>).willRetry).toBe(true);
     // `inbox`, and it is load-bearing: `dispatchAlertsForEvent` fans out warn/error lines to the
     // Discord and webhook channels ONLY for inbox traffic, because a playground error must not
     // page. Filed as playground, the row would still render on the Logs page and reach nobody.
@@ -581,9 +584,23 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       inboundMessageId: null,
       status: "PROCESSING",
     });
+    const sweptAt = new Date();
 
     await sweepStrandedDeliveries({ tenantId, base: appDb });
     expect((await statusOf(rowId)).status).toBe("DEAD");
+    // Nothing will retry it, so the sweep's own line is the loss: `error`, and no retry promised.
+    // flowlog-scope: tenant-wide. A strand with no conversation has no turn or thread to read by;
+    // the sweep runs alone in this test, and what it wrote since `sweptAt` is its line.
+    const lines = await flowLogRows(suDb, {
+      where: { tenantId, stage: "delivery", createdAt: { gte: sweptAt } },
+      select: { level: true, detail: true },
+    });
+    expect(
+      lines.map((l) => [
+        l.level,
+        (l.detail as Record<string, unknown>).willRetry,
+      ]),
+    ).toEqual([["error", false]]);
     expect(
       await suDb.schedulerJob.findFirst({
         where: {
@@ -649,7 +666,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
     expect(counts.lost).toBe(1);
     expect((await statusOf(rowId)).status).toBe("DEAD");
-    expect((await deliveryLines(conv.id))[0]?.level).toBe("error");
+    expect((await deliveryLines(conv.id))[0]?.level).toBe("info");
   });
 
   test("leaves a delivery that is still in flight alone", async () => {

@@ -316,10 +316,11 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // so a death here is the loop itself gone: the ceiling keeps deciding on a figure frozen at the
   // last poll, under-refusing by everything spent since, and nothing on the console moves.
   SPEND_CEILING_POLL: "error",
-  // `warn`: the operator already has a way back. The sweep announced this delivery at `error` when it
-  // declared the row DEAD, and the row stays in the `WHERE status = 'DEAD'` worklist. What died is
-  // the automatic second attempt; a second `error` would wake somebody twice for one customer message.
-  DELIVERY_RECOVERY: "warn",
+  // `error`: with a recovery armed, the sweep's line for the stranded delivery is `info`, since the
+  // recovery is what decides whether the message was lost. A recovery that ENDS says so itself
+  // (../chatwoot/recover-delivery.ts); one that dies here never got to, and the customer's message
+  // is still unanswered.
+  DELIVERY_RECOVERY: "error",
   // `warn`: nothing was lost to page about (the sweep closed the row PROCESSED with no loss line).
   // What dies is a conversation left `pending` on the bot after a person answered on it, which that
   // person's next reply takes over on its own; an `error` would announce something that self-heals.

@@ -313,7 +313,6 @@ const NOT_A_CAUSE: Record<string, string> = {
     "the class of the failure `fallbackReason` already prints, kept for the primary's rate",
   messageId: "an id to find the message by, never a cause",
   mode: "tts_check: the check's configured mode, not an outcome",
-  node: "which graph node retried; `retry` is the printed flag",
   score: "tts_check: the detector's raw number",
   thresholdMs: "capacity: the configured threshold the wait crossed",
   toolCalls: "how many calls ran; `toolLimitHit` is the printed flag",

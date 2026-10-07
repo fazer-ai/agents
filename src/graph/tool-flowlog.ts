@@ -130,6 +130,13 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     string,
     { tool: string; at: number; args: unknown }
   >();
+  // What each tool did across the turn, for the one line `settle` writes: a failed call is `info` when
+  // it happens, because the model may call the tool again and succeed, and only a tool that failed on
+  // every call it made is the turn's degraded outcome.
+  private readonly outcomes = new Map<
+    string,
+    { failed: number; succeeded: number; cause: string }
+  >();
 
   constructor(
     flow: FlowContext,
@@ -175,11 +182,15 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     const failed = isErrorToolOutput(output);
     const value = toolOutputValue(output);
     const retries = toolRetries(output);
-    // NOTE: an integration failure returned as a friendly string (failableTool) is ONE line at level
-    // warn, like handleToolError, so alert channels (minLevel warn) can subscribe.
+    const cause = failed
+      ? sanitizeErrorMessage(failureCause(value, this.logValues))
+      : "";
+    this.tally(s.tool, failed ? cause : null);
+    // NOTE: an integration failure returned as a friendly string (failableTool) is `status: error`
+    // and `info`: whether it degraded the turn is known at `settle`, once every call has ended.
     emitFlowEvent(this.flow, {
       stage: "tool",
-      level: failed ? "warn" : "info",
+      level: "info",
       status: failed ? "error" : "ok",
       durationMs: Date.now() - s.at,
       detail: {
@@ -192,14 +203,37 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         // concurrently: at the start of a 0ms decision the companion has not recorded anything yet.
         ...this.deliveryStamp(s.tool),
       },
-      ...(failed
-        ? {
-            errorMessage: sanitizeErrorMessage(
-              failureCause(value, this.logValues),
-            ),
-          }
-        : {}),
+      ...(failed ? { errorMessage: cause } : {}),
     });
+  }
+
+  private tally(tool: string, failure: string | null): void {
+    const o = this.outcomes.get(tool) ?? { failed: 0, succeeded: 0, cause: "" };
+    if (failure === null) o.succeeded += 1;
+    else {
+      o.failed += 1;
+      o.cause = failure;
+    }
+    this.outcomes.set(tool, o);
+  }
+
+  // The turn's outcome per tool, called once the model is done calling them: one `warn` for each tool
+  // that failed on every call it made, naming the tool, how many calls failed and the last cause. A
+  // tool that failed and then succeeded leaves its `info` lines and nothing else. Idempotent.
+  settle(): void {
+    for (const [tool, o] of this.outcomes) {
+      if (o.failed === 0 || o.succeeded > 0) continue;
+      emitFlowEvent(this.flow, {
+        stage: "tool",
+        level: "warn",
+        status: "error",
+        detail: { tool, failedCalls: o.failed },
+        errorMessage: sanitizeErrorMessage(
+          `${tool} failed on every call this turn (${o.failed}): ${o.cause}`,
+        ),
+      });
+    }
+    this.outcomes.clear();
   }
 
   // The stamp, as a fragment so the key is ABSENT rather than null on every other line: a reader
@@ -214,13 +248,15 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     const s = this.starts.get(runId);
     if (!s) return;
     this.starts.delete(runId);
+    const cause = sanitizeErrorMessage(err);
+    this.tally(s.tool, cause);
     emitFlowEvent(this.flow, {
       stage: "tool",
-      level: "warn",
+      level: "info",
       status: "error",
       durationMs: Date.now() - s.at,
       detail: { tool: s.tool, args: s.args },
-      errorMessage: sanitizeErrorMessage(err),
+      errorMessage: cause,
     });
   }
 }

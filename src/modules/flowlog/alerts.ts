@@ -150,6 +150,9 @@ export function causeKeyOf(ev: FlowEvent): string | null {
     return `channel_error:${vocabulary("code", detail.code) ?? "unknown"}`;
   }
   if (ev.stage === "dead_letter") {
+    // A discarded outcome is a warning on a job that is still live and will run again, not lost work:
+    // giving it the death's key would let it take the window and fold the real death into its count.
+    if (detail.discarded !== undefined) return null;
     const unit = vocabulary("unit", detail.unit);
     if (unit === null) return null;
     const kind = vocabulary("kind", detail.kind);

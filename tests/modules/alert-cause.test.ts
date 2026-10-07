@@ -80,6 +80,13 @@ describe("causeKeyOf", () => {
         detail: { unit: "inbound_delivery" },
       }),
     ).toBe("dead_letter:inbound_delivery");
+    // A discarded outcome leaves the job live, with retries ahead: not the death's cause.
+    expect(
+      causeKeyOf({
+        stage: "dead_letter",
+        detail: { unit: "job", kind: "FOLLOWUP", discarded: "deadline" },
+      }),
+    ).toBeNull();
   });
 
   test("text a server wrote never becomes part of a key", () => {
@@ -526,6 +533,32 @@ describe.skipIf(!dbUp)("cause alerts through the ledger", () => {
       ["channel_error:131047", 1],
       ["dead_letter:job:FOLLOWUP", 2],
       ["dead_letter:job:HEARTBEAT", 1],
+    ]);
+  });
+
+  // A late attempt warns that its outcome was discarded while the job still has retries; the death
+  // that follows is what the operator has to hear, and must not fold into the warning's window.
+  test("a discarded outcome does not take the window of the job's death", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    await writeFlowEvent(flow(tenantId), {
+      stage: "dead_letter",
+      level: "warn",
+      status: "error",
+      detail: { unit: "job", kind: "FOLLOWUP", discarded: "deadline" },
+      errorMessage:
+        "scheduler: handler returned after its deadline, outcome discarded",
+    });
+    await writeFlowEvent(flow(tenantId), {
+      stage: "dead_letter",
+      level: "error",
+      status: "error",
+      detail: { unit: "job", kind: "FOLLOWUP" },
+      errorMessage: "gave up",
+    });
+    const rows = await deliveries(ch);
+    expect(rows.map((r) => [r.causeKey, r.count])).toEqual([
+      ["dead_letter:job:FOLLOWUP", 1],
     ]);
   });
 

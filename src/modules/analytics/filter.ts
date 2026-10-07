@@ -84,9 +84,22 @@ export function usageWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
     AND (${inbox}::bigint IS NULL OR ${u}.inbox_id = ${inbox})`;
 }
 
-// Same for the flow log, which carries the same agent, inbox and source columns.
+// Same for the flow log, which carries the same agent, inbox and source columns, with one
+// difference: some lines name the conversation and not the inbox (a person taking over is written
+// from the webhook, before any inbox is resolved), so under an inbox filter a line with no inbox is
+// the inbox of its conversation. The Logs page reads the same rule (`buildLogWhere`).
 export function logWhereSql(alias: string, f: DashboardFilter): Prisma.Sql {
-  return usageWhereSql(alias, f);
+  const l = Prisma.raw(alias);
+  const source = f.source ?? null;
+  const agent = f.agentId ?? null;
+  const inbox = f.inboxId ?? null;
+  return Prisma.sql`${windowSql(Prisma.sql`${l}.created_at`, f)}
+    AND (${source}::text IS NULL OR ${l}.source = ${source})
+    AND (${agent}::bigint IS NULL OR ${l}.agent_id = ${agent})
+    AND (${inbox}::bigint IS NULL OR ${l}.inbox_id = ${inbox}
+         OR (${l}.inbox_id IS NULL AND EXISTS (
+               SELECT 1 FROM conversations lc
+                WHERE lc.id = ${l}.conversation_id AND lc.inbox_id = ${inbox})))`;
 }
 
 // The local day of a `timestamp without time zone` column holding UTC wall-clock: shifted to an

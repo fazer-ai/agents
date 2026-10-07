@@ -5,6 +5,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   buildLogWhere,
   type ExecutionLogItem,
+  inboxLogConversations,
   type ListLogsOpts,
   LOG_SELECT,
   mapExecutionLogRow,
@@ -104,10 +105,9 @@ export async function exportExecutionLogs(
     opts.maxRows ?? MAX_LOG_EXPORT_ROWS,
     MAX_LOG_EXPORT_ROWS,
   );
-  const where = buildLogWhere(opts);
-  const rows = await runScopedOn(base, ctx, (db) =>
+  const rows = await runScopedOn(base, ctx, async (db) =>
     db.executionLog.findMany({
-      where,
+      where: buildLogWhere(opts, await inboxLogConversations(db, opts)),
       orderBy: { id: "desc" },
       take: cap + 1, // one extra row tells us whether the export was truncated
       select: LOG_SELECT,

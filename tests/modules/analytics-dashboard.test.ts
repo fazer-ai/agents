@@ -16,6 +16,7 @@ import { getInstanceMetrics, getKpis } from "@/modules/analytics/service";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { listConversations } from "@/modules/conversations/service";
+import { listExecutionLogs } from "@/modules/flowlog/read";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // THE DASHBOARD READS ONE SET OF ROWS PER VIEW. A fixed fixture over two days, two
@@ -1068,6 +1069,51 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     expect((await k()).proposed).toBe(4);
     expect((await k(ex.i2)).proposed).toBe(1);
     expect((await k(ex.i1)).proposed).toBe(2);
+  });
+
+  test("a takeover logged with its conversation and no inbox is that conversation's inbox's", async () => {
+    // Written from the webhook before any inbox is resolved: the line names the conversation only.
+    await suDb.executionLog.create({
+      data: {
+        tenantId: ex.tenantId,
+        turnId: crypto.randomUUID(),
+        conversationId: ex.conv.anaOnBeto ?? null,
+        stage: "handoff",
+        level: "warn",
+        source: "inbox",
+        detail: { outcome: "taken_over" },
+        createdAt: D1,
+      },
+    });
+    const person = async (inboxId: bigint) =>
+      (
+        await getHandoffReasons(ctx(ex.tenantId), { ...DAY, inboxId }, appDb)
+      ).totals.find((t) => t.cause === "person")?.conversations ?? 0;
+    expect(await person(ex.i2)).toBe(1);
+    expect(await person(ex.i1)).toBe(0);
+    const problems = async (inboxId: bigint) =>
+      (
+        await getHealth(ctx(ex.tenantId), { ...DAY, inboxId }, appDb)
+      ).problems.find((p) => p.stage === "handoff")?.lines ?? 0;
+    expect(await problems(ex.i2)).toBe(1);
+    expect(await problems(ex.i1)).toBe(0);
+    // The Logs page the health row links to lists the same line under the same filter.
+    const logs = async (inboxId: bigint) =>
+      (
+        await listExecutionLogs(
+          ctx(ex.tenantId),
+          {
+            inboxId,
+            stage: "handoff",
+            level: "warn",
+            since: DAY.since,
+            until: DAY.until,
+          },
+          appDb,
+        )
+      ).items.length;
+    expect(await logs(ex.i2)).toBe(1);
+    expect(await logs(ex.i1)).toBe(0);
   });
 
   test("an inbox filter narrows the ledger figures too", async () => {

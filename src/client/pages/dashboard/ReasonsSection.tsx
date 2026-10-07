@@ -126,6 +126,63 @@ export function ReasonsSection({
         )}
         chart
         table={handoffTable}
+        footer={
+          h &&
+          (h.totals.length > 0 || h.silences.length > 0) && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <p className="text-text-muted text-xs">
+                  {t(
+                    "dashboard.handoffs.totals",
+                    "Conversations in the period",
+                  )}
+                </p>
+                <ul className="flex flex-col gap-1">
+                  {h.totals.map((x) => (
+                    <li
+                      key={x.cause}
+                      className="flex items-center justify-between gap-4 text-sm"
+                    >
+                      <span className="text-text-secondary">
+                        {causeLabel[x.cause] ?? x.cause}
+                      </span>
+                      <span className="font-medium text-text-primary tabular-nums">
+                        {nf.format(x.conversations)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <p className="text-text-muted text-xs">
+                  {t(
+                    "dashboard.handoffs.silences",
+                    "Turns the agent chose not to answer, by reason",
+                  )}
+                </p>
+                {h.silences.length === 0 ? (
+                  <p className="text-sm text-text-muted">{"\u2014"}</p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {h.silences.map((s) => (
+                      <li
+                        key={s.reason}
+                        className="flex items-center justify-between gap-4 text-sm"
+                      >
+                        <span className="text-text-secondary">
+                          {silenceLabel[s.reason] ?? s.reason}
+                        </span>
+                        <span className="font-medium text-text-primary tabular-nums">
+                          {nf.format(s.turns)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )
+        }
       >
         {handoffs.loading && !h ? (
           <Skeleton className="h-56 w-full" />
@@ -143,57 +200,6 @@ export function ReasonsSection({
               height={220}
             />
           </Suspense>
-        )}
-        {h && (h.totals.length > 0 || h.silences.length > 0) && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <p className="text-text-muted text-xs">
-                {t("dashboard.handoffs.totals", "Conversations in the period")}
-              </p>
-              <ul className="flex flex-col gap-1">
-                {h.totals.map((x) => (
-                  <li
-                    key={x.cause}
-                    className="flex items-center justify-between gap-4 text-sm"
-                  >
-                    <span className="text-text-secondary">
-                      {causeLabel[x.cause] ?? x.cause}
-                    </span>
-                    <span className="font-medium text-text-primary tabular-nums">
-                      {nf.format(x.conversations)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <p className="text-text-muted text-xs">
-                {t(
-                  "dashboard.handoffs.silences",
-                  "Turns the agent chose not to answer, by reason",
-                )}
-              </p>
-              {h.silences.length === 0 ? (
-                <p className="text-sm text-text-muted">{"\u2014"}</p>
-              ) : (
-                <ul className="flex flex-col gap-1">
-                  {h.silences.map((s) => (
-                    <li
-                      key={s.reason}
-                      className="flex items-center justify-between gap-4 text-sm"
-                    >
-                      <span className="text-text-secondary">
-                        {silenceLabel[s.reason] ?? s.reason}
-                      </span>
-                      <span className="font-medium text-text-primary tabular-nums">
-                        {nf.format(s.turns)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
         )}
       </Block>
 

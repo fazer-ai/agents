@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -82,6 +82,9 @@ export type ExecutionLogRow = Prisma.ExecutionLogGetPayload<{
 // keyset pagination via `cursor`) and the export (which ignores `cursor`/`limit`).
 export function buildLogWhere(
   opts: ListLogsOpts,
+  // Under an inbox filter: the conversations of that inbox that have lines naming no inbox
+  // (`inboxLogConversations`), whose lines are that inbox's too.
+  inboxConversations: bigint[] = [],
 ): Prisma.ExecutionLogWhereInput {
   const createdAt: Prisma.DateTimeFilter = {};
   if (opts.since) createdAt.gte = opts.since;
@@ -91,7 +94,21 @@ export function buildLogWhere(
     ...(opts.level ? { level: opts.level } : {}),
     ...(opts.stage ? { stage: opts.stage } : {}),
     ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
-    ...(opts.inboxId !== undefined ? { inboxId: opts.inboxId } : {}),
+    ...(opts.inboxId !== undefined
+      ? {
+          OR: [
+            { inboxId: opts.inboxId },
+            ...(inboxConversations.length > 0
+              ? [
+                  {
+                    inboxId: null,
+                    conversationId: { in: inboxConversations },
+                  },
+                ]
+              : []),
+          ],
+        }
+      : {}),
     ...(opts.tool ? { detail: { path: ["tool"], equals: opts.tool } } : {}),
     ...(opts.conversationId !== undefined
       ? { conversationId: opts.conversationId }
@@ -127,6 +144,28 @@ export function mapExecutionLogRow(r: ExecutionLogRow): ExecutionLogItem {
   };
 }
 
+// A line written before its inbox was known (a person taking over is logged from the webhook) names
+// only its conversation. Under an inbox filter it is still that inbox's line, so the reader resolves,
+// within the window, which of the inbox's conversations carry such lines. The dashboard counts them
+// by the same rule (`logWhereSql`), so its figure and the page it links to agree.
+export async function inboxLogConversations(
+  db: Prisma.TransactionClient,
+  opts: ListLogsOpts,
+): Promise<bigint[]> {
+  if (opts.inboxId === undefined) return [];
+  const since = opts.since ?? null;
+  const until = opts.until ?? null;
+  const rows = await db.$queryRaw<{ id: bigint }[]>(Prisma.sql`
+    SELECT DISTINCT l.conversation_id AS id
+      FROM execution_logs l
+      JOIN conversations c ON c.id = l.conversation_id
+     WHERE l.inbox_id IS NULL
+       AND c.inbox_id = ${opts.inboxId}
+       AND (${since}::timestamptz IS NULL OR l.created_at >= ${since})
+       AND (${until}::timestamptz IS NULL OR l.created_at <= ${until})`);
+  return rows.map((r) => r.id);
+}
+
 export async function listExecutionLogs(
   ctx: TenantContext,
   opts: ListLogsOpts = {},
@@ -134,10 +173,9 @@ export async function listExecutionLogs(
 ): Promise<ListLogsResult> {
   assertUsableCount(opts.limit, "limit");
   const take = Math.min(opts.limit ?? 50, 200);
-  const where = buildLogWhere(opts);
-  const rows = await runScopedOn(base, ctx, (db) =>
+  const rows = await runScopedOn(base, ctx, async (db) =>
     db.executionLog.findMany({
-      where,
+      where: buildLogWhere(opts, await inboxLogConversations(db, opts)),
       orderBy: { id: "desc" },
       take: take + 1, // one extra row tells us whether a next page exists
       select: LOG_SELECT,

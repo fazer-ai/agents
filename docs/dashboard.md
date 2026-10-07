@@ -16,7 +16,7 @@ Every route takes the same query (`dashboardFilterQuery`, `src/api/v1/dashboard.
 | `agentRanSql` | **the agent ran on it**: a real-traffic ledger row that is an agent turn (`node` null or not in `NON_AGENT_TURN_NODES`), by the filtered agent when there is one |
 | `outcomeSql` | `classifyOutcome` in SQL (handoff, resolved by the agent, resolved before tracking, resolved by someone else, unresolved); fenced against the TypeScript rule by `tests/modules/analytics-outcome-sql.test.ts` |
 | `usageWhereSql` | **the view's ledger rows**: billed in the window, in the source, by the agent, in the inbox |
-| `logWhereSql` | the same for `execution_logs`, which carries the same columns |
+| `logWhereSql` | the same for `execution_logs`, which carries the same columns; under an inbox filter a line that names its conversation and no inbox (a takeover is logged from the webhook) is its conversation's inbox's. The Logs page reads the same rule (`inboxLogConversations`, `src/modules/flowlog/read.ts`) |
 
 Conversation figures are real traffic by construction (a playground turn has no conversation). Ledger figures follow the source toggle.
 
@@ -48,6 +48,6 @@ Two windows coexist on purpose: conversation figures count conversations **creat
 
 ## Export and accessibility
 
-Each block exports what it shows as CSV (`src/client/pages/dashboard/csv.ts`): raw numbers, a header row, the same rows the screen shows. A chart is hidden from the accessibility tree and a table with the same figures stands in its place (`Block`, `src/client/pages/dashboard/Block.tsx`); the CSV and that table are built from one `BlockTable`, so they cannot disagree. Chart colors are read from the theme's CSS variables and re-read when the theme flips (`useChartPalette`).
+Each block exports what it shows as CSV (`src/client/pages/dashboard/csv.ts`): raw numbers, a header row, the same rows the screen shows. A chart is hidden from the accessibility tree and a table with the same figures stands in its place (`Block`, `src/client/pages/dashboard/Block.tsx`); figures shown beside a chart that are not in its table (the handoff block's period totals and silences) go in the block's `footer`, which stays readable; the CSV and that table are built from one `BlockTable`, so they cannot disagree. Chart colors are read from the theme's CSS variables and re-read when the theme flips (`useChartPalette`).
 
 Each block loads on its own (`useBlock`). A new filter takes the previous view's figures off the block at once, so nothing of the old view stays on screen or clickable while the new one loads; a refresh of the same view (the ceiling's poll, a retry) keeps them until the new ones arrive. A block whose request fails says so, with a retry, and offers no CSV: an empty result and a failed one never look alike.

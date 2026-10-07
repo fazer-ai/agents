@@ -157,7 +157,11 @@ const stubFetch = (async (input: unknown) => {
   if (p.endsWith("/metrics/handoffs"))
     return json({
       instance: "i",
-      handoffs: { days: [], totals: [], silences: [] },
+      handoffs: {
+        days: [{ date: "2026-10-01", cause: "person", conversations: 2 }],
+        totals: [{ cause: "person", conversations: 2 }],
+        silences: [{ reason: "needs_human", turns: 3 }],
+      },
     });
   if (p.endsWith("/metrics/labels"))
     return json({ instance: "i", labels: { labels: [], unlabeled: 0 } });
@@ -502,6 +506,17 @@ describe("a block whose request fails", () => {
       expect(asks("/metrics/health").length).toBe(before + 1);
       expect(has("No warnings or errors in this period.")).toBe(true);
     });
+  });
+});
+
+describe("figures beside a chart", () => {
+  test("the handoff block's period totals and silences stay readable by a screen reader", async () => {
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Needs a person")).toBe(true);
+    });
+    const silence = screen.getAllByText("Needs a person")[0] as HTMLElement;
+    expect(silence.closest("[aria-hidden='true']")).toBeNull();
   });
 });
 

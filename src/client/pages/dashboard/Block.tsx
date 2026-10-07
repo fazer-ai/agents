@@ -30,6 +30,7 @@ export function Block({
   chart,
   error,
   onRetry,
+  footer,
   children,
 }: {
   id?: string;
@@ -44,6 +45,9 @@ export function Block({
   // that reads as "nothing happened". No CSV either, since there is nothing true to export.
   error?: boolean;
   onRetry?: () => void;
+  // Figures shown under a chart that are not in its table (a period's totals, a second breakdown):
+  // rendered for everyone, since hiding them with the chart would leave a screen reader without them.
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -97,6 +101,7 @@ export function Block({
       ) : (
         children
       )}
+      {shown && footer}
       {shown && chart && table && (
         <table className="sr-only">
           <caption>{title}</caption>

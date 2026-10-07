@@ -117,6 +117,7 @@ export function ReasonsSection({
       </h2>
       <Block
         error={handoffs.error}
+        loading={handoffs.loading && !handoffs.data}
         onRetry={handoffs.reload}
         icon={ArrowRightLeft}
         title={t("dashboard.handoffs.title", "Handoffs by cause")}
@@ -205,6 +206,7 @@ export function ReasonsSection({
 
       <Block
         error={labels.error}
+        loading={labels.loading && !labels.data}
         onRetry={labels.reload}
         icon={Tags}
         title={t("dashboard.labels.title", "Outcome by label")}

@@ -118,6 +118,7 @@ let costs: Record<string, unknown> | "error" = COSTS;
 let kpis = KPIS;
 let ceilingPollMs = 300_000;
 let healthFails = false;
+let costsHang = false;
 let optionsFail = false;
 
 const stubFetch = (async (input: unknown) => {
@@ -142,6 +143,8 @@ const stubFetch = (async (input: unknown) => {
         days: [],
       },
     });
+  if (p.endsWith("/metrics/costs") && costsHang)
+    return new Promise<Response>(() => {});
   if (p.endsWith("/metrics/costs"))
     return costs === "error"
       ? json({ error: "x" }, 500)
@@ -267,6 +270,7 @@ beforeEach(() => {
   ceilingPollMs = 300_000;
   healthFails = false;
   optionsFail = false;
+  costsHang = false;
 });
 afterEach(cleanup);
 
@@ -505,6 +509,26 @@ describe("a block whose request fails", () => {
     await waitFor(() => {
       expect(asks("/metrics/health").length).toBe(before + 1);
       expect(has("No warnings or errors in this period.")).toBe(true);
+    });
+  });
+});
+
+describe("a block still loading", () => {
+  test("offers no CSV until its figures arrive", async () => {
+    const exportDaily = () =>
+      screen.queryAllByRole("button", { name: "Export Daily cost as CSV" });
+    costsHang = true;
+    await renderDash("/");
+    await waitFor(() => {
+      expect(has("Daily cost")).toBe(true);
+      expect(asks("/metrics/costs").length).toBeGreaterThan(0);
+    });
+    expect(exportDaily().length).toBe(0);
+    cleanup();
+    costsHang = false;
+    await renderDash("/");
+    await waitFor(() => {
+      expect(exportDaily().length).toBe(1);
     });
   });
 });

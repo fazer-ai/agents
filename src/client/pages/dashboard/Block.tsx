@@ -29,6 +29,7 @@ export function Block({
   table,
   chart,
   error,
+  loading,
   onRetry,
   footer,
   children,
@@ -44,6 +45,9 @@ export function Block({
   // The block's request failed: it says so, with a retry, instead of rendering an empty result
   // that reads as "nothing happened". No CSV either, since there is nothing true to export.
   error?: boolean;
+  // The block's figures have not arrived: no CSV and no stand-in table yet, since whatever the
+  // table holds now (zeros, an empty list) is not what the block is about to show.
+  loading?: boolean;
   onRetry?: () => void;
   // Figures shown under a chart that are not in its table (a period's totals, a second breakdown):
   // rendered for everyone, since hiding them with the chart would leave a screen reader without them.
@@ -52,6 +56,7 @@ export function Block({
 }) {
   const { t } = useTranslation();
   const shown = !error;
+  const ready = shown && !loading;
   return (
     <Card id={id} className="flex scroll-mt-4 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -62,7 +67,7 @@ export function Block({
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           {actions}
-          {table && shown && (
+          {table && ready && (
             <button
               type="button"
               onClick={() =>
@@ -102,7 +107,7 @@ export function Block({
         children
       )}
       {shown && footer}
-      {shown && chart && table && (
+      {ready && chart && table && (
         <table className="sr-only">
           <caption>{title}</caption>
           <thead>

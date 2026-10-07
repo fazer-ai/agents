@@ -426,6 +426,7 @@ export function CostSection({
 
       <Block
         error={costs.error}
+        loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={Coins}
         title={t("dashboard.cost.daily", "Daily cost")}
@@ -467,6 +468,7 @@ export function CostSection({
 
       <Block
         error={costs.error}
+        loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={LineIcon}
         title={t(
@@ -511,6 +513,7 @@ export function CostSection({
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
           error={cache.error}
+          loading={cache.loading && !cache.data}
           onRetry={cache.reload}
           icon={Database}
           title={t("dashboard.cache.title", "Cached input by agent")}

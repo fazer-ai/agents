@@ -92,6 +92,9 @@ export async function getHandoffReasons(
          WHERE ${logWhereSql("l", filter)}
            AND l.stage = 'tool'
            AND l.detail->>'tool' = 'skip_reply'
+           -- Only a call that ran: a refused one (arguments that failed the schema) is logged as
+           -- skipped and silenced nothing.
+           AND l.status = 'ok'
          GROUP BY 1
          ORDER BY 2 DESC`),
     ];

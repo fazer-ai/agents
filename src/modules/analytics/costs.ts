@@ -204,15 +204,18 @@ export async function getDashboardCosts(
     const costUsd = usd(r.cost);
     const conversations = Number(r.conversations);
     const resolvedConversations = Number(r.resolved);
+    // A day with no priced call has no known cost, so nothing to divide; a priced zero (a free
+    // model) is a cost of zero, and divides like any other.
+    const priced = r.cost !== null;
     return {
       date: r.bucket,
       costUsd,
       conversations,
       resolvedConversations,
       costPerConversation:
-        conversations > 0 && costUsd > 0 ? costUsd / conversations : null,
+        priced && conversations > 0 ? costUsd / conversations : null,
       costPerResolvedConversation:
-        resolvedConversations > 0 && costUsd > 0
+        priced && resolvedConversations > 0
           ? costUsd / resolvedConversations
           : null,
     };
@@ -232,6 +235,7 @@ export async function getDashboardCosts(
       costUsd: usd(r.cost),
     }));
   const totalCostUsd = days.reduce((sum, d) => sum + d.costUsd, 0);
+  const priced = figures.days.some((r) => r.cost !== null);
   const conversations = Number(figures.period?.conversations ?? 0);
   const resolvedConversations = Number(figures.period?.resolved ?? 0);
   return {
@@ -244,11 +248,9 @@ export async function getDashboardCosts(
     conversations,
     resolvedConversations,
     costPerConversation:
-      conversations > 0 && totalCostUsd > 0
-        ? totalCostUsd / conversations
-        : null,
+      priced && conversations > 0 ? totalCostUsd / conversations : null,
     costPerResolvedConversation:
-      resolvedConversations > 0 && totalCostUsd > 0
+      priced && resolvedConversations > 0
         ? totalCostUsd / resolvedConversations
         : null,
     days,

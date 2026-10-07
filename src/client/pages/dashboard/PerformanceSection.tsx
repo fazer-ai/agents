@@ -457,6 +457,7 @@ export function PerformanceSection({
 
       <Block
         error={trend.error}
+        loading={trend.loading && !trend.data}
         onRetry={trend.reload}
         icon={TrendingUp}
         title={t("dashboard.trend.title", "Funnel over time")}

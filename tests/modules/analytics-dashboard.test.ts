@@ -1186,6 +1186,79 @@ describe.skipIf(!dbUp)("the view's boundaries", () => {
     ).toBe(0);
   });
 
+  test("a priced zero is a cost of zero per conversation; no price at all is no figure", async () => {
+    const free = await seedConv(ex, "freeModel", {
+      at: new Date("2026-09-10T12:00:00Z"),
+      inbox: ex.i1,
+    });
+    await row(ex, {
+      conv: free,
+      agent: ex.a1,
+      inbox: ex.i1,
+      node: "agent",
+      at: new Date("2026-09-10T12:00:00Z"),
+      cost: 0,
+    });
+    const day10: DashboardFilter = {
+      since: new Date("2026-09-10T00:00:00Z"),
+      until: new Date("2026-09-11T00:00:00Z"),
+      tz: "UTC",
+    };
+    const c = await getDashboardCosts(ctx(ex.tenantId), day10, appDb, noFetch);
+    expect(c.costPerConversation).toBe(0);
+    expect(c.days[0]?.costPerConversation).toBe(0);
+    const unpriced = await seedConv(ex, "unpricedOnly", {
+      at: new Date("2026-09-11T12:00:00Z"),
+      inbox: ex.i1,
+    });
+    await suDb.llmUsage.create({
+      data: {
+        tenantId: ex.tenantId,
+        agentId: ex.a1,
+        inboxId: ex.i1,
+        conversationId: unpriced,
+        source: "inbox",
+        model: "m-unknown",
+        node: "agent",
+        promptTokens: 1,
+        completionTokens: 1,
+        costUsd: null,
+        createdAt: new Date("2026-09-11T12:00:00Z"),
+      },
+    });
+    const u = await getDashboardCosts(
+      ctx(ex.tenantId),
+      {
+        since: new Date("2026-09-11T00:00:00Z"),
+        until: new Date("2026-09-12T00:00:00Z"),
+        tz: "UTC",
+      },
+      appDb,
+      noFetch,
+    );
+    expect(u.costPerConversation).toBeNull();
+    expect(u.days[0]?.costPerConversation).toBeNull();
+  });
+
+  test("a skip_reply the schema refused silenced nothing", async () => {
+    await suDb.executionLog.create({
+      data: {
+        tenantId: ex.tenantId,
+        turnId: crypto.randomUUID(),
+        conversationId: ex.conv.visionOnly ?? null,
+        inboxId: ex.i1,
+        stage: "tool",
+        level: "warn",
+        status: "skipped",
+        source: "inbox",
+        detail: { tool: "skip_reply" },
+        createdAt: D1,
+      },
+    });
+    const r = await getHandoffReasons(ctx(ex.tenantId), DAY, appDb);
+    expect(r.silences).toEqual([]);
+  });
+
   test("an inbox filter narrows the ledger figures too", async () => {
     const rows = await getBreakdown(
       ctx(ex.tenantId),

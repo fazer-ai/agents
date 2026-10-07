@@ -138,6 +138,7 @@ export function BreakdownSection({
     <section id="breakdown" className="flex scroll-mt-4 flex-col gap-3">
       <Block
         error={block.error}
+        loading={block.loading && !block.data}
         onRetry={block.reload}
         icon={Table2}
         title={t("dashboard.breakdown.title", "Where the usage goes")}

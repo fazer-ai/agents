@@ -128,59 +128,23 @@ function carriedIds(conv: unknown): Map<number, string> {
   return out;
 }
 
-// The files the contact sent, newest first, walking the origin back page by page. Under
-// `attendance`, a message from before the attendance started is passed over but does not end the
-// walk: an imported message carries an old date under a new id, so dates do not fall in step with the
-// pages.
-async function candidatesOf(
+// Every message of the origin, walking it back page by page.
+async function originRows(
   client: CarryClient,
-  input: CarryInput,
-  boundary: Date | null,
-): Promise<Candidate[]> {
-  const types = new Set<string>(input.config.fileTypes);
-  // Chatwoot dates a message to the second.
-  const since = boundary ? Math.floor(boundary.getTime() / 1000) : null;
-  const out: Candidate[] = [];
+  conversationId: number,
+): Promise<Record<string, unknown>[]> {
+  const seen = new Map<number, Record<string, unknown>>();
   let before: number | undefined;
   for (let pages = 0; pages < MAX_PAGES; pages += 1) {
     const page = rows(
       await client.getMessages(
-        input.originConversationId,
+        conversationId,
         before == null ? undefined : { before },
       ),
     );
-    // Newest first, whatever order the page came in.
-    const sorted = [...page].sort((a, b) => Number(b.id) - Number(a.id));
-    for (const m of sorted) {
-      const createdAt = Number(m.created_at);
-      if (since !== null && Number.isFinite(createdAt) && createdAt < since)
-        continue;
-      if (m.message_type !== 0 && m.message_type !== "incoming") continue;
-      if (m.private === true) continue;
-      const sender = contactSender(m);
-      if (!sender.contact) continue;
-      if (input.originContactId !== null && sender.id !== input.originContactId)
-        continue;
-      const messageId = Number(m.id);
-      const attachments = Array.isArray(m.attachments) ? m.attachments : [];
-      // Within one message, the last file is the newest, so the order is reversed with the rest.
-      for (let i = attachments.length - 1; i >= 0; i -= 1) {
-        const a = attachments[i] as Record<string, unknown> | null;
-        if (!a || typeof a !== "object") continue;
-        const id = Number(a.id);
-        const dataUrl = typeof a.data_url === "string" ? a.data_url : "";
-        const type = typeof a.file_type === "string" ? a.file_type : "";
-        if (!Number.isInteger(id) || id <= 0 || !dataUrl || !types.has(type))
-          continue;
-        const size = Number(a.file_size);
-        out.push({
-          attachmentId: id,
-          messageId,
-          dataUrl,
-          fileSize: Number.isFinite(size) && size >= 0 ? size : null,
-          fileName: fileNameOf(dataUrl, `anexo-${id}`),
-        });
-      }
+    for (const m of page) {
+      const id = Number(m.id);
+      if (Number.isFinite(id)) seen.set(id, m);
     }
     if (page.length < MESSAGES_PAGE) break;
     const ids = page
@@ -190,6 +154,94 @@ async function candidatesOf(
     const oldest = Math.min(...ids);
     if (before != null && oldest >= before) break;
     before = oldest;
+  }
+  return [...seen.values()];
+}
+
+function isContactIncoming(m: Record<string, unknown>): boolean {
+  return (
+    (m.message_type === 0 || m.message_type === "incoming") &&
+    m.private !== true &&
+    contactSender(m).contact
+  );
+}
+
+function isImported(m: Record<string, unknown>): boolean {
+  const ca = m.content_attributes;
+  return (
+    !!ca &&
+    typeof ca === "object" &&
+    (ca as Record<string, unknown>).imported === true
+  );
+}
+
+// Where the attendance starts in the origin's own timeline. A turn is stamped with the NEWEST message
+// of the customer's burst, so the contact's messages right before it, with nothing else between, are
+// the same burst and start the attendance with it. Imported messages are not the timeline.
+function attendanceSince(
+  all: Record<string, unknown>[],
+  since: number,
+): number {
+  const timeline = all
+    .filter((m) => !isImported(m))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+  const first = timeline.findIndex((m) => Number(m.created_at) >= since);
+  let start = since;
+  for (let i = first - 1; first > 0 && i >= 0; i -= 1) {
+    const m = timeline[i];
+    if (!m || !isContactIncoming(m)) break;
+    const at = Number(m.created_at);
+    if (Number.isFinite(at)) start = Math.min(start, at);
+  }
+  return start;
+}
+
+// The files the contact sent, newest first by when they were sent (an imported message carries an old
+// date under a new id, so the id does not order them). Under `attendance`, only those since the
+// attendance started.
+async function candidatesOf(
+  client: CarryClient,
+  input: CarryInput,
+  boundary: Date | null,
+): Promise<Candidate[]> {
+  const types = new Set<string>(input.config.fileTypes);
+  const all = await originRows(client, input.originConversationId);
+  // Chatwoot dates a message to the second.
+  const since = boundary
+    ? attendanceSince(all, Math.floor(boundary.getTime() / 1000))
+    : null;
+  const newestFirst = all
+    .map((m) => ({ m, at: Number(m.created_at), id: Number(m.id) }))
+    .sort((x, y) => (y.at || 0) - (x.at || 0) || y.id - x.id);
+  const out: Candidate[] = [];
+  for (const { m, at } of newestFirst) {
+    if (since !== null && Number.isFinite(at) && at < since) continue;
+    if (!isContactIncoming(m)) continue;
+    if (
+      input.originContactId !== null &&
+      contactSender(m).id !== input.originContactId
+    )
+      continue;
+    const messageId = Number(m.id);
+    const attachments = Array.isArray(m.attachments) ? m.attachments : [];
+    // Within one message, the last file is the newest, so the order is reversed with the rest.
+    for (let i = attachments.length - 1; i >= 0; i -= 1) {
+      const a = attachments[i] as Record<string, unknown> | null;
+      if (!a || typeof a !== "object") continue;
+      const id = Number(a.id);
+      const dataUrl = typeof a.data_url === "string" ? a.data_url : "";
+      const type = typeof a.file_type === "string" ? a.file_type : "";
+      if (!Number.isInteger(id) || id <= 0 || !dataUrl || !types.has(type))
+        continue;
+      const size = Number(a.file_size);
+      out.push({
+        attachmentId: id,
+        messageId,
+        dataUrl,
+        fileSize: Number.isFinite(size) && size >= 0 ? size : null,
+        fileName: fileNameOf(dataUrl, `anexo-${id}`),
+      });
+    }
   }
   return out;
 }

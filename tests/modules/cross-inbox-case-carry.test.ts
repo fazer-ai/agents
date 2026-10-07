@@ -22,6 +22,7 @@ interface Msg {
   private?: boolean;
   senderType?: "contact" | "user" | "agent_bot";
   senderId?: number;
+  imported?: boolean;
   files?: Array<{
     id: number;
     type?: string;
@@ -80,6 +81,7 @@ function fake(
                 ? "AgentBot"
                 : "Contact",
           sender_id: m.senderId ?? CONTACT,
+          content_attributes: m.imported ? { imported: true } : {},
           attachments: (m.files ?? []).map((f) => ({
             id: f.id,
             file_type: f.type ?? "file",
@@ -227,9 +229,10 @@ describe("carryCaseAttachments", () => {
       messages: [
         { id: 1, createdAt: 100, files: [{ id: 11 }] },
         { id: 2, createdAt: 200, files: [{ id: 12 }] },
-        { id: 3, createdAt: 1000, files: [{ id: 13 }] },
+        { id: 3, createdAt: 300, type: "out" },
+        { id: 4, createdAt: 1000, files: [{ id: 13 }] },
         {
-          id: 4,
+          id: 5,
           createdAt: 1100,
           files: [{ id: 14 }, { id: 15, type: "image" }],
         },
@@ -253,8 +256,9 @@ describe("carryCaseAttachments", () => {
   test("attendance: the message the attendance started with is part of it", async () => {
     const f = fake({
       messages: [
-        { id: 1, createdAt: 499, files: [{ id: 11 }] },
-        { id: 2, createdAt: 500, files: [{ id: 12 }] },
+        { id: 1, createdAt: 498, files: [{ id: 11 }] },
+        { id: 2, createdAt: 499, type: "out" },
+        { id: 3, createdAt: 500, files: [{ id: 12 }] },
       ],
     });
     const out = await carryCaseAttachments(
@@ -266,6 +270,68 @@ describe("carryCaseAttachments", () => {
     );
     expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
     expect(uploadedNames(uploads(f.calls)[0])).toEqual(["doc-12.pdf"]);
+  });
+
+  test("attendance: the customer's burst before the stamped message is part of it", async () => {
+    // A turn is stamped with the burst's newest message: the receipt sent right before the text is
+    // the same attendance.
+    const f = fake({
+      messages: [
+        { id: 1, createdAt: 100, files: [{ id: 11 }] },
+        { id: 2, createdAt: 200, type: "out" },
+        { id: 3, createdAt: 495, files: [{ id: 13, name: "recibo.pdf" }] },
+        { id: 4, createdAt: 500 },
+      ],
+    });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput(
+        { mode: "attendance" },
+        { attendanceStartedAt: async () => new Date(500 * 1000) },
+      ),
+    );
+    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["recibo.pdf"]);
+  });
+
+  test("attendance: an imported message is not part of the burst", async () => {
+    const f = fake({
+      messages: [
+        { id: 1, createdAt: 200, type: "out" },
+        { id: 2, createdAt: 600, files: [{ id: 12, name: "atual.pdf" }] },
+        {
+          id: 3,
+          createdAt: 100,
+          imported: true,
+          files: [{ id: 13, name: "antigo.pdf" }],
+        },
+        { id: 4, createdAt: 700 },
+      ],
+    });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput(
+        { mode: "attendance" },
+        { attendanceStartedAt: async () => new Date(700 * 1000) },
+      ),
+    );
+    expect(out).toEqual({ carried: 1, skipped: 0, failed: 0 });
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["atual.pdf"]);
+  });
+
+  test("the limit keeps the newest by when they were sent, not by id", async () => {
+    const f = fake({
+      messages: [
+        { id: 1, createdAt: 900, files: [{ id: 11, name: "recente.pdf" }] },
+        { id: 2, createdAt: 100, files: [{ id: 12, name: "importado.pdf" }] },
+      ],
+    });
+    const out = await carryCaseAttachments(
+      f.client,
+      carryInput({ maxFiles: 1 }),
+    );
+    expect(out).toEqual({ carried: 1, skipped: 1, failed: 0 });
+    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["recente.pdf"]);
   });
 
   test("attendance: an old message under a new id does not end the walk", async () => {

@@ -26,6 +26,7 @@ const PROVIDERS: { id: Provider; label: string }[] = [
   { id: "deepseek", label: "DeepSeek" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "openai-compatible", label: "OpenAI-compatible" },
+  { id: "typesafe", label: "TypeSafe (Jev)" },
 ];
 
 type RateKey = "input" | "cachedInput" | "cacheWrite" | "output";

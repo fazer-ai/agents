@@ -70,7 +70,7 @@ A problem never falls back to the `llm` engine: an operator who chose classifica
 
 ## Cost
 
-A successful call is recorded through `recordDirectUsage` under node `decision` (`USAGE_NODE_IS_AGENT_TURN`: false; `SPEND_GATE_FOR_NODE`: gated, by the same check the `llm` tick asks right before its call). Both providers bill input tokens only, so the row carries `completionTokens: 0` even when TypeSafe reports output tokens. `gpt-6-luna` is priced by the LiteLLM table's input rate ($0.10 per 1M, the rate the Decisions guide states). TypeSafe is not in that table; its rate is pinned in `PUBLISHED_RATES` (`src/modules/pricing/price.ts`), $0.042 per 1M input tokens, from docs.typesafe.ai/models read 2026-10-07. A failed call records nothing.
+A successful call is recorded through `recordDirectUsage` under node `decision` (`USAGE_NODE_IS_AGENT_TURN`: false; `SPEND_GATE_FOR_NODE`: gated, by the same check the `llm` tick asks right before its call). Both providers bill input tokens only, so the row carries `completionTokens: 0` even when TypeSafe reports output tokens. `gpt-6-luna` is priced by the LiteLLM table's input rate ($0.10 per 1M, the rate the Decisions guide states). TypeSafe is not in that table; its rate is pinned in `PUBLISHED_RATES` (`src/modules/pricing/price.ts`), $0.042 per 1M input tokens, from docs.typesafe.ai/models read 2026-10-07. `typesafe` is in `PRICE_OVERRIDE_PROVIDERS`, so a tenant may override that rate and `reprice-usage --provider typesafe` corrects past rows. A failed call records nothing.
 
 ## Known limits
 

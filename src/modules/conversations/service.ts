@@ -32,7 +32,10 @@ import {
 } from "@/modules/business-hours/hours";
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
 import {
   type LoadChatwootClientDeps,
@@ -2360,6 +2363,7 @@ export async function returnConversationToAgent(
       live.inboxId === judgedInboxId);
   let attempted = false;
   let assigned: "bot" | "user" | null = null;
+  let answered = false;
   let toggled = false;
   try {
     if (botCanTakeIt) {
@@ -2369,6 +2373,7 @@ export async function returnConversationToAgent(
         ourAgentBotId,
         { asAdmin: true },
       );
+      answered = true;
       handedToBot = assigned === "bot";
     }
     // NOTE: the bot already holding it still needs the status, and only an assignment that landed
@@ -2402,14 +2407,23 @@ export async function returnConversationToAgent(
       });
     }
   } catch (err) {
-    // NOTE: nothing was written yet, so there is nothing to record.
+    // NOTE: nothing was written yet, or the only write was refused outright (a 4xx is Chatwoot saying
+    // it did not apply it), so there is no effect to record.
     if (!attempted && !toggled) throw err;
+    if (
+      !answered &&
+      !toggled &&
+      err instanceof ChatwootApiError &&
+      err.status >= 400 &&
+      err.status < 500
+    )
+      throw err;
     // Once a bot assignment was sent, neither the holder nor the status is known to be what it was
     // (it may have landed, or named a user with the bot's id), so both are read again for the row;
     // unread, they are unknown. The mirror is left to the assignment webhook, which carries the
     // version this read lacks.
     let partial: {
-      status: string;
+      status: string | null;
       assigneeType: string | null;
       assigneeId: number | null;
       holderUnknown?: true;
@@ -2428,7 +2442,8 @@ export async function returnConversationToAgent(
               assigneeId: seen.assigneeId,
             }
           : {
-              status: seen?.status ?? "pending",
+              // An unread status is unknown unless this call's own status write landed.
+              status: seen?.status ?? (toggled ? "pending" : null),
               assigneeType: null,
               assigneeId: null,
               holderUnknown: true,

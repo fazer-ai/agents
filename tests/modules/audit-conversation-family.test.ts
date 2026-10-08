@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
   handoffConversation,
@@ -643,6 +646,71 @@ describe.skipIf(!dbUp)(
         status: "pending",
         assigneeType: "User",
         assigneeId: 12,
+        partial: true,
+      });
+    });
+
+    // A 4xx is Chatwoot saying it did not apply the assignment, and nothing else was written.
+    test("a hand-back whose bot assignment is refused outright records nothing", async () => {
+      await clearAudit();
+      const id = await seedConversation(4028, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 12,
+      });
+      const stub = stubClient({
+        getConversation: async () =>
+          liveConversation({ status: "open", assigneeId: 12 }),
+        assignAgentBot: async () => {
+          throw new ChatwootApiError(403, "POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow();
+      expect(stub.calls).not.toContain("toggleStatus");
+      expect(await rows()).toEqual([]);
+    });
+
+    // An assignment whose outcome is unknown, reread without success: neither the holder nor the
+    // status is claimed.
+    test("an unknown assignment outcome read back as nothing claims no status", async () => {
+      await clearAudit();
+      const id = await seedConversation(4029, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 12,
+      });
+      let failReads = false;
+      const stub = stubClient({
+        getConversation: async () => {
+          if (failReads) throw new Error("chatwoot 502");
+          return liveConversation({ status: "open", assigneeId: 12 });
+        },
+        assignAgentBot: async () => {
+          failReads = true;
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      const [row] = await rows();
+      expect(row?.after).toEqual({
+        status: null,
+        assigneeType: null,
+        assigneeId: null,
+        holderUnknown: true,
         partial: true,
       });
     });

@@ -116,16 +116,22 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(a.inboxRowId).toBe(b.inboxRowId);
   });
 
-  test("the second route delivering later reuses the run while its rows stand still", async () => {
+  test("a delivery after the run finished runs its own, and writes nothing to the inbox or the contact", async () => {
     const m = countingMirror();
     const first = statusEvent(12, "pending", T0);
     const lead = await once(first, m.fn);
+    const shared = async () =>
+      suDb.$queryRaw<{ v: string }[]>`
+        SELECT i.xmin::text || ':' || ct.xmin::text AS v
+          FROM conversations c
+          JOIN inboxes i ON i.id = c.inbox_id
+          JOIN contacts ct ON ct.id = c.contact_id
+         WHERE c.id = ${lead.conversationRowId as bigint}`;
+    const before = await shared();
     const late = await once(first, m.fn);
-    expect(m.runs()).toBe(1);
-    expect(late.applied).toBe(false);
+    expect(m.runs()).toBe(2);
     expect(late.status).toBe("pending");
-    expect(late.prevStatus).toBe("pending");
-    expect(late.rowVersions).toBe(lead.rowVersions);
+    expect(await shared()).toEqual(before);
   });
 
   test("a later delivery over rows that moved since runs again, and the run orders itself as stale", async () => {
@@ -140,46 +146,16 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(late.status).toBe("resolved");
   });
 
-  test("a write by anyone else to the conversation, its inbox or its contact makes the next delivery run", async () => {
-    const m = countingMirror();
-    const n = statusEvent(19, "pending", T0);
-    const lead = await once(n, m.fn);
-    const row = await suDb.conversation.findUniqueOrThrow({
-      where: { id: lead.conversationRowId as bigint },
-      select: { inboxId: true, contactId: true },
-    });
-    await suDb.conversation.update({
-      where: { id: lead.conversationRowId as bigint },
-      data: { redirectOriginDisplayId: 77 },
-    });
-    await once(n, m.fn);
-    expect(m.runs()).toBe(2);
-    await suDb.inbox.update({
-      where: { id: row.inboxId as bigint },
-      data: { name: "renomeada fora do mirror" },
-    });
-    await once(n, m.fn);
-    expect(m.runs()).toBe(3);
-    if (row.contactId !== null) {
-      await suDb.contact.update({
-        where: { id: row.contactId },
-        data: { name: "outro nome" },
-      });
-      await once(n, m.fn);
-      expect(m.runs()).toBe(4);
-    }
-    await once(n, m.fn);
-    expect(m.runs()).toBe(row.contactId !== null ? 4 : 3);
-  });
-
-  test("a different payload, or the same payload under different options, runs its own mirror", async () => {
+  test("a different payload, or the same payload under different options, does not wait on another run", async () => {
     const m = countingMirror();
     await once(statusEvent(13, "pending", T0), m.fn);
-    await once(statusEvent(13, "pending", T0 + 1), m.fn);
-    await once(statusEvent(13, "pending", T0 + 1), m.fn, {
-      suppressInboundWatermark: true,
-    });
-    expect(m.runs()).toBe(3);
+    const n = statusEvent(13, "pending", T0 + 1);
+    await Promise.all([
+      once(n, m.fn),
+      once(n, m.fn, { suppressInboundWatermark: true }),
+      once(statusEvent(13, "pending", T0 + 2), m.fn),
+    ]);
+    expect(m.runs()).toBe(4);
   });
 
   test("a run that failed is not reused: the other delivery runs its own", async () => {
@@ -197,12 +173,9 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(a.status).toBe("rejected");
     expect(b.status).toBe("fulfilled");
     expect(calls).toBe(2);
-    // And the failure is not remembered: a third delivery reuses the successful run.
-    await once(n, flaky);
-    expect(calls).toBe(2);
   });
 
-  test("a run that held a write back is not reused: the next delivery runs the mirror again", async () => {
+  test("a run that held a write back is not shared: the waiting delivery runs the mirror again", async () => {
     let calls = 0;
     const holding: typeof mirrorChatwootEvent = async (...args) => {
       calls += 1;
@@ -214,11 +187,9 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(calls).toBe(2);
     expect(a.heldBack).toBe(true);
     expect(b.heldBack).toBeUndefined();
-    await once(n, holding);
-    expect(calls).toBe(2);
   });
 
-  test("a status a live claim refused is not reused: once the claim expires, the same event applies", async () => {
+  test("a status a live claim refused marks the run held back, and once the claim expires the same event applies", async () => {
     const m = countingMirror();
     const first = await once(statusEvent(16, "pending", T0), m.fn);
     // A local takeover moved the conversation off `pending` and holds a claim on that transition.
@@ -244,22 +215,18 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(later.status).toBe("pending");
   });
 
-  test("an unversioned payload that serializes two transitions alike runs for each of them", async () => {
+  test("an unversioned payload is never shared: two equal payloads can be two transitions", async () => {
     const m = countingMirror();
     const bare = (status: string) => {
       const n = statusEvent(17, status, T0);
       return { ...n, conversationUpdatedAt: null } as NormalizedChatwootEvent;
     };
-    const [a, b] = await Promise.all([
-      once(bare("open"), m.fn),
-      once(bare("open"), m.fn),
-    ]);
-    expect(m.runs()).toBe(1);
-    expect([a.applied, b.applied].sort()).toEqual([false, true]);
+    // Two equal payloads at once: with no version they may be two transitions, so neither waits.
+    await Promise.all([once(bare("open"), m.fn), once(bare("open"), m.fn)]);
+    expect(m.runs()).toBe(2);
     await once(bare("resolved"), m.fn);
-    // The same payload as the first, a real reopen: it runs.
     const reopened = await once(bare("open"), m.fn);
-    expect(m.runs()).toBe(3);
+    expect(m.runs()).toBe(4);
     expect(reopened.status).toBe("open");
   });
 });

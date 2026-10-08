@@ -958,14 +958,14 @@
     "noData": "Sem dados ainda.",
     "node": {
       "agent": "Resposta do agente",
+      "decision": "API de decisão",
       "guardrail": "Guardrail",
       "memoryCompact": "Compactação de memória",
       "nudge": "Follow-up",
       "observer": "Observador",
       "suggestionReview": "Revisão de sugestão de conhecimento",
       "ttsNormalize": "Preparo do texto para voz",
-      "vision": "Leitura de imagem",
-      "decision": "API de decisão"
+      "vision": "Leitura de imagem"
     },
     "openInLangfuse": "Abrir no Langfuse",
     "percent": "%",
@@ -1289,6 +1289,7 @@
       "contactAuthNoUrl": "A verificação de autorização está ligada, mas sem endereço para consultar. Sem ele a verificação falha em toda mensagem e o agente para de responder a todo mundo. Preencha a URL do endpoint, escolha uma lista ou um atributo para decidir no lugar dele, ou desligue a verificação.",
       "contactAuthSilentRefusal": "Um contato recusado fica sem nada: nenhuma mensagem é enviada e a conversa não é aberta para ninguém, então ele fica sem resposta e só uma nota privada registra o que houve. Preencha “Mensagem para contato negado” ou ligue “Abrir conversas recusadas para humanos”.",
       "contactAuthUnlockHandoff": "O destravamento por código e a passagem para atendimento humano se anulam: a primeira recusa abre a conversa e a atribui, e uma conversa aberta não é mais da IA, então o código que o cliente mandar em seguida nunca chega à verificação. Desligue “Abrir conversas recusadas para humanos” para deixar o contato se destravar, ou desligue “Enviar o texto da mensagem do cliente” se um humano deve assumir toda conversa recusada.",
+      "decisions": "O motor de decisões está ligado, mas a API de classificação está sem chave definida, então o observador não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas o embedding do tenant não está configurado.",
       "guardrails": "Os guardrails estão ligados, mas sem chave de API definida, então as mensagens saem sem triagem.",
       "memoryModel": "Há um modelo separado configurado para os resumos de atendimento, mas a configuração dele não roda: os atendimentos encerrados não serão resumidos e o contato não guarda memória deles. Confira o provedor, o modelo, “Chave de API” e “Base URL”.",
@@ -1302,8 +1303,7 @@
       "suggestionReviewModel": "O avaliador de sugestões tem um modelo próprio que não consegue rodar com a configuração atual, então as sugestões de conhecimento do agente chegam à fila de aprovação sem avaliação. Confira fornecedor, modelo, chave e endpoint.",
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
       "ttsNormalize": "A reescrita para fala está ligada mas a configuração de modelo dela não pode rodar, então o áudio sai sem ela. Confira provedor, modelo, chave e endpoint.",
-      "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida.",
-      "decisions": "O motor de decisões está ligado, mas a API de classificação está sem chave definida, então o observador não decide nada."
+      "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
     "configIssueGuardrailsFailing": "Os guardrails estão ligados, mas {{failures}} das Checagens não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}). Uma checagem que não rodou não pegou nada e não segurou nada. Confira “Modelo do guardrails”, “Base URL” e “Chave de API”.",
     "configIssueGuardrailsFailingCause": "Os guardrails estão ligados, mas {{failures}} das Checagens não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}). Uma checagem que não rodou não pegou nada e não segurou nada. A última respondeu: {{error}}",
@@ -1312,6 +1312,7 @@
     "configIssueOutOfHoursChatwoot": "O Chatwoot envia uma mensagem de fora do horário em {{inboxes}}, mas este agente segue apenas o próprio horário. O cliente pode receber um aviso de que a empresa está fechada e ser atendido logo depois.",
     "configIssuePending": {
       "contactAuth": "A credencial da autorização do contato está referenciada, mas ainda não foi preenchida; a verificação falha e o agente fica em silêncio.",
+      "decisions": "A credencial da API de classificação está referenciada, mas ainda não foi preenchida, então o observador não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding ainda não foi preenchida.",
       "guardrails": "A credencial dos guardrails está referenciada, mas ainda não foi preenchida, então as mensagens saem sem triagem.",
       "memoryModel": "A credencial do modelo de resumo está referenciada mas ainda não foi preenchida, então os atendimentos encerrados não são resumidos.",
@@ -1321,14 +1322,14 @@
       "suggestionReviewModel": "A credencial do avaliador de sugestões está referenciada, mas ainda não foi preenchida, então as sugestões chegam à fila sem avaliação.",
       "tts": "A credencial de resposta em áudio está referenciada, mas ainda não foi preenchida.",
       "ttsNormalize": "A credencial da reescrita para fala está referenciada, mas ainda não foi preenchida.",
-      "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida.",
-      "decisions": "A credencial da API de classificação está referenciada, mas ainda não foi preenchida, então o observador não decide nada."
+      "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
     },
     "configIssuesTitle": "Avisos de configuração",
     "configIssueTextCap": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado.",
     "configIssueTextCapNoField": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado. Esta orientação não tem campo no console, então só pode ser encurtada pela API.",
     "configIssueUnresolved": {
       "contactAuth": "A credencial da autorização do contato não existe mais; a verificação falha e o agente fica em silêncio.",
+      "decisions": "A credencial da API de classificação não existe mais, então o observador não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
       "guardrails": "A credencial dos guardrails não existe mais, então as mensagens saem sem triagem.",
       "memoryModel": "A credencial do modelo de resumo não existe mais, então os atendimentos encerrados não são resumidos.",
@@ -1338,11 +1339,11 @@
       "suggestionReviewModel": "A credencial do avaliador de sugestões não existe mais, então as sugestões chegam à fila sem avaliação.",
       "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",
       "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
-      "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos.",
-      "decisions": "A credencial da API de classificação não existe mais, então o observador não decide nada."
+      "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
     },
     "configIssueWrongKind": {
       "contactAuth": "A credencial da autorização do contato é de um tipo que este produto nunca envia para outro serviço, então a verificação falha e o agente fica em silêncio. Escolha uma credencial capaz de autenticar uma requisição.",
+      "decisions": "A credencial da API de classificação é de um tipo que não pode ser usado como chave de API, então o observador não decide nada. Escolha uma credencial que guarde uma única chave.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding é de um tipo que não pode ser usado como chave de API. Escolha uma credencial que guarde uma única chave.",
       "guardrails": "A credencial dos guardrails é de um tipo que não pode ser usado como chave de API, então as mensagens saem sem triagem. Escolha uma credencial que guarde uma única chave.",
       "memoryModel": "A credencial do modelo de resumo é de um tipo que não pode ser usado como chave de API, então os atendimentos encerrados não são resumidos. Escolha uma credencial que guarde uma única chave.",
@@ -1352,8 +1353,7 @@
       "suggestionReviewModel": "A credencial do avaliador de sugestões é de um tipo que não pode ser usado como chave de API, então as sugestões chegam à fila sem avaliação. Escolha uma credencial que guarde uma única chave.",
       "tts": "A credencial da resposta em áudio é de um tipo que não pode ser usado como chave de API, então as respostas saem em texto. Escolha uma credencial que guarde uma única chave.",
       "ttsNormalize": "A credencial da reescrita para fala é de um tipo que não pode ser usado como chave de API, então as respostas são faladas sem a reescrita. Escolha uma credencial que guarde uma única chave.",
-      "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave.",
-      "decisions": "A credencial da API de classificação é de um tipo que não pode ser usado como chave de API, então o observador não decide nada. Escolha uma credencial que guarde uma única chave."
+      "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave."
     },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",
     "contactAuth": "Autorização do contato",
@@ -3057,13 +3057,13 @@
     "modelShare": "{{pct}}% do turno esperando o modelo",
     "node": {
       "agent": "agente",
+      "decision": "API de decisão",
       "guardrail": "verificação de guardrails",
       "memoryCompact": "resumo de memória",
       "nudge": "mensagem proativa",
       "observer": "observador",
       "ttsNormalize": "reescrita para voz",
-      "vision": "leitura de imagem ou documento",
-      "decision": "API de decisão"
+      "vision": "leitura de imagem ou documento"
     },
     "noPrice": "sem preço",
     "outputLabel": "Saída",

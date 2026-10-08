@@ -1333,14 +1333,15 @@ function owesAReply(row: {
 }
 
 // Who we are on this conversation, for the reply boundary: our bot's Chatwoot id and the inbox's
-// WhatsApp provider, read off the mirror. Null when the mirror cannot say, and then no bot reply is
-// taken as somebody else's: ours, whose reply answers only what its turn took, is indistinguishable.
+// WhatsApp provider, read off the mirror. The bot is null when the mirror cannot say (no agent bound,
+// as on a monitoring-only inbox), and then no bot reply is taken as somebody else's: ours, whose reply
+// answers only what its turn took, is indistinguishable. The provider stands on its own.
 async function replyIdentity(params: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
   base: PrismaClient;
-}): Promise<ReplyIdentity | null> {
+}): Promise<ReplyIdentity> {
   const bound = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
       where: {
@@ -1354,16 +1355,15 @@ async function replyIdentity(params: {
     }),
   );
   const agentId = bound?.inbox?.agentId;
-  if (!agentId) return null;
-  const managedBotId = await agentBotChatwootId(
-    params.tenantId,
-    params.instanceId,
-    agentId,
-    params.base,
-  );
-  return managedBotId === null
-    ? null
-    : { managedBotId, whatsappProvider: bound.inbox?.provider ?? null };
+  const managedBotId = agentId
+    ? await agentBotChatwootId(
+        params.tenantId,
+        params.instanceId,
+        agentId,
+        params.base,
+      )
+    : null;
+  return { managedBotId, whatsappProvider: bound?.inbox?.provider ?? null };
 }
 
 // How far past the stranded message the catch-up read walks before leaving the decision to the line.
@@ -1407,15 +1407,11 @@ async function supersededLive(params: {
       // message before its reply. Our bot's reply is not evidence here (a turn answers what it took,
       // which a later reply cannot tell apart from an orphan it left out); the rows a turn ran over
       // are retired by the turn itself (`retireCoveredDeliveries`).
-      const page = identity
-        ? rows
-        : rows.filter((m) => m.senderType !== "agent_bot");
-      if (
-        foreignReplyBoundary(
-          page,
-          identity ?? { managedBotId: null, whatsappProvider: null },
-        ) > params.messageId
-      )
+      const page =
+        identity.managedBotId !== null
+          ? rows
+          : rows.filter((m) => m.senderType !== "agent_bot");
+      if (foreignReplyBoundary(page, identity) > params.messageId)
         return "answered";
       if (rows.length < CATCH_UP_PAGE) return null;
       cursor = rows.reduce((max, m) => Math.max(max, m.id), cursor);
@@ -1467,6 +1463,7 @@ export async function announceUnanswered(
   opts: {
     leftProcessed?: boolean;
     makeClient?: RuntimeDeps["makeClient"];
+    readConversation?: boolean;
   } = {},
 ): Promise<void> {
   try {
@@ -1503,7 +1500,9 @@ export async function announceUnanswered(
     // moved on, the line is `info` with `outcome: "superseded"`, which pages nobody: both outcomes
     // below describe a conversation that is still waiting on this message, and this one is not.
     const supersededBy =
-      row.conversationId !== null && row.inboundMessageId !== null
+      opts.readConversation !== false &&
+      row.conversationId !== null &&
+      row.inboundMessageId !== null
         ? await supersededLive({
             tenantId,
             instanceId: row.chatwootInstanceId,
@@ -1609,7 +1608,9 @@ export async function announceUnanswered(
 // A recovery that died never reached `announceUnanswered` (an account it could not read on every
 // attempt, a crash), and the sweep's line was `info` because it was coming. Its death is announced like
 // every kind's, re-arm suppression included (`announceJobDeath`), and when that line was owed and the
-// row is still DEAD, the delivery's own line says the customer went unanswered.
+// row is still DEAD, the delivery's own line says the customer went unanswered. Without the live
+// read: the scheduler runs these hooks one after another before it claims anything, with no deadline,
+// and a job that died mostly could not reach the account anyway.
 export async function announceDeadRecovery(
   job: ClaimedJob,
   error: string,
@@ -1618,7 +1619,9 @@ export async function announceDeadRecovery(
   if (!(await announceJobDeath(job, error, base))) return;
   const deliveryRowId = readDeliveryRowId(job.payload);
   if (deliveryRowId !== null)
-    await announceUnanswered(job.tenantId, deliveryRowId, base);
+    await announceUnanswered(job.tenantId, deliveryRowId, base, {
+      readConversation: false,
+    });
 }
 
 let registered = false;

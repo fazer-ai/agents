@@ -4,6 +4,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import {
   clearTurnInFlight,
@@ -5372,6 +5373,93 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           appDb,
           depsWith(stubChatwoot({ throwOnRead: true })),
         );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // An inbox with no agent bound (monitoring only, or unbound since) still knows its provider:
+      // the paired phone answers there, while no bot reply can be told from ours.
+      test("the provider stands without a bound agent, and bots still do not answer", async () => {
+        await suDb.inbox.update({
+          where: { id: inboxDbId },
+          data: { provider: "baileys", agentId: null },
+        });
+        try {
+          for (const [convId, messageId, reply, outcome] of [
+            [28976, 29977, { externalSender: "WhatsApp" }, "superseded"],
+            [28977, 29980, { sender: "agent_bot", senderId: 77 }, "unanswered"],
+          ] as const) {
+            const { conv, rowId } = await endedRow(convId, messageId);
+            await runRecoveryJob(
+              jobFor({ deliveryRowId: String(rowId) }),
+              appDb,
+              depsWith(
+                stubChatwoot({
+                  caughtUp: afterPage([
+                    { id: messageId + 1, type: 1, sender: null, ...reply },
+                  ]),
+                }),
+              ),
+            );
+            expect((await outcomes(conv.id)).map((o) => o[1])).toEqual([
+              outcome,
+            ]);
+          }
+        } finally {
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { provider: null, agentId: agentDbId },
+          });
+        }
+      });
+
+      // The dead-letter hooks run one after another on the scheduler's tick, before it claims
+      // anything and with no deadline, so the hook's line is written without reading the account.
+      test("the dead-letter hook does not read the conversation", async () => {
+        const { conv, rowId } = await endedRow(28978, 29982);
+        const hook = getDeadLetterHandler("DELIVERY_RECOVERY");
+        if (!hook)
+          throw new Error("the recovery's dead-letter hook is not registered");
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status: "DEAD",
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true, dedupeKey: true },
+        });
+        const realFetch = globalThis.fetch;
+        const privateBefore = config.ssrf.allowPrivateTargets;
+        const asked: string[] = [];
+        config.ssrf.allowPrivateTargets = true;
+        globalThis.fetch = (async (input: RequestInfo | URL) => {
+          asked.push(String(input));
+          return Response.json({ id: 28978, status: "resolved", payload: [] });
+        }) as typeof globalThis.fetch;
+        try {
+          await hook(
+            {
+              id: job.id,
+              tenantId,
+              kind: "DELIVERY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              dedupeKey: job.dedupeKey,
+              attempts: 5,
+              claimSeq: job.claimSeq,
+            },
+            "recovery: the Chatwoot account could not be read",
+            appDb,
+          );
+        } finally {
+          globalThis.fetch = realFetch;
+          config.ssrf.allowPrivateTargets = privateBefore;
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+        expect(asked).toEqual([]);
         expect(await outcomes(conv.id)).toEqual([
           ["error", "unanswered", undefined],
         ]);

@@ -22,6 +22,7 @@ describe("parseChatwootMessages", () => {
       createdAt: null,
       emailSubject: null,
       messageType: "incoming",
+      platformSent: false,
       private: false,
       sendId: null,
       attachmentTypes: [],

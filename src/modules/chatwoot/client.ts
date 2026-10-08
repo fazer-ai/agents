@@ -6,6 +6,7 @@ import { redactEndpoint } from "@/modules/audit/projection";
 import type { AdditionalContactField } from "@/modules/chatwoot/contact-fields";
 import {
   CHATWOOT_AUTH_HEADER,
+  CHATWOOT_PLATFORM_SENT_KEY,
   CHATWOOT_REPLY_BY_OPERATOR_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
   CHATWOOT_SEND_ID_KEY,
@@ -1687,7 +1688,12 @@ export class ChatwootClient {
       this.config.adminToken,
       "POST",
       `/conversations/${conversationId}/messages`,
-      { content, private: opts.private, message_type: "outgoing" },
+      {
+        content,
+        private: opts.private,
+        message_type: "outgoing",
+        content_attributes: { [CHATWOOT_PLATFORM_SENT_KEY]: true },
+      },
     );
   }
 

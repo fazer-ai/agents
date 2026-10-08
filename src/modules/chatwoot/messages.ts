@@ -1,6 +1,6 @@
 import type { VisualAttachment } from "@/modules/vision/extract-message";
 import type { UnreadFile } from "@/modules/vision/unread";
-import { CHATWOOT_SEND_ID_KEY } from "./constants";
+import { CHATWOOT_PLATFORM_SENT_KEY, CHATWOOT_SEND_ID_KEY } from "./constants";
 import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import {
   activityStatusFrom,
@@ -105,6 +105,9 @@ export interface ChatwootMessageRow {
   // asked for one. Null on everything inbound, everything a person wrote, and sends with no resend to
   // decide. It lets a delivery be proved by identity instead of by matching text.
   sendId: string | null;
+  // `CHATWOOT_PLATFORM_SENT_KEY`: the platform sent this on the admin token, so the user Chatwoot
+  // names as sender is not a person typing. Optional because a hand-built row carries no mark.
+  platformSent?: boolean;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -332,6 +335,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
         typeof ca?.[CHATWOOT_SEND_ID_KEY] === "string"
           ? (ca[CHATWOOT_SEND_ID_KEY] as string)
           : null,
+      platformSent: ca?.[CHATWOOT_PLATFORM_SENT_KEY] === true,
     });
   }
   out.sort((a, b) => a.id - b.id);

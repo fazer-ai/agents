@@ -110,6 +110,22 @@ export async function agentBotChatwootId(
   return row?.chatwootAgentBotId ?? null;
 }
 
+// Every Chatwoot agent bot this instance provisioned, one per agent persona. A reader that names who
+// wrote a message needs all of them: an observer reads the replies of the agents beside it.
+export async function instanceAgentBotChatwootIds(
+  tenantId: bigint,
+  instanceId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<number[]> {
+  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findMany({
+      where: { tenantId, chatwootInstanceId: instanceId },
+      select: { chatwootAgentBotId: true },
+    }),
+  );
+  return rows.map((r) => r.chatwootAgentBotId);
+}
+
 export async function loadAgentBot(
   tenantId: bigint,
   instanceId: bigint,

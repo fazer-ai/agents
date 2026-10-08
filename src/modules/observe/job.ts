@@ -34,6 +34,7 @@ import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { resetAckSendId } from "@/modules/chatwoot/constants";
 import {
+  instanceAgentBotChatwootIds,
   type LoadChatwootClientDeps,
   loadAgentBot,
   loadChatwootClient,
@@ -857,8 +858,33 @@ function stripFences(text: string): string {
 }
 
 export interface TranscriptLine {
-  role: "customer" | "attendant";
+  // `assistant` is an AI agent of this instance, `person` someone on the team, and `attendant` an
+  // outgoing message nobody can be named for (imported history, an automation, another bot).
+  role: "customer" | "assistant" | "person" | "attendant";
   text: string;
+}
+
+const ROLE_LABEL: Record<TranscriptLine["role"], string> = {
+  customer: "Cliente",
+  assistant: "Assistente virtual",
+  person: "Atendente (pessoa)",
+  attendant: "Atendente",
+};
+
+// Who wrote an outgoing message, from what Chatwoot and the platform recorded on it. Imported
+// history first: its sender is whoever ran the import, not who wrote the words.
+function outgoingRole(
+  m: ChatwootMessageRow,
+  ownBotIds: ReadonlySet<number>,
+): TranscriptLine["role"] {
+  if (m.imported) return "attendant";
+  if (m.platformSent === true) return "assistant";
+  if (m.senderType === "agent_bot")
+    return m.senderId !== null && ownBotIds.has(m.senderId)
+      ? "assistant"
+      : "attendant";
+  if (m.senderType === "user" || m.externalSenderName) return "person";
+  return "attendant";
 }
 
 // The newest `limit` public messages of the conversation, oldest first, rendered per direction the
@@ -866,7 +892,10 @@ export interface TranscriptLine {
 export function transcriptFromRows(
   rows: ChatwootMessageRow[],
   limit: number,
+  // The Chatwoot agent bot ids this instance provisioned, every agent's and not only the observer's.
+  opts: { ownBotIds?: ReadonlySet<number> } = {},
 ): TranscriptLine[] {
+  const ownBotIds = opts.ownBotIds ?? new Set<number>();
   // Built from EVERY row fetched, not from the windowed slice: a reply inside the window can quote a
   // message older than it, and the quote is then the only thing that says what it is about.
   const resolveQuoted = buildQuoteResolver(rows);
@@ -897,7 +926,8 @@ export function transcriptFromRows(
     const clean = stripFences(text).trim();
     if (!clean) continue;
     out.push({
-      role: m.messageType === "incoming" ? "customer" : "attendant",
+      role:
+        m.messageType === "incoming" ? "customer" : outgoingRole(m, ownBotIds),
       text: clean,
     });
   }
@@ -906,7 +936,7 @@ export function transcriptFromRows(
 
 export function renderTranscript(lines: readonly TranscriptLine[]): string {
   const joined = lines
-    .map((l) => `${l.role === "customer" ? "Cliente" : "Atendente"}: ${l.text}`)
+    .map((l) => `${ROLE_LABEL[l.role]}: ${l.text}`)
     .join("\n");
   return clipTextEnd(joined, TRANSCRIPT_MAX_CHARS);
 }
@@ -1288,7 +1318,12 @@ export async function runObserve(
     resetBoundary === null
       ? fetched
       : fetched.filter((r) => r.id > resetBoundary);
-  const transcript = transcriptFromRows(rows, mon.window.messages);
+  const ownBotIds = new Set(
+    await instanceAgentBotChatwootIds(tenantId, instanceId, base),
+  );
+  const transcript = transcriptFromRows(rows, mon.window.messages, {
+    ownBotIds,
+  });
   // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
   // the operator wiped is not part of this one either.
   const notes = notesFromRows(rows, mon.window.messages);

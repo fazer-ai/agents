@@ -32,7 +32,10 @@ import {
 } from "@/modules/business-hours/hours";
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
 import {
   type LoadChatwootClientDeps,
@@ -809,6 +812,7 @@ interface ConsoleWriteMirror {
     assigneeType: string | null;
     assigneeId: number | null;
     assigneeName: string | null;
+    assigneeStated: boolean;
   } | null;
 }
 
@@ -834,6 +838,32 @@ function readLiveBeforeConsoleWrite(
   }
 }
 
+// A versioned read that omitted the assignee, completed with the holder the action asked for and
+// named only when that holder is the stored one. An action that asked for no holder passes the read
+// as it is, and the reconcile leaves the stored holder alone under its lock.
+function withHolderOf(
+  live: LiveConversationState,
+  conv: {
+    assigneeType: string | null;
+    assigneeId: number | null;
+    assigneeName: string | null;
+  },
+  fallback: { assigneeId?: number | null; assigneeType?: string | null },
+): LiveConversationState {
+  if (fallback.assigneeType === undefined || fallback.assigneeId === undefined)
+    return live;
+  const kept =
+    fallback.assigneeType === conv.assigneeType &&
+    fallback.assigneeId === conv.assigneeId;
+  return {
+    ...live,
+    assigneeType: fallback.assigneeType,
+    assigneeId: fallback.assigneeId,
+    assigneeName: kept ? conv.assigneeName : null,
+    assigneeStated: true,
+  };
+}
+
 // Writes the mirror after a console action, claiming the version Chatwoot produced for it. The two
 // write endpoints do not serialize `updated_at`, so a blind write carries no version and an event
 // Chatwoot serialized BEFORE the click, still retrying, would outrank it and undo the action (the
@@ -849,6 +879,7 @@ async function mirrorConsoleWrite(
     chatwootConversationId: number;
     assigneeType: string | null;
     assigneeId: number | null;
+    assigneeName: string | null;
   },
   client: ChatwootClient,
   fallback: {
@@ -902,17 +933,23 @@ async function mirrorConsoleWrite(
         assigneeType: live.assigneeType,
         assigneeId: live.assigneeId,
         assigneeName: live.assigneeName,
+        assigneeStated: live.assigneeStated === true,
       };
     }
     // NOTE: a snapshot with no version is not reconciled: the reconcile would apply the WHOLE
     // snapshot, so a status click could carry back an assignee a webhook has since changed. The
-    // fallback writes exactly the fields this action meant to change.
+    // fallback writes exactly the fields this action meant to change. One that did not state the
+    // assignee keeps its version: the holder it is silent on is the one this action wrote, and with
+    // none written the reconcile leaves the stored holder, so the silence is never read as nobody.
     if (live && live.updatedAt !== null) {
       const outcome = await reconcileMirrorFromLive({
         tenantId,
         instanceId: conv.chatwootInstanceId,
         conversationId: conv.chatwootConversationId,
-        live,
+        live:
+          live.assigneeStated === true
+            ? live
+            : withHolderOf(live, conv, fallback),
         // NOTE: an operator's click is a decision even when it restates the stored state.
         ownershipIsDecision: fallback.status != null,
         base,
@@ -2238,36 +2275,61 @@ export async function returnConversationToAgent(
       chatwootInboxId: liveInbox?.chatwootInboxId ?? null,
     },
   );
-  // The binding itself is re-read LAST of all, after the runnable probe (the longest await
-  // left), under the same row lock: a rebind in that window would leave the validation judging the
-  // agent that was there before. It refuses rather than re-validating, like the move confirmation.
-  const boundNow = await runScopedOn(base, ctx, async (db) => {
-    if (nowInbox === null) return null;
-    await db.$queryRaw`SELECT id FROM inboxes WHERE chatwoot_instance_id = ${conv.chatwootInstanceId} AND chatwoot_inbox_id = ${nowInbox.chatwootInboxId} FOR NO KEY UPDATE`;
-    return db.inbox.findFirst({
-      where: {
-        chatwootInstanceId: conv.chatwootInstanceId,
-        chatwootInboxId: nowInbox.chatwootInboxId,
-      },
-      select: { agentId: true },
-    });
-  });
-  if (
-    nowInbox !== null &&
-    (boundNow?.agentId ?? null) !== (liveInbox?.agentId ?? null)
-  ) {
-    throw new ConflictError(
-      "The responder of this inbox changed while the conversation was being returned; try again.",
-      "errors.returnResponderChanged",
-    );
-  }
-  await client.toggleStatus(conv.chatwootConversationId, "pending", {
-    asAdmin: true,
-  });
+  // The bot of the inbox the hand-back was judged on. Chatwoot clears the bot assignee whenever a
+  // person takes the conversation, so removing the person alone leaves it in "Unassigned" while the
+  // agent answers it; the hand-back assigns this bot instead (docs/chatwoot.md, next to the unassign note).
+  // Read before the first remote write, so a failed read changes nothing in Chatwoot.
+  const ourAgentBotId =
+    liveInbox?.agentId != null
+      ? ((
+          await runScopedOn(base, ctx, (db) =>
+            db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: conv.chatwootInstanceId,
+                agentId: liveInbox?.agentId ?? 0n,
+              },
+              select: { chatwootAgentBotId: true },
+            }),
+          )
+        )?.chatwootAgentBotId ?? null)
+      : null;
+  // The last look before the write, and the one every decision below is taken on. Unreadable is NOT
+  // "nobody took it": a degraded payload with the holder unchanged is the common case, and refusing
+  // to hand back on it would leave the conversation with a human who has already walked away.
+  const live = await readHolder();
+  // A holder other than the baseline, by the whole identity ("User" and "AgentBot" are
+  // separate id namespaces). An EMPTY assignee is not a competing holder; a typed holder with no id
+  // is (unknown is not absent, so it fails closed). Written once because a live read after the
+  // write can still name the party just removed, and only the baseline tells them apart.
+  const holderOtherThan = (
+    seen: { assigneeType: string | null; assigneeId: number | null } | null,
+  ): { assigneeType: string | null; assigneeId: number | null } | null =>
+    seen !== null &&
+    seen.assigneeType !== null &&
+    (seen.assigneeId === null ||
+      seen.assigneeType !== baseline.assigneeType ||
+      seen.assigneeId !== baseline.assigneeId)
+      ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
+      : null;
+  let newHolder = holderOtherThan(live);
+  const alreadyOurs =
+    live !== null &&
+    ourAgentBotId !== null &&
+    live.assigneeType === "AgentBot" &&
+    live.assigneeId === ourAgentBotId;
+  // An EMPTY read still assigns the bot, since an empty assignee is exactly the state being fixed.
+  // Without a bot assignment, nobody to remove means no request: unassigning an already unassigned
+  // conversation changes nothing and could only land after somebody claimed it in the round trip
+  // (Chatwoot has no conditional assignment). An unreadable read still writes.
+  let nobodyToRemove =
+    live !== null && live.assigneeStated === true && live.assigneeType === null;
+  let handedToBot = alreadyOurs;
   // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
   // and a stale row sends "Respond now" through the ORIGIN inbox's persona. Compare-and-set on the
-  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort, since
-  // the hand-back has already happened.
+  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort. Written
+  // before the hand-back's writes because it records where the conversation IS, which holds whether
+  // or not they succeed.
   if (
     nowInbox !== null &&
     relocated !== null &&
@@ -2288,56 +2350,149 @@ export async function returnConversationToAgent(
       );
     }
   }
-  // Unreadable is NOT "nobody took it": a degraded payload with the holder unchanged is the common
-  // case, and refusing to hand back on it would leave the conversation with a human who has already
-  // walked away. The live read is the improvement over an unconditional unassign, not a new gate.
-  const live = await readHolder();
-  // A holder other than the baseline, by the whole identity ("User" and "AgentBot" are
-  // separate id namespaces). An EMPTY assignee is not a competing holder; a typed holder with no id
-  // is (unknown is not absent, so it fails closed). Written once because a live read after the
-  // unassign can still name the party just removed, and only the baseline tells them apart.
-  const holderOtherThan = (
-    seen: { assigneeType: string | null; assigneeId: number | null } | null,
-  ): { assigneeType: string | null; assigneeId: number | null } | null =>
-    seen !== null &&
-    seen.assigneeType !== null &&
-    (seen.assigneeId === null ||
-      seen.assigneeType !== baseline.assigneeType ||
-      seen.assigneeId !== baseline.assigneeId)
-      ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
-      : null;
-  const newHolder = holderOtherThan(live);
-  // Nobody to remove means no request: unassigning an already unassigned conversation changes
-  // nothing and could only land after somebody claimed it in the round trip (Chatwoot has no
-  // conditional assignment). Only for a read that came back EMPTY; an unreadable read still writes.
-  const nobodyToRemove = live !== null && live.assigneeType === null;
-  if (newHolder === null && !nobodyToRemove) {
-    try {
+  // The binding itself is re-read LAST of all, after the runnable probe and the holder read the write
+  // is decided on, under the same row lock: a rebind in that window would leave the validation judging
+  // the agent that was there before, and the write naming its bot. It refuses rather than
+  // re-validating, like the move confirmation.
+  const boundNow = await runScopedOn(base, ctx, async (db) => {
+    if (nowInbox === null) return null;
+    await db.$queryRaw`SELECT id FROM inboxes WHERE chatwoot_instance_id = ${conv.chatwootInstanceId} AND chatwoot_inbox_id = ${nowInbox.chatwootInboxId} FOR NO KEY UPDATE`;
+    return db.inbox.findFirst({
+      where: {
+        chatwootInstanceId: conv.chatwootInstanceId,
+        chatwootInboxId: nowInbox.chatwootInboxId,
+      },
+      select: { agentId: true },
+    });
+  });
+  if (
+    nowInbox !== null &&
+    (boundNow?.agentId ?? null) !== (liveInbox?.agentId ?? null)
+  ) {
+    throw new ConflictError(
+      "The responder of this inbox changed while the conversation was being returned; try again.",
+      "errors.returnResponderChanged",
+    );
+  }
+  // ONE WRITE when the bot can take it. The fork's bot assignment removes the person, names the
+  // bot and sets `pending` in one locked write, so it replaces the status call rather than following
+  // it: two writes would leave a window in which a resolve, or a rebinding of the inbox, lands between
+  // them and is undone by the second. The bot is the inbox's the hand-back was judged on, so a read
+  // naming another inbox withholds it. Anything else takes the status call and the plain unassign.
+  const botCanTakeIt =
+    newHolder === null &&
+    !alreadyOurs &&
+    ourAgentBotId !== null &&
+    (live === null ||
+      live.inboxId === null ||
+      judgedInboxId === null ||
+      live.inboxId === judgedInboxId);
+  let attempted = false;
+  let assigned: "bot" | "user" | null = null;
+  let answered = false;
+  let toggled = false;
+  try {
+    if (botCanTakeIt) {
+      attempted = true;
+      assigned = await client.assignAgentBot(
+        conv.chatwootConversationId,
+        ourAgentBotId,
+        { asAdmin: true },
+      );
+      answered = true;
+      handedToBot = assigned === "bot";
+    }
+    // NOTE: the bot already holding it still needs the status, and only an assignment that landed
+    // set it.
+    if (!(attempted && handedToBot)) {
+      await client.toggleStatus(conv.chatwootConversationId, "pending", {
+        asAdmin: true,
+      });
+      toggled = true;
+      // NOTE: the unassign is decided on a read taken AFTER the status call, so a human who claimed
+      // the conversation while it was on the wire keeps it. The user the assignment's own answer named
+      // (a Chatwoot that read the bot's id as a user's) is that assignment misread, not a newcomer.
+      if (!handedToBot && newHolder === null) {
+        const afterStatus = await readHolder();
+        const misread =
+          assigned === "user" &&
+          afterStatus?.assigneeType === "User" &&
+          afterStatus.assigneeId === ourAgentBotId;
+        if (!misread) newHolder = holderOtherThan(afterStatus);
+        if (afterStatus?.assigneeStated === true)
+          nobodyToRemove = afterStatus.assigneeType === null;
+      }
+    }
+    // NOTE: an assignment whose answer named a USER (a Chatwoot that ignores `assignee_type`) put
+    // somebody there, so the unassign follows it even onto an empty read.
+    if (
+      !handedToBot &&
+      newHolder === null &&
+      (assigned === "user" || !nobodyToRemove)
+    ) {
       await client.unassignConversation(conv.chatwootConversationId, {
         asAdmin: true,
       });
-    } catch (err) {
-      // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
-      // is still holding the conversation, which is the recoverable half of the pair (the comment on
-      // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
-      // status of a live conversation moved, and the row is what says so.
-      await recordConversationAction(ctx, base, id, {
-        action: "conversation.return",
-        before: {
-          status: conv.status,
-          assigneeType: baseline.assigneeType,
-          assigneeId: baseline.assigneeId,
-        },
-        after: {
-          status: "pending",
-          assigneeType: baseline.assigneeType,
-          assigneeId: baseline.assigneeId,
-          partial: true,
-        },
-      });
-      throw err;
     }
-  } else if (newHolder !== null) {
+  } catch (err) {
+    // NOTE: nothing was written yet, or the only write was refused outright (a 4xx is Chatwoot saying
+    // it did not apply it), so there is no effect to record.
+    if (!attempted && !toggled) throw err;
+    if (
+      !answered &&
+      !toggled &&
+      err instanceof ChatwootApiError &&
+      err.status >= 400 &&
+      err.status < 500
+    )
+      throw err;
+    // Once a bot assignment was sent, neither the holder nor the status is known to be what it was
+    // (it may have landed, or named a user with the bot's id), so both are read again for the row;
+    // unread, they are unknown. The mirror is left to the assignment webhook, which carries the
+    // version this read lacks.
+    let partial: {
+      status: string | null;
+      assigneeType: string | null;
+      assigneeId: number | null;
+      holderUnknown?: true;
+    } = {
+      status: "pending",
+      assigneeType: baseline.assigneeType,
+      assigneeId: baseline.assigneeId,
+    };
+    if (attempted) {
+      const seen = await readHolder().catch(() => null);
+      partial =
+        seen?.assigneeStated === true
+          ? {
+              status: seen.status,
+              assigneeType: seen.assigneeType,
+              assigneeId: seen.assigneeId,
+            }
+          : {
+              // An unread status is unknown unless this call's own status write landed.
+              status: seen?.status ?? (toggled ? "pending" : null),
+              assigneeType: null,
+              assigneeId: null,
+              holderUnknown: true,
+            };
+    }
+    // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. Without the bot, the status call goes
+    // first and the unassign second, so a failure leaves the status pending with the human still
+    // holding the conversation: the recoverable half of the pair. Recoverable is not invisible: the
+    // status of a live conversation moved, and the row is what says so.
+    await recordConversationAction(ctx, base, id, {
+      action: "conversation.return",
+      before: {
+        status: conv.status,
+        assigneeType: baseline.assigneeType,
+        assigneeId: baseline.assigneeId,
+      },
+      after: { ...partial, partial: true },
+    });
+    throw err;
+  }
+  if (newHolder !== null) {
     logger.info(
       "conversations: hand-back left the conversation with its new holder (conv=%d, %s=%s)",
       conv.chatwootConversationId,
@@ -2348,15 +2503,19 @@ export async function returnConversationToAgent(
   // From here the effect has happened, and the bookkeeping below can throw, so the row is
   // written in a `finally`. It carries what THIS CALL knows, not the baseline: the unassign ran, was
   // skipped because the conversation was free, or was withheld because somebody else holds it.
+  const requestedHolder: {
+    assigneeType: string | null;
+    assigneeId: number | null;
+  } =
+    newHolder ??
+    (handedToBot
+      ? { assigneeType: "AgentBot", assigneeId: ourAgentBotId }
+      : { assigneeType: null, assigneeId: null });
   let landedReturn: {
     status: string;
     assigneeType: string | null;
     assigneeId: number | null;
-  } = {
-    status: "pending",
-    assigneeType: newHolder?.assigneeType ?? null,
-    assigneeId: newHolder?.assigneeId ?? null,
-  };
+  } = { status: "pending", ...requestedHolder };
   let outcomeForRow: ReturnToAgentOutcome | null = null;
   try {
     const { state, observed } = await mirrorConsoleWrite(
@@ -2365,21 +2524,22 @@ export async function returnConversationToAgent(
       id,
       conv,
       client,
-      {
-        status: "pending",
-        ...(newHolder ?? { assigneeId: null, assigneeType: null }),
-      },
+      { status: "pending", ...requestedHolder },
       consoleWriteMark(before),
     );
     // Who the mirror ends up naming, resolved once for the event and the return. `state` (a
-    // versioned reconcile) wins; then `observed`, the unversioned read taken AFTER the unassign (a
+    // versioned reconcile) wins; then `observed`, the unversioned read taken AFTER the write (a
     // Chatwoot older than 4.0.2 sends no `updated_at`), the only look that sees a human who claimed
-    // it meanwhile (`newHolder` was read before); then `newHolder`, right when that read failed and
-    // the mirror already wrote the same holder.
+    // it meanwhile or a bot assignment cleared since; then the holder this call asked for, right when
+    // that read failed and the mirror already wrote it.
     const finalHolder = state
       ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
       : (holderOtherThan(observed) ??
-        newHolder ?? { assigneeType: null, assigneeId: null });
+        (observed !== null &&
+        observed.assigneeStated === true &&
+        observed.assigneeType === null
+          ? { assigneeType: null, assigneeId: null }
+          : requestedHolder));
     // NOTE: The row's `after` takes it HERE, the moment it is known, and not at the end: everything
     // below (the mirror's fallback write, the broadcast, the ownership read that names the outcome)
     // can throw, and the `finally` would then fall back to the pre-unassign reading and lose the
@@ -2390,13 +2550,17 @@ export async function returnConversationToAgent(
       assigneeId: finalHolder.assigneeId,
     };
     // And the ROW, which is the half a return value cannot fix. Where `observed` is what corrected the
-    // answer, `mirrorConsoleWrite` has already written its fallback — status pending, no assignee —
-    // because that is what this call asked for before anybody claimed the conversation. Leaving it
+    // answer, `mirrorConsoleWrite` has already written its fallback (status pending, the holder this
+    // call asked for) because that is what it asked for before anybody else moved the conversation. Leaving it
     // there makes the disagreement worse than the one just closed: the response and every open console
     // name the human, while the row that `shouldBotHandle` reads says the conversation is the bot's,
     // and the agent answers over them until an assignment webhook happens to arrive. It is the same
     // fallback-is-not-nobody reasoning one layer down, applied to the durable copy.
-    if (state === null && finalHolder.assigneeType !== null) {
+    if (
+      state === null &&
+      (finalHolder.assigneeType !== null ||
+        requestedHolder.assigneeType !== null)
+    ) {
       await updateMirror(ctx, base, id, {
         assigneeType: finalHolder.assigneeType,
         assigneeId: finalHolder.assigneeId,
@@ -2425,21 +2589,6 @@ export async function returnConversationToAgent(
     // withheld. Read off the value the console just received, with the OWNERSHIP rule against the
     // RESOLVED inbox's bot: the destination's own bot holding it is the success state. A holder whose
     // id never arrived still counts for `User`, while an unidentifiable AgentBot stays uncounted.
-    const ourAgentBotId =
-      liveInbox?.agentId != null
-        ? ((
-            await runScopedOn(base, ctx, (db) =>
-              db.chatwootAgentBot.findFirst({
-                where: {
-                  tenantId,
-                  chatwootInstanceId: conv.chatwootInstanceId,
-                  agentId: liveInbox?.agentId ?? 0n,
-                },
-                select: { chatwootAgentBotId: true },
-              }),
-            )
-          )?.chatwootAgentBotId ?? null)
-        : null;
     const outcome: ReturnToAgentOutcome = heldByAnotherParty(finalHolder, {
       ourAgentBotId,
     })

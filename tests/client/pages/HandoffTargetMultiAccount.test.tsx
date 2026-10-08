@@ -188,6 +188,8 @@ function renderContactAuth(
         credentialRef: "",
         baseURL: "",
         extractionPrompt: "",
+        maxOutputTokens: null,
+        reasoningEffort: null,
       },
       setVision: noop,
       visionCredBaseUrl: null,

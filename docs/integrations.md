@@ -17,7 +17,7 @@ A catalog entry is data, one of four `kind`s:
 
 The n8n-style webhook node, generalized — but the **mapping lands in a CLOSED set of our domain events** (`conversion`, `status_update`, `agent_nudge`), never arbitrary action. We are an app; `n8n-export` covers arbitrary automation.
 
-Endpoint: `POST /api/v1/integrations/inbound/:routeToken` (`integrations.controller.ts`). **JWT-less by design** — not behind `tenancyPlugin`/`requireAuth`; the route token resolves the tenant and the per-instance strategy authenticates. POST only, so the GET 404 guards and the SPA catch-all never apply (smoke-tested in `tests/api/v1/carveout.test.ts`).
+Endpoint: `POST /api/v1/integrations/inbound/:routeToken` (`integrations.controller.ts`). **JWT-less by design** — not behind `tenancyPlugin`/`requireAuth`; the route token resolves the tenant and the per-instance strategy authenticates. POST only, so the GET 404 guards and the SPA catch-all never apply (smoke-tested in `tests/api/v1/carveout.test.ts`). Like the Chatwoot receiver it is outside the global per-address limiter and answers to the receivers' own ceiling, which charges only 401s (docs/chatwoot.md, "Rate limits").
 
 Flow (`receiveInbound` → ack; `processInboundDelivery` → detached async):
 

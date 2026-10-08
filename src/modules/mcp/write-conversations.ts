@@ -95,7 +95,7 @@ export async function conversationReturn(
         action: "return",
         target,
         currentStatus: current.status,
-        note: "Returns the conversation to the bot (unassigns human, status pending). Calls Chatwoot.",
+        note: "Returns the conversation to the bot (hands it to the inbox's Agent Bot, which removes the human and sets status pending). Calls Chatwoot.",
       });
     }
     // The INJECTED factory here too, so both halves read the same Chatwoot.

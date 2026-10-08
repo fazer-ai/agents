@@ -197,6 +197,7 @@ import type {
   VaultEntry,
 } from "./types";
 import { usePlaygroundChat } from "./usePlaygroundChat";
+import { visionToForm, visionToStored } from "./visionFormState";
 
 // The Schedule a saved businessHoursId points at, built field by field rather than passed through:
 // rows can come back without windows/exceptions (the sibling picker guards them the same way), and
@@ -412,7 +413,6 @@ function readBehaviorState(a: Agent) {
   const tt = (s.tts ?? {}) as Record<string, unknown>;
   const sp = (s.split ?? {}) as Record<string, unknown>;
   const sw = (s.serviceWindow ?? {}) as Record<string, unknown>;
-  const vi = (s.vision ?? {}) as Record<string, unknown>;
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
   const ka = (s.kanban ?? {}) as Record<string, unknown>;
   const tg = (s.toolGuidance ?? {}) as Record<string, unknown>;
@@ -534,16 +534,7 @@ function readBehaviorState(a: Agent) {
         typeof ho.targetInstanceId === "number" ? ho.targetInstanceId : null,
       instructions: str(ho.instructions),
     },
-    vision: {
-      enabled: typeof vi.enabled === "boolean" ? vi.enabled : false,
-      provider: str(vi.provider) || "openai",
-      model: str(vi.model),
-      credentialRef: str(vi.credentialRef),
-      baseURL: str(vi.baseURL),
-      // NOTE: Prefill the field with the default so the operator sees (and can tweak)
-      // the real instruction; buildSettings stores null when it stays the default.
-      extractionPrompt: str(vi.extractionPrompt) || DEFAULT_EXTRACTION_PROMPT,
-    },
+    vision: visionToForm(s),
     limits: limitsToForm(s),
     attributeContext: {
       conversation: attrKeys(ac.conversation),
@@ -875,14 +866,7 @@ function AgentEditor() {
     pauseWhileAppointment: true,
   });
   // Image/document extraction (vision). Mirrors agent.settings.vision (modules/vision).
-  const [vision, setVision] = useState({
-    enabled: false,
-    provider: "openai",
-    model: "",
-    credentialRef: "",
-    baseURL: "",
-    extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
-  });
+  const [vision, setVision] = useState(() => visionToForm({}));
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call
   // cap and the per-turn history ceiling.
   const [limits, setLimits] = useState(() => limitsToForm({}));
@@ -1751,22 +1735,9 @@ function AgentEditor() {
         templateContent: serviceWindow.templateContent.trim() || null,
       },
       followUp: followUpToStored(followUp),
-      vision: {
-        enabled: vision.enabled,
-        provider: vision.provider,
-        model: vision.model.trim(),
-        credentialRef: vision.credentialRef || null,
-        // NOTE: When the credential carries a baseUrl, the runtime uses it; keep the user's own value
-        // (or null) instead of persisting the displayed credential URL (mirror STT).
-        baseURL: vision.baseURL.trim() || null,
-        // NOTE: Store null when the prompt is empty or still the default (keeps storage
-        // clean; the reader re-prefills the default on load — no false-dirty).
-        extractionPrompt:
-          vision.extractionPrompt.trim() &&
-          vision.extractionPrompt.trim() !== DEFAULT_EXTRACTION_PROMPT
-            ? vision.extractionPrompt.trim()
-            : null,
-      },
+      // NOTE: through the pair, for the same reason as `limits` below: this save REPLACES the block,
+      // and the output limits have no control to keep them (./visionFormState).
+      vision: visionToStored(vision),
       // NOTE: through the pair, for the same reason as `observability` below: this save REPLACES
       // the block, and `retrySilence` has no control to keep it (./limitsFormState).
       limits: limitsToStored(limits),

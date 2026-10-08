@@ -3242,7 +3242,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "conversation_return",
       {
         description:
-          "Return a conversation to the bot (unassign human, status → pending). Calls Chatwoot. Previews and acts ONLY when dry_run is false.",
+          "Hand a conversation to its inbox's bot (status → pending). Calls Chatwoot. Previews and acts ONLY when dry_run is false.",
         inputSchema: {
           conversation_id: z.string(),
           dry_run: z.boolean().optional(),

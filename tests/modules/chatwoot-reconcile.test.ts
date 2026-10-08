@@ -99,6 +99,7 @@ async function applyFor(
     status: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
+    assigneeStated?: boolean;
     lastActivitySec?: number;
     updatedAt: number | null;
   },
@@ -121,6 +122,9 @@ async function applyFor(
       inboxId: null,
       updatedAt: live.updatedAt,
       latestMessageId: null,
+      ...(live.assigneeStated === undefined
+        ? {}
+        : { assigneeStated: live.assigneeStated }),
     },
     base,
   });
@@ -171,6 +175,45 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(row.assigneeId).toBe(7);
     expect(row.chatwootStatusAt).toBe(T + 1);
     expect(row.chatwootAssigneeAt).toBe(T + 1);
+  });
+
+  test("a read that does not state the assignee leaves the stored holder", async () => {
+    const id = await seedRow({
+      status: "open",
+      assigneeType: "User",
+      assigneeId: 33,
+      chatwootStatusAt: T,
+      chatwootAssigneeAt: T,
+    });
+    const result = await applyFor(id, {
+      status: "resolved",
+      assigneeStated: false,
+      updatedAt: T + 1,
+    });
+    const row = await readRow(id);
+    expect(row.status).toBe("resolved");
+    expect([row.assigneeType, row.assigneeId]).toEqual(["User", 33]);
+    expect(row.chatwootAssigneeAt).toBe(T);
+    expect(result.applied).toBe(true);
+  });
+
+  // The assignee mark cannot outrank a read that said nothing about the assignee: a claim refusing
+  // its status is still the claim, and the console must not stand down as if something newer won.
+  test("a newer assignee mark does not outrank a read silent on the assignee", async () => {
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: new Date(Date.now() + 30_000),
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: null,
+      chatwootStatusAt: T,
+      chatwootAssigneeAt: T + 60,
+    });
+    const result = await applyFor(id, {
+      status: "pending",
+      assigneeStated: false,
+      updatedAt: T + 1,
+    });
+    expect(result.outrankedByVersion).toBe(false);
   });
 
   // NOTE: ── THE LOCAL STATUS CLAIM ── A live read is not evidence about a transition still on the

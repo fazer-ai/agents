@@ -83,6 +83,20 @@ function makeStub(
     // was read and while the probes were awaiting.
     movedTo?: number;
     movedFromRead?: number;
+    // `false` answers a bot assignment the way a deleted bot does (no bot in the answer), which is
+    // the case the hand-back falls back to a plain unassign on.
+    botAssignable?: boolean;
+    // ...and, refused, read the bot's id as a USER's, the way a Chatwoot that ignores `assignee_type`
+    // would, so every later read names that user.
+    botMisreadAsUser?: boolean;
+    // ...or, refused, cleared the person anyway (an older Chatwoot), so later reads say nobody.
+    botRefusedButCleared?: boolean;
+    botCleared?: boolean;
+    // From the bot assignment on, reads come back without `meta`: a payload that says nothing about
+    // the assignee, which is not one that says nobody holds it.
+    metaOmittedAfterWrite?: boolean;
+    // ...carrying a version, which is what would send the read down the reconcile path.
+    metaOmittedVersion?: number;
   } = {},
   // A holder that appears only from the SECOND live read on. The hand-back reads the conversation
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
@@ -109,11 +123,16 @@ function makeStub(
   // Set by the unassign below, and overridden by a `lateLive` holder whose read has come round:
   // somebody who claims the conversation AFTER the clear is holding it again.
   let cleared = false;
+  // Set by a bot assignment the double accepted: like the fork, it removes the person and names the
+  // bot, so every later read reports the bot until a late holder claims it back.
+  let botHolder: number | null = null;
+  let omitMeta = false;
   const calls = {
     getMessages: 0,
     sendMessage: [] as { content: string; isPrivate: boolean }[],
     assignToAgent: [] as number[],
     unassignConversation: 0,
+    assignAgentBot: [] as number[],
     toggleStatus: [] as string[],
     downloadAttachment: [] as string[],
     inboxAgentBotId: [] as number[],
@@ -184,6 +203,25 @@ function makeStub(
       cleared = true;
       return {};
     },
+    assignAgentBot: async (_cid: number, botId: number) => {
+      calls.assignAgentBot.push(botId);
+      if (live.botMisreadAsUser) {
+        live.assigneeType = "User";
+        live.assigneeId = botId;
+        return "user";
+      }
+      if (live.botRefusedButCleared) {
+        cleared = true;
+        botHolder = null;
+        return null;
+      }
+      if (live.botAssignable === false) return null;
+      cleared = true;
+      // `botCleared`: Chatwoot took the bot, and something cleared it again before the next read.
+      botHolder = live.botCleared ? null : botId;
+      if (live.metaOmittedAfterWrite) omitMeta = true;
+      return "bot";
+    },
     toggleStatus: async (_cid: number, status: string) => {
       calls.toggleStatus.push(status);
       return {};
@@ -212,25 +250,40 @@ function makeStub(
                   : { id: late.assigneeId, name: "Bea" },
             },
           }
-        : cleared
+        : omitMeta
           ? {
               id: cid,
               status: "pending",
               ...on,
-              meta: { assignee_type: null, assignee: null },
+              ...(live.metaOmittedVersion != null
+                ? { updated_at: live.metaOmittedVersion }
+                : {}),
             }
-          : {
-              id: cid,
-              status: "pending",
-              ...on,
-              meta: {
-                assignee_type: live.assigneeType ?? null,
-                assignee:
-                  live.assigneeId != null
-                    ? { id: live.assigneeId, name: "Ana" }
-                    : null,
-              },
-            };
+          : cleared
+            ? {
+                id: cid,
+                status: "pending",
+                ...on,
+                meta:
+                  botHolder === null
+                    ? { assignee_type: null, assignee: null }
+                    : {
+                        assignee_type: "AgentBot",
+                        assignee: { id: botHolder, name: "Bot" },
+                      },
+              }
+            : {
+                id: cid,
+                status: "pending",
+                ...on,
+                meta: {
+                  assignee_type: live.assigneeType ?? null,
+                  assignee:
+                    live.assigneeId != null
+                      ? { id: live.assigneeId, name: "Ana" }
+                      : null,
+                },
+              };
     },
   };
   return {
@@ -1035,9 +1088,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(row?.assigneeId).toBe(7);
   });
 
-  test("return sets pending + clears assignee in the mirror", async () => {
-    // A human is holding it, which is what makes this a hand-back with a write to perform. The
-    // unassign is aimed at somebody, so it is sent, and the mirror read afterwards sees it land.
+  test("return sets pending and hands the conversation to the inbox's bot", async () => {
+    // A human is holding it, which is what makes this a hand-back with a write to perform. The bot
+    // assignment removes them and names the bot, so the conversation is not left in "Unassigned".
     const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
     const outcome = await returnConversationToAgent(
       ctx(tenant),
@@ -1047,8 +1100,286 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
     // The control the takeover test needs: an outcome that were always "taken-over" would pass it.
     expect(outcome).toBe("returned");
-    expect(stub.calls.unassignConversation).toBe(1);
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(0);
+    // The assignment sets `pending` itself, in the same write.
+    expect(stub.calls.toggleStatus).toEqual([]);
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { status: true, assigneeType: true },
+    });
+    expect(row?.status).toBe("pending");
+    expect(row?.assigneeType).toBe("AgentBot");
+  });
+
+  test("a conversation nobody holds is handed to the bot too", async () => {
+    // An empty assignee is the state the hand-back exists to fix: no person to remove, and nobody
+    // owning it either. Its bot is assigned, and no unassign is sent at nobody.
+    const stub = makeStub({ assigneeType: null, assigneeId: null });
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(outcome).toBe("returned");
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(0);
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["AgentBot", 501]);
+  });
+
+  test("a conversation its bot already holds is not written again", async () => {
+    const stub = makeStub({ assigneeType: "AgentBot", assigneeId: 501 });
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(outcome).toBe("returned");
+    expect(stub.calls.assignAgentBot).toEqual([]);
+    expect(stub.calls.unassignConversation).toBe(0);
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
+  });
+
+  test("a bot assignment that came back naming a user is followed by an unassign, even when nobody held it", async () => {
+    // A Chatwoot that ignores `assignee_type` reads the bot's id as a USER's, so the empty read
+    // taken before the write no longer says nobody is there.
+    const stub = makeStub({
+      assigneeType: null,
+      assigneeId: null,
+      botMisreadAsUser: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(1);
+  });
+
+  test("a bot cleared again before the read after the write is not reported as the holder", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      botCleared: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual([null, null]);
+  });
+
+  test("a read after the write that omits the assignee keeps the bot that was confirmed", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      metaOmittedAfterWrite: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["AgentBot", 501]);
+  });
+
+  test("a versioned read after the write that omits the assignee does not reconcile it away", async () => {
+    // Marks below the read's version, so the reconcile applies it rather than deferring to the
+    // unversioned write: the holder it applies is the bot this hand-back asked for.
+    const version = Math.floor(Date.now() / 1000) + 3600;
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      metaOmittedAfterWrite: true,
+      metaOmittedVersion: version,
+    });
+    await suDb.conversation.update({
+      where: { id: convId },
+      data: {
+        assigneeType: "User",
+        assigneeId: 7,
+        chatwootStatusAt: version - 60,
+        chatwootAssigneeAt: version - 60,
+      },
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["AgentBot", 501]);
+  });
+
+  test("a versioned read that omits the assignee does not outrank a newer stored holder", async () => {
+    // A human assignment the mirror already holds at a later version than the read: the omitted
+    // assignee must not turn the read into an unversioned write that puts the bot back.
+    const version = Math.floor(Date.now() / 1000);
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      metaOmittedAfterWrite: true,
+      metaOmittedVersion: version,
+    });
+    await suDb.conversation.update({
+      where: { id: convId },
+      data: {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 8,
+        chatwootStatusAt: version + 60,
+        chatwootAssigneeAt: version + 60,
+      },
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 8]);
+  });
+
+  test("a human who claims it during the fallback's status call keeps it", async () => {
+    // The fourth read is the one taken after the status call, which the unassign is decided on.
+    const stub = makeStub(
+      { assigneeType: "User", assigneeId: 7, botAssignable: false },
+      { assigneeType: "User", assigneeId: 55, fromRead: 4 },
+    );
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    expect(stub.calls.unassignConversation).toBe(0);
+    expect(outcome).toBe("taken-over");
+  });
+
+  test("a human sharing the bot's id who claims it during the fallback keeps it", async () => {
+    // User and AgentBot ids are separate namespaces: only an answer that NAMED a user makes that id
+    // the assignment's own doing. Here Chatwoot answered nothing.
+    const stub = makeStub(
+      { assigneeType: "User", assigneeId: 7, botAssignable: false },
+      { assigneeType: "User", assigneeId: 501, fromRead: 4 },
+    );
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.unassignConversation).toBe(0);
+    expect(outcome).toBe("taken-over");
+  });
+
+  test("a refused assignment that already cleared the person sends no unassign at nobody", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      botRefusedButCleared: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    expect(stub.calls.unassignConversation).toBe(0);
+  });
+
+  test("an answer naming a user is unassigned even when the read after it fails", async () => {
+    // Nobody held it before, and the read after the status call is the one that would show the user
+    // the assignment named; with it unreadable, the answer itself is the evidence.
+    const stub = makeStub({
+      assigneeType: null,
+      assigneeId: null,
+      botMisreadAsUser: true,
+    });
+    const client = await stub.makeClient();
+    const real = client.getConversation.bind(client);
+    let n = 0;
+    (client as { getConversation: unknown }).getConversation = async (
+      cid: number,
+    ) => {
+      n += 1;
+      if (n === 4) throw new Error("chatwoot 502");
+      return real(cid);
+    };
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: async () => client },
+      appDb,
+    );
+    expect(stub.calls.unassignConversation).toBe(1);
+  });
+
+  test("a user carrying the bot's id after a refused assignment is still unassigned", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      botMisreadAsUser: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(1);
+  });
+
+  test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {
+    // A bot deleted in Chatwoot, or a Chatwoot that predates bot assignees, answers without a bot.
+    // The person still has to go, or the hand-back leaves them holding a pending conversation.
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      botAssignable: false,
+    });
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(outcome).toBe("returned");
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(1);
     const row = await suDb.conversation.findUnique({
       where: { id: convId },
       select: { status: true, assigneeType: true },
@@ -1510,12 +1841,43 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         appDb,
       );
       expect(outcome).toBe("returned");
-      expect(stub.calls.toggleStatus).toEqual(["pending"]);
+      // Handed back through the bot assignment, which sets `pending` in the same write.
+      expect(stub.calls.assignAgentBot).toHaveLength(1);
       expect(stub.calls.inboxAgentBotId).toEqual([92]);
       // ...AND THE MIRROR LEARNS WHERE IT IS. The reconcile after a hand-back writes status and
       // assignee, never `inboxId`, so a delayed or lost transfer webhook would leave the row naming
       // the inbox the conversation LEFT, and the console's "Respond now" would have the ORIGIN inbox's
       // persona reply on a conversation that is not its own.
+      const moved = await suDb.conversation.findUniqueOrThrow({
+        where: { id: convId },
+        select: { inboxId: true },
+      });
+      expect(moved.inboxId).toBe(staffed);
+    });
+
+    // The move is a fact read live, so the mirror learns it even when a hand-back write then fails.
+    test("the mirror learns the destination even when the fallback unassign fails", async () => {
+      await held();
+      const stub = makeStub({
+        assigneeType: "User",
+        assigneeId: 7,
+        inboxId: 92,
+        attachedBotId: { 92: 501 },
+        botAssignable: false,
+      });
+      const client = await stub.makeClient();
+      (client as { unassignConversation: unknown }).unassignConversation =
+        async () => {
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        };
+      await expect(
+        returnConversationToAgent(
+          ctx(tenant),
+          convId,
+          { makeClient: async () => client },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
       const moved = await suDb.conversation.findUniqueOrThrow({
         where: { id: convId },
         select: { inboxId: true },
@@ -1584,6 +1946,28 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(stub.calls.unassignConversation).toBe(0);
     });
 
+    // A transfer landing after the last check that could refuse is still seen by the read the write
+    // is decided on, which withholds the origin inbox's bot; the plain unassign removes the person.
+    test("a move seen by the last read does not hand it to the origin inbox's bot", async () => {
+      await held();
+      const stub = makeStub({
+        assigneeType: "User",
+        assigneeId: 7,
+        inboxId: 9,
+        movedTo: 91,
+        movedFromRead: 3,
+      });
+      await returnConversationToAgent(
+        ctx(tenant),
+        convId,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      expect(stub.calls.toggleStatus).toEqual(["pending"]);
+      expect(stub.calls.assignAgentBot).toEqual([]);
+      expect(stub.calls.unassignConversation).toBe(1);
+    });
+
     // ...and an unreadable confirmation is a blip, not a move: it fails open like every other live
     // answer on this path.
     test("an unreadable confirmation still hands back", async () => {
@@ -1610,7 +1994,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         appDb,
       );
       expect(outcome).toBe("returned");
-      expect(stub.calls.toggleStatus).toEqual(["pending"]);
+      // Handed back through the bot assignment, which sets `pending` in the same write.
+      expect(stub.calls.assignAgentBot).toHaveLength(1);
     });
 
     // NOTE: ...AND THE FINAL OWNERSHIP CHECK IS ASKED OF THE RESOLVED INBOX TOO. Asked of the row
@@ -1768,6 +2153,67 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect((caught as ConflictError).translationKey).toBe(
       "errors.returnResponderChanged",
     );
+    expect(stub.calls.toggleStatus).toEqual([]);
+    expect(stub.calls.unassignConversation).toBe(0);
+  });
+
+  // ...and a rebind landing during the holder read the write is decided on, past every other check,
+  // still stops the write: the bot it would name is the former responder's.
+  test("a responder swapped during the last holder read stops the write", async () => {
+    await suDb.conversation.update({
+      where: { id: convId },
+      data: { status: "open", assigneeType: "User", assigneeId: 7 },
+    });
+    const spare = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Spare",
+        systemPrompt: "x",
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "local",
+          baseURL: "https://llm.example.invalid/v1",
+        },
+      },
+    });
+    const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
+    const client = await stub.makeClient();
+    const real = client.getConversation.bind(client);
+    let n = 0;
+    (client as { getConversation: unknown }).getConversation = async (
+      cid: number,
+    ) => {
+      n += 1;
+      if (n === 3) {
+        await suDb.inbox.update({
+          where: { id: inboxId },
+          data: { agentId: spare.id },
+        });
+      }
+      return real(cid);
+    };
+    let caught: unknown = null;
+    try {
+      await returnConversationToAgent(
+        ctx(tenant),
+        convId,
+        { makeClient: async () => client },
+        appDb,
+      );
+    } catch (e) {
+      caught = e;
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxId },
+        data: { agentId: responderId },
+      });
+      await suDb.agent.delete({ where: { id: spare.id } });
+    }
+    expect(caught).toBeInstanceOf(ConflictError);
+    expect((caught as ConflictError).translationKey).toBe(
+      "errors.returnResponderChanged",
+    );
+    expect(stub.calls.assignAgentBot).toEqual([]);
     expect(stub.calls.toggleStatus).toEqual([]);
     expect(stub.calls.unassignConversation).toBe(0);
   });
@@ -2127,7 +2573,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       appDb,
     );
     expect(outcome).toBe("returned");
-    expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    // Handed back through the bot assignment, which sets `pending` in the same write.
+    expect(stub.calls.assignAgentBot).toHaveLength(1);
   });
 
   // NOTE: ...AND THE SAME REFUSAL ON THE FAR SIDE OF THE NETWORK. The first check runs before the
@@ -2233,8 +2680,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       { makeClient: stub.makeClient },
       appDb,
     );
-    // It DID unassign: at the moment that was decided, the holder it was aimed at was still there.
-    expect(stub.calls.unassignConversation).toBe(1);
+    // It DID hand back to the bot: at the moment that was decided, the holder it was aimed at was still there.
+    expect(stub.calls.assignAgentBot).toEqual([501]);
     expect(outcome).toBe("taken-over");
     // And the row the same call wrote agrees, which is the disagreement being closed.
     const row = await suDb.conversation.findUnique({
@@ -2247,7 +2694,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
   // The same column, the other direction, and the one the primitive answers on its own: a hand-back
   // that SUCCEEDS empties the holder, and a name left behind reads as the person still having the
   // conversation on the very screen that just said it went back to the agent.
-  test("a successful hand-back clears the name with the holder", async () => {
+  test("a successful hand-back names the bot in place of the person", async () => {
     const namedConv = (
       await suDb.conversation.create({
         data: {
@@ -2265,8 +2712,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       })
     ).id;
     try {
-      // No `lateLive`, so the read after the unassign reports the conversation as free — the shape a
-      // hand-back that worked leaves behind.
+      // No `lateLive`, so the read after the write reports the inbox's bot — the shape a hand-back
+      // that worked leaves behind, with the bot's name in place of the person's.
       const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
       expect(
         await returnConversationToAgent(
@@ -2280,7 +2727,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         where: { id: namedConv },
         select: { assigneeType: true, assigneeName: true },
       });
-      expect([row?.assigneeType, row?.assigneeName]).toEqual([null, null]);
+      expect([row?.assigneeType, row?.assigneeName]).toEqual([
+        "AgentBot",
+        "Bot",
+      ]);
     } finally {
       await suDb.conversation.delete({ where: { id: namedConv } });
     }
@@ -2424,7 +2874,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       { makeClient: stub.makeClient },
       appDb,
     );
-    expect(stub.calls.unassignConversation).toBe(1);
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(0);
     expect(outcome).toBe("taken-over");
     // And the ROW, which no return value reaches. The unversioned write already stored what this call
     // ASKED for — pending, unassigned — so correcting only the answer leaves the durable copy saying
@@ -2457,7 +2908,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       appDb,
     );
     expect(outcome).toBe("returned");
-    expect(stub.calls.unassignConversation).toBe(1);
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(0);
   });
 
   // A payload that names a person and does not identify them. `parseLiveConversation` accepts that

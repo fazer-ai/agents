@@ -596,7 +596,7 @@ const config = {
       RATE_LIMIT_USER_PER_MIN,
       "RATE_LIMIT_USER_PER_MIN",
       600,
-      "It is the ceiling every request that is not static or MCP transport counts against.",
+      "It is the ceiling every request that is not static, MCP transport or a webhook delivery counts against.",
       MAX_COUNT,
     ),
     mcpPerMin: parseIntSetting(

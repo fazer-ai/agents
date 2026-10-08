@@ -112,6 +112,8 @@ export function behaviorTabProps(
       credentialRef: "",
       baseURL: "",
       extractionPrompt: "Leia.",
+      maxOutputTokens: null,
+      reasoningEffort: null,
     },
     setVision: noop,
     visionCredBaseUrl: null,

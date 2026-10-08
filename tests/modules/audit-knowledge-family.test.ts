@@ -545,6 +545,11 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
       proposedTitle: "Título revisado",
       proposedContent: `${PROPOSAL} revisado`,
       base: appDb,
+      // NOTE: The re-embed after an edit is best effort and outside the audit's transaction, so a
+      // provider that answers at once keeps this test about the audit row and off the network.
+      embedText: async () => {
+        throw new Error("no embedding provider in this test");
+      },
     });
     expect(outcome).toBe("updated");
     const [row, ...rest] = await rows();

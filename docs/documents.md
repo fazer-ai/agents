@@ -277,9 +277,20 @@ whose handler moves every overdue `PENDING` request of the tenant to `EXPIRED`. 
 depend on the job running on time: approval and rejection refuse a request past its `expiresAt`
 whatever its status says, and move it to `EXPIRED` themselves.
 
+**While a request is pending** the agent stays on the conversation and is told so twice. The tool's
+answer says the document went to the team, that the agent may say the team is preparing it, and that
+it promises no time. And every later turn of the conversation, reactive or proactive, carries one line
+naming the documents still waiting (`pendingApprovalNotice`): `PENDING` and not past `expiresAt`, read
+by the conversation row, or by the thread when the turn has none. The line is read once per turn and
+travels where the spoken notice does, after the history (docs/graph.md, the tool budget's wrap-up), so
+the cached prefix survives and a customer cannot forge it. It names no time: the validity is how long
+the team may take, not when the customer will receive anything. It is what keeps the agent from
+offering the document again once the tool's answer has left the history window, and it tells the
+agent to bring it up only when the customer asks. A failed read costs the line, never the turn.
+
 Any user of the tenant decides a request (`requireRole: "AGENT"`): approving is reading a document and
-saying yes, not configuring anything. Delivery on approval, what the agent says while a request is
-pending, the alert and the console page are the sibling issues of #1077.
+saying yes, not configuring anything. Delivery on approval, the alert and the console page are the
+sibling issues of #1077.
 
 ## Granting
 

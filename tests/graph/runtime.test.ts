@@ -10847,6 +10847,132 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
     });
   });
+  // A document waiting on the team's approval is a standing fact of the conversation: every turn is
+  // told about it, not only the turn whose tool result said so, because that result scrolls out of
+  // the history window and a fresh episode never had it.
+  describe("a document waiting on approval (docs/documents.md, Approval)", () => {
+    async function pendingTurn(
+      conv: number,
+      model: ScriptedCaptureModel,
+      opts: { messageId?: number; checkpointer?: MemorySaver } = {},
+    ) {
+      const log: Array<{ kind: string; text: string; reply?: string }> = [];
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({
+          conversationId: conv,
+          message: {
+            id: opts.messageId ?? 1,
+            content: "vocês abrem sábado?",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: recordingAudioClient(log),
+          checkpointer: opts.checkpointer ?? new MemorySaver(),
+        },
+      });
+    }
+
+    async function requestOn(
+      conv: number,
+      title: string,
+      status: string,
+      expiresAt = new Date(Date.now() + 86_400_000),
+    ) {
+      const c = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { id: true, threadId: true },
+      });
+      await suDb.documentApprovalRequest.create({
+        data: {
+          tenantId,
+          title,
+          threadId: c.threadId,
+          chatwootInstanceId: instanceId,
+          conversationId: c.id,
+          idempotencyKey: `pending-${conv}-${title}-${status}`,
+          status,
+          snapshot: {},
+          expiresAt,
+        },
+      });
+    }
+
+    test("every turn of the conversation names the pending document and promises no time", async () => {
+      await seedConversation(1138_01, null);
+      await requestOn(1138_01, "Orçamento", "PENDING");
+      const checkpointer = new MemorySaver();
+      const first = new ScriptedCaptureModel([{ reply: "Abrimos sim." }]);
+      await pendingTurn(1138_01, first, { checkpointer });
+      const second = new ScriptedCaptureModel([{ reply: "Até as 12h." }]);
+      await pendingTurn(1138_01, second, { checkpointer, messageId: 2 });
+      for (const model of [first, second]) {
+        const system = systemOf(model.seen[0] ?? []);
+        expect(system).toContain("aguardando a aprovação da equipe");
+        expect(system).toContain("Orçamento");
+        expect(system).toContain("não prometa prazo");
+        expect(system).not.toMatch(/\d{1,2}h|\d{4}-\d{2}-\d{2}|24 horas/);
+      }
+    });
+
+    test("a request of another conversation, or one no longer pending, adds no line", async () => {
+      await seedConversation(1138_02, null);
+      await seedConversation(1138_03, null);
+      await requestOn(1138_03, "Proposta", "PENDING");
+      await seedConversation(1138_04, null);
+      await requestOn(1138_04, "Orçamento", "APPROVED");
+      await requestOn(1138_04, "Recibo", "REJECTED");
+      await requestOn(1138_04, "Contrato", "EXPIRED");
+      await requestOn(
+        1138_04,
+        "Vencido",
+        "PENDING",
+        new Date(Date.now() - 60_000),
+      );
+      for (const conv of [1138_02, 1138_04]) {
+        const model = new ScriptedCaptureModel([{ reply: "Abrimos sim." }]);
+        await pendingTurn(conv, model);
+        expect(systemOf(model.seen[0] ?? [])).not.toContain(
+          "aguardando a aprovação da equipe",
+        );
+      }
+    });
+
+    test("two pending documents are named once each", async () => {
+      await seedConversation(1138_05, null);
+      await requestOn(1138_05, "Orçamento", "PENDING");
+      await requestOn(1138_05, "Proposta", "PENDING");
+      await suDb.documentApprovalRequest.create({
+        data: {
+          tenantId,
+          title: "Orçamento",
+          threadId: `${tenantId}:${instanceId}:${1138_05}`,
+          chatwootInstanceId: instanceId,
+          conversationId: (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: 1138_05 },
+            })
+          ).id,
+          idempotencyKey: "segundo-orcamento",
+          snapshot: {},
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+      const model = new ScriptedCaptureModel([{ reply: "Abrimos sim." }]);
+      await pendingTurn(1138_05, model);
+      const system = systemOf(model.seen[0] ?? []);
+      expect(system.split("aguardando a aprovação da equipe")).toHaveLength(2);
+      expect(system.split("Orçamento")).toHaveLength(2);
+      expect(system).toContain("Proposta");
+    });
+  });
+
   // NOTE: A metade REATIVA da idade da mensagem: a entrega do webhook traz a mensagem, então o
   // instante existe antes do prompt ser composto e vai direto ao `loadAgentConfig`. O caso que dói é
   // a entrega que chega tarde (a fila do Chatwoot parada, o webhook reprocessado, a mensagem que

@@ -56,6 +56,7 @@ import {
   HandoffThenThrowModel,
   PromptCapturingModel,
   ResolveThenReplyModel,
+  ScriptedCaptureModel,
   SilentHandoffThenResolveModel,
 } from "../utils/scripted-models";
 
@@ -6610,6 +6611,46 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       expect(prompt).toContain("Idade: há 3 horas");
       expect(prompt).not.toContain("{{idade_ultima_mensagem}}");
     });
+  });
+
+  test("a proactive turn is told of a document still waiting on approval", async () => {
+    await seedConv(11380, null);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 11380 },
+      select: { id: true, threadId: true },
+    });
+    await suDb.documentApprovalRequest.create({
+      data: {
+        tenantId,
+        title: "Orçamento",
+        threadId: conv.threadId,
+        chatwootInstanceId: instanceId,
+        conversationId: conv.id,
+        idempotencyKey: "nudge-pending-11380",
+        snapshot: {},
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    const s = stub();
+    const capture = new ScriptedCaptureModel([{ reply: "Oi, tudo certo?" }]);
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:11380`,
+      nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+      base: appDb,
+      deps: {
+        makeModel: () => capture as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    const system = (capture.seen[0] ?? [])
+      .filter((m) => m.getType() === "system")
+      .map((m) => String(m.content))
+      .join("\n");
+    expect(system).toContain("aguardando a aprovação da equipe: Orçamento");
   });
 
   // A follow-up's closing step left without instructions: its post-actions are the whole occasion.

@@ -2091,6 +2091,8 @@ export interface GraphBuildDeps {
   noReplyChannel?: boolean;
   // The spoken-reply notice, asked every round. See BuildAgentGraphParams.spokenNotice.
   spokenNotice?: () => string | null;
+  // See BuildAgentGraphParams.standingNotices.
+  standingNotices?: string[];
   // The retry of an unexplained silence. See BuildAgentGraphParams.retrySilence. Only
   // the reactive turn passes it; the agent's own switch is read by the caller, which also knows what
   // the turn already delivered.
@@ -2234,6 +2236,7 @@ export async function buildModelAndGraph(
     onDanglingToolCalls: deps.onDanglingToolCalls,
     noReplyChannel: deps.noReplyChannel,
     spokenNotice: deps.spokenNotice,
+    standingNotices: deps.standingNotices,
     stillWanted: deps.stillWanted,
     retrySilence: deps.retrySilence,
     onSilenceRetry: deps.onSilenceRetry,

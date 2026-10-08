@@ -317,7 +317,9 @@ export async function issueFrozenDocument(params: {
   ctx: TenantContext;
   base?: PrismaClient;
   storageDir?: string;
-  templateId: bigint;
+  // Null once the template is deleted: a key that already names a row still answers with it, and
+  // only a new row needs the counter the template holds.
+  templateId: bigint | null;
   title: string;
   numberPrefix: string | null;
   snapshot: DocumentSnapshot;
@@ -344,6 +346,14 @@ export async function issueFrozenDocument(params: {
     });
   }
 
+  const templateId = params.templateId;
+  if (templateId === null) {
+    throw new AppError(
+      "this document could not be numbered",
+      409,
+      "errors.documentNotNumbered",
+    );
+  }
   // `create`, not `createMany({ skipDuplicates })`, because the ROW is needed. Three scoped
   // calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so the winner must
   // be re-read outside the transaction that lost, or the second caller gets a 500.
@@ -351,7 +361,7 @@ export async function issueFrozenDocument(params: {
     db.issuedDocument.create({
       data: {
         tenantId,
-        templateId: params.templateId,
+        templateId,
         title: params.title,
         // FROZEN with the row, not joined from the template when the number is printed: the prefix
         // is part of how this document identifies itself. Read live, renaming ORC- to PROP- would
@@ -389,7 +399,7 @@ export async function issueFrozenDocument(params: {
     // A crash between the two leaves the row unnumbered, which the load below heals — monotonic,
     // with a gap only where a process actually died.
     await runScopedOn(base, ctx, (db) =>
-      assignNumber(db, params.templateId, created.id),
+      assignNumber(db, templateId, created.id),
     );
   }
   const row = await runScopedOn(base, ctx, (db) =>

@@ -3,7 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
-import { enqueueJob } from "@/modules/scheduler/service";
+import { upsertJobRow } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
 import { formatDate } from "./format";
@@ -123,8 +123,10 @@ export async function createApprovalRequest(params: {
   const expiresAt = new Date(
     params.now.getTime() + frozen.template.approvalTtlHours * 3_600_000,
   );
-  const created = await runScopedOn(base, ctx, (db) =>
-    db.documentApprovalRequest.create({
+  // One transaction for the request and its expiry job: a request committed without the job would
+  // stay PENDING past its time, and a retried turn returns the request before it could re-arm.
+  const created = await runScopedOn(base, ctx, async (db) => {
+    const row = await db.documentApprovalRequest.create({
       data: {
         tenantId,
         templateId: frozen.template.id,
@@ -139,8 +141,16 @@ export async function createApprovalRequest(params: {
         expiresAt,
       },
       select: SELECT,
-    }),
-  ).catch((err: unknown) => {
+    });
+    await upsertJobRow(db, {
+      tenantId,
+      kind: "DOCUMENT_APPROVAL_EXPIRY",
+      dedupeKey: expiryJobKey(row.id),
+      runAt: expiresAt,
+      rearm: "new-work",
+    });
+    return row;
+  }).catch((err: unknown) => {
     // NOTE: a P2002 aborts the transaction it was raised in, so the winner is read in a new one.
     if (
       err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -150,17 +160,7 @@ export async function createApprovalRequest(params: {
     }
     throw err;
   });
-  if (created) {
-    await enqueueJob({
-      tenantId,
-      kind: "DOCUMENT_APPROVAL_EXPIRY",
-      dedupeKey: expiryJobKey(created.id),
-      runAt: expiresAt,
-      rearm: "new-work",
-      base,
-    });
-    return toDto(created);
-  }
+  if (created) return toDto(created);
   const existing = await runScopedOn(base, ctx, (db) =>
     db.documentApprovalRequest.findUnique({
       where: {
@@ -263,7 +263,8 @@ function expired(): AppError {
 // (PENDING → APPROVED, only while unexpired): a rejection or the expiry racing it cannot both win,
 // and a second approval, in parallel or later, finds APPROVED and lands on the same issued row
 // through the key. A failure after the claim leaves an APPROVED request with no document, which
-// approving again completes.
+// approving again completes; once the document exists, approving again returns it even with the
+// template deleted.
 export async function approveDocumentRequest(params: {
   ctx: TenantContext;
   requestId: bigint;
@@ -292,13 +293,6 @@ export async function approveDocumentRequest(params: {
       throw expired();
     }
     throw notPending(row.status);
-  }
-  if (row.templateId === null) {
-    throw new AppError(
-      "this document could not be numbered",
-      409,
-      "errors.documentNotNumbered",
-    );
   }
   const idempotencyKey = `approval:${row.id}`;
   const document = await issueFrozenDocument({

@@ -280,6 +280,9 @@ const exportedDocumentTemplateSchema = z.object({
   // Optional so a bundle from before this field still imports; absent means enabled, which is the
   // column default and what every such bundle described.
   enabled: z.boolean().optional(),
+  // Optional for the same reason; absent means what every such bundle described: no approval.
+  requiresApproval: z.boolean().optional(),
+  approvalTtlHours: z.number().optional(),
 });
 // One source document of a knowledge base. Only the extracted TEXT travels (content); the destination
 // re-chunks + re-embeds. `sourceType` is a plain string (matches the DB column) so a future source kind
@@ -948,6 +951,10 @@ export async function exportAgent(
           // with the column default — enabled — and the destination agent can issue a document the
           // source instance had deliberately made unavailable.
           enabled: r.enabled,
+          // A template that asks for a person to approve each document asks it at the destination
+          // too; recreated with the column default, the imported agent would send without review.
+          requiresApproval: r.requiresApproval,
+          approvalTtlHours: r.approvalTtlHours,
         })),
         knowledgeBases: kbRows.map((r) => ({
           name: r.name,
@@ -1882,6 +1889,9 @@ function readBundledTemplate(
       name: tpl.name,
       description: tpl.description ?? null,
       numberPrefix: tpl.numberPrefix ?? null,
+      ...(tpl.approvalTtlHours !== undefined
+        ? { approvalTtlHours: tpl.approvalTtlHours }
+        : {}),
     }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
   if (metaFault) return { ok: false, reason: metaFault };
   const content = parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
@@ -2567,6 +2577,10 @@ async function createMissingComponents(
           ) as unknown as Prisma.InputJsonValue,
           numberPrefix: tpl.numberPrefix ?? null,
           enabled: tpl.enabled ?? true,
+          requiresApproval: tpl.requiresApproval ?? false,
+          ...(tpl.approvalTtlHours !== undefined
+            ? { approvalTtlHours: tpl.approvalTtlHours }
+            : {}),
         },
       ],
       skipDuplicates: true,

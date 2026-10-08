@@ -128,6 +128,10 @@ export interface BuildAgentGraphParams {
   // where the wrap-up does (see `LATE_SYSTEM_MESSAGE`), never as a human message, so everything before
   // it is the bytes a text turn sends and the cached prefix survives. It is persisted on no round.
   spokenNotice?: () => string | null;
+  // Facts of the conversation that hold for the whole turn, read once by the caller before it: a
+  // document still waiting on the team's approval. They travel where the spoken notice does, after the
+  // history, so the cached prefix survives and a customer cannot forge them.
+  standingNotices?: string[];
   // The deadline on each call to the PRIMARY, retries included: the fallback's 45 s when one was built
   // (the primary then has one attempt), the agent's `modelCallTimeoutMs` when none was (see
   // buildModelAndGraph). Absent means that same default, so no call runs unbounded.
@@ -503,6 +507,7 @@ export function buildAgentGraph({
   stillWanted,
   noReplyChannel,
   spokenNotice,
+  standingNotices,
   primaryDeadlineMs,
   signal: jobSignal,
   retrySilence,
@@ -649,6 +654,7 @@ export function buildAgentGraph({
     const notice = noticeText ? [noticeText] : [];
     const lateTexts = [
       ...notice,
+      ...(standingNotices ?? []),
       ...(softLimit ? [wrapUpText] : []),
       ...(toldOfCap ? [capText] : []),
     ];

@@ -16,6 +16,7 @@ import {
   issueOrRequestApproval,
   KeyAnswered,
   listApprovalRequests,
+  pendingApprovalNotice,
   rejectDocumentRequest,
   renderApprovalPreview,
 } from "@/modules/documents/approval";
@@ -244,6 +245,9 @@ describe.skipIf(!dbUp)("document approval", () => {
     const again = String(await tool(newTurnState()).invoke(ARGS));
     const after = await counts();
     expect(out).toContain("revisão");
+    expect(out).toContain("a equipe está preparando");
+    expect(out).toContain("Não prometa prazo");
+    expect(out).not.toMatch(/ORC-\d|\d{1,2}h|\d{4}-\d{2}-\d{2}/);
     expect(again).toBe(out);
     expect(turnState.pendingAttachments).toHaveLength(0);
     expect(after.requests - before.requests).toBe(1);
@@ -732,6 +736,40 @@ describe.skipIf(!dbUp)("document approval", () => {
     } finally {
       await espiao.$disconnect();
     }
+  });
+
+  test("off a conversation row the pending line is read by thread, and only that thread's", async () => {
+    const mine = `${tenantA}:pending:1`;
+    const other = `${tenantA}:pending:2`;
+    for (const [threadId, title] of [
+      [mine, "Orçamento do meu fio"],
+      [other, "Orçamento de outro fio"],
+    ] as const) {
+      await suDb.documentApprovalRequest.create({
+        data: {
+          tenantId: tenantA,
+          title,
+          threadId,
+          idempotencyKey: `thread-notice-${threadId}`,
+          snapshot: {},
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+    }
+    const line = await pendingApprovalNotice(
+      tenantA,
+      { conversationId: null, threadId: mine },
+      appDb,
+    );
+    expect(line).toContain("Orçamento do meu fio");
+    expect(line).not.toContain("Orçamento de outro fio");
+    expect(
+      await pendingApprovalNotice(
+        tenantA,
+        { conversationId: null, threadId: `${tenantA}:pending:3` },
+        appDb,
+      ),
+    ).toBeNull();
   });
 
   test("expiry moves only overdue pending requests, and approval refuses one even before it runs", async () => {

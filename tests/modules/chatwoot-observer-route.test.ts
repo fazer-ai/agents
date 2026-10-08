@@ -1961,6 +1961,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     await suDb.schedulerJob.deleteMany({
       where: { tenantId, kind: "OBSERVE" },
     });
+    let failedReads = 0;
     // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
     const failing = (target: any): any =>
       new Proxy(target, {
@@ -1976,7 +1977,12 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
             get(d, k, r) {
               const inner = Reflect.get(d, k, r);
               if (k !== "findFirst" && k !== "findUnique") return inner;
-              return async () => {
+              // NOTE: The mirror resolves the inbox by its Chatwoot key before anything else;
+              // failing that read fails the delivery outright and never reaches the arming block.
+              return async (args: { where?: Record<string, unknown> }) => {
+                if (args?.where?.tenantId_chatwootInstanceId_chatwootInboxId)
+                  return inner.call(d, args);
+                failedReads += 1;
                 throw new Error("pool exhausted");
               };
             },
@@ -1992,6 +1998,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       failing(appDb) as typeof appDb,
     );
     // Nothing armed, and the delivery still settled: the block is best-effort as a whole.
+    expect(failedReads).toBeGreaterThan(0);
     expect(await observeRows()).toHaveLength(0);
     expect(
       (

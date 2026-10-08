@@ -16,6 +16,10 @@ import {
   maxIncomingId,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
+import {
+  parseLiveConversation,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
 import {
   type HandoffConfig,
@@ -230,6 +234,24 @@ export async function announceFailedTurn(params: {
         stillOurs: async () => {
           stillLost = isTurnLost(await params.assess());
           if (!stillLost) return false;
+          // Chatwoot first, since the mirror can be behind it: a person who claimed the conversation
+          // while it stayed `pending` would otherwise lose it to the pinned target. Unreadable does not
+          // block; the mirror still answers.
+          const live = parseLiveConversation(
+            await client.getConversation(conversationId).catch(() => null),
+          );
+          if (
+            live !== null &&
+            !shouldBotHandle(
+              {
+                assigneeType: live.assigneeType,
+                assigneeId: live.assigneeId,
+                status: live.status,
+              },
+              { ourAgentBotId: persona.chatwootAgentBotId },
+            )
+          )
+            return false;
           return (
             await conversationOwnershipNow({
               tenantId,

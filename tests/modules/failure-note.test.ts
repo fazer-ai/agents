@@ -107,6 +107,9 @@ interface Write {
   body: Record<string, unknown>;
 }
 let writes: Write[] = [];
+// What Chatwoot itself says about a conversation, where a test needs it to differ from the mirror.
+// A conversation absent here answers 404, which the hand-over reads as "unreadable".
+const liveConversations = new Map<number, Record<string, unknown>>();
 let inbound: Array<{ id: number; message_type: number; content: string }> = [];
 let messagesFail = false;
 let realFetch: typeof globalThis.fetch;
@@ -132,6 +135,12 @@ function installChatwootDouble(): void {
     if (messages && (init?.method ?? "GET") === "GET") {
       if (messagesFail) return json({ error: "boom" }, 500);
       return json({ payload: inbound });
+    }
+    const one = url.match(/\/conversations\/(\d+)$/);
+    if (one && (init?.method ?? "GET") === "GET") {
+      const live = liveConversations.get(Number(one[1]));
+      if (!live) return json({ error: "not found" }, 404);
+      return json({ id: Number(one[1]), ...live });
     }
     const toggle = url.match(/\/conversations\/(\d+)\/toggle_status$/);
     if (toggle && init?.method === "POST") {
@@ -314,6 +323,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
   afterEach(() => {
     posted = [];
     writes = [];
+    liveConversations.clear();
     inbound = [];
     messagesFail = false;
   });
@@ -537,6 +547,28 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
     ).toEqual(["note"]);
     expect(posted[0]?.content).toContain("Alguém da equipe precisa assumir.");
+  });
+
+  test("a person who claimed the conversation in Chatwoot keeps it, even with the mirror behind", async () => {
+    const conv = await seedConversation();
+    // The mirror still says pending and unassigned; Chatwoot already has an attendant on it.
+    liveConversations.set(conv, {
+      status: "pending",
+      meta: { assignee_type: "User", assignee: { id: 41 } },
+    });
+    await withHandoff({ mode: "pinned", targetTeamId: 77 }, () =>
+      announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      }),
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
   });
 
   test("the note's window coalesces the note, never the hand-over", async () => {

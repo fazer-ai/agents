@@ -843,6 +843,25 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     }
   });
 
+  test("a provider that outlives the tick's deadline is a timeout, on the line and to the scheduler", async () => {
+    await setMonitoring(decisionsBlock());
+    const hanging = ((_u: RequestInfo | URL, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      })) as typeof fetch;
+    const { res } = await tick(hanging, [], {
+      timeoutMs: 500,
+      afterFailure: "retry",
+    });
+    expect(res.outcome).toBe("fail");
+    expect(JSON.stringify(res)).toContain("timeout");
+    const d = await detail();
+    expect(d.failed).toBe("decision_call");
+    expect(d.failure).toBe("timeout");
+  });
+
   test("an action that outlives the tick's deadline ends the tick, and a committed one is not retried", async () => {
     await setMonitoring(
       decisionsBlock({
@@ -871,6 +890,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     const d = line.detail as Record<string, unknown>;
     expect(d.failed).toBe("decision_actions");
     expect(d.retried).toBe(false);
+    expect(d.failure).toBe("timeout");
   });
 
   test("once the deadline passes, no later rule's action starts", async () => {

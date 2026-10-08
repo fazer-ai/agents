@@ -1563,7 +1563,8 @@ export async function runObserve(
       // Nothing ran yet, so this is the uncommitted-failure rule: `info` while the scheduler retries,
       // `warn` on the last attempt. The closed vocabulary only: a provider body can echo the text.
       const failure = uncommittedFailure();
-      const why = providerFailure(err);
+      // `underSignal` rejects with a plain error, so the deadline is asked rather than the error read.
+      const why = providerFailure(err, deadline.aborted);
       decisionLine(
         "error",
         {
@@ -1621,7 +1622,7 @@ export async function runObserve(
         "error",
         {
           failed: "decision_actions",
-          ...failureDetail(err),
+          ...(deadline.aborted ? { failure: "timeout" } : failureDetail(err)),
           toolCalls: toolsRan - noEffect,
           ...(committed ? { retried: false } : failure.detail),
         },
@@ -1630,7 +1631,7 @@ export async function runObserve(
       if (committed) return { outcome: "done" };
       return {
         outcome: "fail",
-        error: `observe: decision actions did not finish (${providerFailure(err)})`,
+        error: `observe: decision actions did not finish (${providerFailure(err, deadline.aborted)})`,
       };
     }
     toolLogger.settle();

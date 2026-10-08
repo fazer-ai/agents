@@ -179,6 +179,7 @@ describe.skipIf(!dbUp)("document approval", () => {
       if (!tid) continue;
       for (const table of [
         "scheduler_jobs",
+        "audit_logs",
         "document_approval_requests",
         "issued_documents",
         "document_templates",
@@ -339,6 +340,11 @@ describe.skipIf(!dbUp)("document approval", () => {
       where: { id },
     });
     expect(req.status).toBe("APPROVED");
+    // One trail row for the decision, however many callers raced to make it.
+    const trail = await suDb.auditLog.findMany({
+      where: { tenantId: tenantA, target: `document_approval:${id}` },
+    });
+    expect(trail.map((t) => t.action)).toEqual(["document_approval.approve"]);
     expect(req.issuedDocumentId).toBe(issued.id);
     const later = await approveDocumentRequest({
       ctx: ctx(tenantA),
@@ -457,6 +463,13 @@ describe.skipIf(!dbUp)("document approval", () => {
     });
     expect(done.status).toBe("REJECTED");
     expect(done.note).toBe("preço errado");
+    const trail = await suDb.auditLog.findMany({
+      where: { tenantId: tenantA, target: `document_approval:${fresh}` },
+    });
+    expect(trail.map((t) => t.action)).toEqual(["document_approval.reject"]);
+    expect(JSON.stringify(trail.map((t) => [t.before, t.after]))).not.toContain(
+      "preço errado",
+    );
     const second = await refusal(
       approveDocumentRequest({
         ctx: ctx(tenantA),

@@ -625,6 +625,102 @@ describe.skipIf(!dbUp)("vision retry", () => {
     );
   });
 
+  // The inbound path hands the agent's ceiling to the provider, not just the playground.
+  test("the agent's output ceiling reaches the inbound provider request", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const impl = (async (_url: string | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse((init?.body as string) ?? "{}"));
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: EXTRACTED }] } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 704,
+      messageId: 44,
+      attachmentId: 7,
+      dataUrl: "https://chat.example.com/recibo.png",
+      cfg: { ...(await cfg()), maxOutputTokens: 3000 },
+      base: appDb,
+      deps: {
+        makeClient: stubClient([]),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    expect(out?.text).toBe(EXTRACTED);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.generationConfig).toEqual({ maxOutputTokens: 3000 });
+  });
+
+  // A read the provider cut at the output ceiling still returns its text, so without this mark
+  // the cut was invisible: the agent answered from half a document and nothing said so.
+  test("a read cut by the output ceiling is marked truncated on its vision line, and only that one", async () => {
+    const reply = (stop: string, text: string) =>
+      (async () =>
+        new Response(
+          JSON.stringify({
+            content: [{ type: "text", text }],
+            stop_reason: stop,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )) as unknown as typeof fetch;
+    const provider = getVisionProvider("anthropic") as VisionProvider;
+    const run = (turnId: string, fetchImpl: typeof fetch) =>
+      extractWithRetry({
+        provider,
+        providerName: "anthropic",
+        model: "claude-haiku-5-5",
+        flow: { tenantId, turnId, source: "inbox", base: appDb },
+        sleep: async () => {},
+        req: {
+          bytes: new ArrayBuffer(4),
+          mimeType: "application/pdf",
+          kind: "document",
+          prompt: "p",
+          model: "claude-haiku-5-5",
+          apiKey: "k",
+          baseURL: null,
+          fetchImpl,
+          maxOutputTokens: null,
+          reasoningEffort: null,
+        },
+      });
+    const cutTurn = `vision-cut-${process.pid}`;
+    const wholeTurn = `vision-whole-${process.pid}`;
+    const cut = await run(cutTurn, reply("max_tokens", 'com status "APRO'));
+    const whole = await run(
+      wholeTurn,
+      reply("end_turn", "Documento completo."),
+    );
+    expect(cut.text).toBe('com status "APRO');
+    expect(whole.text).toBe("Documento completo.");
+
+    const cutRows = await flowLogRows(suDb, {
+      where: { tenantId, turnId: cutTurn, stage: "vision" },
+      select: { detail: true, status: true, errorMessage: true },
+    });
+    expect(cutRows).toHaveLength(1);
+    const cutDetail = (cutRows[0]?.detail ?? {}) as Record<string, unknown>;
+    expect(cutDetail.truncated).toBe(true);
+    expect(cutRows[0]?.status).toBe("ok");
+    // The flow log never carries message text, and a cut read is no exception.
+    expect(JSON.stringify(cutRows[0])).not.toContain("APRO");
+
+    const wholeRows = await flowLogRows(suDb, {
+      where: { tenantId, turnId: wholeTurn, stage: "vision" },
+      select: { detail: true },
+    });
+    expect(wholeRows).toHaveLength(1);
+    expect(wholeRows[0]?.detail as Record<string, unknown>).not.toHaveProperty(
+      "truncated",
+    );
+  });
+
   test("a provider that is down for every attempt gives up bounded, not forever", async () => {
     const { impl, calls } = geminiFetch([503]);
     const meta: Array<Record<string, unknown>> = [];

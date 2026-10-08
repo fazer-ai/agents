@@ -39,6 +39,8 @@ function renderWithProvider(
           credentialRef: "",
           baseURL,
           extractionPrompt: "Leia.",
+          maxOutputTokens: null,
+          reasoningEffort: null,
         },
         visionCredBaseUrl: credBaseUrl,
       })}

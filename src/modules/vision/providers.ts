@@ -6,6 +6,18 @@ import { reportedCostFromUsage } from "@/modules/pricing/reported";
 import { mediaSubtype, normalizeMediaType } from "./media-conversion";
 export type VisionKind = "image" | "document";
 
+import {
+  ANTHROPIC_VISION_DEFAULT_MAX_TOKENS,
+  type VisionReasoningEffort,
+} from "./output-limits";
+
+export {
+  ANTHROPIC_VISION_DEFAULT_MAX_TOKENS,
+  VISION_MAX_OUTPUT_TOKENS_CAP,
+  VISION_REASONING_EFFORTS,
+  type VisionReasoningEffort,
+} from "./output-limits";
+
 export interface VisionRequest {
   bytes: ArrayBuffer;
   mimeType: string; // resolved (image/* or application/pdf)
@@ -19,6 +31,10 @@ export interface VisionRequest {
   // constant here on purpose: the caller owns the total, so it can spend what is left of it rather
   // than granting every attempt the whole ceiling.
   timeoutMs: number;
+  // From `settings.vision`, already validated by the reader. Absent or null = not configured, and the
+  // request carries no field for it (anthropic's required `max_tokens` takes its default).
+  maxOutputTokens?: number | null;
+  reasoningEffort?: VisionReasoningEffort | null;
 }
 
 // What a vision call cost, in the provider's own numbers, returned alongside the text by every
@@ -39,6 +55,10 @@ export interface VisionUsage {
 export interface VisionResult {
   text: string;
   usage: VisionUsage | null;
+  // The provider stopped at the output ceiling (`max_tokens`, `length`, `MAX_TOKENS`): the text is
+  // what was read before the cut, and the reply does not say so anywhere else.
+  // Absent reads as false, for a provider that has no stop signal to report.
+  truncated?: boolean;
 }
 
 export interface VisionProvider {
@@ -136,7 +156,7 @@ async function chatCompletionsExtract(
   defaultBase: string,
 ): Promise<VisionResult> {
   const base = (req.baseURL ?? defaultBase).replace(/\/+$/, "");
-  const body = {
+  const body: Record<string, unknown> = {
     model: req.model,
     messages: [
       {
@@ -145,6 +165,14 @@ async function chatCompletionsExtract(
       },
     ],
   };
+  // NOTE: Each key only when configured, so an agent that set neither sends today's body.
+  // OpenAI's own endpoint refuses `max_tokens` on its reasoning models and asks for
+  // `max_completion_tokens`; OpenRouter and self-hosted servers are only known to read the older
+  // spelling. The call carries no tools, which is what lets chat completions take `reasoning_effort`.
+  if (req.maxOutputTokens != null)
+    body[providerName === "openai" ? "max_completion_tokens" : "max_tokens"] =
+      req.maxOutputTokens;
+  if (req.reasoningEffort != null) body.reasoning_effort = req.reasoningEffort;
   const res = await req.fetchImpl(`${base}/chat/completions`, {
     method: "POST",
     headers: {
@@ -157,7 +185,10 @@ async function chatCompletionsExtract(
   });
   if (!res.ok) throw new VisionError(providerName, res.status);
   const json = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: { content?: string };
+      finish_reason?: string | null;
+    }>;
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
@@ -179,6 +210,7 @@ async function chatCompletionsExtract(
       usage && reported != null
         ? { ...usage, reportedCostUsd: reported }
         : usage,
+    truncated: json.choices?.[0]?.finish_reason === "length",
   };
 }
 
@@ -210,7 +242,7 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
   const base = (
     req.baseURL ?? "https://generativelanguage.googleapis.com/v1beta"
   ).replace(/\/+$/, "");
-  const body = {
+  const body: Record<string, unknown> = {
     contents: [
       {
         role: "user",
@@ -221,6 +253,10 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
       },
     ],
   };
+  // NOTE: `reasoningEffort` is not mapped here: Gemini's thinking levels are a different scale per
+  // model family, and a guessed translation would be a setting that silently means something else.
+  if (req.maxOutputTokens != null)
+    body.generationConfig = { maxOutputTokens: req.maxOutputTokens };
   const res = await req.fetchImpl(
     `${base}/models/${encodeURIComponent(req.model)}:generateContent`,
     {
@@ -236,7 +272,10 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
   );
   if (!res.ok) throw new VisionError("gemini", res.status);
   const json = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string }> };
+      finishReason?: string;
+    }>;
     usageMetadata?: {
       promptTokenCount?: number;
       candidatesTokenCount?: number;
@@ -262,6 +301,7 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
       // this is the discounted subset and never an addition.
       cachedRead: json.usageMetadata?.cachedContentTokenCount,
     }),
+    truncated: json.candidates?.[0]?.finishReason === "MAX_TOKENS",
   };
 }
 
@@ -280,9 +320,9 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
     req.kind === "document"
       ? { type: "document", source }
       : { type: "image", source };
-  const body = {
+  const body: Record<string, unknown> = {
     model: req.model,
-    max_tokens: 2048,
+    max_tokens: req.maxOutputTokens ?? ANTHROPIC_VISION_DEFAULT_MAX_TOKENS,
     messages: [
       {
         role: "user",
@@ -290,6 +330,11 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
       },
     ],
   };
+  // NOTE: Current Claude models think adaptively by default, and the effort is what bounds it.
+  // `none` is the switch instead of a level: thinking off. Unset sends neither key.
+  if (req.reasoningEffort === "none") body.thinking = { type: "disabled" };
+  else if (req.reasoningEffort != null)
+    body.output_config = { effort: req.reasoningEffort };
   const res = await req.fetchImpl(`${base}/messages`, {
     method: "POST",
     headers: {
@@ -304,6 +349,7 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
   if (!res.ok) throw new VisionError("anthropic", res.status);
   const json = (await res.json()) as {
     content?: Array<{ type?: string; text?: string }>;
+    stop_reason?: string | null;
     usage?: {
       input_tokens?: number;
       output_tokens?: number;
@@ -323,6 +369,7 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
       cacheCreation: json.usage?.cache_creation_input_tokens,
       promptExcludesCached: true,
     }),
+    truncated: json.stop_reason === "max_tokens",
   };
 }
 

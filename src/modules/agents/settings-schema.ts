@@ -42,6 +42,10 @@ import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
 import { TTS_CHECK_MODES, TTS_MODES } from "@/modules/tts/settings-shared";
+import {
+  ANTHROPIC_VISION_DEFAULT_MAX_TOKENS,
+  VISION_REASONING_EFFORTS,
+} from "@/modules/vision/output-limits";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 
 // The argument shape of the behavior blocks. Two rules, both in docs/mcp.md: type and choice, never
@@ -206,6 +210,12 @@ const vision = z.looseObject({
     .nullable()
     .optional()
     .describe("what the vision model is asked to extract"),
+  maxOutputTokens: z
+    .number()
+    .nullable()
+    .optional()
+    .describe(`anthropic default ${ANTHROPIC_VISION_DEFAULT_MAX_TOKENS}`),
+  reasoningEffort: oneOf(VISION_REASONING_EFFORTS).nullable().optional(),
 });
 
 const split = z.looseObject({

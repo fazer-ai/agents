@@ -1,5 +1,10 @@
 import { clipText } from "@/lib/text";
 import { EXTRACTION_PROMPT_MAX } from "@/modules/agents/text-caps";
+import {
+  readVisionMaxOutputTokens,
+  readVisionReasoningEffort,
+  type VisionReasoningEffort,
+} from "./output-limits";
 import { DEFAULT_EXTRACTION_PROMPT } from "./prompt-default";
 import { VISION_PROVIDER_NAMES } from "./providers";
 
@@ -19,6 +24,11 @@ export interface VisionConfig {
   credentialRef: string | null; // `vault:<id>` ref of the entry holding the API key
   baseURL: string | null; // for self-hosted / compatible endpoints
   extractionPrompt: string; // instruction sent to the vision model
+  // The output ceiling and the reasoning effort, each mapped to the provider's own field by
+  // ./providers. null = not configured: the request goes out as it did before these existed, except
+  // that anthropic's ceiling has a default of its own (see ANTHROPIC_VISION_DEFAULT_MAX_TOKENS).
+  maxOutputTokens: number | null;
+  reasoningEffort: VisionReasoningEffort | null;
 }
 
 export const VISION_DEFAULTS: VisionConfig = {
@@ -29,6 +39,8 @@ export const VISION_DEFAULTS: VisionConfig = {
   credentialRef: null,
   baseURL: null,
   extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
+  maxOutputTokens: null,
+  reasoningEffort: null,
 };
 
 function str(v: unknown): string | null {
@@ -57,5 +69,7 @@ export function readVisionConfig(settings: unknown): VisionConfig {
     extractionPrompt: prompt
       ? clipText(prompt, EXTRACTION_PROMPT_MAX)
       : DEFAULT_EXTRACTION_PROMPT,
+    maxOutputTokens: readVisionMaxOutputTokens(bag.maxOutputTokens),
+    reasoningEffort: readVisionReasoningEffort(bag.reasoningEffort),
   };
 }

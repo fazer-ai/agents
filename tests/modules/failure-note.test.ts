@@ -556,6 +556,56 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     );
   });
 
+  test("a person who takes the conversation after the toggle keeps it over the pinned target", async () => {
+    const conv = await seedConversation();
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    onToggle = async (id) => {
+      liveConversations.set(id, {
+        status: "open",
+        meta: { assignee_type: "User", assignee: { id: 41 } },
+        updated_at: 1_900_000_300,
+      });
+    };
+    await withHandoff({ mode: "pinned", targetTeamId: 77 }, () =>
+      announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      }),
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+  });
+
+  test("a conversation handed back after the toggle is not routed to the pinned target", async () => {
+    const conv = await seedConversation();
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    onToggle = async (id) => {
+      liveConversations.set(id, {
+        status: "pending",
+        meta: {},
+        updated_at: 1_900_000_400,
+      });
+    };
+    await withHandoff({ mode: "pinned", targetTeamId: 77 }, () =>
+      announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      }),
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+  });
+
   test("a decision that moves the mirror between the fence and the claim closes the fence", async () => {
     const conv = await seedConversation();
     let asks = 0;

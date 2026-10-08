@@ -466,6 +466,21 @@ export async function announceFailedTurn(params: {
         conversationId,
         instanceId,
         handoff: persona.handoff,
+        // Asked of Chatwoot right before the write, since the fence was before the toggle: a person
+        // who took the conversation since, or an operator who handed it back, is not overwritten
+        // with the pinned target. Unreadable does not block, as in the fence: the toggle just landed.
+        stillWanted: async () => {
+          const now = parseLiveConversation(
+            await client.getConversation(conversationId).catch(() => null),
+          );
+          return (
+            now === null ||
+            (now.status === "open" &&
+              (now.assigneeType === null ||
+                (now.assigneeType === "AgentBot" &&
+                  now.assigneeId === persona.chatwootAgentBotId)))
+          );
+        },
         logLabel: "failed-turn handoff",
       });
     }

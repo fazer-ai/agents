@@ -633,6 +633,48 @@ export class ChatwootClient {
     return text ? JSON.parse(text) : null;
   }
 
+  // Posts ONE message carrying several files (multipart; admin token), as a private note by default.
+  // The admin token because the conversation can sit in an inbox the bot does not serve (a case opened
+  // in another inbox). `private` rides in the form, which is also what lets a muted client through:
+  // a note never reaches the customer.
+  async sendFilesAsAdmin(
+    conversationId: number,
+    files: Array<{ bytes: ArrayBuffer; fileName: string; mime: string }>,
+    opts: { content?: string; private?: boolean } = {},
+  ): Promise<unknown> {
+    this.assertToken(this.config.adminToken, "POST files");
+    const form = new FormData();
+    for (const f of files) {
+      // NOTE: `File` and not a named Blob, for the same reason as the audio sender above.
+      form.append(
+        "attachments[]",
+        new File([f.bytes], f.fileName, { type: f.mime }),
+      );
+    }
+    form.append("message_type", "outgoing");
+    form.append("private", opts.private === false ? "false" : "true");
+    if (opts.content) form.append("content", opts.content);
+    const res = await this.fetchImpl(
+      `${this.accountBase}/conversations/${conversationId}/messages`,
+      {
+        method: "POST",
+        headers: { [CHATWOOT_AUTH_HEADER]: this.config.adminToken },
+        body: form,
+        redirect: "error",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
+    );
+    if (!res.ok) {
+      throw new ChatwootApiError(
+        res.status,
+        "POST files",
+        await authFailureDetail(res),
+      );
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  }
+
   // Sends an approved WhatsApp template (HSM) — the only message allowed outside the 24h service
   // window. Shape confirmed against the fork's sendTemplate (content + template_params). NOTE
   // (open-validation): processed_params is BODY-only here and the bot-token path for template_params
@@ -752,7 +794,9 @@ export class ChatwootClient {
     conversationId: number,
     attributes: Record<string, unknown>,
     // The caller's fence, asked INSIDE the queue right before the write. See the note at the call.
-    opts: { stillWanted?: () => Promise<boolean> } = {},
+    // `asAdmin` writes with the admin token: a conversation in an inbox the bot does not serve (a
+    // case opened in another inbox) refuses the bot.
+    opts: { stillWanted?: () => Promise<boolean>; asAdmin?: boolean } = {},
   ): Promise<unknown> {
     return withKeyedQueue(
       this.targetKey("conversation", conversationId),
@@ -772,7 +816,7 @@ export class ChatwootClient {
         // episode's values back. Only an explicit `false` stops the write.
         await this.assertStillWanted(opts.stillWanted, "custom_attributes");
         return this.request(
-          this.config.botToken,
+          opts.asAdmin ? this.config.adminToken : this.config.botToken,
           "POST",
           `/conversations/${conversationId}/custom_attributes`,
           {
@@ -1135,6 +1179,16 @@ export class ChatwootClient {
       `/conversations/${conversationId}/messages/${messageId}/attachments/${attachmentId}`,
       { meta },
     );
+  }
+
+  // Whether a URL is on this instance's own host: the one place an attachment is fetched from when the
+  // caller must not reach anywhere else (carrying a customer's files into a case).
+  isInstanceUrl(url: string): boolean {
+    try {
+      return new URL(url).host === new URL(this.config.baseUrl).host;
+    } catch {
+      return false;
+    }
   }
 
   // Downloads an attachment by its data_url (voice note). Anti-SSRF: the URL is validated

@@ -85,6 +85,7 @@ import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
   emitFlowEvent,
   type FlowContext,
+  type FlowEvent,
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
@@ -112,6 +113,7 @@ import {
   type SideEffectErrorReporter,
 } from "@/modules/integrations/toolpacks";
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
+import { attendanceStartedAt } from "@/modules/memory/attendance-start";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import {
@@ -312,6 +314,9 @@ export interface AgentConfig {
   sendImageConfig: SendImageConfig;
   // Where `open_case_in_inbox` opens the case (operator-set; no inbox = the tool is not built).
   crossInboxCaseConfig: CrossInboxCaseConfig;
+  // When the coalesced burst behind this turn started (its oldest message), stamped on the turn's
+  // input next to the newest. Absent on a turn of one message.
+  burstStartedAt?: Date | null;
   // The contact fields in the prompt and the ones update_contact may write (none = no tool).
   contactFieldsConfig: ContactFieldsConfig;
   // The origin contact as Chatwoot knows it; what `open_case_in_inbox` settles the identity on.
@@ -1065,6 +1070,8 @@ export interface ToolsetCtx {
   tenantId: bigint;
   instanceId: bigint;
   base: PrismaClient;
+  // The saver the turn's graph runs on, when the caller injected one. Absent ⇒ the global one.
+  checkpointer?: BaseCheckpointSaver;
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
@@ -1145,6 +1152,26 @@ export interface ToolsetCtx {
   replyIsAudioWith?: (voiceReply: boolean | null) => boolean;
 }
 
+// The flow line a tool's side effect reports. A failure is an `error` line (warn unless the tool asks
+// for info); `status: "ok"` is the record of one that went through, never an error.
+export function sideEffectFlowEvent(
+  e: Parameters<SideEffectErrorReporter>[0],
+): FlowEvent {
+  return {
+    stage: "tool",
+    level: e.status === "ok" ? "info" : (e.level ?? "warn"),
+    status: e.status ?? "error",
+    // NOTE: Spread first — the canonical tool/phase discriminators must win over any
+    // caller-supplied detail keys (the Logs page and alerting key on detail.phase).
+    detail: { ...(e.detail ?? {}), tool: e.tool, phase: e.phase },
+    ...(e.status === "ok"
+      ? {}
+      : {
+          errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
+        }),
+  };
+}
+
 export interface ToolBuildDeps {
   buildNativeTools: (
     ctx: {
@@ -1204,6 +1231,7 @@ export interface ToolBuildDeps {
         sign?: (text: string) => string;
         renderSubject?: (summary: string | null) => string | null;
         interpolate?: (template: string) => string;
+        attendanceStartedAt?: () => Promise<Date | null>;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1246,22 +1274,8 @@ export async function buildToolset(
   // onDiscoverError below): visible in the Logs page, and inbox traffic pages minLevel:warn alert
   // channels. detail.tool names the trail card; detail.phase discriminates the side effect.
   const onSideEffectError = flow
-    ? (e: {
-        tool: string;
-        phase: string;
-        detail?: Record<string, unknown>;
-        err: unknown;
-        level?: "warn" | "info";
-      }) =>
-        emitFlowEvent(flow, {
-          stage: "tool",
-          level: e.level ?? "warn",
-          status: "error",
-          // NOTE: Spread first — the canonical tool/phase discriminators must win over any
-          // caller-supplied detail keys (the Logs page and alerting key on detail.phase).
-          detail: { ...(e.detail ?? {}), tool: e.tool, phase: e.phase },
-          errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
-        })
+    ? (e: Parameters<SideEffectErrorReporter>[0]) =>
+        emitFlowEvent(flow, sideEffectFlowEvent(e))
     : undefined;
   // The two closures a tool calls to say a booking now stands, or no longer does: the Calendar
   // toolpack and any HTTP tool whose definition declares an appointment. The POLICY
@@ -1606,6 +1620,28 @@ export async function buildToolset(
           ? {
               config: cfg.crossInboxCaseConfig,
               contactId: cfg.chatwootContactId,
+              // NOTE: Read only when the files block asks for the attendance scope, and only on a real
+              // conversation of a known contact-inbox, which is what keys the memory thread.
+              ...(ctx.conversationId > 0 &&
+              cfg.contactInboxId != null &&
+              cfg.crossInboxCaseConfig.carryAttachments.mode === "attendance"
+                ? {
+                    attendanceStartedAt: async () =>
+                      attendanceStartedAt(
+                        {
+                          // NOTE: The saver the running graph writes to, so the boundary reads the same thread.
+                          checkpointer:
+                            ctx.checkpointer ?? (await getCheckpointer()),
+                          base: ctx.base,
+                        },
+                        {
+                          tenantId: ctx.tenantId,
+                          instanceId: ctx.instanceId,
+                          contactInboxId: cfg.contactInboxId as number,
+                        },
+                      ),
+                  }
+                : {}),
               renderSubject: (summary: string | null) =>
                 renderCaseSubject(
                   cfg.crossInboxCaseConfig.subjectTemplate,

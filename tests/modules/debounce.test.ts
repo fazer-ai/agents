@@ -1,13 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
+import { stampedBurstStart, stampedSentAt } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -199,6 +201,8 @@ function page(
     // `content_attributes.imported`: a row the history importer backfilled, which carries today's
     // id and last year's conversation.
     imported?: boolean;
+    // `created_at`, in seconds. Omitted ⇒ the row has no instant.
+    createdAt?: number;
   }>,
 ) {
   return {
@@ -213,6 +217,7 @@ function page(
         content: m.content,
         message_type: m.type ?? 0,
         private: m.priv ?? false,
+        ...(m.createdAt != null ? { created_at: m.createdAt } : {}),
         ...(m.attachments ? { attachments: m.attachments } : {}),
         ...(m.sender
           ? { sender: { id: m.senderId ?? 9, type: m.sender } }
@@ -857,6 +862,45 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[800, REPLY]]);
     expect(await watermarkOf(800)).toBe(2);
+  });
+
+  test("the coalesced turn keeps where its burst started next to its newest instant", async () => {
+    await seedConversation(8011);
+    const checkpointer = new MemorySaver();
+    await flushDebounceJob({
+      job: jobFor(8011),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              {
+                id: 1,
+                content: "segue o comprovante",
+                createdAt: 1_790_000_000,
+              },
+              { id: 2, content: "conseguem ver?", createdAt: 1_790_000_040 },
+            ]),
+          ],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer,
+      },
+    });
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: { thread_id: threadOf(8011) },
+    });
+    const human = (
+      (state.values as { messages?: BaseMessage[] }).messages ?? []
+    ).find((m) => m.getType() === "human");
+    expect(stampedBurstStart(human as BaseMessage)?.getTime()).toBe(
+      1_790_000_000_000,
+    );
+    expect(stampedSentAt(human as BaseMessage)?.getTime()).toBe(
+      1_790_000_040_000,
+    );
   });
 
   // The fork's default page carries a reaction only when the message it reacts to is among the

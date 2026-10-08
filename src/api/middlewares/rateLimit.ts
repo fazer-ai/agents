@@ -213,6 +213,26 @@ const boundedSet = <V>(map: Map<string, V>, key: string, value: V) => {
 export const WEBHOOK_FIRST_ATTEMPT_WAIT_MS = 4_000;
 const WEBHOOK_WAITING_PER_KEY = 256;
 
+// Waits until the attempt's verdict wakes it or `ms` pass, whichever comes first, and leaves nothing on
+// the attempt either way: an attempt that never settles must not collect one wake-up per timed-out wait.
+export const waitOnAttempt = async (
+  attempt: Set<() => void>,
+  ms: number,
+): Promise<void> => {
+  let wake: () => void = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((resolve) => {
+      wake = resolve;
+      attempt.add(wake);
+      timer = setTimeout(resolve, ms);
+    });
+  } finally {
+    clearTimeout(timer);
+    attempt.delete(wake);
+  }
+};
+
 // The receivers' own ceiling, charged with what they answered 401: a sender is never refused for its
 // volume, while an address guessing tokens is, and each guess would otherwise cost a lookup (the
 // Chatwoot receiver's negative cache absorbs repeats of ONE token, not a stream of fresh ones). Past
@@ -228,14 +248,16 @@ export const webhookAuthFailureLimitMiddleware = (
 ) => {
   const failures = new Map<string, { count: number; resetAt: number }>();
   const accepted = new Map<string, Set<string>>();
-  const inFlight = new Map<string, Map<string, PromiseWithResolvers<void>>>();
+  // An attempt holds the wake-ups of whoever is waiting on it, each removed when its own wait ends,
+  // so a waiter that times out leaves nothing behind on an attempt that stays pending.
+  const inFlight = new Map<string, Map<string, Set<() => void>>>();
   const waiting = new Map<string, number>();
   // Who asked and on which route, taken BEFORE the handler and carried on the request's own `set`:
   // after the response the socket is gone, so the peer (the key without a declared proxy) is no
   // longer readable there.
   const seen = new WeakMap<
     object,
-    { key: string; route: string; attempt?: PromiseWithResolvers<void> }
+    { key: string; route: string; attempt?: Set<() => void> }
   >();
   const failuresOf = (key: string, at: number): number => {
     const entry = failures.get(key);
@@ -269,7 +291,7 @@ export const webhookAuthFailureLimitMiddleware = (
         const running = routes.get(route);
         if (running === undefined) {
           if (failed + routes.size >= max) return refuse(set, key);
-          const attempt = Promise.withResolvers<void>();
+          const attempt = new Set<() => void>();
           routes.set(route, attempt);
           boundedSet(inFlight, key, routes);
           seen.set(set, { key, route, attempt });
@@ -279,16 +301,9 @@ export const webhookAuthFailureLimitMiddleware = (
         const queued = waiting.get(key) ?? 0;
         if (left <= 0 || queued >= maxWaiting) return refuse(set, key);
         boundedSet(waiting, key, queued + 1);
-        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await Promise.race([
-            running.promise,
-            new Promise<void>((resolve) => {
-              timer = setTimeout(resolve, left);
-            }),
-          ]);
+          await waitOnAttempt(running, left);
         } finally {
-          clearTimeout(timer);
           const still = (waiting.get(key) ?? 1) - 1;
           if (still > 0) waiting.set(key, still);
           else waiting.delete(key);
@@ -320,7 +335,8 @@ export const webhookAuthFailureLimitMiddleware = (
         const routes = inFlight.get(key);
         if (routes?.get(route) === attempt) routes.delete(route);
         if (routes?.size === 0) inFlight.delete(key);
-        attempt.resolve();
+        for (const wake of attempt) wake();
+        attempt.clear();
       }
     });
 };

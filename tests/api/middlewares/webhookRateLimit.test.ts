@@ -230,6 +230,19 @@ describe("guessing tokens is", () => {
     ]);
   });
 
+  test("waking the repeats as soon as the first delivery is answered", async () => {
+    held = Promise.withResolvers<void>();
+    const app = serve({ globalMax: 1000, failureMax: 2, waitMs: 3_000 });
+    const first = app.post("/api/v1/chatwoot/webhook/good-slow-wake");
+    await Bun.sleep(20);
+    const repeat = app.post("/api/v1/chatwoot/webhook/good-slow-wake");
+    await Bun.sleep(50);
+    const released = Date.now();
+    held.resolve();
+    expect([await first, await repeat]).toEqual([200, 200]);
+    expect(Date.now() - released).toBeLessThan(1_500);
+  });
+
   test("bounding how many repeats wait on an attempt in flight", async () => {
     const app = serve({
       globalMax: 1000,
@@ -351,5 +364,27 @@ describe("through the real app", () => {
     expect(res.status).not.toBe(200);
     // The refusal plus the probe.
     expect(before - (await remaining())).toBe(2);
+  });
+});
+
+describe("a wait on an attempt that never settles", () => {
+  test("leaves nothing on the attempt once it times out", async () => {
+    const { waitOnAttempt } = await import("@/api/middlewares/rateLimit");
+    const attempt = new Set<() => void>();
+    await Promise.all(
+      Array.from({ length: 50 }, () => waitOnAttempt(attempt, 5)),
+    );
+    expect(attempt.size).toBe(0);
+  });
+
+  test("is woken by the verdict before its time is up", async () => {
+    const { waitOnAttempt } = await import("@/api/middlewares/rateLimit");
+    const attempt = new Set<() => void>();
+    const started = Date.now();
+    const waited = waitOnAttempt(attempt, 10_000);
+    for (const wake of attempt) wake();
+    await waited;
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(attempt.size).toBe(0);
   });
 });

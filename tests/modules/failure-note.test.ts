@@ -549,6 +549,39 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(posted[0]?.content).toContain("Alguém da equipe precisa assumir.");
   });
 
+  test("the turn's loss is re-asked after the ownership reads, right before the toggle", async () => {
+    const conv = await seedConversation();
+    // Superseded only once Chatwoot has been read: a message that lands during the ownership reads.
+    let liveRead = false;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (String(input).endsWith(`/conversations/${conv}`)) liveRead = true;
+      return realFetch(input, init);
+    }) as typeof globalThis.fetch;
+    let outcome: string;
+    try {
+      outcome = await announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () =>
+          liveRead
+            ? { path: "direct", fence: "superseded" }
+            : { path: "direct", fence: "clear" },
+        error: new Error("boom"),
+        base: appDb,
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(outcome).toBe("not-lost");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
   test("a person who claimed the conversation in Chatwoot keeps it, even with the mirror behind", async () => {
     const conv = await seedConversation();
     // The mirror still says pending and unassigned; Chatwoot already has an attendant on it.

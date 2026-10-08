@@ -223,17 +223,15 @@ export async function announceFailedTurn(params: {
       base,
       botToken: persona.botToken,
     });
-    // Asked again as the last fence before the toggle, with the client already built: a newer
-    // message landing since the first ask has a turn of its own coming, and opening the conversation
-    // would stop it. Then nothing is announced at all, as for the first ask.
+    // Asked again as the last fence before the toggle, after the ownership reads: a newer message
+    // landing since the first ask has a turn of its own coming, and opening the conversation would
+    // stop it. Then nothing is announced at all, as for the first ask.
     let stillLost = true;
     const opened =
       (await openForHumanQueue({
         gate: "failed-turn",
         conversationId,
         stillOurs: async () => {
-          stillLost = isTurnLost(await params.assess());
-          if (!stillLost) return false;
           // Chatwoot first, since the mirror can be behind it: a person who claimed the conversation
           // while it stayed `pending` would otherwise lose it to the pinned target. Unreadable does not
           // block; the mirror still answers.
@@ -252,7 +250,7 @@ export async function announceFailedTurn(params: {
             )
           )
             return false;
-          return (
+          const ours = (
             await conversationOwnershipNow({
               tenantId,
               instanceId,
@@ -261,6 +259,10 @@ export async function announceFailedTurn(params: {
               base,
             })
           ).ours;
+          if (!ours) return false;
+          // Last, so the only await between it and the toggle is the toggle's own.
+          stillLost = isTurnLost(await params.assess());
+          return stillLost;
         },
         client: async () => client,
       })) === "opened";

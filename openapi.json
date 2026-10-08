@@ -25922,7 +25922,8 @@
                             "google",
                             "deepseek",
                             "openrouter",
-                            "openai-compatible"
+                            "openai-compatible",
+                            "typesafe"
                           ]
                         },
                         "model": {
@@ -25989,7 +25990,8 @@
                             "google",
                             "deepseek",
                             "openrouter",
-                            "openai-compatible"
+                            "openai-compatible",
+                            "typesafe"
                           ]
                         },
                         "model": {
@@ -26056,7 +26058,8 @@
                             "google",
                             "deepseek",
                             "openrouter",
-                            "openai-compatible"
+                            "openai-compatible",
+                            "typesafe"
                           ]
                         },
                         "model": {

@@ -264,6 +264,7 @@ export async function documentTemplateWriteProblem(
     slug?: string;
     description?: unknown;
     numberPrefix?: unknown;
+    approvalTtlHours?: unknown;
   },
   base: PrismaClient = basePrisma,
   opts: { deriveSlugFromName: boolean; excludeId?: bigint } = {
@@ -341,6 +342,8 @@ export interface DocumentTemplateDto {
   numberPrefix: string | null;
   lastNumber: number;
   enabled: boolean;
+  requiresApproval: boolean;
+  approvalTtlHours: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -356,6 +359,8 @@ const SELECT = {
   numberPrefix: true,
   lastNumber: true,
   enabled: true,
+  requiresApproval: true,
+  approvalTtlHours: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -375,6 +380,8 @@ function auditProjection(r: Row) {
     description: r.description,
     numberPrefix: r.numberPrefix,
     enabled: r.enabled,
+    requiresApproval: r.requiresApproval,
+    approvalTtlHours: r.approvalTtlHours,
     blocks: blocks.map((b) => {
       const o = (b ?? {}) as Record<string, unknown>;
       return { id: o.id ?? null, type: o.type ?? null };
@@ -414,6 +421,8 @@ function toDto(row: Row): DocumentTemplateDto {
     numberPrefix: row.numberPrefix,
     lastNumber: row.lastNumber,
     enabled: row.enabled,
+    requiresApproval: row.requiresApproval,
+    approvalTtlHours: row.approvalTtlHours,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -435,6 +444,8 @@ export interface DocumentTemplateInput {
   style?: unknown;
   numberPrefix?: string | null;
   enabled?: boolean;
+  requiresApproval?: boolean;
+  approvalTtlHours?: number;
 }
 
 export const templateNameSchema = z.string().trim().min(1).max(120);
@@ -468,7 +479,12 @@ export function templateMetadataProblem(input: {
   name?: unknown;
   description?: unknown;
   numberPrefix?: unknown;
+  approvalTtlHours?: unknown;
 }): string | null {
+  if (input.approvalTtlHours !== undefined) {
+    const problem = approvalTtlProblem(input.approvalTtlHours);
+    if (problem) return problem;
+  }
   if (
     input.name !== undefined &&
     !templateNameSchema.safeParse(input.name).success
@@ -509,6 +525,31 @@ export function templateMetadataProblem(input: {
     if (problem) return problem;
   }
   return null;
+}
+
+// How long an approval request waits for a person, in whole hours (docs/documents.md, Approval).
+export const APPROVAL_TTL_HOURS = { min: 1, max: 168, default: 24 } as const;
+
+export function approvalTtlProblem(value: unknown): string | null {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < APPROVAL_TTL_HOURS.min ||
+    value > APPROVAL_TTL_HOURS.max
+  ) {
+    return `approvalTtlHours: must be a whole number of hours from ${APPROVAL_TTL_HOURS.min} to ${APPROVAL_TTL_HOURS.max}.`;
+  }
+  return null;
+}
+
+function parseApprovalTtl(value: unknown): number {
+  const problem = approvalTtlProblem(value);
+  if (problem) {
+    throw new AppError(problem, 400, "errors.invalidDocumentApprovalTtl", {
+      reason: problem,
+    });
+  }
+  return value as number;
 }
 
 function parseNumberPrefix(value: unknown): string | null {
@@ -677,6 +718,10 @@ export async function createDocumentTemplate(
     style: style as unknown as Prisma.InputJsonValue,
     numberPrefix: parseNumberPrefix(input.numberPrefix ?? null),
     enabled: input.enabled ?? true,
+    requiresApproval: input.requiresApproval ?? false,
+    approvalTtlHours: parseApprovalTtl(
+      input.approvalTtlHours ?? APPROVAL_TTL_HOURS.default,
+    ),
   };
   const slug = derived ? slugifyTemplateName(name) : (input.slug as string);
   const problem = slugProblem(slug);
@@ -929,6 +974,12 @@ async function patched(
     data.numberPrefix = parseNumberPrefix(patch.numberPrefix);
   }
   if (patch.enabled !== undefined) data.enabled = patch.enabled;
+  if (patch.requiresApproval !== undefined) {
+    data.requiresApproval = patch.requiresApproval;
+  }
+  if (patch.approvalTtlHours !== undefined) {
+    data.approvalTtlHours = parseApprovalTtl(patch.approvalTtlHours);
+  }
   // NOTE: blocks, fields and style are validated TOGETHER even when only one was sent, because the
   // rules are about the relationship between them — a block pointing at a field, a token in a block
   // or in the footer naming one. Validating only the patched part would accept a template whose

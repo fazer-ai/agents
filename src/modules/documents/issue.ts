@@ -163,6 +163,54 @@ export async function issueDocument(
     });
   }
 
+  const frozen = await freezeDocumentSnapshot({
+    ctx,
+    base,
+    templateId: params.templateId,
+    values: params.values,
+    now,
+    timezone: params.timezone,
+  });
+  return issueFrozenDocument({
+    ctx,
+    base,
+    storageDir: dir,
+    templateId: frozen.template.id,
+    title: frozen.template.name,
+    numberPrefix: frozen.template.numberPrefix,
+    snapshot: frozen.snapshot,
+    idempotencyKey: params.idempotencyKey,
+    threadId: params.threadId,
+    chatwootInstanceId: params.chatwootInstanceId,
+    conversationId: params.conversationId,
+    withBytes: params.withBytes,
+  });
+}
+
+export interface FrozenDocument {
+  template: {
+    id: bigint;
+    name: string;
+    numberPrefix: string | null;
+    requiresApproval: boolean;
+    approvalTtlHours: number;
+  };
+  snapshot: DocumentSnapshot;
+}
+
+// Everything a document is, short of its number: the template read, the values validated, the
+// snapshot frozen with its date. The agent's tool stores this on an approval request when the
+// template asks for one, so the reviewer previews exactly what approval issues.
+export async function freezeDocumentSnapshot(params: {
+  ctx: TenantContext;
+  base?: PrismaClient;
+  templateId: bigint;
+  values: unknown;
+  now: Date;
+  timezone?: string;
+}): Promise<FrozenDocument> {
+  const base = params.base ?? basePrisma;
+  const { ctx, now } = params;
   const prepared = await runScopedOn(base, ctx, (db) =>
     db.documentTemplate.findUnique({
       where: { id: params.templateId },
@@ -174,6 +222,8 @@ export async function issueDocument(
         style: true,
         numberPrefix: true,
         enabled: true,
+        requiresApproval: true,
+        approvalTtlHours: true,
       },
     }),
   );
@@ -221,10 +271,9 @@ export async function issueDocument(
     issuedDate: calendarDay(now, params.timezone ?? DEFAULT_TIMEZONE),
   };
 
-  // Refused BEFORE the insert, which is what keeps a number from being burned for it: the counter is
-  // bumped once the row exists, and an issued document is immutable, so a blank one is blank
-  // forever. This is the exact question — every value is resolved here — and it is why the authoring
-  // gate only has to answer the unconditional half.
+  // Refused BEFORE any row exists, which is what keeps a number from being burned for it: an issued
+  // document is immutable, so a blank one is blank forever. This is the exact question — every value
+  // is resolved here — and it is why the authoring gate only has to answer the unconditional half.
   //
   // The number is not assigned yet, so the meta below carries a placeholder for it. It has to be
   // NON-EMPTY: `{{doc_number}}` always resolves to something at render, and a block that is only
@@ -250,6 +299,50 @@ export async function issueDocument(
       "errors.documentWouldBeBlank",
     );
   }
+  return {
+    template: {
+      id: prepared.id,
+      name: prepared.name,
+      numberPrefix: prepared.numberPrefix,
+      requiresApproval: prepared.requiresApproval,
+      approvalTtlHours: prepared.approvalTtlHours,
+    },
+    snapshot,
+  };
+}
+
+// Issues a snapshot that is already frozen: inserts the PENDING row, numbers it, renders. The key
+// decides reuse, so a retried call with the same key returns the row the first one made.
+export async function issueFrozenDocument(params: {
+  ctx: TenantContext;
+  base?: PrismaClient;
+  storageDir?: string;
+  templateId: bigint;
+  title: string;
+  numberPrefix: string | null;
+  snapshot: DocumentSnapshot;
+  idempotencyKey: string;
+  threadId?: string | null;
+  chatwootInstanceId?: bigint | null;
+  conversationId?: bigint | null;
+  withBytes?: boolean;
+}): Promise<IssuedDocumentResult> {
+  const base = params.base ?? basePrisma;
+  const dir = params.storageDir ?? config.documentsStorageDir;
+  const { ctx } = params;
+  const tenantId = ctx.tenantId as bigint;
+  const existing = await runScopedOn(base, ctx, (db) =>
+    loadByKey(db, tenantId, params.idempotencyKey),
+  );
+  if (existing) {
+    return finish(existing, {
+      base,
+      ctx,
+      dir,
+      tenantId,
+      withBytes: params.withBytes,
+    });
+  }
 
   // `create`, not `createMany({ skipDuplicates })`, because the ROW is needed. Three scoped
   // calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so the winner must
@@ -258,25 +351,25 @@ export async function issueDocument(
     db.issuedDocument.create({
       data: {
         tenantId,
-        templateId: prepared.id,
-        title: prepared.name,
+        templateId: params.templateId,
+        title: params.title,
         // FROZEN with the row, not joined from the template when the number is printed: the prefix
         // is part of how this document identifies itself. Read live, renaming ORC- to PROP- would
         // rewrite every number already in a customer's hands, and deleting the template (which nulls
         // the FK by design — the documents outlive it) would drop the prefix altogether.
-        numberPrefix: prepared.numberPrefix,
+        numberPrefix: params.numberPrefix,
         threadId: params.threadId ?? null,
         chatwootInstanceId: params.chatwootInstanceId ?? null,
         conversationId: params.conversationId ?? null,
         idempotencyKey: params.idempotencyKey,
         status: "PENDING",
-        snapshot: snapshot as unknown as Prisma.InputJsonValue,
+        snapshot: params.snapshot as unknown as Prisma.InputJsonValue,
       },
       select: { id: true },
     }),
   ).catch((err: unknown) => {
     if (isUniqueViolation(err)) return null; // lost the race → the winner is read below
-    // The template can be DELETED between the read above and this insert, and the foreign key then
+    // The template can be DELETED between the read and this insert, and the foreign key then
     // refuses the row (P2003). That is the same event as "no such template", which the read itself
     // would have reported a moment earlier — so it gets the same terminal answer instead of a 500
     // for the REST caller and an integration-failure alert for an agent turn.
@@ -296,7 +389,7 @@ export async function issueDocument(
     // A crash between the two leaves the row unnumbered, which the load below heals — monotonic,
     // with a gap only where a process actually died.
     await runScopedOn(base, ctx, (db) =>
-      assignNumber(db, prepared.id, created.id),
+      assignNumber(db, params.templateId, created.id),
     );
   }
   const row = await runScopedOn(base, ctx, (db) =>

@@ -1990,6 +1990,18 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           style: z.record(z.string(), z.unknown()).optional(),
           number_prefix: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
+          requires_approval: z
+            .boolean()
+            .optional()
+            .describe(
+              "A person approves each document an agent issues from this template before the customer receives it. Off by default.",
+            ),
+          approval_ttl_hours: z
+            .number()
+            .optional()
+            .describe(
+              "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
+            ),
           starter: z.string().optional(),
           locale: z.enum(["pt-BR", "en-US"]).optional(),
           dry_run: z.boolean().optional(),
@@ -2016,6 +2028,18 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           style: z.record(z.string(), z.unknown()).optional(),
           number_prefix: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
+          requires_approval: z
+            .boolean()
+            .optional()
+            .describe(
+              "A person approves each document an agent issues from this template before the customer receives it. Off by default.",
+            ),
+          approval_ttl_hours: z
+            .number()
+            .optional()
+            .describe(
+              "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },

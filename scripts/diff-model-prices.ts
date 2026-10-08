@@ -15,7 +15,6 @@ type Rates = {
   input: number;
   cachedInput?: number;
   cacheWrite?: number;
-  cacheWrite1h?: number;
   output: number;
 };
 type Entry = Rates & { tiers?: (Rates & { above: number })[] };
@@ -39,7 +38,6 @@ const RATE_FIELDS: [keyof Rates, string][] = [
   ["input", "input"],
   ["cachedInput", "cached input"],
   ["cacheWrite", "cache write"],
-  ["cacheWrite1h", "1h cache write"],
   ["output", "output"],
 ];
 

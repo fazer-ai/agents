@@ -2275,29 +2275,6 @@ export async function returnConversationToAgent(
       chatwootInboxId: liveInbox?.chatwootInboxId ?? null,
     },
   );
-  // The binding itself is re-read LAST of all, after the runnable probe (the longest await
-  // left), under the same row lock: a rebind in that window would leave the validation judging the
-  // agent that was there before. It refuses rather than re-validating, like the move confirmation.
-  const boundNow = await runScopedOn(base, ctx, async (db) => {
-    if (nowInbox === null) return null;
-    await db.$queryRaw`SELECT id FROM inboxes WHERE chatwoot_instance_id = ${conv.chatwootInstanceId} AND chatwoot_inbox_id = ${nowInbox.chatwootInboxId} FOR NO KEY UPDATE`;
-    return db.inbox.findFirst({
-      where: {
-        chatwootInstanceId: conv.chatwootInstanceId,
-        chatwootInboxId: nowInbox.chatwootInboxId,
-      },
-      select: { agentId: true },
-    });
-  });
-  if (
-    nowInbox !== null &&
-    (boundNow?.agentId ?? null) !== (liveInbox?.agentId ?? null)
-  ) {
-    throw new ConflictError(
-      "The responder of this inbox changed while the conversation was being returned; try again.",
-      "errors.returnResponderChanged",
-    );
-  }
   // The bot of the inbox the hand-back was judged on. Chatwoot clears the bot assignee whenever a
   // person takes the conversation, so removing the person alone leaves it in "Unassigned" while the
   // agent answers it; the hand-back assigns this bot instead (docs/chatwoot.md, next to the unassign note).
@@ -2372,6 +2349,30 @@ export async function returnConversationToAgent(
         `conversations: the hand-back could not record the conversation's new inbox (conv=${String(id)})`,
       );
     }
+  }
+  // The binding itself is re-read LAST of all, after the runnable probe and the holder read the write
+  // is decided on, under the same row lock: a rebind in that window would leave the validation judging
+  // the agent that was there before, and the write naming its bot. It refuses rather than
+  // re-validating, like the move confirmation.
+  const boundNow = await runScopedOn(base, ctx, async (db) => {
+    if (nowInbox === null) return null;
+    await db.$queryRaw`SELECT id FROM inboxes WHERE chatwoot_instance_id = ${conv.chatwootInstanceId} AND chatwoot_inbox_id = ${nowInbox.chatwootInboxId} FOR NO KEY UPDATE`;
+    return db.inbox.findFirst({
+      where: {
+        chatwootInstanceId: conv.chatwootInstanceId,
+        chatwootInboxId: nowInbox.chatwootInboxId,
+      },
+      select: { agentId: true },
+    });
+  });
+  if (
+    nowInbox !== null &&
+    (boundNow?.agentId ?? null) !== (liveInbox?.agentId ?? null)
+  ) {
+    throw new ConflictError(
+      "The responder of this inbox changed while the conversation was being returned; try again.",
+      "errors.returnResponderChanged",
+    );
   }
   // ONE WRITE when the bot can take it. The fork's bot assignment removes the person, names the
   // bot and sets `pending` in one locked write, so it replaces the status call rather than following

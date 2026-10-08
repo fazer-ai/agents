@@ -2157,6 +2157,67 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.unassignConversation).toBe(0);
   });
 
+  // ...and a rebind landing during the holder read the write is decided on, past every other check,
+  // still stops the write: the bot it would name is the former responder's.
+  test("a responder swapped during the last holder read stops the write", async () => {
+    await suDb.conversation.update({
+      where: { id: convId },
+      data: { status: "open", assigneeType: "User", assigneeId: 7 },
+    });
+    const spare = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Spare",
+        systemPrompt: "x",
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "local",
+          baseURL: "https://llm.example.invalid/v1",
+        },
+      },
+    });
+    const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
+    const client = await stub.makeClient();
+    const real = client.getConversation.bind(client);
+    let n = 0;
+    (client as { getConversation: unknown }).getConversation = async (
+      cid: number,
+    ) => {
+      n += 1;
+      if (n === 3) {
+        await suDb.inbox.update({
+          where: { id: inboxId },
+          data: { agentId: spare.id },
+        });
+      }
+      return real(cid);
+    };
+    let caught: unknown = null;
+    try {
+      await returnConversationToAgent(
+        ctx(tenant),
+        convId,
+        { makeClient: async () => client },
+        appDb,
+      );
+    } catch (e) {
+      caught = e;
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxId },
+        data: { agentId: responderId },
+      });
+      await suDb.agent.delete({ where: { id: spare.id } });
+    }
+    expect(caught).toBeInstanceOf(ConflictError);
+    expect((caught as ConflictError).translationKey).toBe(
+      "errors.returnResponderChanged",
+    );
+    expect(stub.calls.assignAgentBot).toEqual([]);
+    expect(stub.calls.toggleStatus).toEqual([]);
+    expect(stub.calls.unassignConversation).toBe(0);
+  });
+
   // NOTE: A TEST AGENT NOBODY ACTIVATED HERE ANSWERS NOTHING. The receiver's gate keeps `test` silent
   // on every conversation whose `testActivatedAt` is null, and the runnable probe knows nothing about
   // activation, so without this rule the hand-back parks the conversation with nobody there.

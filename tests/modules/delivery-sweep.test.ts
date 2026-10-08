@@ -545,6 +545,23 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       await sweepStrandedDeliveries({ tenantId, base: appDb });
       const lines = await deliveryLines(conv.id);
       expect(lines.map((l) => l.agentId)).toEqual([agent]);
+      // And the line that closes it, when the route settles its own row, is filed the same way.
+      expect((await statusOf(rowId)).status).toBe("DEAD");
+      await retireCoveredDeliveries({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        conversationRowId: conv.id,
+        settlement: "answered",
+        deliveryRowId: rowId,
+        base: appDb,
+      });
+      const closed = (await deliveryLines(conv.id)).filter(
+        (l) =>
+          (l.detail as Record<string, unknown> | null)?.outcome ===
+          "answered_late",
+      );
+      expect(closed.map((l) => l.agentId)).toEqual([agent]);
       await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
     }
   });

@@ -257,7 +257,15 @@ export async function retireCoveredDeliveries(
       db.chatwootWebhookDelivery.updateManyAndReturn({
         where: { ...where, status: "DEAD" },
         data: { status: "PROCESSED", processedAt: new Date() },
-        select: { deliveryId: true, inboundMessageId: true, receivedAt: true },
+        select: {
+          deliveryId: true,
+          inboundMessageId: true,
+          receivedAt: true,
+          chatwootInstanceId: true,
+          conversationId: true,
+          routeObserved: true,
+          routeAgentBotId: true,
+        },
       }),
   );
 
@@ -277,31 +285,20 @@ export async function retireCoveredDeliveries(
   // ended — without it the row simply leaves the list and an operator is left holding a page about
   // a customer nobody can find any more. A rescue nobody had reported yet writes nothing: a
   // correction for an alert that never fired is noise.
-  // Filed under the conversation's inbox and its agent, like the loss line it closes: a channel that
-  // excludes the agent filters the correction by these, and a line filed under nobody passes every
-  // exclusion. Null when the mirror does not know the conversation; the line is still written.
-  const filedUnder =
-    corrected.length === 0
-      ? null
-      : await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
-          db.conversation.findUnique({
-            where: {
-              tenantId_chatwootInstanceId_chatwootConversationId: {
-                tenantId: params.tenantId,
-                chatwootInstanceId: params.instanceId,
-                chatwootConversationId: params.conversationId,
-              },
-            },
-            select: { inboxId: true, inbox: { select: { agentId: true } } },
-          }),
-        ).catch((error) => {
-          logger.warn(
-            { error },
-            "chatwoot: could not read the agent a stranded-delivery correction is filed under; filing it under none",
-          );
-          return null;
-        });
   for (const row of corrected) {
+    // Filed under the inbox and the agent the delivery was for, read off its recorded route the way
+    // the loss line it closes was (an observer's route is the observer's): a channel's excluded
+    // agents filter the correction by these, and a line filed under nobody passes every exclusion.
+    // Null when the mirror cannot be read; the line is still written.
+    const mirror = await mirrorOf(row, params.tenantId, params.base).catch(
+      (error) => {
+        logger.warn(
+          { error, deliveryId: row.deliveryId },
+          "chatwoot: could not read the agent a stranded-delivery correction is filed under; filing it under none",
+        );
+        return null;
+      },
+    );
     logger.warn(
       "chatwoot: %s was reported as a lost message and has now been %s on conversation %d",
       row.deliveryId,
@@ -314,8 +311,8 @@ export async function retireCoveredDeliveries(
         turnId: crypto.randomUUID(),
         source: "inbox",
         conversationId: params.conversationRowId,
-        agentId: filedUnder?.inbox?.agentId ?? null,
-        inboxId: filedUnder?.inboxId ?? null,
+        agentId: mirror?.lineAgentId ?? null,
+        inboxId: mirror?.inboxId ?? null,
         base: params.base,
       },
       {
@@ -398,7 +395,13 @@ export interface SweepCounts {
 // not know this conversation (a delivery that died before the mirror write); the line is still
 // filed. It reads no watermark: whether anything covered the message is the row's own status.
 async function mirrorOf(
-  row: StrandedRow,
+  row: Pick<
+    StrandedRow,
+    | "chatwootInstanceId"
+    | "conversationId"
+    | "routeObserved"
+    | "routeAgentBotId"
+  >,
   tenantId: bigint,
   base: PrismaClient,
   // Asked only by the verdict that reports it, and here, before the terminal transition: after

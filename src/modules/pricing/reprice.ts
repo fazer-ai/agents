@@ -29,6 +29,7 @@ export interface LedgerRow {
   completionTokens: number;
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  cacheCreation1hTokens: number;
   costUsd: Prisma.Decimal | null;
   createdAt: Date;
 }
@@ -76,6 +77,7 @@ export function capturePricer(
         promptTokens: row.promptTokens,
         cachedReadTokens: row.cachedReadTokens,
         cacheCreationTokens: row.cacheCreationTokens,
+        cacheCreation1hTokens: row.cacheCreation1hTokens,
         completionTokens: row.completionTokens,
       },
       row.createdAt,
@@ -97,6 +99,7 @@ export function tablePricer(
         promptTokens: row.promptTokens,
         cachedReadTokens: row.cachedReadTokens,
         cacheCreationTokens: row.cacheCreationTokens,
+        cacheCreation1hTokens: row.cacheCreation1hTokens,
         completionTokens: row.completionTokens,
       },
       row.createdAt,
@@ -248,6 +251,7 @@ export async function runReprice(
           completionTokens: true,
           cachedReadTokens: true,
           cacheCreationTokens: true,
+          cacheCreation1hTokens: true,
           costUsd: true,
           priceTable: true,
           createdAt: true,

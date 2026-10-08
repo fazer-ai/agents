@@ -29,6 +29,7 @@ type Rates = {
   input: number;
   cachedInput?: number;
   cacheWrite?: number;
+  cacheWrite1h?: number;
   output: number;
 };
 type Entry = Rates & { tiers?: (Rates & { above: number })[] };
@@ -47,6 +48,13 @@ function rates(e: Record<string, unknown>, suffix: string): Rates | null {
   const cacheWrite = perMillion(e[`cache_creation_input_token_cost${suffix}`]);
   if (cachedInput !== undefined) r.cachedInput = cachedInput;
   if (cacheWrite !== undefined) r.cacheWrite = cacheWrite;
+  // LiteLLM states the 1-hour write only at the base tier; a row without it is priced at 2x input
+  // (`cacheWrite1hRate` in src/modules/pricing/price.ts).
+  const cacheWrite1h =
+    suffix === ""
+      ? perMillion(e.cache_creation_input_token_cost_above_1hr)
+      : undefined;
+  if (cacheWrite1h !== undefined) r.cacheWrite1h = cacheWrite1h;
   return r;
 }
 

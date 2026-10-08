@@ -2650,6 +2650,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       promptTokens: 3300,
       cachedReadTokens: 1024,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
       completionTokens: 100,
       byNode: { agent: 2 },
       // NOTE: Each call at gpt-4o-mini's published rates, per million: $0.15 input, $0.075
@@ -2669,6 +2670,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         promptTokens: s.input,
         cachedReadTokens: s.cached,
         cacheCreationTokens: 0,
+        cacheCreation1hTokens: 0,
         completionTokens: s.output,
         byNode: { agent: 1 },
         costUsd: expect.closeTo(usd4oMini(s), 12),

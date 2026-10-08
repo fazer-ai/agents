@@ -60,6 +60,8 @@ export interface UsageRow {
   // Cached-input accounting: a discounted SUBSET of promptTokens, never additive.
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  // Of cacheCreationTokens, the writes made under the 1-hour TTL (priced at their own rate).
+  cacheCreation1hTokens: number;
   // How long the call took, as the capture measured it. Null when nothing measured it.
   durationMs: number | null;
   // What the call cost in USD, from the price table or as the provider reported it. Null when
@@ -85,6 +87,8 @@ export interface TurnUsage {
   promptTokens: number;
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  // Of cacheCreationTokens, the 1-hour writes.
+  cacheCreation1hTokens: number;
   completionTokens: number;
   // The calls by the step that made them, keyed by the ledger's `node`: the detail the screens
   // show, so "3 calls" says which three. A row with no node is the agent's.
@@ -110,6 +114,7 @@ export function emptyTurnUsage(): TurnUsage {
     promptTokens: 0,
     cachedReadTokens: 0,
     cacheCreationTokens: 0,
+    cacheCreation1hTokens: 0,
     completionTokens: 0,
     byNode: {},
     costUsd: 0,
@@ -151,6 +156,7 @@ export function addUsageGroup(
     promptTokens: number | null;
     cachedReadTokens: number | null;
     cacheCreationTokens: number | null;
+    cacheCreation1hTokens?: number | null;
     completionTokens: number | null;
     // The group's summed cost and how many of its rows carried one (`_count` of the column).
     costUsd: number | null;
@@ -163,6 +169,7 @@ export function addUsageGroup(
   into.promptTokens += g.promptTokens ?? 0;
   into.cachedReadTokens += g.cachedReadTokens ?? 0;
   into.cacheCreationTokens += g.cacheCreationTokens ?? 0;
+  into.cacheCreation1hTokens += g.cacheCreation1hTokens ?? 0;
   into.completionTokens += g.completionTokens ?? 0;
   into.costUsd += g.costUsd ?? 0;
   into.unpricedCalls += g.calls - g.pricedCalls;
@@ -217,6 +224,8 @@ export async function sumTurnUsage<T>(
         cachedReadTokens: after.cachedReadTokens - before.cachedReadTokens,
         cacheCreationTokens:
           after.cacheCreationTokens - before.cacheCreationTokens,
+        cacheCreation1hTokens:
+          after.cacheCreation1hTokens - before.cacheCreation1hTokens,
         completionTokens: after.completionTokens - before.completionTokens,
         costUsd: after.costUsd - before.costUsd,
         unpricedCalls: after.unpricedCalls - before.unpricedCalls,
@@ -253,6 +262,7 @@ function noteTurnUsage(row: UsageRow): void {
   sink.usage.promptTokens += row.promptTokens;
   sink.usage.cachedReadTokens += row.cachedReadTokens;
   sink.usage.cacheCreationTokens += row.cacheCreationTokens;
+  sink.usage.cacheCreation1hTokens += row.cacheCreation1hTokens;
   sink.usage.completionTokens += row.completionTokens;
   if (row.costUsd === null) sink.usage.unpricedCalls += 1;
   else {
@@ -367,6 +377,7 @@ export function defaultUsagePersist(
           completionTokens: row.completionTokens,
           cachedReadTokens: row.cachedReadTokens,
           cacheCreationTokens: row.cacheCreationTokens,
+          cacheCreation1hTokens: row.cacheCreation1hTokens,
           durationMs:
             row.durationMs === null ? undefined : Math.round(row.durationMs),
           costUsd: row.costUsd ?? undefined,
@@ -391,6 +402,7 @@ export function defaultUsagePersist(
         completion_tokens: row.completionTokens,
         cached_read_tokens: row.cachedReadTokens,
         cache_creation_tokens: row.cacheCreationTokens,
+        cache_creation_1h_tokens: row.cacheCreation1hTokens,
       });
     });
     if (row.costUsd === null) {
@@ -411,6 +423,8 @@ export interface TokenUsage {
   // (OpenAI/Anthropic/Google) and cache-write (Anthropic, premium).
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  // Of cacheCreationTokens, the writes under the 1-hour TTL (Anthropic's per-TTL split).
+  cacheCreation1hTokens: number;
 }
 
 function num(v: unknown): number {
@@ -428,6 +442,7 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
   let completionTokens = 0;
   let cachedReadTokens = 0;
   let cacheCreationTokens = 0;
+  let cacheCreation1hTokens = 0;
   for (const gens of output.generations ?? []) {
     for (const gen of gens) {
       // biome-ignore lint/suspicious/noExplicitAny: generation message shape is provider-dependent.
@@ -448,7 +463,11 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
         const det = meta.input_token_details;
         if (det) {
           cachedReadTokens += num(det.cache_read);
-          cacheCreationTokens += num(det.cache_creation);
+          // `cache_creation_1h` is the 1-hour share `splitOneHourWrites` moves out of
+          // `cache_creation`, so the two add up to the call's writes.
+          cacheCreationTokens +=
+            num(det.cache_creation) + num(det.cache_creation_1h);
+          cacheCreation1hTokens += num(det.cache_creation_1h);
         }
       }
     }
@@ -459,6 +478,10 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
       completionTokens,
       cachedReadTokens,
       cacheCreationTokens,
+      cacheCreation1hTokens: Math.min(
+        cacheCreation1hTokens,
+        cacheCreationTokens,
+      ),
     };
   }
   // biome-ignore lint/suspicious/noExplicitAny: llmOutput is an untyped provider bag.
@@ -471,6 +494,7 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
       // NOTE: OpenAI raw exposes the cached subset under prompt_tokens_details.cached_tokens.
       cachedReadTokens: num(tu.promptTokensDetails?.cachedTokens),
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
     };
   }
   const u = out.usage;
@@ -488,6 +512,7 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
       completionTokens: num(u.output_tokens),
       cachedReadTokens: cacheRead,
       cacheCreationTokens: cacheCreation,
+      cacheCreation1hTokens: Math.min(anthropicOneHourWrites(u), cacheCreation),
     };
   }
   return {
@@ -495,7 +520,20 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
     completionTokens: 0,
     cachedReadTokens: 0,
     cacheCreationTokens: 0,
+    cacheCreation1hTokens: 0,
   };
+}
+
+// Anthropic's `usage.cache_creation.ephemeral_1h_input_tokens`: the writes made under the 1-hour TTL,
+// a subset of `cache_creation_input_tokens`. Zero for any other shape.
+function anthropicOneHourWrites(usage: unknown): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const split = (usage as { cache_creation?: unknown }).cache_creation;
+  if (!split || typeof split !== "object") return 0;
+  return num(
+    (split as { ephemeral_1h_input_tokens?: unknown })
+      .ephemeral_1h_input_tokens,
+  );
 }
 
 // The `price_table` of a row whose cost OpenRouter itself reported.
@@ -585,6 +623,8 @@ export async function recordDirectUsage(
     completionTokens: row.completionTokens,
     cachedReadTokens: row.cachedReadTokens ?? 0,
     cacheCreationTokens: row.cacheCreationTokens ?? 0,
+    // A direct call carries no cache mark, so it never writes under the 1-hour TTL.
+    cacheCreation1hTokens: 0,
     durationMs: row.durationMs ?? null,
     ...(await priceRow(
       attr.tenantId,
@@ -727,6 +767,7 @@ export class UsageCapture extends BaseCallbackHandler {
       completionTokens,
       cachedReadTokens,
       cacheCreationTokens,
+      cacheCreation1hTokens,
     } = extractTokenUsage(output);
     // The pair, never one half: a named model is priced as its own provider's or not at all.
     const named = this.runModel.get(runId);
@@ -755,6 +796,7 @@ export class UsageCapture extends BaseCallbackHandler {
       completionTokens,
       cachedReadTokens,
       cacheCreationTokens,
+      cacheCreation1hTokens,
       durationMs,
       ...(await priceRow(
         this.tenantId,
@@ -764,6 +806,7 @@ export class UsageCapture extends BaseCallbackHandler {
           promptTokens,
           cachedReadTokens,
           cacheCreationTokens,
+          cacheCreation1hTokens,
           completionTokens,
         },
         this.base,

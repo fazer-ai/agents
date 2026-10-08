@@ -54,6 +54,7 @@ const TABLE_COST = callCostUsd(
     promptTokens: PROMPT,
     cachedReadTokens: 0,
     cacheCreationTokens: 0,
+    cacheCreation1hTokens: 0,
     completionTokens: COMPLETION,
   },
   new Date(),
@@ -238,6 +239,7 @@ describe("an OpenRouter call records the cost OpenRouter reported", () => {
       promptTokens: 0,
       cachedReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
       completionTokens: 0,
       costUsd: 0.01,
       pricedCalls: 2,
@@ -364,6 +366,7 @@ describe("another provider's `cost` field is not read", () => {
           promptTokens: PROMPT,
           cachedReadTokens: 0,
           cacheCreationTokens: 0,
+          cacheCreation1hTokens: 0,
           completionTokens: COMPLETION,
         },
         new Date(),
@@ -481,6 +484,7 @@ describe.skipIf(!dbUp)(
         completionTokens: COMPLETION,
         cachedReadTokens: 0,
         cacheCreationTokens: 0,
+        cacheCreation1hTokens: 0,
         durationMs: null,
       };
       await persist({

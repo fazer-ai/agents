@@ -72,6 +72,8 @@ interface Row {
   input: number;
   cached?: number;
   written?: number;
+  // Of `written`, the 1-hour writes.
+  written1h?: number;
   output: number;
   at: string;
   tenant?: bigint;
@@ -93,6 +95,7 @@ async function bill(r: Row) {
       promptTokens: r.input,
       cachedReadTokens: r.cached ?? 0,
       cacheCreationTokens: r.written ?? 0,
+      cacheCreation1hTokens: r.written1h ?? 0,
       completionTokens: r.output,
       costUsd: r.cost,
       priceTable:
@@ -188,6 +191,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
       node: "agent",
       input: 3000,
       written: 2500,
+      written1h: 1000,
       output: 150,
       at: "2026-09-25T10:05:00Z",
     });
@@ -241,6 +245,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
       promptTokens: 5200,
       cachedReadTokens: 600,
       cacheCreationTokens: 2500,
+      cacheCreation1hTokens: 1000,
       completionTokens: 375,
       byNode: {
         agent: 2,
@@ -265,6 +270,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           promptTokens: 1600,
           cachedReadTokens: 600,
           cacheCreationTokens: 0,
+          cacheCreation1hTokens: 0,
           completionTokens: 75,
           byNode: { agent: 1, guardrail: 1, vision: 1 },
           costUsd: 0,
@@ -286,6 +292,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           promptTokens: 3100,
           cachedReadTokens: 0,
           cacheCreationTokens: 2500,
+          cacheCreation1hTokens: 1000,
           completionTokens: 200,
           byNode: { agent: 1, tts_normalize: 1 },
           costUsd: 0,

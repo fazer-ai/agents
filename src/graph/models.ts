@@ -1,10 +1,10 @@
-import { ChatAnthropic } from "@langchain/anthropic";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { ChatDeepSeek } from "@langchain/deepseek";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import logger from "@/api/lib/logger";
 import { AppError } from "@/lib/errors";
+import { ChatAnthropicCacheSplit } from "./anthropic-cache-split";
 import { toGeminiTools } from "./gemini-tools";
 import type { ModelConfig } from "./model-config";
 import {
@@ -13,7 +13,7 @@ import {
   type ReasoningEffort,
   toolEffortFloorOf,
 } from "./openai-reasoning";
-import { promptCacheEnabled, promptCacheFetch } from "./prompt-cache";
+import { promptCacheFetch, resolvePromptCache } from "./prompt-cache";
 
 // Per-agent/per-node model factory. The config SCHEMA lives in ./model-config (LangChain-free, so
 // the config/HTTP layer validates without importing the provider SDKs); this module turns a
@@ -228,7 +228,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         planOpenAITransport(model, undefined),
       );
     case "openrouter": {
-      const cache = promptCacheEnabled(cfg);
+      const cache = resolvePromptCache(cfg);
       return makeOpenAIChat(
         {
           model,
@@ -239,7 +239,9 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
             baseURL: cfg.baseURL || OPENROUTER_BASE_URL,
             // NOTE: only a Claude model behind OpenRouter gets marks (./prompt-cache); the others
             // cache on their own and the request goes out untouched.
-            ...(cache ? { fetch: promptCacheFetch("chat-completions") } : {}),
+            ...(cache
+              ? { fetch: promptCacheFetch(cache, "chat-completions") }
+              : {}),
           },
         },
         planOpenAITransport(model, undefined),
@@ -253,15 +255,16 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
     // omitting it leaves the guardrail results unchanged. The stored value is kept as the operator
     // set it, so if Anthropic takes the parameter back this line is all that has to go.
     case "anthropic": {
-      const cache = promptCacheEnabled(cfg);
+      const cache = resolvePromptCache(cfg);
       // `clientOptions`, not the plain `timeout` the OpenAI-shaped clients take: the option
       // type accepts `timeout` and the built instance leaves it undefined.
       const clientOptions = {
         ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
         // Anthropic caches only what the request marks (./prompt-cache).
-        ...(cache ? { fetch: promptCacheFetch("anthropic") } : {}),
+        ...(cache ? { fetch: promptCacheFetch(cache, "anthropic") } : {}),
       };
-      return new ChatAnthropic({
+      // The subclass keeps the 1-hour cache writes apart in the usage (./anthropic-cache-split).
+      return new ChatAnthropicCacheSplit({
         model,
         apiKey,
         ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),

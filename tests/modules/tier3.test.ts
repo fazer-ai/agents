@@ -1804,6 +1804,36 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(moved.inboxId).toBe(staffed);
     });
 
+    // The move is a fact read live, so the mirror learns it even when a hand-back write then fails.
+    test("the mirror learns the destination even when the fallback unassign fails", async () => {
+      await held();
+      const stub = makeStub({
+        assigneeType: "User",
+        assigneeId: 7,
+        inboxId: 92,
+        attachedBotId: { 92: 501 },
+        botAssignable: false,
+      });
+      const client = await stub.makeClient();
+      (client as { unassignConversation: unknown }).unassignConversation =
+        async () => {
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        };
+      await expect(
+        returnConversationToAgent(
+          ctx(tenant),
+          convId,
+          { makeClient: async () => client },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      const moved = await suDb.conversation.findUniqueOrThrow({
+        where: { id: convId },
+        select: { inboxId: true },
+      });
+      expect(moved.inboxId).toBe(staffed);
+    });
+
     // ...and a destination whose bot is NOT attached is refused there, on the destination's own
     // reading — the same map, answering `null` for 92 while 9 is still attached.
     test("a destination with no attached bot refuses", async () => {

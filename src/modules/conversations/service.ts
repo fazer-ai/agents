@@ -2348,6 +2348,31 @@ export async function returnConversationToAgent(
   const nobodyToRemove =
     live !== null && live.assigneeStated === true && live.assigneeType === null;
   let handedToBot = alreadyOurs;
+  // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
+  // and a stale row sends "Respond now" through the ORIGIN inbox's persona. Compare-and-set on the
+  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort. Written
+  // before the hand-back's writes because it records where the conversation IS, which holds whether
+  // or not they succeed.
+  if (
+    nowInbox !== null &&
+    relocated !== null &&
+    conv.inbox !== null &&
+    nowInbox.chatwootInboxId !== conv.inbox.chatwootInboxId
+  ) {
+    try {
+      await runScopedOn(base, ctx, (db) =>
+        db.conversation.updateMany({
+          where: { id, inboxId: conv.inbox?.id },
+          data: { inboxId: nowInbox.id },
+        }),
+      );
+    } catch (err) {
+      logger.warn(
+        { err },
+        `conversations: the hand-back could not record the conversation's new inbox (conv=${String(id)})`,
+      );
+    }
+  }
   // ONE WRITE when the bot can take it. The fork's bot assignment removes the person, names the
   // bot and sets `pending` in one locked write, so it replaces the status call rather than following
   // it: two writes would leave a window in which a resolve, or a rebinding of the inbox, lands between
@@ -2471,30 +2496,6 @@ export async function returnConversationToAgent(
       newHolder.assigneeType ?? "none",
       String(newHolder.assigneeId ?? "none"),
     );
-  }
-  // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
-  // and a stale row sends "Respond now" through the ORIGIN inbox's persona. Compare-and-set on the
-  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort, since
-  // the hand-back has already happened.
-  if (
-    nowInbox !== null &&
-    relocated !== null &&
-    conv.inbox !== null &&
-    nowInbox.chatwootInboxId !== conv.inbox.chatwootInboxId
-  ) {
-    try {
-      await runScopedOn(base, ctx, (db) =>
-        db.conversation.updateMany({
-          where: { id, inboxId: conv.inbox?.id },
-          data: { inboxId: nowInbox.id },
-        }),
-      );
-    } catch (err) {
-      logger.warn(
-        { err },
-        `conversations: the hand-back could not record the conversation's new inbox (conv=${String(id)})`,
-      );
-    }
   }
   // From here the effect has happened, and the bookkeeping below can throw, so the row is
   // written in a `finally`. It carries what THIS CALL knows, not the baseline: the unassign ran, was

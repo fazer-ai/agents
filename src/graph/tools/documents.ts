@@ -176,7 +176,7 @@ function approvalAnswer(
   at: Date,
 ): string {
   if (request.status === "PENDING" && request.expiresAt > at) {
-    return "O documento foi para a revisão da equipe e não vai junto com esta resposta. Se o cliente perguntar por ele, diga que a equipe está preparando. Não prometa prazo de envio.";
+    return 'O documento NÃO foi enviado: foi para a revisão da equipe e não vai junto com esta resposta. Não diga ao cliente que enviou. Diga que a equipe está preparando o documento, sem dizer quando fica pronto ou chega: nada de prazo, data, "hoje", "em breve", "logo" ou "em instantes".';
   }
   if (request.status === "APPROVED") {
     return "A equipe já aprovou esse documento. Não o anexe de novo nesta resposta.";

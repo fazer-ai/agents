@@ -10914,7 +10914,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         const system = systemOf(model.seen[0] ?? []);
         expect(system).toContain("aguardando a aprovação da equipe");
         expect(system).toContain("Orçamento");
-        expect(system).toContain("não prometa prazo");
+        expect(system).toContain('nada de prazo, data, "hoje", "em breve"');
+        expect(system).toContain("não diga que já foi enviado");
         expect(system).not.toMatch(/\d{1,2}h|\d{4}-\d{2}-\d{2}|24 horas/);
       }
     });

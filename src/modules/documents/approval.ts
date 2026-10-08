@@ -526,7 +526,7 @@ export async function pendingApprovalNotice(
     titles.length === 1
       ? `um documento aguardando a aprovação da equipe: ${titles[0]}`
       : `documentos aguardando a aprovação da equipe: ${titles.join("; ")}`;
-  return `[Sistema] Nesta conversa há ${which}. Ainda não foi enviado ao cliente. Só fale disso se o cliente perguntar por esse documento: nesse caso, diga que a equipe está preparando e não prometa prazo. Não chame a ferramenta do documento de novo para isso.`;
+  return `[Sistema] Nesta conversa há ${which}. Ainda não foi enviado ao cliente. Só fale disso se o cliente perguntar por esse documento: nesse caso, diga que a equipe está preparando, sem dizer quando fica pronto ou chega (nada de prazo, data, "hoje", "em breve", "logo" ou "em instantes"), e não diga que já foi enviado. Não chame a ferramenta do documento de novo para isso.`;
 }
 
 // What a turn hands the graph. A failed read costs the line, never the turn: the customer is still

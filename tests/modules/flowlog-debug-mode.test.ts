@@ -653,6 +653,8 @@ const NO_LONG_STRING: Record<string, string> = {
   // `contactAuthFlowEvent`: outcome, a boolean, an HTTP status number and a slug from a closed map.
   // The customer's text travels to the endpoint and nowhere else, which that file argues at length.
   "modules/conversations/reengage.ts": "closed vocabulary",
+  // The same `contactAuthFlowEvent`, on the observer's rule line.
+  "modules/contact-auth/observer.ts": "closed vocabulary",
   // `{ coalesced: number }` and `GateCloseDetail` (`{ outcome, status }`, `gate-close.ts`).
   "modules/debounce/handler.ts": "closed vocabulary",
   // The same `GateCloseDetail`, on the gate's handoff lines.

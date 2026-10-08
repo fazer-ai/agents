@@ -130,8 +130,10 @@ import {
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
 import {
+  contactAuthGateEmpty,
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
+  readContactAuthEndpointEnabled,
   readContactAuthRuleForm,
 } from "./contactAuthRuleForm";
 import { ExportAgentModal } from "./ExportAgentModal";
@@ -417,6 +419,7 @@ function readBehaviorState(a: Agent) {
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const av = (s.availability ?? {}) as Record<string, unknown>;
   const ca = (s.contactAuth ?? {}) as Record<string, unknown>;
+  const caRule = readContactAuthRuleForm(ca.rule);
 
   // Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
@@ -472,8 +475,14 @@ function readBehaviorState(a: Agent) {
       baseURL: str(st.baseURL),
     },
     contactAuth: {
-      ...readContactAuthRuleForm(ca.rule),
+      ...caRule,
       enabled: ca.enabled === true,
+      // NOTE: Strict like the reader: beside conditions only `true` asks the endpoint after them.
+      endpointEnabled: readContactAuthEndpointEnabled(
+        caRule,
+        ca.url,
+        ca.askEndpointAfterRule,
+      ),
       url: str(ca.url),
       credentialRef: str(ca.credentialRef),
       timeoutMs: num(ca.timeoutMs) || "5000",
@@ -490,6 +499,8 @@ function readBehaviorState(a: Agent) {
         typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
       handoffTeamId: num(ca.handoffTeamId),
       handoffTeamInstanceId: num(ca.handoffTeamInstanceId),
+      // NOTE: Only an explicit `false` turns the note off, as in the reader.
+      operatorNoteEnabled: ca.operatorNoteEnabled !== false,
     },
     tts: readTtsFormState(tt),
     split: {
@@ -812,6 +823,7 @@ function AgentEditor() {
   const [contactAuth, setContactAuth] = useState<ContactAuthState>({
     ...EMPTY_CONTACT_AUTH_RULE_FORM,
     enabled: false,
+    endpointEnabled: false,
     url: "",
     credentialRef: "",
     timeoutMs: "5000",
@@ -823,6 +835,7 @@ function AgentEditor() {
     handoffEnabled: true,
     handoffTeamId: "",
     handoffTeamInstanceId: "",
+    operatorNoteEnabled: true,
   });
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
@@ -929,6 +942,9 @@ function AgentEditor() {
     subjectTemplate: "",
     openingTemplate: "",
     noteTemplate: "",
+    carryMode: "off",
+    carryFileTypes: ["image", "file"],
+    carryMaxFiles: 10,
   });
   // Which Chatwoot custom attributes are injected into the prompt as current values, per
   // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).
@@ -1073,7 +1089,11 @@ function AgentEditor() {
     ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
     ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
-    contactAuthEnabled: contactAuth.enabled,
+    // NOTE: A watcher's section draws no deny copy; its endpoint's fields, the credential among them,
+    // are drawn wherever the endpoint switch is on.
+    contactAuthEnabled: contactAuth.enabled && agentMode !== "monitoring",
+    contactAuthEndpointShown:
+      contactAuth.enabled && contactAuth.endpointEnabled,
     memoryCompactionEnabled: memory.compactionEnabled,
     modelFallbackChosen: !!modelFallback.provider,
     guardrailsEnabled: guardrails.enabled,
@@ -1674,6 +1694,9 @@ function AgentEditor() {
       contactAuth: {
         enabled: contactAuth.enabled,
         rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled),
+        // NOTE: The endpoint switch. Beside conditions it is the two-stage flag; with none the reader
+        // ignores it (no rule means the endpoint decides). Drawn for every mode, so written as shown.
+        askEndpointAfterRule: contactAuth.endpointEnabled,
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,
@@ -1705,6 +1728,7 @@ function AgentEditor() {
         handoffTeamInstanceId: contactAuth.handoffTeamId
           ? Number(contactAuth.handoffTeamInstanceId) || null
           : null,
+        operatorNoteEnabled: contactAuth.operatorNoteEnabled,
       },
       tts: ttsSettingsFrom(tts),
       split: {
@@ -2012,7 +2036,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.contactAuth', 'The contact-authorization credential no longer exists, so the check fails and the agent stays silent.')
   // t('editor.configIssue.contactAuthUnlockHandoff', 'The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI\'s, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.')
   // t('editor.configIssue.contactAuthSilentRefusal', 'A refused contact is left with nothing: no message is sent and the conversation is not opened for anyone, so their message goes unanswered and only a private note records it. Write the refusal message, or turn on the handoff to humans.')
-  // t('editor.configIssue.contactAuthNoUrl', 'The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, choose a list or an attribute to decide instead, or turn the check off.')
+  // t('editor.configIssue.contactAuthNoUrl', 'The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, let a rule decide alone, or turn the check off.')
   // t('editor.configIssue.embedding', 'A knowledge base needs indexing, but the tenant embedding is not configured.')
   // t('editor.configIssuePending.embedding', 'A knowledge base needs indexing, but the embedding credential is not filled in yet.')
   // t('editor.configIssue.redirect', 'Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.')
@@ -2108,8 +2132,10 @@ function AgentEditor() {
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
+    agentMonitoring: agentMode === "monitoring",
     contactAuthUrl: contactAuth.url,
-    contactAuthHasRule: contactAuth.ruleKind !== "",
+    contactAuthRuleOnly:
+      contactAuth.ruleConditions.length > 0 && !contactAuth.endpointEnabled,
     contactAuthCredentialRef: contactAuth.credentialRef,
     contactAuthIncludeMessageText: contactAuth.includeMessageText,
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,
@@ -3377,9 +3403,21 @@ function AgentEditor() {
   // Saves every dirty section sequentially (so the optimistic-concurrency token chains through each
   // write), used by "Save and export". Tools + Knowledge share the grant set, so one saveTools() write
   // persists both. Awaited so the export reads the just-saved version.
-  async function saveAllDirty() {
+  async function saveAllDirty(): Promise<boolean> {
+    // NOTE: The Behavior tab's Save is disabled on an empty gate; this path saves without that
+    // button, so it refuses the same state before writing any section.
+    if (dirty.behavior && contactAuthGateEmpty(contactAuth)) {
+      showToast(
+        t(
+          "editor.contactAuthEmpty",
+          "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+        ),
+        "error",
+      );
+      return false;
+    }
     if (dirty.general) {
-      if (!guardModelBeforeSave()) return;
+      if (!guardModelBeforeSave()) return false;
       await saveAgent(
         {
           name: name.trim(),
@@ -3413,6 +3451,7 @@ function AgentEditor() {
     if (dirty.knowledge) {
       await saveGrants();
     }
+    return true;
   }
 
   function askDelete() {
@@ -4241,7 +4280,7 @@ function AgentEditor() {
           includeDocuments,
           saveFirst,
         }) => {
-          if (saveFirst) await saveAllDirty();
+          if (saveFirst && !(await saveAllDirty())) return;
           await doExport(includeComponents, includeDocuments);
         }}
       />

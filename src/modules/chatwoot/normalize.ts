@@ -285,6 +285,15 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
+  // NOTE: the fork's `group_type`, read by the contact gate's rule. A value outside the two types says
+  // nothing rather than something wrong: absent leaves the stored value alone. The label list is read
+  // above, once, for the dashboard and the gate alike.
+  if (
+    conv &&
+    (conv.group_type === "group" || conv.group_type === "individual")
+  ) {
+    normalized.conversationType = conv.group_type;
+  }
   // NOTE: the redirect episode's other half, when the fork wrote one. PRESENCE of the key is the
   // statement: the fork always ships it (nil included) and a Chatwoot without it never does, so a
   // payload that says nothing never clears an established pairing. A present-but-unusable value (0,

@@ -102,6 +102,7 @@ import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
 import {
+  burstStartStamp,
   conversationDividerMessage,
   conversationStamp,
   humanHandbackMessage,
@@ -1017,6 +1018,7 @@ async function runTurnBody(
       client,
       conversationId,
       threadId,
+      checkpointer: params.deps?.checkpointer,
       // NOTE: The slow-tool ack's send is a wait after the graph's ask at the tool boundary.
       stillWanted: stillWantedFence,
       messageId: params.messageId,
@@ -2004,6 +2006,7 @@ async function runTurnBody(
                 additional_kwargs: {
                   ...conversationStamp(conversationId),
                   ...sentAtStamp(loaded.promptOpts.messageAt),
+                  ...burstStartStamp(loaded.burstStartedAt),
                 },
               }),
             ],

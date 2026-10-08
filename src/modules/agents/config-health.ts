@@ -226,13 +226,18 @@ export interface ConfigHealthInput {
   // needs none), so an absent ref raises nothing; a ref that is pending or gone does, because the
   // gate fails closed and the agent goes silent for every contact.
   contactAuthEnabled?: boolean;
+  // A monitoring agent answers nobody and hands nothing off, so the notice warnings below are about
+  // something that does not happen for it. It asks the endpoint under the same rules as a responder
+  // (docs/contact-auth.md, The observer path), so the endpoint's own warnings hold for it.
+  agentMonitoring?: boolean;
   contactAuthCredentialRef?: string;
   // The endpoint itself. `readContactAuthConfig` normalizes a missing or malformed URL to null and
   // leaves `enabled` alone, so the pair is storable — and the gate then refuses every message.
   contactAuthUrl?: string;
-  // A local rule answers instead of the endpoint, so the endpoint-only warnings are about a request
-  // that is never made.
-  contactAuthHasRule?: boolean;
+  // A local rule answers and no endpoint stage follows it, so the endpoint-only warnings are about a
+  // request that is never made. False when the operator asked the endpoint after the rule: then the
+  // endpoint is asked about what the rule allows, and its warnings are about a real request.
+  contactAuthRuleOnly?: boolean;
   // The two sides of the unlock-vs-handoff contradiction, plus the copy: an enabled gate that
   // neither speaks nor hands over leaves a refused customer with nothing at all.
   contactAuthIncludeMessageText?: boolean;
@@ -731,7 +736,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "contactAuth", tab: "behavior", sectionId: "contactAuth" },
     credIssue(
       Boolean(input.contactAuthEnabled) &&
-        !input.contactAuthHasRule &&
+        !input.contactAuthRuleOnly &&
         Boolean(input.contactAuthCredentialRef),
       input.contactAuthCredentialRef ?? "",
       // The one field here that is not an API key: the gate resolves it through
@@ -750,7 +755,8 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // wrong on its own, so this is said rather than silently resolved.
   if (
     input.contactAuthEnabled &&
-    !input.contactAuthHasRule &&
+    !input.agentMonitoring &&
+    !input.contactAuthRuleOnly &&
     input.contactAuthIncludeMessageText &&
     input.contactAuthHandoffEnabled
   ) {
@@ -765,10 +771,11 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // runtime then fails closed on EVERY message with `not_configured`. That is the loudest failure
   // this feature has (the agent answers nobody) and the quietest to diagnose, because nothing about
   // a blank field says the gate in front of it is armed.
-  // A local rule is the other way to reach a verdict, and with one the endpoint is never asked.
+  // A local rule is the other way to reach a verdict, and with one alone the endpoint is never asked.
+  // A rule with the endpoint asked after it still needs the endpoint: what the rule allows is refused.
   if (
     input.contactAuthEnabled &&
-    !input.contactAuthHasRule &&
+    !input.contactAuthRuleOnly &&
     !(input.contactAuthUrl ?? "").trim()
   ) {
     issues.push({
@@ -784,6 +791,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // said rather than forced: the fix is a deny message, or the handoff, and the operator picks.
   if (
     input.contactAuthEnabled &&
+    !input.agentMonitoring &&
     !(input.contactAuthDenyMessage ?? "").trim() &&
     !input.contactAuthHandoffEnabled
   ) {

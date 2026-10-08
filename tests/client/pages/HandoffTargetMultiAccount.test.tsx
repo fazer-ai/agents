@@ -103,6 +103,8 @@ function renderContactAuth(
       handoffEnabled: true,
       handoffTeamId,
       handoffTeamInstanceId,
+      endpointEnabled: false,
+      operatorNoteEnabled: true,
     });
     const props: React.ComponentProps<typeof BehaviorTab> &
       Record<string, unknown> = {
@@ -393,6 +395,9 @@ function renderPinned(targetInstanceId: number | null): {
           subjectTemplate: "",
           openingTemplate: "",
           noteTemplate: "",
+          carryMode: "off",
+          carryFileTypes: ["image", "file"],
+          carryMaxFiles: 10,
         }}
         setCrossInboxCase={noop}
         sendImage={{ allowedHosts: "" }}

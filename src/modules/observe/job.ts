@@ -2,7 +2,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { ToolInputParsingException } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { recursionLimitFor } from "@/graph/graph";
@@ -51,6 +51,7 @@ import {
 } from "@/modules/chatwoot/render";
 import { loadChatwootLabels } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
+import { observerRuleVerdict } from "@/modules/contact-auth/observer";
 import {
   type DecisionsConfig,
   readDecisionsConfig,
@@ -66,6 +67,7 @@ import {
   type ClaimedJob,
   jobRetriesAfterFailure,
   type Rearm,
+  retireUnlessAllowedLaterOn,
   upsertJobRow,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -110,6 +112,8 @@ const REFUSAL_ENDING = {
   analysis_changed: "info",
   agent_no_longer_observes: "info",
   agent_no_longer_on_inbox: "info",
+  contact_auth_refused: "info",
+  contact_auth_unreadable: "retry",
 } as const satisfies Record<string, "retry" | "info" | "warn">;
 type Refusal = keyof typeof REFUSAL_ENDING;
 
@@ -152,6 +156,51 @@ export function observeKeyPrefix(threadId: string): string {
   return `observe:${threadId}:`;
 }
 
+// The watcher's endpoint refused this conversation at an arm: retires its queued observation unless
+// an allow asked after this refusal armed it, and leaves the refusal's ask time on the row, under the
+// arm's lock, so an allow asked before it and still in flight (a delivery waiting on its media pass)
+// cannot re-arm what the refusal retired (`ArmObserveParams.gateAskedAt`). With no row yet, a DONE
+// one is created to carry the mark.
+export async function retireRefusedObserve(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  agentId: bigint;
+  askedAt: number;
+  base: PrismaClient;
+}): Promise<void> {
+  const threadId = chatwootThreadId(p.tenantId, p.instanceId, p.conversationId);
+  const dedupeKey = observeDedupeKey(threadId, p.agentId);
+  await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    withEntityLock(db, `observe-arm:${threadId}`, async () => {
+      await retireUnlessAllowedLaterOn(db, {
+        tenantId: p.tenantId,
+        kind: "OBSERVE",
+        dedupeKey,
+        at: p.askedAt,
+        allowedField: "gateAllowedAt",
+        refusedField: "gateRefusedAt",
+        // A resolution's verdict retired before it ran is not one this resolution already has.
+        unrunFields: ["resolveMark"],
+        createPayload: {
+          instanceId: String(p.instanceId),
+          conversationId: p.conversationId,
+          agentId: String(p.agentId),
+        },
+      });
+    }),
+  );
+}
+
+function readGateMark(
+  payload: unknown,
+  field: "gateRefusedAt" | "gateAllowedAt",
+): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>)[field];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export interface ArmObserveParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -180,6 +229,10 @@ export interface ArmObserveParams {
   // command's id is about the erased episode. Null on a resolve, which the reopen check covers (the
   // command reopens it).
   atMessageId?: number | null;
+  // WHEN THE GATE'S ALLOW WAS ASKED (`observerArmPermit`). A refusal asked at or after it has
+  // retired the row and left its own ask time there (`retireRefusedObserve`); this arm then arms
+  // nothing, since the newer answer is the refusal. Absent, the arm is not fenced.
+  gateAskedAt?: number;
 }
 
 function readBurstStart(payload: unknown): number | null {
@@ -228,6 +281,21 @@ export async function armObserve(
         // `mark`), read whatever the row's status. AT OR BELOW, not equal: the mark only moves
         // forward, so a lower one is a late echo of an older resolution, and arming on it would
         // bill the current one twice. A burst clears the mark.
+        // A refusal asked at or after this arm's allow is the newer answer, and it retired the row.
+        const gateRefusedAt = readGateMark(existing?.payload, "gateRefusedAt");
+        if (
+          p.gateAskedAt != null &&
+          gateRefusedAt !== null &&
+          gateRefusedAt >= p.gateAskedAt
+        ) {
+          armed = false;
+          return;
+        }
+        const allowedBefore = readGateMark(existing?.payload, "gateAllowedAt");
+        const gateAllowedAt =
+          p.gateAskedAt != null || allowedBefore !== null
+            ? Math.max(p.gateAskedAt ?? 0, allowedBefore ?? 0)
+            : null;
         const recordedMark = readResolveMark(existing?.payload);
         if (
           p.reason === "resolved" &&
@@ -235,6 +303,23 @@ export async function armObserve(
           recordedMark !== null &&
           recordedMark >= p.mark
         ) {
+          // Not re-armed, but a newer allow is kept: a refusal asked before it and landing late
+          // must still find the row authorized after it (`retireRefusedObserve`).
+          if (
+            gateAllowedAt !== null &&
+            gateAllowedAt !== allowedBefore &&
+            existing
+          ) {
+            await db.schedulerJob.updateMany({
+              where: { kind: "OBSERVE", dedupeKey },
+              data: {
+                payload: {
+                  ...(existing.payload as Record<string, unknown>),
+                  gateAllowedAt,
+                } as Prisma.InputJsonValue,
+              },
+            });
+          }
           armed = false;
           return;
         }
@@ -268,6 +353,12 @@ export async function armObserve(
               ? { resolveMark: p.mark }
               : {}),
             ...(p.attaching === true ? { attaching: true } : {}),
+            // Carried across re-arms, so an allow asked before the refusal and landing after a newer
+            // one still finds it.
+            ...(gateRefusedAt !== null ? { gateRefusedAt } : {}),
+            // The newest allow behind this row, so a refusal asked before it and landing late
+            // leaves the row runnable (`retireRefusedObserve`).
+            ...(gateAllowedAt !== null ? { gateAllowedAt } : {}),
             // NOTE: ...and the NEWEST message of the burst: the MAXIMUM, not the last to arrive.
             // Chatwoot delivers out of order, and a delayed older delivery pushing the id backwards
             // would let a reset between the two discard the whole burst, the valid new message with
@@ -877,10 +968,11 @@ export async function runObserve(
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
   const turnId = crypto.randomUUID();
 
-  // NOTE: THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR: a claimed row can wait seconds for a
+  // THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR: a claimed row can wait seconds for a
   // provider permit, and a message in that wait re-arms it. The tool-boundary fence would refuse
   // the write only after the model was paid. Unreadable proceeds: that fence is still ahead.
-  if (deps.claim !== undefined) {
+  const claimLost = async (): Promise<boolean> => {
+    if (deps.claim === undefined) return false;
     const claim = deps.claim;
     const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.schedulerJob.findUnique({
@@ -888,13 +980,12 @@ export async function runObserve(
         select: { status: true, claimSeq: true },
       }),
     ).catch(() => "unreadable" as const);
-    if (
+    return (
       row !== "unreadable" &&
       !(row?.status === "CLAIMED" && row.claimSeq === claim.claimSeq)
-    ) {
-      return { outcome: "done" };
-    }
-  }
+    );
+  };
+  if (await claimLost()) return { outcome: "done" };
 
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const agent = await db.agent.findUnique({
@@ -902,6 +993,7 @@ export async function runObserve(
       select: { name: true, enabled: true, mode: true, settings: true },
     });
     if (!agent?.enabled || !isMonitoring(agent.mode)) return null;
+    const settings = agent.settings;
     const mon = readMonitoringConfig(agent.settings);
     // NOTE: THE ARM'S OWN REFUSAL, asked again against the configuration now: a burst queued while
     // the agent was `incremental` outlives a flip to `on_resolve`, which does not retire the row.
@@ -932,7 +1024,7 @@ export async function runObserve(
     // NOTE: A CONFIG THAT DOES NOT BUILD IS NOT AN AGENT THAT STOPPED OBSERVING: the checks above
     // are operator states and end the job; this is a credential the vault cannot hand over, and it
     // retries. The CONV goes with it, so the stale-state fences below run before the retry.
-    if (!cfg) return { noModel: true as const, conv };
+    if (!cfg) return { noModel: true as const, conv, settings };
     let decisions: DecisionsSetup | null = null;
     if (mon.engine === "decisions") {
       const read = readDecisionsConfig({ decisions: mon.decisions });
@@ -962,7 +1054,7 @@ export async function runObserve(
               };
       }
     }
-    return { mon, cfg, conv, decisions };
+    return { mon, cfg, conv, settings, decisions };
   });
   if (loaded !== null && loaded.conv?.inboxId != null) {
     const onInbox = await agentStillOnInbox(
@@ -997,6 +1089,36 @@ export async function runObserve(
   if (!loaded) {
     logger.info(
       "observe: nothing to do (conv=%s): the agent no longer observes, or this burst is refused by its `analysis` setting",
+      String(conversationId),
+    );
+    return { outcome: "done" };
+  }
+  // THE CONTACT GATE'S RULE, asked again before anything is spent and before the model's own
+  // configuration is required: the arm asked it, but a label removed or a rule tightened since then
+  // leaves this row runnable, and an excluded conversation must complete even when no model could run.
+  const ruled = await observerRuleVerdict(
+    {
+      tenantId,
+      instanceId,
+      conversationId,
+      agentId,
+      settings: loaded.settings,
+      base,
+    },
+    { emit: true },
+  );
+  // The claim again, after the gate: an endpoint refusal at an arm retires this row
+  // (`retireRefusedObserve`), and one landing since the first look must still keep the model out.
+  if (ruled !== "unreadable" && (await claimLost())) return { outcome: "done" };
+  if (ruled === "unreadable") {
+    return {
+      outcome: "fail",
+      error: "observe: the contact gate's rule could not be evaluated",
+    };
+  }
+  if (ruled === "refused" && "noModel" in loaded) {
+    logger.info(
+      "observe: the contact gate's rule no longer covers this conversation (conv=%s); nothing to do",
       String(conversationId),
     );
     return { outcome: "done" };
@@ -1115,6 +1237,11 @@ export async function runObserve(
         ...(decisions.problem ? { problem: decisions.problem } : {}),
       },
     });
+    return { outcome: "done" };
+  }
+
+  if (ruled === "refused") {
+    line("skipped", { skipped: "contact_auth_refused" }, "info");
     return { outcome: "done" };
   }
 
@@ -1241,17 +1368,18 @@ export async function runObserve(
     // ONE ROW ANSWERS BOTH QUESTIONS: re-reading the switch and mode here narrows the window
     // to this read, and catches an agent deleted mid-turn, which a `settings`-only select read as
     // no config.
+    let settingsNow: unknown = null;
     const monNow = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.agent.findUnique({
         where: { id: agentId },
         select: { enabled: true, mode: true, settings: true },
       }),
     )
-      .then((row) =>
-        !row?.enabled || !isMonitoring(row.mode)
-          ? ("gone" as const)
-          : readMonitoringConfig(row.settings),
-      )
+      .then((row) => {
+        if (!row?.enabled || !isMonitoring(row.mode)) return "gone" as const;
+        settingsNow = row.settings;
+        return readMonitoringConfig(row.settings);
+      })
       .catch(() => "unreadable" as const);
     if (monNow === "unreadable") {
       refusal = "settings_unreadable";
@@ -1269,6 +1397,26 @@ export async function runObserve(
       monNow.analysis !== "incremental"
     ) {
       refusal = "analysis_changed";
+      return false;
+    }
+    // The contact gate's rule, against the settings and the conversation as they are now: a label
+    // removed while the model answers takes the conversation out of scope before the next write.
+    const ruledNow = await observerRuleVerdict(
+      {
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId,
+        settings: settingsNow,
+        base,
+      },
+      { emit: false },
+    );
+    if (ruledNow !== "allowed") {
+      refusal =
+        ruledNow === "unreadable"
+          ? "contact_auth_unreadable"
+          : "contact_auth_refused";
       return false;
     }
     const rows = await runScopedOn(base, sysCtx(tenantId), async (db) => {

@@ -350,6 +350,8 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
     expect(readContactAuthConfig(row.settings)).toEqual({
       enabled: true,
       rule: null,
+      askEndpointAfterRule: false,
+      operatorNoteEnabled: true,
       url: "https://api.example.com/check?tenant=t1",
       credentialRef: `vault:${credId}`,
       timeoutMs: 10_000,

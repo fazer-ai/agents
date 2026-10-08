@@ -2469,7 +2469,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
           }) as unknown as typeof fetch,
         },
       });
-      expect(seen.asked).toBe(1);
+      // Twice: the responder's gate, and then the observer's arm once the flipped agent observes,
+      // which asks the endpoint under the same rules (docs/contact-auth.md, The observer path).
+      expect(seen.asked).toBe(2);
       expect(sent).toEqual([]);
     } finally {
       await suDb.agent.update({

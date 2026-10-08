@@ -74,16 +74,35 @@ import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   mediaRefusedThrough,
   recordMediaRefusal,
+  recordWatcherMediaRefusal,
   refusedCovers,
+  watcherMediaRefusedThrough,
 } from "@/modules/contact-auth/media-refusal";
+import {
+  observerArmPermit,
+  observerRuleVerdict,
+  rememberWatcherAdmission,
+  watcherAdmissionStands,
+} from "@/modules/contact-auth/observer";
+import {
+  RULE_CONVERSATION_TYPE,
+  RULE_LABEL,
+  RULE_NONE_MET,
+  RULE_NOT_LISTED,
+  RULE_UNMET,
+} from "@/modules/contact-auth/rule";
 import {
   authorizeContact,
   type ContactAuthOutcome,
+  type ContactAuthResult,
+  type ContactAuthStage,
   contactAuthFlowEvent,
-  RULE_NOT_LISTED,
-  RULE_UNMET,
 } from "@/modules/contact-auth/service";
-import { readContactAuthConfig } from "@/modules/contact-auth/settings";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+  readContactAuthConfig,
+} from "@/modules/contact-auth/settings";
 import {
   type ContactAuthNotice,
   claimContactAuthNotice,
@@ -1411,6 +1430,13 @@ export interface EagerMediaOwner {
   // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
   // a provider.
   admission: "allowed" | "refused" | "unverified";
+  // The delivery's own ask of a watcher's whole gate (`observerMayObserve`), for a pass that finds
+  // the inbox's agent observing: the pass and the observation's arm then share one verdict instead
+  // of asking the endpoint one after the other.
+  watcherPermit?: (
+    agentId: bigint,
+    settings: unknown,
+  ) => Promise<{ askedAt: number } | null>;
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1434,7 +1460,7 @@ async function mediaAdmitted(
       const agent = inbox?.agentId
         ? await db.agent.findUnique({
             where: { id: inbox.agentId },
-            select: { settings: true },
+            select: { settings: true, mode: true },
           })
         : null;
       const conv = await db.conversation.findUnique({
@@ -1451,7 +1477,7 @@ async function mediaAdmitted(
           mediaRefusedThroughMessageId: true,
         },
       });
-      return { inbox, settings: agent?.settings, conv };
+      return { inbox, settings: agent?.settings, mode: agent?.mode, conv };
     });
     // The refusal mark wins over any yes, including the caller's and a gate switched off since:
     // a replayed delivery re-asks the gate, and a consent given since would answer for a file sent
@@ -1484,6 +1510,52 @@ async function mediaAdmitted(
     ) {
       return true;
     }
+    const watcherPass = isMonitoring(ctx.mode ?? "");
+    // NOTE: Another watcher's route (several can observe one inbox): its own gate already let this
+    // conversation through before the pass, and the bound watcher's verdict decides only what the
+    // BOUND watcher observes.
+    if (watcherPass && owner.agentId !== null && owner.agentId !== agentId) {
+      return true;
+    }
+    if (watcherPass) {
+      // The watcher's whole gate, with the retirement bookkeeping an arm's ask does: the delivery's
+      // own ask when the caller shares it, asked once for both, or a fresh one. It leaves its own line.
+      const permitOf =
+        owner.watcherPermit ??
+        ((watcherId: bigint, settings: unknown) =>
+          observerArmPermit({
+            tenantId,
+            instanceId,
+            conversationId,
+            agentId: watcherId,
+            settings,
+            base,
+            fetchImpl: owner.deps?.contactAuthFetch,
+            message:
+              messageId != null
+                ? { id: messageId, text: n.message?.content ?? null }
+                : null,
+          }));
+      if (!(await permitOf(agentId, ctx.settings))) {
+        recordWatcherMediaRefusal(tenantId, convDbId, agentId, n.message?.id);
+        return false;
+      }
+      if (
+        convDbId !== null &&
+        refusedCovers(
+          await mediaRefusedThrough(tenantId, convDbId, base),
+          messageId,
+        )
+      ) {
+        return false;
+      }
+      if (messageId != null) {
+        rememberMediaAdmission(
+          mediaAdmissionKey(tenantId, instanceId, messageId),
+        );
+      }
+      return true;
+    }
     const verdict = await authorizeContact({
       tenantId,
       agentId,
@@ -1496,6 +1568,8 @@ async function mediaAdmitted(
       requestKey: cfg.includeMessageText
         ? `msg:${n.message?.id ?? "none"}`
         : "inbox",
+      // The media pass asks at one place, so it asks the whole gate.
+      stage: "both",
       cfg,
       base,
       fetchImpl: owner.deps?.contactAuthFetch,
@@ -2035,6 +2109,20 @@ export type ContactAuthCopyOutcome =
 // Operator-facing note for a conversation the contact-authorization gate refused (pt-BR). Reasons are
 // short slugs by now, so the note carries one without anything the customer wrote; this is the ONE
 // place the endpoint's own reason surfaces, on the conversation, not in the execution log.
+// Which condition of the agent's own rule refused, said to the operator. Keyed by OUR reason codes.
+const RULE_NOTE_LINES: Record<string, string> = {
+  [RULE_NOT_LISTED]:
+    "🔒 Contato não autorizado pela regra do agente: o telefone e o identificador do contato não estão na lista.",
+  [RULE_UNMET]:
+    "🔒 Contato não autorizado pela regra do agente: o atributo exigido não está como a regra pede.",
+  [RULE_CONVERSATION_TYPE]:
+    "🔒 Conversa fora da regra do agente: o tipo de conversa (grupo ou individual) não é o que a regra pede.",
+  [RULE_LABEL]:
+    "🔒 Conversa fora da regra do agente: a conversa não tem a etiqueta exigida.",
+  [RULE_NONE_MET]:
+    "🔒 Conversa fora da regra do agente: nenhuma das condições da regra foi atendida.",
+};
+
 export function contactAuthNoteText(
   verdict: {
     outcome: ContactAuthOutcome;
@@ -2074,12 +2162,9 @@ export function contactAuthNoteText(
     }[copy];
     // A local rule refused: no endpoint was asked, so "external check" would point the operator at
     // a service that never saw this contact. Name the rule and which of its two questions failed.
-    const ruleLine =
-      verdict.reason === RULE_NOT_LISTED
-        ? "🔒 Contato não autorizado pela regra do agente: o telefone e o identificador do contato não estão na lista."
-        : verdict.reason === RULE_UNMET
-          ? "🔒 Contato não autorizado pela regra do agente: o atributo exigido não está como a regra pede."
-          : null;
+    const ruleLine = verdict.reason
+      ? (RULE_NOTE_LINES[verdict.reason] ?? null)
+      : null;
     if (ruleLine) return `${ruleLine}${copyLine}${handoffLine}`;
     return `🔒 Contato não autorizado pela verificação externa.${reason}${copyLine}${handoffLine}`;
   }
@@ -3071,6 +3156,234 @@ async function maybeConsumeCommandOrGate(params: {
     );
   }
 
+  // Contact authorization (docs/contact-auth.md), in two stages that this function asks at two
+  // positions. The identity is what Chatwoot mirrored, never customer text (under POST with
+  // includeMessageText the text rides in `message`, for unlock codes). EVERY message is re-checked.
+  // Denied: the operator's copy plus a handoff; cannot-tell: fail-closed silence plus a private note.
+  // Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict never does. Built once
+  // here, so both positions act on a verdict through the same code.
+  const contactAuth = (() => {
+    if (ctx.agentId === null || !ctx.agentEnabled || !isNewIncomingMessage(n)) {
+      return null;
+    }
+    const authCfg = readContactAuthConfig(ctx.agentSettings);
+    if (!authCfg.enabled) return null;
+    const agentId = ctx.agentId;
+    // Opens the conversation for the human queue (status `open` ends the bot's attribution; the
+    // team routes it); an assignment failure never undoes the open. A Chatwoot team id belongs to ONE
+    // account, and a value can arrive via REST, MCP, import or an agent moved between accounts, so the
+    // account recorded with it decides; counting accounts is only the fallback for an older value.
+    const teamTargetUsable = async (teamId: number): Promise<boolean> => {
+      const pinnedTo = authCfg.handoffTeamInstanceId;
+      if (pinnedTo !== null) {
+        if (pinnedTo === Number(instanceId)) return true;
+        logger.warn(
+          "chatwoot: contact-auth team target ignored (conv=%s team=%s) — it was picked in Chatwoot account %s and this conversation is in %s",
+          String(conversationId),
+          String(teamId),
+          String(pinnedTo),
+          String(instanceId),
+        );
+        return false;
+      }
+      const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.inbox.findMany({
+          where: { agentId },
+          select: { chatwootInstanceId: true },
+          distinct: ["chatwootInstanceId"],
+        }),
+      );
+      if (instances.length <= 1) return true;
+      logger.warn(
+        "chatwoot: contact-auth team target ignored (conv=%s team=%s) — the agent serves %s Chatwoot accounts and a team id belongs to one",
+        String(conversationId),
+        String(teamId),
+        String(instances.length),
+      );
+      return false;
+    };
+
+    const openForHumans = (teamId: number | null): Promise<boolean> =>
+      openConversationForHumans("contact-auth", teamId, teamTargetUsable);
+    const ask = (stage: ContactAuthStage) =>
+      authorizeContact({
+        tenantId,
+        agentId,
+        contactDbId: ctx.conv.contactId,
+        conversationDbId: ctx.conv.id,
+        conversationId,
+        inboxId: ctx.inboxChatwootId,
+        channelType: ctx.channelType,
+        messageText: n.message?.content ?? null,
+        // The message id under an unlock flow, where the verdict is a function of the text; the
+        // source otherwise. Never the text itself: it must not reach a cache key.
+        requestKey: authCfg.includeMessageText
+          ? `msg:${n.message?.id ?? "none"}`
+          : "inbox",
+        stage,
+        cfg: authCfg,
+        base,
+        fetchImpl: deps?.contactAuthFetch,
+      });
+    // Acts on a FINAL verdict: true = the delivery is consumed (refused, or the conversation left the
+    // bot while asking), false = the turn goes on. `silencedByTestMode`: a refusal in a conversation
+    // the test-mode gate would have kept quiet is only recorded (see the rule stage below).
+    const settle = async (
+      verdict: ContactAuthResult,
+      silencedByTestMode = false,
+    ): Promise<boolean> => {
+      const line = contactAuthFlowEvent(verdict);
+      emitFlowEvent(
+        {
+          tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: ctx.conv.id,
+          agentId,
+          inboxId: ctx.conv.inboxId,
+          threadId: chatwootThreadId(tenantId, instanceId, conversationId),
+          base,
+        },
+        silencedByTestMode
+          ? { ...line, detail: { ...line.detail, silencedBy: "test_mode" } }
+          : line,
+      );
+      params.onAuthVerdict?.(verdict.outcome === "allowed");
+      if (verdict.outcome === "allowed" && n.message?.id != null) {
+        rememberMediaAdmission(
+          mediaAdmissionKey(tenantId, instanceId, n.message.id),
+        );
+      }
+      if (verdict.outcome !== "allowed") {
+        await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
+        if (silencedByTestMode) {
+          logger.info(
+            "chatwoot: contact-auth refusal silenced by test mode (conv=%s outcome=%s)",
+            String(conversationId),
+            verdict.outcome,
+          );
+          return true;
+        }
+        // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
+        // contact, but copy, handoff and note belong to a CONVERSATION, and one contact can have two; the
+        // per-conversation notice claim below stops a double. Order: copy (after the open the fence would
+        // withhold it), handoff, note (so it says what happened). An ERROR hands nothing off: it is
+        // transient by contract, and escalating every blip would page humans the next message answers.
+        {
+          const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
+          const claim = (notice: ContactAuthNotice) =>
+            claimContactAuthNotice(
+              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
+              cooldownMs,
+            );
+          // The copy's window is claimed only when a copy goes out: a shared claim let an ERROR, which
+          // speaks to nobody, silence the denial after it.
+          const denyMessage =
+            verdict.outcome === "denied" ? authCfg.denyMessage : null;
+          const copyClaim = denyMessage ? claim("copy") : false;
+          // Tracked so the operator note can say what the CUSTOMER actually got, instead of
+          // claiming silence on top of a refusal that was just delivered.
+          let copyOutcome: ContactAuthCopyOutcome = denyMessage
+            ? copyClaim
+              ? "failed"
+              : "suppressed"
+            : "none";
+          if (denyMessage && copyClaim) {
+            // NOTE: Claimed before the send so two racing deliveries do not both speak, so a send that did not
+            // land gives the window back instead of silencing the next refusal.
+            if (await postPublicMessage(denyMessage)) {
+              copyOutcome = "sent";
+            } else {
+              releaseContactAuthNotice(copyClaim);
+            }
+          }
+          let handedOff = false;
+          if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
+            // NOTE: Outside the cooldown on purpose: the open is what ends the bot's
+            // attribution, and a first attempt that failed must be retried on the next refused
+            // message, notice or no notice.
+            handedOff = await openForHumans(authCfg.handoffTeamId);
+          }
+          // A DENIAL's note is the operator's to switch off (`operatorNoteEnabled`), for a gate
+          // used as a scope filter. An error and an unidentified contact always write theirs: those are
+          // things to fix, and the note is where the operator learns of them.
+          const noteClaim =
+            verdict.outcome === "denied" && !authCfg.operatorNoteEnabled
+              ? false
+              : claim("note");
+          if (noteClaim) {
+            if (
+              !(await postPrivateNote(
+                contactAuthNoteText(verdict, handedOff, copyOutcome),
+              ))
+            ) {
+              releaseContactAuthNotice(noteClaim);
+            }
+          }
+        }
+        logger.info(
+          "chatwoot: contact-auth silent (conv=%s outcome=%s shared=%s)",
+          String(conversationId),
+          verdict.outcome,
+          String(verdict.shared),
+        );
+        return true;
+      }
+      // Allowed, but up to ten seconds went by inside someone else's endpoint, and `runAgentTurn`
+      // re-checks ownership only after the model answers (withholding the reply, not the tools). A human
+      // who took over meanwhile would find the agent's tools writing on the conversation. This does not
+      // fence the turn's own window, only avoids widening it by the operator's network call.
+      const now = await ownershipNow();
+      if (!now.ours) {
+        // NOTE: The same exit as the gate on the way in, so it leaves the same line: the one `stillOurs`
+        // caller where a message that WOULD have been answered stops being answered.
+        if (now.closed !== null) {
+          emitFlowEvent(
+            {
+              tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              conversationId: ctx.conv.id,
+              agentId,
+              base,
+            },
+            { stage: "handoff", status: "ok", detail: now.closed },
+          );
+        }
+        logger.info(
+          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s reason=%s)",
+          String(conversationId),
+          now.closed?.outcome ?? "identity_unresolved",
+        );
+        return true;
+      }
+      // Allowed, and still ours: the facts the endpoint volunteered travel to the turn below.
+      params.onAuthContext(verdict.context ?? null);
+      return false;
+    };
+    return { cfg: authCfg, ask, settle };
+  })();
+
+  // NOTE: Contact authorization, RULE stage: free, so ahead of every gate that answers the customer
+  // (the test-mode notice, the WhatsApp redirect, availability, the spend ceiling); after the commands
+  // and the redirect cross-link, the operator's tooling. A test agent still must not speak to a real
+  // lead: where the test-mode gate would keep quiet (not activated with /teste) a refusal is only
+  // recorded, with no copy, handoff, note or test notice; an activated one is the operator testing the
+  // gate. An allow is final only with no endpoint stage, which otherwise has the last word below.
+  if (contactAuth && contactAuthHasRuleStage(contactAuth.cfg)) {
+    const verdict = await contactAuth.ask("rule");
+    if (
+      verdict.outcome !== "allowed" ||
+      !contactAuthHasEndpointStage(contactAuth.cfg)
+    ) {
+      const testModeSilent =
+        verdict.outcome !== "allowed" &&
+        ctx.mode === "test" &&
+        ctx.conv.testActivatedAt === null;
+      if (await contactAuth.settle(verdict, testModeSilent)) return true;
+    }
+  }
+
   // ── Test-mode gate: a "test" agent stays silent until the conversation is activated with /teste. ──
   if (ctx.mode === "test" && ctx.conv.testActivatedAt === null) {
     // One-shot private note (operator-only) so whoever watches the inbox knows WHY the bot is quiet
@@ -3351,180 +3664,11 @@ async function maybeConsumeCommandOrGate(params: {
     }
   }
 
-  // NOTE: Contact authorization gate (docs/contact-auth.md), last on purpose so a silenced
-  // conversation costs no call. The identity is what Chatwoot mirrored, never customer text (under
-  // POST with includeMessageText the text rides in `message`, for unlock codes). EVERY message is
-  // re-checked. Denied: the operator's copy plus a handoff; cannot-tell: fail-closed silence plus a
-  // private note. Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict never does.
-  if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
-    const authCfg = readContactAuthConfig(ctx.agentSettings);
-    if (authCfg.enabled) {
-      const agentId = ctx.agentId;
-      // Opens the conversation for the human queue (status `open` ends the bot's attribution; the
-      // team routes it); an assignment failure never undoes the open. A Chatwoot team id belongs to ONE
-      // account, and a value can arrive via REST, MCP, import or an agent moved between accounts, so the
-      // account recorded with it decides; counting accounts is only the fallback for an older value.
-      const teamTargetUsable = async (teamId: number): Promise<boolean> => {
-        const pinnedTo = authCfg.handoffTeamInstanceId;
-        if (pinnedTo !== null) {
-          if (pinnedTo === Number(instanceId)) return true;
-          logger.warn(
-            "chatwoot: contact-auth team target ignored (conv=%s team=%s) — it was picked in Chatwoot account %s and this conversation is in %s",
-            String(conversationId),
-            String(teamId),
-            String(pinnedTo),
-            String(instanceId),
-          );
-          return false;
-        }
-        const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.inbox.findMany({
-            where: { agentId },
-            select: { chatwootInstanceId: true },
-            distinct: ["chatwootInstanceId"],
-          }),
-        );
-        if (instances.length <= 1) return true;
-        logger.warn(
-          "chatwoot: contact-auth team target ignored (conv=%s team=%s) — the agent serves %s Chatwoot accounts and a team id belongs to one",
-          String(conversationId),
-          String(teamId),
-          String(instances.length),
-        );
-        return false;
-      };
-
-      const openForHumans = (teamId: number | null): Promise<boolean> =>
-        openConversationForHumans("contact-auth", teamId, teamTargetUsable);
-      const verdict = await authorizeContact({
-        tenantId,
-        agentId,
-        contactDbId: ctx.conv.contactId,
-        conversationDbId: ctx.conv.id,
-        conversationId,
-        inboxId: ctx.inboxChatwootId,
-        channelType: ctx.channelType,
-        messageText: n.message?.content ?? null,
-        // The message id under an unlock flow, where the verdict is a function of the text; the
-        // source otherwise. Never the text itself: it must not reach a cache key.
-        requestKey: authCfg.includeMessageText
-          ? `msg:${n.message?.id ?? "none"}`
-          : "inbox",
-        cfg: authCfg,
-        base,
-        fetchImpl: deps?.contactAuthFetch,
-      });
-      emitFlowEvent(
-        {
-          tenantId,
-          turnId: crypto.randomUUID(),
-          source: "inbox",
-          conversationId: ctx.conv.id,
-          agentId,
-          inboxId: ctx.conv.inboxId,
-          threadId: chatwootThreadId(tenantId, instanceId, conversationId),
-          base,
-        },
-        contactAuthFlowEvent(verdict),
-      );
-      params.onAuthVerdict?.(verdict.outcome === "allowed");
-      if (verdict.outcome === "allowed" && n.message?.id != null) {
-        rememberMediaAdmission(
-          mediaAdmissionKey(tenantId, instanceId, n.message.id),
-        );
-      }
-      if (verdict.outcome !== "allowed") {
-        await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
-        // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
-        // contact, but copy, handoff and note belong to a CONVERSATION, and one contact can have two; the
-        // per-conversation notice claim below stops a double. Order: copy (after the open the fence would
-        // withhold it), handoff, note (so it says what happened). An ERROR hands nothing off: it is
-        // transient by contract, and escalating every blip would page humans the next message answers.
-        {
-          const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
-          const claim = (notice: ContactAuthNotice) =>
-            claimContactAuthNotice(
-              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
-              cooldownMs,
-            );
-          // The copy's window is claimed only when a copy goes out: a shared claim let an ERROR, which
-          // speaks to nobody, silence the denial after it.
-          const denyMessage =
-            verdict.outcome === "denied" ? authCfg.denyMessage : null;
-          const copyClaim = denyMessage ? claim("copy") : false;
-          // Tracked so the operator note can say what the CUSTOMER actually got, instead of
-          // claiming silence on top of a refusal that was just delivered.
-          let copyOutcome: ContactAuthCopyOutcome = denyMessage
-            ? copyClaim
-              ? "failed"
-              : "suppressed"
-            : "none";
-          if (denyMessage && copyClaim) {
-            // NOTE: Claimed before the send so two racing deliveries do not both speak, so a send that did not
-            // land gives the window back instead of silencing the next refusal.
-            if (await postPublicMessage(denyMessage)) {
-              copyOutcome = "sent";
-            } else {
-              releaseContactAuthNotice(copyClaim);
-            }
-          }
-          let handedOff = false;
-          if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
-            // NOTE: Outside the cooldown on purpose: the open is what ends the bot's
-            // attribution, and a first attempt that failed must be retried on the next refused
-            // message, notice or no notice.
-            handedOff = await openForHumans(authCfg.handoffTeamId);
-          }
-          const noteClaim = claim("note");
-          if (noteClaim) {
-            if (
-              !(await postPrivateNote(
-                contactAuthNoteText(verdict, handedOff, copyOutcome),
-              ))
-            ) {
-              releaseContactAuthNotice(noteClaim);
-            }
-          }
-        }
-        logger.info(
-          "chatwoot: contact-auth silent (conv=%s outcome=%s shared=%s)",
-          String(conversationId),
-          verdict.outcome,
-          String(verdict.shared),
-        );
-        return true;
-      }
-      // Allowed, but up to ten seconds went by inside someone else's endpoint, and `runAgentTurn`
-      // re-checks ownership only after the model answers (withholding the reply, not the tools). A human
-      // who took over meanwhile would find the agent's tools writing on the conversation. This does not
-      // fence the turn's own window, only avoids widening it by the operator's network call.
-      const now = await ownershipNow();
-      if (!now.ours) {
-        // NOTE: The same exit as the gate on the way in, so it leaves the same line: the one `stillOurs`
-        // caller where a message that WOULD have been answered stops being answered.
-        if (now.closed !== null) {
-          emitFlowEvent(
-            {
-              tenantId,
-              turnId: crypto.randomUUID(),
-              source: "inbox",
-              conversationId: ctx.conv.id,
-              agentId,
-              base,
-            },
-            { stage: "handoff", status: "ok", detail: now.closed },
-          );
-        }
-        logger.info(
-          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s reason=%s)",
-          String(conversationId),
-          now.closed?.outcome ?? "identity_unresolved",
-        );
-        return true;
-      }
-      // Allowed, and still ours: the facts the endpoint volunteered travel to the turn below.
-      params.onAuthContext(verdict.context ?? null);
-    }
+  // NOTE: Contact authorization, ENDPOINT stage, last on purpose so a conversation an earlier gate
+  // silenced costs no call. With no rule this is the whole gate (and `not_configured` when there is no
+  // endpoint either); after a rule it decides what the rule allowed.
+  if (contactAuth && contactAuthHasEndpointStage(contactAuth.cfg)) {
+    return contactAuth.settle(await contactAuth.ask("endpoint"));
   }
   return false;
 }
@@ -4136,6 +4280,16 @@ export async function processChatwootDelivery(
           (watcher === responderRt || responderRt?.agentId !== watcher.agentId)
         ) {
           seen.add(watcher.agentId);
+          const permit = await observerArmPermit({
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId,
+            agentId: watcher.agentId,
+            settings: watcher.settings,
+            base,
+            fetchImpl: params.deps?.contactAuthFetch,
+          });
+          if (!permit) continue;
           await armObserve({
             tenantId: params.tenantId,
             instanceId: params.instanceId,
@@ -4149,6 +4303,7 @@ export async function processChatwootDelivery(
             // NOTE: Only the reply-route answer can come from the attach window, and here it matters most: the
             // mark suppresses every later delivery of this resolution, so a lost verdict is lost for good.
             attaching: watcher === observerRt && observerRt.attaching === true,
+            gateAskedAt: permit.askedAt,
             base,
           });
         }
@@ -4379,10 +4534,54 @@ export async function processChatwootDelivery(
       rt.mode,
       base,
     )) !== null;
+  // A WATCHER bound as the inbox's agent remembers, but analyses media only for a conversation
+  // its own contact gate lets it observe. Another watcher of the inbox stands down on its pass
+  // only when that is known to happen: the bound watcher's conditions allow the conversation and no
+  // endpoint follows them. Otherwise this route analyses for itself, under its own gate, since one
+  // watcher's refusal decides only what that watcher observes. The conditions are asked without a
+  // line: the bound watcher's own route leaves it.
+  const boundWatcherMayRefuseMedia =
+    responderRemembers &&
+    observer !== null &&
+    responderRt !== null &&
+    isMonitoring(responderRt.mode) &&
+    n.conversationId !== null &&
+    (await (async () => {
+      // NOTE: An audio the bound watcher already refused is one it will not analyze, whatever its
+      // gate says now, turned off included.
+      if (
+        refusedCovers(
+          watcherMediaRefusedThrough(
+            params.tenantId,
+            mirror.conversationRowId,
+            responderRt.agentId,
+          ),
+          n.message?.id,
+        )
+      )
+        return true;
+      const cfg = readContactAuthConfig(responderRt.settings);
+      if (!cfg.enabled) return false;
+      if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
+        return true;
+      return (
+        (await observerRuleVerdict(
+          {
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId: n.conversationId as number,
+            agentId: responderRt.agentId,
+            settings: responderRt.settings,
+            base,
+          },
+          { emit: false },
+        )) !== "allowed"
+      );
+    })());
   // A TEST responder analyses media too, on the answer path of an activated conversation, so the
   // observer stands down there as well. Asked only on an observer route beside a test responder.
   const responderAnalysesMedia =
-    responderRemembers ||
+    (responderRemembers && !boundWatcherMayRefuseMedia) ||
     (responderCovers &&
       responderRt?.enabled === true &&
       responderRt.mode === "test" &&
@@ -4410,6 +4609,39 @@ export async function processChatwootDelivery(
   // memory. A ROW-BACKED observer analyses whatever its mode, as its ingestion does: a watcher that
   // remembers an audio as a marker remembers nothing of it.
   const watcherReads = observer !== null;
+  // The contact gate on the observer path, asked once per watcher per delivery: the media pass and
+  // the arm below put the same question, and two asks would leave two lines (and, with an endpoint,
+  // call it twice).
+  const observeVerdicts = new Map<
+    string,
+    Promise<{ askedAt: number } | null>
+  >();
+  const observerMayObserve = (
+    watcher: { agentId: bigint },
+    settings: unknown,
+  ): Promise<{ askedAt: number } | null> => {
+    if (n.conversationId === null)
+      return Promise.resolve({ askedAt: Date.now() });
+    const key = String(watcher.agentId);
+    let verdict = observeVerdicts.get(key);
+    if (!verdict) {
+      verdict = observerArmPermit({
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        agentId: watcher.agentId,
+        settings,
+        base,
+        fetchImpl: params.deps?.contactAuthFetch,
+        message:
+          n.message?.id != null
+            ? { id: n.message.id, text: n.message.content ?? null }
+            : null,
+      });
+      observeVerdicts.set(key, verdict);
+    }
+    return verdict;
+  };
   // When the contact authorization gate runs on this message, the media pass waits for its verdict.
   const gateAsksNext =
     (act || commandActive) &&
@@ -4428,9 +4660,83 @@ export async function processChatwootDelivery(
           watcherReads ||
           activatedTestLateMedia)))
   ) {
+    // Chatwoot follows a voice note with a `message_updated`: the bound watcher's allow for the
+    // message already covers it, so the late update does not put the question to the endpoint again
+    // (the pass still honours a refusal recorded since).
+    // Scoped to the watcher: that admission is its own verdict, never the responder's media gate
+    // nor another agent's that held the inbox before.
+    const watcherAdmission =
+      observing && n.message?.id != null
+        ? `${mediaAdmissionKey(params.tenantId, params.instanceId, n.message.id)}:watcher:${rt.agentId}`
+        : null;
+    // A message this watcher already refused stays refused for it, a refusal of a later message
+    // included: its late update is not transcribed by a yes given since, nor by an allow cached for it
+    // before that refusal, and its gate is not asked again.
+    const refusedForWatcher =
+      observing &&
+      refusedCovers(
+        watcherMediaRefusedThrough(
+          params.tenantId,
+          mirror.conversationRowId,
+          rt.agentId,
+        ),
+        n.message?.id,
+      );
+    // The endpoint's answer is what is reused; the conditions are asked again, since a label
+    // removed since then takes the conversation out of scope.
+    const lateAdmitted =
+      !refusedForWatcher &&
+      !isNewIncoming &&
+      watcherAdmission !== null &&
+      n.conversationId !== null &&
+      watcherAdmissionStands(watcherAdmission, rt.settings, {
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        agentId: rt.agentId,
+      }) &&
+      (await observerRuleVerdict(
+        {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId,
+          agentId: rt.agentId,
+          settings: rt.settings,
+          base,
+        },
+        { emit: false },
+      )) === "allowed";
+    const watcherPermit =
+      !gateAsksNext && observing && !lateAdmitted && !refusedForWatcher
+        ? await observerMayObserve(rt, rt.settings)
+        : null;
     if (gateAsksNext) {
       mediaAwaitsGate = true;
+    } else if (observing && !lateAdmitted && !watcherPermit) {
+      // NOTE: A conversation the watcher's gate keeps it out of is not transcribed or described for
+      // it: that analysis exists for the observation the gate just refused. The refusal is remembered
+      // for THIS watcher only (a late update of the same audio is not transcribed by a later yes), never
+      // on the conversation: another watcher of the inbox decides its own media by its own gate, and a
+      // responder's media gate is the responder's.
+      recordWatcherMediaRefusal(
+        params.tenantId,
+        mirror.conversationRowId,
+        rt.agentId,
+        n.message?.id,
+      );
     } else {
+      if (
+        watcherAdmission !== null &&
+        watcherPermit &&
+        n.conversationId !== null
+      ) {
+        rememberWatcherAdmission(watcherAdmission, watcherPermit, rt.settings, {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId,
+          agentId: rt.agentId,
+        });
+      }
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
         agentId: rt.agentId,
@@ -4439,7 +4745,10 @@ export async function processChatwootDelivery(
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
         deps: params.deps,
-        admission: "unverified",
+        // NOTE: On the responder's route the watcher IS the inbox's agent, and its gate just
+        // answered: the pass's own ask would put the same question again (to the endpoint too), and
+        // leave a second line.
+        admission: observing && observer === null ? "allowed" : "unverified",
       });
     }
   }
@@ -4583,6 +4892,8 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: admissionFromGate(),
+        watcherPermit: (agentId, settings) =>
+          observerMayObserve({ agentId }, settings),
       });
     }
     if (!consumed) {
@@ -4599,6 +4910,8 @@ export async function processChatwootDelivery(
         sleep: params.deps?.sleep,
         deps: params.deps,
         admission: admissionFromGate(),
+        watcherPermit: (agentId, settings) =>
+          observerMayObserve({ agentId }, settings),
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -4983,6 +5296,8 @@ export async function processChatwootDelivery(
       deps: params.deps,
       // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
+      watcherPermit: (agentId, settings) =>
+        observerMayObserve({ agentId }, settings),
     });
   }
   // The observer marks only after its ingestion has the message (queued, or nothing to queue):
@@ -5544,21 +5859,24 @@ export async function processChatwootDelivery(
             })
         : null;
     for (const watcher of watchers) {
+      const settings =
+        freshSettings !== null && watcher.agentId === rt?.agentId
+          ? freshSettings
+          : watcher.settings;
+      const permit = await observerMayObserve(watcher, settings);
+      if (!permit) continue;
       await armObserve({
         tenantId: params.tenantId,
         instanceId: params.instanceId,
         conversationId,
         agentId: watcher.agentId,
         reason: "burst",
-        cfg: readMonitoringConfig(
-          freshSettings !== null && watcher.agentId === rt?.agentId
-            ? freshSettings
-            : watcher.settings,
-        ),
+        cfg: readMonitoringConfig(settings),
         // The message this burst is about, in Chatwoot's own sequence: the reset fence the tick is
         // held to is asked in that order and in no other.
         atMessageId: n.message?.id ?? null,
         attaching: watcher.agentId === attachingAgentId,
+        gateAskedAt: permit.askedAt,
         base,
       });
     }

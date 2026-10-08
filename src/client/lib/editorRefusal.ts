@@ -173,7 +173,10 @@ export interface EditorControlsShown {
   ttsSpokenNoticeShown: boolean;
   ttsTextChoiceShown: boolean;
   visionEnabled: boolean;
+  // The gate's two groups of controls are drawn under different conditions: the deny copy only on an
+  // agent that answers, the endpoint's credential wherever the endpoint switch is on, watcher included.
   contactAuthEnabled: boolean;
+  contactAuthEndpointShown: boolean;
   memoryCompactionEnabled: boolean;
   // The fallback's credential picker appears once a provider is chosen, not behind a switch.
   modelFallbackChosen: boolean;
@@ -196,7 +199,7 @@ const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "tts.credentialRef": "ttsOn",
   "tts.normalizeCredentialRef": "ttsNormalize",
   "vision.credentialRef": "visionEnabled",
-  "contactAuth.credentialRef": "contactAuthEnabled",
+  "contactAuth.credentialRef": "contactAuthEndpointShown",
   "memory.compaction.credentialRef": "memoryCompactionEnabled",
   "modelFallback.credentialRef": "modelFallbackChosen",
   "guardrails.credentialRef": "guardrailsEnabled",

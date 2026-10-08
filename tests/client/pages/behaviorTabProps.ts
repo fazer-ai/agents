@@ -79,6 +79,8 @@ export function behaviorTabProps(
       handoffEnabled: false,
       handoffTeamId: "",
       handoffTeamInstanceId: "",
+      endpointEnabled: false,
+      operatorNoteEnabled: true,
     },
     setContactAuth: noop,
     tts: readTtsFormState(undefined),

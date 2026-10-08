@@ -215,6 +215,92 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     await appDb.$disconnect();
   });
 
+  // THE RULE STAGE COMES FIRST (docs/contact-auth.md, Two stages): ahead of the spend ceiling, so a
+  // follow-up to a conversation the agent does not serve is silent as a refusal, not reported as a
+  // refused spend (an `error` line that pages, and a reschedule every fifteen minutes for two hours).
+  test("over the ceiling, a conversation the rule refuses is silent, not over-ceiling", async () => {
+    await seedConv(9420);
+    const agentRow = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true, settings: true },
+    });
+    const tenantBefore = await suDb.tenant.findUniqueOrThrow({
+      where: { id: tenantId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentRow.id },
+      data: {
+        settings: {
+          ...(agentRow.settings as object),
+          contactAuth: {
+            enabled: true,
+            rule: { kind: "label", label: "nenhuma-conversa-tem" },
+            askEndpointAfterRule: true,
+            url: AUTH_URL,
+          },
+        },
+      },
+    });
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: {
+          ...(tenantBefore.settings as object),
+          spendCeiling: { enabled: true, monthlyInboxUsd: 10 },
+        },
+      },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.spendCostSnapshot.create({
+      data: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+    });
+    try {
+      const s = stub();
+      const auth = authFetch(
+        () => new Response('{"authorized":true}', { status: 200 }),
+      );
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9420`,
+        nudge: { source: "followup", kind: "inactivity" },
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error(
+              "the model must not be invoked for a refused nudge",
+            );
+          },
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+          contactAuthFetch: auth.fetchImpl,
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(auth.calls).toHaveLength(0);
+      expect(s.messages).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentRow.id },
+        data: { settings: agentRow.settings as object },
+      });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: tenantBefore.settings as object },
+      });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+    }
+  });
+
   test("a denied contact is not followed up: silent, no model spend", async () => {
     await seedConv(9401);
     const s = stub();

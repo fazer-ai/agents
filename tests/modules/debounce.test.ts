@@ -1,13 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
+import { stampedBurstStart, stampedSentAt } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -199,6 +201,8 @@ function page(
     // `content_attributes.imported`: a row the history importer backfilled, which carries today's
     // id and last year's conversation.
     imported?: boolean;
+    // `created_at`, in seconds. Omitted ⇒ the row has no instant.
+    createdAt?: number;
   }>,
 ) {
   return {
@@ -213,6 +217,7 @@ function page(
         content: m.content,
         message_type: m.type ?? 0,
         private: m.priv ?? false,
+        ...(m.createdAt != null ? { created_at: m.createdAt } : {}),
         ...(m.attachments ? { attachments: m.attachments } : {}),
         ...(m.sender
           ? { sender: { id: m.senderId ?? 9, type: m.sender } }
@@ -857,6 +862,45 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[800, REPLY]]);
     expect(await watermarkOf(800)).toBe(2);
+  });
+
+  test("the coalesced turn keeps where its burst started next to its newest instant", async () => {
+    await seedConversation(8011);
+    const checkpointer = new MemorySaver();
+    await flushDebounceJob({
+      job: jobFor(8011),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              {
+                id: 1,
+                content: "segue o comprovante",
+                createdAt: 1_790_000_000,
+              },
+              { id: 2, content: "conseguem ver?", createdAt: 1_790_000_040 },
+            ]),
+          ],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer,
+      },
+    });
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: { thread_id: threadOf(8011) },
+    });
+    const human = (
+      (state.values as { messages?: BaseMessage[] }).messages ?? []
+    ).find((m) => m.getType() === "human");
+    expect(stampedBurstStart(human as BaseMessage)?.getTime()).toBe(
+      1_790_000_000_000,
+    );
+    expect(stampedSentAt(human as BaseMessage)?.getTime()).toBe(
+      1_790_000_040_000,
+    );
   });
 
   // The fork's default page carries a reaction only when the message it reacts to is among the
@@ -5768,6 +5812,95 @@ describe.skipIf(!dbUp)("debounce", () => {
         outcome: "ownership_lost",
         status: "open",
       });
+    });
+
+    // THE RULE STAGE COMES FIRST (docs/contact-auth.md, Two stages): ahead of the spend ceiling, so a
+    // burst this agent does not serve draws no ceiling sentence and no handoff, and the endpoint the
+    // operator put after the rule is never asked about it.
+    test("over the ceiling, a burst the rule refuses is dropped before the ceiling speaks", async () => {
+      const convId = 847;
+      await seedConversation(convId);
+      await seedContactOn(convId, 68);
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            contactAuth: {
+              enabled: true,
+              rule: { kind: "label", label: "nenhuma-conversa-tem" },
+              askEndpointAfterRule: true,
+              url: "https://203.0.113.9:9443/check",
+            },
+          },
+        },
+      });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+        },
+      });
+      const monthStart = new Date(
+        Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+      );
+      await suDb.spendCostSnapshot.upsert({
+        where: {
+          tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+        },
+        create: {
+          tenantId,
+          source: "inbox",
+          monthStart,
+          costUsd: 99,
+          polledAt: new Date(),
+        },
+        update: { costUsd: 99, polledAt: new Date() },
+      });
+      try {
+        const sent: Array<[number, string]> = [];
+        const toggles: Array<[number, string]> = [];
+        const notes: Array<[number, string]> = [];
+        const auth = { n: 0 };
+        const out = await flushDebounceJob({
+          job: jobFor(convId, { lastMessageId: 8 }),
+          base: appDb,
+          deps: {
+            makeModel: fakeModel,
+            makeClient: makeResolveStub({
+              pages: [page([{ id: 8, content: "oi" }])],
+              sent,
+              calls: { getMessages: 0 },
+              toggles,
+              notes,
+            }) as never,
+            checkpointer: new MemorySaver(),
+            contactAuthFetch: answering(true, auth),
+          },
+        });
+        expect(out).toEqual({ outcome: "done" });
+        expect(auth.n).toBe(0);
+        expect(sent).toEqual([]);
+        expect(toggles).toEqual([]);
+        expect(notes).toEqual([]);
+        expect(await watermarkOf(convId)).toBe(8);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { settings: before.settings as object },
+        });
+        await suDb.tenant.update({
+          where: { id: tenantId },
+          data: { settings: {} },
+        });
+        await suDb.spendCostSnapshot.deleteMany({
+          where: { tenantId, source: "inbox" },
+        });
+      }
     });
 
     test("a refused contact drops the burst: no fetch, no post, watermark advanced", async () => {

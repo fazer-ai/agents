@@ -446,6 +446,9 @@ const BARE_SLICES: Record<
   "src/modules/conversations/service.ts": [1, "array"],
   // The newest turns' lines kept off an ARRAY of turns, never a string.
   "src/modules/conversations/usage.ts": [1, "array"],
+  // Two: the newest `maxFiles` of the candidate files, and the newest entries of the carried record.
+  // Both are ARRAYS (of files, of `msg:attachment` entries), never a string.
+  "src/modules/cross-inbox-case/carry-attachments.ts": [2, "array"],
   // The operator's case labels capped as an ARRAY of labels, never a string.
   "src/modules/cross-inbox-case/settings.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],

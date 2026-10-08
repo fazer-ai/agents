@@ -1307,6 +1307,72 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([]);
     });
 
+    // THE RULE STAGE COMES FIRST (docs/contact-auth.md, Two stages). A conversation the agent's rule
+    // does not serve is refused as such, ahead of the ceiling: the operator is told the contact is not
+    // authorized, not that a budget is spent, and the endpoint after the rule is never asked.
+    test("a conversation the rule refuses is not-authorized, not over the ceiling", async () => {
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      });
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            contactAuth: {
+              enabled: true,
+              rule: { kind: "label", label: "nenhuma-conversa-tem" },
+              askEndpointAfterRule: true,
+              url: AUTH_URL,
+            },
+          },
+        },
+      });
+      try {
+        // A contact the endpoint could ask about, so an endpoint asked here would answer, and allow.
+        const contact = await suDb.contact.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootContactId: 97,
+            phone: "+5511988887797",
+          },
+          select: { id: true },
+        });
+        const id = await seedConversation(924, { contactId: contact.id });
+        const sent: Array<[number, string]> = [];
+        const asked: string[] = [];
+        const res = await reengageConversation(
+          ctx(),
+          id,
+          {
+            makeModel: () => {
+              throw new Error("the model must not be invoked on a refusal");
+            },
+            makeClient: makeStub({
+              page: page([{ id: 1, content: "oi" }]),
+              sent,
+            }),
+            checkpointer: new MemorySaver(),
+            contactAuthFetch: (async (input: RequestInfo | URL) => {
+              asked.push(String(input));
+              return new Response('{"authorized":true}', { status: 200 });
+            }) as unknown as typeof fetch,
+          },
+          appDb,
+        );
+        expect(res.outcome).toBe("not-authorized");
+        expect(asked).toEqual([]);
+        expect(sent).toEqual([]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentId },
+          data: { settings: before.settings as object },
+        });
+      }
+    });
+
     // A CLICK WITH NOTHING TO ANSWER WAS NEVER A TURN, so the ceiling has nothing to refuse. The
     // button reporting a spent budget here tells the operator to raise a number that would change
     // nothing, and writes an `error` line saying a turn was skipped when none was ever going to run.

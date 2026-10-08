@@ -2314,41 +2314,14 @@ export async function returnConversationToAgent(
           )
         )?.chatwootAgentBotId ?? null)
       : null;
-  await client.toggleStatus(conv.chatwootConversationId, "pending", {
-    asAdmin: true,
-  });
-  // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
-  // and a stale row sends "Respond now" through the ORIGIN inbox's persona. Compare-and-set on the
-  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort, since
-  // the hand-back has already happened.
-  if (
-    nowInbox !== null &&
-    relocated !== null &&
-    conv.inbox !== null &&
-    nowInbox.chatwootInboxId !== conv.inbox.chatwootInboxId
-  ) {
-    try {
-      await runScopedOn(base, ctx, (db) =>
-        db.conversation.updateMany({
-          where: { id, inboxId: conv.inbox?.id },
-          data: { inboxId: nowInbox.id },
-        }),
-      );
-    } catch (err) {
-      logger.warn(
-        { err },
-        `conversations: the hand-back could not record the conversation's new inbox (conv=${String(id)})`,
-      );
-    }
-  }
-  // Unreadable is NOT "nobody took it": a degraded payload with the holder unchanged is the common
-  // case, and refusing to hand back on it would leave the conversation with a human who has already
-  // walked away. The live read is the improvement over an unconditional unassign, not a new gate.
+  // The last look before the write, and the one every decision below is taken on. Unreadable is NOT
+  // "nobody took it": a degraded payload with the holder unchanged is the common case, and refusing
+  // to hand back on it would leave the conversation with a human who has already walked away.
   const live = await readHolder();
   // A holder other than the baseline, by the whole identity ("User" and "AgentBot" are
   // separate id namespaces). An EMPTY assignee is not a competing holder; a typed holder with no id
   // is (unknown is not absent, so it fails closed). Written once because a live read after the
-  // unassign can still name the party just removed, and only the baseline tells them apart.
+  // write can still name the party just removed, and only the baseline tells them apart.
   const holderOtherThan = (
     seen: { assigneeType: string | null; assigneeId: number | null } | null,
   ): { assigneeType: string | null; assigneeId: number | null } | null =>
@@ -2372,78 +2345,124 @@ export async function returnConversationToAgent(
   const nobodyToRemove =
     live !== null && live.assigneeStated === true && live.assigneeType === null;
   let handedToBot = alreadyOurs;
-  // The bot assignment also sets `pending` and names the bot of the inbox the hand-back was judged
-  // on, so it is only sent while the read after the status call still says pending on that inbox:
-  // a conversation resolved, opened or transferred meanwhile gets the plain unassign instead, which
-  // leaves the status alone and names no bot.
+  // ONE WRITE when the bot can take it. The fork's bot assignment removes the person, names the
+  // bot and sets `pending` in one locked write, so it replaces the status call rather than following
+  // it: two writes would leave a window in which a resolve, or a rebinding of the inbox, lands between
+  // them and is undone by the second. The bot is the inbox's the hand-back was judged on, so a read
+  // naming another inbox withholds it. Anything else takes the status call and the plain unassign.
+  const botCanTakeIt =
+    newHolder === null &&
+    !alreadyOurs &&
+    ourAgentBotId !== null &&
+    (live === null ||
+      live.inboxId === null ||
+      judgedInboxId === null ||
+      live.inboxId === judgedInboxId);
   let attempted = false;
-  const stillJudgedInbox =
-    live === null ||
-    live.inboxId === null ||
-    judgedInboxId === null ||
-    live.inboxId === judgedInboxId;
-  if (newHolder === null && !alreadyOurs) {
-    try {
-      if (
-        ourAgentBotId !== null &&
-        stillJudgedInbox &&
-        (live === null || live.status === "pending")
-      ) {
-        attempted = true;
-        handedToBot = await client.assignAgentBot(
-          conv.chatwootConversationId,
-          ourAgentBotId,
-          { asAdmin: true },
-        );
-      }
-      // NOTE: an assignment that came back without the bot may have named a USER with that id (a
-      // Chatwoot that ignores `assignee_type`), so the unassign follows it even onto an empty read.
-      if (!handedToBot && (attempted || !nobodyToRemove)) {
-        await client.unassignConversation(conv.chatwootConversationId, {
-          asAdmin: true,
-        });
-      }
-    } catch (err) {
-      // Once a bot assignment was sent, the holder is no longer known to be the baseline (it may have
-      // landed, or named a user with the bot's id), so it is read again for the row; unread, it is
-      // unknown. The mirror is left to the assignment webhook, which carries the version this lacks.
-      let partialHolder: {
-        assigneeType: string | null;
-        assigneeId: number | null;
-        holderUnknown?: true;
-      } = {
+  let toggled = false;
+  try {
+    if (botCanTakeIt) {
+      attempted = true;
+      handedToBot = await client.assignAgentBot(
+        conv.chatwootConversationId,
+        ourAgentBotId,
+        { asAdmin: true },
+      );
+    }
+    // NOTE: the bot already holding it still needs the status, and only an assignment that landed
+    // set it.
+    if (!(attempted && handedToBot)) {
+      await client.toggleStatus(conv.chatwootConversationId, "pending", {
+        asAdmin: true,
+      });
+      toggled = true;
+    }
+    // NOTE: an assignment that came back without the bot may have named a USER with that id (a
+    // Chatwoot that ignores `assignee_type`), so the unassign follows it even onto an empty read.
+    if (!handedToBot && newHolder === null && (attempted || !nobodyToRemove)) {
+      await client.unassignConversation(conv.chatwootConversationId, {
+        asAdmin: true,
+      });
+    }
+  } catch (err) {
+    // NOTE: nothing was written yet, so there is nothing to record.
+    if (!attempted && !toggled) throw err;
+    // Once a bot assignment was sent, neither the holder nor the status is known to be what it was
+    // (it may have landed, or named a user with the bot's id), so both are read again for the row;
+    // unread, they are unknown. The mirror is left to the assignment webhook, which carries the
+    // version this read lacks.
+    let partial: {
+      status: string;
+      assigneeType: string | null;
+      assigneeId: number | null;
+      holderUnknown?: true;
+    } = {
+      status: "pending",
+      assigneeType: baseline.assigneeType,
+      assigneeId: baseline.assigneeId,
+    };
+    if (attempted) {
+      const seen = await readHolder().catch(() => null);
+      partial =
+        seen?.assigneeStated === true
+          ? {
+              status: seen.status,
+              assigneeType: seen.assigneeType,
+              assigneeId: seen.assigneeId,
+            }
+          : {
+              status: seen?.status ?? "pending",
+              assigneeType: null,
+              assigneeId: null,
+              holderUnknown: true,
+            };
+    }
+    // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. Without the bot, the status call goes
+    // first and the unassign second, so a failure leaves the status pending with the human still
+    // holding the conversation: the recoverable half of the pair. Recoverable is not invisible: the
+    // status of a live conversation moved, and the row is what says so.
+    await recordConversationAction(ctx, base, id, {
+      action: "conversation.return",
+      before: {
+        status: conv.status,
         assigneeType: baseline.assigneeType,
         assigneeId: baseline.assigneeId,
-      };
-      if (attempted) {
-        const seen = await readHolder().catch(() => null);
-        partialHolder =
-          seen?.assigneeStated === true
-            ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
-            : { assigneeType: null, assigneeId: null, holderUnknown: true };
-      }
-      // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
-      // is still holding the conversation, which is the recoverable half of the pair (the comment on
-      // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
-      // status of a live conversation moved, and the row is what says so.
-      await recordConversationAction(ctx, base, id, {
-        action: "conversation.return",
-        before: {
-          status: conv.status,
-          assigneeType: baseline.assigneeType,
-          assigneeId: baseline.assigneeId,
-        },
-        after: { status: "pending", ...partialHolder, partial: true },
-      });
-      throw err;
-    }
-  } else if (newHolder !== null) {
+      },
+      after: { ...partial, partial: true },
+    });
+    throw err;
+  }
+  if (newHolder !== null) {
     logger.info(
       "conversations: hand-back left the conversation with its new holder (conv=%d, %s=%s)",
       conv.chatwootConversationId,
       newHolder.assigneeType ?? "none",
       String(newHolder.assigneeId ?? "none"),
     );
+  }
+  // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
+  // and a stale row sends "Respond now" through the ORIGIN inbox's persona. Compare-and-set on the
+  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort, since
+  // the hand-back has already happened.
+  if (
+    nowInbox !== null &&
+    relocated !== null &&
+    conv.inbox !== null &&
+    nowInbox.chatwootInboxId !== conv.inbox.chatwootInboxId
+  ) {
+    try {
+      await runScopedOn(base, ctx, (db) =>
+        db.conversation.updateMany({
+          where: { id, inboxId: conv.inbox?.id },
+          data: { inboxId: nowInbox.id },
+        }),
+      );
+    } catch (err) {
+      logger.warn(
+        { err },
+        `conversations: the hand-back could not record the conversation's new inbox (conv=${String(id)})`,
+      );
+    }
   }
   // From here the effect has happened, and the bookkeeping below can throw, so the row is
   // written in a `finally`. It carries what THIS CALL knows, not the baseline: the unassign ran, was

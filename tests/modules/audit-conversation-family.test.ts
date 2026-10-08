@@ -664,6 +664,44 @@ describe.skipIf(!dbUp)(
       expect(row?.after).toEqual({ status: "resolved" });
     });
 
+    // Somebody else holds it by the last read, so the hand-back's first write is the status call, and
+    // that failing changed nothing in Chatwoot: there is no partial to record.
+    test("a hand-back whose first write fails records nothing", async () => {
+      await clearAudit();
+      const id = await seedConversation(4027, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      let reads = 0;
+      const stub = stubClient({
+        getConversation: async () => {
+          reads += 1;
+          return {
+            id: 1,
+            status: "open",
+            meta: {
+              assignee_type: "User",
+              assignee: { id: reads >= 3 ? 30 : 21, name: "U" },
+            },
+          };
+        },
+        toggleStatus: async () => {
+          throw new Error("Chatwoot API 502 for POST /toggle_status");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      expect(stub.calls).not.toContain("assignAgentBot");
+      expect(await rows()).toEqual([]);
+    });
+
     // A status read that omits the assignee says nothing about it: a holder cleared by a webhook
     // after the conversation was loaded stays cleared, rather than coming back from that load.
     test("a status change whose read omits the assignee keeps the holder the mirror has now", async () => {

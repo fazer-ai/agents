@@ -92,9 +92,6 @@ function makeStub(
     metaOmittedAfterWrite?: boolean;
     // ...carrying a version, which is what would send the read down the reconcile path.
     metaOmittedVersion?: number;
-    // The status reads report once the status call has gone out: an operator who resolved it
-    // meanwhile, which the bot assignment (it sets pending) would undo.
-    statusAfterToggle?: string;
   } = {},
   // A holder that appears only from the SECOND live read on. The hand-back reads the conversation
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
@@ -125,7 +122,6 @@ function makeStub(
   // bot, so every later read reports the bot until a late holder claims it back.
   let botHolder: number | null = null;
   let omitMeta = false;
-  let toggled = false;
   const calls = {
     getMessages: 0,
     sendMessage: [] as { content: string; isPrivate: boolean }[],
@@ -213,7 +209,6 @@ function makeStub(
     },
     toggleStatus: async (_cid: number, status: string) => {
       calls.toggleStatus.push(status);
-      toggled = true;
       return {};
     },
     getConversation: async (cid: number) => {
@@ -264,9 +259,7 @@ function makeStub(
               }
             : {
                 id: cid,
-                status: toggled
-                  ? (live.statusAfterToggle ?? "pending")
-                  : "pending",
+                status: "pending",
                 ...on,
                 meta: {
                   assignee_type: live.assigneeType ?? null,
@@ -1094,7 +1087,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(outcome).toBe("returned");
     expect(stub.calls.assignAgentBot).toEqual([501]);
     expect(stub.calls.unassignConversation).toBe(0);
-    expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    // The assignment sets `pending` itself, in the same write.
+    expect(stub.calls.toggleStatus).toEqual([]);
     const row = await suDb.conversation.findUnique({
       where: { id: convId },
       select: { status: true, assigneeType: true },
@@ -1135,24 +1129,6 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.assignAgentBot).toEqual([]);
     expect(stub.calls.unassignConversation).toBe(0);
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
-  });
-
-  test("a conversation resolved after the status call is not reopened by the bot assignment", async () => {
-    // The bot assignment sets pending, so it is held back once the read after the status call says
-    // somebody resolved it; the plain unassign, which leaves the status alone, removes the person.
-    const stub = makeStub({
-      assigneeType: "User",
-      assigneeId: 7,
-      statusAfterToggle: "resolved",
-    });
-    await returnConversationToAgent(
-      ctx(tenant),
-      convId,
-      { makeClient: stub.makeClient },
-      appDb,
-    );
-    expect(stub.calls.assignAgentBot).toEqual([]);
-    expect(stub.calls.unassignConversation).toBe(1);
   });
 
   test("a bot assignment that came back without the bot is followed by an unassign, even when nobody held it", async () => {
@@ -1755,7 +1731,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         appDb,
       );
       expect(outcome).toBe("returned");
-      expect(stub.calls.toggleStatus).toEqual(["pending"]);
+      // Handed back through the bot assignment, which sets `pending` in the same write.
+      expect(stub.calls.assignAgentBot).toHaveLength(1);
       expect(stub.calls.inboxAgentBotId).toEqual([92]);
       // ...AND THE MIRROR LEARNS WHERE IT IS. The reconcile after a hand-back writes status and
       // assignee, never `inboxId`, so a delayed or lost transfer webhook would leave the row naming
@@ -1829,9 +1806,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(stub.calls.unassignConversation).toBe(0);
     });
 
-    // A transfer landing during the status call is past the last check that could refuse, so the
-    // read after it withholds the origin inbox's bot and the plain unassign removes the person.
-    test("a move during the status call does not hand it to the origin inbox's bot", async () => {
+    // A transfer landing after the last check that could refuse is still seen by the read the write
+    // is decided on, which withholds the origin inbox's bot; the plain unassign removes the person.
+    test("a move seen by the last read does not hand it to the origin inbox's bot", async () => {
       await held();
       const stub = makeStub({
         assigneeType: "User",
@@ -1877,7 +1854,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         appDb,
       );
       expect(outcome).toBe("returned");
-      expect(stub.calls.toggleStatus).toEqual(["pending"]);
+      // Handed back through the bot assignment, which sets `pending` in the same write.
+      expect(stub.calls.assignAgentBot).toHaveLength(1);
     });
 
     // NOTE: ...AND THE FINAL OWNERSHIP CHECK IS ASKED OF THE RESOLVED INBOX TOO. Asked of the row
@@ -2394,7 +2372,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       appDb,
     );
     expect(outcome).toBe("returned");
-    expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    // Handed back through the bot assignment, which sets `pending` in the same write.
+    expect(stub.calls.assignAgentBot).toHaveLength(1);
   });
 
   // NOTE: ...AND THE SAME REFUSAL ON THE FAR SIDE OF THE NETWORK. The first check runs before the

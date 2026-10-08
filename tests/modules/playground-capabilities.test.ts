@@ -121,5 +121,44 @@ describe.skipIf(!dbUp)(
       expect(res.kind).toBe("unsupported");
       expect(res.text).toBe("");
     });
+
+    // The draft's output ceiling and effort reach the provider, so the operator tests the request
+    // production will send.
+    test("the draft's output ceiling and effort reach the provider request", async () => {
+      const bodies: Array<Record<string, unknown>> = [];
+      const res = await extractPlaygroundFile({
+        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
+        agentId: 1n,
+        file: new ArrayBuffer(8),
+        mimeType: "image/png",
+        settings: {
+          vision: {
+            enabled: true,
+            provider: "anthropic",
+            model: "claude-haiku-5-5",
+            credentialRef: vaultRef,
+            maxOutputTokens: 3000,
+            reasoningEffort: "low",
+          },
+        },
+        base: appDb,
+        deps: {
+          fetchImpl: (async (_url: string | URL, init?: RequestInit) => {
+            bodies.push(JSON.parse((init?.body as string) ?? "{}"));
+            return new Response(
+              JSON.stringify({
+                content: [{ type: "text", text: "um recibo" }],
+                stop_reason: "end_turn",
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }) as unknown as typeof fetch,
+        },
+      });
+      expect(res.text).toBe("um recibo");
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]?.max_tokens).toBe(3000);
+      expect(bodies[0]?.output_config).toEqual({ effort: "low" });
+    });
   },
 );

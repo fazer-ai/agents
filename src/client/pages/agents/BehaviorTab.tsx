@@ -93,6 +93,7 @@ import {
   VOICE_CHOICE_TEXT_MAX,
 } from "@/modules/tts/settings-shared";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
+import type { VisionReasoningEffort } from "@/modules/vision/output-limits";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import { ContactAuthConditionList } from "./ContactAuthConditionFields";
 import {
@@ -280,13 +281,17 @@ export interface SignatureState {
   separator: "blank" | "--";
 }
 
-interface VisionState {
+export interface VisionState {
   enabled: boolean;
   provider: string;
   model: string;
   credentialRef: string;
   baseURL: string;
   extractionPrompt: string;
+  // No control on the tab: carried through the save so a value set over the API survives it
+  // (./visionFormState).
+  maxOutputTokens: number | null;
+  reasoningEffort: VisionReasoningEffort | null;
 }
 
 export interface LimitsState {

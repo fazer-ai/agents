@@ -240,7 +240,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/unpriced-model-alert.test.ts": 1,
   "tests/modules/vision-email-body.test.ts": 1,
   "tests/modules/vision-every-attachment.test.ts": 1,
-  "tests/modules/vision-retry.test.ts": 5,
+  "tests/modules/vision-retry.test.ts": 7,
   "tests/modules/vision-unread-reason.test.ts": 1,
   "tests/modules/webhooks-outbound-dead-alert.test.ts": 1,
   "tests/modules/webhooks-outbound-deliveries.test.ts": 1,

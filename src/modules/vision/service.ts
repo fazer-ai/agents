@@ -200,6 +200,10 @@ export async function extractWithRetry(args: {
           // do not carry the same number: the last attempt gets what is left of the total. Without
           // it a 39s timeout reads as a slow provider rather than as the budget running out.
           detail: { kind, attempt, budgetMs },
+          // NOTE: A read cut at the output ceiling still returns text, so it would otherwise reach the
+          // agent as a finished description with nothing on the Logs page. Only when true: the key's
+          // absence is the ordinary line.
+          detailOf: (out) => (out.truncated ? { truncated: true } : {}),
           // NOTE: An attempt followed by another is `info`, flagged `willRetry`. The one that ends
           // the extraction is a `warn` naming what went unread: the turn recovers with the "couldn't
           // extract" marker, so it is an advisory and not a red error, the same contract as TTS.
@@ -582,6 +586,8 @@ async function extractInboundOnce(
         apiKey: entry.secret,
         baseURL: entry.baseUrl ?? cfg.baseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
+        maxOutputTokens: cfg.maxOutputTokens,
+        reasoningEffort: cfg.reasoningEffort,
       },
     });
   } catch (e) {
@@ -787,6 +793,8 @@ export async function extractPlaygroundFile(
         apiKey: entry.secret,
         baseURL: entry.baseUrl ?? cfg.baseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
+        maxOutputTokens: cfg.maxOutputTokens,
+        reasoningEffort: cfg.reasoningEffort,
       },
     });
     if (params.flow && extracted.usage) {

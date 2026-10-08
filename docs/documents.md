@@ -265,7 +265,8 @@ someone approves, and a reviewer shown ORC-0042 would expect that number on the 
 the calendar-day key the tool uses, so an approval landing tomorrow keeps the date the reviewer saw;
 only the number is taken then. The digest is of what only the request holds (its own key and creation
 instant), so no row written before the request existed can carry the key, and `issueDocument` refuses
-any caller key with the `approval:` prefix. The status is claimed first, `PENDING → APPROVED` while unexpired, in one
+to write a new document under a caller key with the `approval:` prefix (a row older builds already
+stored under one still answers its retry). The status is claimed first, `PENDING → APPROVED` while unexpired, in one
 conditional UPDATE: a rejection or the expiry racing it cannot both win, and a second approval, in
 parallel or later, finds `APPROVED` and lands on the same issued row through the key. A failure after
 the claim (the template deleted, so nothing can number the document) leaves an `APPROVED` request with

@@ -428,6 +428,40 @@ describe.skipIf(!dbUp)("document approval", () => {
     expect(e.message).toContain("reserved");
   });
 
+  test("a document an older build stored under the prefix still answers its retry", async () => {
+    const legacy = await issueDocument({
+      ctx: ctx(tenantA),
+      templateId,
+      idempotencyKey: "legado-antigo",
+      values: { ...ARGS, cliente: "Legado REST" },
+      base: appDb,
+      storageDir: DIR,
+    });
+    await suDb.issuedDocument.update({
+      where: { id: BigInt(legacy.id) },
+      data: { idempotencyKey: "approval:legado" },
+    });
+    const before = await suDb.documentTemplate.findUniqueOrThrow({
+      where: { id: templateId },
+      select: { lastNumber: true },
+    });
+    const retry = await issueDocument({
+      ctx: ctx(tenantA),
+      templateId,
+      idempotencyKey: "approval:legado",
+      values: ARGS,
+      base: appDb,
+      storageDir: DIR,
+    });
+    expect(retry.id).toBe(legacy.id);
+    expect(retry.number).toBe(legacy.number);
+    const after = await suDb.documentTemplate.findUniqueOrThrow({
+      where: { id: templateId },
+      select: { lastNumber: true },
+    });
+    expect(after.lastNumber).toBe(before.lastNumber);
+  });
+
   test("a request that is not pending, or not this tenant's, issues nothing", async () => {
     const approved = await latestRequestId();
     const rejected = await refusal(

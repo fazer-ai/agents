@@ -183,6 +183,17 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
       for (const [j, o] of (q?.[key] ?? []).entries()) {
         need(o, ["value", "description"], ["questions", i, key, j]);
       }
+      const seen = new Set<unknown>();
+      for (const [j, o] of (q?.[key] ?? []).entries()) {
+        if (typeof o?.value !== "string") continue;
+        if (seen.has(o.value)) {
+          out.push({
+            path: ["questions", i, key, j, "value"],
+            message: `"${o.value}" is repeated`,
+          });
+        }
+        seen.add(o.value);
+      }
     }
   }
   for (const [r, rl] of (v.rules ?? []).entries()) {

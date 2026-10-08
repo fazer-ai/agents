@@ -77,6 +77,7 @@ export async function applyDecisions(
       actions.push({ rule: f.rule, tool: f.tool, outcome: "shadow" });
       continue;
     }
+    signal.throwIfAborted();
     if (!(await stillWanted())) {
       return { fired, missed, actions, withdrawn: true };
     }
@@ -89,6 +90,8 @@ export async function applyDecisions(
       await tool.invoke(f.args, { callbacks, signal });
       actions.push({ rule: f.rule, tool: f.tool, outcome: "ran" });
     } catch (err) {
+      // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
+      if (signal.aborted) throw err;
       actions.push({
         rule: f.rule,
         tool: f.tool,

@@ -870,6 +870,34 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect(d.retried).toBe(false);
   });
 
+  test("once the deadline passes, no later rule's action starts", async () => {
+    await setMonitoring(
+      decisionsBlock({
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+            action: { tool: "private_note", args: { content: "lenta" } },
+          },
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+            action: { tool: "set_labels", args: { add: ["reembolso"] } },
+          },
+        ],
+      }),
+    );
+    const p = providerDouble(() =>
+      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
+    );
+    const { log } = await tick(p.fetchImpl, [], {
+      timeoutMs: 1_000,
+      slowNotes: 2_000,
+      afterFailure: "retry",
+    });
+    // The slow note settles after the tick returned; the next rule must not run then.
+    await new Promise((r) => setTimeout(r, 2_500));
+    expect(log.labelsWritten).toEqual([]);
+  });
+
   test("a provider string outside the configured options never reaches the line", async () => {
     await setMonitoring(
       decisionsBlock({
@@ -883,7 +911,9 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     );
     const p = providerDouble(() =>
       json({
-        model: "MARCADOR-1135 echoed by a proxy with spaces",
+        // Id-shaped, so only the provider's model grammar keeps it out (a credential's base URL may
+        // point at anything that echoes the conversation).
+        model: "MARCADOR-1135_echoed",
         answers: {
           assunto: {
             type: "choice",

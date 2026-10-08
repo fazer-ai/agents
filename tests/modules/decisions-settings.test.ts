@@ -170,6 +170,26 @@ describe("the decisions block at the write boundary", () => {
       },
       "monitoring.decisions.rules.0",
     ],
+    [
+      "a choice with the same option twice",
+      {
+        ...valid,
+        decisions: {
+          ...valid.decisions,
+          questions: [
+            QUESTIONS[0],
+            {
+              ...QUESTIONS[1],
+              options: [
+                { value: "reembolso", description: "a" },
+                { value: "reembolso", description: "b" },
+              ],
+            },
+          ],
+        },
+      },
+      "monitoring.decisions.questions.1.options.1.value",
+    ],
   ])("refused: %s", (_label, monitoring, field) => {
     const r = refusal(monitoring);
     expect(r?.statusCode).toBe(400);

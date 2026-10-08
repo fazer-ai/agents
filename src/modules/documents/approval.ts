@@ -67,7 +67,6 @@ const SELECT = {
   idempotencyKey: true,
   chatwootInstanceId: true,
   conversationId: true,
-  snapshot: true,
   expiresAt: true,
   reviewerUserId: true,
   note: true,
@@ -79,6 +78,9 @@ const SELECT = {
 type Row = Prisma.DocumentApprovalRequestGetPayload<{
   select: typeof SELECT;
 }>;
+
+// The frozen snapshot can run to megabytes, so only preview and issuance read it.
+const WITH_SNAPSHOT = { ...SELECT, snapshot: true } as const;
 
 function toDto(r: Row): ApprovalRequestDto {
   return {
@@ -255,6 +257,21 @@ async function loadRequest(
   return row;
 }
 
+async function loadRequestWithSnapshot(
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient,
+) {
+  const row = await runScopedOn(base, ctx, (db) =>
+    db.documentApprovalRequest.findUnique({
+      where: { id },
+      select: WITH_SNAPSHOT,
+    }),
+  );
+  if (!row) throw notFound();
+  return row;
+}
+
 export async function getApprovalRequest(
   ctx: TenantContext,
   id: bigint,
@@ -270,7 +287,7 @@ export async function renderApprovalPreview(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<{ bytes: Uint8Array; fileName: string }> {
-  const row = await loadRequest(ctx, id, base);
+  const row = await loadRequestWithSnapshot(ctx, id, base);
   const stored = row.snapshot as unknown as DocumentSnapshot;
   const style = parseDocumentStyle(stored.style);
   const { logo } = await readRenderContext(ctx, base);
@@ -369,7 +386,7 @@ export async function approveDocumentRequest(params: {
     if (r.count === 1) await auditDecision(db, ctx, requestId, "APPROVED");
     return r;
   });
-  const row = await loadRequest(ctx, requestId, base);
+  const row = await loadRequestWithSnapshot(ctx, requestId, base);
   if (claimed.count === 0 && row.status !== "APPROVED") {
     if (row.status === "PENDING") {
       await expireDueApprovalRequests(ctx.tenantId as bigint, now, base);

@@ -12,8 +12,10 @@ import {
   createApprovalRequest,
   expireDueApprovalRequests,
   expiryJobKey,
+  getApprovalRequest,
   issueOrRequestApproval,
   KeyAnswered,
+  listApprovalRequests,
   rejectDocumentRequest,
   renderApprovalPreview,
 } from "@/modules/documents/approval";
@@ -664,6 +666,38 @@ describe.skipIf(!dbUp)("document approval", () => {
     expect(
       (issued.snapshot as { values?: { cliente?: string } }).values?.cliente,
     ).toBe("Legado");
+  });
+
+  test("listing and reading a request leave the frozen snapshot in the database", async () => {
+    await tool(newTurnState(), 81).invoke({ ...ARGS, cliente: "Leve" });
+    const id = await latestRequestId();
+    // Its own client, because the shared one is built without the query log and the claim is about
+    // what Postgres was asked.
+    const espiao = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+      log: [{ emit: "event", level: "query" }],
+    } as never) as unknown as PrismaClient;
+    const sql: string[] = [];
+    (
+      espiao as unknown as {
+        $on: (e: string, f: (q: { query: string }) => void) => void;
+      }
+    ).$on("query", (q) => {
+      if (q.query.includes("document_approval_requests")) sql.push(q.query);
+    });
+    try {
+      const listed = await listApprovalRequests(ctx(tenantA), {}, espiao);
+      expect(listed.some((r) => r.id === String(id))).toBe(true);
+      const read = await getApprovalRequest(ctx(tenantA), id, espiao);
+      expect(read.id).toBe(String(id));
+      const metadata = sql.splice(0);
+      expect(metadata.length).toBeGreaterThanOrEqual(2);
+      for (const q of metadata) expect(q).not.toContain('"snapshot"');
+      await renderApprovalPreview(ctx(tenantA), id, espiao);
+      expect(sql.some((q) => q.includes('"snapshot"'))).toBe(true);
+    } finally {
+      await espiao.$disconnect();
+    }
   });
 
   test("expiry moves only overdue pending requests, and approval refuses one even before it runs", async () => {

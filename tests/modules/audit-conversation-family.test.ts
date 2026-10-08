@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
   handoffConversation,
@@ -88,6 +91,10 @@ function stubClient(over: Partial<Record<string, unknown>> = {}) {
       calls.push("unassignConversation");
       return {};
     },
+    assignAgentBot: async () => {
+      calls.push("assignAgentBot");
+      return "bot";
+    },
     toggleStatus: async () => {
       calls.push("toggleStatus");
       return {};
@@ -127,6 +134,41 @@ async function seedConversation(
 
 // A client whose MIRROR write fails and whose everything else works, for the case where Chatwoot has
 // already accepted the action and our own bookkeeping is what breaks.
+// The hand-back's own bot lookup failing (the only `chatwootAgentBot.findFirst` it makes; the
+// responder checks read the row with `findUnique`).
+const botLookupFailingBase = (client: PrismaClient): PrismaClient => {
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, receiver) {
+        if (prop === "$extends") {
+          return (...args: unknown[]) => wrap(t.$extends(...args));
+        }
+        if (prop === "$transaction") {
+          return (fn: unknown, ...rest: unknown[]) =>
+            typeof fn === "function"
+              ? t.$transaction(
+                  (tx: unknown) => (fn as (c: unknown) => unknown)(wrap(tx)),
+                  ...rest,
+                )
+              : t.$transaction(fn, ...rest);
+        }
+        if (prop === "chatwootAgentBot") {
+          const real = Reflect.get(t, prop, receiver);
+          return {
+            ...real,
+            findUnique: real.findUnique.bind(real),
+            findFirst: async () => {
+              throw new Error("bot lookup failed (pool timeout)");
+            },
+          };
+        }
+        return Reflect.get(t, prop, receiver);
+      },
+    });
+  return wrap(client);
+};
+
 const mirrorFailingBase = (client: PrismaClient): PrismaClient => {
   // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
   const wrap = (target: any): any =>
@@ -356,6 +398,26 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    test("a hand-back whose bot cannot be read changes nothing in Chatwoot", async () => {
+      await clearAudit();
+      const id = await seedConversation(4024, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 5,
+      });
+      const stub = stubClient();
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          botLookupFailingBase(appDb),
+        ),
+      ).rejects.toThrow("bot lookup failed");
+      expect(stub.calls).not.toContain("toggleStatus");
+      expect(stub.calls).not.toContain("assignAgentBot");
+    });
+
     test("a hand-back records the outcome, because taken-over is not the outcome asked for", async () => {
       await clearAudit();
       const id = await seedConversation(4004, {
@@ -379,8 +441,8 @@ describe.skipIf(!dbUp)(
       });
       expect(row?.after).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
         outcome,
       });
     });
@@ -516,8 +578,8 @@ describe.skipIf(!dbUp)(
       });
       expect(row?.after).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
         outcome: "returned",
       });
     });
@@ -565,7 +627,7 @@ describe.skipIf(!dbUp)(
       const stub = stubClient({
         getConversation: async () =>
           liveConversation({ status: "pending", assigneeId: 12 }),
-        unassignConversation: async () => {
+        assignAgentBot: async () => {
           throw new Error("Chatwoot API 502 for POST /assignments");
         },
       });
@@ -588,6 +650,71 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // A 4xx is Chatwoot saying it did not apply the assignment, and nothing else was written.
+    test("a hand-back whose bot assignment is refused outright records nothing", async () => {
+      await clearAudit();
+      const id = await seedConversation(4028, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 12,
+      });
+      const stub = stubClient({
+        getConversation: async () =>
+          liveConversation({ status: "open", assigneeId: 12 }),
+        assignAgentBot: async () => {
+          throw new ChatwootApiError(403, "POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow();
+      expect(stub.calls).not.toContain("toggleStatus");
+      expect(await rows()).toEqual([]);
+    });
+
+    // An assignment whose outcome is unknown, reread without success: neither the holder nor the
+    // status is claimed.
+    test("an unknown assignment outcome read back as nothing claims no status", async () => {
+      await clearAudit();
+      const id = await seedConversation(4029, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 12,
+      });
+      let failReads = false;
+      const stub = stubClient({
+        getConversation: async () => {
+          if (failReads) throw new Error("chatwoot 502");
+          return liveConversation({ status: "open", assigneeId: 12 });
+        },
+        assignAgentBot: async () => {
+          failReads = true;
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      const [row] = await rows();
+      expect(row?.after).toEqual({
+        status: null,
+        assigneeType: null,
+        assigneeId: null,
+        holderUnknown: true,
+        partial: true,
+      });
+    });
+
     test("a status change records both sides", async () => {
       await clearAudit();
       const id = await seedConversation(4005, { status: "open" });
@@ -603,6 +730,91 @@ describe.skipIf(!dbUp)(
       expect(row?.action).toBe("conversation.status");
       expect(row?.before).toEqual({ status: "open" });
       expect(row?.after).toEqual({ status: "resolved" });
+    });
+
+    // Somebody else holds it by the last read, so the hand-back's first write is the status call, and
+    // that failing changed nothing in Chatwoot: there is no partial to record.
+    test("a hand-back whose first write fails records nothing", async () => {
+      await clearAudit();
+      const id = await seedConversation(4027, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      let reads = 0;
+      const stub = stubClient({
+        getConversation: async () => {
+          reads += 1;
+          return {
+            id: 1,
+            status: "open",
+            meta: {
+              assignee_type: "User",
+              assignee: { id: reads >= 3 ? 30 : 21, name: "U" },
+            },
+          };
+        },
+        toggleStatus: async () => {
+          throw new Error("Chatwoot API 502 for POST /toggle_status");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      expect(stub.calls).not.toContain("assignAgentBot");
+      expect(await rows()).toEqual([]);
+    });
+
+    // A status read that omits the assignee says nothing about it: a holder cleared by a webhook
+    // after the conversation was loaded stays cleared, rather than coming back from that load.
+    test("a status change whose read omits the assignee keeps the holder the mirror has now", async () => {
+      await clearAudit();
+      const id = await seedConversation(4026, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      const version = Math.floor(Date.now() / 1000);
+      const stub = stubClient({
+        toggleStatus: async () => {
+          await suDb.conversation.update({
+            where: { id },
+            data: {
+              assigneeType: null,
+              assigneeId: null,
+              chatwootStatusAt: version - 60,
+              chatwootAssigneeAt: version - 60,
+            },
+          });
+          return {};
+        },
+        getConversation: async () => ({
+          id: 4026,
+          status: "resolved",
+          updated_at: version,
+        }),
+      });
+      await setConversationStatus(
+        ctx(),
+        id,
+        "resolved",
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      const mirrored = await suDb.conversation.findUnique({
+        where: { id },
+        select: { status: true, assigneeType: true, assigneeId: true },
+      });
+      expect(mirrored).toEqual({
+        status: "resolved",
+        assigneeType: null,
+        assigneeId: null,
+      });
     });
 
     // The row follows the EFFECT, and this is the half a service that recorded first would get wrong:
@@ -718,15 +930,67 @@ describe.skipIf(!dbUp)(
           mirrorFailingBase(appDb),
         ),
       ).rejects.toThrow();
-      expect(stub.calls).toContain("unassignConversation");
+      expect(stub.calls).toContain("assignAgentBot");
       const [row, ...rest] = await rows();
       expect(rest).toEqual([]);
       expect(row?.action).toBe("conversation.return");
       expect(row?.after).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
       });
+    });
+
+    // A Chatwoot that ignores `assignee_type` assigns the USER whose id is the bot's, and then the
+    // fallback unassign fails: the person the hand-back started from is already gone, so the row
+    // and the mirror carry what Chatwoot says now, not the baseline.
+    test("a hand-back whose fallback unassign fails records the holder it reads again", async () => {
+      await clearAudit();
+      const id = await seedConversation(4025, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      let swapped = false;
+      const user = (assigneeId: number) => ({
+        id: 1,
+        status: "pending",
+        meta: {
+          assignee_type: "User",
+          assignee: { id: assigneeId, name: "U" },
+        },
+      });
+      const stub = stubClient({
+        getConversation: async () => user(swapped ? 9 : 21),
+        assignAgentBot: async () => {
+          swapped = true;
+          return "user";
+        },
+        unassignConversation: async () => {
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow("502");
+      const [row] = await rows();
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 9,
+        partial: true,
+      });
+      const mirrored = await suDb.conversation.findUnique({
+        where: { id },
+        select: { assigneeType: true, assigneeId: true },
+      });
+      // The reread carries no version, so the mirror waits for the assignment webhook.
+      expect(mirrored).toEqual({ assigneeType: "User", assigneeId: 21 });
     });
 
     // An untargeted handoff makes no assignment request, and the open toggle does not auto-assign

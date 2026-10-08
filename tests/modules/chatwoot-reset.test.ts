@@ -140,6 +140,18 @@ function fakeChatwoot(
           : {}),
       });
     }
+    // NOTE: a bot assignment answers the way the fork does, with the bot (`agent_bot_slim`), so the
+    // hand-back takes it as landed and sends no unassign after it.
+    if (method === "POST" && url.pathname.endsWith("/assignments")) {
+      const body = typeof raw === "string" ? JSON.parse(raw) : null;
+      if (body?.assignee_type === "AgentBot") {
+        return jsonResponse({
+          id: body.assignee_id,
+          name: "Bot",
+          bot_type: "webhook",
+        });
+      }
+    }
     // NOTE: the labels standing on the conversation when the command arrives. The clear reads them
     // so the acknowledgement can name them; the fall-through below answers with no payload, which
     // reads as "no label" and would make that assertion vacuous.
@@ -1006,10 +1018,8 @@ describe.skipIf(!dbUp)(
         assigneeType: "User",
       });
 
-      // Pending BEFORE unassign, which is the order returnConversationToAgent documents, and it is
-      // chosen for the failure: the two are separate requests, and the partial that leaves the human
-      // holding the conversation is recoverable by doing nothing, while the one that removes them
-      // and leaves a status the gate refuses is nobody's conversation.
+      // One request: the bot assignment removes the person, names the bot and sets `pending` in one
+      // locked write, so there is no partial in which the human is gone and the status is not.
       const owned = cw.calls.filter(
         (c) =>
           c.method === "POST" &&
@@ -1017,8 +1027,7 @@ describe.skipIf(!dbUp)(
             c.path.endsWith(`/conversations/${CONV_ID}/toggle_status`)),
       );
       expect(owned.map((c) => [c.path.split("/").pop(), c.body])).toEqual([
-        ["toggle_status", { status: "pending" }],
-        ["assignments", { assignee_id: 0 }],
+        ["assignments", { assignee_id: 9, assignee_type: "AgentBot" }],
       ]);
       // Admin token on both: the bot cannot reassign a conversation away from a human, and the
       // audit should show the operator rather than the persona.
@@ -1032,8 +1041,8 @@ describe.skipIf(!dbUp)(
       });
       expect(conv).toEqual({
         status: "pending",
-        assigneeType: null,
-        assigneeId: null,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
       });
 
       // The acknowledgement reports what happened and nothing else: the conversation WAS handed
@@ -1190,11 +1199,11 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // And the third way it ends with a human: somebody claimed the conversation between the status
-    // call and the live read. Nothing throws — the hand-back deliberately leaves a takeover alone —
+    // And the third way it ends with a human: somebody claimed the conversation by the hand-back's own
+    // last read, past the guard's. Nothing throws — the hand-back deliberately leaves a takeover alone —
     // so the command would otherwise announce a clean slate over a conversation that is still theirs.
     test("a takeover during the hand-back is named in the acknowledgement", async () => {
-      const cw = fakeChatwoot(null, { type: "User", id: 999 });
+      const cw = fakeChatwoot(null, { type: "User", id: 999, fromRead: 4 });
       globalThis.fetch = cw.impl;
       // The mirror has to agree with the payload's holder, or the guard that runs BEFORE the
       // hand-back sees a changed holder and stands the whole thing down — which is the other,
@@ -1232,22 +1241,24 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // And what that ordering buys. The status call failing must leave the human where they were, not
-    // strip the conversation from them and hand it to a gate that refuses it.
+    // The bot assignment is the hand-back's one write, so its failure must not be followed by an
+    // unassign that strips the conversation from the human and hands it to a gate that refuses it.
     test("a hand-back that fails halfway leaves the human holding it", async () => {
-      const cw = fakeChatwoot(/\/toggle_status$/);
+      const cw = fakeChatwoot(/\/assignments$/);
       globalThis.fetch = cw.impl;
       await sendReset("/reset", CONV_ID, {
         status: "open",
         assigneeType: "User",
       });
 
-      // The unassign never ran, so nothing was taken away.
+      // Only the bot assignment was sent; no unassign followed it.
       expect(
-        cw.calls.filter((c) =>
-          c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
-        ),
-      ).toEqual([]);
+        cw.calls
+          .filter((c) =>
+            c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
+          )
+          .map((c) => c.body),
+      ).toEqual([{ assignee_id: 9, assignee_type: "AgentBot" }]);
       // And the operator is told which part did not happen.
       expect(
         ackCalls(cw.calls)
@@ -1419,7 +1430,7 @@ describe.skipIf(!dbUp)(
                   c.path.endsWith(`/conversations/${CONV_ID}/toggle_status`)),
             )
             .map((c) => c.path.split("/").pop()),
-        ).toEqual(["toggle_status", "assignments"]);
+        ).toEqual(["assignments"]);
       } finally {
         globalThis.fetch = originalFetch;
         await suDb.conversation.updateMany({
@@ -1465,7 +1476,7 @@ describe.skipIf(!dbUp)(
             c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
           )
           .map((c) => c.body),
-      ).toEqual([{ assignee_id: 0 }]);
+      ).toEqual([{ assignee_id: 9, assignee_type: "AgentBot" }]);
     });
 
     // NOTE: the card's dates and its attributes are independent endpoints, so a failure on the
@@ -2661,7 +2672,7 @@ describe.skipIf(!dbUp)(
             c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
           )
           .map((c) => c.body),
-      ).toEqual([{ assignee_id: 0 }]);
+      ).toEqual([{ assignee_id: 9, assignee_type: "AgentBot" }]);
       await suDb.agent.delete({ where: { id: otherAgentId } });
     });
 
@@ -2690,7 +2701,7 @@ describe.skipIf(!dbUp)(
             c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
           )
           .map((c) => c.body),
-      ).toEqual([{ assignee_id: 0 }]);
+      ).toEqual([{ assignee_id: 9, assignee_type: "AgentBot" }]);
       // And the acknowledgement does not report a takeover: nobody arrived during the reset, the
       // mirror was simply behind.
       const ack = ackCalls(cw.calls)
@@ -2824,14 +2835,15 @@ describe.skipIf(!dbUp)(
 
         // The rendezvous really fired, so this is not passing on a cleanup that never got there.
         expect(released).toBe(true);
-        // The hand-back RAN: the conversation is put back to `pending`, which is the whole point.
+        // The hand-back RAN: the conversation is handed to the bot, which also puts it back to
+        // `pending`, and that is the whole point.
         expect(
           cw.calls
             .filter((c) =>
-              c.path.endsWith(`/conversations/${CONV_ID}/toggle_status`),
+              c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
             )
-            .map((c) => (c.body as { status?: string })?.status),
-        ).toContain("pending");
+            .map((c) => c.body),
+        ).toContainEqual({ assignee_id: 9, assignee_type: "AgentBot" });
         // And nobody is blamed for a takeover that did not happen.
         const ack = ackCalls(cw.calls)
           .map((c) => (c.body as { content?: string })?.content ?? "")

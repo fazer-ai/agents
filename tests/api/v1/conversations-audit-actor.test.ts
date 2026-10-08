@@ -62,6 +62,10 @@ const makeClient = async () =>
       chatwootCalls.push("unassignConversation");
       return {};
     },
+    assignAgentBot: async () => {
+      chatwootCalls.push("assignAgentBot");
+      return "bot";
+    },
     toggleStatus: async () => {
       chatwootCalls.push("toggleStatus");
       return {};

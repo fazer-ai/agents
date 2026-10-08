@@ -170,6 +170,38 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers["api-access-token"]).toBe("BOT_TOK");
   });
 
+  test("assignAgentBot names the bot by type and says who the answer names", async () => {
+    const answers: Array<[unknown, "bot" | "user" | null]> = [
+      // The fork's `agent_bot_slim`: the bot it assigned.
+      [{ id: 501, name: "Bot", bot_type: "webhook" }, "bot"],
+      // A Chatwoot that ignores `assignee_type` reads the id as a USER's.
+      [
+        { id: 501, name: "Ana", email: "ana@example.com", role: "agent" },
+        "user",
+      ],
+      // A bot the fork cannot find renders null.
+      [null, null],
+      // Another bot is not this one.
+      [{ id: 502, name: "Other", bot_type: "webhook" }, null],
+    ];
+    for (const [payload, expected] of answers) {
+      const { fetchImpl, calls } = stub(200, payload);
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      expect(await client.assignAgentBot(42, 501, { asAdmin: true })).toBe(
+        expected,
+      );
+      expect(calls[0]?.url).toContain("/conversations/42/assignments");
+      expect(calls[0]?.body).toEqual({
+        assignee_id: 501,
+        assignee_type: "AgentBot",
+      });
+      expect(calls[0]?.headers["api-access-token"]).toBe("ADMIN_TOK");
+    }
+  });
+
   test("toggleTyping uses the bot token (toggle_typing_status is bot-accessible)", async () => {
     const { fetchImpl, calls } = stub();
     const client = await createChatwootClient(baseConfig, {
@@ -996,5 +1028,32 @@ describe("ChatwootClient", () => {
       ).rejects.toBeInstanceOf(ChatwootApiError);
       expect(calls).toHaveLength(1);
     });
+  });
+});
+
+describe("parseLiveConversation states the assignee only when the payload does", () => {
+  // The REST show renders `meta` on every conversation and leaves `assignee_type` out of it when
+  // nobody holds the conversation, so a `meta` without the key is the unassigned shape.
+  test("a meta without an assignee says nobody; a payload without meta says nothing", async () => {
+    const { parseLiveConversation } = await import(
+      "@/modules/chatwoot/normalize"
+    );
+    const stated = parseLiveConversation({
+      id: 1,
+      status: "pending",
+      meta: { assignee_type: null, assignee: null },
+    });
+    const unassigned = parseLiveConversation({
+      id: 1,
+      status: "pending",
+      meta: { channel: "Channel::Api" },
+    });
+    const omittedMeta = parseLiveConversation({ id: 1, status: "pending" });
+    expect(stated?.assigneeStated).toBe(true);
+    expect([unassigned?.assigneeStated, unassigned?.assigneeType]).toEqual([
+      true,
+      null,
+    ]);
+    expect(omittedMeta?.assigneeStated).toBe(false);
   });
 });

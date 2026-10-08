@@ -442,6 +442,58 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await watermarks(50)).toEqual({ linked: false, closed: false });
   });
 
+  // A ladder that cannot be retired holds the pairing back, and the result says so: a later delivery
+  // of the same event has to run the mirror again rather than reuse this run.
+  test("a retirement that fails holds the pairing back and marks the result held back", async () => {
+    const T = 1_786_650_000;
+    await mirror(
+      clonedMessage(60, {
+        messageId: 8600,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    const failingRetire = (target: any): any =>
+      new Proxy(target, {
+        get(t, prop, recv) {
+          if (prop === "$extends")
+            return (...a: unknown[]) => failingRetire(t.$extends(...a));
+          if (prop === "$transaction")
+            return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+              t.$transaction((tx: unknown) => fn(failingRetire(tx)), ...rest);
+          if (prop === "$executeRaw")
+            return (strings: TemplateStringsArray, ...values: unknown[]) => {
+              if (strings.join("").includes("UPDATE scheduler_jobs"))
+                return Promise.reject(new Error("pool exhausted"));
+              return t.$executeRaw(strings, ...values);
+            };
+          return Reflect.get(t, prop, recv);
+        },
+      });
+    const n = normalizeChatwootEvent({
+      event: "conversation_updated",
+      ...convPayload(60, { lastActivityAt: T, updatedAt: T + 5, origin: 91 }),
+    });
+    if (!n) throw new Error("unreachable");
+    const held = await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      n,
+      failingRetire(appDb) as PrismaClient,
+      { redirectLadderDedupeKey: "ladder-60" },
+    );
+    expect(held.heldBack).toBe(true);
+    expect(await storedOrigin(60)).toBe(77);
+
+    const moved = await mirrorChatwootEvent(tenantId, instanceId, n, appDb, {
+      redirectLadderDedupeKey: "ladder-60",
+    });
+    expect(moved.heldBack).toBeUndefined();
+    expect(await storedOrigin(60)).toBe(91);
+  });
+
   // The other half, and the one that keeps this from being a wipe on every delivery: the retried
   // snapshot of the SAME episode says nothing new, so the episode it describes is still running.
   test("a retry of the same origin leaves the episode standing", async () => {

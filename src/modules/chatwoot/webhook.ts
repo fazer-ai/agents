@@ -189,7 +189,7 @@ import {
   loadChatwootClient,
 } from "./instance";
 import { withConversationLabels } from "./labels";
-import { mirrorChatwootEvent } from "./mirror";
+import { mirrorOncePerEvent } from "./mirror-once";
 import {
   type ControlCommand,
   controlCommand,
@@ -3979,8 +3979,9 @@ export async function processChatwootDelivery(
       : null;
 
   // Mirror metadata (idempotent, monotonic, per-conversation locked) BEFORE the gate so the
-  // runtime reads fresh state. Unconditional: applies to every event, not just actionable ones.
-  const mirror = await mirrorChatwootEvent(
+  // runtime reads fresh state. Unconditional: applies to every event, not just actionable ones. Once
+  // per event, not per route: the other route's delivery of the same payload reuses this run.
+  const mirror = await mirrorOncePerEvent(
     params.tenantId,
     params.instanceId,
     n,

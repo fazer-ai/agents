@@ -419,6 +419,9 @@ export async function mirrorChatwootEvent(
                       n.kanbanAttributes as Prisma.InputJsonValue,
                   }
                 : {}),
+              ...(n.conversationType
+                ? { conversationType: n.conversationType }
+                : {}),
               ...(n.labels !== undefined ? { labels: n.labels } : {}),
               ...(decision.redirectOrigin
                 ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
@@ -508,6 +511,9 @@ export async function mirrorChatwootEvent(
               ? {
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
+              : {}),
+            ...(decision.unversioned && n.conversationType
+              ? { conversationType: n.conversationType }
               : {}),
             // The label list, on the bags' terms: assigned whole, by recency, and only when carried.
             ...(decision.unversioned && n.labels !== undefined

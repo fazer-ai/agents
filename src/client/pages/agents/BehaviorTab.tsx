@@ -79,10 +79,6 @@ import {
   type ContactField,
   type ContactFieldsConfig,
 } from "@/modules/chatwoot/contact-fields";
-import {
-  CONTACT_AUTH_IDENTIFIERS_TEXT_MAX,
-  CONTACT_AUTH_PHONES_TEXT_MAX,
-} from "@/modules/contact-auth/settings";
 import { debugModesFrom } from "@/modules/flowlog/debug-mode";
 import {
   FULL_DETAIL_ARM_HOURS,
@@ -98,8 +94,10 @@ import {
 } from "@/modules/tts/settings-shared";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import { ContactAuthConditionList } from "./ContactAuthConditionFields";
 import {
   type ContactAuthRuleForm,
+  contactAuthGateEmpty,
   contactAuthRuleInvalid,
 } from "./contactAuthRuleForm";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
@@ -191,6 +189,10 @@ interface SttState {
 // half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
 export interface ContactAuthState extends ContactAuthRuleForm {
   enabled: boolean;
+  // The editor's endpoint switch: with conditions, ask the endpoint about what they let through
+  // (saved as `askEndpointAfterRule`); with none, the endpoint decides alone. See
+  // readContactAuthEndpointEnabled for how a stored gate reads.
+  endpointEnabled: boolean;
   url: string;
   credentialRef: string;
   timeoutMs: string;
@@ -206,6 +208,8 @@ export interface ContactAuthState extends ContactAuthRuleForm {
   // The ChatwootInstance the team above was picked from, recorded with it: a team id belongs to one
   // account, and the runtime only assigns it in that one.
   handoffTeamInstanceId: string;
+  // Whether a denial writes the operator's private note.
+  operatorNoteEnabled: boolean;
 }
 
 interface SplitState {
@@ -1187,8 +1191,9 @@ function FollowUpStepsEditor({
 
 // What a WATCHER's Behavior tab shows. A watcher runs the ordinary graph, so the rule is: hide what
 // is about SPEAKING TO THE CUSTOMER (availability and away message, grouping, audio, splitting,
-// images, contact authorization, takeover, the proactive ladder), show everything else, because
-// everything else runs. Hidden, not unmounted (`Section.hidden`): the form keeps its state, and
+// images, takeover, the proactive ladder), show everything else, because everything else runs. The
+// contact gate is drawn with its rule alone: on the observer path the rule decides which
+// conversations are observed, and nothing of the endpoint or the notices runs. Hidden, not unmounted (`Section.hidden`): the form keeps its state, and
 // flipping the mode back shows it again untouched.
 export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observation",
@@ -1196,6 +1201,7 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observability",
   "modelFallback",
   "attributeContext",
+  "contactAuth",
   "limits",
   // NOTE: STT and vision run for a watcher: the receiver's `watcherReads` path runs `runEagerMedia`
   // under the observer's own settings when that route remembers the message, so their controls and
@@ -1438,13 +1444,23 @@ export function BehaviorTab({
       return false;
     }
   })();
-  // With a local rule the endpoint is never asked, so an empty URL is not an error.
-  const contactAuthUsesRule = contactAuth.ruleKind !== "";
+  // The conditions are the local rule; with none there is no rule.
+  const contactAuthUsesRule = contactAuth.ruleConditions.length > 0;
+  // The endpoint is asked only with its switch on: after the conditions when there are some, alone
+  // when there are none. Off, its URL is kept but not asked, so an empty one is not an error.
+  const contactAuthAsksEndpoint = contactAuth.endpointEnabled;
+  const contactAuthEmpty = contactAuthGateEmpty(contactAuth);
+  // The quiet refusal: no message, no note, and the conversation handed to humans. What a gate used
+  // as a scope filter looks like, said in the section so it reads as a setup rather than a gap.
+  const contactAuthQuietRefusal =
+    !contactAuth.denyMessage.trim() &&
+    !contactAuth.operatorNoteEnabled &&
+    contactAuth.handoffEnabled;
   const contactAuthRuleBad =
     contactAuth.enabled && contactAuthRuleInvalid(contactAuth);
   const contactAuthUrlInvalid =
     contactAuth.enabled &&
-    !contactAuthUsesRule &&
+    contactAuthAsksEndpoint &&
     (!contactAuth.url.trim() ||
       !isValidHttpUrl(contactAuth.url) ||
       contactAuthUrlHasCredentials);
@@ -1626,7 +1642,7 @@ export function BehaviorTab({
     {
       id: "contactAuth",
       icon: ShieldCheck,
-      label: t("editor.contactAuth", "Contact authorization"),
+      label: t("editor.contactAuth", "Who this agent serves"),
     },
     {
       id: "takeover",
@@ -3095,181 +3111,104 @@ export function BehaviorTab({
 
           <Section
             id="contactAuth"
-            hidden={watcher}
             icon={ShieldCheck}
-            title={t("editor.contactAuth", "Contact authorization")}
-            help={t(
-              "editor.contactAuthHelp",
-              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). By default every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
-            )}
+            title={t("editor.contactAuth", "Who this agent serves")}
+            help={
+              watcher
+                ? t(
+                    "editor.contactAuthWatcherHelp",
+                    "Decides which conversations this agent observes, so a conversation it refuses costs no analysis. Nothing is sent to the customer and no note is written.\n\nThe conditions, and the external endpoint when it is on, are checked before an observation is scheduled: on every new message and when a conversation is resolved.",
+                  )
+                : t(
+                    "editor.contactAuthHelp",
+                    "Decides, before the agent answers, whether this conversation is one it serves. Every message is checked again, and the check does not run in the Playground.\n\nConditions decide here, from what Chatwoot already holds (the conversation type, a label, a list, an attribute), before the other checks, so a conversation the agent does not serve gets no away message or redirect first.\n\nAn external endpoint decides from your own system, by the phone number, email and identifier Chatwoot holds for the contact, after the other checks: alone, or about what the conditions let through.",
+                  )
+            }
           >
             <SwitchField
               checked={contactAuth.enabled}
               onCheckedChange={(v) =>
                 setContactAuth({ ...contactAuth, enabled: v })
               }
-              label={t(
-                "editor.contactAuthEnabled",
-                "Only answer authorized contacts",
-              )}
+              label={
+                watcher
+                  ? t(
+                      "editor.contactAuthWatcherEnabled",
+                      "Only observe the conversations a rule lets through",
+                    )
+                  : t(
+                      "editor.contactAuthEnabled",
+                      "Only answer authorized contacts",
+                    )
+              }
             />
             {contactAuth.enabled && (
               <>
                 <FormField
-                  label={t("editor.contactAuthSource", "Who decides")}
+                  group
+                  label={t("editor.contactAuthConditions", "Conditions")}
                   help={t(
-                    "editor.contactAuthSourceHelp",
-                    "An external endpoint answers from your own system (a CRM, a customer list).\n\nA list or an attribute decides here, from what Chatwoot already holds for the contact, with no service to host. The endpoint is then never called.\n\nA list or an attribute is checked on every message, so an edit takes effect on the contact's next message.",
+                    "editor.contactAuthConditionsHelp",
+                    "Decided here, from what Chatwoot already holds for the contact and the conversation (the conversation type, a label, a list of phones or identifiers, an attribute), with no service to host and no cost. Checked on every message, so an edit takes effect on the next one.",
                   )}
                 >
-                  <Select
-                    value={contactAuth.ruleKind}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        ruleKind: e.target.value,
-                      })
+                  <ContactAuthConditionList
+                    form={contactAuth}
+                    onChange={(next) =>
+                      setContactAuth({ ...contactAuth, ...next })
                     }
-                  >
-                    <option value="">
-                      {t(
-                        "editor.contactAuthSourceEndpoint",
-                        "External endpoint",
-                      )}
-                    </option>
-                    <option value="allowlist">
-                      {t(
-                        "editor.contactAuthSourceAllowlist",
-                        "A list of phones or identifiers",
-                      )}
-                    </option>
-                    <option value="attribute">
-                      {t(
-                        "editor.contactAuthSourceAttribute",
-                        "A contact or conversation attribute",
-                      )}
-                    </option>
-                  </Select>
+                    showErrors={contactAuthRuleBad}
+                  />
                 </FormField>
-                {contactAuth.ruleKind === "allowlist" && (
-                  <>
-                    <FormField
-                      label={t("editor.contactAuthRulePhones", "Phones")}
-                      description={t(
-                        "editor.contactAuthRulePhonesHint",
-                        "One per line, with the country code (+55 11 99999-0000). Compared by digits, never by the end of the number.",
-                      )}
-                      error={
-                        contactAuthRuleBad
-                          ? t(
-                              "editor.contactAuthRuleListInvalid",
-                              "The list needs 1 to 500 entries in total; each phone needs 8 to 15 digits and each identifier at most 200 characters.",
-                            )
-                          : null
-                      }
-                    >
-                      <Textarea
-                        rows={4}
-                        maxLength={CONTACT_AUTH_PHONES_TEXT_MAX}
-                        value={contactAuth.rulePhones}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            rulePhones: e.target.value,
-                          })
-                        }
-                        placeholder="+55 11 99999-0000"
-                      />
-                    </FormField>
-                    <FormField
-                      label={t(
-                        "editor.contactAuthRuleIdentifiers",
-                        "Identifiers",
-                      )}
-                      description={t(
-                        "editor.contactAuthRuleIdentifiersHint",
-                        "One per line: the contact's identifier in Chatwoot, compared exactly.",
-                      )}
-                    >
-                      <Textarea
-                        rows={3}
-                        maxLength={CONTACT_AUTH_IDENTIFIERS_TEXT_MAX}
-                        value={contactAuth.ruleIdentifiers}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleIdentifiers: e.target.value,
-                          })
-                        }
-                      />
-                    </FormField>
-                  </>
+                {watcher && contactAuthUsesRule && (
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthWatcherRule",
+                      "On a monitoring agent, the rule decides which conversations it observes. A conversation the rule refuses is not observed, and nothing is sent or noted.",
+                    )}
+                  </p>
                 )}
-                {contactAuth.ruleKind === "attribute" && (
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <FormField
-                      label={t("editor.contactAuthRuleScope", "Attribute of")}
-                    >
-                      <Select
-                        value={contactAuth.ruleScope}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleScope: e.target.value,
-                          })
-                        }
-                      >
-                        <option value="contact">
-                          {t("editor.contactAuthRuleScopeContact", "Contact")}
-                        </option>
-                        <option value="conversation">
-                          {t(
-                            "editor.contactAuthRuleScopeConversation",
-                            "Conversation",
-                          )}
-                        </option>
-                      </Select>
-                    </FormField>
-                    <FormField
-                      label={t("editor.contactAuthRuleKey", "Attribute key")}
-                      error={
-                        contactAuthRuleBad
-                          ? t("editor.contactAuthRuleKeyRequired", "Required.")
-                          : null
-                      }
-                    >
-                      <Input
-                        value={contactAuth.ruleKey}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleKey: e.target.value,
-                          })
-                        }
-                        placeholder="plano"
-                      />
-                    </FormField>
-                    <FormField
-                      label={t("editor.contactAuthRuleEquals", "Equal to")}
-                      description={t(
-                        "editor.contactAuthRuleEqualsHint",
-                        "Empty: any value counts.",
-                      )}
-                    >
-                      <Input
-                        value={contactAuth.ruleEquals}
-                        onChange={(e) =>
-                          setContactAuth({
-                            ...contactAuth,
-                            ruleEquals: e.target.value,
-                          })
-                        }
-                        placeholder="ativo"
-                      />
-                    </FormField>
-                  </div>
+                {contactAuthEmpty && (
+                  <p className="text-error text-xs">
+                    {t(
+                      "editor.contactAuthEmpty",
+                      "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+                    )}
+                  </p>
                 )}
-                {!contactAuthUsesRule && (
+                <SwitchField
+                  checked={contactAuth.endpointEnabled}
+                  onCheckedChange={(v) =>
+                    setContactAuth({
+                      ...contactAuth,
+                      endpointEnabled: v,
+                    })
+                  }
+                  label={t(
+                    "editor.contactAuthEndpoint",
+                    "Ask an external endpoint",
+                  )}
+                  help={
+                    contactAuthUsesRule
+                      ? t(
+                          "editor.contactAuthEndpointAfterHelp",
+                          "Asked after the conditions, only about what they let through: what they refuse is refused without calling it. The endpoint has the final word, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact.",
+                        )
+                      : t(
+                          "editor.contactAuthEndpointAloneHelp",
+                          "With no conditions, the endpoint decides alone, from your own system (a CRM, a customer list), by the phone, email and identifier Chatwoot holds for the contact. It is asked after the other checks, and a failure refuses.",
+                        )
+                  }
+                />
+                {watcher && contactAuthAsksEndpoint && (
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthWatcherEndpoint",
+                      "On a monitoring agent, the endpoint's answer only decides which conversations this agent observes. It is asked once before each observation is scheduled, and a denial or a failure leaves the conversation unobserved, with nothing sent or noted.",
+                    )}
+                  </p>
+                )}
+                {contactAuthAsksEndpoint && (
                   <>
                     <FormField
                       label={t("editor.contactAuthUrl", "Authorization URL")}
@@ -3326,10 +3265,17 @@ export function BehaviorTab({
                     </FormField>
                     <FormField
                       label={t("editor.contactAuthTimeout", "Timeout (ms)")}
-                      description={t(
-                        "editor.contactAuthTimeoutHint",
-                        "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
-                      )}
+                      description={
+                        watcher
+                          ? t(
+                              "editor.contactAuthWatcherTimeoutHint",
+                              "1,000-10,000. Past it the check counts as failed and the conversation is not observed.",
+                            )
+                          : t(
+                              "editor.contactAuthTimeoutHint",
+                              "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+                            )
+                      }
                     >
                       <Input
                         type="number"
@@ -3423,81 +3369,110 @@ export function BehaviorTab({
                     )}
                   </>
                 )}
-                <FormField
-                  label={t(
-                    "editor.contactAuthNoticeCooldown",
-                    "Notice cooldown (s)",
-                  )}
-                  description={t(
-                    "editor.contactAuthNoticeCooldownHint",
-                    "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
-                  )}
-                >
-                  <Input
-                    type="number"
-                    min={0}
-                    max={3600}
-                    value={contactAuth.noticeCooldownSeconds}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        noticeCooldownSeconds: e.target.value,
-                      })
-                    }
-                  />
-                </FormField>
-                <FormField
-                  label={t(
-                    "editor.contactAuthDenyMessage",
-                    "Message to a denied contact",
-                  )}
-                  error={refusals.contactAuthDenyMessage}
-                  description={t(
-                    "editor.contactAuthDenyMessageHint",
-                    "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
-                  )}
-                >
-                  <Textarea
-                    value={contactAuth.denyMessage}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        denyMessage: e.target.value,
-                      })
-                    }
-                    rows={2}
-                    maxLength={TEMPLATE_MESSAGE_MAX}
-                    placeholder={t(
-                      "editor.contactAuthDenyMessagePlaceholder",
-                      "This channel serves registered customers only.",
+                {!watcher && (
+                  <>
+                    <FormField
+                      label={t(
+                        "editor.contactAuthNoticeCooldown",
+                        "Notice cooldown (s)",
+                      )}
+                      description={t(
+                        "editor.contactAuthNoticeCooldownHint",
+                        "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
+                      )}
+                    >
+                      <Input
+                        type="number"
+                        min={0}
+                        max={3600}
+                        value={contactAuth.noticeCooldownSeconds}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            noticeCooldownSeconds: e.target.value,
+                          })
+                        }
+                      />
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.contactAuthDenyMessage",
+                        "Message to a denied contact",
+                      )}
+                      error={refusals.contactAuthDenyMessage}
+                      description={t(
+                        "editor.contactAuthDenyMessageHint",
+                        "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
+                      )}
+                    >
+                      <Textarea
+                        value={contactAuth.denyMessage}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            denyMessage: e.target.value,
+                          })
+                        }
+                        rows={2}
+                        maxLength={TEMPLATE_MESSAGE_MAX}
+                        placeholder={t(
+                          "editor.contactAuthDenyMessagePlaceholder",
+                          "This channel serves registered customers only.",
+                        )}
+                      />
+                    </FormField>
+                    <SwitchField
+                      checked={contactAuth.handoffEnabled}
+                      onCheckedChange={(v) =>
+                        setContactAuth({ ...contactAuth, handoffEnabled: v })
+                      }
+                      label={t(
+                        "editor.contactAuthHandoff",
+                        "Open refused conversations for humans",
+                      )}
+                    />
+                    {contactAuth.handoffEnabled && (
+                      <ContactAuthTeamSelect
+                        agentId={agentId}
+                        value={contactAuth.handoffTeamId}
+                        instanceId={contactAuth.handoffTeamInstanceId}
+                        onChange={(v, instanceId) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            handoffTeamId: v,
+                            // Cleared with the team: a recorded account with no team pins nothing, and
+                            // a stale one would outlive the choice it belonged to.
+                            handoffTeamInstanceId: v ? instanceId : "",
+                          })
+                        }
+                      />
                     )}
-                  />
-                </FormField>
-                <SwitchField
-                  checked={contactAuth.handoffEnabled}
-                  onCheckedChange={(v) =>
-                    setContactAuth({ ...contactAuth, handoffEnabled: v })
-                  }
-                  label={t(
-                    "editor.contactAuthHandoff",
-                    "Open refused conversations for humans",
-                  )}
-                />
-                {contactAuth.handoffEnabled && (
-                  <ContactAuthTeamSelect
-                    agentId={agentId}
-                    value={contactAuth.handoffTeamId}
-                    instanceId={contactAuth.handoffTeamInstanceId}
-                    onChange={(v, instanceId) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        handoffTeamId: v,
-                        // Cleared with the team: a recorded account with no team pins nothing, and
-                        // a stale one would outlive the choice it belonged to.
-                        handoffTeamInstanceId: v ? instanceId : "",
-                      })
-                    }
-                  />
+                    <SwitchField
+                      checked={contactAuth.operatorNoteEnabled}
+                      onCheckedChange={(v) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          operatorNoteEnabled: v,
+                        })
+                      }
+                      label={t(
+                        "editor.contactAuthOperatorNote",
+                        "Write a private note when a contact is refused",
+                      )}
+                      help={t(
+                        "editor.contactAuthOperatorNoteHelp",
+                        "Turn it off when most conversations are refused on purpose, so each one does not get a note. A check that fails, or a contact with nothing to check, always gets a note, since those need fixing.",
+                      )}
+                    />
+                    {contactAuthQuietRefusal && (
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "editor.contactAuthQuietRefusal",
+                          "Quiet refusal: conversations this agent does not serve go to the human queue with no message to the customer and no note. This is the setup for an agent that should act on only part of an inbox.",
+                        )}
+                      </p>
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -4263,11 +4238,12 @@ export function BehaviorTab({
           fallbackBaseUrlInvalid ||
           fallbackBaseUrlUnsupported ||
           fallbackModelMissing ||
-          (!watcher &&
-            (contactAuthUrlInvalid ||
-              contactAuthRuleBad ||
-              normalizeBaseUrlInvalid ||
-              normalizeBaseUrlUnsupported))
+          // NOTE: A watcher draws the gate's conditions and its endpoint's fields, so a rule or a url
+          // it cannot use is said there.
+          contactAuthRuleBad ||
+          contactAuthEmpty ||
+          contactAuthUrlInvalid ||
+          (!watcher && (normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))
         }
         onOpenPlayground={onOpenPlayground}
       />

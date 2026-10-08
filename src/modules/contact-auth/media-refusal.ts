@@ -87,6 +87,44 @@ export async function mediaRefusedThrough(
   return Math.max(Number(column), here ?? 0);
 }
 
+// A WATCHER's refusal (a monitoring agent's gate keeping it out of a conversation), kept apart from
+// the conversation's mark above. Several watchers can observe one inbox, and each one's gate decides
+// only what it observes: written on the conversation, one watcher's refusal would also keep media
+// away from a sibling whose own gate let the conversation through. Kept in this process only, like
+// the watcher's own allow for the same message: what it covers is the late `message_updated` of a
+// refused audio, seconds after it, so that a yes given in between does not transcribe it.
+export function watcherMediaRefusalKey(
+  tenantId: bigint,
+  conversationDbId: bigint,
+  agentId: bigint,
+): string {
+  return `${mediaRefusalKey(tenantId, conversationDbId)}:watcher:${agentId}`;
+}
+
+export function recordWatcherMediaRefusal(
+  tenantId: bigint,
+  conversationDbId: bigint | null,
+  agentId: bigint,
+  messageId: number | null | undefined,
+): void {
+  if (conversationDbId === null || messageId == null) return;
+  rememberMediaRefusal(
+    watcherMediaRefusalKey(tenantId, conversationDbId, agentId),
+    messageId,
+  );
+}
+
+export function watcherMediaRefusedThrough(
+  tenantId: bigint,
+  conversationDbId: bigint | null,
+  agentId: bigint,
+): number | null {
+  if (conversationDbId === null) return null;
+  return mediaRefusedHereThrough(
+    watcherMediaRefusalKey(tenantId, conversationDbId, agentId),
+  );
+}
+
 export function refusedCovers(
   mark: number | null,
   messageId: number | null | undefined,

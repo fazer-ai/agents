@@ -54,10 +54,16 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
+import { observerArmPermit } from "@/modules/contact-auth/observer";
 import {
   authorizeContact,
+  type ContactAuthStage,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
+import {
+  contactAuthHasEndpointStage,
+  contactAuthHasRuleStage,
+} from "@/modules/contact-auth/settings";
 import {
   clearConversationError,
   recordConversationError,
@@ -1192,6 +1198,8 @@ async function ingestObservedBurst(args: {
     return "unread";
   }
   let newest = armedLast;
+  // The newest handed-over message, whose text the watcher's endpoint gets when it forwards text.
+  let arming: { id: number; text: string | null } | null = null;
   // Hoisted so the watermark advance at the tail can name what it closed: one id per message
   // this route folded into memory.
   const handedIds: number[] = [];
@@ -1311,6 +1319,9 @@ async function ingestObservedBurst(args: {
         });
         handedIds.push(m.id);
         if (newest === null || m.id > newest) newest = m.id;
+        if (arming === null || m.id > arming.id) {
+          arming = { id: m.id, text: m.content ?? null };
+        }
       }
       // NOTE: Retire the ledger rows of what the observer now has, or the stranded-delivery sweep
       // would re-run a message already remembered. Best-effort, like the flush's.
@@ -1340,19 +1351,33 @@ async function ingestObservedBurst(args: {
         String(conversationId),
         burst.length,
       );
-      // NOTE: A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
-      // message: best-effort, after the memory has it.
-      await armObserve({
+      // A watcher's verdict on the burst is armed the way the receiver arms one per handed-over
+      // message: best-effort, after the memory has it, and only where the contact gate (conditions,
+      // and the endpoint under the same rules) lets the watcher observe this conversation.
+      const permit = await observerArmPermit({
         tenantId,
         instanceId,
         conversationId,
         agentId: ctx.agentId,
-        reason: "burst",
-        cfg: readMonitoringConfig(ctx.settings),
-        // NOTE: In Chatwoot's own id sequence, the order the tick's reset fence is asked in.
-        atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
+        settings: ctx.settings,
         base,
+        fetchImpl: deps?.contactAuthFetch,
+        message: arming,
       });
+      if (permit) {
+        await armObserve({
+          tenantId,
+          instanceId,
+          conversationId,
+          agentId: ctx.agentId,
+          reason: "burst",
+          cfg: readMonitoringConfig(ctx.settings),
+          // NOTE: In Chatwoot's own id sequence, the order the tick's reset fence is asked in.
+          atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
+          gateAskedAt: permit.askedAt,
+          base,
+        });
+      }
       if (!floorInView) {
         // NOTE: Failed rather than left for a later flush: no flush re-reads beyond one page, so
         // the part the bound left out would be lost quietly. The dead-letter keeps it visible.
@@ -1746,15 +1771,51 @@ export async function flushDebounceJob(
     armedLast !== null &&
     ctx.watermark !== null &&
     ctx.watermark >= armedLast;
+  // The contact-authorization gate in two stages (docs/contact-auth.md): the RULE first, before the
+  // spend ceiling, since it costs nothing and a burst this agent does not serve should not draw the
+  // ceiling's sentence, handoff and note; the ENDPOINT where the gate always stood, below.
+  const authCfg = ctx.loaded.contactAuthConfig;
+  const askAuth = (stage: ContactAuthStage) =>
+    authorizeContact({
+      tenantId,
+      agentId: ctx.loaded.agentId,
+      contactDbId: ctx.loaded.contactDbId,
+      conversationDbId: ctx.convDbId,
+      conversationId,
+      inboxId: ctx.inboxChatwootId,
+      channelType: ctx.loaded.channelType,
+      // The burst is many messages, not one: there is no single text to forward, and an unlock code
+      // is something the customer sends on a message of their own, which the webhook path checks.
+      messageText: null,
+      // Its own asking, for the reason the nudge has one: it carries no message text and must never
+      // join (or be joined by) the flight of an incoming message that does.
+      requestKey: "debounce",
+      stage,
+      cfg: ctx.loaded.contactAuthConfig,
+      base,
+      fetchImpl: deps?.contactAuthFetch,
+    });
+  const ruleVerdict =
+    authCfg.enabled && contactAuthHasRuleStage(authCfg)
+      ? await askAuth("rule")
+      : null;
+  // The rule's answer is the gate's when it refused, or when there is no endpoint stage after it.
+  const ruleFinal =
+    ruleVerdict !== null &&
+    (ruleVerdict.outcome !== "allowed" || !contactAuthHasEndpointStage(authCfg))
+      ? ruleVerdict
+      : null;
+  const ruleRefused = ruleFinal !== null && ruleFinal.outcome !== "allowed";
   // The ceiling is asked again at the turn, minutes after the webhook's ask, and a refusal here
   // is the first one, so this flush owes the whole contract (docs/spend-ceiling.md).
-  const flushCeiling = alreadyAnswered
-    ? null
-    : await spendCeilingVerdict({
-        tenantId,
-        source: "inbox",
-        base,
-      });
+  const flushCeiling =
+    alreadyAnswered || ruleRefused
+      ? null
+      : await spendCeilingVerdict({
+          tenantId,
+          source: "inbox",
+          base,
+        });
   // Every ceiling write, the flow line included (it pages alerts and spends the notice window),
   // first asks whether `/reset` retired the burst; a retired burst refused nobody and keeps its
   // watermark. Lenient `jobRetired`: an unreadable row costs a sentence sent once too often.
@@ -2003,24 +2064,8 @@ export async function flushDebounceJob(
   // belong to the webhook's refused delivery.
   let authContext: AuthContext | null = null;
   if (ctx.loaded.contactAuthConfig.enabled) {
-    const auth = await authorizeContact({
-      tenantId,
-      agentId: ctx.loaded.agentId,
-      contactDbId: ctx.loaded.contactDbId,
-      conversationDbId: ctx.convDbId,
-      conversationId,
-      inboxId: ctx.inboxChatwootId,
-      channelType: ctx.loaded.channelType,
-      // The burst is many messages, not one: there is no single text to forward, and an unlock code
-      // is something the customer sends on a message of their own, which the webhook path checks.
-      messageText: null,
-      // Its own asking, for the reason the nudge has one: it carries no message text and must never
-      // join (or be joined by) the flight of an incoming message that does.
-      requestKey: "debounce",
-      cfg: ctx.loaded.contactAuthConfig,
-      base,
-      fetchImpl: deps?.contactAuthFetch,
-    });
+    const auth =
+      ruleFinal ?? (await askAuth(ruleVerdict ? "endpoint" : "both"));
     emitFlowEvent(
       {
         tenantId,

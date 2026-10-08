@@ -12,10 +12,12 @@ import { readFileSync } from "node:fs";
 import { cleanup, render, screen } from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import {
+  type ContactAuthConditionForm,
   type ContactAuthRuleForm,
   contactAuthRuleInvalid,
   contactAuthRulePayload,
   contactAuthRuleToSave,
+  EMPTY_CONTACT_AUTH_CONDITION_FORM,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthRuleForm,
 } from "@/client/pages/agents/contactAuthRuleForm";
@@ -27,6 +29,16 @@ import { behaviorTabProps } from "./behaviorTabProps";
 // Every assertion reduces to a number or a boolean BEFORE expect (a failing expectation holding a
 // DOM node serializes a cyclic happy-dom tree and stalls the runner).
 
+const one = (
+  ruleKind: string,
+  patch: Partial<ContactAuthConditionForm> = {},
+): ContactAuthRuleForm => ({
+  ...EMPTY_CONTACT_AUTH_RULE_FORM,
+  ruleConditions: [
+    { ...EMPTY_CONTACT_AUTH_CONDITION_FORM, ruleKind, ...patch },
+  ],
+});
+
 describe("the rule's form state", () => {
   test("a stored list reads as one entry per line and saves back as the same rule", () => {
     const form = readContactAuthRuleForm({
@@ -34,8 +46,8 @@ describe("the rule's form state", () => {
       phones: ["+55 (11) 98888-7777"],
       identifiers: ["cli-42"],
     });
-    expect(form.ruleKind).toBe("allowlist");
-    expect(form.rulePhones).toBe("5511988887777");
+    expect(form.ruleConditions[0]?.ruleKind).toBe("allowlist");
+    expect(form.ruleConditions[0]?.rulePhones).toBe("5511988887777");
     expect(contactAuthRulePayload(form)).toEqual({
       kind: "allowlist",
       phones: ["5511988887777"],
@@ -44,11 +56,7 @@ describe("the rule's form state", () => {
   });
 
   test("blank lines are dropped and an attribute keeps its scope and value", () => {
-    const list: ContactAuthRuleForm = {
-      ...EMPTY_CONTACT_AUTH_RULE_FORM,
-      ruleKind: "allowlist",
-      rulePhones: "\n+55 11 98888-7777\n\n",
-    };
+    const list = one("allowlist", { rulePhones: "\n+55 11 98888-7777\n\n" });
     expect(contactAuthRulePayload(list)).toEqual({
       kind: "allowlist",
       phones: ["+55 11 98888-7777"],
@@ -70,11 +78,11 @@ describe("the rule's form state", () => {
 
   test("no rule saves as null, which clears a stored one", () => {
     expect(contactAuthRulePayload(EMPTY_CONTACT_AUTH_RULE_FORM)).toBeNull();
-    expect(readContactAuthRuleForm(undefined).ruleKind).toBe("");
+    expect(readContactAuthRuleForm(undefined).ruleConditions.length).toBe(0);
   });
 
   test("switching the gate off never sends an invalid draft", () => {
-    const emptied = { ...EMPTY_CONTACT_AUTH_RULE_FORM, ruleKind: "allowlist" };
+    const emptied = one("allowlist");
     // Off: the draft the server would refuse is cleared, so the switch-off itself goes through.
     expect(contactAuthRuleToSave(emptied, false)).toBeNull();
     // On: sent as it is, and the save is blocked before it gets there.
@@ -84,7 +92,7 @@ describe("the rule's form state", () => {
       identifiers: [],
     });
     // Off with a valid rule: kept, so turning the gate back on later finds it.
-    const valid = { ...emptied, rulePhones: "+55 11 98888-7777" };
+    const valid = one("allowlist", { rulePhones: "+55 11 98888-7777" });
     expect(contactAuthRuleToSave(valid, false)).toEqual(
       contactAuthRulePayload(valid),
     );
@@ -103,18 +111,16 @@ describe("the rule's form state", () => {
   });
 
   test("the editor refuses exactly what the server refuses", () => {
-    const base = { ...EMPTY_CONTACT_AUTH_RULE_FORM, ruleKind: "allowlist" };
-    expect(contactAuthRuleInvalid(base)).toBe(true);
-    expect(contactAuthRuleInvalid({ ...base, rulePhones: "123" })).toBe(true);
+    expect(contactAuthRuleInvalid(one("allowlist"))).toBe(true);
     expect(
-      contactAuthRuleInvalid({ ...base, rulePhones: "+55 11 98888-7777" }),
-    ).toBe(false);
-    expect(
-      contactAuthRuleInvalid({
-        ...EMPTY_CONTACT_AUTH_RULE_FORM,
-        ruleKind: "attribute",
-      }),
+      contactAuthRuleInvalid(one("allowlist", { rulePhones: "123" })),
     ).toBe(true);
+    expect(
+      contactAuthRuleInvalid(
+        one("allowlist", { rulePhones: "+55 11 98888-7777" }),
+      ),
+    ).toBe(false);
+    expect(contactAuthRuleInvalid(one("attribute"))).toBe(true);
     expect(contactAuthRuleInvalid(EMPTY_CONTACT_AUTH_RULE_FORM)).toBe(false);
   });
 });
@@ -125,7 +131,9 @@ const stubFetch = (async () =>
     headers: { "content-type": "application/json" },
   })) as unknown as typeof globalThis.fetch;
 
-function renderGate(rule: Partial<ContactAuthRuleForm>): void {
+function renderGate(
+  rule: Partial<ContactAuthRuleForm> & { endpointEnabled?: boolean },
+): void {
   const props = behaviorTabProps({});
   render(
     <BehaviorTab
@@ -159,14 +167,14 @@ describe("the gate's section in the editor", () => {
     globalThis.fetch = realFetch;
   });
 
-  test("the endpoint is the default, and its URL field is on screen", () => {
-    renderGate({});
+  test("the endpoint switched on with no conditions shows its URL field", () => {
+    renderGate({ endpointEnabled: true });
     expect(urlField() > 0).toBe(true);
     expect(phonesField()).toBe(0);
   });
 
   test("a list hides the endpoint's fields and shows the list", () => {
-    renderGate({ ruleKind: "allowlist", rulePhones: "+55 11 98888-7777" });
+    renderGate(one("allowlist", { rulePhones: "+55 11 98888-7777" }));
     expect(phonesField() > 0).toBe(true);
     expect(urlField()).toBe(0);
     expect(listError()).toBe(0);
@@ -174,19 +182,19 @@ describe("the gate's section in the editor", () => {
     expect(saveBlocked()).toBe(false);
   });
 
-  test("without a rule, the missing URL still blocks the save", () => {
-    renderGate({});
+  test("the endpoint alone, the missing URL still blocks the save", () => {
+    renderGate({ endpointEnabled: true });
     expect(saveBlocked()).toBe(true);
   });
 
   test("an empty list says why it cannot be saved", () => {
-    renderGate({ ruleKind: "allowlist" });
+    renderGate(one("allowlist"));
     expect(listError() > 0).toBe(true);
     expect(saveBlocked()).toBe(true);
   });
 
   test("an attribute shows its key field", () => {
-    renderGate({ ruleKind: "attribute", ruleKey: "plano" });
+    renderGate(one("attribute", { ruleKey: "plano" }));
     expect(keyField() > 0).toBe(true);
     expect(urlField()).toBe(0);
   });

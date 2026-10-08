@@ -139,19 +139,31 @@ function scheduleSweep(nowMs: number): void {
 // endpoint. The second caller awaits the first caller's promise and is told the verdict was SHARED,
 // which the gate reads as "the leader acts, I stay silent". Same idiom as the OAuth refresh
 // coalescing in modules/vault/mcp-oauth.ts.
-const inFlight = new Map<string, Promise<ContactAuthVerdict>>();
+const inFlight = new Map<
+  string,
+  { p: Promise<ContactAuthVerdict>; askedAt: number }
+>();
 
+// `askedAt` is when the flight began, the same for every caller that joined it: a caller that joins
+// late is answered by the question asked then, not by one asked when it arrived.
 export async function singleFlight(
   key: string,
   run: () => Promise<ContactAuthVerdict>,
-): Promise<{ verdict: ContactAuthVerdict; shared: boolean }> {
+): Promise<{ verdict: ContactAuthVerdict; shared: boolean; askedAt: number }> {
   const existing = inFlight.get(key);
-  if (existing) return { verdict: await existing, shared: true };
+  if (existing) {
+    return {
+      verdict: await existing.p,
+      shared: true,
+      askedAt: existing.askedAt,
+    };
+  }
+  const askedAt = Date.now();
   const p = run().finally(() => {
     inFlight.delete(key);
   });
-  inFlight.set(key, p);
-  return { verdict: await p, shared: false };
+  inFlight.set(key, { p, askedAt });
+  return { verdict: await p, shared: false, askedAt };
 }
 
 // Messages whose media the gate let through, so the `message_updated` Chatwoot sends after a voice

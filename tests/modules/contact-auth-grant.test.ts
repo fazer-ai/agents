@@ -183,6 +183,7 @@ async function ask(params: {
     // A fresh key every time: single-flight coalesces concurrent askings of the SAME question, and
     // what is under test here is a sequence of different messages.
     requestKey: `msg:${seq}`,
+    stage: "both",
     cfg: params.cfg,
     base: params.base ?? appDb,
     fetchImpl: params.fetchImpl,

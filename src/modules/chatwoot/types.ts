@@ -194,14 +194,18 @@ export interface NormalizedChatwootEvent {
   // The CONVERSATION's custom attributes (conversation.custom_attributes on EventDataPresenter
   // push_data). Mirrored for the agent's attribute context. `undefined` ⇒ absent from this payload.
   customAttributes?: Record<string, unknown>;
-  // The conversation's label titles (push_data.labels, the conversation's `label_list`). Mirrored for
-  // the dashboard's outcome-by-label view. `undefined` ⇒ absent from this payload; `[]` ⇒ no labels.
+  // The conversation's label titles (push_data.labels, the conversation's `label_list`), as Chatwoot
+  // stated them. Mirrored for the dashboard's outcome-by-label view and the contact gate's `label`
+  // condition (which compares ignoring case). `undefined` ⇒ absent from this payload; `[]` ⇒ no labels.
   labels?: string[];
   // The linked kanban CARD's custom attributes (conversation.kanban_task.custom_attributes — the Pro
   // fork's FazerAi::Conversations::EventDataPresenter adds `kanban_task` to push_data, and
   // Kanban::Task#common_event_data carries `custom_attributes`). `undefined` ⇒ absent (upstream
   // Chatwoot, or a conversation with no card).
   kanbanAttributes?: Record<string, unknown>;
+  // The fork's `conversation.group_type`. `undefined` ⇒ the payload said nothing (the mirror keeps
+  // what it has).
+  conversationType?: "group" | "individual";
   // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
   // (conversation.redirect_origin_display_id, written by the fork's token resolve). A number is the
   // pairing. `null` states there is none (the fork clears it when a re-entry's token names no origin),

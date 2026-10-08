@@ -906,5 +906,65 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
         after.configHealth.issues.some((i) => i.severity === "advisory"),
       ).toBe(false);
     });
+
+    // The endpoint warnings follow the endpoint STAGE: a rule alone never asks it, a rule with the
+    // endpoint after it does, and then a missing URL refuses everything the rule lets through.
+    test("a rule with the endpoint after it and no URL is reported; the rule alone is not", async () => {
+      const noUrlAfter = async (askEndpointAfterRule: boolean) => {
+        const r = await agentSettingsSet(
+          principal(tenantId),
+          {
+            agent_id: String(healthyAgent),
+            contactAuth: {
+              enabled: true,
+              rule: { kind: "label", label: "suporte" },
+              askEndpointAfterRule,
+              url: null,
+            },
+            dry_run: false,
+          },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return null;
+        const health = r.data.configHealth as { issues: { key: string }[] };
+        return health.issues.some((i) => i.key === "contactAuthNoUrl");
+      };
+      expect(await noUrlAfter(true)).toBe(true);
+      expect(await noUrlAfter(false)).toBe(false);
+    });
+
+    // A monitoring agent runs only the rule, before it arms an observation: no endpoint is asked, so
+    // an endpoint-only gate with no URL is not a gate that refuses everything there.
+    test("a monitoring agent's endpoint-only gate with no URL is reported, since it asks the endpoint too", async () => {
+      const noUrlOn = async (mode: "monitoring" | "production") => {
+        await suDb.agent.update({
+          where: { id: healthyAgent },
+          data: { mode },
+        });
+        const r = await agentSettingsSet(
+          principal(tenantId),
+          {
+            agent_id: String(healthyAgent),
+            contactAuth: { enabled: true, rule: null, url: null },
+            dry_run: false,
+          },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return null;
+        const health = r.data.configHealth as { issues: { key: string }[] };
+        return health.issues.some((i) => i.key === "contactAuthNoUrl");
+      };
+      try {
+        expect(await noUrlOn("monitoring")).toBe(true);
+        expect(await noUrlOn("production")).toBe(true);
+      } finally {
+        await suDb.agent.update({
+          where: { id: healthyAgent },
+          data: { mode: "production" },
+        });
+      }
+    });
   });
 });

@@ -352,70 +352,84 @@ const availability = z.looseObject({
     ),
 });
 
-// The local rule. Either this or `url`: with a rule, the endpoint is never called.
+// The local rule, asked before `url` (which is then called only under `askEndpointAfterRule`). One
+// flat union: a nested one publishes an `anyOf` wrapper per level and refuses the same values.
+const contactAuthConditions = [
+  z.object({
+    kind: z.literal("allowlist"),
+    phones: z.array(z.string()).optional(),
+    identifiers: z.array(z.string()).optional(),
+  }),
+  z.object({
+    kind: z.literal("attribute"),
+    scope: z.enum(["conversation", "contact"]),
+    key: nonBlank("must not be blank"),
+    equals: nonBlank("must not be blank").optional(),
+  }),
+  z.object({
+    kind: z.literal("conversation_type"),
+    type: z.enum(["group", "individual"]),
+  }),
+  z.object({
+    kind: z.literal("label"),
+    label: nonBlank("must not be blank"),
+  }),
+] as const;
+
 const contactAuthRule = z
   .union([
+    ...contactAuthConditions,
     z.object({
-      kind: z.literal("allowlist"),
-      phones: z.array(z.string()).optional(),
-      identifiers: z.array(z.string()).optional(),
+      kind: z.enum(["all", "any"]),
+      // NOTE: each condition is one of the shapes above; only the kind is declared here, so the
+      // published schema does not carry the union twice. The write boundary parses the rest.
+      conditions: z.array(
+        z.looseObject({
+          kind: z.enum([
+            "allowlist",
+            "attribute",
+            "conversation_type",
+            "label",
+          ]),
+        }),
+      ),
     }),
-    z.object({
-      kind: z.literal("attribute"),
-      scope: z.enum(["conversation", "contact"]),
-      key: nonBlank("must not be blank"),
-      equals: nonBlank("must not be blank").optional(),
-    }),
+    z.null(),
   ])
-  .nullable()
   .optional()
   .describe(
-    "decides instead of `url`: allowlist = phone (with country code) or identifier listed, 1-500 entries; attribute = set, or equal to `equals`. null clears",
+    "allowlist 1-500 entries; all/any 1-10 conditions, one level; null clears",
   );
 
+// The descriptions carry only what a caller cannot read off the shape: clamps, refusals, and what
+// null or 0 means. The gate's semantics are in docs/contact-auth.md.
 const contactAuth = z.looseObject({
   enabled: z.boolean().optional(),
   rule: contactAuthRule,
+  askEndpointAfterRule: z.boolean().optional(),
   url: z
     .string()
     .nullable()
     .optional()
-    .describe("the authorization endpoint; fixed origin, no placeholders"),
+    .describe("fixed origin, no placeholders"),
   credentialRef: credentialRef(),
   timeoutMs: z.number().optional().describe("1000-10000, clamped"),
   noticeCooldownSeconds: z
     .number()
     .optional()
-    .describe(
-      "cooldown on the refusal NOTICES, never on the verdict; 0 = notify on every refusal",
-    ),
-  includeMessageText: z
-    .boolean()
-    .optional()
-    .describe(
-      "forward the message text under `message.text` so the endpoint can accept an unlock code",
-    ),
-  denyMessage: z
-    .string()
-    .nullable()
-    .optional()
-    .describe("what a REFUSED contact receives; null = say nothing"),
+    .describe("notices only; 0 = every refusal"),
+  includeMessageText: z.boolean().optional(),
+  denyMessage: z.string().nullable().optional().describe("null = say nothing"),
   handoffEnabled: z.boolean().optional(),
+  operatorNoteEnabled: z.boolean().optional(),
   mode: z
     .enum(["perMessage", "once"])
     .optional()
-    .describe(
-      "perMessage (default) re-checks every message; once stores the first positive verdict per contact and reuses it until it expires",
-    ),
-  grantTtlSeconds: z
-    .number()
-    .optional()
-    .describe(
-      "how long a stored verdict counts for under mode=once; 60-2592000, clamped. Part of the policy a verdict is stored under, so a stored verdict stops counting while a different value is in force",
-    ),
-  handoffTeamId: chatwootId().describe("Chatwoot team id"),
+    .describe("once = keep a contact's first allow"),
+  grantTtlSeconds: z.number().optional().describe("60-2592000, clamped"),
+  handoffTeamId: chatwootId(),
   handoffTeamInstanceId: chatwootId().describe(
-    "our ChatwootInstance id the team was picked from; the team is only assigned in that account",
+    "our ChatwootInstance id the team is from",
   ),
 });
 

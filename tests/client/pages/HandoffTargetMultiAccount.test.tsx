@@ -103,6 +103,8 @@ function renderContactAuth(
       handoffEnabled: true,
       handoffTeamId,
       handoffTeamInstanceId,
+      endpointEnabled: false,
+      operatorNoteEnabled: true,
     });
     const props: React.ComponentProps<typeof BehaviorTab> &
       Record<string, unknown> = {

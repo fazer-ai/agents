@@ -428,6 +428,75 @@ export async function retireJobsByDedupeKeyOn(
          )`;
 }
 
+// A retirement ordered by when the verdicts behind it were asked, for work armed under an outside
+// yes that a later no takes back (the observer's contact gate, observe/job.ts
+// `retireRefusedObserve`). Retires the key's PENDING and CLAIMED rows as `retireJobsByDedupeKeyOn`
+// does, unless the row records a yes asked after this no (`allowedField` above `at`): the advisory
+// lock orders the writes, not the asks, and a late no must not take back a newer yes. Leaves `at` on
+// the row under `refusedField`, only moving forward, so a yes asked before it and still in flight
+// arms nothing; with no row yet, a DONE one is created to carry it. Run under the arm's lock.
+export async function retireUnlessAllowedLaterOn(
+  db: ScopedDb,
+  p: {
+    tenantId: bigint;
+    kind: SchedulerJobKind;
+    dedupeKey: string;
+    at: number;
+    allowedField: string;
+    refusedField: string;
+    createPayload: Record<string, unknown>;
+    // Fields a PENDING row loses on retirement, for the marks that say its work already happened
+    // (the observer's `resolveMark`): work retired before it ran must stay armable by a later yes.
+    // A CLAIMED row keeps them, since its run may have done the work.
+    unrunFields?: string[];
+  },
+): Promise<void> {
+  const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+  const unrun = p.unrunFields ?? [];
+  await db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET status = 'DONE',
+             payload = (CASE WHEN status = 'PENDING'
+                             THEN payload - ${unrun}::text[]
+                             ELSE payload END) || ${stamp}::jsonb,
+             claim_seq = claim_seq + 1,
+             updated_at = now()
+       WHERE tenant_id = ${p.tenantId}
+         AND kind = ${p.kind}::"SchedulerJobKind"
+         AND dedupe_key = ${p.dedupeKey}
+         AND status IN ('PENDING', 'CLAIMED')
+         AND COALESCE((payload->>${p.allowedField})::bigint, 0) <= ${p.at}::bigint`;
+  await db.schedulerJob.upsert({
+    where: {
+      tenantId_kind_dedupeKey: {
+        tenantId: p.tenantId,
+        kind: p.kind,
+        dedupeKey: p.dedupeKey,
+      },
+    },
+    create: {
+      tenantId: p.tenantId,
+      kind: p.kind,
+      dedupeKey: p.dedupeKey,
+      runAt: new Date(p.at),
+      status: "DONE",
+      payload: {
+        ...p.createPayload,
+        [p.refusedField]: p.at,
+      } as Prisma.InputJsonValue,
+    },
+    update: {},
+  });
+  await db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET payload = payload || jsonb_build_object(
+               ${p.refusedField}::text,
+               GREATEST(COALESCE((payload->>${p.refusedField})::bigint, 0), ${p.at}::bigint))
+       WHERE tenant_id = ${p.tenantId}
+         AND kind = ${p.kind}::"SchedulerJobKind"
+         AND dedupe_key = ${p.dedupeKey}`;
+}
+
 function readJobRetirement(
   job: ClaimedJob,
   base: PrismaClient,

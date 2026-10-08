@@ -37,6 +37,19 @@ describe("prompt cache form → stored", () => {
     ).toEqual({});
   });
 
+  test("openrouter keeps auto/off but stores no TTL", () => {
+    expect(
+      promptCacheToStored(
+        form({
+          provider: "openrouter",
+          promptCache: "auto",
+          promptCacheTtl: "1h",
+          promptCacheConversationTtl: "1h",
+        }),
+      ),
+    ).toEqual({ promptCache: "auto" });
+  });
+
   test("a 1h conversation behind a 5m prefix is never sent", () => {
     expect(
       promptCacheToStored(form({ promptCacheConversationTtl: "1h" })),

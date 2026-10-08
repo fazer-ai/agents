@@ -6,6 +6,7 @@ import {
   PROMPT_CACHE_MODES,
   PROMPT_CACHE_TTLS,
   PROVIDERS_WITH_PROMPT_CACHE,
+  PROVIDERS_WITH_PROMPT_CACHE_1H,
 } from "./prompt-cache";
 
 // Per-agent/per-node model config SCHEMA, deliberately LangChain-free so the config/HTTP layer
@@ -118,6 +119,19 @@ export const modelConfigSchema = z
             code: "custom",
             path: [f],
             message: `${f} is only supported on the ${PROVIDERS_WITH_PROMPT_CACHE.map((p) => `"${p}"`).join(" and ")} providers, not "${cfg.provider}"`,
+          });
+    }
+    if (
+      !(PROVIDERS_WITH_PROMPT_CACHE_1H as readonly string[]).includes(
+        cfg.provider,
+      )
+    ) {
+      for (const f of ["promptCacheTtl", "promptCacheConversationTtl"] as const)
+        if (cfg[f] === "1h")
+          ctx.addIssue({
+            code: "custom",
+            path: [f],
+            message: `${f} "1h" is only supported on the "anthropic" provider, not "${cfg.provider}": its usage does not say which writes were 1h, so they could not be priced`,
           });
     }
     // NOTE: the API refuses a longer TTL after a shorter one, and the prefix comes first, so a 1h

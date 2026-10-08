@@ -367,6 +367,24 @@ describe("the policy is refused where it would do nothing or break the request",
     ).not.toThrow();
   });
 
+  // OpenRouter's usage carries one write count with no TTL, so a 1h write would be priced at 5m.
+  test("openrouter refuses a 1h TTL and keeps 5m", () => {
+    const or = { provider: "openrouter", model: "anthropic/claude-haiku-5.5" };
+    expect(() => parseModelConfig({ ...or, promptCacheTtl: "1h" })).toThrow(
+      /promptCacheTtl/,
+    );
+    expect(() =>
+      parseModelConfig({
+        ...or,
+        promptCacheTtl: "5m",
+        promptCacheConversationTtl: "1h",
+      }),
+    ).toThrow(/promptCacheConversationTtl/);
+    expect(() =>
+      parseModelConfig({ ...or, promptCache: "auto", promptCacheTtl: "5m" }),
+    ).not.toThrow();
+  });
+
   test("a provider that caches on its own refuses the fields", () => {
     expect(() =>
       parseModelConfig({

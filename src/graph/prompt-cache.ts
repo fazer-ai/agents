@@ -29,6 +29,10 @@ export function promptCacheApplies(provider: string, model: string): boolean {
 // The providers on which the fields mean something; the model-config schema refuses them elsewhere.
 export const PROVIDERS_WITH_PROMPT_CACHE = ["anthropic", "openrouter"] as const;
 
+// Where a 1h write can be told apart from a 5m one in the usage, and so priced at its own rate.
+// OpenRouter reports one write count with no TTL, so a 1h mark there would be priced at 5m.
+export const PROVIDERS_WITH_PROMPT_CACHE_1H = ["anthropic"] as const;
+
 export function resolvePromptCache(cfg: {
   provider: string;
   model: string;

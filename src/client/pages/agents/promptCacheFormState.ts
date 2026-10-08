@@ -1,4 +1,7 @@
-import { PROVIDERS_WITH_PROMPT_CACHE } from "@/graph/prompt-cache";
+import {
+  PROVIDERS_WITH_PROMPT_CACHE,
+  PROVIDERS_WITH_PROMPT_CACHE_1H,
+} from "@/graph/prompt-cache";
 
 // The General tab's prompt-cache fields, as stored in `modelConfig`. Empty means "not set" (`auto`, a
 // 5m prefix, a conversation that follows the prefix), so an untouched form stores nothing. The backend
@@ -18,6 +21,13 @@ export function promptCacheToStored(model: {
   const out: Record<string, string> = {};
   if (model.promptCache) out.promptCache = model.promptCache;
   if (model.promptCache === "off") return out;
+  // Only the providers that report a 1h write apart from a 5m one take a TTL at all.
+  if (
+    !(PROVIDERS_WITH_PROMPT_CACHE_1H as readonly string[]).includes(
+      model.provider,
+    )
+  )
+    return out;
   if (model.promptCacheTtl) out.promptCacheTtl = model.promptCacheTtl;
   const conv = model.promptCacheConversationTtl;
   if (conv && !(conv === "1h" && model.promptCacheTtl !== "1h"))

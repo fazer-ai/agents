@@ -64,8 +64,9 @@ export interface MirrorResult {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: Date | null;
-  // Set when a write this event owes was held back by a transient failure (a redirect ladder that
-  // could not be retired). The event is not fully mirrored, so a later delivery of it must run again.
+  // Set when a write this event owes was held back by something that passes: a redirect ladder that
+  // could not be retired, or a live status claim that refused the status. A later delivery of the
+  // same event can decide differently, so it must run the mirror again rather than reuse this run.
   heldBack?: true;
 }
 
@@ -588,7 +589,9 @@ export async function mirrorChatwootEvent(
           assigneeId: nextAssigneeId,
           assigneeType: nextAssigneeType,
           lastEventAt: effectiveLastEventAt,
-          ...(retiredLadder ? {} : { heldBack: true as const }),
+          ...(retiredLadder && !decision.claimRefused
+            ? {}
+            : { heldBack: true as const }),
         };
       });
     });
@@ -832,15 +835,16 @@ async function upsertInbox(
   const channel = n.channel ?? null;
   if (name === null && channel === null) return row.id;
   const accepts = position
-    ? Prisma.sql`(metadata_at IS NULL OR metadata_at < ${position})`
+    ? Prisma.sql`(metadata_at IS NULL OR metadata_at <= ${position})`
     : Prisma.sql`(metadata_at IS NULL)`;
-  // One statement, decided against the row as it stands when the UPDATE reaches it (a read taken
-  // earlier may already be stale), and a statement whose WHERE matches nothing writes nothing.
-  // A payload positioned after the last change writes every field it states, so a field left out
-  // cannot keep an older payload's value under the newer position. An unchanged payload does NOT move
-  // the position (that is the write per delivery this function exists to remove), and an undated one
-  // writes only over a row never positioned. A field the source never stated (the placeholder name, a
-  // null channel) takes the first stated value at any position, and the position only moves forward.
+  // One statement, decided against the row as it stands when the UPDATE reaches it (an earlier read
+  // may be stale); a WHERE that matches nothing writes nothing. A payload positioned at or after the
+  // last change writes every field it states, so a field left out cannot keep an older value under
+  // the newer position. A tie goes to the last writer: the position is the conversation's clock, and
+  // an event of an unchanged conversation can be the first to carry a rename. An unchanged payload
+  // does NOT move the position (that write per delivery is what this removes); an undated one writes
+  // only over a row never positioned. A field never stated (the placeholder name, a null channel)
+  // takes the first stated value at any position, and the position only moves forward.
   await db.$executeRaw`
     UPDATE inboxes SET
       name = CASE

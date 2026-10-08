@@ -174,4 +174,30 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     await once(n, holding);
     expect(calls).toBe(2);
   });
+
+  test("a status a live claim refused is not reused: once the claim expires, the same event applies", async () => {
+    const m = countingMirror();
+    const first = await once(statusEvent(16, "pending", T0), m.fn);
+    // A local takeover moved the conversation off `pending` and holds a claim on that transition.
+    await suDb.conversation.update({
+      where: { id: first.conversationRowId as bigint },
+      data: {
+        status: "open",
+        statusClaimUntil: new Date(Date.now() + 45_000),
+        statusClaimFrom: "pending",
+      },
+    });
+    const handBack = statusEvent(16, "pending", T0 + 10);
+    const refused = await once(handBack, m.fn);
+    expect(refused.status).toBe("open");
+    expect(refused.heldBack).toBe(true);
+
+    await suDb.conversation.update({
+      where: { id: first.conversationRowId as bigint },
+      data: { statusClaimUntil: new Date(Date.now() - 1_000) },
+    });
+    const later = await once(handBack, m.fn);
+    expect(m.runs()).toBe(3);
+    expect(later.status).toBe("pending");
+  });
 });

@@ -380,6 +380,29 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     expect(row?.name).toBe("A");
   });
 
+  test("a rename first carried by an event at the same position is written", async () => {
+    await mirror(
+      event({
+        convId: 325,
+        messageId: 325,
+        at: T0 + 70,
+        inboxId: 42,
+        inboxName: "Antes",
+      }),
+    );
+    await mirror(
+      event({
+        convId: 325,
+        messageId: 326,
+        at: T0 + 70,
+        inboxId: 42,
+        inboxName: "Depois",
+      }),
+    );
+    const [row] = await inboxRow(42);
+    expect(row?.name).toBe("Depois");
+  });
+
   test("a delivery whose insert lost the race still applies its newer snapshot", async () => {
     await mirror(
       event({
@@ -456,7 +479,7 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
       event({
         convId: 346,
         messageId: 346,
-        at: T0 + 50,
+        at: T0 + 40,
         inboxId: 41,
         inboxName: "Sem canal",
       }),

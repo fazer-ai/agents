@@ -2,6 +2,11 @@ import { z } from "zod";
 import { AppError } from "@/lib/errors";
 import { modelOptionalFor } from "./model-defaults";
 import { REASONING_EFFORTS } from "./openai-reasoning";
+import {
+  PROMPT_CACHE_MODES,
+  PROMPT_CACHE_TTLS,
+  PROVIDERS_WITH_PROMPT_CACHE,
+} from "./prompt-cache";
 
 // Per-agent/per-node model config SCHEMA, deliberately LangChain-free so the config/HTTP layer
 // can validate a modelConfig without importing the provider SDKs (those live in ./models, which
@@ -70,6 +75,13 @@ export const modelConfigSchema = z
     // How much the model may reason before answering. Absent = the provider's own default.
     // See ./openai-reasoning for the table behind the values and the transport.
     reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
+    // Prompt caching on the providers that only cache what the request marks (./prompt-cache).
+    // Absent = `auto` there. The two TTLs are apart because the two spans repeat at different rates:
+    // the prefix (tools + system) is shared by every conversation of the agent, the conversation
+    // tail only by the next turn of the same customer. Absent conversation TTL follows the prefix.
+    promptCache: z.enum(PROMPT_CACHE_MODES).optional(),
+    promptCacheTtl: z.enum(PROMPT_CACHE_TTLS).optional(),
+    promptCacheConversationTtl: z.enum(PROMPT_CACHE_TTLS).optional(),
   })
   .superRefine((cfg, ctx) => {
     if (!cfg.model.trim() && !modelOptionalFor(cfg.provider)) {
@@ -88,6 +100,37 @@ export const modelConfigSchema = z
         code: "custom",
         path: ["reasoningEffort"],
         message: `reasoningEffort is only supported on the "openai" provider, not "${cfg.provider}"`,
+      });
+    }
+    // OpenAI and the rest cache a repeated prefix on their own, so the fields would be a control
+    // that does nothing there, the same reason reasoningEffort is refused off "openai".
+    const cacheFields = [
+      "promptCache",
+      "promptCacheTtl",
+      "promptCacheConversationTtl",
+    ] as const;
+    if (
+      !(PROVIDERS_WITH_PROMPT_CACHE as readonly string[]).includes(cfg.provider)
+    ) {
+      for (const f of cacheFields)
+        if (cfg[f] !== undefined)
+          ctx.addIssue({
+            code: "custom",
+            path: [f],
+            message: `${f} is only supported on the ${PROVIDERS_WITH_PROMPT_CACHE.map((p) => `"${p}"`).join(" and ")} providers, not "${cfg.provider}"`,
+          });
+    }
+    // NOTE: the API refuses a longer TTL after a shorter one, and the prefix comes first, so a 1h
+    // conversation behind a 5m prefix would fail every call.
+    if (
+      cfg.promptCacheConversationTtl === "1h" &&
+      (cfg.promptCacheTtl ?? "5m") === "5m"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["promptCacheConversationTtl"],
+        message:
+          'promptCacheConversationTtl "1h" needs promptCacheTtl "1h": a longer cache TTL cannot follow a shorter one',
       });
     }
   });

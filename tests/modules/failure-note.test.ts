@@ -509,6 +509,13 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(posted[0]?.content).toContain(
       "Ela foi aberta para a equipe assumir.",
     );
+    // The mirror moved with the toggle: no reader waits on Chatwoot's webhook to see it is no
+    // longer the bot's.
+    const mirror = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true },
+    });
+    expect(mirror.status).toBe("open");
   });
 
   test("a newer message that lands before the hand-over cancels it, note included", async () => {
@@ -1679,6 +1686,42 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         sleep: async () => {},
       },
     });
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a given-up row a turn answered meanwhile hands nothing over", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-retired-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_700 + conv,
+      },
+      select: { id: true },
+    });
+    // A live turn answers the same message while the announcer reads Chatwoot, and retires the row.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (String(input).endsWith(`/conversations/${conv}/messages`)) {
+        await suDb.chatwootWebhookDelivery.update({
+          where: { id: row.id },
+          data: { status: "PROCESSED" },
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof globalThis.fetch;
+    try {
+      await announceUnanswered(tenantId, row.id, appDb);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 

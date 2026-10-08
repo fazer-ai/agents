@@ -1646,17 +1646,30 @@ export async function announceUnanswered(
         chatwootConversationId: conversationId,
         // The conversation is lost only if this was its newest message: a newer one has its own
         // delivery, live or still being recovered, and opening the conversation would stop it.
-        assess: async () => ({
-          path: "direct",
-          fence: await readDirectFence({
-            tenantId,
-            instanceId: row.chatwootInstanceId,
-            chatwootConversationId: conversationId,
-            triggerId: row.inboundMessageId,
-            base,
-            deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,
-          }),
-        }),
+        assess: async () => {
+          // Retired since (a turn answered the same message): nothing is lost any more.
+          const still = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.chatwootWebhookDelivery.findUnique({
+              where: { id: deliveryRowId },
+              select: { status: true },
+            }),
+          );
+          if (still?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD"))
+            return { path: "job", deadLettered: false };
+          return {
+            path: "direct",
+            fence: await readDirectFence({
+              tenantId,
+              instanceId: row.chatwootInstanceId,
+              chatwootConversationId: conversationId,
+              triggerId: row.inboundMessageId,
+              base,
+              deps: opts.makeClient
+                ? { makeClient: opts.makeClient }
+                : undefined,
+            }),
+          };
+        },
         error: new Error(RECOVERY_GAVE_UP),
         base,
         deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,

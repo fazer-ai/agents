@@ -12,6 +12,7 @@ import { turnOwnsThread } from "@/graph/thread-claim";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
+  claimOpenForHumanQueue,
   conversationOwnershipNow,
   openForHumanQueue,
 } from "@/modules/chatwoot/human-takeover";
@@ -224,6 +225,8 @@ function turnBusyHere(keys: { handoffKey: string; graphKey: string }): boolean {
   );
 }
 
+type SeenRow = Parameters<typeof claimOpenForHumanQueue>[0]["seen"];
+
 // Markdown, which Chatwoot renders in a private note. The first line is what an operator scanning
 // the conversation reads, so it says what happened; the second says what was done about it, which
 // is the part that tells them whether anyone has the conversation yet.
@@ -285,6 +288,9 @@ export async function announceFailedTurn(params: {
     // started meanwhile, and an unread fence cannot rule that out.
     let lastAsk: "lost" | "not-lost" | "unreadable" | null = null;
     let reserved: { handoffKey: string; graphKey: string } | null = null;
+    // The mirror row the fence read, which the claim below pins. Typed through the cast because the
+    // closure assigns it, and a plain `null` would narrow every later read to `never`.
+    let seen = null as SeenRow | null;
     let queued: Awaited<ReturnType<typeof openForHumanQueue>>;
     try {
       queued = await openForHumanQueue({
@@ -312,16 +318,15 @@ export async function announceFailedTurn(params: {
             lastAsk = null;
             return false;
           }
-          const ours = (
-            await conversationOwnershipNow({
-              tenantId,
-              instanceId,
-              conversationId,
-              ourAgentBotId: persona.chatwootAgentBotId,
-              base,
-            })
-          ).ours;
-          if (!ours) {
+          const ownership = await conversationOwnershipNow({
+            tenantId,
+            instanceId,
+            conversationId,
+            ourAgentBotId: persona.chatwootAgentBotId,
+            base,
+          });
+          if (ownership.ours) seen = ownership;
+          if (!ownership.ours) {
             lastAsk = null;
             return false;
           }
@@ -372,6 +377,32 @@ export async function announceFailedTurn(params: {
       }
     }
     const opened = queued === "opened";
+    // The mirror moves with the toggle, as the human-reply takeover's does, rather than waiting on
+    // Chatwoot's webhook: until it lands every reader of the row would still see a bot-owned
+    // conversation and could start a turn in the human queue. Pinned to the row the fence read, so
+    // a newer decision wins; best-effort, since the webhook still corrects it.
+    const pinned = seen;
+    if (opened && pinned !== null) {
+      await claimOpenForHumanQueue({
+        tenantId,
+        instanceId,
+        conversationId,
+        seen: {
+          statusAt: pinned.statusAt,
+          ownershipChangedAt: pinned.ownershipChangedAt,
+          assigneeType: pinned.assigneeType,
+          assigneeId: pinned.assigneeId,
+          consoleWriteAtMessageId: pinned.consoleWriteAtMessageId,
+        },
+        base,
+      }).catch((err) => {
+        logger.warn(
+          "conversations: failed-turn hand-over opened Chatwoot but not the mirror (conv=%s): %s",
+          String(conversationId),
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    }
     if (lastAsk === "not-lost") return "not-lost";
     if (lastAsk === "unreadable") return "failed";
     if (opened) {

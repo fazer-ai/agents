@@ -582,6 +582,25 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 
+  test("a last ask that cannot be read announces nothing, rather than trusting the first", async () => {
+    const conv = await seedConversation();
+    let asks = 0;
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => {
+        if (asks++ === 0) return { path: "job", deadLettered: true };
+        throw new Error("the scheduler row could not be read");
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("failed");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+    expect(await noticeAt(conv)).toBeNull();
+  });
+
   test("a person who claimed the conversation in Chatwoot keeps it, even with the mirror behind", async () => {
     const conv = await seedConversation();
     // The mirror still says pending and unassigned; Chatwoot already has an attendant on it.

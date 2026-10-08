@@ -226,7 +226,9 @@ export async function announceFailedTurn(params: {
     // Asked again as the last fence before the toggle, after the ownership reads: a newer message
     // landing since the first ask has a turn of its own coming, and opening the conversation would
     // stop it. Then nothing is announced at all, as for the first ask.
-    let stillLost = true;
+    // Null when the ownership fence refused first, which leaves the first ask standing; a throw
+    // fails closed, since the reason to ask again is a turn that may have started meanwhile.
+    let lastAsk: "lost" | "not-lost" | "unreadable" | null = null;
     const opened =
       (await openForHumanQueue({
         gate: "failed-turn",
@@ -261,12 +263,14 @@ export async function announceFailedTurn(params: {
           ).ours;
           if (!ours) return false;
           // Last, so the only await between it and the toggle is the toggle's own.
-          stillLost = isTurnLost(await params.assess());
-          return stillLost;
+          lastAsk = "unreadable";
+          lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
+          return lastAsk === "lost";
         },
         client: async () => client,
       })) === "opened";
-    if (!stillLost) return "not-lost";
+    if (lastAsk === "not-lost") return "not-lost";
+    if (lastAsk === "unreadable") return "failed";
     if (opened) {
       await assignPinnedTarget({
         client,

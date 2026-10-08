@@ -190,7 +190,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/contact-auth-stages-e2e.test.ts": 1,
   "tests/modules/debounce-late-visual.test.ts": 1,
   "tests/modules/debounce.test.ts": 10,
-  "tests/modules/delivery-sweep.test.ts": 6,
+  "tests/modules/delivery-sweep.test.ts": 7,
   "tests/modules/eager-media-flow-context.test.ts": 6,
   "tests/modules/failure-note.test.ts": 1,
   "tests/modules/flowlog-astral-detail.test.ts": 1,

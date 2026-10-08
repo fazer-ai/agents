@@ -257,7 +257,15 @@ export async function retireCoveredDeliveries(
       db.chatwootWebhookDelivery.updateManyAndReturn({
         where: { ...where, status: "DEAD" },
         data: { status: "PROCESSED", processedAt: new Date() },
-        select: { deliveryId: true, inboundMessageId: true },
+        select: {
+          deliveryId: true,
+          inboundMessageId: true,
+          receivedAt: true,
+          chatwootInstanceId: true,
+          conversationId: true,
+          routeObserved: true,
+          routeAgentBotId: true,
+        },
       }),
   );
 
@@ -278,6 +286,19 @@ export async function retireCoveredDeliveries(
   // a customer nobody can find any more. A rescue nobody had reported yet writes nothing: a
   // correction for an alert that never fired is noise.
   for (const row of corrected) {
+    // Filed under the inbox and the agent the delivery was for, read off its recorded route the way
+    // the loss line it closes was (an observer's route is the observer's): a channel's excluded
+    // agents filter the correction by these, and a line filed under nobody passes every exclusion.
+    // Null when the mirror cannot be read; the line is still written.
+    const mirror = await mirrorOf(row, params.tenantId, params.base).catch(
+      (error) => {
+        logger.warn(
+          { error, deliveryId: row.deliveryId },
+          "chatwoot: could not read the agent a stranded-delivery correction is filed under; filing it under none",
+        );
+        return null;
+      },
+    );
     logger.warn(
       "chatwoot: %s was reported as a lost message and has now been %s on conversation %d",
       row.deliveryId,
@@ -290,19 +311,25 @@ export async function retireCoveredDeliveries(
         turnId: crypto.randomUUID(),
         source: "inbox",
         conversationId: params.conversationRowId,
+        agentId: mirror?.lineAgentId ?? null,
+        inboxId: mirror?.inboxId ?? null,
         base: params.base,
       },
       {
         stage: "delivery",
         level: "warn",
-        // NOTE: a "warn" that does not page the channel the loss paged (`minLevel` defaults to
-        // "error"), a known gap. Routing it as "error" is worse: alert dispatch coalesces by
-        // (channel, stage, level), so the correction would increment the loss alert instead of
-        // closing it. The DEAD worklist is correct the instant this lands.
+        // NOTE: a "warn" that pages nobody alone: it counts toward the recovery rate, one alert per
+        // window (`recoverySubjectOf`, flowlog/alerts.ts), unless the answer came late enough to keep
+        // its own. Routing it as "error" is worse: alert dispatch coalesces by (channel, stage,
+        // level), so the correction would increment the loss alert instead of closing it. The DEAD
+        // worklist is correct the instant this lands.
         status: "ok",
         detail: {
           outcome: answered ? "answered_late" : "consumed_late",
           messageId: row.inboundMessageId,
+          // How long after the message arrived it was settled: an answer that came late enough keeps an
+          // alert of its own, where every other recovery only counts toward the recovery rate.
+          ageMs: Date.now() - row.receivedAt.getTime(),
           conversationId: params.conversationId,
         },
       },
@@ -368,7 +395,13 @@ export interface SweepCounts {
 // not know this conversation (a delivery that died before the mirror write); the line is still
 // filed. It reads no watermark: whether anything covered the message is the row's own status.
 async function mirrorOf(
-  row: StrandedRow,
+  row: Pick<
+    StrandedRow,
+    | "chatwootInstanceId"
+    | "conversationId"
+    | "routeObserved"
+    | "routeAgentBotId"
+  >,
   tenantId: bigint,
   base: PrismaClient,
   // Asked only by the verdict that reports it, and here, before the terminal transition: after

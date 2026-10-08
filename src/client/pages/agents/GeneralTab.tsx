@@ -304,8 +304,8 @@ export function GeneralTab({
           <div className="grid gap-4 sm:grid-cols-3">
             <FormField
               label={t("editor.promptCache", "Prompt cache")}
-              description={t(
-                "editor.promptCacheHint",
+              help={t(
+                "editor.promptCacheHelp",
                 "Reuses the instructions and the conversation from one call to the next at a tenth of the input price. On OpenRouter it only applies to Claude models.",
               )}
             >
@@ -328,8 +328,8 @@ export function GeneralTab({
                 <>
                   <FormField
                     label={t("editor.promptCacheTtl", "Instructions cache")}
-                    description={t(
-                      "editor.promptCacheTtlHint",
+                    help={t(
+                      "editor.promptCacheTtlHelp",
                       "Shared by every conversation. 1 hour only pays off when the agent goes more than 5 minutes without a call.",
                     )}
                   >
@@ -352,9 +352,13 @@ export function GeneralTab({
                       "editor.promptCacheConversationTtl",
                       "Conversation cache",
                     )}
+                    help={t(
+                      "editor.promptCacheConversationTtlHelp",
+                      "How long one customer's history stays cached between their messages.",
+                    )}
                     description={t(
-                      "editor.promptCacheConversationTtlHint",
-                      "How long one customer's history stays cached between their messages. 1 hour needs the instructions cache at 1 hour too.",
+                      "editor.promptCacheConversationTtlRequires",
+                      "1 hour needs the instructions cache at 1 hour.",
                     )}
                   >
                     <Select

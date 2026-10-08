@@ -22,6 +22,7 @@ import {
   rateLimitMiddleware,
   registerRateLimitMiddleware,
   staticRateLimitMiddleware,
+  webhookAuthFailureLimitMiddleware,
 } from "@/api/middlewares/rateLimit";
 import config from "@/config";
 import { AppError } from "@/lib/errors";
@@ -137,6 +138,7 @@ export async function buildApp() {
     .use(registerRateLimitMiddleware())
     .use(credentialRateLimitMiddleware())
     .use(staticRateLimitMiddleware())
+    .use(webhookAuthFailureLimitMiddleware())
     // NOTE: registered AFTER the limiters on purpose. A request rejected before its handler is charged
     // from the plugin's own `onError`, and Elysia stops at the first error handler that returns a
     // value, so answering NOT_FOUND or VALIDATION before the plugin would leave them uncharged.

@@ -90,7 +90,7 @@ function stubClient(over: Partial<Record<string, unknown>> = {}) {
     },
     assignAgentBot: async () => {
       calls.push("assignAgentBot");
-      return true;
+      return "bot";
     },
     toggleStatus: async () => {
       calls.push("toggleStatus");
@@ -896,7 +896,7 @@ describe.skipIf(!dbUp)(
         getConversation: async () => user(swapped ? 9 : 21),
         assignAgentBot: async () => {
           swapped = true;
-          return false;
+          return "user";
         },
         unassignConversation: async () => {
           throw new Error("Chatwoot API 502 for POST /assignments");

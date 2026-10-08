@@ -170,19 +170,19 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers["api-access-token"]).toBe("BOT_TOK");
   });
 
-  test("assignAgentBot names the bot by type and is true only when the bot comes back", async () => {
-    const answers: Array<[unknown, boolean]> = [
+  test("assignAgentBot names the bot by type and says who the answer names", async () => {
+    const answers: Array<[unknown, "bot" | "user" | null]> = [
       // The fork's `agent_bot_slim`: the bot it assigned.
-      [{ id: 501, name: "Bot", bot_type: "webhook" }, true],
+      [{ id: 501, name: "Bot", bot_type: "webhook" }, "bot"],
       // A Chatwoot that ignores `assignee_type` reads the id as a USER's.
       [
         { id: 501, name: "Ana", email: "ana@example.com", role: "agent" },
-        false,
+        "user",
       ],
       // A bot the fork cannot find renders null.
-      [null, false],
+      [null, null],
       // Another bot is not this one.
-      [{ id: 502, name: "Other", bot_type: "webhook" }, false],
+      [{ id: 502, name: "Other", bot_type: "webhook" }, null],
     ];
     for (const [payload, expected] of answers) {
       const { fetchImpl, calls } = stub(200, payload);

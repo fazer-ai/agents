@@ -2359,15 +2359,17 @@ export async function returnConversationToAgent(
       judgedInboxId === null ||
       live.inboxId === judgedInboxId);
   let attempted = false;
+  let assigned: "bot" | "user" | null = null;
   let toggled = false;
   try {
     if (botCanTakeIt) {
       attempted = true;
-      handedToBot = await client.assignAgentBot(
+      assigned = await client.assignAgentBot(
         conv.chatwootConversationId,
         ourAgentBotId,
         { asAdmin: true },
       );
+      handedToBot = assigned === "bot";
     }
     // NOTE: the bot already holding it still needs the status, and only an assignment that landed
     // set it.
@@ -2377,20 +2379,24 @@ export async function returnConversationToAgent(
       });
       toggled = true;
       // NOTE: the unassign is decided on a read taken AFTER the status call, so a human who claimed
-      // the conversation while it was on the wire keeps it. A user carrying the bot's id right after
-      // an assignment that did not take is that assignment misread, not a newcomer.
+      // the conversation while it was on the wire keeps it. The user the assignment's own answer named
+      // (a Chatwoot that read the bot's id as a user's) is that assignment misread, not a newcomer.
       if (!handedToBot && newHolder === null) {
         const afterStatus = await readHolder();
         const misread =
-          attempted &&
+          assigned === "user" &&
           afterStatus?.assigneeType === "User" &&
           afterStatus.assigneeId === ourAgentBotId;
         if (!misread) newHolder = holderOtherThan(afterStatus);
       }
     }
-    // NOTE: an assignment that came back without the bot may have named a USER with that id (a
-    // Chatwoot that ignores `assignee_type`), so the unassign follows it even onto an empty read.
-    if (!handedToBot && newHolder === null && (attempted || !nobodyToRemove)) {
+    // NOTE: an assignment whose answer named a USER (a Chatwoot that ignores `assignee_type`) put
+    // somebody there, so the unassign follows it even onto an empty read.
+    if (
+      !handedToBot &&
+      newHolder === null &&
+      (assigned === "user" || !nobodyToRemove)
+    ) {
       await client.unassignConversation(conv.chatwootConversationId, {
         asAdmin: true,
       });

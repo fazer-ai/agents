@@ -1118,7 +1118,7 @@ describe.skipIf(!dbUp)(
           },
           assignAgentBot: async () => {
             calls.push("assignAgentBot");
-            return true;
+            return "bot";
           },
           toggleStatus: async () => {
             calls.push("toggleStatus");

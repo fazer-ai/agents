@@ -64,7 +64,7 @@ const makeClient = async () =>
     },
     assignAgentBot: async () => {
       chatwootCalls.push("assignAgentBot");
-      return true;
+      return "bot";
     },
     toggleStatus: async () => {
       chatwootCalls.push("toggleStatus");

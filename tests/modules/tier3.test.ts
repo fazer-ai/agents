@@ -206,14 +206,14 @@ function makeStub(
       if (live.botMisreadAsUser) {
         live.assigneeType = "User";
         live.assigneeId = botId;
-        return false;
+        return "user";
       }
-      if (live.botAssignable === false) return false;
+      if (live.botAssignable === false) return null;
       cleared = true;
       // `botCleared`: Chatwoot took the bot, and something cleared it again before the next read.
       botHolder = live.botCleared ? null : botId;
       if (live.metaOmittedAfterWrite) omitMeta = true;
-      return true;
+      return "bot";
     },
     toggleStatus: async (_cid: number, status: string) => {
       calls.toggleStatus.push(status);
@@ -1139,13 +1139,13 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
   });
 
-  test("a bot assignment that came back without the bot is followed by an unassign, even when nobody held it", async () => {
+  test("a bot assignment that came back naming a user is followed by an unassign, even when nobody held it", async () => {
     // A Chatwoot that ignores `assignee_type` reads the bot's id as a USER's, so the empty read
     // taken before the write no longer says nobody is there.
     const stub = makeStub({
       assigneeType: null,
       assigneeId: null,
-      botAssignable: false,
+      botMisreadAsUser: true,
     });
     await returnConversationToAgent(
       ctx(tenant),
@@ -1275,6 +1275,23 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
     expect(stub.calls.assignAgentBot).toEqual([501]);
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    expect(stub.calls.unassignConversation).toBe(0);
+    expect(outcome).toBe("taken-over");
+  });
+
+  test("a human sharing the bot's id who claims it during the fallback keeps it", async () => {
+    // User and AgentBot ids are separate namespaces: only an answer that NAMED a user makes that id
+    // the assignment's own doing. Here Chatwoot answered nothing.
+    const stub = makeStub(
+      { assigneeType: "User", assigneeId: 7, botAssignable: false },
+      { assigneeType: "User", assigneeId: 501, fromRead: 4 },
+    );
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
     expect(stub.calls.unassignConversation).toBe(0);
     expect(outcome).toBe("taken-over");
   });

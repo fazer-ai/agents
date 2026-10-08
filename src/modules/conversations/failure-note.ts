@@ -1,6 +1,9 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
+import { isFlushHeld, isTurnInFlight } from "@/graph/inflight";
+import { turnOwnsThread } from "@/graph/thread-claim";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -170,6 +173,48 @@ async function personaOf(
   };
 }
 
+// Both keys a turn claims, the pair the delivery recovery asks: the conversation's, and the graph
+// thread's, also read off its row because the in-process Map cannot see another replica. A row that
+// cannot be read counts as held. The Map is asked again after the read, which is what decides.
+async function turnRunningOn(
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+  base: PrismaClient,
+): Promise<boolean> {
+  const handoffKey = chatwootThreadId(tenantId, instanceId, conversationId);
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+      },
+      select: { contactInboxId: true },
+    }),
+  );
+  const contactInboxId = row?.contactInboxId ?? null;
+  const graphKey = resolveGraphThreadId(
+    tenantId,
+    instanceId,
+    conversationId,
+    contactInboxId,
+  );
+  const busyHere = () =>
+    isTurnInFlight(handoffKey) ||
+    isTurnInFlight(graphKey) ||
+    isFlushHeld(handoffKey) ||
+    isFlushHeld(graphKey);
+  if (busyHere()) return true;
+  const held =
+    contactInboxId != null &&
+    (await turnOwnsThread(
+      { tenantId, instanceId, contactInboxId, graphThreadId: graphKey },
+      base,
+    ));
+  return held || busyHere();
+}
+
 // Markdown, which Chatwoot renders in a private note. The first line is what an operator scanning
 // the conversation reads, so it says what happened; the second says what was done about it, which
 // is the part that tells them whether anyone has the conversation yet.
@@ -262,6 +307,13 @@ export async function announceFailedTurn(params: {
             })
           ).ours;
           if (!ours) return false;
+          // A turn already running on the conversation (an operator's re-engage, a follow-up, a
+          // flush) was started without a new message, so neither ask can see it; opening the
+          // conversation would discard its reply. It may still answer, so nothing is announced.
+          if (await turnRunningOn(tenantId, instanceId, conversationId, base)) {
+            lastAsk = "not-lost";
+            return false;
+          }
           // Last, so the only await between it and the toggle is the toggle's own.
           lastAsk = "unreadable";
           lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";

@@ -16,6 +16,8 @@ import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { contactInboxThreadId } from "@/graph/checkpointer";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import * as prepare from "@/graph/prepare";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
@@ -338,6 +340,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     globalThis.fetch = realFetch;
     if (!dbUp) return;
     for (const table of [
+      "agent_threads",
       "agent_tool_selections",
       "scheduler_jobs",
       "execution_logs",
@@ -606,6 +609,65 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(outcome).toBe("failed");
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
     expect(await noticeAt(conv)).toBeNull();
+  });
+
+  test("a turn already running on the conversation is not cancelled by the hand-over", async () => {
+    const conv = await seedConversation();
+    // A contact inbox, so the graph thread's key differs from the conversation's: the re-engage
+    // marks the conversation's.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { contactInboxId: 76_000 + conv },
+    });
+    // An operator's re-engage: no new customer message, so neither ask of the fence sees it.
+    const key = `${tenantId}:${instanceId}:${conv}`;
+    markTurnInFlight(key);
+    let outcome: string;
+    try {
+      outcome = await announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      });
+    } finally {
+      clearTurnInFlight(key);
+    }
+    expect(outcome).toBe("not-lost");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+    expect(await noticeAt(conv)).toBeNull();
+  });
+
+  test("a turn another replica holds on the conversation's graph thread is not cancelled either", async () => {
+    const conv = await seedConversation();
+    const contactInboxId = 77_000 + conv;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { contactInboxId },
+    });
+    // The claim's own row: the in-process Map cannot see a turn running on another replica.
+    await suDb.agentThread.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        threadId: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+        turnHolders: 1,
+        turnHeldUntil: new Date(Date.now() + 60_000),
+      },
+    });
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => ({ path: "job", deadLettered: true }),
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("not-lost");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 
   test("a person who claimed the conversation in Chatwoot keeps it, even with the mirror behind", async () => {

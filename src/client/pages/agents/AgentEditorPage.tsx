@@ -405,8 +405,6 @@ function readModelState(a: Agent) {
     temperature: num(mc.temperature),
     reasoningEffort: str(mc.reasoningEffort),
     promptCache: str(mc.promptCache),
-    promptCacheTtl: str(mc.promptCacheTtl),
-    promptCacheConversationTtl: str(mc.promptCacheConversationTtl),
   };
 }
 
@@ -1006,8 +1004,6 @@ function AgentEditor() {
     temperature: "",
     reasoningEffort: "",
     promptCache: "",
-    promptCacheTtl: "",
-    promptCacheConversationTtl: "",
   });
   // The endpoint each selected credential carries, which OUTRANKS the typed field wherever one is
   // shown. Resolved from the vault, not from the pickers: the page judges these on every tab, and
@@ -1632,7 +1628,7 @@ function AgentEditor() {
     // must not be serialized.
     if (model.reasoningEffort && model.provider === "openai")
       cfg.reasoningEffort = model.reasoningEffort;
-    // Same rule for the prompt-cache fields (./promptCacheFormState).
+    // Same rule for the prompt-cache field (./promptCacheFormState).
     Object.assign(cfg, promptCacheToStored(model));
     return cfg;
   }

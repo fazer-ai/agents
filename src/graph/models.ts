@@ -13,7 +13,7 @@ import {
   type ReasoningEffort,
   toolEffortFloorOf,
 } from "./openai-reasoning";
-import { promptCacheFetch, resolvePromptCache } from "./prompt-cache";
+import { promptCacheEnabled, promptCacheFetch } from "./prompt-cache";
 
 // Per-agent/per-node model factory. The config SCHEMA lives in ./model-config (LangChain-free, so
 // the config/HTTP layer validates without importing the provider SDKs); this module turns a
@@ -228,7 +228,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         planOpenAITransport(model, undefined),
       );
     case "openrouter": {
-      const cache = resolvePromptCache(cfg);
+      const cache = promptCacheEnabled(cfg);
       return makeOpenAIChat(
         {
           model,
@@ -239,9 +239,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
             baseURL: cfg.baseURL || OPENROUTER_BASE_URL,
             // NOTE: only a Claude model behind OpenRouter gets marks (./prompt-cache); the others
             // cache on their own and the request goes out untouched.
-            ...(cache
-              ? { fetch: promptCacheFetch(cache, "chat-completions") }
-              : {}),
+            ...(cache ? { fetch: promptCacheFetch("chat-completions") } : {}),
           },
         },
         planOpenAITransport(model, undefined),
@@ -255,13 +253,13 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
     // omitting it leaves the guardrail results unchanged. The stored value is kept as the operator
     // set it, so if Anthropic takes the parameter back this line is all that has to go.
     case "anthropic": {
-      const cache = resolvePromptCache(cfg);
+      const cache = promptCacheEnabled(cfg);
       // `clientOptions`, not the plain `timeout` the OpenAI-shaped clients take: the option
       // type accepts `timeout` and the built instance leaves it undefined.
       const clientOptions = {
         ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
         // Anthropic caches only what the request marks (./prompt-cache).
-        ...(cache ? { fetch: promptCacheFetch(cache, "anthropic") } : {}),
+        ...(cache ? { fetch: promptCacheFetch("anthropic") } : {}),
       };
       return new ChatAnthropic({
         model,

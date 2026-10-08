@@ -176,25 +176,12 @@ describe("anthropic: the prefix and the conversation are marked by default", () 
     expect(JSON.stringify(body)).not.toContain("cache_control");
   });
 
-  test("a 1h prefix TTL reaches every mark when the conversation TTL is not set", async () => {
-    const body = await send({ ...anthropic, promptCacheTtl: "1h" });
-    const all = marks(body);
+  // A 1-hour write bills at 2x the input rate and the usage ledger prices every write at the 5-minute
+  // rate, so no mark may carry a TTL.
+  test("every mark is the 5-minute one", async () => {
+    const all = marks(await send(anthropic));
     expect(all.length).toBeGreaterThan(0);
-    for (const m of all) expect(m).toEqual({ type: "ephemeral", ttl: "1h" });
-  });
-
-  test("a 1h prefix with a 5m conversation marks each span with its own TTL", async () => {
-    const body = await send({
-      ...anthropic,
-      promptCacheTtl: "1h",
-      promptCacheConversationTtl: "5m",
-    });
-    expect(last(body.system as unknown[])).toMatchObject({
-      cache_control: { type: "ephemeral", ttl: "1h" },
-    });
-    expect(lastBlock(last(body.messages as unknown[]))?.cache_control).toEqual({
-      type: "ephemeral",
-    });
+    for (const m of all) expect(m).toEqual({ type: "ephemeral" });
   });
 
   test("the prefix is byte-identical from one turn to the next, and the mark moves to the new end", async () => {
@@ -239,20 +226,17 @@ describe("anthropic: a tool round inside the turn", () => {
 
 describe("blocks the API refuses a mark on", () => {
   test("an empty last text block is skipped for the block before it", () => {
-    const body = markAnthropicBody(
-      {
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "quero ingresso" },
-              { type: "text", text: "  " },
-            ],
-          },
-        ],
-      },
-      { prefixTtl: "5m", conversationTtl: "5m" },
-    );
+    const body = markAnthropicBody({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "quero ingresso" },
+            { type: "text", text: "  " },
+          ],
+        },
+      ],
+    });
     const content = (
       body.messages as Array<{ content: Array<Record<string, unknown>> }>
     )[0]?.content;
@@ -261,20 +245,17 @@ describe("blocks the API refuses a mark on", () => {
   });
 
   test("a thinking block is skipped for the block before it", () => {
-    const body = markAnthropicBody(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [
-              { type: "text", text: "Vou consultar." },
-              { type: "thinking", thinking: "...", signature: "s" },
-            ],
-          },
-        ],
-      },
-      { prefixTtl: "5m", conversationTtl: "5m" },
-    );
+    const body = markAnthropicBody({
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Vou consultar." },
+            { type: "thinking", thinking: "...", signature: "s" },
+          ],
+        },
+      ],
+    });
     const content = (
       body.messages as Array<{ content: Array<Record<string, unknown>> }>
     )[0]?.content;
@@ -284,20 +265,17 @@ describe("blocks the API refuses a mark on", () => {
 });
 
 describe("a system prompt already in blocks", () => {
-  test("its last block carries the prefix TTL, apart from the conversation's", () => {
-    const body = markAnthropicBody(
-      {
-        system: [
-          { type: "text", text: "regras" },
-          { type: "text", text: "mais regras" },
-        ],
-        messages: [{ role: "user", content: "oi" }],
-      },
-      { prefixTtl: "1h", conversationTtl: "5m" },
-    );
+  test("its last block carries the mark, and the conversation its own", () => {
+    const body = markAnthropicBody({
+      system: [
+        { type: "text", text: "regras" },
+        { type: "text", text: "mais regras" },
+      ],
+      messages: [{ role: "user", content: "oi" }],
+    });
     const system = body.system as Array<Record<string, unknown>>;
     expect(system[0]).not.toHaveProperty("cache_control");
-    expect(system[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+    expect(system[1]?.cache_control).toEqual({ type: "ephemeral" });
     const msg = (
       body.messages as Array<{ content: Array<Record<string, unknown>> }>
     )[0];
@@ -348,26 +326,9 @@ describe("the policy is refused where it would do nothing or break the request",
     expect(() =>
       parseModelConfig({ ...anthropic, promptCache: "always" }),
     ).toThrow(/promptCache/);
-    expect(() =>
-      parseModelConfig({ ...anthropic, promptCacheTtl: "10m" }),
-    ).toThrow(/promptCacheTtl/);
   });
 
-  // The API requires a longer TTL to come before a shorter one, and the prefix comes first.
-  test("a 1h conversation behind a 5m prefix is refused", () => {
-    expect(() =>
-      parseModelConfig({ ...anthropic, promptCacheConversationTtl: "1h" }),
-    ).toThrow(/promptCacheConversationTtl/);
-    expect(() =>
-      parseModelConfig({
-        ...anthropic,
-        promptCacheTtl: "1h",
-        promptCacheConversationTtl: "1h",
-      }),
-    ).not.toThrow();
-  });
-
-  test("a provider that caches on its own refuses the fields", () => {
+  test("a provider that caches on its own refuses the field", () => {
     expect(() =>
       parseModelConfig({
         provider: "openai",

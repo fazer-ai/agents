@@ -8,14 +8,6 @@
 export const PROMPT_CACHE_MODES = ["auto", "off"] as const;
 export type PromptCacheMode = (typeof PROMPT_CACHE_MODES)[number];
 
-export const PROMPT_CACHE_TTLS = ["5m", "1h"] as const;
-export type PromptCacheTtl = (typeof PROMPT_CACHE_TTLS)[number];
-
-export interface PromptCachePolicy {
-  prefixTtl: PromptCacheTtl;
-  conversationTtl: PromptCacheTtl;
-}
-
 // Whether the provider (and, behind OpenRouter, the model) needs explicit marks at all. OpenRouter
 // passes `cache_control` through to Anthropic; every other vendor behind it caches on its own or
 // not at all, and a mark there is at best ignored.
@@ -29,30 +21,20 @@ export function promptCacheApplies(provider: string, model: string): boolean {
 // The providers on which the fields mean something; the model-config schema refuses them elsewhere.
 export const PROVIDERS_WITH_PROMPT_CACHE = ["anthropic", "openrouter"] as const;
 
-export function resolvePromptCache(cfg: {
+// Whether this config's requests are marked. Every mark is the 5-minute one: a 1-hour write bills at
+// 2x the input rate against 1.25x, and the usage ledger records cache writes as one count priced at the
+// 5-minute rate, so a 1-hour mark would understate spend and the spend ceiling with it.
+export function promptCacheEnabled(cfg: {
   provider: string;
   model: string;
   promptCache?: PromptCacheMode;
-  promptCacheTtl?: PromptCacheTtl;
-  promptCacheConversationTtl?: PromptCacheTtl;
-}): PromptCachePolicy | null {
-  if (cfg.promptCache === "off") return null;
-  if (!promptCacheApplies(cfg.provider, cfg.model)) return null;
-  const prefixTtl = cfg.promptCacheTtl ?? "5m";
-  return {
-    prefixTtl,
-    // NOTE: the conversation follows the prefix unless set apart, so "1h" alone means 1h everywhere.
-    conversationTtl: cfg.promptCacheConversationTtl ?? prefixTtl,
-  };
+}): boolean {
+  return (
+    cfg.promptCache !== "off" && promptCacheApplies(cfg.provider, cfg.model)
+  );
 }
 
-// `{type: "ephemeral"}` IS the 5-minute TTL; the key is only written for 1h, so a default request
-// carries the same bytes the API documents.
-function mark(ttl: PromptCacheTtl): Record<string, unknown> {
-  return ttl === "1h"
-    ? { type: "ephemeral", ttl: "1h" }
-    : { type: "ephemeral" };
-}
+const MARK = { type: "ephemeral" } as const;
 
 type Block = Record<string, unknown>;
 
@@ -83,11 +65,11 @@ function markable(b: unknown): b is Block {
 
 // Marks the last markable block of a message's content, turning a plain string into one text block
 // (the same bytes the API reads for a string). True when a mark was placed.
-function markContent(msg: Block, ttl: PromptCacheTtl): boolean {
+function markContent(msg: Block): boolean {
   if (typeof msg.content === "string") {
     if (!msg.content.trim()) return false;
     msg.content = [
-      { type: "text", text: msg.content, cache_control: mark(ttl) },
+      { type: "text", text: msg.content, cache_control: { ...MARK } },
     ];
     return true;
   }
@@ -95,7 +77,7 @@ function markContent(msg: Block, ttl: PromptCacheTtl): boolean {
   for (let i = msg.content.length - 1; i >= 0; i--) {
     const b = msg.content[i];
     if (markable(b)) {
-      b.cache_control = mark(ttl);
+      b.cache_control = { ...MARK };
       return true;
     }
   }
@@ -112,61 +94,55 @@ function contentAsBlocks(messages: unknown): void {
       m.content = [{ type: "text", text: m.content }];
 }
 
-function markLastMessage(messages: unknown, ttl: PromptCacheTtl): void {
+function markLastMessage(messages: unknown): void {
   if (!Array.isArray(messages)) return;
   contentAsBlocks(messages);
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] as Block;
-    if (m && m.role !== "system" && markContent(m, ttl)) return;
+    if (m && m.role !== "system" && markContent(m)) return;
   }
 }
 
 // Anthropic messages API body: `tools`, `system` (string or blocks) and `messages`.
-export function markAnthropicBody(
-  body: Block,
-  policy: PromptCachePolicy,
-): Block {
+export function markAnthropicBody(body: Block): Block {
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     const lastTool = body.tools[body.tools.length - 1] as Block;
-    lastTool.cache_control = mark(policy.prefixTtl);
+    lastTool.cache_control = { ...MARK };
   }
   if (typeof body.system === "string" && body.system.trim()) {
     body.system = [
       {
         type: "text",
         text: body.system,
-        cache_control: mark(policy.prefixTtl),
+        cache_control: { ...MARK },
       },
     ];
   } else if (Array.isArray(body.system)) {
     for (let i = body.system.length - 1; i >= 0; i--) {
       const b = body.system[i];
       if (markable(b)) {
-        b.cache_control = mark(policy.prefixTtl);
+        b.cache_control = { ...MARK };
         break;
       }
     }
   }
-  markLastMessage(body.messages, policy.conversationTtl);
+  markLastMessage(body.messages);
   return body;
 }
 
 // Chat-completions body (OpenRouter): the system message carries the prefix mark, the last message
 // the conversation one. Tool definitions have no mark in this shape; they render before the system
 // message, so the system mark caches them too.
-export function markChatCompletionsBody(
-  body: Block,
-  policy: PromptCachePolicy,
-): Block {
+export function markChatCompletionsBody(body: Block): Block {
   if (!Array.isArray(body.messages)) return body;
   for (let i = body.messages.length - 1; i >= 0; i--) {
     const m = body.messages[i] as Block;
     if (m?.role === "system" || m?.role === "developer") {
-      markContent(m, policy.prefixTtl);
+      markContent(m);
       break;
     }
   }
-  markLastMessage(body.messages, policy.conversationTtl);
+  markLastMessage(body.messages);
   return body;
 }
 
@@ -174,7 +150,6 @@ export function markChatCompletionsBody(
 // untouched. The underlying fetch is read at call time, so a test (or another wrapper) that swaps
 // `globalThis.fetch` is still the one that sends.
 export function promptCacheFetch(
-  policy: PromptCachePolicy,
   shape: "anthropic" | "chat-completions",
   base: FetchFn = (input, init) => globalThis.fetch(input, init),
 ): FetchFn {
@@ -196,8 +171,8 @@ export function promptCacheFetch(
     } catch {
       return base(input, init);
     }
-    if (shape === "anthropic") markAnthropicBody(body, policy);
-    else markChatCompletionsBody(body, policy);
+    if (shape === "anthropic") markAnthropicBody(body);
+    else markChatCompletionsBody(body);
     return base(input, { ...init, body: JSON.stringify(body) });
   };
   return wrapped;

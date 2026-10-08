@@ -90,13 +90,9 @@ The plan can send a call to /v1/responses but cannot keep one off it. @langchain
 
 OpenAI caches a repeated prefix on its own. Anthropic caches only what the request marks with `cache_control`, so before #1149 every Claude turn paid the full input price for tools, system prompt and history on every call. `src/graph/prompt-cache.ts` places the marks on the request BODY, in a fetch wrapper handed to the SDK (`clientOptions.fetch` on `ChatAnthropic`, `configuration.fetch` on the OpenRouter client), because the body is the only place where tools, system and messages are in their final rendered order, which is what the cache matches on. Three marks, within the API's four: the last tool, the last system block (tools + system, the prefix every conversation of the agent shares), and the last markable block of the last message (moves forward each turn, so the next turn reads the whole history). Thinking blocks and empty text blocks refuse a mark and are skipped. Every string content is normalized to one text block, not only the marked one: otherwise a message is a string while it is last and a block list the turn after, and the prefix stops matching byte for byte.
 
-Per agent, in the model config (`modelConfigSchema`), editable on the General tab:
+Per agent, `promptCache` in the model config (`modelConfigSchema`), editable on the General tab: `auto` (default, marks placed) or `off` (the request goes out as before). Every mark is the 5-minute one. A 1-hour mark bills its write at 2x the input rate against 1.25x, and the usage ledger records cache writes as one count priced at the 5-minute rate, so offering 1 hour would understate the dashboard spend and the spend ceiling; it waits on the ledger keeping writes per TTL.
 
-- `promptCache`: `auto` (default, marks placed) or `off` (the request goes out as before).
-- `promptCacheTtl`: `5m` (default) or `1h` for the tools + system prefix. 1h costs 2x on write against 1.25x, and pays off when conversations of the agent are more than five minutes apart.
-- `promptCacheConversationTtl`: the history mark; unset follows the prefix TTL. The API requires a longer TTL to come before a shorter one, so 1h here with a 5m prefix is refused on write.
-
-The fields are refused on any provider other than `anthropic` and `openrouter`. On OpenRouter the marks are placed only when the model id starts with `anthropic/`; every other vendor behind it caches on its own or not at all.
+The field is refused on any provider other than `anthropic` and `openrouter`. On OpenRouter the marks are placed only when the model id starts with `anthropic/`; every other vendor behind it caches on its own or not at all.
 
 The prefix mark only hits while the system prompt renders the same bytes. `{{data_atual}}` changes once a day and the rounded time variables once per rounding window, and both break the system mark when they change; the tool mark still hits. `{{hora_atual_exata}}` changes every minute, which is why the editor suggests the rounded sibling.
 

@@ -2,7 +2,12 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
-import { isFlushHeld, isTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnReserved,
+  isFlushHeld,
+  isTurnInFlight,
+  markTurnReserved,
+} from "@/graph/inflight";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -175,14 +180,17 @@ async function personaOf(
 
 // Both keys a turn claims, the pair the delivery recovery asks: the conversation's, and the graph
 // thread's, also read off its row because the in-process Map cannot see another replica. A row that
-// cannot be read counts as held. The Map is asked again after the read, which is what decides.
-async function turnRunningOn(
+// cannot be read counts as held.
+async function turnKeysOf(
   tenantId: bigint,
   instanceId: bigint,
   conversationId: number,
   base: PrismaClient,
-): Promise<boolean> {
-  const handoffKey = chatwootThreadId(tenantId, instanceId, conversationId);
+): Promise<{
+  handoffKey: string;
+  graphKey: string;
+  contactInboxId: number | null;
+}> {
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findFirst({
       where: {
@@ -194,25 +202,26 @@ async function turnRunningOn(
     }),
   );
   const contactInboxId = row?.contactInboxId ?? null;
-  const graphKey = resolveGraphThreadId(
-    tenantId,
-    instanceId,
-    conversationId,
+  return {
+    handoffKey: chatwootThreadId(tenantId, instanceId, conversationId),
+    graphKey: resolveGraphThreadId(
+      tenantId,
+      instanceId,
+      conversationId,
+      contactInboxId,
+    ),
     contactInboxId,
+  };
+}
+
+// The in-process half, synchronous so it can be the last thing before a reservation.
+function turnBusyHere(keys: { handoffKey: string; graphKey: string }): boolean {
+  return (
+    isTurnInFlight(keys.handoffKey) ||
+    isTurnInFlight(keys.graphKey) ||
+    isFlushHeld(keys.handoffKey) ||
+    isFlushHeld(keys.graphKey)
   );
-  const busyHere = () =>
-    isTurnInFlight(handoffKey) ||
-    isTurnInFlight(graphKey) ||
-    isFlushHeld(handoffKey) ||
-    isFlushHeld(graphKey);
-  if (busyHere()) return true;
-  const held =
-    contactInboxId != null &&
-    (await turnOwnsThread(
-      { tenantId, instanceId, contactInboxId, graphThreadId: graphKey },
-      base,
-    ));
-  return held || busyHere();
 }
 
 // Markdown, which Chatwoot renders in a private note. The first line is what an operator scanning
@@ -274,8 +283,10 @@ export async function announceFailedTurn(params: {
     // Null when the ownership fence refused first, which leaves the first ask standing; a throw
     // fails closed, since the reason to ask again is a turn that may have started meanwhile.
     let lastAsk: "lost" | "not-lost" | "unreadable" | null = null;
-    const opened =
-      (await openForHumanQueue({
+    let reserved: { handoffKey: string; graphKey: string } | null = null;
+    let queued: Awaited<ReturnType<typeof openForHumanQueue>>;
+    try {
+      queued = await openForHumanQueue({
         gate: "failed-turn",
         conversationId,
         stillOurs: async () => {
@@ -310,17 +321,51 @@ export async function announceFailedTurn(params: {
           // A turn already running on the conversation (an operator's re-engage, a follow-up, a
           // flush) was started without a new message, so neither ask can see it; opening the
           // conversation would discard its reply. It may still answer, so nothing is announced.
-          if (await turnRunningOn(tenantId, instanceId, conversationId, base)) {
+          const keys = await turnKeysOf(
+            tenantId,
+            instanceId,
+            conversationId,
+            base,
+          );
+          const heldElsewhere =
+            keys.contactInboxId != null &&
+            (await turnOwnsThread(
+              {
+                tenantId,
+                instanceId,
+                contactInboxId: keys.contactInboxId,
+                graphThreadId: keys.graphKey,
+              },
+              base,
+            ));
+          if (heldElsewhere || turnBusyHere(keys)) {
             lastAsk = "not-lost";
             return false;
           }
-          // Last, so the only await between it and the toggle is the toggle's own.
           lastAsk = "unreadable";
           lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
-          return lastAsk === "lost";
+          if (lastAsk === "not-lost") return false;
+          // Asked again with nothing awaited before the reservation: a turn that started during the
+          // last ask is seen here, and one starting after defers on the reservation, held to the toggle.
+          if (turnBusyHere(keys)) {
+            lastAsk = "not-lost";
+            return false;
+          }
+          markTurnReserved(keys.handoffKey);
+          markTurnReserved(keys.graphKey);
+          reserved = keys;
+          return true;
         },
         client: async () => client,
-      })) === "opened";
+      });
+    } finally {
+      if (reserved !== null) {
+        const held: { handoffKey: string; graphKey: string } = reserved;
+        clearTurnReserved(held.handoffKey);
+        clearTurnReserved(held.graphKey);
+      }
+    }
+    const opened = queued === "opened";
     if (lastAsk === "not-lost") return "not-lost";
     if (lastAsk === "unreadable") return "failed";
     if (opened) {

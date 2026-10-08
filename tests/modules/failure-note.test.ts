@@ -17,7 +17,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import * as prepare from "@/graph/prepare";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
@@ -638,6 +642,72 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(outcome).toBe("not-lost");
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
     expect(await noticeAt(conv)).toBeNull();
+  });
+
+  test("a turn that starts during the last ask is seen before the toggle", async () => {
+    const conv = await seedConversation();
+    const key = `${tenantId}:${instanceId}:${conv}`;
+    let asks = 0;
+    let outcome: string;
+    try {
+      outcome = await announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => {
+          // The operator re-engages while the last ask is reading Chatwoot.
+          if (asks++ === 1) markTurnInFlight(key);
+          return { path: "job", deadLettered: true };
+        },
+        error: new Error("boom"),
+        base: appDb,
+      });
+    } finally {
+      clearTurnInFlight(key);
+    }
+    expect(outcome).toBe("not-lost");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("the toggle runs under a reservation on both keys, released after it", async () => {
+    const conv = await seedConversation();
+    const contactInboxId = 75_000 + conv;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { contactInboxId },
+    });
+    const conversationKey = `${tenantId}:${instanceId}:${conv}`;
+    const graphKey = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    const atToggle: boolean[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (String(input).endsWith(`/conversations/${conv}/toggle_status`)) {
+        // What a re-engage starting now would ask before it runs.
+        atToggle.push(
+          isTurnInFlight(conversationKey),
+          isTurnInFlight(graphKey),
+        );
+      }
+      return realFetch(input, init);
+    }) as typeof globalThis.fetch;
+    try {
+      await announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(atToggle).toEqual([true, true]);
+    expect(isTurnInFlight(conversationKey)).toBe(false);
+    expect(isTurnInFlight(graphKey)).toBe(false);
   });
 
   test("a turn another replica holds on the conversation's graph thread is not cancelled either", async () => {

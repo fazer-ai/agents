@@ -839,8 +839,8 @@ async function upsertInbox(
   // A payload positioned after the last change writes every field it states, so a field left out
   // cannot keep an older payload's value under the newer position. An unchanged payload does NOT move
   // the position (that is the write per delivery this function exists to remove), and an undated one
-  // writes only over a row never positioned. The placeholder is not a name the source stated, so the
-  // first real name replaces it at any position, and the position only ever moves forward.
+  // writes only over a row never positioned. A field the source never stated (the placeholder name, a
+  // null channel) takes the first stated value at any position, and the position only moves forward.
   await db.$executeRaw`
     UPDATE inboxes SET
       name = CASE
@@ -849,6 +849,7 @@ async function upsertInbox(
         ELSE name END,
       channel_type = CASE
         WHEN ${accepts} AND ${channel}::text IS NOT NULL THEN ${channel}::text
+        WHEN channel_type IS NULL AND ${channel}::text IS NOT NULL THEN ${channel}::text
         ELSE channel_type END,
       metadata_at = GREATEST(metadata_at, ${position}),
       updated_at = now()
@@ -858,6 +859,7 @@ async function upsertInbox(
           (${name}::text IS NOT NULL AND name IS DISTINCT FROM ${name}::text)
           OR (${channel}::text IS NOT NULL AND channel_type IS DISTINCT FROM ${channel}::text)))
         OR (name = ${placeholder} AND ${name}::text IS NOT NULL AND ${name}::text <> ${placeholder})
+        OR (channel_type IS NULL AND ${channel}::text IS NOT NULL)
       )`;
   return row.id;
 }

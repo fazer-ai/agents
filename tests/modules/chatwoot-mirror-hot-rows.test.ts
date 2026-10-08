@@ -441,6 +441,31 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     expect(named?.name).toBe("Vendas");
   });
 
+  test("an inbox first seen without its channel takes the first stated one, at any position", async () => {
+    const n = event({
+      convId: 345,
+      messageId: 345,
+      at: T0 + 50,
+      inboxId: 41,
+      inboxName: "Sem canal",
+    });
+    await mirror({ ...n, channel: null } as NormalizedChatwootEvent);
+    const [bare] = await inboxRow(41);
+    expect(bare?.channel_type).toBeNull();
+    await mirror(
+      event({
+        convId: 346,
+        messageId: 346,
+        at: T0 + 50,
+        inboxId: 41,
+        inboxName: "Sem canal",
+      }),
+    );
+    const [filled] = await inboxRow(41);
+    expect(filled?.channel_type).toBe("Channel::Whatsapp");
+    expect(filled?.name).toBe("Sem canal");
+  });
+
   test("a placeholder replaced by a newer name moves the position, so a late different name does not undo it", async () => {
     const n = normalizeChatwootEvent({
       event: "conversation_status_changed",

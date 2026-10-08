@@ -20,7 +20,10 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { readClaimedMessageIds } from "@/modules/debounce/watermark";
+import {
+  foreignReplyBoundary,
+  type ReplyIdentity,
+} from "@/modules/debounce/watermark";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import {
@@ -1329,35 +1332,16 @@ function owesAReply(row: {
   );
 }
 
-// Who answered, if a row did: public, outgoing or a template, not a reaction (the fork stores an
-// operator's emoji as a public outgoing row) and not an imported one (old history with new ids), the
-// exclusions the reply boundary makes (../debounce/watermark.ts, `foreignReplyBoundary`). A person or
-// the phone paired to the inbox answers everything before it; a bot's reply only what its turn took,
-// which is what the claim rows say (`botAnswered`).
-function answerFrom(
-  m: ReturnType<typeof parseChatwootMessages>[number],
-): "person" | "bot" | null {
-  if (
-    !(m.messageType === "outgoing" || m.messageType === "template") ||
-    m.private ||
-    m.isReaction ||
-    m.imported
-  )
-    return null;
-  if (m.senderType === "user" || m.externalSenderName !== null) return "person";
-  return m.senderType === "agent_bot" ? "bot" : null;
-}
-
-// Whether a turn of ours took the stranded message: a later bot reply can come from a turn that
-// left it out (an orphan below the burst it answered), and only the claim says which.
-async function botAnswered(params: {
+// Who we are on this conversation, for the reply boundary: our bot's Chatwoot id and the inbox's
+// WhatsApp provider, read off the mirror. Null when the mirror cannot say, and then no bot reply is
+// taken as somebody else's: ours, whose reply answers only what its turn took, is indistinguishable.
+async function replyIdentity(params: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
-  messageId: number;
   base: PrismaClient;
-}): Promise<boolean> {
-  const conv = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
+}): Promise<ReplyIdentity | null> {
+  const bound = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
       where: {
         tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -1366,27 +1350,29 @@ async function botAnswered(params: {
           chatwootConversationId: params.conversationId,
         },
       },
-      select: { id: true },
+      select: { inbox: { select: { agentId: true, provider: true } } },
     }),
   );
-  if (!conv) return false;
-  const claimed = await readClaimedMessageIds({
-    tenantId: params.tenantId,
-    conversationDbId: conv.id,
-    messageIds: [params.messageId],
-    base: params.base,
-  });
-  return claimed.has(params.messageId);
+  const agentId = bound?.inbox?.agentId;
+  if (!agentId) return null;
+  const managedBotId = await agentBotChatwootId(
+    params.tenantId,
+    params.instanceId,
+    agentId,
+    params.base,
+  );
+  return managedBotId === null
+    ? null
+    : { managedBotId, whatsappProvider: bound.inbox?.provider ?? null };
 }
 
 // How far past the stranded message the catch-up read walks before leaving the decision to the line.
 const SUPERSEDED_MAX_PAGES = 10;
 
 // Whether the conversation itself has moved past the stranded message, read live, because the row
-// cannot say: a later turn retires only the rows it ran over, and one still PENDING then, or whose
-// message was answered by another road (an operator's re-engage, a person replying), stays DEAD.
-// Two answers close it: a row after the message that `answerFrom` names (a sender-less
-// outgoing is Chatwoot's own, an away message, an automation, a survey, and answers nothing), or
+// cannot say: a later turn retires only the rows it ran over, and one still PENDING then, or one a
+// person answered, stays DEAD. Two answers close it: a reply past the delivery path's own boundary
+// (Chatwoot's sender-less outgoing, an away message, an automation, a survey, answers nothing), or
 // the conversation resolved. Null on anything the read cannot settle, which leaves the line as it
 // was: a page about an answered customer is noise, and silence about a waiting one is the loss.
 async function supersededLive(params: {
@@ -1411,14 +1397,25 @@ async function supersededLive(params: {
     // The catch-up read lists by id and stops at a page, so a reply behind a hundred notes or
     // customer messages is on a later one: walked until a reply or a short page, and bounded, since
     // a conversation that far ahead without one is left to the line as it was.
+    const identity = await replyIdentity(params);
     let cursor = params.messageId;
-    for (let page = 0; page < SUPERSEDED_MAX_PAGES; page++) {
+    for (let read = 0; read < SUPERSEDED_MAX_PAGES; read++) {
       const rows = parseChatwootMessages(
         await client.getMessages(params.conversationId, { after: cursor }),
       );
-      const after = rows.filter((m) => m.id > params.messageId).map(answerFrom);
-      if (after.includes("person")) return "answered";
-      if (after.includes("bot") && (await botAnswered(params)))
+      // The delivery path's own boundary: a person, another bot or the paired phone answers every
+      // message before its reply. Our bot's reply is not evidence here (a turn answers what it took,
+      // which a later reply cannot tell apart from an orphan it left out); the rows a turn ran over
+      // are retired by the turn itself (`retireCoveredDeliveries`).
+      const page = identity
+        ? rows
+        : rows.filter((m) => m.senderType !== "agent_bot");
+      if (
+        foreignReplyBoundary(
+          page,
+          identity ?? { managedBotId: null, whatsappProvider: null },
+        ) > params.messageId
+      )
         return "answered";
       if (rows.length < CATCH_UP_PAGE) return null;
       cursor = rows.reduce((max, m) => Math.max(max, m.id), cursor);

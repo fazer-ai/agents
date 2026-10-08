@@ -5052,6 +5052,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         externalSender?: string;
         reaction?: boolean;
         imported?: boolean;
+        // Which bot or person, by Chatwoot id. Defaults to one that is not our bot (AGENT_BOT_ID).
+        senderId?: number;
       };
       function afterPage(rows: After[]) {
         return {
@@ -5065,7 +5067,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             sender:
               m.sender === null || m.sender === undefined
                 ? null
-                : { id: 41, name: "x", type: m.sender },
+                : { id: m.senderId ?? 41, name: "x", type: m.sender },
             attachments: [],
             content_attributes: {
               ...(m.externalSender
@@ -5079,29 +5081,17 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
       // Spent on arrival, so the recovery itself refuses before any network and the only Chatwoot
       // read is the one this asks about.
-      // `claimed`: a turn of ours took the message, which is what makes our bot's later reply an
-      // answer to it.
       async function endedRow(
         convId: number,
         messageId: number,
-        over: { routeObserved?: boolean; claimed?: boolean } = {},
+        over: { routeObserved?: boolean } = {},
       ) {
-        const { claimed, ...rowOver } = over;
         const conv = await seedConversation(convId);
-        if (claimed)
-          await suDb.messageReplyClaim.create({
-            data: {
-              tenantId,
-              conversationId: conv.id,
-              messageId,
-              reason: "CLAIMED",
-            },
-          });
         const rowId = await seedDeadDelivery({
           conversationId: convId,
           inboundMessageId: messageId,
           attempts: MAX_RECOVERY_ATTEMPTS,
-          ...rowOver,
+          ...over,
         });
         return { conv, rowId };
       }
@@ -5112,15 +5102,12 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           (l.detail as Record<string, unknown> | null)?.supersededBy,
         ]);
 
-      test("a reply after the message, from a bot or a person, supersedes it", async () => {
+      test("a reply after the message, from a person or another bot, supersedes it", async () => {
         for (const [convId, messageId, reply] of [
           [28950, 29950, { sender: "agent_bot" }],
           [28951, 29951, { sender: "user" }],
-          [28962, 29962, { sender: null, externalSender: "Ana" }],
         ] as const) {
-          const { conv, rowId } = await endedRow(convId, messageId, {
-            claimed: reply.sender === "agent_bot",
-          });
+          const { conv, rowId } = await endedRow(convId, messageId);
           const stub = stubChatwoot({
             caughtUp: afterPage([{ id: messageId + 3, type: 1, ...reply }]),
           });
@@ -5177,10 +5164,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       test("an observer's lost memory on a conversation that moved on is superseded too", async () => {
         const { conv, rowId } = await endedRow(28957, 29957, {
           routeObserved: true,
-          claimed: true,
         });
         const stub = stubChatwoot({
-          caughtUp: afterPage([{ id: 29958, type: 1, sender: "agent_bot" }]),
+          caughtUp: afterPage([{ id: 29958, type: 1, sender: "user" }]),
         });
         await runRecoveryJob(
           jobFor({ deliveryRowId: String(rowId) }),
@@ -5190,6 +5176,41 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         expect(await outcomes(conv.id)).toEqual([
           ["info", "superseded", "answered"],
         ]);
+      });
+
+      // On a provider that reserves echo ids, the paired phone's marker is a person answering.
+      test("a reply typed on the paired phone supersedes it where the provider reserves echo ids", async () => {
+        await suDb.inbox.update({
+          where: { id: inboxDbId },
+          data: { provider: "baileys" },
+        });
+        try {
+          const { conv, rowId } = await endedRow(28975, 29975);
+          await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(
+              stubChatwoot({
+                caughtUp: afterPage([
+                  {
+                    id: 29976,
+                    type: 1,
+                    sender: null,
+                    externalSender: "WhatsApp",
+                  },
+                ]),
+              }),
+            ),
+          );
+          expect(await outcomes(conv.id)).toEqual([
+            ["info", "superseded", "answered"],
+          ]);
+        } finally {
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { provider: null },
+          });
+        }
       });
 
       // A template a person sends is an answer; an emoji reaction and an imported row are not, though
@@ -5229,7 +5250,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // The catch-up read stops at a hundred rows, so a reply behind a full page of customer
       // messages is on the next one.
       test("a reply past a full catch-up page still supersedes it", async () => {
-        const { conv, rowId } = await endedRow(28969, 29969, { claimed: true });
+        const { conv, rowId } = await endedRow(28969, 29969);
         const stub = stubChatwoot({});
         const inner = stub.makeClient;
         const cursors: number[] = [];
@@ -5249,7 +5270,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
                       sender: "contact" as const,
                     })),
                   );
-                return afterPage([{ id: 30200, type: 1, sender: "agent_bot" }]);
+                return afterPage([{ id: 30200, type: 1, sender: "user" }]);
               },
             } as unknown as ChatwootClient;
           },
@@ -5265,24 +5286,62 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         ]);
       });
 
-      // Our bot's later reply answers only what its turn took: a message the turn left out (an orphan
-      // below the burst it answered) has no claim, and stays unanswered.
-      test("our bot's reply without a claim on the message does not supersede it", async () => {
-        const { conv, rowId } = await endedRow(28970, 29970);
+      // Our bot's later reply answers only what its turn took, and an orphan the turn left out looks
+      // the same from here; so does the paired phone's marker on a provider that does not reserve
+      // echo ids (our own send's echo). And where the mirror cannot say which bot is ours, no bot
+      // reply counts. Each stays unanswered.
+      test("our bot's reply, an untrusted phone echo, or a bot on an unmirrored conversation does not supersede it", async () => {
+        const { conv: ours, rowId: a } = await endedRow(28970, 29970);
+        const { conv: echo, rowId: b } = await endedRow(28971, 29972);
+        for (const [rowId, reply] of [
+          [a, { sender: "agent_bot" as const, senderId: AGENT_BOT_ID }],
+          [b, { sender: null, externalSender: "WhatsApp" }],
+        ] as const) {
+          await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(
+              stubChatwoot({
+                caughtUp: afterPage([{ id: 29990, type: 1, ...reply }]),
+              }),
+            ),
+          );
+        }
+        for (const conv of [ours, echo])
+          expect(await outcomes(conv.id)).toEqual([
+            ["error", "unanswered", undefined],
+          ]);
+        // Unmirrored: no conversation row, so the line names none; read it by the ledger row.
+        const unmirrored = await seedDeadDelivery({
+          conversationId: 28973,
+          inboundMessageId: 29973,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+        });
         await runRecoveryJob(
-          jobFor({ deliveryRowId: String(rowId) }),
+          jobFor({ deliveryRowId: String(unmirrored) }),
           appDb,
           depsWith(
             stubChatwoot({
               caughtUp: afterPage([
-                { id: 29971, type: 1, sender: "agent_bot" },
+                { id: 29974, type: 1, sender: "agent_bot" },
               ]),
             }),
           ),
         );
-        expect(await outcomes(conv.id)).toEqual([
-          ["error", "unanswered", undefined],
-        ]);
+        const lines = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "delivery",
+            detail: { path: ["deliveryRowId"], equals: String(unmirrored) },
+          },
+          select: { level: true, detail: true },
+        });
+        expect(
+          lines.map((l) => [
+            l.level,
+            (l.detail as Record<string, unknown> | null)?.outcome,
+          ]),
+        ).toEqual([["error", "unanswered"]]);
       });
 
       // A reply from BEFORE the message answered something else. A read that ignored `after` and
@@ -5321,9 +5380,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // Once per row across the outcomes: a re-run, and the dead-letter hook (which builds its own
       // client and here cannot read the account), find the row decided and add nothing.
       test("a superseded row stays decided through a re-run and its dead letter", async () => {
-        const { conv, rowId } = await endedRow(28960, 29960, { claimed: true });
+        const { conv, rowId } = await endedRow(28960, 29960);
         const stub = stubChatwoot({
-          caughtUp: afterPage([{ id: 29961, type: 1, sender: "agent_bot" }]),
+          caughtUp: afterPage([{ id: 29961, type: 1, sender: "user" }]),
         });
         for (let run = 0; run < 2; run++)
           await runRecoveryJob(

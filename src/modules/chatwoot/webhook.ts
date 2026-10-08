@@ -5116,8 +5116,8 @@ export async function processChatwootDelivery(
       // turn must not strand the delivery. runAgentTurn no-ops for non-incoming-message events and
       // inboxes with no Agent configured.
       if (!armed) {
-        // Past this a tool may have acted, so the turn is not one to run again on its own.
-        let turnReachedModel = false;
+        // Set when a tool call starts: past it the turn may have acted, and is not one to run again.
+        let toolStarted = false;
         try {
           // Whether the message ended up in the thread, reported by the runtime and written there, not
           // carried to the settlement: a TTS or send failing after the invoke jumps to the catch, tx2 closes
@@ -5159,8 +5159,8 @@ export async function processChatwootDelivery(
           // throws today, but the contract must not rest on three unrelated call sites.
           const outcome = await runAgentTurn({
             onFoldedIn,
-            onReachingModel: () => {
-              turnReachedModel = true;
+            onToolStart: () => {
+              toolStarted = true;
             },
             tenantId: params.tenantId,
             instanceId: params.instanceId,
@@ -5267,13 +5267,13 @@ export async function processChatwootDelivery(
             convLabel,
             err instanceof Error ? err.message : String(err),
           );
-          // A live turn the pool never gave a connection to, before anything could act, is not a turn
+          // A live turn the pool never gave a connection to, before any tool could act, is not a turn
           // that failed: the same turn a little later answers it, so it goes to the delivery's
-          // recovery, which retries and hands over when it gives up. Past the model a tool may have
-          // run, and a replay would repeat it, so that one fails here like any other error.
+          // recovery, which retries and hands over when it gives up. A model call alone has no effect
+          // outside; once a tool started, a replay could repeat it, so that one fails here like any other.
           const owedToRecovery =
             claimFrom === "PENDING" &&
-            !turnReachedModel &&
+            !toolStarted &&
             isTransactionNeverStarted(err);
           // NOTE: Surface the failure to the operator (sanitized) so they can re-engage.
           if (n.conversationId !== null) {

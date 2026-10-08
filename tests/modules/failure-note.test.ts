@@ -7,6 +7,12 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import {
+  BaseChatModel,
+  type BindToolsInput,
+} from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
@@ -332,6 +338,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     globalThis.fetch = realFetch;
     if (!dbUp) return;
     for (const table of [
+      "agent_tool_selections",
       "scheduler_jobs",
       "execution_logs",
       "chatwoot_webhook_deliveries",
@@ -1084,6 +1091,33 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     );
   }
 
+  // Asks for one tool, then fails the way it is told: the shape of a turn whose pool gave out after a
+  // tool already ran.
+  class ToolThenFailModel extends BaseChatModel {
+    calls = 0;
+    constructor(
+      private readonly toolName: string,
+      private readonly error: unknown,
+    ) {
+      super({});
+    }
+    _llmType() {
+      return "fake-tool-then-fail";
+    }
+    override bindTools(_tools: BindToolsInput[]) {
+      return this;
+    }
+    async _generate(): Promise<ChatResult> {
+      this.calls += 1;
+      if (this.calls > 1) throw this.error;
+      const message = new AIMessage({
+        content: "",
+        tool_calls: [{ name: this.toolName, args: {}, id: "call-1" }],
+      });
+      return { generations: [{ text: "", message }] };
+    }
+  }
+
   function incoming(conv: number, messageId: number) {
     const n = normalizeChatwootEvent({
       event: "message_created",
@@ -1206,21 +1240,36 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 
-  test("a pool refusal after the model was reached is not replayed: a tool may already have acted", async () => {
+  test("a pool refusal after a tool started is not replayed: the tool may already have acted", async () => {
     const conv = await seedConversation();
     const deliveryId = `failnote-pool-late-${process.pid}-${conv}`;
-    await recordAndProcessChatwootDelivery({
-      tenantId,
-      instanceId,
-      deliveryId,
-      agentBotId: 9,
-      normalized: incoming(conv, 5_200 + conv),
-      base: appDb,
-      deps: {
-        makeModel: () => new FailingModel(neverStarted()),
-        sleep: async () => {},
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "NATIVE",
+        enabledTools: ["get_current_time"],
+        knowledgeBaseIds: [],
       },
+      select: { id: true },
     });
+    try {
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: 9,
+        normalized: incoming(conv, 5_200 + conv),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new ToolThenFailModel("get_current_time", neverStarted()),
+          sleep: async () => {},
+        },
+      });
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+    }
     const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
       where: { tenantId, deliveryId },
       select: { id: true, status: true },
@@ -1234,6 +1283,33 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(
       writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
     ).toEqual(["toggle", "note"]);
+  });
+
+  test("a pool refusal after the model but before any tool still goes to recovery", async () => {
+    const conv = await seedConversation();
+    const deliveryId = `failnote-pool-model-${process.pid}-${conv}`;
+    const model = new FailingModel(neverStarted());
+    await recordAndProcessChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryId,
+      agentBotId: 9,
+      normalized: incoming(conv, 5_300 + conv),
+      base: appDb,
+      deps: { makeModel: () => model, sleep: async () => {} },
+    });
+    expect(model.calls).toBeGreaterThan(0);
+    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { tenantId, deliveryId },
+      select: { id: true, status: true },
+    });
+    expect(row.status).toBe("DEAD");
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: deliveryRecoveryDedupeKey(row.id) },
+      }),
+    ).toBe(1);
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 
   test("a live turn that failed for any other reason is handed over and its row closes", async () => {

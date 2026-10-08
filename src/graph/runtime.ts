@@ -315,10 +315,9 @@ export interface RunLoadedTurnParams {
   // the invoke, the output guardrail `blocked` after it). The caller writes it to the ledger here,
   // since a later TTS or send failure skips the settlement. Awaited and best-effort.
   onFoldedIn?: () => void | Promise<void>;
-  // Called right before the first step that can act outside the database, the input guardrail's
-  // screening, which every path to the graph's invoke passes. Past it a tool may have run, so a
-  // caller must not run the turn again on its own.
-  onReachingModel?: () => void;
+  // Called as each tool call starts, before it can act. Past the first, the turn may have acted
+  // outside the database, so a caller must not run it again on its own; a model call alone has not.
+  onToolStart?: () => void;
   // What the authorization endpoint said about this contact on the check that let THIS turn happen,
   // or null when the gate is off (or this path has no verdict of its own). Required, not optional:
   // every path that reaches here asks the gate immediately before it, and a path that forgot to
@@ -1223,6 +1222,7 @@ async function runTurnBody(
     tools,
     turnDelivered,
     handedOff: () => handoffState.completed === true,
+    ...(params.onToolStart ? { onToolStart: params.onToolStart } : {}),
   });
 
   // One guardrail gate, shared with the proactive path. A trip logs a `guardrail` line and
@@ -1862,7 +1862,6 @@ async function runTurnBody(
 
     // Input guardrail, before the agent runs. A trip sends the template or a safe reply, or
     // stays silent; anything short of a trip proceeds, including a screening that could not run.
-    params.onReachingModel?.();
     const inGuard = await runGuardrail("input", text);
     if (inGuard.kind !== "not-run") reachedModel = true;
     // NOTE: Asked after the screening's model call, since its silent branch returns "blocked", which
@@ -2679,8 +2678,8 @@ async function runTurnBody(
 export interface RunAgentTurnParams {
   // See `RunLoadedTurnParams.onFoldedIn`; forwarded verbatim.
   onFoldedIn?: () => void | Promise<void>;
-  // See `RunLoadedTurnParams.onReachingModel`; forwarded verbatim.
-  onReachingModel?: () => void;
+  // See `RunLoadedTurnParams.onToolStart`; forwarded verbatim.
+  onToolStart?: () => void;
   tenantId: bigint;
   instanceId: bigint;
   agentBotId: number | null;
@@ -2895,9 +2894,7 @@ export async function runAgentTurn(
 
   const outcome = await runLoadedTurn({
     ...(params.onFoldedIn ? { onFoldedIn: params.onFoldedIn } : {}),
-    ...(params.onReachingModel
-      ? { onReachingModel: params.onReachingModel }
-      : {}),
+    ...(params.onToolStart ? { onToolStart: params.onToolStart } : {}),
     // NOTE: The direct entry has nowhere to defer and a customer waiting, so it waits out a turn
     // already on the thread; joining it would send two replies, the second undoing the first's
     // channel.

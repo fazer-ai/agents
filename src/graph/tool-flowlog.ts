@@ -128,6 +128,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   // (playground, observe runner), and absent is not `false`: the reader treats it as unknown.
   private readonly turnDelivered?: () => boolean;
   private readonly handedOff?: () => boolean;
+  private readonly onToolStart?: () => void;
   private readonly starts = new Map<
     string,
     { tool: string; at: number; args: unknown }
@@ -151,12 +152,15 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       turnDelivered?: () => boolean;
       // Whether this turn's transfer to a person actually happened (`handoffState.completed`).
       handedOff?: () => boolean;
+      // Told as each tool call starts, before it can act.
+      onToolStart?: () => void;
     } = {},
   ) {
     super();
     this.flow = flow;
     this.turnDelivered = opts.turnDelivered;
     this.handedOff = opts.handedOff;
+    this.onToolStart = opts.onToolStart;
     this.logValues = opts.logValues === true;
     this.describe = this.logValues ? (value) => value : describeShape;
     this.declaredKeys = declaredKeysByTool(opts.tools ?? []);
@@ -172,6 +176,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     runName?: string,
   ): void {
     const tool = runName && runName.length > 0 ? runName : "tool";
+    this.onToolStart?.();
     this.starts.set(runId, {
       tool,
       at: Date.now(),

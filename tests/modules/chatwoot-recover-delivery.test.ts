@@ -4,6 +4,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import {
   clearTurnInFlight,
@@ -5035,6 +5036,476 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect((await deliveryLines(conv.id)).map((l) => l.level)).toEqual([
         "error",
       ]);
+    });
+
+    // A row stays DEAD while its conversation moves on: a later turn retires only the rows it ran
+    // over, and a re-engage or a person replying retires none. So "unanswered" is asked of the
+    // conversation, live, before it is said: answered or resolved after the message is `superseded`,
+    // at `info`, and pages nobody.
+    describe("a conversation that moved on is not reported unanswered", () => {
+      type After = {
+        id: number;
+        type: 0 | 1 | 2 | 3;
+        private?: boolean;
+        sender?: "contact" | "user" | "agent_bot" | null;
+        // A person answering on the phone paired to the inbox: the fork stores the echo sender-less
+        // and names them here.
+        externalSender?: string;
+        reaction?: boolean;
+        imported?: boolean;
+        // Which bot or person, by Chatwoot id. Defaults to one that is not our bot (AGENT_BOT_ID).
+        senderId?: number;
+      };
+      function afterPage(rows: After[]) {
+        return {
+          payload: rows.map((m) => ({
+            id: m.id,
+            content: "texto",
+            message_type: m.type,
+            private: m.private === true,
+            inbox_id: CHATWOOT_INBOX_ID,
+            created_at: SENT_AT,
+            sender:
+              m.sender === null || m.sender === undefined
+                ? null
+                : { id: m.senderId ?? 41, name: "x", type: m.sender },
+            attachments: [],
+            content_attributes: {
+              ...(m.externalSender
+                ? { external_sender_name: m.externalSender }
+                : {}),
+              ...(m.reaction ? { is_reaction: true } : {}),
+              ...(m.imported ? { imported: true } : {}),
+            },
+          })),
+        };
+      }
+      // Spent on arrival, so the recovery itself refuses before any network and the only Chatwoot
+      // read is the one this asks about.
+      async function endedRow(
+        convId: number,
+        messageId: number,
+        over: { routeObserved?: boolean; routeAgentBotId?: number } = {},
+      ) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+          ...over,
+        });
+        return { conv, rowId };
+      }
+      const outcomes = async (convDbId: bigint) =>
+        (await deliveryLines(convDbId)).map((l) => [
+          l.level,
+          (l.detail as Record<string, unknown> | null)?.outcome,
+          (l.detail as Record<string, unknown> | null)?.supersededBy,
+        ]);
+
+      test("a reply after the message, from a person or another bot, supersedes it", async () => {
+        for (const [convId, messageId, reply] of [
+          [28950, 29950, { sender: "agent_bot" }],
+          [28951, 29951, { sender: "user" }],
+        ] as const) {
+          const { conv, rowId } = await endedRow(convId, messageId);
+          const stub = stubChatwoot({
+            caughtUp: afterPage([{ id: messageId + 3, type: 1, ...reply }]),
+          });
+          const result = await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(stub),
+          );
+          expect(result.outcome).toBe("done");
+          expect(await outcomes(conv.id)).toEqual([
+            ["info", "superseded", "answered"],
+          ]);
+        }
+      });
+
+      test("a resolved conversation supersedes it, with the customer's message last", async () => {
+        const { conv, rowId } = await endedRow(28952, 29952);
+        const stub = stubChatwoot({
+          conv: { status: "resolved" },
+          caughtUp: afterPage([]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "resolved"],
+        ]);
+      });
+
+      // What does NOT answer: a note, an activity, and Chatwoot's own sender-less outgoing (an away
+      // message, an automation, a survey). The customer is still waiting, and the page stays.
+      test("a note, an activity or a sender-less outgoing after it leaves it unanswered", async () => {
+        const { conv, rowId } = await endedRow(28953, 29953);
+        const stub = stubChatwoot({
+          caughtUp: afterPage([
+            { id: 29954, type: 1, private: true, sender: "user" },
+            { id: 29955, type: 2 },
+            { id: 29956, type: 1, sender: null },
+          ]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+        expect(await ledger(rowId)).toMatchObject({ status: "DEAD" });
+      });
+
+      test("an observer's lost memory on a conversation that moved on is superseded too", async () => {
+        const { conv, rowId } = await endedRow(28957, 29957, {
+          routeObserved: true,
+        });
+        const stub = stubChatwoot({
+          caughtUp: afterPage([{ id: 29958, type: 1, sender: "user" }]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+      });
+
+      // On a provider that reserves echo ids, the paired phone's marker is a person answering.
+      test("a reply typed on the paired phone supersedes it where the provider reserves echo ids", async () => {
+        await suDb.inbox.update({
+          where: { id: inboxDbId },
+          data: { provider: "baileys" },
+        });
+        try {
+          const { conv, rowId } = await endedRow(28975, 29975);
+          await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(
+              stubChatwoot({
+                caughtUp: afterPage([
+                  {
+                    id: 29976,
+                    type: 1,
+                    sender: null,
+                    externalSender: "WhatsApp",
+                  },
+                ]),
+              }),
+            ),
+          );
+          expect(await outcomes(conv.id)).toEqual([
+            ["info", "superseded", "answered"],
+          ]);
+        } finally {
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { provider: null },
+          });
+        }
+      });
+
+      // A template a person sends is an answer; an emoji reaction and an imported row are not, though
+      // both are public outgoing rows with ids above the message.
+      test("a template answers it; a reaction or an imported row does not", async () => {
+        const { conv: answered, rowId: a } = await endedRow(28964, 29964);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(a) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([{ id: 29965, type: 3, sender: "user" }]),
+            }),
+          ),
+        );
+        expect(await outcomes(answered.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+        const { conv: notAnswered, rowId: b } = await endedRow(28966, 29966);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(b) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([
+                { id: 29967, type: 1, sender: "user", reaction: true },
+                { id: 29968, type: 1, sender: "user", imported: true },
+              ]),
+            }),
+          ),
+        );
+        expect(await outcomes(notAnswered.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // The catch-up read stops at a hundred rows, so a reply behind a full page of customer
+      // messages is on the next one.
+      test("a reply past a full catch-up page still supersedes it", async () => {
+        const { conv, rowId } = await endedRow(28969, 29969);
+        const stub = stubChatwoot({});
+        const inner = stub.makeClient;
+        const cursors: number[] = [];
+        const deps = {
+          ...depsWith(stub),
+          makeClient: async (...a: Parameters<Stub["makeClient"]>) => {
+            const client = await inner(...a);
+            return {
+              ...client,
+              getMessages: async (_c: number, o?: { after?: number }) => {
+                cursors.push(o?.after ?? -1);
+                if (o?.after === 29969)
+                  return afterPage(
+                    Array.from({ length: 100 }, (_, i) => ({
+                      id: 30000 + i,
+                      type: 0 as const,
+                      sender: "contact" as const,
+                    })),
+                  );
+                return afterPage([{ id: 30200, type: 1, sender: "user" }]);
+              },
+            } as unknown as ChatwootClient;
+          },
+        };
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          deps,
+        );
+        expect(cursors).toEqual([29969, 30099]);
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+      });
+
+      // Our bot's later reply answers only what its turn took, and an orphan the turn left out looks
+      // the same from here; so does the paired phone's marker on a provider that does not reserve
+      // echo ids (our own send's echo). And where the mirror cannot say which bot is ours, no bot
+      // reply counts. Each stays unanswered.
+      test("our bot's reply, an untrusted phone echo, or a bot on an unmirrored conversation does not supersede it", async () => {
+        const { conv: ours, rowId: a } = await endedRow(28970, 29970);
+        const { conv: echo, rowId: b } = await endedRow(28971, 29972);
+        for (const [rowId, reply] of [
+          [a, { sender: "agent_bot" as const, senderId: AGENT_BOT_ID }],
+          [b, { sender: null, externalSender: "WhatsApp" }],
+        ] as const) {
+          await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(
+              stubChatwoot({
+                caughtUp: afterPage([{ id: 29990, type: 1, ...reply }]),
+              }),
+            ),
+          );
+        }
+        for (const conv of [ours, echo])
+          expect(await outcomes(conv.id)).toEqual([
+            ["error", "unanswered", undefined],
+          ]);
+        // Unmirrored: no conversation row, so the line names none; read it by the ledger row.
+        const unmirrored = await seedDeadDelivery({
+          conversationId: 28973,
+          inboundMessageId: 29973,
+          attempts: MAX_RECOVERY_ATTEMPTS,
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(unmirrored) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([
+                { id: 29974, type: 1, sender: "agent_bot" },
+              ]),
+            }),
+          ),
+        );
+        // flowlog-scope: tenant-wide. The line names its ledger row, whose id is this test's alone.
+        const lines = await flowLogRows(suDb, {
+          where: {
+            tenantId,
+            stage: "delivery",
+            detail: { path: ["deliveryRowId"], equals: String(unmirrored) },
+          },
+          select: { level: true, detail: true },
+        });
+        expect(
+          lines.map((l) => [
+            l.level,
+            (l.detail as Record<string, unknown> | null)?.outcome,
+          ]),
+        ).toEqual([["error", "unanswered"]]);
+      });
+
+      // A reply from BEFORE the message answered something else. A read that ignored `after` and
+      // handed back the newest page would carry it, and it must not count.
+      test("a reply older than the message does not supersede it", async () => {
+        const { conv, rowId } = await endedRow(28963, 29963);
+        const stub = stubChatwoot({
+          caughtUp: afterPage([
+            { id: 29900, type: 1, sender: "user" },
+            { id: 29963, type: 0, sender: "contact" },
+          ]),
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // An account it cannot read decides nothing, so the line is the one it always was.
+      test("a conversation it cannot read is still reported unanswered", async () => {
+        const { conv, rowId } = await endedRow(28959, 29959);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stubChatwoot({ throwOnRead: true })),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // The bot the delivery arrived on is ours even after the inbox moved to another bot: its later
+      // reply answers what its turn took, not the stranded message.
+      test("the delivery's own route bot does not answer after the inbox was rebound", async () => {
+        const { conv, rowId } = await endedRow(28979, 29984, {
+          routeAgentBotId: 12,
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([
+                { id: 29985, type: 1, sender: "agent_bot", senderId: 12 },
+              ]),
+            }),
+          ),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // An inbox with no agent bound (monitoring only, or unbound since) still knows its provider:
+      // the paired phone answers there, while no bot reply can be told from ours.
+      test("the provider stands without a bound agent, and bots still do not answer", async () => {
+        await suDb.inbox.update({
+          where: { id: inboxDbId },
+          data: { provider: "baileys", agentId: null },
+        });
+        try {
+          for (const [convId, messageId, reply, outcome] of [
+            [28976, 29977, { externalSender: "WhatsApp" }, "superseded"],
+            [28977, 29980, { sender: "agent_bot", senderId: 77 }, "unanswered"],
+          ] as const) {
+            const { conv, rowId } = await endedRow(convId, messageId);
+            await runRecoveryJob(
+              jobFor({ deliveryRowId: String(rowId) }),
+              appDb,
+              depsWith(
+                stubChatwoot({
+                  caughtUp: afterPage([
+                    { id: messageId + 1, type: 1, sender: null, ...reply },
+                  ]),
+                }),
+              ),
+            );
+            expect((await outcomes(conv.id)).map((o) => o[1])).toEqual([
+              outcome,
+            ]);
+          }
+        } finally {
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { provider: null, agentId: agentDbId },
+          });
+        }
+      });
+
+      // The dead-letter hooks run one after another on the scheduler's tick, before it claims
+      // anything and with no deadline, so the hook's line is written without reading the account.
+      test("the dead-letter hook does not read the conversation", async () => {
+        const { conv, rowId } = await endedRow(28978, 29982);
+        const hook = getDeadLetterHandler("DELIVERY_RECOVERY");
+        if (!hook)
+          throw new Error("the recovery's dead-letter hook is not registered");
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status: "DEAD",
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true, dedupeKey: true },
+        });
+        const realFetch = globalThis.fetch;
+        const privateBefore = config.ssrf.allowPrivateTargets;
+        const asked: string[] = [];
+        config.ssrf.allowPrivateTargets = true;
+        globalThis.fetch = (async (input: RequestInfo | URL) => {
+          asked.push(String(input));
+          return Response.json({ id: 28978, status: "resolved", payload: [] });
+        }) as typeof globalThis.fetch;
+        try {
+          await hook(
+            {
+              id: job.id,
+              tenantId,
+              kind: "DELIVERY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              dedupeKey: job.dedupeKey,
+              attempts: 5,
+              claimSeq: job.claimSeq,
+            },
+            "recovery: the Chatwoot account could not be read",
+            appDb,
+          );
+        } finally {
+          globalThis.fetch = realFetch;
+          config.ssrf.allowPrivateTargets = privateBefore;
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+        expect(asked).toEqual([]);
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // Once per row across the outcomes: a re-run, and the dead-letter hook (which builds its own
+      // client and here cannot read the account), find the row decided and add nothing.
+      test("a superseded row stays decided through a re-run and its dead letter", async () => {
+        const { conv, rowId } = await endedRow(28960, 29960);
+        const stub = stubChatwoot({
+          caughtUp: afterPage([{ id: 29961, type: 1, sender: "user" }]),
+        });
+        for (let run = 0; run < 2; run++)
+          await runRecoveryJob(
+            jobFor({ deliveryRowId: String(rowId) }),
+            appDb,
+            depsWith(stub),
+          );
+        await announceUnanswered(tenantId, rowId, appDb);
+        expect(await outcomes(conv.id)).toEqual([
+          ["info", "superseded", "answered"],
+        ]);
+      });
     });
 
     test("a recovery that is still coming, or a row someone else took, writes no unanswered line", async () => {

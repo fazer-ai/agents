@@ -1380,6 +1380,7 @@ async function supersededLive(params: {
   instanceId: bigint;
   conversationId: number;
   messageId: number;
+  routeBotId: number | null;
   base: PrismaClient;
   makeClient?: RuntimeDeps["makeClient"];
 }): Promise<"answered" | "resolved" | null> {
@@ -1407,10 +1408,12 @@ async function supersededLive(params: {
       // message before its reply. Our bot's reply is not evidence here (a turn answers what it took,
       // which a later reply cannot tell apart from an orphan it left out); the rows a turn ran over
       // are retired by the turn itself (`retireCoveredDeliveries`).
-      const page =
-        identity.managedBotId !== null
-          ? rows
-          : rows.filter((m) => m.senderType !== "agent_bot");
+      // The delivery's own route bot is ours as well, also after the inbox was rebound to another.
+      const page = rows.filter((m) =>
+        m.senderType !== "agent_bot"
+          ? true
+          : identity.managedBotId !== null && m.senderId !== params.routeBotId,
+      );
       if (foreignReplyBoundary(page, identity) > params.messageId)
         return "answered";
       if (rows.length < CATCH_UP_PAGE) return null;
@@ -1508,6 +1511,7 @@ export async function announceUnanswered(
             instanceId: row.chatwootInstanceId,
             conversationId: row.conversationId,
             messageId: row.inboundMessageId,
+            routeBotId: row.routeAgentBotId,
             base,
             makeClient: opts.makeClient,
           })

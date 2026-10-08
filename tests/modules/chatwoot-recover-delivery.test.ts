@@ -5085,7 +5085,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       async function endedRow(
         convId: number,
         messageId: number,
-        over: { routeObserved?: boolean } = {},
+        over: { routeObserved?: boolean; routeAgentBotId?: number } = {},
       ) {
         const conv = await seedConversation(convId);
         const rowId = await seedDeadDelivery({
@@ -5373,6 +5373,28 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           jobFor({ deliveryRowId: String(rowId) }),
           appDb,
           depsWith(stubChatwoot({ throwOnRead: true })),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
+      // The bot the delivery arrived on is ours even after the inbox moved to another bot: its later
+      // reply answers what its turn took, not the stranded message.
+      test("the delivery's own route bot does not answer after the inbox was rebound", async () => {
+        const { conv, rowId } = await endedRow(28979, 29984, {
+          routeAgentBotId: 12,
+        });
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([
+                { id: 29985, type: 1, sender: "agent_bot", senderId: 12 },
+              ]),
+            }),
+          ),
         );
         expect(await outcomes(conv.id)).toEqual([
           ["error", "unanswered", undefined],

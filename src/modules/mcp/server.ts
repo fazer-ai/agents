@@ -11,7 +11,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import {
-  BEHAVIOR_PATCH_SHAPE,
+  BEHAVIOR_PATCH_ARGS_SHAPE,
   type BehaviorPatchArgs,
 } from "@/modules/agents/settings-schema";
 import { exportAgent } from "@/modules/agents/transfer";
@@ -1489,7 +1489,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           "Patch an agent's BEHAVIOR config. Each block is a PARTIAL patch MERGED into the existing settings (untouched keys preserved) and re-validated by the runtime readers, which CLAMP rather than refuse: a number outside its band is stored at the nearest end, and a value they cannot use at all is stored as the block's default. Previews a normalized diff and applies NOTHING unless dry_run is false \u2014 read the diff, it is where a clamp becomes visible. credentialRef accepts a vault entry NAME or a stable vault:<id> ref (use vault:<id> when several entries share a name). The fields, choices and ranges of every block are in this tool's SCHEMA; what each block does, and what it costs, is in docs/ (tts, stt, split, service-window, channel-redirect, graph, logs, chatwoot). REFUSED, as opposed to clamped: operator free text over its cap is refused, not trimmed, on the preview as well as the apply \u2014 handoff.instructions 1500, followUp step instructions 2000, availability.awayMessage 2000, vision.extractionPrompt 4000. Also refused: a contactFields.writable field outside contactFields.context (the stored one when omitted). Only text this write INTRODUCES or CHANGES, so re-sending a stored over-cap value untouched is not a refusal. SAVED BUT DEAD, as opposed to refused: a tts block that ends up carrying normalizeModel or normalizeCredentialRef with no normalizeProvider (even the agent's own value) is stored without complaint and the rewrite NEVER RUNS \u2014 a model id and a key belong to the vendor they were picked from, so name it. On memory.compaction that same mistake, or a provider other than the agent's with no credentialRef of its own, stops the SUMMARISER instead and the thread stays raw. Same shape: an availability.awayMessage carrying {proximo_atendimento}/{next_open} is WITHHELD ENTIRELY when the schedule never reopens, because there is no honest value to interpolate. (Appointment reminders live on the Calendar integration's config \u2014 see integration_update.)",
         inputSchema: {
           agent_id: z.string(),
-          ...BEHAVIOR_PATCH_SHAPE,
+          ...BEHAVIOR_PATCH_ARGS_SHAPE,
           dry_run: z.boolean().optional(),
         },
       },

@@ -20,7 +20,10 @@ import {
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
-import { decisionsSchema } from "@/modules/decisions/config";
+import {
+  decisionsPatchSchema,
+  decisionsSchema,
+} from "@/modules/decisions/config";
 import {
   FULL_DETAIL_MAX_HOURS,
   parseIsoInstant,
@@ -848,11 +851,11 @@ const toolPreconditions = nativeToolKeys(
 
 // What a monitoring agent does with what it reads. Descriptions kept short: the MCP schema ceiling
 // (tests/modules/mcp-tool-descriptions.test.ts) is a ratchet, and docs/chatwoot.md has the rest.
-const monitoring = z.looseObject({
+const monitoringShape = (decisions: z.ZodType<Record<string, unknown>>) => ({
   engine: oneOf(["llm", "decisions"] as const)
     .optional()
     .describe("llm (prompt+tools, default) or decisions (docs/decisions.md)"),
-  decisions: decisionsSchema
+  decisions: decisions
     .nullable()
     .optional()
     .describe(
@@ -879,6 +882,9 @@ const monitoring = z.looseObject({
       "burst window; 3-600s, rounded and clamped, default 20s with a 60s ceiling from the START of the burst",
     ),
 });
+// The write boundary asks the whole block; the MCP argument is a patch, merged before it is whole.
+const monitoring = z.looseObject(monitoringShape(decisionsSchema));
+const monitoringPatch = z.looseObject(monitoringShape(decisionsPatchSchema));
 
 export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
@@ -911,6 +917,13 @@ export const BEHAVIOR_PATCH_SHAPE = {
   setLabels: setLabels.optional(),
   toolPreconditions: toolPreconditions.optional(),
   monitoring: monitoring.optional(),
+} satisfies z.ZodRawShape;
+
+// What agent_settings_set takes: the patch shape with `monitoring.decisions` unrefined, since the
+// refinement needs the merged block (asked in the preview and again by the write boundary).
+export const BEHAVIOR_PATCH_ARGS_SHAPE = {
+  ...BEHAVIOR_PATCH_SHAPE,
+  monitoring: monitoringPatch.optional(),
 } satisfies z.ZodRawShape;
 
 export type BehaviorPatchArgs = z.infer<

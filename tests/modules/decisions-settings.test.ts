@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
@@ -7,6 +8,7 @@ import {
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
 import { assertAgentCreatable } from "@/modules/agents/service";
+import { BEHAVIOR_PATCH_ARGS_SHAPE } from "@/modules/agents/settings-schema";
 import { readDecisionsConfig } from "@/modules/decisions/config";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
@@ -385,6 +387,50 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
     expect((mon.decisions as Record<string, unknown>).credentialRef).toBe(
       keyName,
     );
+  });
+
+  test("a partial patch of the block passes the MCP argument parse, merges, and keeps the rest", async () => {
+    const args = {
+      agent_id: String(agentId),
+      dry_run: false,
+      monitoring: { decisions: { apply: "enforce" } },
+    };
+    // What the SDK asks of the arguments before the tool runs.
+    expect(
+      z
+        .object({
+          agent_id: z.string(),
+          dry_run: z.boolean().optional(),
+          ...BEHAVIOR_PATCH_ARGS_SHAPE,
+        })
+        .safeParse(args).success,
+    ).toBe(true);
+    const r = await agentSettingsSet(principal(), args as never, {
+      base: appDb,
+    });
+    expect(r.ok).toBe(true);
+    const dec = (await stored())?.decisions as Record<string, unknown>;
+    expect(dec.apply).toBe("enforce");
+    expect(dec.questions).toEqual(QUESTIONS);
+    expect(dec.credentialRef).toBe(`vault:${keyId}`);
+  });
+
+  test("the preview refuses a patch whose merged block could not run", async () => {
+    const bare = (
+      await suDb.agent.create({
+        data: { tenantId, name: "Obs2", systemPrompt: "p", mode: "monitoring" },
+      })
+    ).id;
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(bare),
+        monitoring: { decisions: { apply: "enforce" } },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("monitoring.decisions");
   });
 
   test("a later MCP write to another monitoring field keeps the engine and the block", async () => {

@@ -125,20 +125,22 @@ const rule = z.looseObject({
     .optional(),
 });
 
-export const decisionsSchema = z
-  .looseObject({
-    provider: z.enum(DECISION_PROVIDERS).optional(),
-    model: z.string().min(1).optional(),
-    credentialRef: z.string().min(1).optional(),
-    questions: z.array(question).min(1).max(QUESTIONS_MAX).optional(),
-    rules: z.array(rule).max(RULES_MAX).optional(),
-    apply: z.enum(DECISION_APPLY).optional(),
-  })
-  .superRefine((v, ctx) => {
-    for (const p of crossFieldProblems(v as unknown as RawDecisions)) {
-      ctx.addIssue({ code: "custom", path: p.path, message: p.message });
-    }
-  });
+// THE MCP PATCH: the same fields without the cross-field refinement, since a patch is merged into
+// the stored block before it is whole. The merged block is then asked `decisionsSchema`.
+export const decisionsPatchSchema = z.looseObject({
+  provider: z.enum(DECISION_PROVIDERS).optional(),
+  model: z.string().min(1).optional(),
+  credentialRef: z.string().min(1).optional(),
+  questions: z.array(question).min(1).max(QUESTIONS_MAX).optional(),
+  rules: z.array(rule).max(RULES_MAX).optional(),
+  apply: z.enum(DECISION_APPLY).optional(),
+});
+
+export const decisionsSchema = decisionsPatchSchema.superRefine((v, ctx) => {
+  for (const p of crossFieldProblems(v as unknown as RawDecisions)) {
+    ctx.addIssue({ code: "custom", path: p.path, message: p.message });
+  }
+});
 
 type Bag = Record<string, unknown>;
 interface RawDecisions {

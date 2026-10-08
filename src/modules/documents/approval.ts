@@ -502,7 +502,8 @@ export async function pendingApprovalNotice(
   now: Date = new Date(),
 ): Promise<string | null> {
   const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.documentApprovalRequest.findMany({
+    db.documentApprovalRequest.groupBy({
+      by: ["title"],
       where: {
         status: "PENDING",
         expiresAt: { gt: now },
@@ -510,9 +511,9 @@ export async function pendingApprovalNotice(
           ? { threadId: conversation.threadId }
           : { conversationId: conversation.conversationId }),
       },
-      orderBy: { id: "asc" },
+      _min: { id: true },
+      orderBy: { _min: { id: "asc" } },
       take: PENDING_NOTICE_LIMIT,
-      select: { title: true },
     }),
   );
   const titles = [

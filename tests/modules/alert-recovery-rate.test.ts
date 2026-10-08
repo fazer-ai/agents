@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import config from "@/config";
+import { alertLinks } from "@/modules/flowlog/alert-send";
 import { recoverySubjectOf } from "@/modules/flowlog/alerts";
 import {
   type FlowContext,
@@ -63,6 +64,22 @@ describe("recoverySubjectOf", () => {
       false,
     );
   });
+});
+
+test("the recovery alert links to its list as recoveries, not failures", () => {
+  const [link] = alertLinks({
+    type: "discord",
+    stage: "delivery",
+    level: "warn",
+    summary: "x",
+    count: 1,
+    tenantId: 1n,
+    turnId: "t",
+    conversationId: 9n,
+    causeKey: "rate:delivery:recovered",
+  });
+  expect(link?.label).toBe("View recoveries");
+  expect(link?.url).toContain("/logs?stage=delivery");
 });
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;

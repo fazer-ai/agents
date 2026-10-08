@@ -8,6 +8,7 @@ import { redactEndpoint } from "@/modules/audit/projection";
 import { consoleUrl } from "@/modules/mcp/console-links";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
+import { RECOVERY_RATE_KEY } from "./alerts";
 
 // The one place an alert becomes an HTTP request. The worker and the console's Test button both
 // call it, so a green test is evidence about the path a real alert takes; they differ only in what
@@ -196,9 +197,13 @@ export function alertLinks(
     if (a.causeKey === null) q.set("level", a.level);
     // A rate's count is how many times it fired, not how many failures it counted (the summary
     // says that), so its link names the list instead of a number.
-    const label = a.causeKey?.startsWith("rate:")
-      ? "View failures"
-      : `View all ${a.count}`;
+    // The recovery rate counts deliveries that ended well, so its list is not one of failures.
+    const label =
+      a.causeKey === RECOVERY_RATE_KEY
+        ? "View recoveries"
+        : a.causeKey?.startsWith("rate:")
+          ? "View failures"
+          : `View all ${a.count}`;
     return [{ label, url: consoleUrl(`/logs?${q}`, opts) }];
   }
   if (!a.turnId) return [];

@@ -489,6 +489,9 @@ export function recoverySubjectOf(
   return !(typeof age === "number" && age > lateReplyAgeMs);
 }
 
+// The cause key of the recovery rate, read by the alert body to word its link.
+export const RECOVERY_RATE_KEY = "rate:delivery:recovered";
+
 export interface RecoveryRateOptions {
   threshold: number;
   windowMs: number;
@@ -547,6 +550,6 @@ export async function dispatchRecoveryRateAlert(
       const n = await recoveredFor(db, excludeAgentIds);
       return n < opts.threshold ? null : summaryOf(n);
     },
-    cause: { key: "rate:delivery:recovered", windowMs: opts.windowMs },
+    cause: { key: RECOVERY_RATE_KEY, windowMs: opts.windowMs },
   });
 }

@@ -258,6 +258,24 @@ export function isHumanAgentTurn(message: BaseMessage): boolean {
   return hasMarker(message, "human_agent");
 }
 
+// How many calls the dangling-call repair took out of an assistant message (src/graph/graph.ts).
+// The repaired message no longer shows them, and the silence rules read a batch off its calls: a
+// `skip_reply` that ran beside a call that never did was a PARALLEL decision, and read as a lone one
+// it would blank the answer the next round writes. Inert on the wire, like the stamps above.
+const DROPPED_CALLS_KWARG = "fazerDroppedCalls";
+
+export function droppedCallsStamp(
+  message: BaseMessage,
+  dropped: number,
+): Record<string, unknown> {
+  return { [DROPPED_CALLS_KWARG]: droppedCallCount(message) + dropped };
+}
+
+export function droppedCallCount(message: BaseMessage | undefined): number {
+  const raw = message?.additional_kwargs?.[DROPPED_CALLS_KWARG];
+  return typeof raw === "number" ? raw : 0;
+}
+
 // What a tool call gets back when the turn was called off while it was in flight. The text is for the
 // model; the MARKER is for us: a rollback must know nothing ran, and cannot ask the tool's name (the
 // caller's to choose; `toolDefinitionCreateSchema` reserves no native ones) or the content (a tool may

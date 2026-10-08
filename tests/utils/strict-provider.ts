@@ -27,7 +27,7 @@ export function replayedCallIds(m: AIMessage): string[] {
 }
 
 // Refuses a history the way OpenAI does: every call an assistant message replays needs its output
-// among the tool messages right after it, and a reasoning item cannot be the last item replayed,
+// among the tool messages right after it, and a reasoning item needs an item of its own after it,
 // whether it comes from `response_metadata.output` or, without one, from `additional_kwargs.reasoning`
 // on a message with nothing else to send.
 export class StrictProvider {
@@ -57,10 +57,12 @@ export class StrictProvider {
         ai.additional_kwargs?.reasoning !== undefined &&
         (ai.tool_calls?.length ?? 0) === 0 &&
         !(typeof ai.content === "string" ? ai.content : "").trim();
-      if (
-        (output.length > 0 && output.at(-1)?.type === "reasoning") ||
-        loneReasoning
-      )
+      const unfollowed = output.some(
+        (item, n) =>
+          item.type === "reasoning" &&
+          (n === output.length - 1 || output[n + 1]?.type === "reasoning"),
+      );
+      if (unfollowed || loneReasoning)
         throw new Error(
           "400 Item of type 'reasoning' was provided without its required following item.",
         );

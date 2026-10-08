@@ -221,6 +221,39 @@ describe("the shapes an unanswered call can be stored in", () => {
     expect(ai.response_metadata.output).toEqual([first, done]);
   });
 
+  test("reasoning that led only to the dropped call goes, even before one that ran", async () => {
+    const model = new StrictProvider("ok");
+    const { graph } = build(model);
+    const stored = assistantCalling("ai1", ["call_perdida", "call_feita"]);
+    const [, lost, done] = stored.response_metadata.output as unknown[];
+    const first = { type: "reasoning", id: "rs_1", summary: [] };
+    const second = { type: "reasoning", id: "rs_2", summary: [] };
+    await graph.invoke(
+      {
+        messages: [
+          new HumanMessage({ id: "h1", content: "oi" }),
+          new AIMessage({
+            id: "ai1",
+            content: "",
+            tool_calls: stored.tool_calls,
+            response_metadata: { output: [first, lost, second, done] },
+          }),
+          new ToolMessage({
+            id: "t1",
+            tool_call_id: "call_feita",
+            name: "consultar_evento",
+            content: "resultado",
+          }),
+          new HumanMessage({ id: "h2", content: "e aí?" }),
+        ],
+      },
+      { configurable: { thread_id: "interleaved-reasoning-first" } },
+    );
+    expect(model.seen).toHaveLength(1);
+    const ai = (model.seen[0] ?? []).find((m) => m.id === "ai1") as AIMessage;
+    expect(ai.response_metadata.output).toEqual([second, done]);
+  });
+
   test("Anthropic's tool_use block goes with the call it carries", async () => {
     const model = new StrictProvider("ok");
     const { graph } = build(model);
@@ -287,13 +320,14 @@ describe("the shapes an unanswered call can be stored in", () => {
 describe("a repaired message the same round also rewrites", () => {
   // The silence decision blanks the text beside it by replacing the calling message, and that can be
   // the message the repair replaced: a parallel batch whose `skip_reply` ran and whose companion
-  // never did. The reducer applies the later replacement, so the repair has to come first.
+  // never did. The reducer applies the later replacement, so the repair has to come first. And the
+  // batch stays parallel for the silence rules, though the repaired message shows only the skip.
   test("the text beside a silence decision still leaves the channel", async () => {
     const skip = buildNativeTools({ client: {} as never, conversationId: 1 }, [
       SKIP_REPLY_TOOL,
     ]).find((t) => t.name === SKIP_REPLY_TOOL);
     if (!skip) throw new Error("skip_reply is not in the native catalog");
-    const model = new StrictProvider("");
+    const model = new StrictProvider("Posso ajudar com mais alguma coisa?");
     const checkpointer = new MemorySaver();
     const graph = buildAgentGraph({
       primary: { provider: "openai", model: "test-model" },
@@ -342,6 +376,11 @@ describe("a repaired message the same round also rewrites", () => {
     ) as AIMessage;
     expect(stored.tool_calls?.map((c) => c.id)).toEqual(["call_skip"]);
     expect(stored.content).not.toContain("Vou deixar quieto por ora.");
+    // The batch was parallel, so the turn is not silent: the answer the round after it writes is
+    // kept, as a `skip_reply` beside a companion that failed would keep it.
+    expect((state.values.messages as BaseMessage[]).at(-1)?.content).toBe(
+      "Posso ajudar com mais alguma coisa?",
+    );
   });
 });
 

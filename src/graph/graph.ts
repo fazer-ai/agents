@@ -32,7 +32,11 @@ import {
   USAGE_PROVIDER_METADATA_KEY,
 } from "@/graph/usage";
 import { markReportedElsewhere, providerFailure } from "@/lib/provider-failure";
-import { calledOffToolResult } from "./markers";
+import {
+  calledOffToolResult,
+  droppedCallCount,
+  droppedCallsStamp,
+} from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
@@ -316,12 +320,41 @@ function danglingToolCalls(messages: BaseMessage[]): Map<number, Set<string>> {
   return found;
 }
 
+// The Responses API items without the dropped calls. A `reasoning` item owns the items after it, up
+// to the next one, and is refused without them ("provided without its required following item"),
+// while an item it owns is refused without it; so a reasoning item goes exactly when everything it
+// owned went, wherever it sits, and stays while any of its items stays.
+function withoutDroppedItems(
+  output: { type?: unknown; call_id?: unknown }[],
+  isDropped: (id: unknown) => boolean,
+): unknown[] {
+  const kept: unknown[] = [];
+  let reasoning: unknown = null;
+  let owned: unknown[] = [];
+  const flush = () => {
+    if (reasoning !== null && owned.length > 0) kept.push(reasoning);
+    kept.push(...owned);
+    reasoning = null;
+    owned = [];
+  };
+  for (const item of output) {
+    if (item?.type === "reasoning") {
+      flush();
+      reasoning = item;
+    } else if (!(item?.type === "function_call" && isDropped(item.call_id))) {
+      owned.push(item);
+    }
+  }
+  flush();
+  return kept;
+}
+
 // The assistant message without the calls that never ran, replaced by ID so the repair lands in the
 // thread. Dropped, not answered with a synthetic result, which the next round would read as a call
 // that happened. Every copy a provider replays goes: `tool_calls`, the Chat Completions copy in
 // `additional_kwargs`, and the Responses items in `response_metadata.output`, replayed VERBATIM by
-// `@langchain/openai`. A reasoning item left last (one that preceded a dropped call) is refused on its
-// own, so trailing ones go too. Text beside the call and calls that did run stay; a message left with
+// `@langchain/openai`, with the reasoning that led only to them. The message is stamped with how many
+// went (see `onlySkipped`). Text beside the call and calls that did run stay; a message left with
 // neither is what `isEmptyAssistantTurn` keeps out of the prompt, reasoning and all.
 function withoutCalls(message: AIMessage, dropped: Set<string>): AIMessage {
   const isDropped = (id: unknown) => typeof id === "string" && dropped.has(id);
@@ -346,15 +379,12 @@ function withoutCalls(message: AIMessage, dropped: Set<string>): AIMessage {
   }
   const meta: Record<string, unknown> = { ...message.response_metadata };
   if (Array.isArray(meta.output)) {
-    const output = (
-      meta.output as { type?: unknown; call_id?: unknown }[]
-    ).filter(
-      (item) => !(item?.type === "function_call" && isDropped(item.call_id)),
+    meta.output = withoutDroppedItems(
+      meta.output as { type?: unknown; call_id?: unknown }[],
+      isDropped,
     );
-    while (output.length > 0 && output.at(-1)?.type === "reasoning")
-      output.pop();
-    meta.output = output;
   }
+  Object.assign(kwargs, droppedCallsStamp(message, dropped.size));
   return new AIMessage({
     ...(typeof message.id === "string" ? { id: message.id } : {}),
     content,
@@ -425,6 +455,9 @@ function onlySkipped(caller: BaseMessage | undefined): boolean {
   // whose arguments do not parse, which LangChain files under `invalid_tool_calls`; reading
   // `tool_calls` alone would end the turn and deny the model the round where it sees the failure.
   if ((ai?.invalid_tool_calls?.length ?? 0) > 0) return false;
+  // NOTE: and so do calls the dangling-call repair took out: the batch was parallel when the model
+  // wrote it, and its companion never running is something the model may answer about.
+  if (droppedCallCount(caller) > 0) return false;
   return calls.length > 0 && calls.every((c) => c.name === SKIP_REPLY_TOOL);
 }
 

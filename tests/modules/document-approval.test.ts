@@ -465,6 +465,61 @@ describe.skipIf(!dbUp)("document approval", () => {
     expect(await counts()).toEqual(before);
   });
 
+  test("a repeated call is told what became of its request", async () => {
+    const args = { ...ARGS, cliente: "Repetido" };
+    await tool(newTurnState(), 70).invoke(args);
+    const id = await latestRequestId();
+    await rejectDocumentRequest({
+      ctx: ctx(tenantA),
+      requestId: id,
+      base: appDb,
+    });
+    const rejected = String(await tool(newTurnState(), 70).invoke(args));
+    expect(rejected).toContain("não aprovou");
+    await suDb.documentApprovalRequest.update({
+      where: { id },
+      data: { status: "PENDING", expiresAt: new Date(Date.now() - 1_000) },
+    });
+    const lapsed = String(await tool(newTurnState(), 70).invoke(args));
+    expect(lapsed).toContain("venceu");
+    await suDb.documentApprovalRequest.update({
+      where: { id },
+      data: { status: "REJECTED" },
+    });
+  });
+
+  test("approval never adopts a document written under a key that predates the request", async () => {
+    await tool(newTurnState(), 80).invoke({ ...ARGS, cliente: "Legado" });
+    const id = await latestRequestId();
+    // A row an older build could have written: the REST route accepted any key before the prefix
+    // was reserved.
+    const planted = await issueDocument({
+      ctx: ctx(tenantA),
+      templateId,
+      idempotencyKey: `x-${id}`,
+      values: { ...ARGS, cliente: "Outro cliente" },
+      base: appDb,
+      storageDir: DIR,
+    });
+    await suDb.issuedDocument.update({
+      where: { id: BigInt(planted.id) },
+      data: { idempotencyKey: `approval:${id}` },
+    });
+    const { document } = await approveDocumentRequest({
+      ctx: ctx(tenantA),
+      requestId: id,
+      base: appDb,
+      storageDir: DIR,
+    });
+    expect(document.id).not.toBe(planted.id);
+    const issued = await suDb.issuedDocument.findUniqueOrThrow({
+      where: { id: BigInt(document.id) },
+    });
+    expect(
+      (issued.snapshot as { values?: { cliente?: string } }).values?.cliente,
+    ).toBe("Legado");
+  });
+
   test("expiry moves only overdue pending requests, and approval refuses one even before it runs", async () => {
     await tool(newTurnState(), 44).invoke({ ...ARGS, cliente: "Caio" });
     const overdue = await latestRequestId();
@@ -475,6 +530,12 @@ describe.skipIf(!dbUp)("document approval", () => {
       data: { expiresAt: new Date(Date.now() - 60_000) },
     });
     const before = await counts();
+    const approvedBefore = (
+      await suDb.documentApprovalRequest.findMany({
+        where: { templateId, status: "APPROVED" },
+        select: { id: true },
+      })
+    ).map((r) => r.id);
     const late = await refusal(
       approveDocumentRequest({
         ctx: ctx(tenantA),
@@ -494,7 +555,10 @@ describe.skipIf(!dbUp)("document approval", () => {
     const by = new Map(statuses.map((s) => [s.id, s.status]));
     expect(by.get(overdue)).toBe("EXPIRED");
     expect(by.get(future)).toBe("PENDING");
-    expect([...by.values()].filter((s) => s === "APPROVED")).toHaveLength(1);
+    expect(approvedBefore.length).toBeGreaterThan(0);
+    for (const approved of approvedBefore) {
+      expect(by.get(approved)).toBe("APPROVED");
+    }
     expect(await counts()).toEqual(before);
   });
 });

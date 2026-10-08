@@ -946,6 +946,20 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     ]);
   });
 
+  test("modelVersion is the model asked for or its dated snapshot, never another model-shaped string", async () => {
+    await setMonitoring(decisionsBlock({ provider: "openai", rules: [] }));
+    for (const [model, kept] of [
+      ["gpt-6-luna-MARCADOR-1135", null],
+      ["gpt-6-luna-2026-09-01", "gpt-6-luna-2026-09-01"],
+    ] as const) {
+      const p = providerDouble(() =>
+        json({ model, answers: [], usage: { input_tokens: 1 } }),
+      );
+      await tick(p.fetchImpl);
+      expect((await detail()).modelVersion).toBe(kept);
+    }
+  });
+
   test("a rule whose tool the agent was not granted does not act, and the line says so at warn", async () => {
     const grant = await suDb.agentToolSelection.create({
       data: {
@@ -966,6 +980,14 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       const line = await lastLine();
       expect(line.level).toBe("warn");
       expect((line.detail as Record<string, unknown>).actions).toEqual([
+        { rule: 0, tool: "set_labels", outcome: "not_granted" },
+      ]);
+      // Shadow reports the same missing grant enforce would hit, not an action that could run.
+      await setMonitoring(decisionsBlock({ apply: "shadow" }));
+      await tick(p.fetchImpl);
+      const shadow = await lastLine();
+      expect(shadow.level).toBe("warn");
+      expect((shadow.detail as Record<string, unknown>).actions).toEqual([
         { rule: 0, tool: "set_labels", outcome: "not_granted" },
       ]);
     } finally {

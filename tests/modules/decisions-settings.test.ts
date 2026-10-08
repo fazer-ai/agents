@@ -190,6 +190,22 @@ describe("the decisions block at the write boundary", () => {
       },
       "monitoring.decisions.questions.1.options.1.value",
     ],
+    [
+      "a choice condition naming an option the question does not have",
+      {
+        ...valid,
+        decisions: {
+          ...valid.decisions,
+          rules: [
+            {
+              when: [{ question: "assunto", equals: "troca" }],
+              action: { tool: "set_labels", args: {} },
+            },
+          ],
+        },
+      },
+      "monitoring.decisions.rules.0.when.0.equals",
+    ],
   ])("refused: %s", (_label, monitoring, field) => {
     const r = refusal(monitoring);
     expect(r?.statusCode).toBe(400);

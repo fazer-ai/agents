@@ -73,6 +73,12 @@ export async function applyDecisions(
   const { fired, missed } = evaluateRules(config.rules, answers);
   const actions: ActionReport[] = [];
   for (const f of fired) {
+    // The grant is checked first, so shadow shows the same missing grant enforce would hit.
+    const tool = tools.find((t) => t.name === f.tool);
+    if (!tool) {
+      actions.push({ rule: f.rule, tool: f.tool, outcome: "not_granted" });
+      continue;
+    }
     if (config.apply === "shadow") {
       actions.push({ rule: f.rule, tool: f.tool, outcome: "shadow" });
       continue;
@@ -80,11 +86,6 @@ export async function applyDecisions(
     signal.throwIfAborted();
     if (!(await stillWanted())) {
       return { fired, missed, actions, withdrawn: true };
-    }
-    const tool = tools.find((t) => t.name === f.tool);
-    if (!tool) {
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "not_granted" });
-      continue;
     }
     try {
       await tool.invoke(f.args, { callbacks, signal });

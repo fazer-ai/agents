@@ -203,7 +203,10 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
       need(cond, ["question"], ["rules", r, "when", c]);
     }
   }
-  const byName = new Map<string, { type: unknown; size: number }>();
+  const byName = new Map<
+    string,
+    { type: unknown; size: number; options: Set<unknown> }
+  >();
   for (const [i, q] of (v.questions ?? []).entries()) {
     if (typeof q?.name !== "string") continue;
     if (byName.has(q.name)) {
@@ -227,6 +230,9 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
     byName.set(q.name, {
       type: q.type,
       size: Array.isArray(q.levels) ? q.levels.length : 0,
+      options: new Set(
+        Array.isArray(q.options) ? q.options.map((o) => o?.value) : [],
+      ),
     });
   }
   for (const [r, rl] of (v.rules ?? []).entries()) {
@@ -250,6 +256,11 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
         out.push({
           path: at,
           message: "a choice condition needs equals",
+        });
+      } else if (q.type === "choice" && !q.options.has(cond.equals)) {
+        out.push({
+          path: [...at, "equals"],
+          message: `"${String(cond.equals)}" is not one of the question's options`,
         });
       }
       if (q.type === "score") {

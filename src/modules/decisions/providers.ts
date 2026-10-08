@@ -90,16 +90,23 @@ function configured(q: DecisionQuestion): ReadonlySet<string> {
   );
 }
 
-// The resolved model id, kept only when it is in the provider's own model grammar (`jev-1.13.0`,
-// `gpt-6-luna`): the field is the provider's text like any other, and a credential's base URL may
-// point anywhere, so an id-shaped name must not pass for a model.
-const MODEL_GRAMMAR: Record<DecisionProvider, RegExp> = {
-  openai: /^gpt-\d[\w.-]{0,63}$/,
-  typesafe: /^jev-(latest|\d+(\.\d+){0,3})$/,
-};
-
-function modelId(provider: DecisionProvider, v: unknown): string | null {
-  return typeof v === "string" && MODEL_GRAMMAR[provider].test(v) ? v : null;
+// The resolved model id, kept only when it is the model asked for, its dated snapshot, or (TypeSafe)
+// a numeric version of the alias: the field is the provider's text like any other, and a credential's
+// base URL may point anywhere, so a model-shaped string carries nothing it can be trusted with.
+function modelId(
+  provider: DecisionProvider,
+  requested: string,
+  v: unknown,
+): string | null {
+  if (typeof v !== "string") return null;
+  if (v === requested) return v;
+  if (
+    v.startsWith(`${requested}-`) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(v.slice(requested.length + 1))
+  )
+    return v;
+  if (provider === "typesafe" && /^jev-\d+(\.\d+){0,3}$/.test(v)) return v;
+  return null;
 }
 
 function tokens(v: unknown): number {
@@ -187,7 +194,7 @@ const openai: DecisionProviderImpl = {
     const usage = (json.usage ?? {}) as Record<string, unknown>;
     return {
       answers,
-      modelVersion: modelId("openai", json.model),
+      modelVersion: modelId("openai", req.model, json.model),
       inputTokens: tokens(usage.input_tokens),
     };
   },
@@ -300,7 +307,7 @@ const typesafe: DecisionProviderImpl = {
     const usage = (json.usage ?? {}) as Record<string, unknown>;
     return {
       answers,
-      modelVersion: modelId("typesafe", json.model),
+      modelVersion: modelId("typesafe", req.model, json.model),
       inputTokens: tokens(usage.input_tokens),
     };
   },

@@ -402,9 +402,13 @@ async function withdrawClaimStatusOnly(p: {
 
 // Puts the row of a takeover Chatwoot refused back on the source's state, through the claim it owns.
 // A versioned read reconciles; an unversioned one moves the status alone (above). An unreadable
-// Chatwoot leaves the claim to run out, as a failed open does.
-async function withdrawClaim(
-  p: HumanReplyTakeoverParams & {
+// Chatwoot leaves the claim to run out, as a failed open does. Exported for the failed-turn
+// hand-over (../conversations/failure-note.ts), which claims the same way.
+export async function withdrawClaim(
+  p: Pick<
+    HumanReplyTakeoverParams,
+    "tenantId" | "instanceId" | "conversationId" | "conversationRowId" | "base"
+  > & {
     claimUntil: Date;
     client: () => Promise<ChatwootClient>;
   },

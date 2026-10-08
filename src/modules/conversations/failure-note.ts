@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
@@ -15,6 +16,7 @@ import {
   claimOpenForHumanQueue,
   conversationOwnershipNow,
   openForHumanQueue,
+  withdrawClaim,
 } from "@/modules/chatwoot/human-takeover";
 import {
   type LoadChatwootClientDeps,
@@ -29,6 +31,7 @@ import {
   parseLiveConversation,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
+import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
 import {
   type HandoffConfig,
@@ -191,6 +194,9 @@ async function turnKeysOf(
   handoffKey: string;
   graphKey: string;
   contactInboxId: number | null;
+  // The mirror row, for the console broadcast of the claim; null when the mirror does not know it.
+  rowId: bigint | null;
+  lastEventAt: Date | null;
 }> {
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findFirst({
@@ -199,7 +205,7 @@ async function turnKeysOf(
         chatwootInstanceId: instanceId,
         chatwootConversationId: conversationId,
       },
-      select: { contactInboxId: true },
+      select: { id: true, contactInboxId: true, lastEventAt: true },
     }),
   );
   const contactInboxId = row?.contactInboxId ?? null;
@@ -212,6 +218,8 @@ async function turnKeysOf(
       contactInboxId,
     ),
     contactInboxId,
+    rowId: row?.id ?? null,
+    lastEventAt: row?.lastEventAt ?? null,
   };
 }
 
@@ -224,8 +232,6 @@ function turnBusyHere(keys: { handoffKey: string; graphKey: string }): boolean {
     isFlushHeld(keys.graphKey)
   );
 }
-
-type SeenRow = Parameters<typeof claimOpenForHumanQueue>[0]["seen"];
 
 // Markdown, which Chatwoot renders in a private note. The first line is what an operator scanning
 // the conversation reads, so it says what happened; the second says what was done about it, which
@@ -288,9 +294,11 @@ export async function announceFailedTurn(params: {
     // started meanwhile, and an unread fence cannot rule that out.
     let lastAsk: "lost" | "not-lost" | "unreadable" | null = null;
     let reserved: { handoffKey: string; graphKey: string } | null = null;
-    // The mirror row the fence read, which the claim below pins. Typed through the cast because the
-    // closure assigns it, and a plain `null` would narrow every later read to `never`.
-    let seen = null as SeenRow | null;
+    // The mirror's claim, taken inside the fence and released or stamped after the toggle, as the
+    // human-reply takeover does. Typed through the cast because the closure assigns it, and a plain
+    // `null` would narrow every later read to `never`.
+    let claimHeld = null as Date | null;
+    let rowOf = null as { id: bigint | null; lastEventAt: Date | null } | null;
     let queued: Awaited<ReturnType<typeof openForHumanQueue>>;
     try {
       queued = await openForHumanQueue({
@@ -325,7 +333,6 @@ export async function announceFailedTurn(params: {
             ourAgentBotId: persona.chatwootAgentBotId,
             base,
           });
-          if (ownership.ours) seen = ownership;
           if (!ownership.ours) {
             lastAsk = null;
             return false;
@@ -365,6 +372,33 @@ export async function announceFailedTurn(params: {
           markTurnReserved(keys.handoffKey);
           markTurnReserved(keys.graphKey);
           reserved = keys;
+          // The mirror moves BEFORE the toggle and under the reservation, as the human-reply
+          // takeover's does: until it says `open` every reader of the row (a re-engage, the runtime's
+          // ownership checks) still sees a bot-owned conversation, and the reservation is what keeps
+          // them out until then. Pinned to the row the fence read, so a lost swap is a newer
+          // decision (a hand-back, a person claiming it) and closes the fence like any refusal. No
+          // mirror row has nothing to claim and nothing a reader could misread.
+          if (keys.rowId === null) return true;
+          claimHeld = await claimOpenForHumanQueue({
+            tenantId,
+            instanceId,
+            conversationId,
+            seen: ownership,
+            base,
+          });
+          // The turn is still lost (`lastAsk` stays so): only the hand-over yields, and the note asks
+          // for someone.
+          if (claimHeld === null) return false;
+          rowOf = { id: keys.rowId, lastEventAt: keys.lastEventAt };
+          broadcastConversationEvent(tenantId, {
+            conversationId: String(keys.rowId),
+            status: "open",
+            assigneeId: ownership.assigneeId,
+            assigneeType: ownership.assigneeType,
+            lastEventAt: keys.lastEventAt
+              ? keys.lastEventAt.toISOString()
+              : null,
+          });
           return true;
         },
         client: async () => client,
@@ -377,31 +411,52 @@ export async function announceFailedTurn(params: {
       }
     }
     const opened = queued === "opened";
-    // The mirror moves with the toggle, as the human-reply takeover's does, rather than waiting on
-    // Chatwoot's webhook: until it lands every reader of the row would still see a bot-owned
-    // conversation and could start a turn in the human queue. Pinned to the row the fence read, so
-    // a newer decision wins; best-effort, since the webhook still corrects it.
-    const pinned = seen;
-    if (opened && pinned !== null) {
-      await claimOpenForHumanQueue({
+    const claim = claimHeld;
+    const row = rowOf;
+    // Chatwoot refused the toggle after the claim (it moved on in between): the row says `open`
+    // where Chatwoot never will, so it takes the source's state through the claim it owns.
+    if (queued === "refused" && claim !== null) {
+      await withdrawClaim({
         tenantId,
         instanceId,
         conversationId,
-        seen: {
-          statusAt: pinned.statusAt,
-          ownershipChangedAt: pinned.ownershipChangedAt,
-          assigneeType: pinned.assigneeType,
-          assigneeId: pinned.assigneeId,
-          consoleWriteAtMessageId: pinned.consoleWriteAtMessageId,
-        },
+        conversationRowId: row?.id ?? null,
+        claimUntil: claim,
+        client: async () => client,
         base,
-      }).catch((err) => {
+      }).catch((err) =>
         logger.warn(
-          "conversations: failed-turn hand-over opened Chatwoot but not the mirror (conv=%s): %s",
+          "conversations: correcting the mirror after a refused failed-turn hand-over failed (conv=%s): %s",
+          String(conversationId),
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
+    }
+    // Opened: a versioned live read stamps the claim, through it, so a hand-back the operator makes
+    // during the claim's window is ordered against it instead of refused by it. A failed toggle
+    // keeps the claim to run out, as the takeover's does (an unknown outcome).
+    if (opened && claim !== null) {
+      try {
+        const live = parseLiveConversation(
+          await client.getConversation(conversationId),
+        );
+        if (live && live.updatedAt !== null) {
+          await reconcileMirrorFromLive({
+            tenantId,
+            instanceId,
+            conversationId,
+            live,
+            ownsStatusClaim: claim,
+            base,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          "conversations: reconciling the mirror after the failed-turn hand-over failed (conv=%s): %s",
           String(conversationId),
           err instanceof Error ? err.message : String(err),
         );
-      });
+      }
     }
     if (lastAsk === "not-lost") return "not-lost";
     if (lastAsk === "unreadable") return "failed";

@@ -16,7 +16,7 @@ import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { contactInboxThreadId } from "@/graph/checkpointer";
+import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import {
   clearTurnInFlight,
   isTurnInFlight,
@@ -126,6 +126,11 @@ let writes: Write[] = [];
 const liveConversations = new Map<number, Record<string, unknown>>();
 let inbound: Array<{ id: number; message_type: number; content: string }> = [];
 let messagesFail = false;
+// Runs when the toggle arrives, before Chatwoot answers it: what the mirror and the registry say AT
+// the toggle is what the hand-over's ordering is about. `toggleConflict` answers it with the 409 a
+// conversation that moved on gets.
+let onToggle: ((conversationId: number) => Promise<void>) | null = null;
+let toggleConflict = false;
 let realFetch: typeof globalThis.fetch;
 
 function installChatwootDouble(): void {
@@ -160,6 +165,8 @@ function installChatwootDouble(): void {
     if (toggle && init?.method === "POST") {
       const body = JSON.parse(String(init.body ?? "{}"));
       writes.push({ conversationId: Number(toggle[1]), kind: "toggle", body });
+      await onToggle?.(Number(toggle[1]));
+      if (toggleConflict) return json({ error: "status changed" }, 409);
       return json({ payload: { success: true, current_status: body.status } });
     }
     const assign = url.match(/\/conversations\/(\d+)\/assignments$/);
@@ -340,6 +347,8 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     liveConversations.clear();
     inbound = [];
     messagesFail = false;
+    onToggle = null;
+    toggleConflict = false;
   });
 
   afterAll(async () => {
@@ -516,6 +525,133 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       select: { status: true },
     });
     expect(mirror.status).toBe("open");
+  });
+
+  test("the mirror says open before the toggle, while the reservation still holds the thread", async () => {
+    const conv = await seedConversation();
+    let atToggle = null as { status: string; reserved: boolean } | null;
+    onToggle = async (id) => {
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: id },
+        select: { status: true },
+      });
+      atToggle = {
+        status: row.status,
+        reserved: isTurnInFlight(chatwootThreadId(tenantId, instanceId, id)),
+      };
+    };
+    await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => ({ path: "job", deadLettered: true }),
+      error: new Error("boom"),
+      base: appDb,
+    });
+    // A re-engage asks the mirror and the registry; between them one of the two must say no at
+    // every instant up to the moment the conversation is no longer the bot's.
+    expect(atToggle).toEqual({ status: "open", reserved: true });
+    expect(isTurnInFlight(chatwootThreadId(tenantId, instanceId, conv))).toBe(
+      false,
+    );
+  });
+
+  test("a decision that moves the mirror between the fence and the claim closes the fence", async () => {
+    const conv = await seedConversation();
+    let asks = 0;
+    const outcome = await withHandoff(
+      { mode: "pinned", targetTeamId: 77 },
+      () =>
+        announceFailedTurn({
+          tenantId,
+          instanceId,
+          chatwootConversationId: conv,
+          assess: async () => {
+            // The last ask runs after the ownership read: an operator's hand-back lands there,
+            // leaving the row pending and the bot's, with a newer version.
+            if (asks++ === 1) {
+              await suDb.conversation.updateMany({
+                where: { tenantId, chatwootConversationId: conv },
+                data: { chatwootStatusAt: 1_900_000_000 },
+              });
+            }
+            return { path: "job", deadLettered: true };
+          },
+          error: new Error("boom"),
+          base: appDb,
+        }),
+    );
+    expect(outcome).toBe("posted");
+    // No toggle and no pinned assignment over the newer decision; the note still asks for someone.
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+    expect(posted[0]?.content).toContain("Alguém da equipe precisa assumir.");
+    const mirror = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true },
+    });
+    expect(mirror.status).toBe("pending");
+  });
+
+  test("an opened hand-over stamps its claim from Chatwoot's versioned read", async () => {
+    const conv = await seedConversation();
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    onToggle = async (id) => {
+      liveConversations.set(id, {
+        status: "open",
+        meta: {},
+        updated_at: 1_900_000_100,
+      });
+    };
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => ({ path: "job", deadLettered: true }),
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("posted");
+    // Stamped, a hand-back newer than the toggle is ordered against the claim instead of refused
+    // by it for the claim's whole window.
+    const mirror = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true, statusClaimStampedAt: true },
+    });
+    expect(mirror.status).toBe("open");
+    expect(mirror.statusClaimStampedAt).not.toBeNull();
+  });
+
+  test("Chatwoot refusing the toggle after the claim puts the mirror on Chatwoot's state", async () => {
+    const conv = await seedConversation();
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    toggleConflict = true;
+    onToggle = async (id) => {
+      liveConversations.set(id, {
+        status: "resolved",
+        meta: {},
+        updated_at: 1_900_000_200,
+      });
+    };
+    await withHandoff({ mode: "pinned", targetTeamId: 77 }, () =>
+      announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      }),
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+    const mirror = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true },
+    });
+    expect(mirror.status).toBe("resolved");
   });
 
   test("a newer message that lands before the hand-over cancels it, note included", async () => {

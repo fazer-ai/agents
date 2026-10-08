@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
@@ -104,6 +105,28 @@ function notFound(): NotFoundError {
   );
 }
 
+// One tool key ends in ONE outcome, a document or a request, and each lives in its own table with
+// its own unique index. Both writers take this lock and re-ask the other table before inserting, so
+// two calls racing a switch of `requiresApproval` cannot leave one of each.
+async function claimKey(
+  db: ScopedDb,
+  tenantId: bigint,
+  idempotencyKey: string,
+): Promise<void> {
+  await withEntityLock(
+    db,
+    `document-key:${tenantId}:${idempotencyKey}`,
+    async () => {},
+  );
+}
+
+// The key was answered by the other outcome while this call was deciding.
+export class KeyAnswered extends Error {
+  constructor(readonly by: "document" | "request") {
+    super(`this key is already answered by a ${by}`);
+  }
+}
+
 export function expiryJobKey(requestId: bigint): string {
   return `doc-approval:${requestId}`;
 }
@@ -129,6 +152,17 @@ export async function createApprovalRequest(params: {
   // One transaction for the request and its expiry job: a request committed without the job would
   // stay PENDING past its time, and a retried turn returns the request before it could re-arm.
   const created = await runScopedOn(base, ctx, async (db) => {
+    await claimKey(db, tenantId, params.idempotencyKey);
+    const issued = await db.issuedDocument.findUnique({
+      where: {
+        tenantId_idempotencyKey: {
+          tenantId,
+          idempotencyKey: params.idempotencyKey,
+        },
+      },
+      select: { id: true },
+    });
+    if (issued) throw new KeyAnswered("document");
     const row = await db.documentApprovalRequest.create({
       data: {
         tenantId,
@@ -154,6 +188,7 @@ export async function createApprovalRequest(params: {
     });
     return row;
   }).catch((err: unknown) => {
+    if (err instanceof KeyAnswered) throw err;
     // NOTE: a P2002 aborts the transaction it was raised in, so the winner is read in a new one.
     if (
       err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -516,6 +551,19 @@ export async function issueOrRequestApproval(params: {
           chatwootInstanceId: params.chatwootInstanceId,
           conversationId: params.conversationId,
           withBytes: params.withBytes,
+          guard: async (db) => {
+            await claimKey(db, tenantId, params.idempotencyKey);
+            const requested = await db.documentApprovalRequest.findUnique({
+              where: {
+                tenantId_idempotencyKey: {
+                  tenantId,
+                  idempotencyKey: params.idempotencyKey,
+                },
+              },
+              select: { id: true },
+            });
+            if (requested) throw new KeyAnswered("request");
+          },
         })
       : issueDocument({ ...params, base });
   if (issued) return { kind: "issued", document: await issue() };
@@ -527,20 +575,37 @@ export async function issueOrRequestApproval(params: {
     now: params.now,
     timezone: params.timezone,
   });
-  if (!frozen.template.requiresApproval) {
-    return { kind: "issued", document: await issue(frozen) };
+  try {
+    if (!frozen.template.requiresApproval) {
+      return { kind: "issued", document: await issue(frozen) };
+    }
+    return {
+      kind: "approval",
+      request: await createApprovalRequest({
+        ctx,
+        base,
+        frozen,
+        idempotencyKey: params.idempotencyKey,
+        threadId: params.threadId,
+        chatwootInstanceId: params.chatwootInstanceId,
+        conversationId: params.conversationId,
+        now: params.now,
+      }),
+    };
+  } catch (e) {
+    if (!(e instanceof KeyAnswered)) throw e;
+    if (e.by === "document") return { kind: "issued", document: await issue() };
+    const winner = await runScopedOn(base, ctx, (db) =>
+      db.documentApprovalRequest.findUniqueOrThrow({
+        where: {
+          tenantId_idempotencyKey: {
+            tenantId,
+            idempotencyKey: params.idempotencyKey,
+          },
+        },
+        select: SELECT,
+      }),
+    );
+    return { kind: "approval", request: toDto(winner) };
   }
-  return {
-    kind: "approval",
-    request: await createApprovalRequest({
-      ctx,
-      base,
-      frozen,
-      idempotencyKey: params.idempotencyKey,
-      threadId: params.threadId,
-      chatwootInstanceId: params.chatwootInstanceId,
-      conversationId: params.conversationId,
-      now: params.now,
-    }),
-  };
 }

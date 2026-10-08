@@ -521,41 +521,49 @@ export async function dispatchRecoveryRateAlert(
   },
 ): Promise<void> {
   const since = new Date(Date.now() - opts.windowMs);
-  const recoveredFor = (db: ScopedDb, excludeAgentIds: bigint[]) =>
-    db.executionLog.count({
+  const recoveredFor = async (db: ScopedDb, excludeAgentIds: bigint[]) => {
+    const scope = {
+      stage: "delivery",
+      source: "inbox",
+      createdAt: { gte: since },
+      ...(excludeAgentIds.length > 0
+        ? {
+            OR: [{ agentId: null }, { agentId: { notIn: excludeAgentIds } }],
+          }
+        : {}),
+    };
+    const all = await db.executionLog.count({
       where: {
-        stage: "delivery",
-        source: "inbox",
-        createdAt: { gte: since },
-        OR: [...RECOVERED_OUTCOMES].map((outcome) => ({
-          detail: { path: ["outcome"], equals: outcome },
-        })),
-        // The late answers alert on their own (`causeKeyOf`), so they are not counted here too.
-        NOT: {
-          AND: [
-            { detail: { path: ["outcome"], equals: "answered_late" } },
-            {
-              detail: {
-                path: ["ageMs"],
-                gt: config.alertWorker.lateReplyAgeMs,
-              },
-            },
-          ],
-        },
-        ...(excludeAgentIds.length > 0
-          ? {
-              AND: [
-                {
-                  OR: [
-                    { agentId: null },
-                    { agentId: { notIn: excludeAgentIds } },
-                  ],
-                },
-              ],
-            }
-          : {}),
+        ...scope,
+        AND: [
+          {
+            OR: [...RECOVERED_OUTCOMES].map((outcome) => ({
+              detail: { path: ["outcome"], equals: outcome },
+            })),
+          },
+        ],
       },
     });
+    // The late answers alert on their own (`causeKeyOf`), so they are not counted here too. Taken
+    // off by subtraction rather than a NOT in the count: a line without `ageMs` (written before the
+    // sweep stated it) makes the comparison NULL, and a NOT over NULL would drop it from the count,
+    // where `recoverySubjectOf` counts it.
+    const late = await db.executionLog.count({
+      where: {
+        ...scope,
+        AND: [
+          { detail: { path: ["outcome"], equals: "answered_late" } },
+          {
+            detail: {
+              path: ["ageMs"],
+              gt: config.alertWorker.lateReplyAgeMs,
+            },
+          },
+        ],
+      },
+    });
+    return all - late;
+  };
   const recovered = await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
     recoveredFor(db, []),
   );

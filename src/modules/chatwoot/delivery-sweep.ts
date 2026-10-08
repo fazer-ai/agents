@@ -277,6 +277,30 @@ export async function retireCoveredDeliveries(
   // ended — without it the row simply leaves the list and an operator is left holding a page about
   // a customer nobody can find any more. A rescue nobody had reported yet writes nothing: a
   // correction for an alert that never fired is noise.
+  // Filed under the conversation's inbox and its agent, like the loss line it closes: a channel that
+  // excludes the agent filters the correction by these, and a line filed under nobody passes every
+  // exclusion. Null when the mirror does not know the conversation; the line is still written.
+  const filedUnder =
+    corrected.length === 0
+      ? null
+      : await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
+          db.conversation.findUnique({
+            where: {
+              tenantId_chatwootInstanceId_chatwootConversationId: {
+                tenantId: params.tenantId,
+                chatwootInstanceId: params.instanceId,
+                chatwootConversationId: params.conversationId,
+              },
+            },
+            select: { inboxId: true, inbox: { select: { agentId: true } } },
+          }),
+        ).catch((error) => {
+          logger.warn(
+            { error },
+            "chatwoot: could not read the agent a stranded-delivery correction is filed under; filing it under none",
+          );
+          return null;
+        });
   for (const row of corrected) {
     logger.warn(
       "chatwoot: %s was reported as a lost message and has now been %s on conversation %d",
@@ -290,6 +314,8 @@ export async function retireCoveredDeliveries(
         turnId: crypto.randomUUID(),
         source: "inbox",
         conversationId: params.conversationRowId,
+        agentId: filedUnder?.inbox?.agentId ?? null,
+        inboxId: filedUnder?.inboxId ?? null,
         base: params.base,
       },
       {

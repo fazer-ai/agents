@@ -173,18 +173,23 @@ async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
 // `convId`. Same two obligations as the readers above, and it asserts the count before reading the
 // line: a second line would mean two corrections raced, and reading `[0]` of that would answer with
 // whichever landed first instead of failing.
-// The age the correction line records, from the ledger row's receipt: an answer late enough keeps an
-// alert of its own, so the line has to carry it.
-async function correctionAgeMs(convId: number) {
+// The correction line's age, from the ledger row's receipt (an answer late enough keeps an alert of
+// its own, so the line has to carry it), and the agent and inbox it is filed under (a channel's
+// agent exclusion filters by them).
+async function correctionLine(convId: number) {
   const conv = await suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
     select: { id: true },
   });
   const lines = await flowLogRows(suDb, {
     where: { tenantId, conversationId: conv.id, stage: "delivery" },
-    select: { detail: true },
+    select: { detail: true, agentId: true, inboxId: true },
   });
-  return (lines[0]?.detail as Record<string, unknown> | undefined)?.ageMs;
+  return {
+    ageMs: (lines[0]?.detail as Record<string, unknown> | undefined)?.ageMs,
+    agentId: lines[0]?.agentId ?? null,
+    inboxId: lines[0]?.inboxId ?? null,
+  };
 }
 
 async function correctionOutcome(convId: number) {
@@ -1238,9 +1243,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect((await statusOf(reportedSibling.id)).status).toBe("PROCESSED");
     expect(await correctionOutcome(convId)).toBe("answered_late");
     // Received two minutes ago, settled now.
-    const age = await correctionAgeMs(convId);
-    expect(age).toBeGreaterThanOrEqual(120_000);
-    expect(age).toBeLessThan(120_000 + POLL_DEADLINE_MS + 60_000);
+    const line = await correctionLine(convId);
+    expect(line.ageMs).toBeGreaterThanOrEqual(120_000);
+    expect(line.ageMs).toBeLessThan(120_000 + POLL_DEADLINE_MS + 60_000);
+    expect(line.agentId).toBe(agentDbId);
+    expect(line.inboxId).toBe(inboxDbId);
 
     await suDb.agent.update({
       where: { id: agentDbId },

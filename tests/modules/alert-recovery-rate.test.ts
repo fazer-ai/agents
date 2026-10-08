@@ -327,6 +327,16 @@ describe.skipIf(!dbUp)("recovery rate alerts", () => {
     ).toEqual([]);
   });
 
+  test("a late answer written without an age counts toward the recovery rate", async () => {
+    // Lines written before the sweep stated the age carry none, and they are quiet recoveries.
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    await recover(tenantId, Array(THRESHOLD).fill("answered_late"));
+    expect((await deliveries(ch)).map((r) => [r.causeKey, r.summary])).toEqual([
+      ["rate:delivery:recovered", aggregated(THRESHOLD)],
+    ]);
+  });
+
   test("the playground does not count", async () => {
     const tenantId = await freshTenant();
     const ch = await channel(tenantId);

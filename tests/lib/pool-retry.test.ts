@@ -12,6 +12,20 @@ import {
 // saturated pool back into an unretried failure.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
+let dbUp = false;
+if (appUrl) {
+  const probe = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: appUrl }),
+  });
+  try {
+    await probe.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  } finally {
+    await probe.$disconnect().catch(() => {});
+  }
+}
 
 function neverStarted(): Error {
   return Object.assign(
@@ -53,7 +67,7 @@ async function realPoolRefusal(url: string): Promise<unknown> {
 }
 
 describe("isTransactionNeverStarted", () => {
-  test.skipIf(!appUrl)(
+  test.skipIf(!dbUp)(
     "a transaction a full pool never started is recognised",
     async () => {
       const err = await realPoolRefusal(appUrl as string);

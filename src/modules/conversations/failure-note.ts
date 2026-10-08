@@ -219,12 +219,18 @@ export async function announceFailedTurn(params: {
       base,
       botToken: persona.botToken,
     });
+    // Asked again as the last fence before the toggle, with the client already built: a newer
+    // message landing since the first ask has a turn of its own coming, and opening the conversation
+    // would stop it. Then nothing is announced at all, as for the first ask.
+    let stillLost = true;
     const opened =
       (await openForHumanQueue({
         gate: "failed-turn",
         conversationId,
-        stillOurs: async () =>
-          (
+        stillOurs: async () => {
+          stillLost = isTurnLost(await params.assess());
+          if (!stillLost) return false;
+          return (
             await conversationOwnershipNow({
               tenantId,
               instanceId,
@@ -232,9 +238,11 @@ export async function announceFailedTurn(params: {
               ourAgentBotId: persona.chatwootAgentBotId,
               base,
             })
-          ).ours,
+          ).ours;
+        },
         client: async () => client,
       })) === "opened";
+    if (!stillLost) return "not-lost";
     if (opened) {
       await assignPinnedTarget({
         client,

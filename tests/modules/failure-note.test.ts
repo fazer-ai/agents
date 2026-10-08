@@ -485,6 +485,26 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     );
   });
 
+  test("a newer message that lands before the hand-over cancels it, note included", async () => {
+    const conv = await seedConversation();
+    // Clear on the first ask, superseded by the time of the last fence.
+    let asks = 0;
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () =>
+        asks++ === 0
+          ? { path: "direct", fence: "clear" }
+          : { path: "direct", fence: "superseded" },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("not-lost");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+    expect(await noticeAt(conv)).toBeNull();
+  });
+
   test("with no pinned target the conversation is still opened, for Chatwoot's own routing", async () => {
     const conv = await seedConversation();
     await withHandoff(null, () =>

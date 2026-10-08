@@ -862,6 +862,38 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect(d.failure).toBe("timeout");
   });
 
+  test("enforce switched to shadow while the provider answered writes nothing", async () => {
+    const block = (apply: string) =>
+      decisionsBlock({
+        apply,
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+            action: {
+              tool: "private_note",
+              args: { content: "não deveria sair" },
+            },
+          },
+        ],
+      });
+    await setMonitoring(block("enforce"));
+    const p = providerDouble(() =>
+      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
+    );
+    const switching = (async (u: RequestInfo | URL, init?: RequestInit) => {
+      const r = await p.fetchImpl(u, init);
+      await setMonitoring(block("shadow"));
+      return r;
+    }) as typeof fetch;
+    const { log } = await tick(switching);
+    expect(log.notes).toEqual([]);
+    const line = await lastLine();
+    expect(line.status).toBe("skipped");
+    expect((line.detail as Record<string, unknown>).skipped).toBe(
+      "engine_changed",
+    );
+  });
+
   test("an action that outlives the tick's deadline ends the tick, and a committed one is not retried", async () => {
     await setMonitoring(
       decisionsBlock({

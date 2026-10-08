@@ -110,6 +110,7 @@ const REFUSAL_ENDING = {
   reopened: "info",
   reset: "info",
   analysis_changed: "info",
+  engine_changed: "info",
   agent_no_longer_observes: "info",
   agent_no_longer_on_inbox: "info",
   contact_auth_refused: "info",
@@ -1397,6 +1398,18 @@ export async function runObserve(
       monNow.analysis !== "incremental"
     ) {
       refusal = "analysis_changed";
+      return false;
+    }
+    // The engine and the decisions apply mode, asked again: an operator switching to `shadow` (or off
+    // the engine) while the call is in flight has refused the writes this tick would make next.
+    const applyNow =
+      monNow?.decisions?.apply === "enforce" ? "enforce" : "shadow";
+    if (
+      monNow !== null &&
+      (monNow.engine !== (decisions === null ? "llm" : "decisions") ||
+        (decisions?.ok === true && applyNow !== decisions.config.apply))
+    ) {
+      refusal = "engine_changed";
       return false;
     }
     // The contact gate's rule, against the settings and the conversation as they are now: a label

@@ -211,6 +211,16 @@ describe("the decisions block at the write boundary", () => {
       },
       "monitoring.decisions.rules.0.when.0.equals",
     ],
+    [
+      "the decisions engine without a block",
+      { engine: "decisions" },
+      "monitoring.engine",
+    ],
+    [
+      "the decisions engine with the block removed",
+      { engine: "decisions", decisions: null },
+      "monitoring.engine",
+    ],
   ])("refused: %s", (_label, monitoring, field) => {
     const r = refusal(monitoring);
     expect(r?.statusCode).toBe(400);

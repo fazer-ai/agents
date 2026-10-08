@@ -1044,6 +1044,22 @@ export async function runObserve(
   const labelWrites: LabelWrite[] = [];
   // Declared above `line` because every exit after a write carries it: a committed label is
   // never retried, so a line without it loses the write. Absent on exits before any tool ran.
+  // A `decisions` tick is the classification API's, on every exit it shares with the model's tick
+  // (a fence refusal after a paid call included), never the unrelated chat model's.
+  const attribution =
+    decisions === null
+      ? { provider: cfg.mc.provider, model: cfg.mc.model, engine: {} }
+      : decisions.ok
+        ? {
+            provider: decisions.config.provider,
+            model: decisions.config.model,
+            engine: { engine: "decisions", apply: decisions.config.apply },
+          }
+        : {
+            provider: decisions.provider,
+            model: decisions.model,
+            engine: { engine: "decisions" },
+          };
   const line = (
     status: "ok" | "error" | "skipped",
     detail: Record<string, unknown>,
@@ -1053,10 +1069,11 @@ export async function runObserve(
       stage: "observe",
       level,
       status,
-      provider: cfg.mc.provider,
-      model: cfg.mc.model,
+      provider: attribution.provider,
+      model: attribution.model,
       detail: {
         reason,
+        ...attribution.engine,
         ...detail,
         ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
       },

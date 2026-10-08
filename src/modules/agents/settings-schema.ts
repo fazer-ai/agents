@@ -883,7 +883,20 @@ const monitoringShape = (decisions: z.ZodType<Record<string, unknown>>) => ({
     ),
 });
 // The write boundary asks the whole block; the MCP argument is a patch, merged before it is whole.
-const monitoring = z.looseObject(monitoringShape(decisionsSchema));
+const monitoring = z
+  .looseObject(monitoringShape(decisionsSchema))
+  .superRefine((v, ctx) => {
+    // The engine and its block are one choice: `decisions` without a block would skip every tick.
+    // `wholeBlock`, so any edit of the monitoring block re-asks it (see decisionsSchema).
+    if (v.engine === "decisions" && (v.decisions ?? null) === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["engine"],
+        message: "the decisions engine needs a decisions block",
+        params: { wholeBlock: 1 },
+      });
+    }
+  });
 const monitoringPatch = z.looseObject(monitoringShape(decisionsPatchSchema));
 
 export const BEHAVIOR_PATCH_SHAPE = {

@@ -832,6 +832,9 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       expect((line.detail as Record<string, unknown>).skipped).toBe(
         "agent_no_longer_observes",
       );
+      // The paid call was the classification API's, so the refusal is attributed to it.
+      expect([line.provider, line.model]).toEqual(["typesafe", "jev-latest"]);
+      expect((line.detail as Record<string, unknown>).engine).toBe("decisions");
     } finally {
       await suDb.agent.update({
         where: { id: agentId },

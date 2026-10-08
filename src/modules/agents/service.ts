@@ -768,7 +768,8 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
         expected: expected ?? describeExpected(issue),
         changedAt:
           typeof whole === "number"
-            ? issue.path.slice(0, issue.path.length - whole)
+            ? // `filter`, not a cut: a path is not text (tests/lib/astral-cap-sweep.test.ts).
+              issue.path.filter((_, i) => i < issue.path.length - whole)
             : undefined,
       });
     }

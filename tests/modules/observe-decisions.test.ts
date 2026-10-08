@@ -963,6 +963,37 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     }
   });
 
+  test("arguments the tool would refuse read the same in shadow as on enforce", async () => {
+    const p = providerDouble(() =>
+      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
+    );
+    for (const apply of ["shadow", "enforce"] as const) {
+      await setMonitoring(
+        decisionsBlock({
+          apply,
+          rules: [
+            {
+              when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+              action: { tool: "private_note", args: {} },
+            },
+          ],
+        }),
+      );
+      const { log } = await tick(p.fetchImpl);
+      expect(log.notes).toEqual([]);
+      const line = await lastLine();
+      expect(line.level).toBe("warn");
+      expect((line.detail as Record<string, unknown>).actions).toEqual([
+        {
+          rule: 0,
+          tool: "private_note",
+          outcome: "failed",
+          failure: "invalid_arguments",
+        },
+      ]);
+    }
+  });
+
   test("a rule whose tool the agent was not granted does not act, and the line says so at warn", async () => {
     const grant = await suDb.agentToolSelection.create({
       data: {

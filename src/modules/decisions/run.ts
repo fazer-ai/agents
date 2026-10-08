@@ -7,6 +7,10 @@ import {
   type StructuredToolInterface,
   ToolInputParsingException,
 } from "@langchain/core/tools";
+import {
+  interopSafeParseAsync,
+  isInteropZodSchema,
+} from "@langchain/core/utils/types";
 import type { DecisionApply, DecisionsConfig } from "./config";
 import {
   DECISION_PROVIDER_REGISTRY,
@@ -80,7 +84,21 @@ export async function applyDecisions(
       continue;
     }
     if (config.apply === "shadow") {
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "shadow" });
+      // The arguments are asked of the tool's own schema without running it, so shadow shows the
+      // `invalid_arguments` enforce would hit. The watcher's writes are native tools, schema'd in zod.
+      const fits =
+        !isInteropZodSchema(tool.schema) ||
+        (await interopSafeParseAsync(tool.schema, f.args)).success;
+      actions.push(
+        fits
+          ? { rule: f.rule, tool: f.tool, outcome: "shadow" }
+          : {
+              rule: f.rule,
+              tool: f.tool,
+              outcome: "failed",
+              failure: "invalid_arguments",
+            },
+      );
       continue;
     }
     signal.throwIfAborted();

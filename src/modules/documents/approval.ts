@@ -1,8 +1,9 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
+import { auditMutation } from "@/modules/audit/service";
 import { upsertJobRow } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
@@ -267,6 +268,25 @@ function approvalDocumentKey(row: {
   return `${APPROVAL_KEY_PREFIX}${row.id}:${hasher.digest("hex")}`;
 }
 
+// A decision in the tenant's trail, written in the transaction that made it. The status only: the
+// document's values and the reviewer's note are customer and team text, which the trail does not keep.
+async function auditDecision(
+  db: ScopedDb,
+  ctx: TenantContext,
+  requestId: bigint,
+  status: "APPROVED" | "REJECTED",
+): Promise<void> {
+  await auditMutation(db, ctx, {
+    action:
+      status === "APPROVED"
+        ? "document_approval.approve"
+        : "document_approval.reject",
+    target: `document_approval:${requestId}`,
+    before: { status: "PENDING" },
+    after: { status },
+  });
+}
+
 function notPending(status: string): AppError {
   return new AppError(
     `this approval request is ${status.toLowerCase()}, not pending`,
@@ -302,16 +322,18 @@ export async function approveDocumentRequest(params: {
   const base = params.base ?? basePrisma;
   const { ctx, requestId } = params;
   const now = params.now ?? new Date();
-  const claimed = await runScopedOn(base, ctx, (db) =>
-    db.documentApprovalRequest.updateMany({
+  const claimed = await runScopedOn(base, ctx, async (db) => {
+    const r = await db.documentApprovalRequest.updateMany({
       where: { id: requestId, status: "PENDING", expiresAt: { gt: now } },
       data: {
         status: "APPROVED",
         reviewerUserId: params.reviewerUserId ?? null,
         decidedAt: now,
       },
-    }),
-  );
+    });
+    if (r.count === 1) await auditDecision(db, ctx, requestId, "APPROVED");
+    return r;
+  });
   const row = await loadRequest(ctx, requestId, base);
   if (claimed.count === 0 && row.status !== "APPROVED") {
     if (row.status === "PENDING") {
@@ -367,8 +389,8 @@ export async function rejectDocumentRequest(params: {
   const note = params.note?.trim()
     ? clipText(makeStorable(params.note.trim()), 2_000)
     : null;
-  const claimed = await runScopedOn(base, ctx, (db) =>
-    db.documentApprovalRequest.updateMany({
+  const claimed = await runScopedOn(base, ctx, async (db) => {
+    const r = await db.documentApprovalRequest.updateMany({
       where: { id: requestId, status: "PENDING", expiresAt: { gt: now } },
       data: {
         status: "REJECTED",
@@ -376,8 +398,10 @@ export async function rejectDocumentRequest(params: {
         note,
         decidedAt: now,
       },
-    }),
-  );
+    });
+    if (r.count === 1) await auditDecision(db, ctx, requestId, "REJECTED");
+    return r;
+  });
   const row = await loadRequest(ctx, requestId, base);
   if (claimed.count === 0) {
     if (row.status === "PENDING") {

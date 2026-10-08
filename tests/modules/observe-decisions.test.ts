@@ -440,6 +440,14 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     });
     extraMessages = [
       {
+        id: 15,
+        content: "Eco do telefone",
+        message_type: 1,
+        private: false,
+        attachments: [],
+        content_attributes: { external_sender_name: "WhatsApp" },
+      },
+      {
         id: 14,
         content: "Bot de outra instância",
         message_type: 1,
@@ -487,8 +495,39 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       expect(state).toContain("Assistente virtual: Resposta da assistente");
       expect(state).toContain("Atendente (pessoa): Resposta da atendente");
       expect(state).toContain("Atendente: Bot de outra instância");
+      // The test inbox names no provider, so the phone marker is not trusted to name a person.
+      expect(state).toContain("Atendente: Eco do telefone");
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        data: { provider: "baileys" },
+      });
+      const p2 = providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.1 },
+          assunto: {
+            type: "choice",
+            choice: "duvida",
+            confidence: 0.9,
+            probabilities: { reembolso: 0.05, troca: 0.05, duvida: 0.9 },
+          },
+          irritacao: {
+            type: "score",
+            score: 0.2,
+            confidence: 0.6,
+            probabilities: { "0": 0.8, "1": 0.1, "2": 0.1 },
+          },
+        }),
+      );
+      await tick(p2.fetchImpl);
+      expect(String(p2.requests[0]?.body.state)).toContain(
+        "Atendente (pessoa): Eco do telefone",
+      );
     } finally {
       extraMessages = [];
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        data: { provider: null },
+      });
     }
   });
 

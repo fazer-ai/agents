@@ -114,13 +114,21 @@ describe("who wrote each line of the observer's transcript", () => {
     ]);
   });
 
-  test("a person answering on the paired phone is a person", () => {
-    const out = lines([
+  test("a paired-phone reply is a person only where the provider's echo can be trusted", () => {
+    const phone = [
       row(1, "outgoing", "Liguei pra você agora", {
-        externalSenderName: "Fran",
+        externalSenderName: "WhatsApp",
       }),
-    ]);
-    expect(out[0]).toBe("Atendente (pessoa): Liguei pra você agora");
+    ];
+    const trusted = renderTranscript(
+      transcriptFromRows(phone, 20, { trustPhoneEcho: true }),
+    );
+    expect(trusted).toBe("Atendente (pessoa): Liguei pra você agora");
+    // On a provider that does not reserve echo ids, a lost send response comes back as this same
+    // shape carrying the AI's own reply, so it is not called a person.
+    expect(renderTranscript(transcriptFromRows(phone, 20))).toBe(
+      "Atendente: Liguei pra você agora",
+    );
   });
 
   test("without the instance's bots nothing is attributed to the AI", () => {

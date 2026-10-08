@@ -46,6 +46,7 @@ import {
   parseChatwootMessages,
   toRenderable,
 } from "@/modules/chatwoot/messages";
+import { providerReservesEchoIds } from "@/modules/chatwoot/normalize";
 import {
   renderAttendantMessage,
   renderInboundMessage,
@@ -876,6 +877,7 @@ const ROLE_LABEL: Record<TranscriptLine["role"], string> = {
 function outgoingRole(
   m: ChatwootMessageRow,
   ownBotIds: ReadonlySet<number>,
+  trustPhoneEcho: boolean,
 ): TranscriptLine["role"] {
   if (m.imported) return "attendant";
   if (m.platformSent === true) return "assistant";
@@ -883,7 +885,10 @@ function outgoingRole(
     return m.senderId !== null && ownBotIds.has(m.senderId)
       ? "assistant"
       : "attendant";
-  if (m.senderType === "user" || m.externalSenderName) return "person";
+  if (m.senderType === "user") return "person";
+  // A paired-phone reply is a person only where the provider reserves its echo ids: elsewhere a lost
+  // send response comes back as the same sender-less, marked echo of our own reply.
+  if (m.externalSenderName && trustPhoneEcho) return "person";
   return "attendant";
 }
 
@@ -893,9 +898,10 @@ export function transcriptFromRows(
   rows: ChatwootMessageRow[],
   limit: number,
   // The Chatwoot agent bot ids this instance provisioned, every agent's and not only the observer's.
-  opts: { ownBotIds?: ReadonlySet<number> } = {},
+  opts: { ownBotIds?: ReadonlySet<number>; trustPhoneEcho?: boolean } = {},
 ): TranscriptLine[] {
   const ownBotIds = opts.ownBotIds ?? new Set<number>();
+  const trustPhoneEcho = opts.trustPhoneEcho === true;
   // Built from EVERY row fetched, not from the windowed slice: a reply inside the window can quote a
   // message older than it, and the quote is then the only thing that says what it is about.
   const resolveQuoted = buildQuoteResolver(rows);
@@ -927,7 +933,9 @@ export function transcriptFromRows(
     if (!clean) continue;
     out.push({
       role:
-        m.messageType === "incoming" ? "customer" : outgoingRole(m, ownBotIds),
+        m.messageType === "incoming"
+          ? "customer"
+          : outgoingRole(m, ownBotIds, trustPhoneEcho),
       text: clean,
     });
   }
@@ -1046,6 +1054,8 @@ export async function runObserve(
         // NOTE: read with the boundary, from the same row, so a second `/reset` cannot land between
         // them.
         resetClearedLabels: true,
+        // Whether a phone-echo marker can be trusted to name a person (`providerReservesEchoIds`).
+        inbox: { select: { provider: true } },
       },
     });
     const cfg = await loadAgentConfig(
@@ -1323,6 +1333,7 @@ export async function runObserve(
   );
   const transcript = transcriptFromRows(rows, mon.window.messages, {
     ownBotIds,
+    trustPhoneEcho: providerReservesEchoIds(conv?.inbox?.provider ?? null),
   });
   // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
   // the operator wiped is not part of this one either.

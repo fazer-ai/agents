@@ -149,6 +149,11 @@ export function causeKeyOf(ev: FlowEvent): string | null {
   if (ev.stage === "channel_error") {
     return `channel_error:${vocabulary("code", detail.code) ?? "unknown"}`;
   }
+  // An answer to a stranded message that came late enough that the customer waited for it: a cause,
+  // so it reaches a channel whatever its minimum level, and a run of them is one alert.
+  if (ev.stage === "delivery") {
+    return isLateAnswer(ev) ? "delivery:late_answer" : null;
+  }
   if (ev.stage === "dead_letter") {
     // A discarded outcome is a warning on a job that is still live and will run again, not lost work:
     // giving it the death's key would let it take the window and fold the real death into its count.
@@ -476,17 +481,23 @@ const RECOVERED_OUTCOMES: ReadonlySet<string> = new Set([
 // waited for it, so it keeps its own alert. A healthy instance strands almost none, so one at a time
 // says nothing an operator acts on, and after an incident the backlog drains for hours: paging each
 // one buries the alert that means a customer is still waiting.
-export function recoverySubjectOf(
-  ev: FlowEvent,
-  lateReplyAgeMs: number = config.alertWorker.lateReplyAgeMs,
-): boolean {
+export function recoverySubjectOf(ev: FlowEvent): boolean {
   if (ev.stage !== "delivery") return false;
   const outcome = ev.detail?.outcome;
   if (typeof outcome !== "string" || !RECOVERED_OUTCOMES.has(outcome))
     return false;
-  if (outcome !== "answered_late") return true;
+  return !isLateAnswer(ev);
+}
+
+// An `answered_late` whose answer came more than `lateReplyAgeMs` after the message arrived.
+function isLateAnswer(
+  ev: FlowEvent,
+  lateReplyAgeMs: number = config.alertWorker.lateReplyAgeMs,
+): boolean {
+  if (ev.stage !== "delivery" || ev.detail?.outcome !== "answered_late")
+    return false;
   const age = ev.detail?.ageMs;
-  return !(typeof age === "number" && age > lateReplyAgeMs);
+  return typeof age === "number" && age > lateReplyAgeMs;
 }
 
 // The cause key of the recovery rate, read by the alert body to word its link.
@@ -519,6 +530,18 @@ export async function dispatchRecoveryRateAlert(
         OR: [...RECOVERED_OUTCOMES].map((outcome) => ({
           detail: { path: ["outcome"], equals: outcome },
         })),
+        // The late answers alert on their own (`causeKeyOf`), so they are not counted here too.
+        NOT: {
+          AND: [
+            { detail: { path: ["outcome"], equals: "answered_late" } },
+            {
+              detail: {
+                path: ["ageMs"],
+                gt: config.alertWorker.lateReplyAgeMs,
+              },
+            },
+          ],
+        },
         ...(excludeAgentIds.length > 0
           ? {
               AND: [

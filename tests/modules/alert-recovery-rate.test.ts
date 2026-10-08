@@ -117,14 +117,17 @@ async function freshTenant(): Promise<bigint> {
 }
 
 // A channel that takes warnings, so a per-delivery alert would land on it if one were raised.
-async function channel(tenantId: bigint): Promise<bigint> {
+async function channel(
+  tenantId: bigint,
+  minLevel: "warn" | "error" = "warn",
+): Promise<bigint> {
   const ch = await suDb.alertChannel.create({
     data: {
       tenantId,
       name: `ch-${seq++}`,
       type: "discord",
       url: encryptJson(outboundUrl(`/api/webhooks/rec-${seq}`)),
-      minLevel: "warn",
+      minLevel,
       stages: [],
       excludeAgentIds: [],
     },
@@ -290,6 +293,38 @@ describe.skipIf(!dbUp)("recovery rate alerts", () => {
     expect((await deliveries(ch)).map((r) => r.summary)).toEqual([
       "[delivery] ok: answered_late",
     ]);
+  });
+
+  test("a late answer reaches an error-only channel, and a run of them is one alert", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId, "error");
+    for (let i = 0; i < 2; i++) {
+      await writeFlowEvent(
+        flow(tenantId),
+        line("answered_late", { detail: { ageMs: LATE_MS + 60_000 } }),
+      );
+    }
+    const rows = await deliveries(ch);
+    expect(rows.map((r) => [r.causeKey, r.summary, r.count])).toEqual([
+      ["delivery:late_answer", "[delivery] ok: answered_late", 2],
+    ]);
+  });
+
+  test("late answers are not counted toward the recovery rate", async () => {
+    const tenantId = await freshTenant();
+    const ch = await channel(tenantId);
+    for (let i = 0; i < THRESHOLD; i++) {
+      await writeFlowEvent(
+        flow(tenantId),
+        line("answered_late", { detail: { ageMs: LATE_MS + 60_000 } }),
+      );
+    }
+    await recover(tenantId, quiet(THRESHOLD - 1));
+    expect(
+      (await deliveries(ch)).filter(
+        (r) => r.causeKey === "rate:delivery:recovered",
+      ),
+    ).toEqual([]);
   });
 
   test("the playground does not count", async () => {

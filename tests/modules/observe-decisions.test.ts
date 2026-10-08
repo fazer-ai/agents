@@ -64,6 +64,9 @@ interface ClientLog {
   publicSends: number;
 }
 
+// Rows a test appends after the customer's message, read on every fetch until it clears them.
+let extraMessages: Record<string, unknown>[] = [];
+
 function stubClient(labels: string[], log: ClientLog): ChatwootClient {
   return {
     getMessages: async () => ({
@@ -75,6 +78,7 @@ function stubClient(labels: string[], log: ClientLog): ChatwootClient {
           private: false,
           attachments: [],
         },
+        ...extraMessages,
       ],
     }),
     getConversationLabels: async () => [...labels],
@@ -398,6 +402,133 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     const { model } = await tick(p.fetchImpl);
     expect(p.requests).toHaveLength(0);
     expect(model.calls).toBeGreaterThan(0);
+  });
+
+  test("the evidence names the instance's AI agent and a person apart", async () => {
+    await setMonitoring(decisionsBlock());
+    // A bot id of ANOTHER instance of the same tenant: bot ids are per Chatwoot server, so on this
+    // one the same number is somebody else's bot.
+    const OTHER_BOT = 4242;
+    const other = await seedChatwootInstance(suDb, {
+      tenantId,
+      accountId: 64,
+      baseUrl: "https://chat.other.example",
+      adminToken: encryptJson("ADMIN2"),
+    });
+    const otherAgent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Outra",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "agent",
+        settings: {},
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: other.id,
+        agentId: otherAgent.id,
+        chatwootAgentBotId: OTHER_BOT,
+        accessToken: encryptJson("BOT2"),
+        webhookSecret: encryptJson("S2"),
+        webhookRouteTokenHash: `dec-route-other-${process.pid}`,
+        name: "Outra",
+      },
+    });
+    extraMessages = [
+      {
+        id: 15,
+        content: "Eco do telefone",
+        message_type: 1,
+        private: false,
+        attachments: [],
+        content_attributes: { external_sender_name: "WhatsApp" },
+      },
+      {
+        id: 14,
+        content: "Bot de outra instância",
+        message_type: 1,
+        private: false,
+        attachments: [],
+        sender: { type: "agent_bot", id: OTHER_BOT },
+      },
+      {
+        id: 12,
+        content: "Resposta da assistente",
+        message_type: 1,
+        private: false,
+        attachments: [],
+        sender: { type: "agent_bot", id: OUR_BOT },
+      },
+      {
+        id: 13,
+        content: "Resposta da atendente",
+        message_type: 1,
+        private: false,
+        attachments: [],
+        sender: { type: "user", id: 7 },
+      },
+    ];
+    try {
+      const p = providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.1 },
+          assunto: {
+            type: "choice",
+            choice: "duvida",
+            confidence: 0.9,
+            probabilities: { reembolso: 0.05, troca: 0.05, duvida: 0.9 },
+          },
+          irritacao: {
+            type: "score",
+            score: 0.2,
+            confidence: 0.6,
+            probabilities: { "0": 0.8, "1": 0.1, "2": 0.1 },
+          },
+        }),
+      );
+      await tick(p.fetchImpl);
+      const state = String(p.requests[0]?.body.state);
+      expect(state).toContain("Assistente virtual: Resposta da assistente");
+      expect(state).toContain("Atendente (pessoa): Resposta da atendente");
+      expect(state).toContain("Atendente: Bot de outra instância");
+      // The test inbox names no provider, so the phone marker is not trusted to name a person.
+      expect(state).toContain("Atendente: Eco do telefone");
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        data: { provider: "baileys" },
+      });
+      const p2 = providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.1 },
+          assunto: {
+            type: "choice",
+            choice: "duvida",
+            confidence: 0.9,
+            probabilities: { reembolso: 0.05, troca: 0.05, duvida: 0.9 },
+          },
+          irritacao: {
+            type: "score",
+            score: 0.2,
+            confidence: 0.6,
+            probabilities: { "0": 0.8, "1": 0.1, "2": 0.1 },
+          },
+        }),
+      );
+      await tick(p2.fetchImpl);
+      expect(String(p2.requests[0]?.body.state)).toContain(
+        "Atendente (pessoa): Eco do telefone",
+      );
+    } finally {
+      extraMessages = [];
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        data: { provider: null },
+      });
+    }
   });
 
   test("enforce: an answer over the threshold runs the rule's tool, and nothing else", async () => {

@@ -15,6 +15,12 @@ export const CHATWOOT_AUTH_HEADER = "api-access-token";
 // Chatwoot's own keys (`in_reply_to`, `is_reaction`) and with the operator's own automations.
 export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
 
+// Set on everything the platform sends on the ADMIN token (a cross-inbox case opening and its
+// notes). Chatwoot files those under the token's owner, a user, so without it the AI agent's own
+// words read as a person's to whoever reads the conversation back. The owner typing by hand in
+// Chatwoot sends without it, which is why the user id cannot stand in for the mark.
+export const CHATWOOT_PLATFORM_SENT_KEY = "fazer_ai_platform_sent";
+
 // The whole reply a voice note was cut from, set when the cut took something out. The attachment's
 // `transcribed_text` is the words actually said, so a URL or an address leaves a hole in it; when
 // the channel refuses the audio, the text sent in its place is read from here. It comes back on the

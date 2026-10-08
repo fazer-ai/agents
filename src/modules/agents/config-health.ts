@@ -17,6 +17,7 @@ import {
   scheduleCanClose,
 } from "@/modules/business-hours/hours";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import { readKnowledgeConfig } from "@/modules/rag/review-settings";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import {
@@ -63,6 +64,7 @@ export type ConfigIssueKey =
   | "suggestionReviewModel"
   | "modelFallback"
   | "vision"
+  | "decisions"
   | "guardrails"
   | "guardrailsFailing"
   | "contactAuth"
@@ -709,6 +711,19 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "vision", tab: "behavior", sectionId: "vision" },
     credIssue(input.visionEnabled, input.visionCredentialRef, "apiKey", vault),
+  );
+  // The classification API's key, on an agent that decides through it: unresolved, the tick skips
+  // every burst (`decisions_credential_unresolved`) while everything else looks configured.
+  const monitoring = readMonitoringConfig(input.settings);
+  const decisionsRef = monitoring.decisions?.credentialRef;
+  push(
+    { key: "decisions", tab: "behavior", sectionId: "observation" },
+    credIssue(
+      monitoring.engine === "decisions" && monitoring.decisions !== null,
+      typeof decisionsRef === "string" ? decisionsRef : "",
+      "apiKey",
+      vault,
+    ),
   );
   // NOTE: gated on the ref being present, so "missing" can never fire for this feature: enabled
   // without a credential is a legitimate configuration here, unlike the blocks above.

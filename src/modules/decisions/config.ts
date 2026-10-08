@@ -393,3 +393,75 @@ function conditionFor(
   }
   return { question: c.question, minProbability: c.minProbability ?? 1 };
 }
+
+// THE BLOCK AS EVERY REWRITE OF `monitoring` CARRIES IT (the MCP merge, the console's save, the audit
+// projection): the declared fields only, picked by name at every level. The schema is loose, so a
+// stored block may hold any key; one the engine does not read (an `apiKey` pasted beside the ref)
+// must not travel on into an audit row. `action.args` is the tool's own input and goes as written.
+const pick = (
+  v: unknown,
+  keys: readonly string[],
+): Record<string, unknown> | null => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    const x = (v as Record<string, unknown>)[k];
+    if (x !== undefined) out[k] = x;
+  }
+  return out;
+};
+const list = (v: unknown, each: (x: unknown) => unknown): unknown =>
+  Array.isArray(v) ? v.map(each) : v;
+const entry = (x: unknown) => pick(x, ["value", "description"]) ?? x;
+
+export function projectDecisionsBlock(
+  raw: unknown,
+): Record<string, unknown> | null {
+  const top = pick(raw, [
+    "provider",
+    "model",
+    "credentialRef",
+    "questions",
+    "rules",
+    "apply",
+  ]);
+  if (top === null) return null;
+  if (top.questions !== undefined) {
+    top.questions = list(top.questions, (q) => {
+      const o = pick(q, ["name", "type", "instructions", "options", "levels"]);
+      if (o === null) return q;
+      if (o.options !== undefined) o.options = list(o.options, entry);
+      if (o.levels !== undefined) o.levels = list(o.levels, entry);
+      return o;
+    });
+  }
+  if (top.rules !== undefined) {
+    top.rules = list(top.rules, (r) => {
+      const o = pick(r, ["when", "action"]);
+      if (o === null) return r;
+      if (o.when !== undefined) {
+        o.when = list(
+          o.when,
+          (c) =>
+            pick(c, [
+              "question",
+              "minProbability",
+              "equals",
+              "minConfidence",
+              "minLevel",
+              "maxLevel",
+            ]) ?? c,
+        );
+      }
+      if (o.action !== undefined) {
+        const a = pick(o.action, ["tool", "args"]);
+        if (a !== null) {
+          if (a.args !== undefined) a.args = structuredClone(a.args);
+          o.action = a;
+        }
+      }
+      return o;
+    });
+  }
+  return structuredClone(top);
+}

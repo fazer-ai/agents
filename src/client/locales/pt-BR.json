@@ -964,7 +964,8 @@
       "observer": "Observador",
       "suggestionReview": "Revisão de sugestão de conhecimento",
       "ttsNormalize": "Preparo do texto para voz",
-      "vision": "Leitura de imagem"
+      "vision": "Leitura de imagem",
+      "decision": "API de decisão"
     },
     "openInLangfuse": "Abrir no Langfuse",
     "percent": "%",
@@ -1301,7 +1302,8 @@
       "suggestionReviewModel": "O avaliador de sugestões tem um modelo próprio que não consegue rodar com a configuração atual, então as sugestões de conhecimento do agente chegam à fila de aprovação sem avaliação. Confira fornecedor, modelo, chave e endpoint.",
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
       "ttsNormalize": "A reescrita para fala está ligada mas a configuração de modelo dela não pode rodar, então o áudio sai sem ela. Confira provedor, modelo, chave e endpoint.",
-      "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
+      "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida.",
+      "decisions": "O motor de decisões está ligado, mas a API de classificação está sem chave definida, então o observador não decide nada."
     },
     "configIssueGuardrailsFailing": "Os guardrails estão ligados, mas {{failures}} das Checagens não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}). Uma checagem que não rodou não pegou nada e não segurou nada. Confira “Modelo do guardrails”, “Base URL” e “Chave de API”.",
     "configIssueGuardrailsFailingCause": "Os guardrails estão ligados, mas {{failures}} das Checagens não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}). Uma checagem que não rodou não pegou nada e não segurou nada. A última respondeu: {{error}}",
@@ -1319,7 +1321,8 @@
       "suggestionReviewModel": "A credencial do avaliador de sugestões está referenciada, mas ainda não foi preenchida, então as sugestões chegam à fila sem avaliação.",
       "tts": "A credencial de resposta em áudio está referenciada, mas ainda não foi preenchida.",
       "ttsNormalize": "A credencial da reescrita para fala está referenciada, mas ainda não foi preenchida.",
-      "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
+      "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida.",
+      "decisions": "A credencial da API de classificação está referenciada, mas ainda não foi preenchida, então o observador não decide nada."
     },
     "configIssuesTitle": "Avisos de configuração",
     "configIssueTextCap": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado.",
@@ -1335,7 +1338,8 @@
       "suggestionReviewModel": "A credencial do avaliador de sugestões não existe mais, então as sugestões chegam à fila sem avaliação.",
       "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",
       "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
-      "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
+      "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos.",
+      "decisions": "A credencial da API de classificação não existe mais, então o observador não decide nada."
     },
     "configIssueWrongKind": {
       "contactAuth": "A credencial da autorização do contato é de um tipo que este produto nunca envia para outro serviço, então a verificação falha e o agente fica em silêncio. Escolha uma credencial capaz de autenticar uma requisição.",
@@ -1348,7 +1352,8 @@
       "suggestionReviewModel": "A credencial do avaliador de sugestões é de um tipo que não pode ser usado como chave de API, então as sugestões chegam à fila sem avaliação. Escolha uma credencial que guarde uma única chave.",
       "tts": "A credencial da resposta em áudio é de um tipo que não pode ser usado como chave de API, então as respostas saem em texto. Escolha uma credencial que guarde uma única chave.",
       "ttsNormalize": "A credencial da reescrita para fala é de um tipo que não pode ser usado como chave de API, então as respostas são faladas sem a reescrita. Escolha uma credencial que guarde uma única chave.",
-      "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave."
+      "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave.",
+      "decisions": "A credencial da API de classificação é de um tipo que não pode ser usado como chave de API, então o observador não decide nada. Escolha uma credencial que guarde uma única chave."
     },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",
     "contactAuth": "Autorização do contato",
@@ -3057,7 +3062,8 @@
       "nudge": "mensagem proativa",
       "observer": "observador",
       "ttsNormalize": "reescrita para voz",
-      "vision": "leitura de imagem ou documento"
+      "vision": "leitura de imagem ou documento",
+      "decision": "API de decisão"
     },
     "noPrice": "sem preço",
     "outputLabel": "Saída",

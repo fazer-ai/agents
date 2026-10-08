@@ -1,3 +1,5 @@
+import { projectDecisionsBlock } from "@/modules/decisions/config";
+
 // What a monitoring agent DOES with what it reads, configured under `agent.settings.monitoring`.
 // Read leniently, like every other behavior block: a missing or malformed field takes its default.
 // It holds only what is about OBSERVING (when to look, how much to read): what a watcher does with
@@ -81,12 +83,7 @@ export function readMonitoringConfig(settings: unknown): MonitoringConfig {
   );
   return {
     engine: bag.engine === "decisions" ? "decisions" : "llm",
-    decisions:
-      bag.decisions &&
-      typeof bag.decisions === "object" &&
-      !Array.isArray(bag.decisions)
-        ? structuredClone(bag.decisions as Record<string, unknown>)
-        : null,
+    decisions: projectDecisionsBlock(bag.decisions),
     analysis: bag.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: {
       messages: clampInt(

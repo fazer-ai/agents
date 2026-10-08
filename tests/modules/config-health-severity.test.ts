@@ -28,6 +28,7 @@ const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   suggestionReviewModel: "degraded",
   modelFallback: "degraded",
   vision: "degraded",
+  decisions: "degraded",
   knowledge: "degraded",
   embedding: "degraded",
   redirect: "degraded",

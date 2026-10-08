@@ -315,6 +315,33 @@ describe("the decisions block at the write boundary", () => {
     expect(saved.decisions).toEqual(valid.decisions);
   });
 
+  test("every rewrite carries the declared fields only, so a key pasted beside them reaches no audit", () => {
+    const pasted = {
+      ...valid.decisions,
+      apiKey: "MARCADOR-SEGREDO",
+      questions: [
+        { ...QUESTIONS[0], extra: "MARCADOR-SEGREDO" },
+        {
+          ...QUESTIONS[1],
+          options: [
+            {
+              value: "reembolso",
+              description: "estorno",
+              x: "MARCADOR-SEGREDO",
+            },
+            { value: "outro", description: "outro" },
+          ],
+        },
+      ],
+      rules: [{ ...RULES[0], note: "MARCADOR-SEGREDO" }],
+    };
+    const read = readMonitoringConfig({
+      monitoring: { ...valid, decisions: pasted },
+    });
+    expect(JSON.stringify(read)).not.toContain("MARCADOR-SEGREDO");
+    expect(read.decisions).toEqual(valid.decisions);
+  });
+
   test("typesafe is not a chat provider", () => {
     let err: { statusCode?: number } | null = null;
     try {

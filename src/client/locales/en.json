@@ -937,7 +937,8 @@
       "observer": "Observer",
       "suggestionReview": "Knowledge suggestion review",
       "ttsNormalize": "Voice text preparation",
-      "vision": "Image reading"
+      "vision": "Image reading",
+      "decision": "Decision API"
     },
     "openInLangfuse": "Open in Langfuse",
     "percent": "%",
@@ -1266,7 +1267,8 @@
       "suggestionReviewModel": "A separate model is set for the suggestion reviewer but its configuration cannot run, so the agent's knowledge suggestions reach the approval queue unreviewed. Check its provider, model, key and endpoint.",
       "tts": "Audio replies are on but have no API key set.",
       "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.",
-      "vision": "Image/document reading is on but has no API key set."
+      "vision": "Image/document reading is on but has no API key set.",
+      "decisions": "The decisions engine is on but its classification API has no key set, so the observer decides nothing."
     },
     "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. Check “Guardrails model”, “Base URL” and “API key”.",
     "configIssueGuardrailsFailingCause": "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. The last one said: {{error}}",
@@ -1284,7 +1286,8 @@
       "suggestionReviewModel": "The suggestion-reviewer credential is referenced but not filled in yet, so knowledge suggestions reach the queue unreviewed.",
       "tts": "The audio-reply credential is referenced but not filled in yet.",
       "ttsNormalize": "The speech-rewrite credential is referenced but not filled in yet.",
-      "vision": "The image-reading credential is referenced but not filled in yet."
+      "vision": "The image-reading credential is referenced but not filled in yet.",
+      "decisions": "The classification API credential is referenced but not filled in yet, so the observer decides nothing."
     },
     "configIssuesTitle": "Configuration warnings",
     "configIssueTextCap": "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored.",
@@ -1300,7 +1303,8 @@
       "suggestionReviewModel": "The suggestion-reviewer credential no longer exists, so knowledge suggestions reach the queue unreviewed.",
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",
       "ttsNormalize": "The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.",
-      "vision": "The image-reading credential no longer exists, so images and documents are not read."
+      "vision": "The image-reading credential no longer exists, so images and documents are not read.",
+      "decisions": "The classification API credential no longer exists, so the observer decides nothing."
     },
     "configIssueWrongKind": {
       "contactAuth": "The contact-authorization credential is a type this product never sends to another service, so the check fails and the agent stays silent. Pick a credential that can authenticate a request.",
@@ -1313,7 +1317,8 @@
       "suggestionReviewModel": "The suggestion-reviewer credential is a type that cannot be used as an API key, so knowledge suggestions reach the queue unreviewed. Pick a credential that holds a single key.",
       "tts": "The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.",
       "ttsNormalize": "The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.",
-      "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key."
+      "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.",
+      "decisions": "The classification API credential is a type that cannot be used as an API key, so the observer decides nothing. Pick a credential that holds a single key."
     },
     "conflictToast": "This agent was changed elsewhere. Reload, or save again to overwrite.",
     "contactAuth": "Contact authorization",
@@ -2975,7 +2980,8 @@
       "nudge": "proactive message",
       "observer": "observer",
       "ttsNormalize": "rewrite for speech",
-      "vision": "image or document read"
+      "vision": "image or document read",
+      "decision": "decision API"
     },
     "noPrice": "no price",
     "outputLabel": "Output",

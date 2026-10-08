@@ -2345,7 +2345,7 @@ export async function returnConversationToAgent(
   // Without a bot assignment, nobody to remove means no request: unassigning an already unassigned
   // conversation changes nothing and could only land after somebody claimed it in the round trip
   // (Chatwoot has no conditional assignment). An unreadable read still writes.
-  const nobodyToRemove =
+  let nobodyToRemove =
     live !== null && live.assigneeStated === true && live.assigneeType === null;
   let handedToBot = alreadyOurs;
   // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
@@ -2418,6 +2418,8 @@ export async function returnConversationToAgent(
           afterStatus?.assigneeType === "User" &&
           afterStatus.assigneeId === ourAgentBotId;
         if (!misread) newHolder = holderOtherThan(afterStatus);
+        if (afterStatus?.assigneeStated === true)
+          nobodyToRemove = afterStatus.assigneeType === null;
       }
     }
     // NOTE: an assignment whose answer named a USER (a Chatwoot that ignores `assignee_type`) put

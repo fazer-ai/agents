@@ -158,4 +158,20 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     await once(n, flaky);
     expect(calls).toBe(2);
   });
+
+  test("a run that held a write back is not reused: the next delivery runs the mirror again", async () => {
+    let calls = 0;
+    const holding: typeof mirrorChatwootEvent = async (...args) => {
+      calls += 1;
+      const r = await mirrorChatwootEvent(...args);
+      return calls === 1 ? { ...r, heldBack: true } : r;
+    };
+    const n = statusEvent(15, "pending", T0);
+    const [a, b] = await Promise.all([once(n, holding), once(n, holding)]);
+    expect(calls).toBe(2);
+    expect(a.heldBack).toBe(true);
+    expect(b.heldBack).toBeUndefined();
+    await once(n, holding);
+    expect(calls).toBe(2);
+  });
 });

@@ -107,17 +107,19 @@ export async function mirrorOncePerEvent(
   }
   const running = inFlight.get(key);
   if (running) {
-    // A leader that failed wrote nothing this delivery can rely on, so it runs its own, as the new
-    // leader (the failed run is not remembered).
+    // A leader that failed, or that held a write back, did not mirror the event whole, so this
+    // delivery runs its own, as the new leader (neither run is remembered).
     const lead = await running.catch(() => null);
-    if (lead !== null) return asFollower(tenantId, lead, base);
+    if (lead !== null && !lead.heldBack) {
+      return asFollower(tenantId, lead, base);
+    }
     return mirrorOncePerEvent(tenantId, instanceId, n, base, opts, mirror);
   }
   const run = mirror(tenantId, instanceId, n, base, opts);
   inFlight.set(key, run);
   try {
     const result = await run;
-    remember(key, result, Date.now());
+    if (!result.heldBack) remember(key, result, Date.now());
     return result;
   } finally {
     inFlight.delete(key);

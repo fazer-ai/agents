@@ -64,6 +64,9 @@ export interface MirrorResult {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: Date | null;
+  // Set when a write this event owes was held back by a transient failure (a redirect ladder that
+  // could not be retired). The event is not fully mirrored, so a later delivery of it must run again.
+  heldBack?: true;
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -390,6 +393,7 @@ export async function mirrorChatwootEvent(
             assigneeId: existing.assigneeId,
             assigneeType: existing.assigneeType,
             lastEventAt: existing.lastEventAt,
+            ...(retiredLadder ? {} : { heldBack: true as const }),
           };
         }
 
@@ -584,6 +588,7 @@ export async function mirrorChatwootEvent(
           assigneeId: nextAssigneeId,
           assigneeType: nextAssigneeType,
           lastEventAt: effectiveLastEventAt,
+          ...(retiredLadder ? {} : { heldBack: true as const }),
         };
       });
     });
@@ -795,53 +800,70 @@ async function upsertInbox(
       chatwootInboxId: n.inboxId,
     },
   };
+  const placeholder = `inbox ${n.inboxId}`;
   const position = inboxMetadataPosition(n);
   // Read, not upsert. Every delivery of an inbox names the same row, and an upsert rewrites it (ON
   // CONFLICT DO UPDATE writes even an identical value, and burns a sequence value).
-  const row = await db.inbox.findUnique({
+  let row = await db.inbox.findUnique({
     where: key,
     select: { id: true, name: true, channelType: true },
   });
   if (!row) {
-    // Many deliveries of a new inbox can miss the row at once; DO NOTHING lands them all on one.
-    await db.inbox.createMany({
+    // Many deliveries of a new inbox can miss the row at once; DO NOTHING lands them all on one. A
+    // delivery whose insert lost goes on to the conditional update below with its own snapshot.
+    const inserted = await db.inbox.createMany({
       data: {
         tenantId,
         chatwootInstanceId: instanceId,
         chatwootInboxId: n.inboxId,
-        name: n.inboxName ?? `inbox ${n.inboxId}`,
+        name: n.inboxName ?? placeholder,
         channelType: n.channel ?? null,
         metadataAt: position,
       },
       skipDuplicates: true,
     });
-    const created = await db.inbox.findUniqueOrThrow({
+    row = await db.inbox.findUniqueOrThrow({
       where: key,
-      select: { id: true },
+      select: { id: true, name: true, channelType: true },
     });
-    return created.id;
+    if (inserted.count > 0) return row.id;
+  }
+  const inboxId = row.id;
+  // The placeholder is not a name the source stated, so the first real name replaces it whatever
+  // the position: an event without a name (a conversation event) must not lock a placeholder in.
+  if (
+    n.inboxName != null &&
+    row.name === placeholder &&
+    n.inboxName !== placeholder
+  ) {
+    await db.inbox.updateMany({
+      where: { id: inboxId, name: placeholder },
+      data: { name: n.inboxName },
+    });
+    row = { ...row, name: n.inboxName };
   }
   const nameChanged = n.inboxName != null && n.inboxName !== row.name;
   const channelChanged = n.channel != null && n.channel !== row.channelType;
-  if (!nameChanged && !channelChanged) return row.id;
+  if (!nameChanged && !channelChanged) return inboxId;
   // NOTE: A change is written only from a payload positioned after the last change, so a late
-  // delivery cannot restore a replaced name. An unchanged payload does NOT move the position: moving
-  // it is a write per delivery, the cost this function exists to remove. An undated payload writes
-  // only over a row never positioned, which is what every row was before the position existed.
+  // delivery cannot restore a replaced name, and the accepted payload writes EVERY field it states:
+  // the read above may be stale, and a field left out would keep an older payload's value under the
+  // newer position. An unchanged payload does NOT move the position (that is the write per delivery
+  // this function exists to remove). An undated payload writes only over a row never positioned.
   await db.inbox.updateMany({
     where: {
-      id: row.id,
+      id: inboxId,
       ...(position
         ? { OR: [{ metadataAt: null }, { metadataAt: { lt: position } }] }
         : { metadataAt: null }),
     },
     data: {
-      ...(nameChanged ? { name: n.inboxName as string } : {}),
-      ...(channelChanged ? { channelType: n.channel } : {}),
+      ...(n.inboxName != null ? { name: n.inboxName } : {}),
+      ...(n.channel != null ? { channelType: n.channel } : {}),
       ...(position ? { metadataAt: position } : {}),
     },
   });
-  return row.id;
+  return inboxId;
 }
 
 // The columns whose change moves who holds a conversation in the fork: the status, the human

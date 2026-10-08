@@ -123,6 +123,46 @@ function mirror(n: NormalizedChatwootEvent) {
   return mirrorChatwootEvent(tenantId, instanceId, n, appDb);
 }
 
+// A client whose first natural-key read of the inbox answers with `fake(real row)`, the way a read
+// taken before a concurrent delivery committed would. Every other call goes through.
+function staleInboxRead(
+  fake: (
+    real: { id: bigint; name: string; channelType: string | null } | null,
+  ) => unknown,
+) {
+  let pending = true;
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, recv) {
+        if (prop === "$extends")
+          return (...a: unknown[]) => wrap(t.$extends(...a));
+        if (prop === "$transaction")
+          return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+            t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+        if (prop !== "inbox") return Reflect.get(t, prop, recv);
+        const delegate = Reflect.get(t, prop, recv);
+        return new Proxy(delegate, {
+          get(d, k, r) {
+            const inner = Reflect.get(d, k, r);
+            if (k !== "findUnique") return inner;
+            return async (args: { where?: Record<string, unknown> }) => {
+              const real = await inner.call(d, args);
+              if (
+                !pending ||
+                !args?.where?.tenantId_chatwootInstanceId_chatwootInboxId
+              )
+                return real;
+              pending = false;
+              return fake(real);
+            };
+          },
+        });
+      },
+    });
+  return wrap(appDb) as PrismaClient;
+}
+
 describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -239,6 +279,106 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     expect(late?.name).toBe("Suporte");
     expect(late?.channel_type).toBe("Channel::Api");
     expect(late?.xmin).toBe(moved?.xmin);
+  });
+
+  test("a newer snapshot accepted over a stale read writes every field it states", async () => {
+    // The row holds B/X at T0+20, but this delivery read A/X before that write landed.
+    await mirror(
+      event({
+        convId: 310,
+        messageId: 310,
+        at: T0 + 10,
+        inboxId: 35,
+        inboxName: "A",
+      }),
+    );
+    await mirror(
+      event({
+        convId: 311,
+        messageId: 311,
+        at: T0 + 20,
+        inboxId: 35,
+        inboxName: "B",
+      }),
+    );
+    const stale = staleInboxRead((real) => real && { ...real, name: "A" });
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      event({
+        convId: 312,
+        messageId: 312,
+        at: T0 + 30,
+        inboxId: 35,
+        inboxName: "A",
+        channel: "Channel::Api",
+      }),
+      stale,
+    );
+    const [row] = await inboxRow(35);
+    expect(row?.name).toBe("A");
+    expect(row?.channel_type).toBe("Channel::Api");
+  });
+
+  test("a delivery whose insert lost the race still applies its newer snapshot", async () => {
+    await mirror(
+      event({
+        convId: 320,
+        messageId: 320,
+        at: T0 + 10,
+        inboxId: 36,
+        inboxName: "Velha",
+      }),
+    );
+    // This delivery missed the row, as if it read before the other insert committed.
+    const missed = staleInboxRead(() => null);
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      event({
+        convId: 321,
+        messageId: 321,
+        at: T0 + 20,
+        inboxId: 36,
+        inboxName: "Nova",
+      }),
+      missed,
+    );
+    const rows = await inboxRow(36);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.name).toBe("Nova");
+  });
+
+  test("an inbox first seen by an event without its name takes the first real name, at any position", async () => {
+    const n = normalizeChatwootEvent({
+      event: "conversation_status_changed",
+      id: 330,
+      inbox_id: 37,
+      status: "pending",
+      contact_inbox: { id: 9_330 },
+      meta: { assignee: null, sender: { id: 8_330, type: "contact" } },
+      channel: "Channel::Whatsapp",
+      last_activity_at: T0 + 50,
+      updated_at: T0 + 50,
+    });
+    if (!n) throw new Error("payload did not normalize");
+    expect(n.inboxName).toBeNull();
+    await mirror(n);
+    const [placeholder] = await inboxRow(37);
+    expect(placeholder?.name).toBe("inbox 37");
+
+    // A message positioned before the conversation event, carrying the inbox's real name.
+    await mirror(
+      event({
+        convId: 331,
+        messageId: 331,
+        at: T0 + 40,
+        inboxId: 37,
+        inboxName: "Vendas",
+      }),
+    );
+    const [named] = await inboxRow(37);
+    expect(named?.name).toBe("Vendas");
   });
 
   test("a contact snapshot repeated at the same position writes nothing", async () => {

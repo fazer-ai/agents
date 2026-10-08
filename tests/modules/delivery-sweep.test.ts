@@ -173,6 +173,20 @@ async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
 // `convId`. Same two obligations as the readers above, and it asserts the count before reading the
 // line: a second line would mean two corrections raced, and reading `[0]` of that would answer with
 // whichever landed first instead of failing.
+// The age the correction line records, from the ledger row's receipt: an answer late enough keeps an
+// alert of its own, so the line has to carry it.
+async function correctionAgeMs(convId: number) {
+  const conv = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { id: true },
+  });
+  const lines = await flowLogRows(suDb, {
+    where: { tenantId, conversationId: conv.id, stage: "delivery" },
+    select: { detail: true },
+  });
+  return (lines[0]?.detail as Record<string, unknown> | undefined)?.ageMs;
+}
+
 async function correctionOutcome(convId: number) {
   const conv = await suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
@@ -1223,6 +1237,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // as answered — the one caller that can tell the difference has to report it.
     expect((await statusOf(reportedSibling.id)).status).toBe("PROCESSED");
     expect(await correctionOutcome(convId)).toBe("answered_late");
+    // Received two minutes ago, settled now.
+    const age = await correctionAgeMs(convId);
+    expect(age).toBeGreaterThanOrEqual(120_000);
+    expect(age).toBeLessThan(120_000 + POLL_DEADLINE_MS + 60_000);
 
     await suDb.agent.update({
       where: { id: agentDbId },

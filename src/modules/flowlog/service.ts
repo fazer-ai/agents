@@ -13,7 +13,9 @@ import {
   causeKeyOf,
   dispatchAlertsForEvent,
   dispatchRateAlert,
+  dispatchRecoveryRateAlert,
   rateSubjectOf,
+  recoverySubjectOf,
 } from "./alerts";
 import { trackFlowWrite } from "./scheduled";
 import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
@@ -154,14 +156,26 @@ export async function writeFlowEvent(
   // Alerting: only warn/error, plus a cause alert at any level (a run the job retries against a dead
   // key is an `info`, and the key still needs a person), and only real (inbox) traffic — a playground
   // error must not page.
+  //
+  // A stranded delivery that ended well pages nobody alone: it counts toward the recovery rate
+  // instead, one alert per window (`dispatchRecoveryRateAlert`).
+  const recovered = recoverySubjectOf(ev);
   if (
     (level === "warn" || level === "error" || causeKeyOf(ev) !== null) &&
-    ctx.source === "inbox"
+    ctx.source === "inbox" &&
+    !recovered
   ) {
     try {
       await dispatchAlertsForEvent(ctx, { ...ev, level }, base);
     } catch (err) {
       logger.warn({ err, turnId: ctx.turnId }, "flowlog alert dispatch failed");
+    }
+  }
+  if (recovered && ctx.source === "inbox") {
+    try {
+      await dispatchRecoveryRateAlert(ctx, base);
+    } catch (err) {
+      logger.warn({ err, turnId: ctx.turnId }, "flowlog recovery alert failed");
     }
   }
   // A transient provider failure also counts toward that provider's rate, at any level: the attempt

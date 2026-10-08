@@ -257,7 +257,7 @@ export async function retireCoveredDeliveries(
       db.chatwootWebhookDelivery.updateManyAndReturn({
         where: { ...where, status: "DEAD" },
         data: { status: "PROCESSED", processedAt: new Date() },
-        select: { deliveryId: true, inboundMessageId: true },
+        select: { deliveryId: true, inboundMessageId: true, receivedAt: true },
       }),
   );
 
@@ -295,14 +295,18 @@ export async function retireCoveredDeliveries(
       {
         stage: "delivery",
         level: "warn",
-        // NOTE: a "warn" that does not page the channel the loss paged (`minLevel` defaults to
-        // "error"), a known gap. Routing it as "error" is worse: alert dispatch coalesces by
-        // (channel, stage, level), so the correction would increment the loss alert instead of
-        // closing it. The DEAD worklist is correct the instant this lands.
+        // NOTE: a "warn" that pages nobody alone: it counts toward the recovery rate, one alert per
+        // window (`recoverySubjectOf`, flowlog/alerts.ts), unless the answer came late enough to keep
+        // its own. Routing it as "error" is worse: alert dispatch coalesces by (channel, stage,
+        // level), so the correction would increment the loss alert instead of closing it. The DEAD
+        // worklist is correct the instant this lands.
         status: "ok",
         detail: {
           outcome: answered ? "answered_late" : "consumed_late",
           messageId: row.inboundMessageId,
+          // How long after the message arrived it was settled: an answer that came late enough keeps an
+          // alert of its own, where every other recovery only counts toward the recovery rate.
+          ageMs: Date.now() - row.receivedAt.getTime(),
           conversationId: params.conversationId,
         },
       },

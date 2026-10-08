@@ -35,6 +35,9 @@ const {
   ALERT_CAUSE_WINDOW_MS,
   ALERT_RATE_THRESHOLD,
   ALERT_RATE_WINDOW_MS,
+  ALERT_RECOVERY_THRESHOLD,
+  ALERT_RECOVERY_WINDOW_MS,
+  ALERT_LATE_REPLY_AGE_MS,
   FLOWLOG_RETENTION_DAYS,
   HEARTBEAT_INTERVAL_MS,
   SPEND_CEILING_POLL_INTERVAL_MS,
@@ -523,6 +526,32 @@ const config = {
       "ALERT_RATE_WINDOW_MS",
       900_000,
       "It is the window ALERT_RATE_THRESHOLD counts transient failures over.",
+      MAX_DURATION_MS,
+    ),
+    // NOTE: Stranded deliveries that a recovery or a later turn took care of, with nothing left for a
+    // person: none pages alone, and this many within the window make one alert, because a healthy
+    // instance strands almost none and a run of them means something is stranding deliveries.
+    recoveryThreshold: parseIntSetting(
+      ALERT_RECOVERY_THRESHOLD,
+      "ALERT_RECOVERY_THRESHOLD",
+      3,
+      "It is how many recovered stranded deliveries within ALERT_RECOVERY_WINDOW_MS make one alert.",
+      MAX_COUNT,
+    ),
+    recoveryWindowMs: parseIntSetting(
+      ALERT_RECOVERY_WINDOW_MS,
+      "ALERT_RECOVERY_WINDOW_MS",
+      3_600_000,
+      "It is the window ALERT_RECOVERY_THRESHOLD counts recovered stranded deliveries over.",
+      MAX_DURATION_MS,
+    ),
+    // NOTE: A stranded message a later turn did answer still pages on its own when the answer came
+    // this long after the message arrived: the customer waited, and that is worth a look.
+    lateReplyAgeMs: parseIntSetting(
+      ALERT_LATE_REPLY_AGE_MS,
+      "ALERT_LATE_REPLY_AGE_MS",
+      1_800_000,
+      "It is how late an answer to a stranded message has to be to alert on its own.",
       MAX_DURATION_MS,
     ),
   },

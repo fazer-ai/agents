@@ -460,3 +460,93 @@ export async function dispatchRateAlert(
     },
   });
 }
+
+// The outcomes that close a stranded delivery with nothing left for a person: a recovery that replayed
+// it (`recovered`), and a later turn that folded it in (`consumed_late`) or answered it
+// (`answered_late`). The losses (`unanswered`, `memory_unrecovered`) and the stranded line itself are
+// not among them: those still need someone and page on their own.
+const RECOVERED_OUTCOMES: ReadonlySet<string> = new Set([
+  "recovered",
+  "consumed_late",
+  "answered_late",
+]);
+
+// A stranded delivery that ended well: it pages nobody alone and counts toward the recovery rate. An
+// answer that came more than `lateReplyAgeMs` after the message is the exception, since the customer
+// waited for it, so it keeps its own alert. A healthy instance strands almost none, so one at a time
+// says nothing an operator acts on, and after an incident the backlog drains for hours: paging each
+// one buries the alert that means a customer is still waiting.
+export function recoverySubjectOf(
+  ev: FlowEvent,
+  lateReplyAgeMs: number = config.alertWorker.lateReplyAgeMs,
+): boolean {
+  if (ev.stage !== "delivery") return false;
+  const outcome = ev.detail?.outcome;
+  if (typeof outcome !== "string" || !RECOVERED_OUTCOMES.has(outcome))
+    return false;
+  if (outcome !== "answered_late") return true;
+  const age = ev.detail?.ageMs;
+  return !(typeof age === "number" && age > lateReplyAgeMs);
+}
+
+export interface RecoveryRateOptions {
+  threshold: number;
+  windowMs: number;
+}
+
+// One alert per window for the stranded deliveries that ended well, counted from the flow log like the
+// provider rate: at the threshold it is a cause keyed `rate:delivery:recovered` with the window as its
+// dedupe window, so the recoveries after it in the window are counted on it, and a run that goes on
+// past the window alerts again.
+export async function dispatchRecoveryRateAlert(
+  ctx: FlowContext,
+  base: PrismaClient,
+  opts: RecoveryRateOptions = {
+    threshold: config.alertWorker.recoveryThreshold,
+    windowMs: config.alertWorker.recoveryWindowMs,
+  },
+): Promise<void> {
+  const since = new Date(Date.now() - opts.windowMs);
+  const recoveredFor = (db: ScopedDb, excludeAgentIds: bigint[]) =>
+    db.executionLog.count({
+      where: {
+        stage: "delivery",
+        source: "inbox",
+        createdAt: { gte: since },
+        OR: [...RECOVERED_OUTCOMES].map((outcome) => ({
+          detail: { path: ["outcome"], equals: outcome },
+        })),
+        ...(excludeAgentIds.length > 0
+          ? {
+              AND: [
+                {
+                  OR: [
+                    { agentId: null },
+                    { agentId: { notIn: excludeAgentIds } },
+                  ],
+                },
+              ],
+            }
+          : {}),
+      },
+    });
+  const recovered = await runScopedOn(base, sysCtx(ctx.tenantId), (db) =>
+    recoveredFor(db, []),
+  );
+  if (recovered < opts.threshold) return;
+  const minutes = Math.max(1, Math.round(opts.windowMs / 60_000));
+  const summaryOf = (n: number) =>
+    `[delivery] ${n} stranded deliveries were recovered in ${minutes} min`;
+  await deliverAlert(ctx, base, {
+    stage: "delivery",
+    level: "warn",
+    rank: LEVEL_RANK.warn as number,
+    summary: summaryOf(recovered),
+    summaryFor: async (db, excludeAgentIds) => {
+      if (excludeAgentIds.length === 0) return summaryOf(recovered);
+      const n = await recoveredFor(db, excludeAgentIds);
+      return n < opts.threshold ? null : summaryOf(n);
+    },
+    cause: { key: "rate:delivery:recovered", windowMs: opts.windowMs },
+  });
+}

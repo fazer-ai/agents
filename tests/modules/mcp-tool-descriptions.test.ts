@@ -110,7 +110,7 @@ const SETTINGS_DESC_CEILING = 2_000;
 // description alone would watch the half that shrank while the shape grew unwatched. Headroom stays
 // tighter than one settings block; how a raise is decided (trim first, keep what a caller cannot
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
-const SETTINGS_SCHEMA_CEILING = 30_700;
+const SETTINGS_SCHEMA_CEILING = 30_800;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

@@ -210,8 +210,12 @@ const vision = z.looseObject({
     .nullable()
     .optional()
     .describe("what the vision model is asked to extract"),
+  // Declared positive integer: the reader throws away zero, negatives and fractions. The cap is a
+  // clamp, so it stays out of the schema (docs/mcp.md, type and choice, never size).
   maxOutputTokens: z
     .number()
+    .int()
+    .positive()
     .nullable()
     .optional()
     .describe(`anthropic default ${ANTHROPIC_VISION_DEFAULT_MAX_TOKENS}`),

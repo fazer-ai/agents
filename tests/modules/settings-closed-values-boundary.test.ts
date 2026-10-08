@@ -67,6 +67,10 @@ describe("closed settings values on the create path", () => {
     ],
     ["monitoring.analysis", { monitoring: { analysis: "sempre" } }],
     ["vision.reasoningEffort", { vision: { reasoningEffort: "turbo" } }],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 0 } }],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: -100 } }],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: 1.5 } }],
+    ["vision.maxOutputTokens", { vision: { maxOutputTokens: "4096" } }],
     ["memory.compaction.enabled", { memory: { compaction: { enabled: 1 } } }],
     // NOTE: keys the schema declares `never` under `input` are tolerated only with the type the
     // reader reads there, so a value it throws away (such as "sim") is still refused.

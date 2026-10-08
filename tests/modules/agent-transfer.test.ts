@@ -798,6 +798,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         fields: starter.fields,
         style: starter.style,
         numberPrefix: "ORC-",
+        requiresApproval: true,
+        approvalTtlHours: 48,
       },
       appDb,
     );
@@ -1243,9 +1245,17 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // nothing at all.
     const dstTemplate = await suDb.documentTemplate.findFirst({
       where: { tenantId: dstTenant, slug: "orcamento" },
-      select: { id: true, numberPrefix: true },
+      select: {
+        id: true,
+        numberPrefix: true,
+        requiresApproval: true,
+        approvalTtlHours: true,
+      },
     });
     expect(dstTemplate?.numberPrefix).toBe("ORC-");
+    // A template that asks for approval asks it at the destination too.
+    expect(dstTemplate?.requiresApproval).toBe(true);
+    expect(dstTemplate?.approvalTtlHours).toBe(48);
     // …and the disabled one arrives disabled.
     const dstOff = await suDb.documentTemplate.findFirst({
       where: { tenantId: dstTenant, slug: "desativado" },

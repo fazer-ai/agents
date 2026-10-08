@@ -345,6 +345,59 @@ describe.skipIf(!dbUp)("document approval", () => {
     expect((await counts()).lastNumber).toBe(after.lastNumber);
   });
 
+  test("an approved request answers with its document after the template is deleted", async () => {
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const doomed = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Apagado depois",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+        requiresApproval: true,
+      },
+      appDb,
+    );
+    const [built] = buildDocumentTools(
+      [
+        {
+          templateId: BigInt(doomed.id),
+          name: doomed.name,
+          slug: doomed.slug,
+          description: null,
+          fields: doomed.fields as DocumentField[],
+        },
+      ],
+      {
+        tenantId: tenantA,
+        turnState: newTurnState(),
+        threadId: `${tenantA}:1:60`,
+        base: appDb,
+        storageDir: DIR,
+      },
+    );
+    await built?.invoke(ARGS);
+    const request = await suDb.documentApprovalRequest.findFirstOrThrow({
+      where: { templateId: BigInt(doomed.id) },
+    });
+    const first = await approveDocumentRequest({
+      ctx: ctx(tenantA),
+      requestId: request.id,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await suDb.documentTemplate.delete({ where: { id: BigInt(doomed.id) } });
+    const again = await approveDocumentRequest({
+      ctx: ctx(tenantA),
+      requestId: request.id,
+      base: appDb,
+      storageDir: DIR,
+    });
+    expect(again.document.id).toBe(first.document.id);
+    expect(again.document.number).toBe(first.document.number);
+  });
+
   test("a request that is not pending, or not this tenant's, issues nothing", async () => {
     const approved = await latestRequestId();
     const rejected = await refusal(

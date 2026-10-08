@@ -5329,6 +5329,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             }),
           ),
         );
+        // flowlog-scope: tenant-wide. The line names its ledger row, whose id is this test's alone.
         const lines = await flowLogRows(suDb, {
           where: {
             tenantId,

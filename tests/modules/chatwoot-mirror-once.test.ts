@@ -116,17 +116,60 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(a.inboxRowId).toBe(b.inboxRowId);
   });
 
-  test("the second route delivering later reuses the run too, and reads the conversation as it stands", async () => {
+  test("the second route delivering later reuses the run while its rows stand still", async () => {
     const m = countingMirror();
     const first = statusEvent(12, "pending", T0);
+    const lead = await once(first, m.fn);
+    const late = await once(first, m.fn);
+    expect(m.runs()).toBe(1);
+    expect(late.applied).toBe(false);
+    expect(late.status).toBe("pending");
+    expect(late.prevStatus).toBe("pending");
+    expect(late.rowVersions).toBe(lead.rowVersions);
+  });
+
+  test("a later delivery over rows that moved since runs again, and the run orders itself as stale", async () => {
+    const m = countingMirror();
+    const first = statusEvent(18, "pending", T0);
     await once(first, m.fn);
     // A newer event moves the conversation between the two deliveries of `first`.
-    await once(statusEvent(12, "resolved", T0 + 20), m.fn);
+    await once(statusEvent(18, "resolved", T0 + 20), m.fn);
     const late = await once(first, m.fn);
-    expect(m.runs()).toBe(2);
+    expect(m.runs()).toBe(3);
     expect(late.applied).toBe(false);
     expect(late.status).toBe("resolved");
-    expect(late.prevStatus).toBe("resolved");
+  });
+
+  test("a write by anyone else to the conversation, its inbox or its contact makes the next delivery run", async () => {
+    const m = countingMirror();
+    const n = statusEvent(19, "pending", T0);
+    const lead = await once(n, m.fn);
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: lead.conversationRowId as bigint },
+      select: { inboxId: true, contactId: true },
+    });
+    await suDb.conversation.update({
+      where: { id: lead.conversationRowId as bigint },
+      data: { redirectOriginDisplayId: 77 },
+    });
+    await once(n, m.fn);
+    expect(m.runs()).toBe(2);
+    await suDb.inbox.update({
+      where: { id: row.inboxId as bigint },
+      data: { name: "renomeada fora do mirror" },
+    });
+    await once(n, m.fn);
+    expect(m.runs()).toBe(3);
+    if (row.contactId !== null) {
+      await suDb.contact.update({
+        where: { id: row.contactId },
+        data: { name: "outro nome" },
+      });
+      await once(n, m.fn);
+      expect(m.runs()).toBe(4);
+    }
+    await once(n, m.fn);
+    expect(m.runs()).toBe(row.contactId !== null ? 4 : 3);
   });
 
   test("a different payload, or the same payload under different options, runs its own mirror", async () => {
@@ -201,7 +244,7 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(later.status).toBe("pending");
   });
 
-  test("an unversioned payload is shared only while its run is in flight, never remembered", async () => {
+  test("an unversioned payload that serializes two transitions alike runs for each of them", async () => {
     const m = countingMirror();
     const bare = (status: string) => {
       const n = statusEvent(17, status, T0);

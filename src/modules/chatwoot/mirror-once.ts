@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { type MirrorResult, mirrorChatwootEvent } from "./mirror";
+import {
+  type MirrorResult,
+  mirrorChatwootEvent,
+  mirrorRowVersions,
+} from "./mirror";
 import type { NormalizedChatwootEvent } from "./types";
 
 // ONE MIRROR PER EVENT, NOT PER ROUTE. Chatwoot delivers an event once per bot route, so an inbox with
@@ -59,16 +63,18 @@ function remember(key: string, result: MirrorResult, now: number): void {
 }
 
 // A follower reports `applied: false` and no transition (`prevStatus` is the current status), so
-// exactly one delivery of an event acts on a transition.
+// exactly one delivery of an event acts on a transition. Null when the rows moved since the leader
+// left them: the same payload over different rows can decide differently, so it has to run.
 async function asFollower(
   tenantId: bigint,
   lead: MirrorResult,
   base: PrismaClient,
-): Promise<MirrorResult> {
+): Promise<MirrorResult | null> {
   if (lead.conversationRowId === null) return { ...lead, applied: false };
   const rowId = lead.conversationRowId;
-  const current = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.conversation.findUnique({
+  const read = await runScopedOn(base, sysCtx(tenantId), async (db) => ({
+    versions: await mirrorRowVersions(db, rowId),
+    current: await db.conversation.findUnique({
       where: { id: rowId },
       select: {
         status: true,
@@ -77,8 +83,9 @@ async function asFollower(
         lastEventAt: true,
       },
     }),
-  );
-  if (current === null) return { ...lead, applied: false };
+  }));
+  if (read.current === null || read.versions !== lead.rowVersions) return null;
+  const current = read.current;
   return {
     conversationRowId: rowId,
     inboxRowId: lead.inboxRowId,
@@ -89,6 +96,7 @@ async function asFollower(
     assigneeId: current.assigneeId,
     assigneeType: current.assigneeType,
     lastEventAt: current.lastEventAt,
+    rowVersions: read.versions,
   };
 }
 
@@ -103,15 +111,18 @@ export async function mirrorOncePerEvent(
   const key = mirrorEventKey(tenantId, instanceId, n, opts);
   const known = remembered.get(key);
   if (known && Date.now() - known.at <= REMEMBER_MS) {
-    return asFollower(tenantId, known.result, base);
+    const reused = await asFollower(tenantId, known.result, base);
+    if (reused !== null) return reused;
+    remembered.delete(key);
   }
   const running = inFlight.get(key);
   if (running) {
-    // A leader that failed, or that held a write back, did not mirror the event whole, so this
-    // delivery runs its own, as the new leader (neither run is remembered).
+    // A leader that failed, that held a write back, or whose rows moved since does not stand for
+    // this delivery, so it runs its own, as the new leader.
     const lead = await running.catch(() => null);
     if (lead !== null && !lead.heldBack) {
-      return asFollower(tenantId, lead, base);
+      const reused = await asFollower(tenantId, lead, base);
+      if (reused !== null) return reused;
     }
     return mirrorOncePerEvent(tenantId, instanceId, n, base, opts, mirror);
   }
@@ -119,12 +130,7 @@ export async function mirrorOncePerEvent(
   inFlight.set(key, run);
   try {
     const result = await run;
-    // NOTE: Only a versioned payload is remembered past its run. Without the conversation's
-    // `updated_at` (Chatwoot before 4.0.2) two real transitions can serialize to the same payload
-    // (open, resolved, open again with no message between), and the second must run.
-    if (!result.heldBack && n.conversationUpdatedAt != null) {
-      remember(key, result, Date.now());
-    }
+    if (!result.heldBack) remember(key, result, Date.now());
     return result;
   } finally {
     inFlight.delete(key);

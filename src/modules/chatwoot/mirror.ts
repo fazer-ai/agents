@@ -68,6 +68,25 @@ export interface MirrorResult {
   // could not be retired, or a live status claim that refused the status. A later delivery of the
   // same event can decide differently, so it must run the mirror again rather than reuse this run.
   heldBack?: true;
+  // The tuple versions of the conversation, its inbox and its contact as this run left them. Running
+  // the same payload again over rows still at these versions writes what this run wrote, so a
+  // caller that reuses the run checks them first.
+  rowVersions?: string;
+}
+
+// The `xmin` of the conversation row and of the inbox and contact rows it points to: every write
+// to any of them, by anyone, leaves a new one.
+export async function mirrorRowVersions(
+  db: Pick<ScopedDb, "$queryRaw">,
+  conversationRowId: bigint,
+): Promise<string | null> {
+  const rows = await db.$queryRaw<{ v: string }[]>`
+    SELECT c.xmin::text || ':' || coalesce(i.xmin::text, '-') || ':' || coalesce(ct.xmin::text, '-') AS v
+      FROM conversations c
+      LEFT JOIN inboxes i ON i.id = c.inbox_id
+      LEFT JOIN contacts ct ON ct.id = c.contact_id
+     WHERE c.id = ${conversationRowId}`;
+  return rows[0]?.v ?? null;
 }
 
 function isForeignKeyViolation(err: unknown): boolean {
@@ -196,7 +215,7 @@ export async function mirrorChatwootEvent(
   const run = (): Promise<MirrorResult> =>
     runScopedOn(base, sysCtx(tenantId), async (db) => {
       const threadId = `${tenantId}:${instanceId}:${convId}`;
-      return withEntityLock(db, threadId, async () => {
+      const result = await withEntityLock(db, threadId, async () => {
         const existing = await db.conversation.findUnique({
           where: {
             tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -603,6 +622,13 @@ export async function mirrorChatwootEvent(
             : { heldBack: true as const }),
         };
       });
+      // Read under the conversation lock, after this run's writes: what a reuse of this run is
+      // checked against. See `mirrorRowVersions`.
+      const rowVersions =
+        result.conversationRowId === null
+          ? null
+          : await mirrorRowVersions(db, result.conversationRowId);
+      return rowVersions === null ? result : { ...result, rowVersions };
     });
   for (;;) {
     try {

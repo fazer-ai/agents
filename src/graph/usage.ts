@@ -463,11 +463,25 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
         const det = meta.input_token_details;
         if (det) {
           cachedReadTokens += num(det.cache_read);
-          // `cache_creation_1h` is the 1-hour share `splitOneHourWrites` moves out of
-          // `cache_creation`, so the two add up to the call's writes.
-          cacheCreationTokens +=
-            num(det.cache_creation) + num(det.cache_creation_1h);
-          cacheCreation1hTokens += num(det.cache_creation_1h);
+          if (det.cache_creation_1h !== undefined) {
+            // The 1-hour share `splitOneHourWrites` moved out of `cache_creation`: the two add up
+            // to the call's writes.
+            cacheCreationTokens +=
+              num(det.cache_creation) + num(det.cache_creation_1h);
+            cacheCreation1hTokens += num(det.cache_creation_1h);
+          } else {
+            // An unsplit message (a stream merged by its caller): `cache_creation` is the total,
+            // and the 1-hour share is in the raw usage ChatAnthropic keeps on the message.
+            const writes = num(det.cache_creation);
+            cacheCreationTokens += writes;
+            cacheCreation1hTokens += Math.min(
+              writes,
+              anthropicOneHourWrites(
+                // biome-ignore lint/suspicious/noExplicitAny: provider-shaped response metadata.
+                (gen as any).message?.response_metadata?.usage,
+              ),
+            );
+          }
         }
       }
     }

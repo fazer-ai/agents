@@ -1,7 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  type AIMessageChunk,
+  HumanMessage,
+} from "@langchain/core/messages";
 import type { LLMResult } from "@langchain/core/outputs";
-import { splitOneHourWrites } from "@/graph/anthropic-cache-split";
+import {
+  ChatAnthropicCacheSplit,
+  splitOneHourWrites,
+} from "@/graph/anthropic-cache-split";
 import { createChatModel } from "@/graph/models";
 import { extractTokenUsage } from "@/graph/usage";
 import { callCostUsd, costAt, priceCall } from "@/modules/pricing/price";
@@ -215,6 +222,49 @@ const CORS = {
   "access-control-allow-headers": "*",
   "access-control-allow-methods": "*",
 };
+// The same reply as a stream: the usage arrives on `message_start` and the output count on
+// `message_delta`, the way the API sends it.
+function sse(): string {
+  const ev = (type: string, data: object) =>
+    `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+  return [
+    ev("message_start", {
+      message: {
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "claude-haiku-4-5",
+        content: [],
+        stop_reason: null,
+        usage: {
+          input_tokens: 3_000,
+          cache_read_input_tokens: 1_000,
+          cache_creation_input_tokens: 6_000,
+          cache_creation: {
+            ephemeral_5m_input_tokens: 2_000,
+            ephemeral_1h_input_tokens: 4_000,
+          },
+          output_tokens: 1,
+        },
+      },
+    }),
+    ev("content_block_start", {
+      index: 0,
+      content_block: { type: "text", text: "" },
+    }),
+    ev("content_block_delta", {
+      index: 0,
+      delta: { type: "text_delta", text: "ok" },
+    }),
+    ev("content_block_stop", { index: 0 }),
+    ev("message_delta", {
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 100 },
+    }),
+    ev("message_stop", {}),
+  ].join("");
+}
+
 let server: ReturnType<typeof Bun.serve>;
 let prevBase: string | undefined;
 
@@ -224,7 +274,11 @@ beforeAll(() => {
     async fetch(req) {
       if (req.method === "OPTIONS")
         return new BunResponse(null, { status: 204, headers: CORS });
-      await req.json();
+      const body = (await req.json()) as { stream?: boolean };
+      if (body.stream)
+        return new BunResponse(sse(), {
+          headers: { ...CORS, "content-type": "text/event-stream" },
+        });
       return new BunResponse(
         JSON.stringify({
           id: "msg_1",
@@ -273,6 +327,43 @@ describe("the anthropic model the factory builds", () => {
     expect(usage.cacheCreation1hTokens).toBe(4_000);
     expect(usage.promptTokens).toBe(10_000);
     // The Langfuse handler turns each of these keys into an `input_<key>` detail.
+    const message = (llm.generations[0]?.[0] as { message?: AIMessage })
+      ?.message;
+    expect(message?.usage_metadata?.input_token_details).toMatchObject({
+      cache_creation: 2_000,
+      cache_creation_1h: 4_000,
+    });
+  });
+
+  // Merging a stream's chunks keeps only the token-detail keys LangChain knows, so a split made per
+  // chunk would lose the 1-hour writes in the merge (found in review).
+  test("a stream merged by its caller keeps every write and the 1-hour share", async () => {
+    const model = new ChatAnthropicCacheSplit({
+      model: "claude-haiku-4-5",
+      apiKey: "k",
+      maxRetries: 0,
+    });
+    let merged: AIMessageChunk | undefined;
+    for await (const chunk of await model.stream([new HumanMessage("oi")]))
+      merged = merged ? merged.concat(chunk) : chunk;
+    const usage = extractTokenUsage({
+      generations: [[{ text: "", message: merged } as never]],
+    });
+    expect(usage.cacheCreationTokens).toBe(6_000);
+    expect(usage.cacheCreation1hTokens).toBe(4_000);
+  });
+
+  test("a streaming call reports the split like a single response", async () => {
+    const model = new ChatAnthropicCacheSplit({
+      model: "claude-haiku-4-5",
+      apiKey: "k",
+      maxRetries: 0,
+      streaming: true,
+    });
+    const llm = await model.generate([[new HumanMessage("oi")]]);
+    const usage = extractTokenUsage(llm);
+    expect(usage.cacheCreationTokens).toBe(6_000);
+    expect(usage.cacheCreation1hTokens).toBe(4_000);
     const message = (llm.generations[0]?.[0] as { message?: AIMessage })
       ?.message;
     expect(message?.usage_metadata?.input_token_details).toMatchObject({

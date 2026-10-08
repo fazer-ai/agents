@@ -22,7 +22,11 @@ export function splitOneHourWrites(message: BaseMessage | undefined): void {
   det.cache_creation_1h = oneHourCapped;
 }
 
-// ChatAnthropic with the split applied to every message it returns, on the call path and the stream.
+// ChatAnthropic with the split applied to the message a call returns. Only to the FINAL message: the
+// stream's chunks are left alone, because merging chunks keeps only the token-detail keys LangChain
+// knows and would drop `cache_creation_1h` with the writes in it, while the raw usage the split reads
+// survives the merge. A caller that streams on its own gets the unsplit message, and
+// `extractTokenUsage` reads the 1-hour share from that raw usage.
 export class ChatAnthropicCacheSplit extends ChatAnthropic {
   override async _generate(
     ...args: Parameters<ChatAnthropic["_generate"]>
@@ -30,14 +34,5 @@ export class ChatAnthropicCacheSplit extends ChatAnthropic {
     const result = await super._generate(...args);
     for (const g of result.generations) splitOneHourWrites(g.message);
     return result;
-  }
-
-  override async *_streamResponseChunks(
-    ...args: Parameters<ChatAnthropic["_streamResponseChunks"]>
-  ): ReturnType<ChatAnthropic["_streamResponseChunks"]> {
-    for await (const chunk of super._streamResponseChunks(...args)) {
-      splitOneHourWrites(chunk.message);
-      yield chunk;
-    }
   }
 }

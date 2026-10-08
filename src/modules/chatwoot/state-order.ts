@@ -130,6 +130,12 @@ export interface StateDecision {
    * like every mark here, so the newest refusal is the one kept. ./status-claim.ts.
    */
   statusClaimRefusedAt: number | null;
+  /**
+   * Set when a live local claim refused the payload's status. The refusal lasts only as long as the
+   * claim, so the same payload decided again after it expires can apply: a caller that reuses this
+   * decision for a later delivery must not.
+   */
+  claimRefused?: true;
   /** Version to stamp on the assignee mark, or null to leave it where it is. */
   assigneeAt: number | null;
   /**
@@ -375,6 +381,7 @@ export function decideConversationWrites(
       claim === "refuse-and-defer"
         ? advancesFrom(row.statusClaimRefusedAt, payload.version)
         : null,
+    ...(claim === "apply" ? {} : { claimRefused: true as const }),
     assigneeAt: assignee ? advances(row.assigneeAt) : null,
     redirectOrigin,
     redirectOriginAt: redirectOrigin ? advances(row.redirectOriginAt) : null,

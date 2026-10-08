@@ -569,6 +569,11 @@ model Inbox {
   chatwootInboxId    Int       @map("chatwoot_inbox_id")
   name               String
   channelType        String?   @map("channel_type")
+  // THE SOURCE POSITION OF `name` AND `channelType`: the newest Chatwoot timestamp of a
+  // delivery that changed either. The mirror writes the two only when a value differs and the payload
+  // is positioned after this, so an unchanged inbox is never rewritten and a late delivery cannot
+  // restore a replaced name. NULL until the first change.
+  metadataAt         DateTime? @map("metadata_at")
   // WhatsApp provider (whatsapp_cloud | default(=360dialog) | baileys | zapi) when channelType is
   // Channel::Whatsapp; null for other channels or until an inbox sync populates it. Drives the 24h
   // service-window gate (only the official providers have a window). Captured from the inbox-list sync.

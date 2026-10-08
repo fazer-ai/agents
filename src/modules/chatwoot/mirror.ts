@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
@@ -34,7 +34,8 @@ async function emitMirrorEvent(
 
 // Mirror Chatwoot conversation/inbox/contact METADATA into our DB (no message body by default).
 // Powers the UI conversation list + read API; the runtime reads it for routing. Contact and
-// Inbox upserts are atomic (ON CONFLICT, safe under concurrency); the Conversation read-modify-
+// Inbox are resolved first, in their own short transaction, and written only when something changed
+// (a missing row is inserted with ON CONFLICT DO NOTHING); the Conversation read-modify-
 // write is serialized per conversation by an advisory lock, and what each delivery is allowed to
 // write is decided by `state-order.ts` (Chatwoot does not guarantee order, and a message event
 // carries a frozen conversation snapshot that must not regress status/assignee).
@@ -63,6 +64,18 @@ export interface MirrorResult {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: Date | null;
+  // Set when a write this event owes was held back by something that passes: a redirect ladder that
+  // could not be retired, or a live status claim that refused the status. A later delivery of the
+  // same event can decide differently, so it must run the mirror again rather than reuse this run.
+  heldBack?: true;
+}
+
+function isForeignKeyViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "P2003"
+  );
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -153,23 +166,35 @@ export async function mirrorChatwootEvent(
   if (n.firstReplyCreatedAt != null)
     slaWrites.chatwootFirstReplyAt = n.firstReplyCreatedAt;
 
-  // Twice at most. The contact and inbox upserts run before the per-conversation lock, and
-  // Prisma's upsert is a select then an insert, so two deliveries of one event (an observer's route
-  // and the responder's) can both miss the row and one loses with a unique violation. P2002 aborts
-  // the whole tx, so the retry reruns it: the upsert now takes its update path, and the mirror is
-  // idempotent. Without it the losing delivery sits PROCESSING until the sweep.
-  let attempt = 0;
-  const run = (): Promise<MirrorResult> =>
-    runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const contactId = await upsertContact(
+  // The contact and the inbox are resolved in a transaction of their own, committed BEFORE the
+  // conversation's. Every conversation of an inbox shares its row, and a row lock taken inside the
+  // conversation's transaction is held across the wait for the conversation lock, which serializes a
+  // busy inbox on one row. Each write is also conditional on a change, so an unchanged inbox or
+  // contact is not written at all, and the conversation lock is the only lock the conversation
+  // transaction takes.
+  const resolveRows = () =>
+    runScopedOn(base, sysCtx(tenantId), async (db) => ({
+      contactId: await upsertContact(
         db,
         tenantId,
         instanceId,
         n,
         newLastEventAt,
-      );
-      const inboxRowId = await upsertInbox(db, tenantId, instanceId, n);
+      ),
+      inboxRowId: await upsertInbox(db, tenantId, instanceId, n),
+    }));
+  let { contactId, inboxRowId } = await resolveRows();
 
+  // Twice at most. Two deliveries of one event (an observer's route and the responder's) can both
+  // miss the conversation row and one loses its insert with a unique violation. P2002 aborts the
+  // whole tx, so the retry reruns it: the conversation now exists, and the mirror is idempotent.
+  // Without it the losing delivery sits PROCESSING until the sweep.
+  // A row resolved above can be deleted before the conversation's write references it (an inbox
+  // removed meanwhile), which fails that write on its foreign key: resolve the rows again, once.
+  let attempt = 0;
+  let reresolved = false;
+  const run = (): Promise<MirrorResult> =>
+    runScopedOn(base, sysCtx(tenantId), async (db) => {
       const threadId = `${tenantId}:${instanceId}:${convId}`;
       return withEntityLock(db, threadId, async () => {
         const existing = await db.conversation.findUnique({
@@ -378,6 +403,7 @@ export async function mirrorChatwootEvent(
             assigneeId: existing.assigneeId,
             assigneeType: existing.assigneeType,
             lastEventAt: existing.lastEventAt,
+            ...(retiredLadder ? {} : { heldBack: true as const }),
           };
         }
 
@@ -572,6 +598,9 @@ export async function mirrorChatwootEvent(
           assigneeId: nextAssigneeId,
           assigneeType: nextAssigneeType,
           lastEventAt: effectiveLastEventAt,
+          ...(retiredLadder && !decision.claimRefused
+            ? {}
+            : { heldBack: true as const }),
         };
       });
     });
@@ -579,6 +608,15 @@ export async function mirrorChatwootEvent(
     try {
       return await run();
     } catch (err) {
+      if (isForeignKeyViolation(err) && !reresolved) {
+        reresolved = true;
+        logger.info(
+          "chatwoot: a row the mirror resolved was gone at the conversation write (conv=%s); resolving again",
+          String(convId),
+        );
+        ({ contactId, inboxRowId } = await resolveRows());
+        continue;
+      }
       attempt += 1;
       if (attempt > 1 || !isUniqueViolation(err)) throw err;
       logger.info(
@@ -615,32 +653,40 @@ async function upsertContact(
   }
 
   // Keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
-  // accounts under one tenant can share an id.
-  const row = await db.contact.upsert({
-    where: {
-      tenantId_chatwootInstanceId_chatwootContactId: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootContactId: c.id,
-      },
-    },
-    create: {
+  // accounts under one tenant can share an id. Read first: the contact exists on all but its first
+  // delivery, and an upsert there is an insert attempt per delivery. A missing one is inserted with
+  // ON CONFLICT DO NOTHING, so two deliveries creating it at once both land on the one row instead of
+  // one of them losing with a unique violation. Identity is written below, under a compare-and-set:
+  // written unconditionally here, a delivery arriving late would restore what a newer one changed.
+  const key = {
+    tenantId_chatwootInstanceId_chatwootContactId: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootContactId: c.id,
-      name: c.name ?? null,
-      email: c.email ?? null,
-      phone: c.phone ?? null,
-      attributes: (c.identifier
-        ? { identifier: c.identifier }
-        : {}) as Prisma.InputJsonValue,
-      additionalAttributes: additional as Prisma.InputJsonValue,
     },
-    // Identity is written below, under a compare-and-set. Unconditionally here, a delivery arriving
-    // late would restore what a newer one changed or cleared.
-    update: {},
-    select: { id: true },
-  });
+  };
+  let row = await db.contact.findUnique({ where: key, select: { id: true } });
+  if (!row) {
+    await db.contact.createMany({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: c.id,
+        name: c.name ?? null,
+        email: c.email ?? null,
+        phone: c.phone ?? null,
+        attributes: (c.identifier
+          ? { identifier: c.identifier }
+          : {}) as Prisma.InputJsonValue,
+        additionalAttributes: additional as Prisma.InputJsonValue,
+      },
+      skipDuplicates: true,
+    });
+    row = await db.contact.findUniqueOrThrow({
+      where: key,
+      select: { id: true },
+    });
+  }
 
   // NOTE: a per-field compare-and-set watermark, in one statement so it is atomic under concurrent
   // deliveries. Per contact because the upsert runs before the conversation's stale check and one
@@ -681,6 +727,19 @@ async function upsertContact(
           WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${eventAt}
           ELSE attributes_at END
       WHERE id = ${row.id} AND tenant_id = ${tenantId}
+        -- NOTE: Only when one of the CASEs above moves something: a newer position (which moves the
+        -- watermark even for the same value, or a late snapshot could overwrite it), or a tie that
+        -- disagrees with a field not yet emptied. A repeated snapshot writes nothing.
+        AND (
+          (${nameStated} AND (name_at IS NULL OR name_at < ${eventAt}
+            OR (name_at = ${eventAt} AND name IS NOT NULL AND name IS DISTINCT FROM ${c.name ?? null}::text)))
+          OR (${emailStated} AND (email_at IS NULL OR email_at < ${eventAt}
+            OR (email_at = ${eventAt} AND email IS NOT NULL AND email IS DISTINCT FROM ${c.email ?? null}::text)))
+          OR (${phoneStated} AND (phone_at IS NULL OR phone_at < ${eventAt}
+            OR (phone_at = ${eventAt} AND phone IS NOT NULL AND phone IS DISTINCT FROM ${c.phone ?? null}::text)))
+          OR (${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}
+            OR (attributes_at = ${eventAt} AND attributes <> '{}'::jsonb AND attributes IS DISTINCT FROM ${attrs}::jsonb)))
+        )
     `;
   }
 
@@ -702,6 +761,15 @@ async function upsertContact(
           WHEN additional_attributes_at IS NULL OR additional_attributes_at < ${eventAt} THEN ${eventAt}
           ELSE additional_attributes_at END
       WHERE id = ${row.id} AND tenant_id = ${tenantId}
+        -- NOTE: Same predicate as the identity: newer, or a tie that still has a disagreeing key to drop.
+        AND (
+          additional_attributes_at IS NULL OR additional_attributes_at < ${eventAt}
+          OR (additional_attributes_at = ${eventAt} AND EXISTS (
+            SELECT 1 FROM unnest(${ADDITIONAL_CONTACT_FIELDS}::text[]) AS k
+            WHERE additional_attributes ? k
+              AND additional_attributes -> k IS DISTINCT FROM ${bag}::jsonb -> k
+          ))
+        )
     `;
   }
 
@@ -713,15 +781,30 @@ async function upsertContact(
           SET custom_attributes = ${bag}::jsonb, custom_attributes_at = ${eventAt}
           WHERE id = ${row.id} AND tenant_id = ${tenantId}
             AND (custom_attributes_at IS NULL OR custom_attributes_at <= ${eventAt})
+            AND (custom_attributes_at IS DISTINCT FROM ${eventAt}
+              OR custom_attributes IS DISTINCT FROM ${bag}::jsonb)
         `
       : db.$executeRaw`
           UPDATE contacts
           SET custom_attributes = ${bag}::jsonb
           WHERE id = ${row.id} AND tenant_id = ${tenantId}
             AND custom_attributes_at IS NULL
+            AND custom_attributes IS DISTINCT FROM ${bag}::jsonb
         `);
   }
   return row.id;
+}
+
+// The newest source instant a payload carries, as the position of the inbox metadata it states.
+// Chatwoot reads the inbox's name and channel when it renders the event, and the payload carries no
+// instant of its own for them: the conversation's `updated_at` and `last_activity_at` are the closest
+// clocks, both written by the source. Null when the payload carries neither.
+function inboxMetadataPosition(n: NormalizedChatwootEvent): Date | null {
+  const seconds = [n.conversationUpdatedAt, n.lastActivityAt].filter(
+    (v): v is number => typeof v === "number" && Number.isFinite(v),
+  );
+  if (seconds.length === 0) return null;
+  return new Date(Math.max(...seconds) * 1000);
 }
 
 async function upsertInbox(
@@ -731,27 +814,75 @@ async function upsertInbox(
   n: NormalizedChatwootEvent,
 ): Promise<bigint | null> {
   if (n.inboxId == null) return null;
-  const row = await db.inbox.upsert({
-    where: {
-      tenantId_chatwootInstanceId_chatwootInboxId: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootInboxId: n.inboxId,
-      },
-    },
-    create: {
+  const key = {
+    tenantId_chatwootInstanceId_chatwootInboxId: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootInboxId: n.inboxId,
-      name: n.inboxName ?? `inbox ${n.inboxId}`,
-      channelType: n.channel ?? null,
     },
-    update: {
-      ...(n.inboxName != null ? { name: n.inboxName } : {}),
-      ...(n.channel != null ? { channelType: n.channel } : {}),
-    },
+  };
+  const placeholder = `inbox ${n.inboxId}`;
+  const position = inboxMetadataPosition(n);
+  // Read, not upsert. Every delivery of an inbox names the same row, and an upsert rewrites it (ON
+  // CONFLICT DO UPDATE writes even an identical value, and burns a sequence value).
+  let row = await db.inbox.findUnique({
+    where: key,
     select: { id: true },
   });
+  if (!row) {
+    // Many deliveries of a new inbox can miss the row at once; DO NOTHING lands them all on one. A
+    // delivery whose insert lost goes on to the conditional update below with its own snapshot.
+    const inserted = await db.inbox.createMany({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: n.inboxId,
+        name: n.inboxName ?? placeholder,
+        channelType: n.channel ?? null,
+        metadataAt: position,
+      },
+      skipDuplicates: true,
+    });
+    row = await db.inbox.findUniqueOrThrow({
+      where: key,
+      select: { id: true },
+    });
+    if (inserted.count > 0) return row.id;
+  }
+  const name = n.inboxName ?? null;
+  const channel = n.channel ?? null;
+  if (name === null && channel === null) return row.id;
+  const accepts = position
+    ? Prisma.sql`(metadata_at IS NULL OR metadata_at <= ${position})`
+    : Prisma.sql`(metadata_at IS NULL)`;
+  // One statement, decided against the row as it stands when the UPDATE reaches it (an earlier read
+  // may be stale); a WHERE that matches nothing writes nothing. A payload positioned at or after the
+  // last change writes every field it states, so a field left out cannot keep an older value under
+  // the newer position. A tie goes to the last writer: the position is the conversation's clock, and
+  // an event of an unchanged conversation can be the first to carry a rename. An unchanged payload
+  // does NOT move the position (that write per delivery is what this removes); an undated one writes
+  // only over a row never positioned. A field never stated (the placeholder name, a null channel)
+  // takes the first stated value at any position, and the position only moves forward.
+  await db.$executeRaw`
+    UPDATE inboxes SET
+      name = CASE
+        WHEN ${accepts} AND ${name}::text IS NOT NULL THEN ${name}::text
+        WHEN name = ${placeholder} AND ${name}::text IS NOT NULL THEN ${name}::text
+        ELSE name END,
+      channel_type = CASE
+        WHEN ${accepts} AND ${channel}::text IS NOT NULL THEN ${channel}::text
+        WHEN channel_type IS NULL AND ${channel}::text IS NOT NULL THEN ${channel}::text
+        ELSE channel_type END,
+      metadata_at = GREATEST(metadata_at, ${position}),
+      updated_at = now()
+    WHERE id = ${row.id}
+      AND (
+        (${accepts} AND (
+          (${name}::text IS NOT NULL AND name IS DISTINCT FROM ${name}::text)
+          OR (${channel}::text IS NOT NULL AND channel_type IS DISTINCT FROM ${channel}::text)))
+        OR (name = ${placeholder} AND ${name}::text IS NOT NULL AND ${name}::text <> ${placeholder})
+        OR (channel_type IS NULL AND ${channel}::text IS NOT NULL)
+      )`;
   return row.id;
 }
 

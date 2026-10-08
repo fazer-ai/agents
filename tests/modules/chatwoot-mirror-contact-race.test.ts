@@ -7,10 +7,10 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Two routes deliver the same first message of a new contact milliseconds apart (an observer beside
-// a responder), and the mirror's contact upsert (a select then an insert, ahead of the
-// per-conversation lock) loses the insert on one of them. The transaction is aborted by then, so
-// the recovery is the whole mirror run again, once. Reproduced here deterministically by making the
-// first upsert lose the way the database makes it lose.
+// a responder). The contact is inserted with ON CONFLICT DO NOTHING, so both deliveries land
+// on the one row and neither fails. The conversation row can still lose its insert the same way, and
+// that one is recovered by running the mirror again, once: reproduced here deterministically by
+// making the conversation insert lose the way the database makes it lose.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -40,22 +40,22 @@ let instanceId = 0n;
 
 function uniqueViolation() {
   return new Prisma.PrismaClientKnownRequestError(
-    "Unique constraint failed on the fields: (`tenant_id`,`chatwoot_instance_id`,`chatwoot_contact_id`)",
+    "Unique constraint failed on the fields: (`tenant_id`,`chatwoot_instance_id`,`chatwoot_conversation_id`)",
     { code: "P2002", clientVersion: "test" },
   );
 }
 
-// An app client whose contact upsert loses `losses` times before it works — the race, on demand.
+// An app client whose conversation insert loses `losses` times before it works — the race, on demand.
 function losingClient(losses: number): {
   db: PrismaClient;
-  upserts: () => number;
+  creates: () => number;
 } {
   let left = losses;
   let count = 0;
   const db = appDb.$extends({
     query: {
-      contact: {
-        async upsert({ args, query }) {
+      conversation: {
+        async create({ args, query }) {
           count += 1;
           if (left > 0) {
             left -= 1;
@@ -66,7 +66,7 @@ function losingClient(losses: number): {
       },
     },
   }) as unknown as PrismaClient;
-  return { db, upserts: () => count };
+  return { db, creates: () => count };
 }
 
 function messageEvent(convId: number, messageId: number, contactId: number) {
@@ -116,14 +116,30 @@ describe.skipIf(!dbUp)(
       await appDb.$disconnect();
     });
 
-    test("a lost insert runs the mirror again, and the delivery lands on the row the other route made", async () => {
-      // The winner: the row exists after this.
-      await mirrorChatwootEvent(
-        tenantId,
-        instanceId,
-        messageEvent(31, 3101, 501),
-        appDb,
+    test("many deliveries creating one contact at once land on one row, and none fails", async () => {
+      const results = await Promise.allSettled(
+        Array.from({ length: 12 }, (_, i) =>
+          mirrorChatwootEvent(
+            tenantId,
+            instanceId,
+            messageEvent(40 + i, 4_000 + i, 504),
+            appDb,
+          ),
+        ),
       );
+      expect(results.filter((r) => r.status === "rejected")).toHaveLength(0);
+      expect(
+        await suDb.contact.count({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootContactId: 504,
+          },
+        }),
+      ).toBe(1);
+    });
+
+    test("a lost conversation insert runs the mirror again, and the delivery lands on the row the other route made", async () => {
       const loser = losingClient(1);
       const r = await mirrorChatwootEvent(
         tenantId,
@@ -132,7 +148,7 @@ describe.skipIf(!dbUp)(
         loser.db,
       );
       expect(r.conversationRowId).not.toBeNull();
-      expect(loser.upserts()).toBe(2);
+      expect(loser.creates()).toBe(2);
       expect(
         await suDb.contact.count({
           where: {
@@ -163,15 +179,15 @@ describe.skipIf(!dbUp)(
           loser.db,
         ),
       ).rejects.toMatchObject({ code: "P2002" });
-      expect(loser.upserts()).toBe(2);
+      expect(loser.creates()).toBe(2);
     });
 
     test("any other failure is not retried", async () => {
       let count = 0;
       const db = appDb.$extends({
         query: {
-          contact: {
-            async upsert() {
+          conversation: {
+            async create() {
               count += 1;
               throw new Error("boom");
             },

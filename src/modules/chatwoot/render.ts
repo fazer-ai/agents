@@ -104,9 +104,15 @@ const CORPO_SEM_CONTEUDO =
   "<e-mail sem texto; as imagens do corpo não trouxeram conteúdo legível>";
 const IMAGEM_ILEGIVEL =
   "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>";
-// The same prefix with no request: the file-by-file block below says what to ask for.
+// The same prefix with no request: the file-by-file block below says what to ask for, and the
+// observer is never asked to request anything.
 const IMAGEM_ILEGIVEL_NOMEADA =
   "<usuário enviou uma imagem; não foi possível ler o conteúdo>";
+
+// Who reads the rendered text. The responder answers the customer, so a marker tells it what to ask
+// for; the observer only judges the conversation, so it gets the same facts with no request, which it
+// would otherwise read as a step the attendant still owes.
+export type RenderAudience = "responder" | "observer";
 
 // Each cause asks for the one thing that helps. Resending the same file only helps a failure.
 const PEDIDO_POR_MOTIVO: Record<
@@ -130,9 +136,24 @@ const PEDIDO_POR_MOTIVO: Record<
   },
 };
 
-function anexosNaoLidos(total: number, files: UnreadFile[]): string {
+// The same causes as facts, for the observer.
+const FATO_POR_MOTIVO: Record<UnreadCause, string> = {
+  format: "formato que não conseguimos abrir",
+  too_large: "imagem com resolução alta demais para ler",
+  failed: "não foi possível ler",
+};
+
+function anexosNaoLidos(
+  total: number,
+  files: UnreadFile[],
+  audience: RenderAudience,
+): string {
   const linhas = files.map((f) => {
-    const { motivo, texto } = PEDIDO_POR_MOTIVO[f.cause];
+    const { motivo } = PEDIDO_POR_MOTIVO[f.cause];
+    const texto =
+      audience === "observer"
+        ? FATO_POR_MOTIVO[f.cause]
+        : PEDIDO_POR_MOTIVO[f.cause].texto;
     const nome = defangMarkerText(f.name).replace(/"/g, "'");
     const attr = nome ? ` nome="${nome}"` : "";
     const quem = nome ? "" : "arquivo sem nome: ";
@@ -141,15 +162,21 @@ function anexosNaoLidos(total: number, files: UnreadFile[]): string {
   const resto = total - files.length;
   if (resto > 0)
     linhas.push(
-      `mais ${resto} arquivo(s) não foram abertos; se a resposta depender deles, peça ao cliente que reenvie o que falta`,
+      audience === "observer"
+        ? `mais ${resto} arquivo(s) não foram abertos`
+        : `mais ${resto} arquivo(s) não foram abertos; se a resposta depender deles, peça ao cliente que reenvie o que falta`,
     );
   return `<anexos-nao-lidos quantidade="${total}">estes arquivos chegaram, mas o conteúdo não foi lido:\n${linhas.join("\n")}\n</anexos-nao-lidos>`;
 }
 
 export function renderInboundMessage(
   m: RenderableMessage,
-  ctx: { resolveQuoted?: (id: number) => string | null } = {},
+  ctx: {
+    resolveQuoted?: (id: number) => string | null;
+    audience?: RenderAudience;
+  } = {},
 ): string {
+  const observer = ctx.audience === "observer";
   const types = new Set(m.attachmentTypes);
   const text = (m.text ?? "").trim();
   const withText = (marker: string) => (text ? `${text}\n${marker}` : marker);
@@ -191,9 +218,9 @@ export function renderInboundMessage(
   const pulados = m.attachmentsUnread ?? 0;
   const naoLidos =
     nomeados.length > 0
-      ? anexosNaoLidos(pulados, nomeados)
+      ? anexosNaoLidos(pulados, nomeados, ctx.audience ?? "responder")
       : pulados > 0
-        ? `<anexos-nao-lidos quantidade="${pulados}">não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
+        ? `<anexos-nao-lidos quantidade="${pulados}">${observer ? "não foi possível ler" : "não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta"}</anexos-nao-lidos>`
         : "";
   let body: string;
   // Whether a branch below already told the model a file could not be read.
@@ -202,7 +229,9 @@ export function renderInboundMessage(
     const tr = cleanTranscription(m.transcribedText ?? text);
     body = tr
       ? `<mensagem-de-audio>${tr}</mensagem-de-audio>`
-      : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
+      : observer
+        ? "<mensagem de áudio não audível>"
+        : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
   } else if (imageDescription || extractedText) {
     // Vision extracted the content, so the agent "sees" it. BOTH blocks when both exist, or a
     // message with a photo AND a PDF loses the document without a trace. One `withText` call, so the
@@ -221,7 +250,9 @@ export function renderInboundMessage(
     // (../playground/sessions.ts) reconhece este marcador por `startsWith` para remontar o anexo na
     // tela do operador; cercado em `tests/modules/chatwoot-render.test.ts`.
     body = withText(
-      nomeados.length > 0 ? IMAGEM_ILEGIVEL_NOMEADA : IMAGEM_ILEGIVEL,
+      nomeados.length > 0 || observer
+        ? IMAGEM_ILEGIVEL_NOMEADA
+        : IMAGEM_ILEGIVEL,
     );
     pediuReenvio = true;
   } else if (m.location) {

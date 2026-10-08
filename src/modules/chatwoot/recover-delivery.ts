@@ -20,6 +20,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { readClaimedMessageIds } from "@/modules/debounce/watermark";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import {
@@ -1328,22 +1329,54 @@ function owesAReply(row: {
   );
 }
 
-// A row that answers the customer: public, outgoing or a template, from a person, a bot or the
-// phone paired to the inbox. Not a reaction (the fork stores an operator's emoji as a public
-// outgoing row) and not an imported one (old history written with new ids), the exclusions the
-// reply boundary makes (../debounce/watermark.ts, `foreignReplyBoundary`).
-function answersCustomer(
+// Who answered, if a row did: public, outgoing or a template, not a reaction (the fork stores an
+// operator's emoji as a public outgoing row) and not an imported one (old history with new ids), the
+// exclusions the reply boundary makes (../debounce/watermark.ts, `foreignReplyBoundary`). A person or
+// the phone paired to the inbox answers everything before it; a bot's reply only what its turn took,
+// which is what the claim rows say (`botAnswered`).
+function answerFrom(
   m: ReturnType<typeof parseChatwootMessages>[number],
-): boolean {
-  return (
-    (m.messageType === "outgoing" || m.messageType === "template") &&
-    !m.private &&
-    !m.isReaction &&
-    !m.imported &&
-    (m.senderType === "user" ||
-      m.senderType === "agent_bot" ||
-      m.externalSenderName !== null)
+): "person" | "bot" | null {
+  if (
+    !(m.messageType === "outgoing" || m.messageType === "template") ||
+    m.private ||
+    m.isReaction ||
+    m.imported
+  )
+    return null;
+  if (m.senderType === "user" || m.externalSenderName !== null) return "person";
+  return m.senderType === "agent_bot" ? "bot" : null;
+}
+
+// Whether a turn of ours took the stranded message: a later bot reply can come from a turn that
+// left it out (an orphan below the burst it answered), and only the claim says which.
+async function botAnswered(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  messageId: number;
+  base: PrismaClient;
+}): Promise<boolean> {
+  const conv = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: params.instanceId,
+          chatwootConversationId: params.conversationId,
+        },
+      },
+      select: { id: true },
+    }),
   );
+  if (!conv) return false;
+  const claimed = await readClaimedMessageIds({
+    tenantId: params.tenantId,
+    conversationDbId: conv.id,
+    messageIds: [params.messageId],
+    base: params.base,
+  });
+  return claimed.has(params.messageId);
 }
 
 // How far past the stranded message the catch-up read walks before leaving the decision to the line.
@@ -1352,7 +1385,7 @@ const SUPERSEDED_MAX_PAGES = 10;
 // Whether the conversation itself has moved past the stranded message, read live, because the row
 // cannot say: a later turn retires only the rows it ran over, and one still PENDING then, or whose
 // message was answered by another road (an operator's re-engage, a person replying), stays DEAD.
-// Two answers close it: a row after the message that `answersCustomer` accepts (a sender-less
+// Two answers close it: a row after the message that `answerFrom` names (a sender-less
 // outgoing is Chatwoot's own, an away message, an automation, a survey, and answers nothing), or
 // the conversation resolved. Null on anything the read cannot settle, which leaves the line as it
 // was: a page about an answered customer is noise, and silence about a waiting one is the loss.
@@ -1383,7 +1416,9 @@ async function supersededLive(params: {
       const rows = parseChatwootMessages(
         await client.getMessages(params.conversationId, { after: cursor }),
       );
-      if (rows.some((m) => m.id > params.messageId && answersCustomer(m)))
+      const after = rows.filter((m) => m.id > params.messageId).map(answerFrom);
+      if (after.includes("person")) return "answered";
+      if (after.includes("bot") && (await botAnswered(params)))
         return "answered";
       if (rows.length < CATCH_UP_PAGE) return null;
       cursor = rows.reduce((max, m) => Math.max(max, m.id), cursor);

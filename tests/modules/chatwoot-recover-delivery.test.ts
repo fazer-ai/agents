@@ -5079,13 +5079,29 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
       // Spent on arrival, so the recovery itself refuses before any network and the only Chatwoot
       // read is the one this asks about.
-      async function endedRow(convId: number, messageId: number, over = {}) {
+      // `claimed`: a turn of ours took the message, which is what makes our bot's later reply an
+      // answer to it.
+      async function endedRow(
+        convId: number,
+        messageId: number,
+        over: { routeObserved?: boolean; claimed?: boolean } = {},
+      ) {
+        const { claimed, ...rowOver } = over;
         const conv = await seedConversation(convId);
+        if (claimed)
+          await suDb.messageReplyClaim.create({
+            data: {
+              tenantId,
+              conversationId: conv.id,
+              messageId,
+              reason: "CLAIMED",
+            },
+          });
         const rowId = await seedDeadDelivery({
           conversationId: convId,
           inboundMessageId: messageId,
           attempts: MAX_RECOVERY_ATTEMPTS,
-          ...over,
+          ...rowOver,
         });
         return { conv, rowId };
       }
@@ -5102,7 +5118,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           [28951, 29951, { sender: "user" }],
           [28962, 29962, { sender: null, externalSender: "Ana" }],
         ] as const) {
-          const { conv, rowId } = await endedRow(convId, messageId);
+          const { conv, rowId } = await endedRow(convId, messageId, {
+            claimed: reply.sender === "agent_bot",
+          });
           const stub = stubChatwoot({
             caughtUp: afterPage([{ id: messageId + 3, type: 1, ...reply }]),
           });
@@ -5159,6 +5177,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       test("an observer's lost memory on a conversation that moved on is superseded too", async () => {
         const { conv, rowId } = await endedRow(28957, 29957, {
           routeObserved: true,
+          claimed: true,
         });
         const stub = stubChatwoot({
           caughtUp: afterPage([{ id: 29958, type: 1, sender: "agent_bot" }]),
@@ -5210,7 +5229,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // The catch-up read stops at a hundred rows, so a reply behind a full page of customer
       // messages is on the next one.
       test("a reply past a full catch-up page still supersedes it", async () => {
-        const { conv, rowId } = await endedRow(28969, 29969);
+        const { conv, rowId } = await endedRow(28969, 29969, { claimed: true });
         const stub = stubChatwoot({});
         const inner = stub.makeClient;
         const cursors: number[] = [];
@@ -5246,13 +5265,33 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         ]);
       });
 
+      // Our bot's later reply answers only what its turn took: a message the turn left out (an orphan
+      // below the burst it answered) has no claim, and stays unanswered.
+      test("our bot's reply without a claim on the message does not supersede it", async () => {
+        const { conv, rowId } = await endedRow(28970, 29970);
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(
+            stubChatwoot({
+              caughtUp: afterPage([
+                { id: 29971, type: 1, sender: "agent_bot" },
+              ]),
+            }),
+          ),
+        );
+        expect(await outcomes(conv.id)).toEqual([
+          ["error", "unanswered", undefined],
+        ]);
+      });
+
       // A reply from BEFORE the message answered something else. A read that ignored `after` and
       // handed back the newest page would carry it, and it must not count.
       test("a reply older than the message does not supersede it", async () => {
         const { conv, rowId } = await endedRow(28963, 29963);
         const stub = stubChatwoot({
           caughtUp: afterPage([
-            { id: 29900, type: 1, sender: "agent_bot" },
+            { id: 29900, type: 1, sender: "user" },
             { id: 29963, type: 0, sender: "contact" },
           ]),
         });
@@ -5282,7 +5321,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // Once per row across the outcomes: a re-run, and the dead-letter hook (which builds its own
       // client and here cannot read the account), find the row decided and add nothing.
       test("a superseded row stays decided through a re-run and its dead letter", async () => {
-        const { conv, rowId } = await endedRow(28960, 29960);
+        const { conv, rowId } = await endedRow(28960, 29960, { claimed: true });
         const stub = stubChatwoot({
           caughtUp: afterPage([{ id: 29961, type: 1, sender: "agent_bot" }]),
         });

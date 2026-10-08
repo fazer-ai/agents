@@ -167,7 +167,33 @@ describe("retryWhileTransactionNeverStarted", () => {
     expect(calls).toBe(4);
   });
 
+  test("a backoff that wakes late, past the deadline, starts no new attempt", async () => {
+    let clock = 0;
+    let calls = 0;
+    await expect(
+      retryWhileTransactionNeverStarted(
+        async () => {
+          calls++;
+          clock += 2_000;
+          throw neverStarted();
+        },
+        {
+          ...opts,
+          attempts: 10,
+          deadlineMs: 10_000,
+          now: () => clock,
+          // The timer fires eleven seconds late, as on an overloaded event loop.
+          sleep: async () => {
+            clock += 11_000;
+          },
+        },
+      ),
+    ).rejects.toThrow("Unable to start a transaction");
+    expect(calls).toBe(1);
+  });
+
   test("no retry starts past the deadline", async () => {
+    waits.length = 0;
     let clock = 0;
     let calls = 0;
     await expect(
@@ -181,7 +207,9 @@ describe("retryWhileTransactionNeverStarted", () => {
         { ...opts, attempts: 10, deadlineMs: 5_000, now: () => clock },
       ),
     ).rejects.toThrow("Unable to start a transaction");
-    // Refusals at 2s and 4s retry (250ms and 500ms of backoff fit); at 6s the next wait would pass 5s.
+    // Refusals at 2s and 4s retry (250ms and 500ms of backoff fit); at 6s the next wait would pass 5s,
+    // so it gives up without sleeping it.
     expect(calls).toBe(3);
+    expect(waits).toEqual([250, 500]);
   });
 });

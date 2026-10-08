@@ -68,6 +68,8 @@ export async function retryWhileTransactionNeverStarted<T>(
         wait,
       );
       await sleep(wait);
+      // A congested event loop can wake the timer late; past the deadline, no new attempt starts.
+      if (now() - startedAt > deadlineMs) throw err;
     }
   }
 }

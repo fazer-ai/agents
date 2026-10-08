@@ -8,6 +8,7 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
 import { formatDate } from "./format";
 import {
+  APPROVAL_KEY_PREFIX,
   type DocumentSnapshot,
   documentFileName,
   type FrozenDocument,
@@ -294,7 +295,7 @@ export async function approveDocumentRequest(params: {
     }
     throw notPending(row.status);
   }
-  const idempotencyKey = `approval:${row.id}`;
+  const idempotencyKey = `${APPROVAL_KEY_PREFIX}${row.id}`;
   const document = await issueFrozenDocument({
     ctx,
     base,

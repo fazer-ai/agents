@@ -118,6 +118,17 @@ export function documentFileName(title: string, number: string | null): string {
   return `${base || "documento"}.pdf`;
 }
 
+// The key an approval issues under. Approving reuses whatever row already holds it, so a caller of
+// `issueDocument` may not write one: a document planted under it would be adopted by the approval as
+// if it were the snapshot the reviewer saw.
+export const APPROVAL_KEY_PREFIX = "approval:";
+
+function reservedKeyProblem(key: string): string | null {
+  return key.startsWith(APPROVAL_KEY_PREFIX)
+    ? `idempotencyKey: the prefix "${APPROVAL_KEY_PREFIX}" is reserved for approved documents.`
+    : null;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (
     err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
@@ -138,7 +149,9 @@ export async function issueDocument(
   // its length alone produced a 500 from the lookup — before the template, before the render, before
   // anything a caller could be told about. In the core rather than in the controller, because the
   // agent tool and MCP reach this by their own roads.
-  const unstorable = unstorableProblem(params.idempotencyKey, "idempotencyKey");
+  const unstorable =
+    unstorableProblem(params.idempotencyKey, "idempotencyKey") ??
+    reservedKeyProblem(params.idempotencyKey);
   if (unstorable) {
     throw new AppError(unstorable, 400, "errors.invalidIdempotencyKey", {
       reason: unstorable,

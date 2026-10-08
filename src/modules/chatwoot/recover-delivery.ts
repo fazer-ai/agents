@@ -20,7 +20,10 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { announceFailedTurn } from "@/modules/conversations/failure-note";
+import {
+  announceFailedTurn,
+  readDirectFence,
+} from "@/modules/conversations/failure-note";
 import {
   foreignReplyBoundary,
   type ReplyIdentity,
@@ -1615,11 +1618,24 @@ export async function announceUnanswered(
       line.skipped !== true &&
       row.conversationId !== null
     ) {
+      const conversationId = row.conversationId;
       await announceFailedTurn({
         tenantId,
         instanceId: row.chatwootInstanceId,
-        chatwootConversationId: row.conversationId,
-        assess: async () => ({ path: "job", deadLettered: true }),
+        chatwootConversationId: conversationId,
+        // The conversation is lost only if this was its newest message: a newer one has its own
+        // delivery, live or still being recovered, and opening the conversation would stop it.
+        assess: async () => ({
+          path: "direct",
+          fence: await readDirectFence({
+            tenantId,
+            instanceId: row.chatwootInstanceId,
+            chatwootConversationId: conversationId,
+            triggerId: row.inboundMessageId,
+            base,
+            deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,
+          }),
+        }),
         error: new Error(RECOVERY_GAVE_UP),
         base,
         deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,

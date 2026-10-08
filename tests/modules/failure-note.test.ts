@@ -10,6 +10,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import * as prepare from "@/graph/prepare";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   announceUnanswered,
@@ -1010,18 +1011,29 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
   test("a live turn the pool never served goes to recovery now: DEAD, recovery armed, nothing posted", async () => {
     const conv = await seedConversation();
     const deliveryId = `failnote-pool-${process.pid}-${conv}`;
-    const model = new FailingModel(neverStarted());
-    const out = await recordAndProcessChatwootDelivery({
-      tenantId,
-      instanceId,
-      deliveryId,
-      agentBotId: 9,
-      normalized: incoming(conv, 5_000 + conv),
-      base: appDb,
-      deps: { makeModel: () => model, sleep: async () => {} },
-    });
+    const model = new FailingModel(new Error("the model was reached"));
+    // The agent's load is where a saturated pool refuses a turn before anything can act.
+    const load = spyOn(prepare, "loadAgentConfig").mockImplementationOnce(
+      async () => {
+        throw neverStarted();
+      },
+    );
+    let out: string;
+    try {
+      out = await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: 9,
+        normalized: incoming(conv, 5_000 + conv),
+        base: appDb,
+        deps: { makeModel: () => model, sleep: async () => {} },
+      });
+    } finally {
+      load.mockRestore();
+    }
     expect(out).toBe("processed");
-    expect(model.calls).toBeGreaterThan(0);
+    expect(model.calls).toBe(0);
     const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
       where: { tenantId, deliveryId },
       select: { id: true, status: true },
@@ -1088,6 +1100,36 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     // hand-over here would close the gate that attempt needs.
     expect(threw).toBe(true);
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a pool refusal after the model was reached is not replayed: a tool may already have acted", async () => {
+    const conv = await seedConversation();
+    const deliveryId = `failnote-pool-late-${process.pid}-${conv}`;
+    await recordAndProcessChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryId,
+      agentBotId: 9,
+      normalized: incoming(conv, 5_200 + conv),
+      base: appDb,
+      deps: {
+        makeModel: () => new FailingModel(neverStarted()),
+        sleep: async () => {},
+      },
+    });
+    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { tenantId, deliveryId },
+      select: { id: true, status: true },
+    });
+    expect(row.status).toBe("PROCESSED");
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: deliveryRecoveryDedupeKey(row.id) },
+      }),
+    ).toBe(0);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
   });
 
   test("a live turn that failed for any other reason is handed over and its row closes", async () => {
@@ -1206,6 +1248,59 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     // Once, like its line: a second announcer finds the row decided and hands nothing over again.
     writes = [];
     await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a given-up row that is not the conversation's newest message hands nothing over", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-older-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_200 + conv,
+      },
+      select: { id: true },
+    });
+    // A newer customer message: its own delivery, live or in recovery, owns the conversation now.
+    inbound = [
+      { id: 8_200 + conv, message_type: 0, content: "oi" },
+      { id: 8_201 + conv, message_type: 0, content: "alguém?" },
+    ];
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a recovery's own pass that fails for any reason announces nothing: its next attempt needs the conversation", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-replay-other-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 5_800 + conv,
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: row.id,
+      agentBotId: 9,
+      normalized: incoming(conv, 5_800 + conv),
+      claimFrom: "DEAD",
+      base: appDb,
+      deps: {
+        makeModel: () => new FailingModel(new Error("provider returned 503")),
+        sleep: async () => {},
+      },
+    });
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 

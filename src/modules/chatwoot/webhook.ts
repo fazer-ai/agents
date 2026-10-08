@@ -5116,6 +5116,8 @@ export async function processChatwootDelivery(
       // turn must not strand the delivery. runAgentTurn no-ops for non-incoming-message events and
       // inboxes with no Agent configured.
       if (!armed) {
+        // Past this a tool may have acted, so the turn is not one to run again on its own.
+        let turnReachedModel = false;
         try {
           // Whether the message ended up in the thread, reported by the runtime and written there, not
           // carried to the settlement: a TTS or send failing after the invoke jumps to the catch, tx2 closes
@@ -5157,6 +5159,9 @@ export async function processChatwootDelivery(
           // throws today, but the contract must not rest on three unrelated call sites.
           const outcome = await runAgentTurn({
             onFoldedIn,
+            onReachingModel: () => {
+              turnReachedModel = true;
+            },
             tenantId: params.tenantId,
             instanceId: params.instanceId,
             agentBotId: params.agentBotId,
@@ -5262,12 +5267,14 @@ export async function processChatwootDelivery(
             convLabel,
             err instanceof Error ? err.message : String(err),
           );
-          // A turn the pool never gave a connection to is not a turn that failed: nothing about the
-          // conversation is wrong, and the same turn a little later answers it. So it is owed to the
-          // delivery's recovery, which retries with backoff and hands over when it gives up, and neither the
-          // note nor the hand-over happens here. Live, the delivery is handed to it below; a
-          // recovery's own pass leaves the row to its caller, which puts it back to DEAD.
-          const owedToRecovery = isTransactionNeverStarted(err);
+          // A live turn the pool never gave a connection to, before anything could act, is not a turn
+          // that failed: the same turn a little later answers it, so it goes to the delivery's
+          // recovery, which retries and hands over when it gives up. Past the model a tool may have
+          // run, and a replay would repeat it, so that one fails here like any other error.
+          const owedToRecovery =
+            claimFrom === "PENDING" &&
+            !turnReachedModel &&
+            isTransactionNeverStarted(err);
           // NOTE: Surface the failure to the operator (sanitized) so they can re-engage.
           if (n.conversationId !== null) {
             await recordConversationError({
@@ -5278,10 +5285,11 @@ export async function processChatwootDelivery(
               base,
             });
           }
-          if (owedToRecovery && claimFrom === "PENDING") {
-            throw new TurnOwedToRecovery(convLabel, err);
-          }
-          if (n.conversationId !== null && !owedToRecovery) {
+          if (owedToRecovery) throw new TurnOwedToRecovery(convLabel, err);
+          // A recovery's own pass announces nothing: its caller puts the row back for the next
+          // attempt, and a hand-over now would make that attempt stand down. The recovery hands the
+          // conversation over when it gives up (`announceUnanswered`).
+          if (n.conversationId !== null && claimFrom === "PENDING") {
             // When nothing else is coming, say so INSIDE Chatwoot and hand the conversation over: there is
             // no retry here, so only a newer message's turn can still answer. Read by the announcer, so it
             // describes the moment of the hand-over.

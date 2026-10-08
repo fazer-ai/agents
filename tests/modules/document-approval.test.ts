@@ -15,6 +15,7 @@ import {
   renderApprovalPreview,
 } from "@/modules/documents/approval";
 import type { DocumentField } from "@/modules/documents/blocks";
+import { issueDocument } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import {
   createDocumentTemplate,
@@ -396,6 +397,21 @@ describe.skipIf(!dbUp)("document approval", () => {
     });
     expect(again.document.id).toBe(first.document.id);
     expect(again.document.number).toBe(first.document.number);
+  });
+
+  test("a caller cannot issue under the key an approval reuses", async () => {
+    const e = await refusal(
+      issueDocument({
+        ctx: ctx(tenantA),
+        templateId,
+        idempotencyKey: "approval:1",
+        values: ARGS,
+        base: appDb,
+        storageDir: DIR,
+      }),
+    );
+    expect(e.statusCode).toBe(400);
+    expect(e.message).toContain("reserved");
   });
 
   test("a request that is not pending, or not this tenant's, issues nothing", async () => {

@@ -22,6 +22,10 @@ import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
 import {
+  isTransactionNeverStarted,
+  retryWhileTransactionNeverStarted,
+} from "@/lib/pool-retry";
+import {
   asSuperAdminOn,
   runScopedOn,
   type ScopedDb,
@@ -137,7 +141,7 @@ import {
   readAnsweredFloor,
 } from "@/modules/debounce/watermark";
 import { emitCommandDropped } from "@/modules/flowlog/command";
-import { emitFlowEvent } from "@/modules/flowlog/service";
+import { emitFlowEvent, writeFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { readTakeoverConfig } from "@/modules/handoff/settings";
 import { armCompaction } from "@/modules/memory/compact";
@@ -211,6 +215,7 @@ import {
   visualAttachments,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
+import { armDeliveryRecovery } from "./recover-delivery";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
 import { responderCoversMessage } from "./responder-coverage";
 import {
@@ -1011,6 +1016,112 @@ export interface RecordAndProcessChatwootParams {
   deps?: RuntimeDeps;
 }
 
+// A live direct turn the database pool never served, thrown out of the pass so the delivery goes to
+// its recovery now instead of settling PROCESSED, the state nothing revisits.
+export class TurnOwedToRecovery extends Error {
+  constructor(convLabel: string, cause: unknown) {
+    super(
+      `chatwoot: the turn found no free database connection (conv=${convLabel}); its delivery goes to recovery`,
+      { cause },
+    );
+    this.name = "TurnOwedToRecovery";
+  }
+}
+
+// Does now what the sweep would do thirty minutes from now for this row: DEAD, the recovery armed,
+// and the line that says so (the sweep's own, `stranded`, at `info` while a recovery is coming and
+// `error` when none could be armed). Both writes retry a full pool, since that is why this runs.
+// Losing the CAS means something else took the row; failing the CAS leaves it to the sweep.
+async function handToRecovery(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  rowId: bigint,
+  normalized: NormalizedChatwootEvent,
+  sleep?: (ms: number) => Promise<void>,
+): Promise<void> {
+  try {
+    const { count } = await retryWhileTransactionNeverStarted(
+      () =>
+        runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.chatwootWebhookDelivery.updateMany({
+            where: { id: rowId, status: "PROCESSING" },
+            data: { status: "DEAD", processedAt: new Date() },
+          }),
+        ),
+      { label: `delivery row ${rowId} to recovery`, sleep },
+    );
+    if (count === 0) return;
+  } catch (err) {
+    logger.error(
+      { err },
+      "chatwoot: delivery row %s could not be handed to recovery; the stranded-delivery sweep will find it",
+      String(rowId),
+    );
+    return;
+  }
+  let recoveryArmed = true;
+  try {
+    await retryWhileTransactionNeverStarted(
+      () => armDeliveryRecovery(tenantId, rowId, base),
+      { label: `delivery row ${rowId} recovery arm`, sleep },
+    );
+  } catch (err) {
+    recoveryArmed = false;
+    logger.error(
+      { err },
+      "chatwoot: delivery row %s is DEAD and its recovery could not be armed; the row stays in the DEAD list and nothing will retry it",
+      String(rowId),
+    );
+  }
+  // Filed on the conversation the mirror knows, like the sweep's; unattached when the read fails.
+  const conversationId = normalized.conversationId;
+  const conv =
+    conversationId === null
+      ? null
+      : await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.conversation.findUnique({
+            where: {
+              tenantId_chatwootInstanceId_chatwootConversationId: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: conversationId,
+              },
+            },
+            select: {
+              id: true,
+              inboxId: true,
+              inbox: { select: { agentId: true } },
+            },
+          }),
+        ).catch(() => null);
+  await writeFlowEvent(
+    {
+      tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: conv?.id ?? null,
+      agentId: conv?.inbox?.agentId ?? null,
+      inboxId: conv?.inboxId ?? null,
+      base,
+    },
+    {
+      stage: "delivery",
+      level: recoveryArmed ? "info" : "error",
+      status: "error",
+      detail: {
+        outcome: "stranded",
+        deliveryEvent: normalized.event,
+        strandedOn: "PROCESSING",
+        messageId: normalized.message?.id ?? null,
+        conversationId: normalized.conversationId,
+        reason: "no_free_db_connection",
+        willRetry: recoveryArmed,
+      },
+    },
+  );
+}
+
 // The detached half of a delivery: claim it in the ledger, then process it. A redelivery is not
 // dropped because the row exists: a process that dies after the insert strands it PENDING, and
 // Chatwoot, holding its 200, never resends. Both branches call `processChatwootDelivery`, whose CAS on
@@ -1030,19 +1141,32 @@ export async function recordAndProcessChatwootDelivery(
       chatwootConversationId: params.normalized.conversationId,
     },
   );
-  return processChatwootDelivery({
-    tenantId: params.tenantId,
-    instanceId: params.instanceId,
-    deliveryRowId: rowId,
-    agentBotId: params.agentBotId,
-    normalized: params.normalized,
-    // NOTE: The ROW's value, never the fresh reading: a redelivery finds a row written under the world
-    // its message arrived in, while the reading belongs to this attempt. The recovery passes the row's
-    // value too.
-    receiptBindingGeneration: rowGeneration,
-    base,
-    deps: params.deps,
-  });
+  try {
+    return await processChatwootDelivery({
+      tenantId: params.tenantId,
+      instanceId: params.instanceId,
+      deliveryRowId: rowId,
+      agentBotId: params.agentBotId,
+      normalized: params.normalized,
+      // NOTE: The ROW's value, never the fresh reading: a redelivery finds a row written under the world
+      // its message arrived in, while the reading belongs to this attempt. The recovery passes the row's
+      // value too.
+      receiptBindingGeneration: rowGeneration,
+      base,
+      deps: params.deps,
+    });
+  } catch (err) {
+    if (!(err instanceof TurnOwedToRecovery)) throw err;
+    await handToRecovery(
+      base,
+      params.tenantId,
+      params.instanceId,
+      rowId,
+      params.normalized,
+      params.deps?.sleep,
+    );
+    return "processed";
+  }
 }
 
 // The 200 is already out when this runs, so a throw here loses the message: the ledger claim has
@@ -4919,30 +5043,48 @@ export async function processChatwootDelivery(
       // job (coalescing window) instead of replying balloon-by-balloon. The fast worker flushes it
       // (re-fetch + coalesce + one reply). Arming is best-effort: if it fails we fall back to a direct
       // turn so the customer is never left unanswered.
+      //
+      // NOTE: A pool that is momentarily full is retried first, because the fallback is the worse road
+      // in exactly that moment: the job retries on its own and the direct turn does not, and both read
+      // the same saturated database.
       let armed = false;
       if (n.conversationId !== null && n.inboxId !== null) {
+        const conversationId = n.conversationId;
+        const inboxId = n.inboxId;
         try {
-          const cfg = await resolveDebounceConfig(
-            params.tenantId,
-            params.instanceId,
-            n.inboxId,
-            base,
+          const arm = await retryWhileTransactionNeverStarted(
+            async () => {
+              const cfg = await resolveDebounceConfig(
+                params.tenantId,
+                params.instanceId,
+                inboxId,
+                base,
+              );
+              if (!cfg) return null;
+              return {
+                cfg,
+                at: await armDebounce({
+                  tenantId: params.tenantId,
+                  threadId: chatwootThreadId(
+                    params.tenantId,
+                    params.instanceId,
+                    conversationId,
+                  ),
+                  agentBotId: params.agentBotId,
+                  cfg,
+                  lastMessageId: n.message?.id ?? undefined,
+                  reaction: n.message?.isReaction === true,
+                  base,
+                }),
+              };
+            },
+            {
+              label: `debounce arm (conv=${convLabel})`,
+              sleep: params.deps?.sleep,
+            },
           );
-          if (cfg) {
-            const threadId = chatwootThreadId(
-              params.tenantId,
-              params.instanceId,
-              n.conversationId,
-            );
-            const flushAt = await armDebounce({
-              tenantId: params.tenantId,
-              threadId,
-              agentBotId: params.agentBotId,
-              cfg,
-              lastMessageId: n.message?.id ?? undefined,
-              reaction: n.message?.isReaction === true,
-              base,
-            });
+          if (arm) {
+            const { cfg, at: flushAt } = arm;
             armed = true;
             logger.info(
               "chatwoot: debounced (conv=%s window=%ds)",
@@ -5120,6 +5262,12 @@ export async function processChatwootDelivery(
             convLabel,
             err instanceof Error ? err.message : String(err),
           );
+          // A turn the pool never gave a connection to is not a turn that failed: nothing about the
+          // conversation is wrong, and the same turn a little later answers it. So it is owed to the
+          // delivery's recovery, which retries with backoff and hands over when it gives up, and neither the
+          // note nor the hand-over happens here. Live, the delivery is handed to it below; a
+          // recovery's own pass leaves the row to its caller, which puts it back to DEAD.
+          const owedToRecovery = isTransactionNeverStarted(err);
           // NOTE: Surface the failure to the operator (sanitized) so they can re-engage.
           if (n.conversationId !== null) {
             await recordConversationError({
@@ -5129,8 +5277,14 @@ export async function processChatwootDelivery(
               error: err,
               base,
             });
-            // When nothing else is coming, say so INSIDE Chatwoot: there is no retry here, so only a newer
-            // message's turn can still answer. Read by the announcer, so it describes the moment of the note.
+          }
+          if (owedToRecovery && claimFrom === "PENDING") {
+            throw new TurnOwedToRecovery(convLabel, err);
+          }
+          if (n.conversationId !== null && !owedToRecovery) {
+            // When nothing else is coming, say so INSIDE Chatwoot and hand the conversation over: there is
+            // no retry here, so only a newer message's turn can still answer. Read by the announcer, so it
+            // describes the moment of the hand-over.
             const conversationId = n.conversationId;
             const triggerId = n.message?.id ?? null;
             await announceFailedTurn({

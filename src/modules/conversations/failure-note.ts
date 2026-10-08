@@ -4,6 +4,10 @@ import basePrisma from "@/api/lib/prisma";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
+  conversationOwnershipNow,
+  openForHumanQueue,
+} from "@/modules/chatwoot/human-takeover";
+import {
   type LoadChatwootClientDeps,
   loadAgentBot,
   loadChatwootClient,
@@ -12,11 +16,16 @@ import {
   maxIncomingId,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
+import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
+import {
+  type HandoffConfig,
+  readHandoffConfig,
+} from "@/modules/handoff/settings";
 
-// Posts a private note when a turn is definitively lost, so the person working the inbox can tell a
-// dead turn from an agent that chose silence. The note makes an operator take over, which closes
-// `shouldBotHandle` (the gate a pending retry depends on), so a premature note causes the failure it
-// reports. That is why it hangs off the dead-letter event, never a handler's catch: a job announces
+// Hands the conversation to the team, with a private note, when a turn is definitively lost, so the
+// person working the inbox has it in their queue and can tell a dead turn from an agent that chose
+// silence. The hand-over closes `shouldBotHandle` (the gate a pending retry depends on), so a
+// premature one causes the failure it reports. That is why it hangs off the dead-letter event, never a handler's catch: a job announces
 // only when its `failJob` CAS actually moved the row to DEAD, and the direct path only when no newer
 // incoming message exists (the `shouldPost` supersede fence). An unreadable fence does not announce:
 // a missing note costs less than a conversation taken over while its answer was still coming.
@@ -121,13 +130,18 @@ export async function claimFailureNotice(params: {
 // The persona whose conversation this is, so the note is posted AS the agent the operator sees on the
 // inbox. `loadChatwootClient` defaults the bot token to "" and Chatwoot answers 401, which a
 // best-effort catch swallows — a note that never posts at all. The bot comes from the conversation's
-// inbox (`Inbox.agentId`), the same resolution the console does.
-async function personaBotToken(
+// inbox (`Inbox.agentId`), the same resolution the console does. The agent's handoff setting comes
+// along, so the hand-over lands where `handoff_to_human` would send it.
+async function personaOf(
   tenantId: bigint,
   instanceId: bigint,
   chatwootConversationId: number,
   base: PrismaClient,
-): Promise<string | null> {
+): Promise<{
+  botToken: string;
+  chatwootAgentBotId: number;
+  handoff: HandoffConfig;
+} | null> {
   const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findFirst({
       where: {
@@ -141,21 +155,38 @@ async function personaBotToken(
   const agentId = conv?.inbox?.agentId;
   if (agentId == null) return null;
   const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
-  return bot?.accessToken ?? null;
+  if (!bot?.accessToken) return null;
+  const agent = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.agent.findUnique({ where: { id: agentId }, select: { settings: true } }),
+  );
+  return {
+    botToken: bot.accessToken,
+    chatwootAgentBotId: bot.chatwootAgentBotId,
+    handoff: readHandoffConfig(agent?.settings ?? null),
+  };
 }
 
-function noteText(reason: string): string {
+// Markdown, which Chatwoot renders in a private note. The first line is what an operator scanning
+// the conversation reads, so it says what happened; the second says what was done about it, which
+// is the part that tells them whether anyone has the conversation yet.
+export function noteText(reason: string, opened: boolean): string {
+  // The reason is an error message: a backtick in it would close the code span early.
+  const quoted = reason.replace(/`/g, "'").replace(/\s+/g, " ").trim();
   return [
-    "⚠️ Não consegui responder a esta conversa.",
-    "Um atendente humano precisa assumir.",
-    `Motivo: ${reason}`,
+    "**⚠️ O agente não conseguiu responder esta conversa.**",
+    opened
+      ? "Ela foi aberta para a equipe assumir."
+      : "Alguém da equipe precisa assumir.",
+    `**Motivo:** \`${quoted}\``,
   ].join("\n\n");
 }
 
-// Best-effort from end to end: a Chatwoot that is down must never turn one failed turn into two.
-// `assess` is a callback called right before the claim, because a message arriving after the failure
-// can start a direct turn or re-arm the DEAD debounce row, and a snapshot taken at failure time would
-// announce over live work. The claim-to-post gap remains: no lock spans Chatwoot.
+// Best-effort end to end: a Chatwoot that is down must never turn one failed turn into two. `assess`
+// is called right before acting, since a message arriving after the failure can start a new turn.
+// A lost turn is HANDED OVER, not only announced: a note on a conversation still `pending` with the
+// bot is in nobody's queue. Status, then the pinned target, note last (as graph/skip-handover.ts).
+// The note's window coalesces only the note: a conversation returned to the bot and failing again
+// still has to reach a person. More in docs/chatwoot.md, "A full database pool".
 export async function announceFailedTurn(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -174,13 +205,8 @@ export async function announceFailedTurn(params: {
     chatwootConversationId: conversationId,
   } = params;
   try {
-    const botToken = await personaBotToken(
-      tenantId,
-      instanceId,
-      conversationId,
-      base,
-    );
-    if (botToken === null) {
+    const persona = await personaOf(tenantId, instanceId, conversationId, base);
+    if (persona === null) {
       logger.warn(
         "conversations: no persona bot to announce a failed turn as (conv=%s)",
         String(conversationId),
@@ -188,6 +214,36 @@ export async function announceFailedTurn(params: {
       return "failed";
     }
     if (!isTurnLost(await params.assess())) return "not-lost";
+    const client = await loadChatwootClient(tenantId, instanceId, {
+      ...params.deps,
+      base,
+      botToken: persona.botToken,
+    });
+    const opened =
+      (await openForHumanQueue({
+        gate: "failed-turn",
+        conversationId,
+        stillOurs: async () =>
+          (
+            await conversationOwnershipNow({
+              tenantId,
+              instanceId,
+              conversationId,
+              ourAgentBotId: persona.chatwootAgentBotId,
+              base,
+            })
+          ).ours,
+        client: async () => client,
+      })) === "opened";
+    if (opened) {
+      await assignPinnedTarget({
+        client,
+        conversationId,
+        instanceId,
+        handoff: persona.handoff,
+        logLabel: "failed-turn handoff",
+      });
+    }
     if (
       !(await claimFailureNotice({
         tenantId,
@@ -200,14 +256,9 @@ export async function announceFailedTurn(params: {
     ) {
       return "coalesced";
     }
-    const client = await loadChatwootClient(tenantId, instanceId, {
-      ...params.deps,
-      base,
-      botToken,
-    });
     await client.sendPrivateNote(
       conversationId,
-      noteText(sanitizeErrorMessage(params.error)),
+      noteText(sanitizeErrorMessage(params.error), opened),
     );
     return "posted";
   } catch (err) {

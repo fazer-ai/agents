@@ -20,6 +20,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import {
   foreignReplyBoundary,
   type ReplyIdentity,
@@ -1459,6 +1460,10 @@ async function rowDecided(
   );
 }
 
+// The reason the hand-over note gives when the recovery is what gave up.
+export const RECOVERY_GAVE_UP =
+  "as novas tentativas de responder à mensagem do cliente se esgotaram";
+
 export async function announceUnanswered(
   tenantId: bigint,
   deliveryRowId: bigint,
@@ -1556,7 +1561,7 @@ export async function announceUnanswered(
             }),
       ]),
     );
-    await writeFlowEvent(
+    const line = await writeFlowEvent(
       {
         tenantId,
         turnId: crypto.randomUUID(),
@@ -1600,6 +1605,26 @@ export async function announceUnanswered(
         },
       },
     );
+    // The customer is still waiting and nothing on our side will answer now: the conversation goes
+    // to the team the way any lost turn does, note and hand-over. Once, like the line:
+    // a write another announcer won is a hand-over it already made. Not from the dead-letter hook,
+    // which reads no account by design and runs only when the account could not be read.
+    if (
+      opts.readConversation !== false &&
+      outcome === "unanswered" &&
+      line.skipped !== true &&
+      row.conversationId !== null
+    ) {
+      await announceFailedTurn({
+        tenantId,
+        instanceId: row.chatwootInstanceId,
+        chatwootConversationId: row.conversationId,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error(RECOVERY_GAVE_UP),
+        base,
+        deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,
+      });
+    }
   } catch (err) {
     logger.error(
       { err },

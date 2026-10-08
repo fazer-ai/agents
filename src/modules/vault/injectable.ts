@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { retryWhileTransactionNeverStarted } from "@/lib/pool-retry";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { readVaultRefId } from "@/modules/vault/service";
 import { ensureFreshGoogleAccessToken } from "./google-oauth";
@@ -31,8 +32,15 @@ export async function resolveInjectableCredentialEntry(
   tenantId: bigint,
   ref: string,
 ): Promise<InjectableCredential | null> {
-  const entry = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    tryResolveVaultEntry(db, ref),
+  // Read before the request it serves, so a pool momentarily full would otherwise fail a tool
+  // call over a read that runs again safely. The OAuth refreshes below are not retried
+  // whole: they write, and talk to a provider between their reads.
+  const entry = await retryWhileTransactionNeverStarted(
+    () =>
+      runScopedOn(base, sysCtx(tenantId), (db) =>
+        tryResolveVaultEntry(db, ref),
+      ),
+    { label: "vault credential read" },
   );
   if (!entry) return null;
   if (entry.kind === "google_oauth" || entry.kind === "mcp_oauth") {

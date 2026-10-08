@@ -200,4 +200,23 @@ describe.skipIf(!dbUp)("one mirror run per event, not per route", () => {
     expect(m.runs()).toBe(3);
     expect(later.status).toBe("pending");
   });
+
+  test("an unversioned payload is shared only while its run is in flight, never remembered", async () => {
+    const m = countingMirror();
+    const bare = (status: string) => {
+      const n = statusEvent(17, status, T0);
+      return { ...n, conversationUpdatedAt: null } as NormalizedChatwootEvent;
+    };
+    const [a, b] = await Promise.all([
+      once(bare("open"), m.fn),
+      once(bare("open"), m.fn),
+    ]);
+    expect(m.runs()).toBe(1);
+    expect([a.applied, b.applied].sort()).toEqual([false, true]);
+    await once(bare("resolved"), m.fn);
+    // The same payload as the first, a real reopen: it runs.
+    const reopened = await once(bare("open"), m.fn);
+    expect(m.runs()).toBe(3);
+    expect(reopened.status).toBe("open");
+  });
 });

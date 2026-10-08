@@ -119,7 +119,12 @@ export async function mirrorOncePerEvent(
   inFlight.set(key, run);
   try {
     const result = await run;
-    if (!result.heldBack) remember(key, result, Date.now());
+    // NOTE: Only a versioned payload is remembered past its run. Without the conversation's
+    // `updated_at` (Chatwoot before 4.0.2) two real transitions can serialize to the same payload
+    // (open, resolved, open again with no message between), and the second must run.
+    if (!result.heldBack && n.conversationUpdatedAt != null) {
+      remember(key, result, Date.now());
+    }
     return result;
   } finally {
     inFlight.delete(key);

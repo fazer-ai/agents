@@ -254,15 +254,18 @@ it before the template is read, the retry rule issuance follows. Otherwise the d
 (`freezeDocumentSnapshot`: the same validation, blank check and dated snapshot an issuance freezes)
 and stored on a `DocumentApprovalRequest` instead of issued. Nothing is queued for delivery, no row
 is written to `issued_documents`, and **no number is taken**: a rejected or expired request burns
-none. The request keys on the tool's own key, so a retried turn lands on the request it already made.
+none. The request keys on the tool's own key, so a retried turn lands on the request it already made, and
+the tool's answer follows what became of it: pending, approved, rejected or lapsed.
 
 The **preview** (`GET /v1/document-approvals/:id/preview`) renders the frozen snapshot with a text
 placeholder where the number goes, never a believable number: the counter may have moved by the time
 someone approves, and a reviewer shown ORC-0042 would expect that number on the document.
 
-**Approval issues the frozen snapshot**, under the key `approval:<request id>` rather than the
-calendar-day key the tool uses, so an approval landing tomorrow keeps the date the reviewer saw; only
-the number is taken then. The status is claimed first, `PENDING → APPROVED` while unexpired, in one
+**Approval issues the frozen snapshot**, under the key `approval:<request id>:<digest>` rather than
+the calendar-day key the tool uses, so an approval landing tomorrow keeps the date the reviewer saw;
+only the number is taken then. The digest is of what only the request holds (its own key and creation
+instant), so no row written before the request existed can carry the key, and `issueDocument` refuses
+any caller key with the `approval:` prefix. The status is claimed first, `PENDING → APPROVED` while unexpired, in one
 conditional UPDATE: a rejection or the expiry racing it cannot both win, and a second approval, in
 parallel or later, finds `APPROVED` and lands on the same issued row through the key. A failure after
 the claim (the template deleted, so nothing can number the document) leaves an `APPROVED` request with

@@ -62,6 +62,7 @@ const SELECT = {
   numberPrefix: true,
   status: true,
   threadId: true,
+  idempotencyKey: true,
   chatwootInstanceId: true,
   conversationId: true,
   snapshot: true,
@@ -242,6 +243,19 @@ export async function renderApprovalPreview(
   return { bytes, fileName: documentFileName(row.title, null) };
 }
 
+// The key the approved document is issued under. It names the request by its id AND by a digest of
+// what only this request holds, so no row written before the request existed can carry it: an
+// upgraded install may have documents issued under any key the REST route ever accepted.
+function approvalDocumentKey(row: {
+  id: bigint;
+  idempotencyKey: string;
+  createdAt: Date;
+}): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(`${row.idempotencyKey}|${row.createdAt.toISOString()}`);
+  return `${APPROVAL_KEY_PREFIX}${row.id}:${hasher.digest("hex")}`;
+}
+
 function notPending(status: string): AppError {
   return new AppError(
     `this approval request is ${status.toLowerCase()}, not pending`,
@@ -295,7 +309,7 @@ export async function approveDocumentRequest(params: {
     }
     throw notPending(row.status);
   }
-  const idempotencyKey = `${APPROVAL_KEY_PREFIX}${row.id}`;
+  const idempotencyKey = approvalDocumentKey(row);
   const document = await issueFrozenDocument({
     ctx,
     base,

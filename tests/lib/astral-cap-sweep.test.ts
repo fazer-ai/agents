@@ -400,6 +400,9 @@ const BARE_SLICES: Record<
   // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
   // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.
   "src/client/pages/resources/ToolEditModal.tsx": [2, "index"],
+  // The history without its last message, when that message is a stalled repeat the dangling-call
+  // repair leaves to the stall's own removal. An array of messages, never a string.
+  "src/graph/graph.ts": [1, "array"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],

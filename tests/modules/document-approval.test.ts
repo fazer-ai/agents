@@ -246,7 +246,8 @@ describe.skipIf(!dbUp)("document approval", () => {
     const after = await counts();
     expect(out).toContain("revisão");
     expect(out).toContain("a equipe está preparando");
-    expect(out).toContain("Não prometa prazo");
+    expect(out).toContain("NÃO foi enviado");
+    expect(out).toContain('"em breve"');
     expect(out).not.toMatch(/ORC-\d|\d{1,2}h|\d{4}-\d{2}-\d{2}/);
     expect(again).toBe(out);
     expect(turnState.pendingAttachments).toHaveLength(0);

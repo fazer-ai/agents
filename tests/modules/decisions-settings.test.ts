@@ -7,7 +7,10 @@ import {
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
-import { assertAgentCreatable } from "@/modules/agents/service";
+import {
+  assertAgentCreatable,
+  assertSettingsClosedValues,
+} from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_ARGS_SHAPE } from "@/modules/agents/settings-schema";
 import { readDecisionsConfig } from "@/modules/decisions/config";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -212,6 +215,69 @@ describe("the decisions block at the write boundary", () => {
     const r = refusal(monitoring);
     expect(r?.statusCode).toBe(400);
     expect(r?.field).toBe(field);
+  });
+
+  test("an edit that breaks an unchanged rule is refused, naming the rule; a stored block re-sent untouched is not", () => {
+    const stored = {
+      monitoring: {
+        ...valid,
+        decisions: {
+          ...valid.decisions,
+          rules: [
+            {
+              when: [{ question: "assunto", equals: "reembolso" }],
+              action: { tool: "set_labels", args: {} },
+            },
+          ],
+        },
+      },
+    };
+    const edit = (decisions: Record<string, unknown>) => {
+      try {
+        assertSettingsClosedValues(
+          {
+            monitoring: {
+              ...stored.monitoring,
+              decisions: { ...stored.monitoring.decisions, ...decisions },
+            },
+          },
+          stored,
+        );
+      } catch (e) {
+        return (e as { field?: string }).field;
+      }
+      return null;
+    };
+    // The option the rule names is renamed; the rule itself is untouched.
+    expect(
+      edit({
+        questions: [
+          QUESTIONS[0],
+          {
+            ...QUESTIONS[1],
+            options: [
+              { value: "estorno", description: "estorno" },
+              { value: "outro", description: "outro" },
+            ],
+          },
+        ],
+      }),
+    ).toBe("monitoring.decisions.rules.0.when.0.equals");
+    // The question the rule names is deleted.
+    expect(edit({ questions: [QUESTIONS[0]] })).toBe(
+      "monitoring.decisions.rules.0.when.0.question",
+    );
+    // A stored block that is already broken saves when it is re-sent as it is.
+    const broken = {
+      monitoring: {
+        ...stored.monitoring,
+        decisions: {
+          ...stored.monitoring.decisions,
+          questions: [QUESTIONS[0]],
+        },
+      },
+    };
+    expect(() => assertSettingsClosedValues(broken, broken)).not.toThrow();
   });
 
   test("the tick's reader agrees with the boundary, and answers a problem instead of throwing", () => {

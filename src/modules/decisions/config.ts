@@ -138,7 +138,15 @@ export const decisionsPatchSchema = z.looseObject({
 
 export const decisionsSchema = decisionsPatchSchema.superRefine((v, ctx) => {
   for (const p of crossFieldProblems(v as unknown as RawDecisions)) {
-    ctx.addIssue({ code: "custom", path: p.path, message: p.message });
+    // `wholeBlock`: a cross-field problem is a change wherever the block changed, not only at the
+    // path it names (a renamed option breaks the unchanged rule that names it). The write boundary
+    // compares at the schema's root, `wholeBlock` levels above the issue's path.
+    ctx.addIssue({
+      code: "custom",
+      path: p.path,
+      message: p.message,
+      params: { wholeBlock: p.path.length },
+    });
   }
 });
 

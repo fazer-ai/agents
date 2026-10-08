@@ -1512,6 +1512,15 @@ async function runAgentNudgeBody(
         model,
         detail: { fallbackUnavailable: reason },
       }),
+    // The same thread as the reactive turn, so the same repair, and the same line when it is this
+    // turn that makes it.
+    onDanglingToolCalls: ({ calls }) =>
+      emitFlowEvent(flow, {
+        stage: "memory",
+        level: "info",
+        status: "ok",
+        detail: { reason: "repaired_dangling_tool_call", calls },
+      }),
     // The proactive turn runs on the SAME thread as the reactive one, so it is subject to the same
     // ceiling and has to leave the same trace. INFO for the reason given in runtime.ts.
     onHistoryTrim: ({ kept, dropped, tokens }) =>

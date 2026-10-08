@@ -109,6 +109,10 @@ export interface BuildAgentGraphParams {
     dropped: number;
     tokens: number;
   }) => void;
+  // Fired on the round that took unanswered tool calls out of the history (see
+  // `repairDanglingToolCalls`), with how many. Once per repair: the repaired message is written back
+  // to the thread, so no later round or turn finds the same calls again.
+  onDanglingToolCalls?: (info: { calls: number }) => void;
   // The turn's own "is this still wanted", asked at the tool boundary. The runtime asks it at every
   // seam it owns, but a tool call happens INSIDE the invoke, so without it a `/reset` landing mid-call
   // is reported done while this graph's tools write an attribute, a label and a kanban card back onto
@@ -282,6 +286,114 @@ function repeatsAnsweredCalls(history: BaseMessage[]): boolean {
 function dropRepeatedBatch(history: BaseMessage[]): BaseMessage[] {
   const id = history.at(-1)?.id;
   return typeof id === "string" ? [new RemoveMessage({ id })] : [];
+}
+
+// The calls an assistant message asked for that no `ToolMessage` answers before the next assistant
+// message. A turn killed between checkpointing the calls and running them (a deploy, a crash, the
+// job deadline) leaves exactly this in the thread, and every later request is refused ("No tool
+// output found for function call"), so the conversation is dead until a `/reset`. Read from
+// `tool_calls`, the calls `ToolNode` would have run; a stalled repeat (see `repeatsAnsweredCalls`)
+// is answered EARLIER in the turn, so the caller leaves the last message out when it is one.
+function danglingToolCalls(messages: BaseMessage[]): Map<number, Set<string>> {
+  const found = new Map<number, Set<string>>();
+  messages.forEach((m, i) => {
+    if (m.getType() !== "ai") return;
+    const calls = (m as AIMessage).tool_calls ?? [];
+    const answered = new Set<string>();
+    for (let j = i + 1; j < messages.length; j++) {
+      const next = messages[j];
+      if (next?.getType() === "ai") break;
+      const id = (next as { tool_call_id?: string }).tool_call_id;
+      if (typeof id === "string") answered.add(id);
+    }
+    const missing = calls
+      .map((c) => c.id)
+      .filter(
+        (id): id is string => typeof id === "string" && !answered.has(id),
+      );
+    if (missing.length > 0) found.set(i, new Set(missing));
+  });
+  return found;
+}
+
+// The assistant message without the calls that never ran, replaced by ID so the repair lands in the
+// thread. Dropped, not answered with a synthetic result, which the next round would read as a call
+// that happened. Every copy a provider replays goes: `tool_calls`, the Chat Completions copy in
+// `additional_kwargs`, and the Responses items in `response_metadata.output`, replayed VERBATIM by
+// `@langchain/openai`. A reasoning item left last (one that preceded a dropped call) is refused on its
+// own, so trailing ones go too. Text beside the call and calls that did run stay; a message left with
+// neither is what `isEmptyAssistantTurn` keeps out of the prompt, reasoning and all.
+function withoutCalls(message: AIMessage, dropped: Set<string>): AIMessage {
+  const isDropped = (id: unknown) => typeof id === "string" && dropped.has(id);
+  const toolCalls = (message.tool_calls ?? []).filter((c) => !isDropped(c.id));
+  const content = Array.isArray(message.content)
+    ? (message.content.filter((b) => {
+        const block = b as { type?: unknown; id?: unknown };
+        const isCall =
+          block.type === "tool_use" ||
+          block.type === "tool_call" ||
+          block.type === "function_call";
+        return !(isCall && isDropped(block.id));
+      }) as MessageContent)
+    : message.content;
+  const kwargs: Record<string, unknown> = { ...message.additional_kwargs };
+  if (Array.isArray(kwargs.tool_calls)) {
+    const kept = (kwargs.tool_calls as { id?: unknown }[]).filter(
+      (c) => !isDropped(c?.id),
+    );
+    if (kept.length > 0) kwargs.tool_calls = kept;
+    else delete kwargs.tool_calls;
+  }
+  const meta: Record<string, unknown> = { ...message.response_metadata };
+  if (Array.isArray(meta.output)) {
+    const output = (
+      meta.output as { type?: unknown; call_id?: unknown }[]
+    ).filter(
+      (item) => !(item?.type === "function_call" && isDropped(item.call_id)),
+    );
+    while (output.length > 0 && output.at(-1)?.type === "reasoning")
+      output.pop();
+    meta.output = output;
+  }
+  return new AIMessage({
+    ...(typeof message.id === "string" ? { id: message.id } : {}),
+    content,
+    tool_calls: toolCalls,
+    ...(message.invalid_tool_calls?.length
+      ? { invalid_tool_calls: message.invalid_tool_calls }
+      : {}),
+    additional_kwargs: kwargs,
+    response_metadata: meta,
+    ...(message.usage_metadata
+      ? { usage_metadata: message.usage_metadata }
+      : {}),
+    ...(message.name ? { name: message.name } : {}),
+  });
+}
+
+// The history with every unanswered call taken out, and the replacements that write it back. No
+// `REMOVE_ALL_MESSAGES`: like compaction, the repair names the messages it changes. A message with
+// no id cannot be replaced and is left alone; the reducer gives every stored message one.
+function repairDanglingToolCalls(messages: BaseMessage[]): {
+  messages: BaseMessage[];
+  replacements: BaseMessage[];
+  calls: number;
+} {
+  const stalled = repeatsAnsweredCalls(messages);
+  const scope = stalled ? messages.slice(0, -1) : messages;
+  const found = danglingToolCalls(scope);
+  const repaired = [...messages];
+  const replacements: BaseMessage[] = [];
+  let calls = 0;
+  for (const [i, dropped] of found) {
+    const original = messages[i] as AIMessage;
+    if (typeof original.id !== "string") continue;
+    const replacement = withoutCalls(original, dropped);
+    repaired[i] = replacement;
+    replacements.push(replacement);
+    calls += dropped.size;
+  }
+  return { messages: repaired, replacements, calls };
 }
 
 // The turn still has to end: what stops a model that answers every round with the same lone
@@ -500,6 +612,7 @@ export function buildAgentGraph({
   maxHistoryTokens,
   historyDates,
   onHistoryTrim,
+  onDanglingToolCalls,
   stillWanted,
   noReplyChannel,
   spokenNotice,
@@ -846,7 +959,17 @@ export function buildAgentGraph({
   // the job's own error instead, which is ours to publish and names the deadline.
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
     try {
-      return await agentNodeBody(state);
+      // Before anything reads the history, so the budget, the window and the provider all see the
+      // repaired one. The replacements go FIRST in the update: the body can replace the same message
+      // again (`silenceNarration`), and the reducer applies them in order.
+      const repair = repairDanglingToolCalls(state.messages);
+      if (repair.replacements.length === 0) return await agentNodeBody(state);
+      const update = await agentNodeBody({
+        ...state,
+        messages: repair.messages,
+      });
+      onDanglingToolCalls?.({ calls: repair.calls });
+      return { messages: [...repair.replacements, ...update.messages] };
     } catch (err) {
       if (jobSignal?.aborted && jobSignal.reason instanceof Error) {
         throw jobSignal.reason;

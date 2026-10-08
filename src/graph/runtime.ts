@@ -1156,6 +1156,16 @@ async function runTurnBody(
         model,
         detail: { fallbackUnavailable: reason },
       }),
+    // NOTE: Info, not warn: the turn that left the calls unanswered already failed where it was
+    // killed, and this one answers. The line is what ties a "No tool output found" in the provider's
+    // logs to the turn that cleared it.
+    onDanglingToolCalls: ({ calls }) =>
+      emitFlowEvent(flow, {
+        stage: "memory",
+        level: "info",
+        status: "ok",
+        detail: { reason: "repaired_dangling_tool_call", calls },
+      }),
     // NOTE: Info, not warn: a working history ceiling trims on nearly every turn of a long thread and
     // warn pages. Counts only, never a fragment of what was dropped.
     onHistoryTrim: ({ kept, dropped, tokens }) =>

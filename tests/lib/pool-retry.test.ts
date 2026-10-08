@@ -41,16 +41,23 @@ async function realPoolRefusal(url: string): Promise<unknown> {
     adapter: new PrismaPg({ connectionString: url, max: 1 }),
   });
   let release: () => void = () => {};
+  let ready: () => void = () => {};
+  const holding = new Promise<void>((r) => {
+    ready = r;
+  });
   const held = db.$transaction(
     async (tx) => {
       await tx.$queryRaw`SELECT 1`;
-      await new Promise<void>((r) => {
+      const freed = new Promise<void>((r) => {
         release = r;
       });
+      // Signalled only once the connection is taken and `release` can end it.
+      ready();
+      await freed;
     },
     { timeout: 20_000 },
   );
-  await new Promise((r) => setTimeout(r, 200));
+  await holding;
   try {
     await db.$transaction(async (tx) => tx.$queryRaw`SELECT 1`, {
       maxWait: 300,

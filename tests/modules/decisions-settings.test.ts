@@ -137,6 +137,39 @@ describe("the decisions block at the write boundary", () => {
       },
       "monitoring.decisions.rules.0.when.0.minProbability",
     ],
+    [
+      "a block without questions, named at the block",
+      {
+        ...valid,
+        decisions: { provider: "typesafe", credentialRef: "vault:1" },
+      },
+      "monitoring.decisions",
+    ],
+    [
+      "a question without instructions, named at the question",
+      {
+        ...valid,
+        decisions: {
+          ...valid.decisions,
+          questions: [{ name: "pede_reembolso", type: "yes_no" }],
+          rules: [],
+        },
+      },
+      "monitoring.decisions.questions.0",
+    ],
+    [
+      "a rule without an action, named at the rule",
+      {
+        ...valid,
+        decisions: {
+          ...valid.decisions,
+          rules: [
+            { when: [{ question: "pede_reembolso", minProbability: 0.5 }] },
+          ],
+        },
+      },
+      "monitoring.decisions.rules.0",
+    ],
   ])("refused: %s", (_label, monitoring, field) => {
     const r = refusal(monitoring);
     expect(r?.statusCode).toBe(400);

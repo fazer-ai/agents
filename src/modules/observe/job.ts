@@ -1577,15 +1577,49 @@ export async function runObserve(
       tools,
       handedOff: () => handoffState.completed === true,
     });
-    const report = await applyDecisions(
-      config,
-      result.answers,
-      fencedTools,
-      [toolLogger],
-      deadline,
-    );
+    // UNDER THE TICK'S DEADLINE, as the graph is: a native write can wait in a keyed queue that the
+    // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
+    // deadline and is retried whole, repeating what already committed.
+    let report: Awaited<ReturnType<typeof applyDecisions>>;
+    try {
+      report = await underSignal(
+        applyDecisions(
+          config,
+          result.answers,
+          fencedTools,
+          [toolLogger],
+          deadline,
+          () => fence(),
+        ),
+        deadline,
+      );
+    } catch (err) {
+      toolLogger.settle();
+      if (refusal !== null) return endOnRefusal(refusal);
+      // The same rule as the model-failure path: a dispatch that never settled counts as committed,
+      // and a committed effect is never retried.
+      const committed = toolsRan - noEffect > 0;
+      const failure = uncommittedFailure();
+      decisionLine(
+        "error",
+        {
+          failed: "decision_actions",
+          ...failureDetail(err),
+          toolCalls: toolsRan - noEffect,
+          ...(committed ? { retried: false } : failure.detail),
+        },
+        committed ? "warn" : failure.level,
+      );
+      if (committed) return { outcome: "done" };
+      return {
+        outcome: "fail",
+        error: `observe: decision actions did not finish (${providerFailure(err)})`,
+      };
+    }
     toolLogger.settle();
-    if (refusal !== null) return endOnRefusal(refusal);
+    if (refusal !== null || report.withdrawn) {
+      return endOnRefusal(refusal ?? "superseded");
+    }
     decisionLine(
       "ok",
       {

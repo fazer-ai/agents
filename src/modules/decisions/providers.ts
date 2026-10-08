@@ -76,6 +76,28 @@ function unit(v: unknown): number | null {
     : null;
 }
 
+// WHAT A PROVIDER STRING MAY BECOME in the answer, which the flow line logs: only a value the operator
+// configured. A choice outside the question's options, or a probability keyed by anything else, is
+// dropped rather than carried, because a provider (or an endpoint a credential's base URL points at)
+// can echo the conversation in any string field, and the line promises no customer text.
+function configured(q: DecisionQuestion): ReadonlySet<string> {
+  return new Set(
+    q.type === "choice"
+      ? q.options.map((o) => o.value)
+      : q.type === "score"
+        ? q.levels.map((l) => l.value)
+        : [],
+  );
+}
+
+// The resolved model id, kept only when it looks like one (`jev-1.13.0`, `gpt-6-luna`): the field is
+// the provider's text like any other.
+function modelId(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9][\w.:/-]{0,79}$/.test(v)
+    ? v
+    : null;
+}
+
 function tokens(v: unknown): number {
   const n = Number(v ?? 0);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
@@ -161,7 +183,7 @@ const openai: DecisionProviderImpl = {
     const usage = (json.usage ?? {}) as Record<string, unknown>;
     return {
       answers,
-      modelVersion: typeof json.model === "string" ? json.model : null,
+      modelVersion: modelId(json.model),
       inputTokens: tokens(usage.input_tokens),
     };
   },
@@ -172,6 +194,7 @@ function readOpenAIAnswer(
   raw: Record<string, unknown>,
 ): DecisionAnswer | null {
   if (raw.type === "refusal") return { type: "refusal" };
+  const allowed = configured(q);
   // Probabilities come as an array: a choice's entries carry the option `value`; a score's carry the
   // level index as `value` and the level's `label`. Keyed here by what our config calls the option or
   // level (`value`), so both providers key an answer the same way.
@@ -188,7 +211,8 @@ function readOpenAIAnswer(
                 : undefined
             : p?.value;
         const v = unit(p?.probability);
-        if (typeof key === "string" && v !== null) out[key] = v;
+        if (typeof key === "string" && allowed.has(key) && v !== null)
+          out[key] = v;
       }
     }
     return out;
@@ -198,7 +222,7 @@ function readOpenAIAnswer(
     return p === null ? null : { type: "yes_no", probability: p };
   }
   if (q.type === "choice" && raw.type === "choice") {
-    return typeof raw.choice === "string"
+    return typeof raw.choice === "string" && allowed.has(raw.choice)
       ? {
           type: "choice",
           choice: raw.choice,
@@ -272,7 +296,7 @@ const typesafe: DecisionProviderImpl = {
     const usage = (json.usage ?? {}) as Record<string, unknown>;
     return {
       answers,
-      modelVersion: typeof json.model === "string" ? json.model : null,
+      modelVersion: modelId(json.model),
       inputTokens: tokens(usage.input_tokens),
     };
   },
@@ -284,6 +308,7 @@ function readTypeSafeAnswer(
 ): DecisionAnswer | null {
   if (!raw || typeof raw !== "object") return null;
   if (raw.type === "refusal") return { type: "refusal" };
+  const allowed = configured(q);
   const probs = (keys?: string[]): Record<string, number> => {
     const out: Record<string, number> = {};
     const p = raw.probabilities;
@@ -292,8 +317,8 @@ function readTypeSafeAnswer(
         const n = unit(v);
         // A score's probabilities are keyed by level index ("0", "1"...): mapped to the level's value
         // so both providers key a score the same way.
-        const key = keys?.[Number(k)] ?? k;
-        if (n !== null) out[key] = n;
+        const key = keys ? keys[Number(k)] : k;
+        if (key !== undefined && allowed.has(key) && n !== null) out[key] = n;
       }
     }
     return out;
@@ -303,7 +328,7 @@ function readTypeSafeAnswer(
     return p === null ? null : { type: "yes_no", probability: p };
   }
   if (q.type === "choice" && raw.type === "choice") {
-    return typeof raw.choice === "string"
+    return typeof raw.choice === "string" && allowed.has(raw.choice)
       ? {
           type: "choice",
           choice: raw.choice,

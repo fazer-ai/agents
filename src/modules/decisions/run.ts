@@ -51,19 +51,24 @@ export interface DecisionTickReport {
   fired: FiredAction[];
   missed: { rule: number; miss: ConditionMiss }[];
   actions: ActionReport[];
+  // The observation was withdrawn before an action could run (agent off or detached, claim
+  // superseded, reset, reopened): the caller ends the tick on the fence's own refusal.
+  withdrawn: boolean;
 }
 
-// Runs what the rules fired through the SAME tool objects the LLM observer calls (already wrapped by
-// the tick's effect counter), with the tick's tool logger as the callback, so a decision's write gets
-// the tool's protections, its `tool` flow line and its label accounting exactly as a model's would.
-// In `shadow` nothing is invoked. Sequential, in rule order: two writes to one conversation racing
-// would make the order the log shows a lie.
+// Runs what the rules fired through the SAME tool objects the LLM observer calls, with the tick's
+// tool logger as callback, so a decision's write gets the tool's protections, flow line and label
+// accounting. Shadow invokes nothing. Sequential, in rule order, so the log's order is the real one.
+//
+// The observation's fence is asked before every action, as the graph asks it before every hop: not
+// every tool asks on its own (`private_note` does not), and the provider call leaves time to withdraw.
 export async function applyDecisions(
   config: { rules: DecisionsConfig["rules"]; apply: DecisionApply },
   answers: Record<string, DecisionAnswer>,
   tools: readonly StructuredToolInterface[],
   callbacks: Callbacks,
   signal: AbortSignal,
+  stillWanted: () => Promise<boolean>,
 ): Promise<DecisionTickReport> {
   const { fired, missed } = evaluateRules(config.rules, answers);
   const actions: ActionReport[] = [];
@@ -71,6 +76,9 @@ export async function applyDecisions(
     if (config.apply === "shadow") {
       actions.push({ rule: f.rule, tool: f.tool, outcome: "shadow" });
       continue;
+    }
+    if (!(await stillWanted())) {
+      return { fired, missed, actions, withdrawn: true };
     }
     const tool = tools.find((t) => t.name === f.tool);
     if (!tool) {
@@ -92,7 +100,7 @@ export async function applyDecisions(
       });
     }
   }
-  return { fired, missed, actions };
+  return { fired, missed, actions, withdrawn: false };
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

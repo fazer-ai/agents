@@ -86,18 +86,19 @@ export interface DecisionsConfig {
   apply: DecisionApply;
 }
 
-// THE WRITE BOUNDARY. Loose objects so a key added later round-trips, and cross-field checks (a rule
-// naming a question that does not exist, a condition that does not fit its question's type) in one
-// refinement, so the 400 names the exact path the operator has to fix.
+// THE WRITE BOUNDARY. Loose objects so a key added later round-trips; cross-field checks in one
+// refinement, so the 400 names the exact path to fix. Every field is optional to zod and presence is
+// asked in the refinement, reported at the object that lacks the field: the boundary compares by value
+// at the issue's path, and an absent key equals an absent stored key (docs/decisions.md).
 const name = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const option = z.looseObject({
-  value: z.string().min(1),
-  description: z.string(),
+  value: z.string().min(1).optional(),
+  description: z.string().optional(),
 });
 const question = z.looseObject({
-  name,
-  type: z.enum(DECISION_QUESTION_TYPES),
-  instructions: z.string().min(1),
+  name: name.optional(),
+  type: z.enum(DECISION_QUESTION_TYPES).optional(),
+  instructions: z.string().min(1).optional(),
   options: z.array(option).min(2).max(CHOICE_OPTIONS_MAX).optional(),
   levels: z
     .array(option)
@@ -107,7 +108,7 @@ const question = z.looseObject({
 });
 const unit = z.number().min(0).max(1);
 const condition = z.looseObject({
-  question: name,
+  question: name.optional(),
   minProbability: unit.optional(),
   equals: z.string().min(1).optional(),
   minConfidence: unit.optional(),
@@ -115,19 +116,21 @@ const condition = z.looseObject({
   maxLevel: z.number().int().min(0).optional(),
 });
 const rule = z.looseObject({
-  when: z.array(condition).min(1),
-  action: z.looseObject({
-    tool: z.enum(DECISION_ACTION_TOOLS),
-    args: z.record(z.string(), z.unknown()).optional(),
-  }),
+  when: z.array(condition).min(1).optional(),
+  action: z
+    .looseObject({
+      tool: z.enum(DECISION_ACTION_TOOLS).optional(),
+      args: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
 });
 
 export const decisionsSchema = z
   .looseObject({
-    provider: z.enum(DECISION_PROVIDERS),
+    provider: z.enum(DECISION_PROVIDERS).optional(),
     model: z.string().min(1).optional(),
-    credentialRef: z.string().min(1),
-    questions: z.array(question).min(1).max(QUESTIONS_MAX),
+    credentialRef: z.string().min(1).optional(),
+    questions: z.array(question).min(1).max(QUESTIONS_MAX).optional(),
     rules: z.array(rule).max(RULES_MAX).optional(),
     apply: z.enum(DECISION_APPLY).optional(),
   })
@@ -137,14 +140,18 @@ export const decisionsSchema = z
     }
   });
 
+type Bag = Record<string, unknown>;
 interface RawDecisions {
+  provider?: unknown;
+  credentialRef?: unknown;
   questions?: {
     name?: unknown;
     type?: unknown;
-    options?: unknown[];
-    levels?: unknown[];
+    instructions?: unknown;
+    options?: Bag[];
+    levels?: Bag[];
   }[];
-  rules?: { when?: Record<string, unknown>[] }[];
+  rules?: { when?: Bag[]; action?: Bag }[];
 }
 
 interface Problem {
@@ -158,6 +165,33 @@ interface Problem {
 // and an absent key compares equal to an absent stored key, so an issue there would never refuse.
 function crossFieldProblems(v: RawDecisions): Problem[] {
   const out: Problem[] = [];
+  const need = (
+    bag: Bag | undefined,
+    keys: string[],
+    path: (string | number)[],
+  ) => {
+    for (const k of keys) {
+      if (bag?.[k] === undefined) {
+        out.push({ path, message: `${k} is required` });
+      }
+    }
+  };
+  need(v as Bag, ["provider", "credentialRef", "questions"], []);
+  for (const [i, q] of (v.questions ?? []).entries()) {
+    need(q, ["name", "type", "instructions"], ["questions", i]);
+    for (const key of ["options", "levels"] as const) {
+      for (const [j, o] of (q?.[key] ?? []).entries()) {
+        need(o, ["value", "description"], ["questions", i, key, j]);
+      }
+    }
+  }
+  for (const [r, rl] of (v.rules ?? []).entries()) {
+    need(rl, ["when", "action"], ["rules", r]);
+    if (rl?.action) need(rl.action, ["tool"], ["rules", r, "action"]);
+    for (const [c, cond] of (rl?.when ?? []).entries()) {
+      need(cond, ["question"], ["rules", r, "when", c]);
+    }
+  }
   const byName = new Map<string, { type: unknown; size: number }>();
   for (const [i, q] of (v.questions ?? []).entries()) {
     if (typeof q?.name !== "string") continue;
@@ -249,10 +283,12 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
       .join(".");
     return { ok: false, problem: `${path}: ${issue?.message ?? "invalid"}` };
   }
+  // Presence was asked by the refinement, so the `?? ""` below never supplies a value; it only tells
+  // the type system what the parse already established.
   const v = parsed.data;
   const provider = v.provider as DecisionProvider;
-  const questions: DecisionQuestion[] = v.questions.map((q) => {
-    const base = { name: q.name, instructions: q.instructions };
+  const questions: DecisionQuestion[] = (v.questions ?? []).map((q) => {
+    const base = { name: q.name ?? "", instructions: q.instructions ?? "" };
     if (q.type === "choice") {
       return { ...base, type: "choice", options: (q.options ?? []).map(opt) };
     }
@@ -263,10 +299,15 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
   });
   const types = new Map(questions.map((q) => [q.name, q.type]));
   const rules: DecisionRule[] = (v.rules ?? []).map((r) => ({
-    when: r.when.map((c) => conditionFor(c, types.get(c.question))),
+    when: (r.when ?? []).map((c) =>
+      conditionFor(
+        { ...c, question: c.question ?? "" },
+        types.get(c.question ?? ""),
+      ),
+    ),
     action: {
-      tool: r.action.tool as DecisionActionTool,
-      args: (r.action.args ?? {}) as Record<string, unknown>,
+      tool: r.action?.tool as DecisionActionTool,
+      args: (r.action?.args ?? {}) as Record<string, unknown>,
     },
   }));
   return {
@@ -274,7 +315,7 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
     config: {
       provider,
       model: v.model ?? DEFAULT_DECISION_MODEL[provider],
-      credentialRef: v.credentialRef,
+      credentialRef: v.credentialRef ?? "",
       questions,
       rules,
       apply: v.apply === "enforce" ? "enforce" : "shadow",
@@ -282,8 +323,8 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
   };
 }
 
-function opt(o: { value: string; description: string }): DecisionOption {
-  return { value: o.value, description: o.description };
+function opt(o: { value?: string; description?: string }): DecisionOption {
+  return { value: o.value ?? "", description: o.description ?? "" };
 }
 
 // Only the fields the question's type reads: a stray `equals` on a yes_no condition is not a second

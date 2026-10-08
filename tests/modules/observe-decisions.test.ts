@@ -241,7 +241,11 @@ const usageRows = () =>
 async function tick(
   fetchImpl: typeof fetch,
   labels: string[] = [],
-  extra: { afterFailure?: "retry" | "dead_letter" } = {},
+  extra: {
+    afterFailure?: "retry" | "dead_letter";
+    timeoutMs?: number;
+    slowNotes?: number;
+  } = {},
 ) {
   const log: ClientLog = {
     labelsWritten: [],
@@ -250,6 +254,13 @@ async function tick(
     publicSends: 0,
   };
   const model = new CountingModel();
+  const { slowNotes, ...deps } = extra;
+  const client = stubClient(labels, log);
+  if (slowNotes !== undefined) {
+    // A write that hangs past the tick's deadline (a keyed queue the signal does not cancel).
+    (client as unknown as { sendPrivateNote: unknown }).sendPrivateNote = () =>
+      new Promise((resolve) => setTimeout(() => resolve({}), slowNotes));
+  }
   const res = await runObserve(
     tenantId,
     {
@@ -261,10 +272,10 @@ async function tick(
     },
     appDb,
     {
-      makeClient: async () => stubClient(labels, log),
+      makeClient: async () => client,
       makeModel: () => model as never,
       decisionFetch: fetchImpl,
-      ...extra,
+      ...deps,
     },
   );
   return { log, model, res };
@@ -784,6 +795,125 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect((line.detail as Record<string, unknown>).skipped).toBe(
       "decisions_credential_unresolved",
     );
+  });
+
+  test("an observation withdrawn while the provider answered runs no action", async () => {
+    await setMonitoring(
+      decisionsBlock({
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+            action: {
+              tool: "private_note",
+              args: { content: "não deveria sair" },
+            },
+          },
+        ],
+      }),
+    );
+    // The agent is switched off between the provider call and the action: `private_note` does not
+    // ask the fence itself, so only the engine's own check keeps it from writing.
+    const p = providerDouble(() =>
+      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
+    );
+    const switchingOff = (async (u: RequestInfo | URL, init?: RequestInit) => {
+      const r = await p.fetchImpl(u, init);
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: false },
+      });
+      return r;
+    }) as typeof fetch;
+    try {
+      const { log } = await tick(switchingOff);
+      expect(log.notes).toEqual([]);
+      const line = await lastLine();
+      expect(line.status).toBe("skipped");
+      expect((line.detail as Record<string, unknown>).skipped).toBe(
+        "agent_no_longer_observes",
+      );
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true },
+      });
+    }
+  });
+
+  test("an action that outlives the tick's deadline ends the tick, and a committed one is not retried", async () => {
+    await setMonitoring(
+      decisionsBlock({
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+            action: { tool: "private_note", args: { content: "lenta" } },
+          },
+        ],
+      }),
+    );
+    const p = providerDouble(() =>
+      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
+    );
+    const started = Date.now();
+    const { res } = await tick(p.fetchImpl, [], {
+      timeoutMs: 1_500,
+      slowNotes: 10_000,
+      afterFailure: "retry",
+    });
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(res.outcome).toBe("done");
+    const line = await lastLine();
+    expect(line.status).toBe("error");
+    expect(line.level).toBe("warn");
+    const d = line.detail as Record<string, unknown>;
+    expect(d.failed).toBe("decision_actions");
+    expect(d.retried).toBe(false);
+  });
+
+  test("a provider string outside the configured options never reaches the line", async () => {
+    await setMonitoring(
+      decisionsBlock({
+        rules: [
+          {
+            when: [{ question: "assunto", equals: "reembolso" }],
+            action: { tool: "set_labels", args: { add: ["x"] } },
+          },
+        ],
+      }),
+    );
+    const p = providerDouble(() =>
+      json({
+        model: "MARCADOR-1135 echoed by a proxy with spaces",
+        answers: {
+          assunto: {
+            type: "choice",
+            choice: "MARCADOR-1135 texto do cliente",
+            confidence: 0.9,
+            probabilities: { "MARCADOR-1135": 0.9, reembolso: 0.1 },
+          },
+          irritacao: {
+            type: "score",
+            score: 1,
+            confidence: 0.9,
+            probabilities: { "0": 0.1, "1": 0.8, "MARCADOR-1135": 0.1 },
+          },
+        },
+        usage: { input_tokens: 10 },
+      }),
+    );
+    const { log } = await tick(p.fetchImpl);
+    expect(log.labelsWritten).toEqual([]);
+    const d = await detail();
+    expect(JSON.stringify(d)).not.toContain("MARCADOR-1135");
+    expect(d.modelVersion).toBeNull();
+    expect((d.answers as Record<string, unknown>).assunto).toBeUndefined();
+    expect(
+      (d.answers as Record<string, { probabilities: unknown }>).irritacao
+        ?.probabilities,
+    ).toEqual({ calmo: 0.1, frustrado: 0.8 });
+    expect(d.notFired).toEqual([
+      { rule: 0, miss: { question: "assunto", why: "unanswered" } },
+    ]);
   });
 
   test("a rule whose tool the agent was not granted does not act, and the line says so at warn", async () => {

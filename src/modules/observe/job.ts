@@ -884,7 +884,8 @@ export function transcriptFromRows(
             toRenderable(m),
             // NOTE: WHAT A REPLY IS ANSWERING, resolved off the rows the window fetched (as the
             // debounce path does), so a quoted "sim" reaches the model with the demand it answers.
-            { resolveQuoted },
+            // The observer audience drops the requests aimed at the responder from every marker.
+            { resolveQuoted, audience: "observer" },
           )
         : renderAttendantMessage({
             text: m.content,

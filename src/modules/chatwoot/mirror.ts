@@ -70,6 +70,14 @@ export interface MirrorResult {
   heldBack?: true;
 }
 
+function isForeignKeyViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "P2003"
+  );
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === "object" &&
@@ -164,10 +172,8 @@ export async function mirrorChatwootEvent(
   // busy inbox on one row. Each write is also conditional on a change, so an unchanged inbox or
   // contact is not written at all, and the conversation lock is the only lock the conversation
   // transaction takes.
-  const { contactId, inboxRowId } = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    async (db) => ({
+  const resolveRows = () =>
+    runScopedOn(base, sysCtx(tenantId), async (db) => ({
       contactId: await upsertContact(
         db,
         tenantId,
@@ -176,14 +182,17 @@ export async function mirrorChatwootEvent(
         newLastEventAt,
       ),
       inboxRowId: await upsertInbox(db, tenantId, instanceId, n),
-    }),
-  );
+    }));
+  let { contactId, inboxRowId } = await resolveRows();
 
   // Twice at most. Two deliveries of one event (an observer's route and the responder's) can both
   // miss the conversation row and one loses its insert with a unique violation. P2002 aborts the
   // whole tx, so the retry reruns it: the conversation now exists, and the mirror is idempotent.
   // Without it the losing delivery sits PROCESSING until the sweep.
+  // A row resolved above can be deleted before the conversation's write references it (an inbox
+  // removed meanwhile), which fails that write on its foreign key: resolve the rows again, once.
   let attempt = 0;
+  let reresolved = false;
   const run = (): Promise<MirrorResult> =>
     runScopedOn(base, sysCtx(tenantId), async (db) => {
       const threadId = `${tenantId}:${instanceId}:${convId}`;
@@ -599,6 +608,15 @@ export async function mirrorChatwootEvent(
     try {
       return await run();
     } catch (err) {
+      if (isForeignKeyViolation(err) && !reresolved) {
+        reresolved = true;
+        logger.info(
+          "chatwoot: a row the mirror resolved was gone at the conversation write (conv=%s); resolving again",
+          String(convId),
+        );
+        ({ contactId, inboxRowId } = await resolveRows());
+        continue;
+      }
       attempt += 1;
       if (attempt > 1 || !isUniqueViolation(err)) throw err;
       logger.info(

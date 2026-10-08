@@ -403,6 +403,54 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     expect(row?.name).toBe("Depois");
   });
 
+  test("an inbox removed between the row resolution and the conversation write is resolved again", async () => {
+    let transactions = 0;
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    const removing = (target: any): any =>
+      new Proxy(target, {
+        get(t, prop, recv) {
+          if (prop === "$extends")
+            return (...a: unknown[]) => removing(t.$extends(...a));
+          if (prop === "$transaction")
+            return async (...args: unknown[]) => {
+              transactions += 1;
+              // The second transaction is the conversation's: the inbox goes first.
+              if (transactions === 2) {
+                await suDb.inbox.deleteMany({
+                  where: {
+                    tenantId,
+                    chatwootInstanceId: instanceId,
+                    chatwootInboxId: 43,
+                  },
+                });
+              }
+              return t.$transaction(...args);
+            };
+          return Reflect.get(t, prop, recv);
+        },
+      });
+    const result = await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      event({
+        convId: 350,
+        messageId: 350,
+        at: T0 + 10,
+        inboxId: 43,
+        inboxName: "Removida",
+      }),
+      removing(appDb) as PrismaClient,
+    );
+    expect(transactions).toBeGreaterThan(2);
+    const rows = await inboxRow(43);
+    expect(rows).toHaveLength(1);
+    const conv = await suDb.conversation.findUniqueOrThrow({
+      where: { id: result.conversationRowId as bigint },
+      select: { inbox: { select: { chatwootInboxId: true } } },
+    });
+    expect(conv.inbox?.chatwootInboxId).toBe(43);
+  });
+
   test("a delivery whose insert lost the race still applies its newer snapshot", async () => {
     await mirror(
       event({

@@ -217,6 +217,38 @@ describe("vision request: reasoning effort", () => {
     expect(none.body).not.toHaveProperty("output_config");
   });
 
+  // Each family spells "off" differently, and the wrong spelling is a 400 that leaves the file unread.
+  test("`none` uses the spelling each Claude family accepts", async () => {
+    const off = async (model: string) =>
+      (
+        await extractWith(
+          { provider: "anthropic", model, reasoningEffort: "none" },
+          "document",
+        )
+      ).body;
+    for (const model of [
+      "claude-haiku-5-5",
+      "claude-opus-5",
+      "claude-sonnet-4-6",
+    ]) {
+      const body = await off(model);
+      expect(body.thinking).toEqual({ type: "disabled" });
+      expect(body).not.toHaveProperty("output_config");
+    }
+    const sonnet = await off("claude-sonnet-5-5");
+    expect(sonnet.thinking).toEqual({ type: "between_tools" });
+    expect(sonnet).not.toHaveProperty("output_config");
+    for (const model of [
+      "claude-opus-5-5",
+      "claude-fable-5-1",
+      "claude-fable-5",
+    ]) {
+      const body = await off(model);
+      expect(body).not.toHaveProperty("thinking");
+      expect(body.output_config).toEqual({ effort: "low" });
+    }
+  });
+
   test("openai sends reasoning_effort at the top level and the rest unchanged", async () => {
     const plain = await extractWith({ provider: "openai" }, "document");
     const low = await extractWith(

@@ -305,6 +305,20 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
   };
 }
 
+// The lowest reasoning each Claude family accepts, for `reasoningEffort: "none"`. The API answers 400
+// to the wrong spelling, and a refused call leaves the attachment unread, so the family decides:
+// Sonnet 5.5 refuses `disabled` and takes `between_tools` (thinking only between tool calls, and a
+// vision call has none); Opus 5.5 and Fable 5/5.1 refuse both and cannot turn thinking off at all, so
+// they get the lowest effort instead; every other model takes `disabled`.
+export function anthropicThinkingOff(model: string): Record<string, unknown> {
+  const m = model.toLowerCase();
+  if (m.startsWith("claude-sonnet-5-5"))
+    return { thinking: { type: "between_tools" } };
+  if (m.startsWith("claude-opus-5-5") || m.startsWith("claude-fable-5"))
+    return { output_config: { effort: "low" } };
+  return { thinking: { type: "disabled" } };
+}
+
 // Anthropic messages API. Images use an `image` content block; PDFs use a `document` block.
 async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
   const base = (req.baseURL ?? "https://api.anthropic.com/v1").replace(
@@ -331,8 +345,10 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
     ],
   };
   // NOTE: Current Claude models think adaptively by default, and the effort is what bounds it.
-  // `none` is the switch instead of a level: thinking off. Unset sends neither key.
-  if (req.reasoningEffort === "none") body.thinking = { type: "disabled" };
+  // `none` is the switch instead of a level, and each model spells "off" differently (see
+  // anthropicThinkingOff). Unset sends neither key.
+  if (req.reasoningEffort === "none")
+    Object.assign(body, anthropicThinkingOff(req.model));
   else if (req.reasoningEffort != null)
     body.output_config = { effort: req.reasoningEffort };
   const res = await req.fetchImpl(`${base}/messages`, {

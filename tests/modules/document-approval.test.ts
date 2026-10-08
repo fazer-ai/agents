@@ -9,13 +9,17 @@ import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   approveDocumentRequest,
+  createApprovalRequest,
   expireDueApprovalRequests,
   expiryJobKey,
   rejectDocumentRequest,
   renderApprovalPreview,
 } from "@/modules/documents/approval";
 import type { DocumentField } from "@/modules/documents/blocks";
-import { issueDocument } from "@/modules/documents/issue";
+import {
+  freezeDocumentSnapshot,
+  issueDocument,
+} from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import {
   createDocumentTemplate,
@@ -463,6 +467,40 @@ describe.skipIf(!dbUp)("document approval", () => {
     );
     expect(second.statusCode).toBe(409);
     expect(await counts()).toEqual(before);
+  });
+
+  test("a template deleted between the read and the request is a terminal refusal", async () => {
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const gone = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Some no meio",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+        requiresApproval: true,
+      },
+      appDb,
+    );
+    const frozen = await freezeDocumentSnapshot({
+      ctx: ctx(tenantA),
+      base: appDb,
+      templateId: BigInt(gone.id),
+      values: ARGS,
+      now: new Date(),
+    });
+    await suDb.documentTemplate.delete({ where: { id: BigInt(gone.id) } });
+    const e = await refusal(
+      createApprovalRequest({
+        ctx: ctx(tenantA),
+        base: appDb,
+        frozen,
+        idempotencyKey: `gone-${gone.id}`,
+        now: new Date(),
+      }),
+    );
+    expect(e.translationKey).toBe("errors.documentTemplateNotFound");
   });
 
   test("a repeated call is told what became of its request", async () => {

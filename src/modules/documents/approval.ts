@@ -160,6 +160,17 @@ export async function createApprovalRequest(params: {
     ) {
       return null;
     }
+    // NOTE: the template deleted after it was read: the same event as "no such template", and the
+    // same terminal answer issuance gives it.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2003"
+    ) {
+      throw new NotFoundError(
+        "document template not found",
+        "errors.documentTemplateNotFound",
+      );
+    }
     throw err;
   });
   if (created) return toDto(created);

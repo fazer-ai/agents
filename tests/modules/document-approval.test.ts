@@ -12,6 +12,8 @@ import {
   createApprovalRequest,
   expireDueApprovalRequests,
   expiryJobKey,
+  issueOrRequestApproval,
+  KeyAnswered,
   rejectDocumentRequest,
   renderApprovalPreview,
 } from "@/modules/documents/approval";
@@ -514,6 +516,99 @@ describe.skipIf(!dbUp)("document approval", () => {
       }),
     );
     expect(e.translationKey).toBe("errors.documentTemplateNotFound");
+  });
+
+  test("a request is not written over a key a document already answers", async () => {
+    const key = `raced-${process.pid}`;
+    await issueDocument({
+      ctx: ctx(tenantA),
+      templateId,
+      idempotencyKey: key,
+      values: ARGS,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const frozen = await freezeDocumentSnapshot({
+      ctx: ctx(tenantA),
+      base: appDb,
+      templateId,
+      values: ARGS,
+      now: new Date(),
+    });
+    const before = await counts();
+    let answered: unknown;
+    try {
+      await createApprovalRequest({
+        ctx: ctx(tenantA),
+        base: appDb,
+        frozen,
+        idempotencyKey: key,
+        now: new Date(),
+      });
+    } catch (e) {
+      answered = e;
+    }
+    expect(answered).toBeInstanceOf(KeyAnswered);
+    expect((answered as KeyAnswered).by).toBe("document");
+    expect(await counts()).toEqual(before);
+  });
+
+  test("an issuance that meets a request written while it decided answers with the request", async () => {
+    await updateDocumentTemplate(
+      ctx(tenantA),
+      templateId,
+      { requiresApproval: false },
+      appDb,
+    );
+    const key = `race-issue-${process.pid}`;
+    const model = await suDb.documentApprovalRequest.findFirstOrThrow({
+      where: { templateId },
+    });
+    const before = await counts();
+    let call: Promise<unknown> | undefined;
+    await suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`document-key:${tenantA}:${key}`})::bigint)`;
+        call = issueOrRequestApproval({
+          ctx: ctx(tenantA),
+          base: appDb,
+          storageDir: DIR,
+          templateId,
+          idempotencyKey: key,
+          values: ARGS,
+          now: new Date(),
+        });
+        // The call has looked both tables up and is waiting on the key's lock.
+        for (let i = 0; i < 200; i++) {
+          const [w] = await suDb.$queryRaw<{ n: bigint }[]>`
+          SELECT count(*)::bigint AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+          if (Number(w?.n ?? 0) > 0) break;
+          await Bun.sleep(25);
+        }
+        await tx.documentApprovalRequest.create({
+          data: {
+            tenantId: tenantA,
+            templateId,
+            title: model.title,
+            idempotencyKey: key,
+            snapshot: model.snapshot as object,
+            expiresAt: new Date(Date.now() + 3_600_000),
+          },
+        });
+      },
+      { timeout: 20_000 },
+    );
+    const outcome = (await call) as { kind: string };
+    await updateDocumentTemplate(
+      ctx(tenantA),
+      templateId,
+      { requiresApproval: true },
+      appDb,
+    );
+    expect(outcome.kind).toBe("approval");
+    const after = await counts();
+    expect(after.documents).toBe(before.documents);
+    expect(after.lastNumber).toBe(before.lastNumber);
   });
 
   test("a repeated call is told what became of its request", async () => {

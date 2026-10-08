@@ -341,6 +341,9 @@ export async function issueFrozenDocument(params: {
   chatwootInstanceId?: bigint | null;
   conversationId?: bigint | null;
   withBytes?: boolean;
+  // Run in the insert's transaction, before the row is written: a caller that answers this key from
+  // another table re-asks that table here, under its own lock.
+  guard?: (db: ScopedDb) => Promise<void>;
 }): Promise<IssuedDocumentResult> {
   const base = params.base ?? basePrisma;
   const dir = params.storageDir ?? config.documentsStorageDir;
@@ -370,8 +373,9 @@ export async function issueFrozenDocument(params: {
   // `create`, not `createMany({ skipDuplicates })`, because the ROW is needed. Three scoped
   // calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so the winner must
   // be re-read outside the transaction that lost, or the second caller gets a 500.
-  const created = await runScopedOn(base, ctx, (db) =>
-    db.issuedDocument.create({
+  const created = await runScopedOn(base, ctx, async (db) => {
+    if (params.guard) await params.guard(db);
+    return db.issuedDocument.create({
       data: {
         tenantId,
         templateId,
@@ -389,8 +393,8 @@ export async function issueFrozenDocument(params: {
         snapshot: params.snapshot as unknown as Prisma.InputJsonValue,
       },
       select: { id: true },
-    }),
-  ).catch((err: unknown) => {
+    });
+  }).catch((err: unknown) => {
     if (isUniqueViolation(err)) return null; // lost the race → the winner is read below
     // The template can be DELETED between the read and this insert, and the foreign key then
     // refuses the row (P2003). That is the same event as "no such template", which the read itself

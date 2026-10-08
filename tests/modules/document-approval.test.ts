@@ -772,6 +772,30 @@ describe.skipIf(!dbUp)("document approval", () => {
     ).toBeNull();
   });
 
+  test("repeated titles cannot crowd another pending document out of the line", async () => {
+    const thread = `${tenantA}:pending:crowd`;
+    const titles = [...Array(5).fill("Orçamento"), "Contrato"];
+    for (const [i, title] of titles.entries()) {
+      await suDb.documentApprovalRequest.create({
+        data: {
+          tenantId: tenantA,
+          title,
+          threadId: thread,
+          idempotencyKey: `crowd-${i}`,
+          snapshot: {},
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+    }
+    const line = await pendingApprovalNotice(
+      tenantA,
+      { conversationId: null, threadId: thread },
+      appDb,
+    );
+    expect(line).toContain("Contrato");
+    expect(line?.split("Orçamento")).toHaveLength(2);
+  });
+
   test("expiry moves only overdue pending requests, and approval refuses one even before it runs", async () => {
     await tool(newTurnState(), 44).invoke({ ...ARGS, cliente: "Caio" });
     const overdue = await latestRequestId();

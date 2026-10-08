@@ -23,6 +23,7 @@ import {
   markTurnInFlight,
 } from "@/graph/inflight";
 import * as prepare from "@/graph/prepare";
+import * as humanTakeover from "@/modules/chatwoot/human-takeover";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   announceUnanswered,
@@ -47,6 +48,7 @@ import {
 } from "@/modules/debounce/handler";
 import * as debounceService from "@/modules/debounce/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
+import * as schedulerService from "@/modules/scheduler/service";
 import {
   getDeadLetterHandler,
   getJobHandler,
@@ -740,6 +742,30 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 
+  test("an ownership fence that cannot be read announces nothing", async () => {
+    const conv = await seedConversation();
+    const read = spyOn(
+      humanTakeover,
+      "conversationOwnershipNow",
+    ).mockRejectedValueOnce(new Error("the mirror could not be read"));
+    let outcome: string;
+    try {
+      outcome = await announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      });
+    } finally {
+      read.mockRestore();
+    }
+    expect(outcome).toBe("failed");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+    expect(await noticeAt(conv)).toBeNull();
+  });
+
   test("a person who claimed the conversation in Chatwoot keeps it, even with the mirror behind", async () => {
     const conv = await seedConversation();
     // The mirror still says pending and unassigned; Chatwoot already has an attendant on it.
@@ -1370,6 +1396,46 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     // hand-over here would close the gate that attempt needs.
     expect(threw).toBe(true);
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("DEAD and its recovery commit together: an arm that fails leaves the row where the sweep finds it", async () => {
+    const conv = await seedConversation();
+    const deliveryId = `failnote-pool-arm-${process.pid}-${conv}`;
+    const load = spyOn(prepare, "loadAgentConfig").mockImplementationOnce(
+      async () => {
+        throw neverStarted();
+      },
+    );
+    const arm = spyOn(schedulerService, "upsertJobRow").mockRejectedValueOnce(
+      new Error("the job row could not be written"),
+    );
+    try {
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: 9,
+        normalized: incoming(conv, 5_100 + conv),
+        base: appDb,
+        deps: {
+          makeModel: () => new FailingModel(new Error("unreached")),
+          sleep: async () => {},
+        },
+      });
+    } finally {
+      load.mockRestore();
+      arm.mockRestore();
+    }
+    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { tenantId, deliveryId },
+      select: { id: true, status: true },
+    });
+    expect(row.status).toBe("PROCESSING");
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: deliveryRecoveryDedupeKey(row.id) },
+      }),
+    ).toBe(0);
   });
 
   test("a pool refusal after a tool started is not replayed: the tool may already have acted", async () => {

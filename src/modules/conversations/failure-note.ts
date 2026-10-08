@@ -280,8 +280,9 @@ export async function announceFailedTurn(params: {
     // Asked again as the last fence before the toggle, after the ownership reads: a newer message
     // landing since the first ask has a turn of its own coming, and opening the conversation would
     // stop it. Then nothing is announced at all, as for the first ask.
-    // Null when the ownership fence refused first, which leaves the first ask standing; a throw
-    // fails closed, since the reason to ask again is a turn that may have started meanwhile.
+    // Null when the ownership fence refused, which leaves the first ask standing. Any read here that
+    // throws fails closed (`unreadable`), since the reason to ask again is a turn that may have
+    // started meanwhile, and an unread fence cannot rule that out.
     let lastAsk: "lost" | "not-lost" | "unreadable" | null = null;
     let reserved: { handoffKey: string; graphKey: string } | null = null;
     let queued: Awaited<ReturnType<typeof openForHumanQueue>>;
@@ -290,6 +291,7 @@ export async function announceFailedTurn(params: {
         gate: "failed-turn",
         conversationId,
         stillOurs: async () => {
+          lastAsk = "unreadable";
           // Chatwoot first, since the mirror can be behind it: a person who claimed the conversation
           // while it stayed `pending` would otherwise lose it to the pinned target. Unreadable does not
           // block; the mirror still answers.
@@ -306,8 +308,10 @@ export async function announceFailedTurn(params: {
               },
               { ourAgentBotId: persona.chatwootAgentBotId },
             )
-          )
+          ) {
+            lastAsk = null;
             return false;
+          }
           const ours = (
             await conversationOwnershipNow({
               tenantId,
@@ -317,7 +321,10 @@ export async function announceFailedTurn(params: {
               base,
             })
           ).ours;
-          if (!ours) return false;
+          if (!ours) {
+            lastAsk = null;
+            return false;
+          }
           // A turn already running on the conversation (an operator's re-engage, a follow-up, a
           // flush) was started without a new message, so neither ask can see it; opening the
           // conversation would discard its reply. It may still answer, so nothing is announced.
@@ -342,7 +349,6 @@ export async function announceFailedTurn(params: {
             lastAsk = "not-lost";
             return false;
           }
-          lastAsk = "unreadable";
           lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
           if (lastAsk === "not-lost") return false;
           // Asked again with nothing awaited before the reservation: a turn that started during the

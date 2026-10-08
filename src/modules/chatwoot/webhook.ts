@@ -215,7 +215,7 @@ import {
   visualAttachments,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
-import { armDeliveryRecovery } from "./recover-delivery";
+import { armDeliveryRecoveryOn } from "./recover-delivery";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
 import { responderCoversMessage } from "./responder-coverage";
 import {
@@ -1028,10 +1028,10 @@ export class TurnOwedToRecovery extends Error {
   }
 }
 
-// Does now what the sweep would do thirty minutes from now for this row: DEAD, the recovery armed,
-// and the line that says so (the sweep's own, `stranded`, at `info` while a recovery is coming and
-// `error` when none could be armed). Both writes retry a full pool, since that is why this runs.
-// Losing the CAS means something else took the row; failing the CAS leaves it to the sweep.
+// Does now what the sweep would do thirty minutes from now for this row: DEAD with the recovery
+// armed, and the line that says so (the sweep's own, `stranded`, at `info` since a recovery is
+// coming). The write retries a full pool, since that is why this runs. Losing the CAS means
+// something else took the row; failing the write leaves it PROCESSING, to the sweep.
 async function handToRecovery(
   base: PrismaClient,
   tenantId: bigint,
@@ -1040,18 +1040,23 @@ async function handToRecovery(
   normalized: NormalizedChatwootEvent,
   sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
+  // One transaction: a DEAD row with no recovery job is invisible to the sweep and to every later
+  // pass, so the two commit together or the row stays PROCESSING, where the sweep finds it.
   try {
-    const { count } = await retryWhileTransactionNeverStarted(
+    const moved = await retryWhileTransactionNeverStarted(
       () =>
-        runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.chatwootWebhookDelivery.updateMany({
+        runScopedOn(base, sysCtx(tenantId), async (db) => {
+          const { count } = await db.chatwootWebhookDelivery.updateMany({
             where: { id: rowId, status: "PROCESSING" },
             data: { status: "DEAD", processedAt: new Date() },
-          }),
-        ),
+          });
+          if (count === 0) return false;
+          await armDeliveryRecoveryOn(db, tenantId, rowId);
+          return true;
+        }),
       { label: `delivery row ${rowId} to recovery`, sleep },
     );
-    if (count === 0) return;
+    if (!moved) return;
   } catch (err) {
     logger.error(
       { err },
@@ -1059,20 +1064,6 @@ async function handToRecovery(
       String(rowId),
     );
     return;
-  }
-  let recoveryArmed = true;
-  try {
-    await retryWhileTransactionNeverStarted(
-      () => armDeliveryRecovery(tenantId, rowId, base),
-      { label: `delivery row ${rowId} recovery arm`, sleep },
-    );
-  } catch (err) {
-    recoveryArmed = false;
-    logger.error(
-      { err },
-      "chatwoot: delivery row %s is DEAD and its recovery could not be armed; the row stays in the DEAD list and nothing will retry it",
-      String(rowId),
-    );
   }
   // Filed on the conversation the mirror knows, like the sweep's; unattached when the read fails.
   const conversationId = normalized.conversationId;
@@ -1107,7 +1098,7 @@ async function handToRecovery(
     },
     {
       stage: "delivery",
-      level: recoveryArmed ? "info" : "error",
+      level: "info",
       status: "error",
       detail: {
         outcome: "stranded",
@@ -1116,7 +1107,7 @@ async function handToRecovery(
         messageId: normalized.message?.id ?? null,
         conversationId: normalized.conversationId,
         reason: "no_free_db_connection",
-        willRetry: recoveryArmed,
+        willRetry: true,
       },
     },
   );

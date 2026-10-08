@@ -19,7 +19,7 @@ import {
 import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   announceFailedTurn,
   readDirectFence,
@@ -29,7 +29,12 @@ import {
   type ReplyIdentity,
 } from "@/modules/debounce/watermark";
 import { writeFlowEvent } from "@/modules/flowlog/service";
-import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  enqueueJob,
+  type JobRowParams,
+  upsertJobRow,
+} from "@/modules/scheduler/service";
 import {
   announceJobDeath,
   type JobResult,
@@ -1213,7 +1218,24 @@ export async function armDeliveryRecovery(
   deliveryRowId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await enqueueJob({
+  await enqueueJob({ ...deliveryRecoveryJob(tenantId, deliveryRowId), base });
+}
+
+// The same arming inside a caller's transaction, for one that must commit the row's DEAD and its
+// recovery together: a DEAD row with no job is invisible to the sweep and to every later pass.
+export async function armDeliveryRecoveryOn(
+  db: ScopedDb,
+  tenantId: bigint,
+  deliveryRowId: bigint,
+): Promise<void> {
+  await upsertJobRow(db, deliveryRecoveryJob(tenantId, deliveryRowId));
+}
+
+function deliveryRecoveryJob(
+  tenantId: bigint,
+  deliveryRowId: bigint,
+): JobRowParams {
+  return {
     tenantId,
     kind: "DELIVERY_RECOVERY",
     dedupeKey: deliveryRecoveryDedupeKey(deliveryRowId),
@@ -1223,8 +1245,7 @@ export async function armDeliveryRecovery(
     // A bigint does not survive JSON, and the payload column is one. Read back with parseDbId.
     payload: { deliveryRowId: String(deliveryRowId) },
     rearm: "new-work",
-    base,
-  });
+  };
 }
 
 function readDeliveryRowId(payload: unknown): bigint | null {

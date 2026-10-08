@@ -14,8 +14,8 @@ export type VisionReasoningEffort = (typeof VISION_REASONING_EFFORTS)[number];
 
 // What the anthropic messages API is asked for when the operator set no ceiling. The field is
 // required there, and it covers thinking as well as the reply: at the old fixed 2048, Claude Haiku
-// 5.5 spent the budget thinking and cut a 6-page PDF mid-transcription. The longest complete read
-// measured was 1,900 tokens with thinking included, so this leaves room for the long tail.
+// 5.5 spent the budget thinking and cut a 6-page PDF mid-transcription every time. The same PDF read
+// whole took up to 3,424 tokens with thinking included, so this leaves more than twice that.
 export const ANTHROPIC_VISION_DEFAULT_MAX_TOKENS = 8192;
 
 // Ceiling on `settings.vision.maxOutputTokens`: the reader clamps to it. No vision read needs more,

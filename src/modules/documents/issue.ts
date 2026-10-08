@@ -119,14 +119,19 @@ export function documentFileName(title: string, number: string | null): string {
 }
 
 // The key an approval issues under. Approving reuses whatever row already holds it, so a caller of
-// `issueDocument` may not write one: a document planted under it would be adopted by the approval as
-// if it were the snapshot the reviewer saw.
+// `issueDocument` may not write a new one: a document planted under it would be adopted by the
+// approval as if it were the snapshot the reviewer saw. A row that already holds such a key still
+// answers its retry, since older builds accepted the prefix.
 export const APPROVAL_KEY_PREFIX = "approval:";
 
 function reservedKeyProblem(key: string): string | null {
   return key.startsWith(APPROVAL_KEY_PREFIX)
     ? `idempotencyKey: the prefix "${APPROVAL_KEY_PREFIX}" is reserved for approved documents.`
     : null;
+}
+
+function invalidKey(reason: string): AppError {
+  return new AppError(reason, 400, "errors.invalidIdempotencyKey", { reason });
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -149,14 +154,8 @@ export async function issueDocument(
   // its length alone produced a 500 from the lookup — before the template, before the render, before
   // anything a caller could be told about. In the core rather than in the controller, because the
   // agent tool and MCP reach this by their own roads.
-  const unstorable =
-    unstorableProblem(params.idempotencyKey, "idempotencyKey") ??
-    reservedKeyProblem(params.idempotencyKey);
-  if (unstorable) {
-    throw new AppError(unstorable, 400, "errors.invalidIdempotencyKey", {
-      reason: unstorable,
-    });
-  }
+  const unstorable = unstorableProblem(params.idempotencyKey, "idempotencyKey");
+  if (unstorable) throw invalidKey(unstorable);
 
   // The idempotency check comes FIRST, before the template is even read. Validating the caller's
   // values against the CURRENT template up front would make a retry fail the moment the template
@@ -175,6 +174,8 @@ export async function issueDocument(
       withBytes: params.withBytes,
     });
   }
+  const reserved = reservedKeyProblem(params.idempotencyKey);
+  if (reserved) throw invalidKey(reserved);
 
   const frozen = await freezeDocumentSnapshot({
     ctx,

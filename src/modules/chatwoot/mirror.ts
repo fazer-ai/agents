@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
@@ -806,7 +806,7 @@ async function upsertInbox(
   // CONFLICT DO UPDATE writes even an identical value, and burns a sequence value).
   let row = await db.inbox.findUnique({
     where: key,
-    select: { id: true, name: true, channelType: true },
+    select: { id: true },
   });
   if (!row) {
     // Many deliveries of a new inbox can miss the row at once; DO NOTHING lands them all on one. A
@@ -824,46 +824,42 @@ async function upsertInbox(
     });
     row = await db.inbox.findUniqueOrThrow({
       where: key,
-      select: { id: true, name: true, channelType: true },
+      select: { id: true },
     });
     if (inserted.count > 0) return row.id;
   }
-  const inboxId = row.id;
-  // The placeholder is not a name the source stated, so the first real name replaces it whatever
-  // the position: an event without a name (a conversation event) must not lock a placeholder in.
-  if (
-    n.inboxName != null &&
-    row.name === placeholder &&
-    n.inboxName !== placeholder
-  ) {
-    await db.inbox.updateMany({
-      where: { id: inboxId, name: placeholder },
-      data: { name: n.inboxName },
-    });
-    row = { ...row, name: n.inboxName };
-  }
-  const nameChanged = n.inboxName != null && n.inboxName !== row.name;
-  const channelChanged = n.channel != null && n.channel !== row.channelType;
-  if (!nameChanged && !channelChanged) return inboxId;
-  // NOTE: A change is written only from a payload positioned after the last change, so a late
-  // delivery cannot restore a replaced name, and the accepted payload writes EVERY field it states:
-  // the read above may be stale, and a field left out would keep an older payload's value under the
-  // newer position. An unchanged payload does NOT move the position (that is the write per delivery
-  // this function exists to remove). An undated payload writes only over a row never positioned.
-  await db.inbox.updateMany({
-    where: {
-      id: inboxId,
-      ...(position
-        ? { OR: [{ metadataAt: null }, { metadataAt: { lt: position } }] }
-        : { metadataAt: null }),
-    },
-    data: {
-      ...(n.inboxName != null ? { name: n.inboxName } : {}),
-      ...(n.channel != null ? { channelType: n.channel } : {}),
-      ...(position ? { metadataAt: position } : {}),
-    },
-  });
-  return inboxId;
+  const name = n.inboxName ?? null;
+  const channel = n.channel ?? null;
+  if (name === null && channel === null) return row.id;
+  const accepts = position
+    ? Prisma.sql`(metadata_at IS NULL OR metadata_at < ${position})`
+    : Prisma.sql`(metadata_at IS NULL)`;
+  // One statement, decided against the row as it stands when the UPDATE reaches it (a read taken
+  // earlier may already be stale), and a statement whose WHERE matches nothing writes nothing.
+  // A payload positioned after the last change writes every field it states, so a field left out
+  // cannot keep an older payload's value under the newer position. An unchanged payload does NOT move
+  // the position (that is the write per delivery this function exists to remove), and an undated one
+  // writes only over a row never positioned. The placeholder is not a name the source stated, so the
+  // first real name replaces it at any position, and the position only ever moves forward.
+  await db.$executeRaw`
+    UPDATE inboxes SET
+      name = CASE
+        WHEN ${accepts} AND ${name}::text IS NOT NULL THEN ${name}::text
+        WHEN name = ${placeholder} AND ${name}::text IS NOT NULL THEN ${name}::text
+        ELSE name END,
+      channel_type = CASE
+        WHEN ${accepts} AND ${channel}::text IS NOT NULL THEN ${channel}::text
+        ELSE channel_type END,
+      metadata_at = GREATEST(metadata_at, ${position}),
+      updated_at = now()
+    WHERE id = ${row.id}
+      AND (
+        (${accepts} AND (
+          (${name}::text IS NOT NULL AND name IS DISTINCT FROM ${name}::text)
+          OR (${channel}::text IS NOT NULL AND channel_type IS DISTINCT FROM ${channel}::text)))
+        OR (name = ${placeholder} AND ${name}::text IS NOT NULL AND ${name}::text <> ${placeholder})
+      )`;
+  return row.id;
 }
 
 // The columns whose change moves who holds a conversation in the fork: the status, the human

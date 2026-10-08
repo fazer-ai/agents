@@ -320,6 +320,66 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     expect(row?.channel_type).toBe("Channel::Api");
   });
 
+  test("a newer snapshot whose stale read matched it still writes over the row as it stands", async () => {
+    await mirror(
+      event({
+        convId: 315,
+        messageId: 315,
+        at: T0 + 10,
+        inboxId: 38,
+        inboxName: "A",
+      }),
+    );
+    await mirror(
+      event({
+        convId: 316,
+        messageId: 316,
+        at: T0 + 20,
+        inboxId: 38,
+        inboxName: "B",
+      }),
+    );
+    // Read before the T+20 rename committed: the row looked like the payload.
+    const stale = staleInboxRead((real) => real && { ...real, name: "A" });
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      event({
+        convId: 317,
+        messageId: 317,
+        at: T0 + 30,
+        inboxId: 38,
+        inboxName: "A",
+      }),
+      stale,
+    );
+    const [row] = await inboxRow(38);
+    expect(row?.name).toBe("A");
+  });
+
+  test("a payload with no position does not write over a positioned name", async () => {
+    await mirror(
+      event({
+        convId: 318,
+        messageId: 318,
+        at: T0 + 10,
+        inboxId: 40,
+        inboxName: "A",
+      }),
+    );
+    const n = event({
+      convId: 319,
+      messageId: 319,
+      at: T0,
+      inboxId: 40,
+      inboxName: "B",
+    });
+    const undated = { ...n, conversationUpdatedAt: null, lastActivityAt: null };
+    await mirror(undated as NormalizedChatwootEvent);
+    const [row] = await inboxRow(40);
+    expect(row?.name).toBe("A");
+  });
+
   test("a delivery whose insert lost the race still applies its newer snapshot", async () => {
     await mirror(
       event({
@@ -379,6 +439,42 @@ describe.skipIf(!dbUp)("the mirror's inbox and contact rows", () => {
     );
     const [named] = await inboxRow(37);
     expect(named?.name).toBe("Vendas");
+  });
+
+  test("a placeholder replaced by a newer name moves the position, so a late different name does not undo it", async () => {
+    const n = normalizeChatwootEvent({
+      event: "conversation_status_changed",
+      id: 340,
+      inbox_id: 39,
+      status: "pending",
+      contact_inbox: { id: 9_340 },
+      meta: { assignee: null, sender: { id: 8_340, type: "contact" } },
+      channel: "Channel::Whatsapp",
+      last_activity_at: T0 + 10,
+      updated_at: T0 + 10,
+    });
+    if (!n) throw new Error("payload did not normalize");
+    await mirror(n);
+    await mirror(
+      event({
+        convId: 341,
+        messageId: 341,
+        at: T0 + 30,
+        inboxId: 39,
+        inboxName: "Nova",
+      }),
+    );
+    await mirror(
+      event({
+        convId: 342,
+        messageId: 342,
+        at: T0 + 20,
+        inboxId: 39,
+        inboxName: "Velha",
+      }),
+    );
+    const [row] = await inboxRow(39);
+    expect(row?.name).toBe("Nova");
   });
 
   test("a contact snapshot repeated at the same position writes nothing", async () => {

@@ -73,7 +73,8 @@ export type SchedulerJobKind =
   | "INBOUND_SWEEP"
   | "INBOUND_REDISPATCH"
   | "NOTHING_TO_ANSWER"
-  | "SUGGESTION_REVIEW";
+  | "SUGGESTION_REVIEW"
+  | "DOCUMENT_APPROVAL_EXPIRY";
 
 export interface ClaimedJob {
   id: bigint;

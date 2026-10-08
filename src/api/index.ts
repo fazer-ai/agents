@@ -18,6 +18,7 @@ import { chatwootController } from "@/api/v1/chatwoot.controller";
 import { chatwootAdminController } from "@/api/v1/chatwoot-admin.controller";
 import { codeToolsController } from "@/api/v1/code-tools.controller";
 import { dashboardController } from "@/api/v1/dashboard.controller";
+import { documentApprovalsController } from "@/api/v1/document-approvals.controller";
 import { documentTemplatesController } from "@/api/v1/document-templates.controller";
 import { documentsController } from "@/api/v1/documents.controller";
 import { experimentsController } from "@/api/v1/experiments.controller";
@@ -254,6 +255,7 @@ const api = new Elysia()
   .use(n8nExportController)
   .use(documentTemplatesController)
   .use(documentsController)
+  .use(documentApprovalsController)
   .use(mcpOAuthController)
   .use(mcpController)
   .use(mcpMeController)

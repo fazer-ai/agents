@@ -3,8 +3,9 @@ import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError } from "@/lib/errors";
+import { issueOrRequestApproval } from "@/modules/documents/approval";
 import type { DocumentField } from "@/modules/documents/blocks";
-import { calendarDay, issueDocument, sysCtx } from "@/modules/documents/issue";
+import { calendarDay, sysCtx } from "@/modules/documents/issue";
 import { documentToolName } from "@/modules/documents/slug";
 import { failableTool, toolFailure } from "./failure";
 import type { TurnState } from "./native";
@@ -209,7 +210,7 @@ export function buildDocumentTools(
         // statements), so the property is structural: one read, handed to both consumers.
         const at = new Date();
         try {
-          const issued = await issueDocument({
+          const outcome = await issueOrRequestApproval({
             ctx: sysCtx(deps.tenantId),
             templateId: selection.templateId,
             idempotencyKey: idempotencyKey(
@@ -230,6 +231,12 @@ export function buildDocumentTools(
             timezone: deps.timezone,
             now: at,
           });
+          // NOTE: nothing is queued for a template that asks for approval. The document is frozen on
+          // the request and issued, with its number, only when a person approves it.
+          if (outcome.kind === "approval") {
+            return "O documento foi para a revisão da equipe e não vai junto com esta resposta. Não prometa prazo de envio.";
+          }
+          const issued = outcome.document;
           if (!issued.bytes) {
             return toolFailure(
               "Não consegui gerar o documento agora. Ofereça encaminhar para um atendente.",

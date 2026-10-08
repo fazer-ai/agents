@@ -958,6 +958,7 @@
     "noData": "Sem dados ainda.",
     "node": {
       "agent": "Resposta do agente",
+      "decision": "API de decisão",
       "guardrail": "Guardrail",
       "memoryCompact": "Compactação de memória",
       "nudge": "Follow-up",
@@ -1288,6 +1289,7 @@
       "contactAuthNoUrl": "A verificação de autorização está ligada, mas sem endereço para consultar. Sem ele a verificação falha em toda mensagem e o agente para de responder a todo mundo. Preencha a URL do endpoint, deixe uma regra decidir sozinha, ou desligue a verificação.",
       "contactAuthSilentRefusal": "Um contato recusado fica sem nada: nenhuma mensagem é enviada e a conversa não é aberta para ninguém, então ele fica sem resposta e só uma nota privada registra o que houve. Preencha “Mensagem para contato negado” ou ligue “Abrir conversas recusadas para humanos”.",
       "contactAuthUnlockHandoff": "O destravamento por código e a passagem para atendimento humano se anulam: a primeira recusa abre a conversa e a atribui, e uma conversa aberta não é mais da IA, então o código que o cliente mandar em seguida nunca chega à verificação. Desligue “Abrir conversas recusadas para humanos” para deixar o contato se destravar, ou desligue “Enviar o texto da mensagem do cliente” se um humano deve assumir toda conversa recusada.",
+      "decisions": "O motor de decisões está ligado, mas a API de classificação está sem chave definida, então o observador não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas o embedding do tenant não está configurado.",
       "guardrails": "Os guardrails estão ligados, mas sem chave de API definida, então as mensagens saem sem triagem.",
       "memoryModel": "Há um modelo separado configurado para os resumos de atendimento, mas a configuração dele não roda: os atendimentos encerrados não serão resumidos e o contato não guarda memória deles. Confira o provedor, o modelo, “Chave de API” e “Base URL”.",
@@ -1310,6 +1312,7 @@
     "configIssueOutOfHoursChatwoot": "O Chatwoot envia uma mensagem de fora do horário em {{inboxes}}, mas este agente segue apenas o próprio horário. O cliente pode receber um aviso de que a empresa está fechada e ser atendido logo depois.",
     "configIssuePending": {
       "contactAuth": "A credencial da autorização do contato está referenciada, mas ainda não foi preenchida; a verificação falha e o agente fica em silêncio.",
+      "decisions": "A credencial da API de classificação está referenciada, mas ainda não foi preenchida, então o observador não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding ainda não foi preenchida.",
       "guardrails": "A credencial dos guardrails está referenciada, mas ainda não foi preenchida, então as mensagens saem sem triagem.",
       "memoryModel": "A credencial do modelo de resumo está referenciada mas ainda não foi preenchida, então os atendimentos encerrados não são resumidos.",
@@ -1326,6 +1329,7 @@
     "configIssueTextCapNoField": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado. Esta orientação não tem campo no console, então só pode ser encurtada pela API.",
     "configIssueUnresolved": {
       "contactAuth": "A credencial da autorização do contato não existe mais; a verificação falha e o agente fica em silêncio.",
+      "decisions": "A credencial da API de classificação não existe mais, então o observador não decide nada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
       "guardrails": "A credencial dos guardrails não existe mais, então as mensagens saem sem triagem.",
       "memoryModel": "A credencial do modelo de resumo não existe mais, então os atendimentos encerrados não são resumidos.",
@@ -1339,6 +1343,7 @@
     },
     "configIssueWrongKind": {
       "contactAuth": "A credencial da autorização do contato é de um tipo que este produto nunca envia para outro serviço, então a verificação falha e o agente fica em silêncio. Escolha uma credencial capaz de autenticar uma requisição.",
+      "decisions": "A credencial da API de classificação é de um tipo que não pode ser usado como chave de API, então o observador não decide nada. Escolha uma credencial que guarde uma única chave.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding é de um tipo que não pode ser usado como chave de API. Escolha uma credencial que guarde uma única chave.",
       "guardrails": "A credencial dos guardrails é de um tipo que não pode ser usado como chave de API, então as mensagens saem sem triagem. Escolha uma credencial que guarde uma única chave.",
       "memoryModel": "A credencial do modelo de resumo é de um tipo que não pode ser usado como chave de API, então os atendimentos encerrados não são resumidos. Escolha uma credencial que guarde uma única chave.",
@@ -3089,6 +3094,7 @@
     "modelShare": "{{pct}}% do turno esperando o modelo",
     "node": {
       "agent": "agente",
+      "decision": "API de decisão",
       "guardrail": "verificação de guardrails",
       "memoryCompact": "resumo de memória",
       "nudge": "mensagem proativa",

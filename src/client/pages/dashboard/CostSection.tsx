@@ -57,6 +57,7 @@ export function useNodeLabel() {
     nudge: t("dashboard.node.nudge", "Follow-up"),
     vision: t("dashboard.node.vision", "Image reading"),
     observer: t("dashboard.node.observer", "Observer"),
+    decision: t("dashboard.node.decision", "Decision API"),
     tts_normalize: t("dashboard.node.ttsNormalize", "Voice text preparation"),
     guardrail: t("dashboard.node.guardrail", "Guardrail"),
     memory_compact: t("dashboard.node.memoryCompact", "Memory compaction"),

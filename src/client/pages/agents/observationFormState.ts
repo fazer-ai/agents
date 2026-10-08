@@ -2,6 +2,7 @@ import {
   MONITORING_DEFAULTS,
   type MonitoringAnalysis,
   type MonitoringConfig,
+  type MonitoringEngine,
   OBSERVE_WINDOW_MAX_SECONDS,
   OBSERVE_WINDOW_MIN_SECONDS,
   readMonitoringConfig,
@@ -15,6 +16,11 @@ import {
 // next save; the round-trip test (tests/client/observation-form-state.test.ts) guards the next field.
 
 export interface ObservationState {
+  // Carried, not edited: the console has no control for the engine or its questions yet (they are
+  // written through REST and MCP), and the save replaces the whole block, so dropping them here would
+  // switch a `decisions` agent back to `llm` the first time someone saved its Behavior tab.
+  engine: MonitoringEngine;
+  decisions: Record<string, unknown> | null;
   analysis: MonitoringAnalysis;
   // Numbers travel as text: an emptied field is a state the operator passes through, not a value.
   windowMessages: string;
@@ -36,6 +42,8 @@ export function observationToForm(settings: unknown): ObservationState {
   // persist the difference on the next save.
   const c = readMonitoringConfig(settings);
   return {
+    engine: c.engine,
+    decisions: c.decisions,
     analysis: c.analysis,
     windowMessages: String(c.window.messages),
     windowSeconds: String(c.debounce.windowSeconds),
@@ -60,6 +68,8 @@ function draftFromForm(form: ObservationState): MonitoringConfig {
   const d = MONITORING_DEFAULTS;
   const windowSeconds = intOr(form.windowSeconds, d.debounce.windowSeconds);
   return {
+    engine: form.engine === "decisions" ? "decisions" : "llm",
+    decisions: form.decisions,
     analysis: form.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: { messages: intOr(form.windowMessages, d.window.messages) },
     debounce: {

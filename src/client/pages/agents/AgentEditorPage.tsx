@@ -1992,6 +1992,7 @@ function AgentEditor() {
   // t('editor.configIssuePending.memoryModel', 'The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.')
   // t('editor.configIssuePending.modelFallback', 'The fallback-provider credential is referenced but not filled in yet, so the fallback cannot take a turn.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
+  // t('editor.configIssue.decisions', 'The decisions engine is on but its classification API has no key set, so the observer decides nothing.')
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
   // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
@@ -2001,6 +2002,7 @@ function AgentEditor() {
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.vision', 'The image-reading credential is referenced but not filled in yet.')
+  // t('editor.configIssuePending.decisions', 'The classification API credential is referenced but not filled in yet, so the observer decides nothing.')
   // t('editor.configIssuePending.contactAuth', 'The contact-authorization credential is referenced but not filled in yet, so the check fails and the agent stays silent.')
   // t('editor.configIssueUnresolved.contactAuth', 'The contact-authorization credential no longer exists, so the check fails and the agent stays silent.')
   // t('editor.configIssue.contactAuthUnlockHandoff', 'The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI\'s, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.')
@@ -2020,6 +2022,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.suggestionReviewModel', 'The suggestion-reviewer credential no longer exists, so knowledge suggestions reach the queue unreviewed.')
   // t('editor.configIssueWrongKind.suggestionReviewModel', 'The suggestion-reviewer credential is a type that cannot be used as an API key, so knowledge suggestions reach the queue unreviewed. Pick a credential that holds a single key.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
+  // t('editor.configIssueUnresolved.decisions', 'The classification API credential no longer exists, so the observer decides nothing.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
   // NOTE: The fourth verdict: the entry is filled but its TYPE cannot serve the field. Each sentence names
   // its feature's consequence and ends in the fix, "this key belongs somewhere else".
@@ -2030,6 +2033,7 @@ function AgentEditor() {
   // t('editor.configIssueWrongKind.memoryModel', 'The summary-model credential is a type that cannot be used as an API key, so attendances that end are not summarized. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.modelFallback', 'The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.decisions', 'The classification API credential is a type that cannot be used as an API key, so the observer decides nothing. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.guardrails', 'The guardrails credential is a type that cannot be used as an API key, so messages go out unscreened. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.embedding', 'A knowledge base needs indexing, but the embedding credential is a type that cannot be used as an API key. Pick a credential that holds a single key.')
   // NOTE: The contact-authorization gate also accepts a connected account, so its sentence refuses the

@@ -252,6 +252,8 @@ In the receiver, `observing` (`rt.enabled && rt.mode === "monitoring"`; an agent
 
 ## Observation: a watcher is the ordinary agent that cannot answer (issues #477, #568)
 
+That is the `llm` engine, the default. A watcher can instead decide through a classification API with typed questions and rules (`monitoring.engine: "decisions"`), on the same arming, fences and evidence: [`docs/decisions.md`](decisions.md).
+
 A monitoring agent reads every message of the inboxes it observes and answers none of them. What it DOES with what it reads is not a property of the mode: it is the agent's prompt, its tools, its knowledge and its MCP servers, exactly as for a responder. The one thing it cannot do is put something in front of the customer.
 
 This is the second shape of the feature. The first was a **classifier**: `settings.monitoring.labelGroups` was a taxonomy with its own editor screen, its own JSON schema, its own write-time assertions and a cross-agent conflict rule; the tick made one constrained model call and applied the verdict deterministically. That existed because of where the silence lived — `loadAgentConfig` refuses to build a config for a monitoring agent, so the graph could not run for one, so a pipeline had to be written beside it, so that pipeline needed to be told what to classify into. Issue #568 named the consequence: the mode had become a label classifier instead of a generic watcher. All of it is gone.

@@ -259,11 +259,21 @@ const MODEL_BASE = { provider: "openai", model: "gpt-4o-mini" };
 // A settings bag holding exactly one credential ref, at `path` — the shape a save of that one
 // section sends. Built from the path so a credential added to a NEW block is covered here the moment
 // it joins SETTINGS_CREDENTIAL_PATHS, rather than waiting for someone to remember this file.
+// A block whose schema requires fields beside the ref carries its minimum here, keyed by the block's
+// path, so the save is refused for the ref and nothing else.
+const BLOCK_MINIMUM: Record<string, Record<string, unknown>> = {
+  "monitoring.decisions": {
+    provider: "typesafe",
+    questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+  },
+};
+
 function settingsWithRef(
   path: readonly string[],
   ref: string,
 ): Record<string, unknown> {
   let node: Record<string, unknown> = {
+    ...BLOCK_MINIMUM[path.slice(0, -1).join(".")],
     [path[path.length - 1] as string]: ref,
   };
   for (let i = path.length - 2; i >= 0; i--) {

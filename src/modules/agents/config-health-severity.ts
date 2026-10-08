@@ -39,6 +39,8 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   // The one override whose whole purpose is the day the primary fails.
   modelFallback: "degraded",
   vision: "degraded",
+  // An observer answers nobody; a decisions observer without its key decides nothing.
+  decisions: "degraded",
   // Documents are in the base and unsearchable until somebody indexes them.
   knowledge: "degraded",
   // The prerequisite for the line above: indexing cannot run at all.

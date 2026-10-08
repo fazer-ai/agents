@@ -213,6 +213,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/chatwoot-recover-human-reply.test.ts": 1,
   "tests/modules/memory-compaction.test.ts": 3,
   "tests/modules/memory-dead-letter.test.ts": 1,
+  "tests/modules/observe-decisions.test.ts": 1,
   "tests/modules/observe-job.test.ts": 2,
   "tests/modules/playground-guardrails.test.ts": 1,
   // NOTE: The `vision` stage line of the reengage turn is the only proof the attachment was opened: the reply

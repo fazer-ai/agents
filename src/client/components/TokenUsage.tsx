@@ -54,6 +54,8 @@ function nodeLabel(t: T, node: string): string {
       return t("tokenUsage.node.memoryCompact", "memory summary");
     case "observer":
       return t("tokenUsage.node.observer", "observer");
+    case "decision":
+      return t("tokenUsage.node.decision", "decision API");
     default:
       return node;
   }

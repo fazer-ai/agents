@@ -1917,3 +1917,64 @@ describe("issueHasAction", () => {
     );
   });
 });
+
+describe("a decisions observer's classification key", () => {
+  const settings = (credentialRef?: string, engine = "decisions") => ({
+    monitoring: {
+      engine,
+      decisions: {
+        provider: "typesafe",
+        ...(credentialRef === undefined ? {} : { credentialRef }),
+        questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+      },
+    },
+  });
+  const decisions = (input: Parameters<typeof computeConfigIssues>[0]) =>
+    computeConfigIssues({ agentMonitoring: true, ...input }).filter(
+      (i) => i.key === "decisions",
+    );
+
+  test("is not checked on an agent that no longer observes", () => {
+    expect(
+      decisions({
+        ...base,
+        agentMonitoring: false,
+        settings: settings(undefined),
+      }),
+    ).toEqual([]);
+  });
+
+  test("is checked only when the engine is decisions", () => {
+    expect(decisions({ ...base, settings: settings("", "llm") })).toEqual([]);
+  });
+
+  test("missing, pending or gone, it is an issue on the observation section", () => {
+    const at = {
+      key: "decisions" as const,
+      tab: "behavior" as const,
+      sectionId: "observation",
+    };
+    expect(decisions({ ...base, settings: settings(undefined) })).toEqual([at]);
+    expect(
+      decisions({
+        ...base,
+        settings: settings("vault:7"),
+        pendingRefs: new Set(["vault:7"]),
+      }),
+    ).toEqual([{ ...at, pending: true, vaultId: "7" }]);
+    expect(
+      decisions({
+        ...base,
+        settings: settings("vault:7"),
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([{ ...at, unresolved: true }]);
+    expect(
+      decisions({
+        ...base,
+        settings: settings("vault:7"),
+        knownRefs: new Set(["vault:1", "vault:7"]),
+      }),
+    ).toEqual([]);
+  });
+});

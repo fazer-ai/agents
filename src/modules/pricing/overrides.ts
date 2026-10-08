@@ -13,6 +13,8 @@ export const PRICE_OVERRIDE_PROVIDERS = [
   "deepseek",
   "openrouter",
   "openai-compatible",
+  // Jev, the decisions engine's classification API (docs/decisions.md); its rate is pinned in price.ts.
+  "typesafe",
 ] as const;
 
 export const PRICE_OVERRIDES_MAX = 100;

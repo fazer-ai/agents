@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { parseRepriceArgs, UsageError } from "@/../scripts/reprice-usage";
+import { readPriceOverrides } from "@/modules/pricing/overrides";
 import { callCostUsd, priceCall } from "@/modules/pricing/price";
 import {
   capturePricer,
@@ -134,6 +135,40 @@ describe("arguments", () => {
     expect(() =>
       parseRepriceArgs(["--tenant", "1", "--provider", "openai"]),
     ).toThrow(/--model is required/);
+  });
+
+  test("the decisions engine's classification API can be overridden and repriced like a model", () => {
+    const block = readPriceOverrides({
+      priceOverrides: {
+        overrides: [
+          { provider: "typesafe", model: "jev-latest", input: 0.03, output: 0 },
+        ],
+      },
+    });
+    expect(block.overrides).toHaveLength(1);
+    const priced = priceCall(
+      "typesafe",
+      "jev-latest",
+      {
+        promptTokens: 1_000_000,
+        cachedReadTokens: 0,
+        cacheCreationTokens: 0,
+        completionTokens: 0,
+      },
+      new Date(),
+      block,
+    );
+    expect(priced.costUsd).toBeCloseTo(0.03, 9);
+    expect(() =>
+      parseRepriceArgs([
+        "--tenant",
+        "1",
+        "--provider",
+        "typesafe",
+        "--model",
+        "jev-latest",
+      ]),
+    ).not.toThrow();
   });
 
   test("an unknown provider is refused up front", () => {

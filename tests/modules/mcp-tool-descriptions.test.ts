@@ -110,7 +110,10 @@ const SETTINGS_DESC_CEILING = 2_000;
 // description alone would watch the half that shrank while the shape grew unwatched. Headroom stays
 // tighter than one settings block; how a raise is decided (trim first, keep what a caller cannot
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
-const SETTINGS_SCHEMA_CEILING = 30_800;
+// Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
+// through REST and MCP until the console has a screen for them, so their shape has to be in
+// tools/list. Measured at 32_793 together with the conversation-type and label conditions and the vision ceiling.
+const SETTINGS_SCHEMA_CEILING = 32_900;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -210,7 +213,8 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_950);
-    expect(schema).toBeLessThanOrEqual(67_950);
+    // Measured at 69_245, with the `decisions` block on agent_settings_set and the vision ceiling.
+    expect(schema).toBeLessThanOrEqual(69_350);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

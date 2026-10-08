@@ -61,7 +61,17 @@ export function tableKeys(provider: string, model: string): string[] {
   }
 }
 
+// PROVIDERS LITELLM DOES NOT LIST, priced from the vendor's own page and pinned here with the date it
+// was read, the way the table pins its commit. TypeSafe (the `decisions` engine's Jev) bills input
+// tokens only, one price for every Jev version: docs.typesafe.ai/models, $0.042 per 1M input tokens,
+// output free, read 2026-10-07.
+const PUBLISHED_RATES: Readonly<Record<string, Entry>> = Object.freeze({
+  typesafe: { input: 0.042, output: 0 },
+});
+
 export function modelRates(provider: string, model: string): Entry | null {
+  const published = PUBLISHED_RATES[provider];
+  if (published) return published;
   for (const key of tableKeys(provider, model)) {
     const hit = MODELS[key];
     if (hit) return hit;

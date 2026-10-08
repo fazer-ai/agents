@@ -722,6 +722,9 @@ interface ClosedValueIssue {
   path: PropertyKey[];
   next: unknown;
   expected: string;
+  // Where the write boundary asks "did this write change it?" when that is not `path` itself: a
+  // refinement over a whole object (`params.wholeBlock`) is changed by any edit to that object.
+  changedAt?: PropertyKey[];
 }
 
 // Every closed value in `bag` the schema MCP asks would refuse, block by block. Shared by the write
@@ -756,11 +759,18 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
         if (typeof next === typeof read) continue;
         expected = typeof read;
       }
+      const whole =
+        issue.code === "custom" ? issue.params?.wholeBlock : undefined;
       out.push({
         block,
         path: issue.path,
         next,
         expected: expected ?? describeExpected(issue),
+        changedAt:
+          typeof whole === "number"
+            ? // `filter`, not a cut: a path is not text (tests/lib/astral-cap-sweep.test.ts).
+              issue.path.filter((_, i) => i < issue.path.length - whole)
+            : undefined,
       });
     }
   }
@@ -774,11 +784,25 @@ export function assertSettingsClosedValues(
   const bag = plainObject(settings);
   if (!bag) return;
   const storedBag = plainObject(stored);
-  for (const { block, path, next, expected } of closedValueIssues(bag)) {
+  for (const { block, path, next, expected, changedAt } of closedValueIssues(
+    bag,
+  )) {
+    if (
+      changedAt &&
+      isDeepStrictEqual(
+        valueAt(bag[block], changedAt),
+        valueAt(storedBag?.[block], changedAt),
+      )
+    )
+      continue;
     // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, by value and per path, so a legacy row re-sent
     // untouched saves and a list element is judged field by field. Path by index: a value that moved
     // to another index is a change, and naming its new path is what lets the caller find it.
-    if (isDeepStrictEqual(next, valueAt(storedBag?.[block], path))) continue;
+    if (
+      !changedAt &&
+      isDeepStrictEqual(next, valueAt(storedBag?.[block], path))
+    )
+      continue;
     throw new InvalidSettingsValueError(
       [block, ...path.map(String)].join("."),
       expected,

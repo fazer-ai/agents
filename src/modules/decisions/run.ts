@@ -46,8 +46,9 @@ export interface ActionReport {
   // `shadow`: decided and not run. `ran`: the tool was invoked and returned. `not_granted`: the agent
   // does not have the tool, so the rule cannot act (the operator grants it, as for the LLM path).
   // `failed`: the tool threw; `failure` says which way, never the tool's text: `invalid_arguments`
-  // (the rule's args do not fit the tool's schema) or `tool_error`.
-  outcome: "shadow" | "ran" | "not_granted" | "failed";
+  // (the rule's args do not fit the tool's schema) or `tool_error`. `over_budget`: the agent's
+  // `limits.maxToolCalls` was spent by the rules before it, as the graph caps a model's turn.
+  outcome: "shadow" | "ran" | "not_granted" | "failed" | "over_budget";
   failure?: string;
 }
 
@@ -73,9 +74,12 @@ export async function applyDecisions(
   callbacks: Callbacks,
   signal: AbortSignal,
   stillWanted: () => Promise<boolean>,
+  maxCalls: number,
 ): Promise<DecisionTickReport> {
   const { fired, missed } = evaluateRules(config.rules, answers);
   const actions: ActionReport[] = [];
+  // Every call the tick dispatches counts, shadow's included, so shadow reports what enforce would.
+  let calls = 0;
   for (const f of fired) {
     // The grant is checked first, so shadow shows the same missing grant enforce would hit.
     const tool = tools.find((t) => t.name === f.tool);
@@ -83,6 +87,11 @@ export async function applyDecisions(
       actions.push({ rule: f.rule, tool: f.tool, outcome: "not_granted" });
       continue;
     }
+    if (calls >= maxCalls) {
+      actions.push({ rule: f.rule, tool: f.tool, outcome: "over_budget" });
+      continue;
+    }
+    calls += 1;
     if (config.apply === "shadow") {
       // The arguments are asked of the tool's own schema without running it, so shadow shows the
       // `invalid_arguments` enforce would hit. The watcher's writes are native tools, schema'd in zod.

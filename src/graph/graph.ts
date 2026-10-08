@@ -161,7 +161,7 @@ export interface SilenceRetryInfo {
 export const SILENCE_RETRY_MARK =
   "[Sistema] Este turno terminou sem mensagem para o cliente";
 
-const DEFAULT_MAX_TOOL_CALLS = 10;
+export const DEFAULT_MAX_TOOL_CALLS = 10;
 
 // LangGraph counts super-steps, not tool calls, and defaults to 25, so an operator budget (1-50) could
 // be unreachable: one round of tool call plus tool node is TWO steps, and the turn would die with

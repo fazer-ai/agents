@@ -724,7 +724,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "decisions", tab: "behavior", sectionId: "observation" },
     credIssue(
-      monitoring.engine === "decisions" && monitoring.decisions !== null,
+      // Only while it observes: a detached watcher switched to production keeps its stored block.
+      Boolean(input.agentMonitoring) &&
+        monitoring.engine === "decisions" &&
+        monitoring.decisions !== null,
       typeof decisionsRef === "string" ? decisionsRef : "",
       "apiKey",
       vault,

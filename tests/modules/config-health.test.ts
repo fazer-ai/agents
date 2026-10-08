@@ -1930,7 +1930,19 @@ describe("a decisions observer's classification key", () => {
     },
   });
   const decisions = (input: Parameters<typeof computeConfigIssues>[0]) =>
-    computeConfigIssues(input).filter((i) => i.key === "decisions");
+    computeConfigIssues({ agentMonitoring: true, ...input }).filter(
+      (i) => i.key === "decisions",
+    );
+
+  test("is not checked on an agent that no longer observes", () => {
+    expect(
+      decisions({
+        ...base,
+        agentMonitoring: false,
+        settings: settings(undefined),
+      }),
+    ).toEqual([]);
+  });
 
   test("is checked only when the engine is decisions", () => {
     expect(decisions({ ...base, settings: settings("", "llm") })).toEqual([]);

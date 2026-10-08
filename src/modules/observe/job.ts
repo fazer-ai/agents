@@ -5,7 +5,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import { recursionLimitFor } from "@/graph/graph";
+import { DEFAULT_MAX_TOOL_CALLS, recursionLimitFor } from "@/graph/graph";
 import type { ResolvedModelConfig } from "@/graph/models";
 import {
   buildCallbacks,
@@ -1756,6 +1756,7 @@ export async function runObserve(
           [toolLogger],
           deadline,
           () => fence(),
+          cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
         ),
         deadline,
       );
@@ -1800,7 +1801,10 @@ export async function runObserve(
         labelsBefore: current === null ? null : current.length,
       },
       report.actions.some(
-        (a) => a.outcome === "failed" || a.outcome === "not_granted",
+        (a) =>
+          a.outcome === "failed" ||
+          a.outcome === "not_granted" ||
+          a.outcome === "over_budget",
       )
         ? "warn"
         : "info",

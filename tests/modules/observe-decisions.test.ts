@@ -1014,6 +1014,43 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     }
   });
 
+  test("the agent's limits.maxToolCalls caps the actions a tick dispatches", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          limits: { maxToolCalls: 1 },
+          monitoring: decisionsBlock({
+            rules: [
+              {
+                when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+                action: { tool: "private_note", args: { content: "primeira" } },
+              },
+              {
+                when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+                action: { tool: "private_note", args: { content: "segunda" } },
+              },
+            ],
+          }),
+        } as never,
+      },
+    });
+    const p = providerDouble(() =>
+      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
+    );
+    const { log } = await tick(p.fetchImpl);
+    expect(log.notes).toEqual(["primeira"]);
+    const line = await lastLine();
+    expect(line.level).toBe("warn");
+    expect(
+      (
+        (line.detail as Record<string, unknown>).actions as {
+          outcome: string;
+        }[]
+      ).map((a) => a.outcome),
+    ).toEqual(["ran", "over_budget"]);
+  });
+
   test("a rule whose tool the agent was not granted does not act, and the line says so at warn", async () => {
     const grant = await suDb.agentToolSelection.create({
       data: {

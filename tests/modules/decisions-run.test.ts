@@ -54,6 +54,7 @@ describe("applyDecisions under the tick's deadline", () => {
         [],
         t.controller.signal,
         async () => true,
+        10,
       ),
     ).rejects.toThrow();
     expect(t.ran).toEqual(["private_note"]);
@@ -73,8 +74,31 @@ describe("applyDecisions under the tick's deadline", () => {
         [],
         t.controller.signal,
         async () => true,
+        10,
       ),
     ).rejects.toThrow();
     expect(t.ran).toEqual(["private_note"]);
+  });
+});
+
+describe("applyDecisions under the agent's tool-call budget", () => {
+  test("rules past limits.maxToolCalls do not dispatch, in either mode, and say why", async () => {
+    for (const apply of ["enforce", "shadow"] as const) {
+      const t = tools(async () => "ok");
+      const r = await applyDecisions(
+        { ...config, apply },
+        answers,
+        t.list,
+        [],
+        t.controller.signal,
+        async () => true,
+        1,
+      );
+      expect(r.actions.map((a) => a.outcome)).toEqual([
+        apply === "shadow" ? "shadow" : "ran",
+        "over_budget",
+      ]);
+      expect(t.ran).toEqual(apply === "shadow" ? [] : ["private_note"]);
+    }
   });
 });

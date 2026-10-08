@@ -86,6 +86,9 @@ function makeStub(
     // `false` answers a bot assignment the way a deleted bot does (no bot in the answer), which is
     // the case the hand-back falls back to a plain unassign on.
     botAssignable?: boolean;
+    // ...and, refused, read the bot's id as a USER's, the way a Chatwoot that ignores `assignee_type`
+    // would, so every later read names that user.
+    botMisreadAsUser?: boolean;
     botCleared?: boolean;
     // From the bot assignment on, reads come back without `meta`: a payload that says nothing about
     // the assignee, which is not one that says nobody holds it.
@@ -200,6 +203,11 @@ function makeStub(
     },
     assignAgentBot: async (_cid: number, botId: number) => {
       calls.assignAgentBot.push(botId);
+      if (live.botMisreadAsUser) {
+        live.assigneeType = "User";
+        live.assigneeId = botId;
+        return false;
+      }
       if (live.botAssignable === false) return false;
       cleared = true;
       // `botCleared`: Chatwoot took the bot, and something cleared it again before the next read.
@@ -1251,6 +1259,40 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       select: { assigneeType: true, assigneeId: true },
     });
     expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 8]);
+  });
+
+  test("a human who claims it during the fallback's status call keeps it", async () => {
+    // The fourth read is the one taken after the status call, which the unassign is decided on.
+    const stub = makeStub(
+      { assigneeType: "User", assigneeId: 7, botAssignable: false },
+      { assigneeType: "User", assigneeId: 55, fromRead: 4 },
+    );
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.toggleStatus).toEqual(["pending"]);
+    expect(stub.calls.unassignConversation).toBe(0);
+    expect(outcome).toBe("taken-over");
+  });
+
+  test("a user carrying the bot's id after a refused assignment is still unassigned", async () => {
+    const stub = makeStub({
+      assigneeType: "User",
+      assigneeId: 7,
+      botMisreadAsUser: true,
+    });
+    await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.assignAgentBot).toEqual([501]);
+    expect(stub.calls.unassignConversation).toBe(1);
   });
 
   test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {

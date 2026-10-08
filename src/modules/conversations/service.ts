@@ -2332,7 +2332,7 @@ export async function returnConversationToAgent(
       seen.assigneeId !== baseline.assigneeId)
       ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
       : null;
-  const newHolder = holderOtherThan(live);
+  let newHolder = holderOtherThan(live);
   const alreadyOurs =
     live !== null &&
     ourAgentBotId !== null &&
@@ -2376,6 +2376,17 @@ export async function returnConversationToAgent(
         asAdmin: true,
       });
       toggled = true;
+      // NOTE: the unassign is decided on a read taken AFTER the status call, so a human who claimed
+      // the conversation while it was on the wire keeps it. A user carrying the bot's id right after
+      // an assignment that did not take is that assignment misread, not a newcomer.
+      if (!handedToBot && newHolder === null) {
+        const afterStatus = await readHolder();
+        const misread =
+          attempted &&
+          afterStatus?.assigneeType === "User" &&
+          afterStatus.assigneeId === ourAgentBotId;
+        if (!misread) newHolder = holderOtherThan(afterStatus);
+      }
     }
     // NOTE: an assignment that came back without the bot may have named a USER with that id (a
     // Chatwoot that ignores `assignee_type`), so the unassign follows it even onto an empty read.

@@ -114,6 +114,9 @@ export async function applyDecisions(
     if (!(await stillWanted())) {
       return { fired, missed, actions, withdrawn: true };
     }
+    // Again after the fence: its reads take time, and a deadline that fired during them has already
+    // ended the tick, so nothing may start behind it.
+    signal.throwIfAborted();
     try {
       await tool.invoke(f.args, { callbacks, signal });
       actions.push({ rule: f.rule, tool: f.tool, outcome: "ran" });

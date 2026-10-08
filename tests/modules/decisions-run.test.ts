@@ -60,6 +60,25 @@ describe("applyDecisions under the tick's deadline", () => {
     expect(t.ran).toEqual(["private_note"]);
   });
 
+  test("a deadline that fires while the fence is read starts no action", async () => {
+    const t = tools(async () => "ok");
+    await expect(
+      applyDecisions(
+        config,
+        answers,
+        t.list,
+        [],
+        t.controller.signal,
+        async () => {
+          t.controller.abort(new Error("deadline"));
+          return true;
+        },
+        10,
+      ),
+    ).rejects.toThrow();
+    expect(t.ran).toEqual([]);
+  });
+
   // The last rule: no later iteration is left to notice the deadline.
   test("an action cancelled by the deadline ends the run instead of reading as that tool's failure", async () => {
     const t = tools(async (c) => {

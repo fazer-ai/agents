@@ -2,11 +2,13 @@ import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { clearTurnOwning } from "@/graph/thread-claim";
 import * as documents from "@/modules/rag/documents";
 import * as embeddings from "@/modules/rag/embeddings";
 import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import { searchKnowledge } from "@/modules/rag/service";
 import { resolveInjectableCredentialEntry } from "@/modules/vault/injectable";
+import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The reads a tool makes before its request, against a pool that really is full. A failed read ends
 // the tool call with an error the model may escalate over, when the same read a moment later would
@@ -146,5 +148,38 @@ describe.skipIf(!dbUp)("tool reads on a full pool", () => {
     } finally {
       embed.mockRestore();
     }
+  });
+  test("a turn's lease is released once the pool frees up, not left to read as a running turn", async () => {
+    const db = su as PrismaClient;
+    const inst = await seedChatwootInstance(db, {
+      tenantId,
+      accountId: 9,
+      baseUrl: "https://203.0.113.21:9",
+    });
+    const contactInboxId = 4_242;
+    const graphThreadId = `${tenantId}:${inst.id}:ci:${contactInboxId}`;
+    await db.agentThread.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        contactInboxId,
+        threadId: graphThreadId,
+        turnHolders: 1,
+        turnEpoch: 7n,
+        turnHeldUntil: new Date(Date.now() + 5 * 60_000),
+      },
+    });
+    const held = await holdPool(HOLD_MS);
+    await clearTurnOwning(
+      { tenantId, instanceId: inst.id, contactInboxId, graphThreadId },
+      pool,
+      { epoch: 7n, heldBefore: false },
+    );
+    await held.done;
+    const row = await db.agentThread.findFirstOrThrow({
+      where: { tenantId, contactInboxId },
+      select: { turnHolders: true, turnHeldUntil: true },
+    });
+    expect(row).toEqual({ turnHolders: 0, turnHeldUntil: null });
   });
 });

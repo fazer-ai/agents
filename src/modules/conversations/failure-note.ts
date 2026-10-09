@@ -393,7 +393,7 @@ export async function announceFailedTurn(params: {
             seen: ownership,
             // Read before the last ask: a customer message mirrored since starts a direct turn that
             // the reservation does not hold back, and loses the swap here instead of its reply.
-            lastInboundAt: keys.lastInboundAt,
+            newestInbound: { lastInboundAt: keys.lastInboundAt },
             base,
           });
           // The turn is still lost (`lastAsk` stays so): only the hand-over yields, and the note asks

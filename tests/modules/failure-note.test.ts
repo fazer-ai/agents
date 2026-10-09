@@ -680,6 +680,41 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(mirror.status).toBe("pending");
   });
 
+  test("a newer message in the same second is told apart by the conversation's version", async () => {
+    const conv = await seedConversation();
+    const second = new Date(Math.floor(Date.now() / 1000) * 1000);
+    // A row with an ownership mark, so the takeover's own pin would not read the status version.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: {
+        lastInboundAt: second,
+        chatwootOwnershipChangedAt: 1_800_000_000,
+        chatwootStatusAt: 1_800_000_100.25,
+      },
+    });
+    let asks = 0;
+    await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => {
+        // The newer message carries the same whole second, so only the version moves.
+        if (asks++ === 1) {
+          await suDb.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: conv },
+            data: { lastInboundAt: second, chatwootStatusAt: 1_800_000_100.75 },
+          });
+        }
+        return { path: "job", deadLettered: true };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+  });
+
   test("an opened hand-over stamps its claim from Chatwoot's versioned read", async () => {
     const conv = await seedConversation();
     liveConversations.set(conv, { status: "pending", meta: {} });

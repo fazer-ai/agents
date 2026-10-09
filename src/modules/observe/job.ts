@@ -59,6 +59,10 @@ import { loadChatwootLabels } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
 import { observerRuleVerdict } from "@/modules/contact-auth/observer";
 import {
+  contactAuthHasRuleStage,
+  readContactAuthConfig,
+} from "@/modules/contact-auth/settings";
+import {
   type DecisionsConfig,
   readDecisionsConfig,
 } from "@/modules/decisions/config";
@@ -1838,6 +1842,8 @@ export async function runObserve(
     // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
+    const gate = readContactAuthConfig(loaded.settings);
+    const gatedByRule = gate.enabled && contactAuthHasRuleStage(gate);
     try {
       report = await underSignal(
         applyDecisions(
@@ -1850,8 +1856,11 @@ export async function runObserve(
           cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
           // The label write and the attribute write touch different things on the conversation, so
           // the two go out side by side as well, not one after the other. A tool with a precondition
-          // stays on its own: its condition reads what the rules before it wrote.
+          // stays on its own: its condition reads what the rules before it wrote. Under a contact
+          // gate with conditions every action does, since the fence asks them of the same labels
+          // and attributes.
           (action) =>
+            gatedByRule ||
             Object.hasOwn(cfg.toolPreconditions, action.tool) ||
             sharedWriteKey(action.tool, action.args) === null
               ? null

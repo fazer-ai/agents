@@ -1594,6 +1594,70 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       }
     });
 
+    // The contact gate's conditions read the labels and attributes the actions write, so under a
+    // gate with conditions each action is asked for after the one before it has landed.
+    test("an action that takes the conversation out of the contact gate's rule stops the ones after it", async () => {
+      const chatwoot = fakeChatwoot({
+        labels: [],
+        attributes: { active: "yes" },
+      });
+      // The gate refuses a conversation with no contact before it reaches the conditions.
+      const contact = await suDb.contact.create({
+        data: { tenantId, chatwootInstanceId: instanceId, name: "Ana" },
+      });
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { customAttributes: { active: "yes" }, contactId: contact.id },
+      });
+      const rules = [attribute("active", "no"), attribute("etapa", "segunda")];
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            monitoring: decisionsBlock({ rules }),
+            contactAuth: {
+              enabled: true,
+              rule: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "active",
+                equals: "yes",
+              },
+            },
+          } as never,
+        },
+      });
+      const p = providerDouble(() =>
+        typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.95 } }),
+      );
+      try {
+        await runObserve(
+          tenantId,
+          {
+            instanceId,
+            conversationId: CONV,
+            agentId,
+            reason: "burst",
+            atMessageId: null,
+          },
+          appDb,
+          {
+            makeClient: async (cfg) =>
+              new ChatwootClient(cfg, chatwoot.fetchImpl),
+            makeModel: () => new CountingModel() as never,
+            decisionFetch: p.fetchImpl,
+          },
+        );
+      } finally {
+        await suDb.conversation.update({
+          where: { id: convRowId },
+          data: { customAttributes: {}, contactId: null },
+        });
+        await suDb.contact.delete({ where: { id: contact.id } });
+      }
+      expect(chatwoot.state.attributes).toEqual({ active: "no" });
+    });
+
     // An invalid rule in the middle is that rule's failure. It does not part the valid rules around
     // it into two writes.
     for (const [name, bad] of [

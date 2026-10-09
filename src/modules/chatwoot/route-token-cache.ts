@@ -69,6 +69,9 @@ interface Store {
   generation: number;
   // What a full invalidation asks of the receiver: look the tokens it dropped up again right away.
   rewarm?: ((routeTokenHashes: string[]) => void) | null;
+  // Tokens a full invalidation asked to look up again and that no lookup has written since: the next
+  // full invalidation asks for them too, since its generation bump refuses the earlier lookups' writes.
+  rewarming?: Set<string>;
 }
 
 function store(): Store {
@@ -164,6 +167,7 @@ export function writeRouteTokenCache(
 ): void {
   const s = store();
   if (opts.generation !== undefined && opts.generation !== s.generation) return;
+  s.rewarming?.delete(routeTokenHash);
   const now = opts.now ?? Date.now();
   const entry: Entry = { bot, freshUntil: now + ROUTE_TOKEN_CACHE_TTL_MS };
   if (bot === null) {
@@ -280,14 +284,16 @@ export function invalidateRouteTokenCache(routeTokenHash?: string): void {
     // serve if the lookup fails next. The dropped tokens are looked up again at once, while the
     // database that just took the writer's commit is answering; each lookup writes only what it finds
     // (a retired token comes back as nothing), under the generation guard.
-    const dropped = [...s.positive.keys()];
+    const dropped = new Set([...s.positive.keys(), ...(s.rewarming ?? [])]);
     s.positive.clear();
     s.negative.clear();
     s.refreshing.clear();
     s.refreshFailedUntil.clear();
-    if (s.rewarm && dropped.length > 0) s.rewarm(dropped);
+    s.rewarming = s.rewarm ? dropped : new Set();
+    if (s.rewarm && dropped.size > 0) s.rewarm([...dropped]);
     return;
   }
+  s.rewarming?.delete(routeTokenHash);
   s.positive.delete(routeTokenHash);
   s.negative.delete(routeTokenHash);
   s.refreshing.delete(routeTokenHash);

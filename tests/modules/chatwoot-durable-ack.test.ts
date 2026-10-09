@@ -451,8 +451,11 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
           base: appDb,
         });
       }
-      // The second bot is retired by its own row going, and the writer clears the cache after.
+      // The second bot is retired by its own row going, and the writer clears the cache after. A second
+      // full invalidation right behind it (another writer) refuses the first one's lookups, and must
+      // ask for the same tokens again.
       await suDb.chatwootAgentBot.delete({ where: { id: bot2.id } });
+      invalidateRouteTokenCache();
       invalidateRouteTokenCache();
       const kept = hashRouteToken(routeToken);
       for (let i = 0; i < 200 && !readRouteTokenCache(kept)?.bot; i++)

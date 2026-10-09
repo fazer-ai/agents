@@ -362,6 +362,29 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     });
   });
 
+  // A busy queue can hold an admitted row past the ceiling; it is asked again when its slot opens.
+  test("a row that crosses the age ceiling while it waits is not processed", async () => {
+    const id = await ackOnly("queue-crosses-ceiling", 613);
+    await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS - 300);
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.admitted).toBe(1);
+    await sleep(600);
+    g.release();
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    expect(row.payload).toBeNull();
+  });
+
   // A row an older build wrote has no body. Its redelivery stores one while the row still owes its
   // first attempt, so a redelivery the full queue turned away (here: one nobody admitted) is drained.
   test("a bodyless legacy row gets its body from a redelivery and is drained from it", async () => {

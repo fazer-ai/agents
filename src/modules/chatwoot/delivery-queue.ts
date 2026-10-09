@@ -170,6 +170,7 @@ interface StoredRow {
   routeAgentBotId: number | null;
   bindingGeneration: number | null;
   payload: string | null;
+  receivedAt: Date;
 }
 
 export interface DrainStoredParams {
@@ -233,6 +234,7 @@ export async function drainStoredChatwootDeliveries(
         routeAgentBotId: true,
         bindingGeneration: true,
         payload: true,
+        receivedAt: true,
       },
     }),
   )) as StoredRow[];
@@ -255,8 +257,19 @@ export async function drainStoredChatwootDeliveries(
       );
       continue;
     }
-    const ok = admitChatwootDelivery(row.id, () =>
-      processRecordedChatwootDelivery({
+    const ok = admitChatwootDelivery(row.id, async () => {
+      // NOTE: The ceiling is asked again when the slot opens, since a busy queue can hold a row past it;
+      // a row that crossed it is handed to the sweep exactly as the clearing pass above would.
+      if (Date.now() - row.receivedAt.getTime() > STORED_DELIVERY_MAX_AGE_MS) {
+        await run((db) =>
+          db.chatwootWebhookDelivery.updateMany({
+            where: { id: row.id, status: "PENDING" },
+            data: { payload: null },
+          }),
+        );
+        return "skipped";
+      }
+      return processRecordedChatwootDelivery({
         tenantId: row.tenantId,
         instanceId: row.chatwootInstanceId,
         deliveryRowId: row.id,
@@ -264,8 +277,8 @@ export async function drainStoredChatwootDeliveries(
         normalized,
         receiptBindingGeneration: row.bindingGeneration,
         base,
-      }),
-    );
+      });
+    });
     if (ok) admitted++;
   }
   if (admitted > 0 || cleared > 0) {

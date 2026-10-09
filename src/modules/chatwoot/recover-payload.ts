@@ -26,6 +26,10 @@ export interface RecoveryConversation {
   // pairing by comparing them: the pairing alone, unversioned, could RESTORE one a re-entry replaced
   // while the recovery was doing its REST reads.
   redirectOriginAt: number | null;
+  // The contact, for a conversation the mirror never learned and only then: `meta.sender` as the
+  // recovery chose to state it (see `contactToStateFor` in ./recover-delivery.ts). Absent everywhere
+  // else, for the reason in the header.
+  sender?: Record<string, unknown>;
 }
 
 // A message as the REST read gives it. REST and the wire spell two fields differently: `message_type`
@@ -161,6 +165,7 @@ export function buildRecoveryPayload(params: {
           c.assigneeId === null
             ? null
             : { id: c.assigneeId, name: c.assigneeName },
+        ...(c.sender !== undefined ? { sender: c.sender } : {}),
       },
     },
   };

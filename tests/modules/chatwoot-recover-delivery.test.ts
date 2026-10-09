@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -147,6 +155,8 @@ function stubChatwoot(opts: {
   // split reply and refuses the rest.
   failSendFrom?: number;
   conv?: {
+    // A snapshot with no `meta` at all: Chatwoot saying nothing about who holds it.
+    noMeta?: boolean;
     status?: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
@@ -168,15 +178,17 @@ function stubChatwoot(opts: {
         inbox_id: CHATWOOT_INBOX_ID,
         last_activity_at: c.lastActivityAt ?? SENT_AT,
         timestamp: c.lastActivityAt ?? SENT_AT,
-        meta: {
-          ...(c.assigneeType != null
-            ? {
-                assignee_type: c.assigneeType,
-                assignee: { id: c.assigneeId, name: "outro" },
-              }
-            : { assignee: null }),
-          sender: { id: 77, name: "Cliente" },
-        },
+        meta: c.noMeta
+          ? undefined
+          : {
+              ...(c.assigneeType != null
+                ? {
+                    assignee_type: c.assigneeType,
+                    assignee: { id: c.assigneeId, name: "outro" },
+                  }
+                : { assignee: null }),
+              sender: { id: 77, name: "Cliente" },
+            },
       };
     },
     getMessages: async (
@@ -622,11 +634,39 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   describe("a conversation the mirror never learned", () => {
     // The mirror failing is how a first message strands, so the conversation it belonged to has no
     // row: the recovery reads it from Chatwoot instead of giving up on exactly those customers.
-    const contactOf = async (chatwootContactId: number) =>
-      suDb.contact.create({
-        data: { tenantId, chatwootInstanceId: instanceId, chatwootContactId },
+    const contactOf = async (chatwootContactId: number, name?: string) =>
+      suDb.contact.upsert({
+        where: {
+          tenantId_chatwootInstanceId_chatwootContactId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootContactId,
+          },
+        },
+        create: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootContactId,
+          ...(name !== undefined ? { name } : {}),
+        },
+        update: name !== undefined ? { name } : {},
         select: { id: true },
       });
+    const dropContact = (chatwootContactId: number) =>
+      suDb.contact.deleteMany({
+        where: { tenantId, chatwootInstanceId: instanceId, chatwootContactId },
+      });
+    // The delivery path mirrors these conversations and the contact Chatwoot names, and the contact
+    // id is the stub's for every test in this file.
+    afterEach(async () => {
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId,
+          chatwootConversationId: { gte: 7310, lte: 7316 },
+        },
+      });
+      await dropContact(77);
+    });
 
     test("is answered from Chatwoot's own reading, and the mirror learns it", async () => {
       const convId = 7310;
@@ -656,6 +696,18 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       // A first contact: no other conversation names its pairing, so the turn is the conversation's.
       expect(mirrored.contactInboxId).toBeNull();
+      // ...and the row is linked to the contact Chatwoot named, with its identity, so a contact gate
+      // has someone to ask about.
+      const linked = await suDb.conversation.findFirstOrThrow({
+        where: { id: mirrored.id },
+        select: {
+          contact: { select: { chatwootContactId: true, name: true } },
+        },
+      });
+      expect(linked.contact).toEqual({
+        chatwootContactId: 77,
+        name: "Cliente",
+      });
       const lines = await deliveryLines(mirrored.id);
       expect(
         lines.map((l) => (l.detail as { outcome?: string }).outcome),
@@ -701,7 +753,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: { tenantId, chatwootConversationId: { in: [convId, 7312] } },
       });
-      await suDb.contact.delete({ where: { id: contact.id } });
+      await dropContact(77);
     });
 
     test("takes no pairing when the contact's conversations name two", async () => {
@@ -744,7 +796,65 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           chatwootConversationId: { in: [convId, 7314, 7315] },
         },
       });
-      await suDb.contact.delete({ where: { id: contact.id } });
+      await dropContact(77);
+    });
+
+    test("links a contact the mirror already has without restating its identity", async () => {
+      const convId = 7312;
+      const messageId = 7812;
+      await contactOf(77, "Nome mais novo");
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: {
+          contact: { select: { chatwootContactId: true, name: true } },
+        },
+      });
+      // Read at the stranded message's clock, Chatwoot's "Cliente" must not overwrite a newer name.
+      expect(row.contact).toEqual({
+        chatwootContactId: 77,
+        name: "Nome mais novo",
+      });
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: convId },
+      });
+      await dropContact(77);
+    });
+
+    test("is not answered when Chatwoot does not say who holds it", async () => {
+      const convId = 7315;
+      const messageId = 7815;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { noMeta: true },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unreachable");
+      expect(stub.sent).toEqual([]);
     });
 
     test("is not answered when Chatwoot says a person holds it", async () => {

@@ -480,6 +480,17 @@ async function runRecovery(params: {
   // Read from the reconcile above rather than re-read here, so what the body states is the row that
   // call decided; a second read would answer about a different moment, and the two message reads
   // sit between them.
+  // NOTE: with no mirror row, the live read is the only statement of who holds the conversation, and a
+  // snapshot with no `meta` says nothing about it: its null assignee would be stated below as
+  // unassigned, and a `pending` conversation would pass the ownership gate with its holder unknown.
+  if (conv === null && !live.assigneeStated) {
+    logger.warn(
+      "chatwoot recovery: conversation %d is not mirrored and Chatwoot did not state who holds it (delivery=%s)",
+      conversationId,
+      String(row.id),
+    );
+    return "unreachable";
+  }
   const state = reconciled?.state ??
     conv ?? {
       status: live.status,
@@ -755,6 +766,15 @@ async function runRecovery(params: {
   // NOTE: the pairing a never-mirrored conversation inherits, asked here, ABOVE the re-read, since
   // nothing may await between that read and the fence. Used only when the re-read still finds no
   // row: a webhook that mirrored it during the REST reads carries the real pairing.
+  const contactToState =
+    conv === null
+      ? await contactToStateFor({
+          tenantId: params.tenantId,
+          instanceId,
+          raw: liveRaw,
+          base,
+        })
+      : undefined;
   const inherited =
     conv === null
       ? await pairingOfContact({
@@ -791,6 +811,8 @@ async function runRecovery(params: {
     }),
   );
   const contactInboxId = mirrorNow ? mirrorNow.contactInboxId : inherited;
+  // Asked only where the re-read still finds no row; awaits nothing (see `contactToStateFor`).
+  const sender = mirrorNow ? undefined : contactToState;
 
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({
@@ -801,6 +823,7 @@ async function runRecovery(params: {
         // `contact_inbox`. Re-read immediately above rather than taken from the load at the top,
         // because the pairing DOES move.
         contactInboxId,
+        ...(sender !== undefined ? { sender } : {}),
         redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
         // NOTE: a resolve that lands after this read is not ordered away here, by the delivery path's
@@ -1304,6 +1327,37 @@ async function pairingOfContact(p: {
     }),
   );
   return rows.length === 1 ? (rows[0]?.contactInboxId ?? null) : null;
+}
+
+// The contact a never-mirrored conversation states, so the row the delivery path creates is linked to
+// it and the contact gate has an identity to ask about. A contact the mirror already has is linked by
+// id alone: its identity fields read now, at the stranded message's clock, could empty what a newer
+// event stored, and an absent key leaves the stored value alone. A contact the mirror never saw has
+// nothing to empty, so Chatwoot's whole reading is stated.
+async function contactToStateFor(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  raw: unknown;
+  base: PrismaClient;
+}): Promise<Record<string, unknown> | undefined> {
+  const id = senderIdOf(p.raw);
+  if (id === null || !isRecord(p.raw) || !isRecord(p.raw.meta))
+    return undefined;
+  const live = p.raw.meta.sender;
+  if (!isRecord(live)) return undefined;
+  const known = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.contact.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootContactId: {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootContactId: id,
+        },
+      },
+      select: { id: true },
+    }),
+  );
+  return known ? { id } : live;
 }
 
 // The contact a REST conversation names, `meta.sender.id`.

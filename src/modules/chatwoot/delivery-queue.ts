@@ -14,16 +14,12 @@ import { processRecordedChatwootDelivery } from "./webhook";
 // every delivery fails `maxWait` at once, and a process that dies with deliveries waiting leaves rows a
 // later drain processes from their body.
 
-// A PENDING row whose body is still stored and that nothing in this process holds is drained from the
-// ledger. Past the sweep's window the body is dropped where the conversation is mirrored, and the row
-// becomes the sweep's (`DEAD` and a recovery that rebuilds the body from Chatwoot's live state). The
-// same number as the sweep's `STALE_AFTER_MS`, restated rather than imported because the sweep's
-// handler runs this drain (a module cycle); tests/modules/chatwoot-delivery-queue.test.ts pins both.
-export const STORED_DELIVERY_STALE_MS = 30 * 60 * 1000;
-
-// Where the conversation is NOT mirrored the recovery cannot rebuild the delivery, so the stored body
-// is the only way to answer it and the drain keeps trying past the window, up to this age. Past it the
-// body goes too and the sweep reports the row like any other strand.
+// A PENDING row whose body is still stored and that nothing in this process holds is the drain's, at any
+// age up to this one: the sweep skips it, because the body is a better source than the recovery's
+// rebuild, which refuses whole classes of rows (no conversation mirror, an observer's unstated route).
+// Past it the body goes and the sweep reports the row like any other strand. The same ceiling as the
+// recovery's `MAX_RECOVERY_AGE_MS`, restated rather than imported (the sweep's handler runs this drain,
+// a module cycle); tests/modules/chatwoot-delivery-queue.test.ts pins both.
 export const STORED_DELIVERY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 // How old a stored row must be before the periodic pass treats it as nobody's: a younger one is most
@@ -51,7 +47,7 @@ interface Admission {
   waiting: Pending[];
   // Row ids waiting or running here: a drain or a redelivery of a row this process already holds is
   // not admitted twice.
-  held: Set<string>;
+  held: Map<string, bigint>;
 }
 
 // On globalThis, like the shutdown registry, so `bun --hot` does not split the count.
@@ -60,12 +56,12 @@ const KEY = Symbol.for("fazerai.chatwoot.admission");
 function admission(): Admission {
   const g = globalThis as unknown as Record<symbol, Admission | undefined>;
   const held = g[KEY];
-  if (!held || !(held.held instanceof Set) || !Array.isArray(held.waiting)) {
+  if (!held || !(held.held instanceof Map) || !Array.isArray(held.waiting)) {
     g[KEY] = {
       limit: config.chatwoot.deliveryConcurrency,
       running: 0,
       waiting: [],
-      held: new Set(),
+      held: new Map(),
     };
   }
   return g[KEY] as Admission;
@@ -87,7 +83,7 @@ export function resetChatwootAdmissionForTest(limit?: number): void {
     limit: limit ?? config.chatwoot.deliveryConcurrency,
     running: 0,
     waiting: [],
-    held: new Set(),
+    held: new Map(),
   };
 }
 
@@ -130,7 +126,7 @@ export function admitChatwootDelivery(
     );
     return false;
   }
-  a.held.add(key);
+  a.held.set(key, rowId);
   a.waiting.push({ rowId: key, run });
   pump(a);
   return true;
@@ -169,7 +165,6 @@ export async function drainStoredChatwootDeliveries(
   const youngest = new Date(
     now - (params.minAgeMs ?? STORED_DELIVERY_MIN_AGE_MS),
   );
-  const oldest = new Date(now - STORED_DELIVERY_STALE_MS);
   const ceiling = new Date(now - STORED_DELIVERY_MAX_AGE_MS);
   const run = <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) =>
     params.tenantId === undefined
@@ -177,26 +172,20 @@ export async function drainStoredChatwootDeliveries(
       : runScopedOn(base, sysCtx(params.tenantId), fn);
 
   // The body leaves every row that will not be processed from it: one that left PENDING by a road that
-  // does not clear it (an older release's claim during a rolling deploy), one past the window whose
-  // conversation the recovery can rebuild from its mirror, and one past the ceiling. Both statements
-  // read the partial index of the rows that still hold a body.
-  const cleared = await run(
-    (db) =>
-      db.$executeRaw`
-      UPDATE chatwoot_webhook_deliveries d SET payload = NULL
-      WHERE d.payload IS NOT NULL
-        AND (d.status <> 'PENDING'
-          OR d.received_at <= ${ceiling}
-          OR (d.received_at <= ${oldest}
-            AND (d.conversation_id IS NULL OR EXISTS (
-              SELECT 1 FROM conversations c
-              WHERE c.tenant_id = d.tenant_id
-                AND c.chatwoot_instance_id = d.chatwoot_instance_id
-                AND c.chatwoot_conversation_id = d.conversation_id))))`,
+  // does not clear it (an older release's claim during a rolling deploy), and one past the ceiling.
+  // Both statements read the partial index of the rows that still hold a body.
+  const { count: cleared } = await run((db) =>
+    db.chatwootWebhookDelivery.updateMany({
+      where: {
+        payload: { not: null },
+        OR: [{ status: { not: "PENDING" } }, { receivedAt: { lte: ceiling } }],
+      },
+      data: { payload: null },
+    }),
   );
   // Rows this process already holds are skipped in the query, not after it: otherwise a full batch of
   // them would hide every row a dead process left behind.
-  const held = [...admission().held].map((id) => BigInt(id));
+  const held = [...admission().held.values()];
   const rows = (await run((db) =>
     db.chatwootWebhookDelivery.findMany({
       where: {

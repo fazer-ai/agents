@@ -17,12 +17,12 @@ import {
   drainStoredChatwootDeliveries,
   resetChatwootAdmissionForTest,
   STORED_DELIVERY_MAX_AGE_MS,
-  STORED_DELIVERY_STALE_MS,
 } from "@/modules/chatwoot/delivery-queue";
 import {
   registerDeliverySweepHandler,
   STALE_AFTER_MS,
 } from "@/modules/chatwoot/delivery-sweep";
+import { MAX_RECOVERY_AGE_MS } from "@/modules/chatwoot/recover-delivery";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { receiveChatwootWebhook } from "@/modules/chatwoot/webhook";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -49,9 +49,10 @@ afterEach(() => {
   resetShutdownForTest();
 });
 
-// Restated in the queue to keep the sweep's handler free of a load-time cycle; one number all the same.
-test("the drain hands over to the sweep at the sweep's own threshold", () => {
-  expect(STORED_DELIVERY_STALE_MS).toBe(STALE_AFTER_MS);
+// Restated in the queue to keep the sweep's handler free of a load-time cycle; one number all the same,
+// since past it the recovery refuses the row too.
+test("the drain gives a body up at the recovery's own age ceiling", () => {
+  expect(STORED_DELIVERY_MAX_AGE_MS).toBe(MAX_RECOVERY_AGE_MS);
 });
 
 describe("admission", () => {
@@ -292,7 +293,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect((await settled(id)).status).toBe("PROCESSED");
   });
 
-  const pastWindow = (id: bigint, ms = STORED_DELIVERY_STALE_MS + 60_000) =>
+  const pastWindow = (id: bigint, ms = STALE_AFTER_MS + 60_000) =>
     suDb.chatwootWebhookDelivery.update({
       where: { id },
       data: { receivedAt: new Date(Date.now() - ms) },
@@ -308,28 +309,12 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       },
     });
 
-  // Past the sweep's window a row whose conversation is mirrored is the sweep's: DEAD and a recovery
-  // that rebuilds it from Chatwoot's live state, which an hour-old body no longer is.
-  test("a row past the sweep's window with a mirrored conversation is not drained, and its payload is cleared", async () => {
-    const id = await ackOnly("queue-old", 603);
-    await mirror(603);
-    await pastWindow(id);
-    const r = await drainStoredChatwootDeliveries({
-      base: appDb,
-      tenantId,
-      minAgeMs: 60_000,
-    });
-    expect(r.admitted).toBe(0);
-    expect(r.cleared).toBe(1);
-    const row = await rowById(id);
-    expect(row.status).toBe("PENDING");
-    expect(row.payload).toBeNull();
-  });
-
-  // Without the mirror the recovery returns `unrecoverable`, so the stored body is the only way to
-  // answer: the drain keeps it and processes the row, and the sweep leaves it alone meanwhile.
-  test("a row past the sweep's window whose conversation is not mirrored is drained, not swept", async () => {
-    const id = await ackOnly("queue-old-nomirror", 607);
+  // Past the sweep's window a stored row is still the drain's, and the sweep leaves it alone: the
+  // recovery would rebuild it from Chatwoot only for some rows (a mirrored conversation, a stated
+  // route), and the body answers all of them.
+  test("a row past the sweep's window is drained, not swept, also with its conversation mirrored", async () => {
+    const id = await ackOnly("queue-old", 607);
+    await mirror(607);
     await pastWindow(id);
     resetChatwootAdmissionForTest(1);
     const g = held();
@@ -340,7 +325,9 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       appDb,
     );
     // Admitted and waiting behind the busy slot, so the sweep that ran after it found it PENDING.
-    expect((await rowById(id)).status).toBe("PENDING");
+    const waiting = await rowById(id);
+    expect(waiting.status).toBe("PENDING");
+    expect(waiting.payload).not.toBeNull();
     g.release();
     const row = await settled(id);
     expect(row.status).toBe("PROCESSED");
@@ -366,7 +353,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(row.payload).toBeNull();
   });
 
-  test("past the ceiling a stored body is cleared even without a mirror", async () => {
+  test("past the ceiling a stored body is cleared and the row is left to the sweep", async () => {
     const id = await ackOnly("queue-ceiling", 608);
     await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS + 60_000);
     const r = await drainStoredChatwootDeliveries({

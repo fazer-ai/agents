@@ -2140,6 +2140,9 @@ async function runAgentNudgeBody(
       });
   } finally {
     toolLogger.settle();
+    // NOTE: Before the claim is released, so a reactive turn waiting on it counts what a tool already
+    // sent; the closing line of the nudge asks again for a turn that never got here.
+    await closing.recordToolSpeech();
     // NOTE: best-effort, for the reason ../graph/runtime.ts states at its own release: a throw here
     // would leave through a `finally` that runs after the customer post, turning a delivered nudge
     // into a failure the caller retries. The lease is the recovery path.

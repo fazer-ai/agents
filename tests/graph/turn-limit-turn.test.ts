@@ -5,11 +5,13 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { runAgentNudge } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { outboundUrl } from "../utils/outbound";
 
 // The per-conversation turn limit, end to end through the real turn: a conversation whose agent
 // already answered `limit` times in the last hour is handed to a person instead of answered, with a
@@ -77,7 +79,8 @@ function chatwootDouble(
     {},
     {
       get(_t, prop) {
-        if (prop === "then") return undefined;
+        // NOTE: Not a method: a muted transport sends no ack, and a function here would read as true.
+        if (prop === "then" || prop === "muted") return undefined;
         return async (...args: unknown[]) => {
           if (prop === "sendMessage") calls.sent.push(String(args[1]));
           if (prop === "sendPrivateNote") calls.notes.push(String(args[1]));
@@ -342,6 +345,121 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     ]);
     expect(outcomes).toEqual(["posted", "blocked"]);
     expect(second.sent).toEqual([]);
+  });
+
+  // The same for a follow-up whose only send was a tool's ack: the reactive turn queued behind it on
+  // the thread counts that ack, though the nudge records it only after its graph has run.
+  test("a turn waiting on a follow-up sees the follow-up's tool send", async () => {
+    const convId = 8209;
+    const convDbId = await seedConversation(convId, 7209);
+    // A nudge finds its agent through the conversation's inbox; a reply finds it in the event.
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: LIMITED_INBOX },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id: convDbId },
+      data: { inboxId: inbox.id },
+    });
+    await seedDeliveries(convDbId, [minutesAgo(10), minutesAgo(5)]);
+    const tool = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "consulta_lenta",
+        label: "Consulta lenta",
+        method: "GET",
+        urlTemplate: outboundUrl("/v1/slow"),
+        allowedHosts: [new URL(outboundUrl()).hostname],
+        ackEnabled: true,
+        ackMessage: "Só um momento!",
+      },
+    });
+    const selection = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: limitedAgentId,
+        source: "HTTP",
+        toolDefinitionId: tool.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    const slow = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async create({ args, query }) {
+            await Bun.sleep(400);
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    let n = 0;
+    const ackThenSilence = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          n++;
+          if (n === 1)
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "consulta_lenta",
+                  args: { __wait_message: "Só um momento!" },
+                  id: "call_slow",
+                },
+              ],
+            });
+          if (n === 2)
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "skip_reply",
+                  args: { reason: "acknowledged" },
+                  id: "call_skip",
+                },
+              ],
+            });
+          return new AIMessage("");
+        },
+      }),
+    };
+    try {
+      const nudgeCalls = newCalls();
+      const reactive = newCalls();
+      const [, outcome] = await Promise.all([
+        runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: slow,
+          deps: {
+            makeModel: () => ackThenSilence as never,
+            makeClient: chatwootDouble(nudgeCalls),
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        }),
+        Bun.sleep(50).then(() =>
+          turn(convId, reactive, { base: slow, contactInboxId: 7209 }),
+        ),
+      ]);
+      expect(nudgeCalls.sent).toEqual(["Só um momento!"]);
+      expect(outcome).toBe("blocked");
+      expect(reactive.sent).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: selection.id } });
+      await suDb.toolDefinition.delete({ where: { id: tool.id } });
+    }
   });
 
   // A /reset that lands while the conversation is being handed over gives it back to the agent, so

@@ -1008,6 +1008,7 @@
     "approvedHint": "Approved. The agent sends the document in the conversation, or leaves a note when it cannot.",
     "approveFailed": "Could not approve.",
     "confirmReject": "Reject",
+    "contextError": "The customer and the messages could not be loaded.",
     "customer": "Customer",
     "decidedAt": "Decided {{at}}",
     "email": "Email",

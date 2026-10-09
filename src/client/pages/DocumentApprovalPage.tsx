@@ -16,6 +16,7 @@ import {
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { mediaFetch } from "@/client/lib/media";
+import { serverNow } from "@/client/lib/serverClock";
 import { DocumentPreview } from "@/client/pages/resources/documents/DocumentPreview";
 import type { DocumentPreviewState } from "@/client/pages/resources/documents/useDocumentPreview";
 
@@ -116,6 +117,11 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   const { showToast } = useToast();
   const [request, setRequest] = useState<ApprovalRequest | null>(null);
   const [context, setContext] = useState<ApprovalContext | null>(null);
+  // The context is read apart from the request: it waits on Chatwoot, page by page, and the document
+  // and the decision do not.
+  const [contextState, setContextState] = useState<
+    "loading" | "ready" | "failed"
+  >("loading");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [missing, setMissing] = useState(false);
@@ -124,16 +130,25 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   const [note, setNote] = useState("");
   const preview = usePreview(id, request?.status ?? null);
 
+  const loadContext = useCallback(async () => {
+    setContextState("loading");
+    try {
+      const { data } = await api.api.v1["document-approvals"]({
+        id,
+      }).context.get();
+      setContext(data ?? null);
+      setContextState(data ? "ready" : "failed");
+    } catch {
+      setContextState("failed");
+    }
+  }, [id]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
     setMissing(false);
     try {
-      const endpoint = api.api.v1["document-approvals"]({ id });
-      const [req, ctx] = await Promise.all([
-        endpoint.get(),
-        endpoint.context.get(),
-      ]);
+      const req = await api.api.v1["document-approvals"]({ id }).get();
       if (req.error?.status === 404 || req.error?.status === 400) {
         setMissing(true);
         return;
@@ -143,7 +158,6 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         return;
       }
       setRequest(req.data.request);
-      setContext(ctx.data ?? null);
     } catch {
       setError(true);
     } finally {
@@ -152,12 +166,23 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   }, [id]);
 
   useEffect(() => {
-    setRequest(null);
-    setContext(null);
-    setRejecting(false);
-    setNote("");
     void load();
-  }, [load]);
+    void loadContext();
+  }, [load, loadContext]);
+
+  // A pending request is read again when its time runs out, and every ten seconds after that until
+  // the expiry closes it, so the page moves from the decision to "request again" without a reload.
+  const status = request?.status;
+  const expiresAtMs = request ? new Date(request.expiresAt).getTime() : null;
+  useEffect(() => {
+    if (status !== "PENDING" || expiresAtMs === null) return;
+    const left = expiresAtMs - serverNow();
+    const timer = setTimeout(
+      () => void load(),
+      left > 0 ? left + 1000 : 10_000,
+    );
+    return () => clearTimeout(timer);
+  }, [status, expiresAtMs, load]);
 
   const endpoint = api.api.v1["document-approvals"]({ id });
 
@@ -263,7 +288,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
 
   const pending =
     request?.status === "PENDING" &&
-    new Date(request.expiresAt).getTime() > Date.now();
+    new Date(request.expiresAt).getTime() > serverNow();
 
   return (
     <DataBoundary
@@ -322,7 +347,16 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 <h2 className="font-medium text-sm text-text-primary">
                   {t("documentApproval.customer", "Customer")}
                 </h2>
-                {context?.contact ? (
+                {contextState === "loading" ? (
+                  <Skeleton className="h-16 w-full" />
+                ) : contextState === "failed" ? (
+                  <p className="text-sm text-text-muted">
+                    {t(
+                      "documentApproval.contextError",
+                      "The customer and the messages could not be loaded.",
+                    )}
+                  </p>
+                ) : context?.contact ? (
                   <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                     <dt className="text-text-muted">
                       {t("documentApproval.name", "Name")}
@@ -379,6 +413,9 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 <h2 className="font-medium text-sm text-text-primary">
                   {t("documentApproval.recent", "Recent messages")}
                 </h2>
+                {contextState === "loading" && (
+                  <Skeleton className="h-24 w-full" />
+                )}
                 {context?.messagesUnavailable && (
                   <p className="text-sm text-text-muted">
                     {t(

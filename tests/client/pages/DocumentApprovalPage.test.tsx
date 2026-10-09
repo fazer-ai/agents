@@ -26,10 +26,15 @@ URL.createObjectURL = ((blob: Blob) =>
   `blob:${(blob as Blob & { tag?: string }).tag ?? "x"}`) as typeof URL.createObjectURL;
 URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL;
 
+// The server's clock as the responses state it; the browser's is left alone.
+let serverOffsetMs = 0;
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      date: new Date(Date.now() + serverOffsetMs).toUTCString(),
+    },
   });
 }
 
@@ -105,6 +110,7 @@ function mount(path: string) {
 afterEach(() => {
   cleanup();
   posted.length = 0;
+  serverOffsetMs = 0;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -220,4 +226,64 @@ test("a refused action shows the server's own reason", async () => {
   mount("/document-approvals/5");
   fireEvent.click(await screen.findByRole("button", { name: "Request again" }));
   await screen.findByText("O campo validade não aceita esse valor.");
+});
+
+test("a request the server still holds open offers the decision, even when this machine's clock is ahead", async () => {
+  // The server is two hours behind this browser, and the request has one hour left by its clock.
+  serverOffsetMs = -2 * 3_600_000;
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/11")) {
+      return json({
+        request: request("11", {
+          expiresAt: new Date(Date.now() - 3_600_000).toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/11");
+  await screen.findByRole("button", { name: "Approve and send" });
+});
+
+test("a pending request whose time runs out moves to request again without a reload", async () => {
+  let reads = 0;
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/12")) {
+      reads += 1;
+      return json({
+        request:
+          reads === 1
+            ? request("12", {
+                expiresAt: new Date(Date.now() + 100).toISOString(),
+              })
+            : request("12", { status: "EXPIRED" }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/12");
+  await screen.findByRole("button", { name: "Approve and send" });
+  await screen.findByRole(
+    "button",
+    { name: "Request again" },
+    { timeout: 4000 },
+  );
+});
+
+test("a context that never answers does not hold back the document and the decision", async () => {
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return new Promise<Response>(() => {});
+    if (url.includes("/document-approvals/13")) {
+      return json({ request: request("13") });
+    }
+    return json({});
+  };
+  mount("/document-approvals/13");
+  await screen.findByText("Orçamento 13");
+  await screen.findByRole("button", { name: "Approve and send" });
 });

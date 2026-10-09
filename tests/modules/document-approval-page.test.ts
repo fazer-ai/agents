@@ -486,6 +486,26 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    test("asking again in parallel audits once, with the request that was made", async () => {
+      const { requestId } = await newRequest();
+      await expire(requestId);
+      const [a, b] = await Promise.all([
+        requestApprovalAgain({ ctx: ctx(), requestId, base: appDb }),
+        requestApprovalAgain({ ctx: ctx(), requestId, base: appDb }),
+      ]);
+      expect(a.id).toBe(b.id);
+      const audits = await suDb.auditLog.findMany({
+        where: {
+          tenantId,
+          action: "document_approval.request_again",
+          target: `document_approval:${requestId}`,
+        },
+        select: { after: true },
+      });
+      expect(audits).toHaveLength(1);
+      expect(audits[0]?.after).toEqual({ requestId: a.id });
+    });
+
     test("only an expired request can be asked again", async () => {
       const { requestId } = await newRequest();
       await expect(

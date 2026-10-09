@@ -171,6 +171,9 @@ export async function createApprovalRequest(params: {
   chatwootInstanceId?: bigint | null;
   conversationId?: bigint | null;
   now: Date;
+  // Runs inside the creating transaction, only for the call that inserts the request: a write that
+  // has to land with the request or not at all (the audit of a request asked again).
+  onCreate?: (db: ScopedDb, requestId: bigint) => Promise<void>;
 }): Promise<ApprovalRequestDto> {
   const base = params.base ?? basePrisma;
   const { ctx, frozen } = params;
@@ -215,6 +218,7 @@ export async function createApprovalRequest(params: {
       runAt: expiresAt,
       rearm: "new-work",
     });
+    await params.onCreate?.(db, row.id);
     return row;
   }).catch((err: unknown) => {
     if (err instanceof KeyAnswered) throw err;
@@ -654,15 +658,15 @@ export async function requestApprovalAgain(params: {
     chatwootInstanceId: row.chatwootInstanceId,
     conversationId: row.conversationId,
     now,
+    // With the request or not at all, and only by the call that made it.
+    onCreate: (db, newId) =>
+      auditMutation(db, ctx, {
+        action: "document_approval.request_again",
+        target: `document_approval:${row.id}`,
+        before: { status: "EXPIRED" },
+        after: { requestId: String(newId) },
+      }),
   });
-  await runScopedOn(base, ctx, (db) =>
-    auditMutation(db, ctx, {
-      action: "document_approval.request_again",
-      target: `document_approval:${row.id}`,
-      before: { status: "EXPIRED" },
-      after: { requestId: request.id },
-    }),
-  );
   return request;
 }
 

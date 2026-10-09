@@ -344,15 +344,20 @@ export async function announceFailedTurn(params: {
             lastAsk = null;
             return false;
           }
-          // A turn already running on the conversation (an operator's re-engage, a follow-up, a
-          // flush) was started without a new message, so neither ask can see it; opening the
-          // conversation would discard its reply. It may still answer, so nothing is announced.
+          // Read before the last ask: the claim below pins the newest message it names.
           const keys = await turnKeysOf(
             tenantId,
             instanceId,
             conversationId,
             base,
           );
+          lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
+          if (lastAsk === "not-lost") return false;
+          // A turn already running on the conversation (an operator's re-engage, a follow-up, a
+          // flush) was started without a new message, so neither ask can see it; opening the
+          // conversation would discard its reply. It may still answer, so nothing is announced.
+          // Asked AFTER the last ask, so a turn another replica started while it was out is seen
+          // through its durable thread claim.
           const heldElsewhere =
             keys.contactInboxId != null &&
             (await turnOwnsThread(
@@ -364,15 +369,10 @@ export async function announceFailedTurn(params: {
               },
               base,
             ));
+          // The in-process half, with nothing awaited between it and the reservation: a turn that
+          // started during the reads above is seen here, and one starting after defers on the
+          // reservation, held through the claim.
           if (heldElsewhere || turnBusyHere(keys)) {
-            lastAsk = "not-lost";
-            return false;
-          }
-          lastAsk = isTurnLost(await params.assess()) ? "lost" : "not-lost";
-          if (lastAsk === "not-lost") return false;
-          // Asked again with nothing awaited before the reservation: a turn that started during the
-          // last ask is seen here, and one starting after defers on the reservation, held to the toggle.
-          if (turnBusyHere(keys)) {
             lastAsk = "not-lost";
             return false;
           }

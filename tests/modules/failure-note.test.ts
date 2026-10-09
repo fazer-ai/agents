@@ -975,6 +975,45 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
   });
 
+  test("a turn another replica starts while the last ask is out is not cancelled", async () => {
+    const conv = await seedConversation();
+    const contactInboxId = 78_000 + conv;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { contactInboxId },
+    });
+    let asks = 0;
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => {
+        // A follow-up or re-engage on another replica: no new message, only its durable claim.
+        if (asks++ === 1) {
+          await suDb.agentThread.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+              threadId: contactInboxThreadId(
+                tenantId,
+                instanceId,
+                contactInboxId,
+              ),
+              turnHolders: 1,
+              turnHeldUntil: new Date(Date.now() + 60_000),
+            },
+          });
+        }
+        return { path: "job", deadLettered: true };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(outcome).toBe("not-lost");
+    expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
   test("an ownership fence that cannot be read announces nothing", async () => {
     const conv = await seedConversation();
     const read = spyOn(
@@ -1881,6 +1920,52 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     writes = [];
     await announceUnanswered(tenantId, row.id, appDb);
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a given-up row hands over BEFORE its line decides the row", async () => {
+    const conv = await seedConversation();
+    const convRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { id: true },
+    });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-order-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_700 + conv,
+      },
+      select: { id: true },
+    });
+    incoming(conv, 8_700 + conv);
+    // The line is what makes the row decided, so a crash between the two must find no line yet:
+    // the next announcer then hands over again instead of leaving the conversation with the bot.
+    let linesAtToggle = -1;
+    onToggle = async () => {
+      linesAtToggle = (
+        await flowLogRows(suDb, {
+          where: { tenantId, conversationId: convRow.id, stage: "delivery" },
+        })
+      ).filter(
+        (r) =>
+          (r.detail as { outcome?: string } | null)?.outcome === "unanswered",
+      ).length;
+    };
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(linesAtToggle).toBe(0);
+    expect(
+      (
+        await flowLogRows(suDb, {
+          where: { tenantId, conversationId: convRow.id, stage: "delivery" },
+        })
+      ).filter(
+        (r) =>
+          (r.detail as { outcome?: string } | null)?.outcome === "unanswered",
+      ),
+    ).toHaveLength(1);
   });
 
   test("a given-up row that is not the conversation's newest message hands nothing over", async () => {

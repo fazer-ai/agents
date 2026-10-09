@@ -1585,7 +1585,55 @@ export async function announceUnanswered(
             }),
       ]),
     );
-    const line = await writeFlowEvent(
+    // The customer is still waiting and nothing on our side will answer now: the conversation goes
+    // to the team the way any lost turn does, note and hand-over. BEFORE the line, which is what
+    // makes this row decided: a crash between the two then leaves the row undecided and the next
+    // announcer hands over again, where the other order would leave the line standing and the
+    // conversation with the bot for good. A second announcer cannot open it twice (the mirror claim
+    // swaps `pending` once) and its note coalesces. Not from the dead-letter hook, which reads no
+    // account by design and runs only when the account could not be read.
+    if (
+      opts.readConversation !== false &&
+      outcome === "unanswered" &&
+      row.conversationId !== null
+    ) {
+      const conversationId = row.conversationId;
+      await announceFailedTurn({
+        tenantId,
+        instanceId: row.chatwootInstanceId,
+        chatwootConversationId: conversationId,
+        // The conversation is lost only if this was its newest message: a newer one has its own
+        // delivery, live or still being recovered, and opening the conversation would stop it.
+        assess: async () => {
+          // Retired since (a turn answered the same message): nothing is lost any more.
+          const still = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.chatwootWebhookDelivery.findUnique({
+              where: { id: deliveryRowId },
+              select: { status: true },
+            }),
+          );
+          if (still?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD"))
+            return { path: "job", deadLettered: false };
+          return {
+            path: "direct",
+            fence: await readDirectFence({
+              tenantId,
+              instanceId: row.chatwootInstanceId,
+              chatwootConversationId: conversationId,
+              triggerId: row.inboundMessageId,
+              base,
+              deps: opts.makeClient
+                ? { makeClient: opts.makeClient }
+                : undefined,
+            }),
+          };
+        },
+        error: new Error(RECOVERY_GAVE_UP),
+        base,
+        deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,
+      });
+    }
+    await writeFlowEvent(
       {
         tenantId,
         turnId: crypto.randomUUID(),
@@ -1629,52 +1677,6 @@ export async function announceUnanswered(
         },
       },
     );
-    // The customer is still waiting and nothing on our side will answer now: the conversation goes
-    // to the team the way any lost turn does, note and hand-over. Once, like the line:
-    // a write another announcer won is a hand-over it already made. Not from the dead-letter hook,
-    // which reads no account by design and runs only when the account could not be read.
-    if (
-      opts.readConversation !== false &&
-      outcome === "unanswered" &&
-      line.skipped !== true &&
-      row.conversationId !== null
-    ) {
-      const conversationId = row.conversationId;
-      await announceFailedTurn({
-        tenantId,
-        instanceId: row.chatwootInstanceId,
-        chatwootConversationId: conversationId,
-        // The conversation is lost only if this was its newest message: a newer one has its own
-        // delivery, live or still being recovered, and opening the conversation would stop it.
-        assess: async () => {
-          // Retired since (a turn answered the same message): nothing is lost any more.
-          const still = await runScopedOn(base, sysCtx(tenantId), (db) =>
-            db.chatwootWebhookDelivery.findUnique({
-              where: { id: deliveryRowId },
-              select: { status: true },
-            }),
-          );
-          if (still?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD"))
-            return { path: "job", deadLettered: false };
-          return {
-            path: "direct",
-            fence: await readDirectFence({
-              tenantId,
-              instanceId: row.chatwootInstanceId,
-              chatwootConversationId: conversationId,
-              triggerId: row.inboundMessageId,
-              base,
-              deps: opts.makeClient
-                ? { makeClient: opts.makeClient }
-                : undefined,
-            }),
-          };
-        },
-        error: new Error(RECOVERY_GAVE_UP),
-        base,
-        deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,
-      });
-    }
   } catch (err) {
     logger.error(
       { err },

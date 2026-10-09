@@ -75,6 +75,8 @@ function rebuilt(
     redirectOriginDisplayId?: number | null;
     redirectOriginAt?: number | null;
     event?: string;
+    // A conversation the mirror never learned: no pairing to state, and live facts to create with.
+    unmirrored?: boolean;
   } = {},
 ) {
   return buildRecoveryPayload({
@@ -89,10 +91,12 @@ function rebuilt(
       assigneeId: over.assigneeId === undefined ? OTHER_BOT : over.assigneeId,
       assigneeName:
         over.assigneeName === undefined ? "outro-bot" : over.assigneeName,
-      redirectOriginDisplayId:
-        over.redirectOriginDisplayId === undefined
+      redirectOriginDisplayId: over.unmirrored
+        ? undefined
+        : over.redirectOriginDisplayId === undefined
           ? null
           : over.redirectOriginDisplayId,
+      ...(over.unmirrored ? { liveFacts: { labels: ["vip"] } } : {}),
       redirectOriginAt:
         over.redirectOriginAt === undefined ? null : over.redirectOriginAt,
     },
@@ -182,6 +186,17 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
       rebuilt({ redirectOriginDisplayId: null }),
     );
     expect(none?.redirectOriginDisplayId).toBeNull();
+  });
+
+  test("an unmirrored conversation states no pairing, and its facts are for the row it creates", () => {
+    // Only the mirror knows the pairing; a null here would be a clear nobody measured.
+    const e = normalizeChatwootEvent(rebuilt({ unmirrored: true }));
+    expect(e?.redirectOriginDisplayId).toBeUndefined();
+    expect(e?.labels).toEqual(["vip"]);
+    expect(e?.factsOnCreateOnly).toBe(true);
+    expect(
+      normalizeChatwootEvent(rebuilt())?.factsOnCreateOnly,
+    ).toBeUndefined();
   });
 
   test("a voice note already transcribed travels with its transcription", () => {

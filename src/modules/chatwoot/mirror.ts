@@ -491,6 +491,7 @@ export async function mirrorChatwootEvent(
         }
 
         const effectiveLastEventAt = decision.activityAt;
+        const factsUpdate = decision.unversioned && !n.factsOnCreateOnly;
         const appliedStatus = decision.status;
         const nextStatus = appliedStatus ?? existing.status;
         const assigneeKnown = decision.assignee;
@@ -543,21 +544,23 @@ export async function mirrorChatwootEvent(
             ...slaWrites,
             // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
             // event carried one: a payload without them must not wipe the stored snapshot.
-            ...(decision.unversioned && n.customAttributes
+            // A recovery's body states them for the row it CREATES only (`factsOnCreateOnly`): read
+            // before a webhook that created the row since, they never update it.
+            ...(factsUpdate && n.customAttributes
               ? {
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
                 }
               : {}),
-            ...(decision.unversioned && n.kanbanAttributes
+            ...(factsUpdate && n.kanbanAttributes
               ? {
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
               : {}),
-            ...(decision.unversioned && n.conversationType
+            ...(factsUpdate && n.conversationType
               ? { conversationType: n.conversationType }
               : {}),
             // The label list, on the bags' terms: assigned whole, by recency, and only when carried.
-            ...(decision.unversioned && n.labels !== undefined
+            ...(factsUpdate && n.labels !== undefined
               ? { labels: n.labels }
               : {}),
             // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget

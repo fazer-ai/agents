@@ -206,6 +206,9 @@ export interface NormalizedChatwootEvent {
   // The fork's `conversation.group_type`. `undefined` ⇒ the payload said nothing (the mirror keeps
   // what it has).
   conversationType?: "group" | "individual";
+  // Set only by a recovery's rebuilt body: the four facts above are for the row it creates, and
+  // never update an existing one (a webhook may have created it since the recovery's read).
+  factsOnCreateOnly?: true;
   // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
   // (conversation.redirect_origin_display_id, written by the fork's token resolve). A number is the
   // pairing. `null` states there is none (the fork clears it when a re-entry's token names no origin),

@@ -20,7 +20,9 @@ export interface RecoveryConversation {
   // `EventDataPresenter` (webhook and cable), never in the REST show, so the mirror is authoritative
   // here and nowhere else. It must travel because `processChatwootDelivery` arms the REDIRECT_FOLLOWUP
   // ladder from the EVENT, and a body without it arms the ladder with nothing.
-  redirectOriginDisplayId: number | null;
+  // Undefined when no mirror row supplied it: the REST read cannot state it, and a fabricated null
+  // would be a clear.
+  redirectOriginDisplayId: number | null | undefined;
   // The version that stamped that pairing (`chatwootRedirectOriginAt`), or null if nothing ever did.
   // It travels WITH the pairing because on the wire they are one fact and the mirror refuses an older
   // pairing by comparing them: the pairing alone, unversioned, could RESTORE one a re-entry replaced
@@ -145,14 +147,17 @@ export function buildRecoveryPayload(params: {
       id: c.chatwootConversationId,
       ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
       status: c.status,
-      // ALWAYS emitted, nil included, because PRESENCE of this key is the statement the normalizer
-      // reads: the fork always ships it and a Chatwoot without the feature never does, so absence
-      // means "this instance does not speak about pairings" and would leave the ladder unarmed.
-      //
-      // Sending the mirror's own value can only re-affirm what the row already holds. A null lands
-      // as a CLEAR only where the row already knew a pairing (`redirectOriginAnswers` requires
-      // `redirectOriginKnown`), and there the value being cleared is the one this read came from.
-      redirect_origin_display_id: c.redirectOriginDisplayId,
+      // Emitted whenever the mirror supplied it, nil included, because PRESENCE of this key is the
+      // statement the normalizer reads: absence means "says nothing about pairings". Sending the
+      // mirror's own value can only re-affirm what the row holds; a null clears only where the row
+      // knew a pairing, and there the value cleared is the one this read came from. With no row the
+      // key is left out, so a pairing a webhook stores meanwhile is not cleared by a guess.
+      ...(c.redirectOriginDisplayId !== undefined
+        ? { redirect_origin_display_id: c.redirectOriginDisplayId }
+        : {}),
+      ...(c.liveFacts !== undefined
+        ? { fazer_facts_on_create_only: true }
+        : {}),
       // Only when there IS one. A row nothing ever stamped cannot be regressed, and inventing a
       // version for it would order every other field in this body by a number nobody measured.
       ...(c.redirectOriginAt !== null

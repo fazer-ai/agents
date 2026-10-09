@@ -834,7 +834,10 @@ async function runRecovery(params: {
         ...(!mirrorNow && live.updatedAt !== null
           ? { stateVersion: live.updatedAt }
           : {}),
-        redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
+        // Unstated without a row: only the mirror knows the pairing.
+        redirectOriginDisplayId: mirrorNow
+          ? mirrorNow.redirectOriginDisplayId
+          : undefined,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
         // NOTE: a resolve that lands after this read is not ordered away here, by the delivery path's
         // rule: a brand-new incoming message is the one event allowed to move a stored `resolved`

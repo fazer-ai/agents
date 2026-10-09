@@ -192,4 +192,33 @@ describe.skipIf(!dbUp)("mirror: the conversation's labels", () => {
     );
     expect(await stored(4)).toEqual(["atual"]);
   });
+
+  test("a recovery's create-only facts land on the row they create and never update one", async () => {
+    // A recovery reads these before it mirrors; a webhook that created the row since is newer.
+    await mirror({
+      ...convEvent("conversation_updated", 5, {
+        lastActivityAt: T + 10,
+        updatedAt: T + 10,
+        labels: ["lido-pela-recuperacao"],
+      }),
+      fazer_facts_on_create_only: true,
+    });
+    expect(await stored(5)).toEqual(["lido-pela-recuperacao"]);
+    await mirror(
+      convEvent("conversation_updated", 6, {
+        lastActivityAt: T + 10,
+        updatedAt: T + 10,
+        labels: ["do-webhook"],
+      }),
+    );
+    await mirror({
+      ...convEvent("conversation_updated", 6, {
+        lastActivityAt: T + 30,
+        updatedAt: T + 30,
+        labels: ["lido-pela-recuperacao"],
+      }),
+      fazer_facts_on_create_only: true,
+    });
+    expect(await stored(6)).toEqual(["do-webhook"]);
+  });
 });

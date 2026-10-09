@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7325 },
+          chatwootConversationId: { gte: 7310, lte: 7326 },
         },
       });
       await dropContact(77);
@@ -962,6 +962,40 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(row.customAttributes).toEqual({ plano: "ouro" });
       expect(row.labels).toEqual(["vip"]);
       expect(row.conversationType).toBe("group");
+    });
+
+    test("states no redirect pairing it never read, and marks its facts for the row it creates", async () => {
+      // Only the mirror knows the pairing, and a webhook can store one after the re-read; a null
+      // here would clear it. The facts are read before that webhook, so they create and never update.
+      const convId = 7326;
+      const messageId = 7826;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { labels: ["vip"] },
+      });
+      const real = webhookModule.processChatwootDelivery;
+      const path = spyOn(webhookModule, "processChatwootDelivery");
+      path.mockImplementation((p) => real(p));
+      let handed: Parameters<typeof real>[0] | undefined;
+      try {
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("recovered");
+        handed = path.mock.calls[0]?.[0];
+      } finally {
+        path.mockRestore();
+      }
+      expect(handed?.normalized.redirectOriginDisplayId).toBeUndefined();
+      expect(handed?.normalized.factsOnCreateOnly).toBe(true);
     });
 
     test("leaves a mirrored conversation's attributes to the events that stored them", async () => {

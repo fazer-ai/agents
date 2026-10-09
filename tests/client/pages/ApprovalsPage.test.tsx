@@ -584,3 +584,30 @@ test("a history refresh with nothing in common with what is shown starts over wi
   expect(screen.queryByRole("link", { name: /for Rita Gomes/ })).toBeNull();
   await screen.findByRole("button", { name: "Show more" });
 }, 12_000);
+
+test("a next page asked before the queue was read again is dropped, not appended", async () => {
+  role = "AGENT";
+  const SECOND = { ...DOCUMENT, id: "42", contactName: "Bruno Lima" };
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  pending = async (url) => {
+    if (url.includes("after=41")) {
+      await held;
+      return { requests: [SECOND], total: 2, nextAfter: null };
+    }
+    return { requests: [DOCUMENT], total: 2, nextAfter: "41" };
+  };
+  mount(<ApprovalsPage />);
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+  fireEvent.click(screen.getByRole("tab", { name: "History" }));
+  fireEvent.click(screen.getByRole("tab", { name: /Waiting/ }));
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  release();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(
+    screen.queryByRole("link", { name: /Orçamento for Bruno Lima/ }),
+  ).toBeNull();
+});

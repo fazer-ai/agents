@@ -1,5 +1,5 @@
 import { ClipboardCheck, FileText } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import {
@@ -53,7 +53,11 @@ export function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
+  // Bumped by every first-page read: a "Show more" asked before it answers into a list that no
+  // longer exists, so its page is dropped instead of appended after the fresh first page.
+  const generation = useRef(0);
   const load = useCallback(async () => {
+    generation.current += 1;
     setLoading(true);
     setError(false);
     try {
@@ -82,6 +86,7 @@ export function ApprovalsPage() {
 
   const loadMore = async () => {
     if (!nextAfter) return;
+    const asked = generation.current;
     setLoadingMore(true);
     try {
       const { data, error: err } = await api.api.v1[
@@ -89,6 +94,7 @@ export function ApprovalsPage() {
       ].pending.get({
         query: { after: nextAfter },
       });
+      if (asked !== generation.current) return;
       if (err || !data) {
         // The rows and the cursor stay, so the button retries the same page.
         showToast(

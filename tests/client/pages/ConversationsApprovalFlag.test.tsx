@@ -31,6 +31,9 @@ const { ConversationsPage } = await import("@/client/pages/ConversationsPage");
 
 const realFetch = globalThis.fetch;
 let pending: unknown[] = [];
+// Set per test: an answer to hold back, by the order the flag was asked.
+let holdFirstFlagRead: Promise<void> | null = null;
+let flagReads = 0;
 
 const ROW = {
   id: "41",
@@ -67,8 +70,12 @@ beforeAll(() => {
       return json({ agents: [] });
     if (url.pathname.endsWith("/conversations"))
       return json({ instance: "i", conversations: [ROW], nextCursor: null });
-    if (url.pathname.endsWith("/document-approvals"))
-      return json({ instance: "i", requests: pending });
+    if (url.pathname.endsWith("/document-approvals")) {
+      flagReads += 1;
+      const snapshot = pending;
+      if (flagReads === 1 && holdFirstFlagRead) await holdFirstFlagRead;
+      return json({ instance: "i", requests: snapshot });
+    }
     return json({});
   }) as unknown as typeof globalThis.fetch;
 });
@@ -79,6 +86,8 @@ afterEach(() => {
   cleanup();
   handlers = {};
   pending = [];
+  holdFirstFlagRead = null;
+  flagReads = 0;
 });
 
 test("a decision while the list is open drops the flag on the next event", async () => {
@@ -108,4 +117,44 @@ test("a decision while the list is open drops the flag on the next event", async
   await waitFor(() =>
     expect(screen.queryByText("Document awaiting approval")).toBeNull(),
   );
+});
+
+test("an older flag answer arriving last does not put back a cleared flag", async () => {
+  let release: () => void = () => {};
+  holdFirstFlagRead = new Promise<void>((r) => {
+    release = r;
+  });
+  render(
+    withI18n(
+      <MemoryRouter initialEntries={["/conversations"]}>
+        <TooltipPrimitive.Provider>
+          <ToastProvider>
+            <ConversationsPage />
+          </ToastProvider>
+        </TooltipPrimitive.Provider>
+      </MemoryRouter>,
+    ),
+  );
+  await screen.findByText("Document awaiting approval");
+  const event = {
+    conversationId: "41",
+    status: "pending",
+    assigneeId: null,
+    assigneeType: null,
+  };
+  // The first read sees the request still waiting and is held; the second sees it decided.
+  pending = [
+    { id: "9", expiresAt: new Date(Date.now() + 3_600_000).toISOString() },
+  ];
+  await act(async () => handlers.onConversation?.(event));
+  pending = [];
+  await act(async () => handlers.onConversation?.(event));
+  await waitFor(() =>
+    expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+  );
+  await act(async () => {
+    release();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+  expect(screen.queryByText("Document awaiting approval")).toBeNull();
 });

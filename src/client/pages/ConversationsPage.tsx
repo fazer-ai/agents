@@ -322,13 +322,18 @@ export function ConversationsPage() {
 
   // A conversation event can come with an approval decided, opened or expired, and the row's flag is
   // not in the event: it is asked again, for that conversation alone.
+  // Only the latest read per conversation is applied: two events close together ask twice, and the
+  // older answer arriving last would put back a flag the newer one cleared.
+  const flagReads = useRef(new Map<string, number>());
   const refreshAwaitingApproval = useCallback(
     async (conversationId: string) => {
+      const read = (flagReads.current.get(conversationId) ?? 0) + 1;
+      flagReads.current.set(conversationId, read);
       try {
         const { data } = await api.api.v1["document-approvals"].get({
           query: { conversationId, status: "PENDING", limit: "50" },
         });
-        if (!data) return;
+        if (!data || flagReads.current.get(conversationId) !== read) return;
         const awaiting = data.requests.some(
           (r) => new Date(r.expiresAt).getTime() > serverNow(),
         );

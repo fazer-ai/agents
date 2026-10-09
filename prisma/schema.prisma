@@ -948,6 +948,9 @@ model Conversation {
   // (src/modules/turn-limit). The window counts only deliveries after it, so a conversation handed
   // back to the bot starts from zero instead of tripping again on its first reply. NULL = never.
   turnLimitTrippedAt           DateTime? @map("turn_limit_tripped_at")
+  // The mirror's `chatwootOwnershipChangedAt` as the trip read it, before its own transfer. A
+  // hand-back is the mark moving past it: source versions only, never our clock against Chatwoot's.
+  turnLimitTripMark            Float?    @map("turn_limit_trip_mark")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

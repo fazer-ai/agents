@@ -1295,10 +1295,10 @@ async function runTurnBody(
       limit,
       base,
     });
-    if (!verdict.over) return null;
     // NOTE: Already handed over by an earlier turn, and the mirror has not caught up: the person who
-    // holds it gets the message, with no second transfer and no second note.
+    // holds it gets the message, with no second transfer and no second note, whatever the count.
     if (verdict.handoverPending) return "taken-over-unread";
+    if (!verdict.over) return null;
     const blocked = await postBlocked();
     if (blocked) return blocked;
     // NOTE: A failed read lets the transfer go ahead, as the guardrail's does. Before the invoke, so a
@@ -1318,6 +1318,7 @@ async function runTurnBody(
       await markTurnLimitTripped({
         tenantId,
         conversationDbId: convDbId,
+        fromMark: verdict.ownershipMark,
         base,
       });
     // NOTE: Asked again at the note: a /reset during the transfer gave the conversation back to the

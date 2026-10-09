@@ -287,6 +287,10 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       expect(await deliveries(convDbId)).toBe(i);
     }
 
+    await suDb.conversation.update({
+      where: { id: convDbId },
+      data: { chatwootOwnershipChangedAt: 1_700_000_000.5 },
+    });
     const calls = newCalls();
     expect(await turn(convId, calls)).toBe("blocked");
     // NOTE: Nothing reached the customer: the turn over the limit is never answered.
@@ -303,9 +307,11 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     expect(await deliveries(convDbId)).toBe(LIMIT);
     const row = await suDb.conversation.findUnique({
       where: { id: convDbId },
-      select: { turnLimitTrippedAt: true },
+      select: { turnLimitTrippedAt: true, turnLimitTripMark: true },
     });
     expect(row?.turnLimitTrippedAt).not.toBeNull();
+    // The version the transfer handed over from, read before it: a hand-back is the mark moving past it.
+    expect(row?.turnLimitTripMark).toBe(1_700_000_000.5);
 
     const lines = await flowLogRows(suDb, {
       where: { tenantId, stage: "turn_limit", conversationId: convDbId },
@@ -584,51 +590,67 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
   });
 
   // The trip stamp alone restarts nothing: the hand-over's own status webhook can still be on its
-  // way, and a turn queued behind the trip would read a bot-owned mirror and an empty window.
-  test("before the hand-over reaches the mirror, a queued turn stands down quietly", async () => {
-    const convId = 8212;
+  // way, and a turn queued behind the trip would read a bot-owned mirror and an empty window. The
+  // question is asked in source versions: the mark the trip handed over from, and the mark now.
+  async function tripped(
+    convId: number,
+    deliveredMinutesAgo: number[],
+    marks: { from: number; now: number },
+  ) {
     const convDbId = await seedConversation(convId);
-    await seedDeliveries(convDbId, [
-      minutesAgo(20),
-      minutesAgo(15),
-      minutesAgo(10),
-    ]);
-    const trippedAt = minutesAgo(1);
+    await seedDeliveries(convDbId, deliveredMinutesAgo.map(minutesAgo));
     await suDb.conversation.update({
       where: { id: convDbId },
       data: {
-        turnLimitTrippedAt: trippedAt,
-        chatwootOwnershipChangedAt: (trippedAt.getTime() - 60_000) / 1000,
+        turnLimitTrippedAt: minutesAgo(1),
+        turnLimitTripMark: marks.from,
+        chatwootOwnershipChangedAt: marks.now,
       },
     });
+    return convDbId;
+  }
 
+  test("before the hand-over reaches the mirror, a queued turn stands down quietly", async () => {
+    await tripped(8212, [20, 15, 10], {
+      from: 1_700_000_000.5,
+      now: 1_700_000_000.5,
+    });
     const calls = newCalls();
-    expect(await turn(convId, calls)).toBe("taken-over-unread");
+    expect(await turn(8212, calls)).toBe("taken-over-unread");
     expect(calls.sent).toEqual([]);
     expect(calls.status).toEqual([]);
     expect(calls.notes).toEqual([]);
   });
 
-  test("a hand-back the mirror saw after the trip restarts the count", async () => {
-    const convId = 8213;
-    const convDbId = await seedConversation(convId);
-    await seedDeliveries(convDbId, [
-      minutesAgo(20),
-      minutesAgo(15),
-      minutesAgo(10),
-    ]);
-    const trippedAt = minutesAgo(8);
-    await suDb.conversation.update({
-      where: { id: convDbId },
-      data: {
-        turnLimitTrippedAt: trippedAt,
-        chatwootOwnershipChangedAt: (trippedAt.getTime() + 120_000) / 1000,
-      },
-    });
-
+  // Under the limit too: a delivery that ages out while the webhook lags does not hand the
+  // conversation back to the bot.
+  test("a hand-over still in flight holds even when the count fell under the limit", async () => {
+    await tripped(8214, [10], { from: 1_700_000_000.5, now: 1_700_000_000.5 });
     const calls = newCalls();
-    expect(await turn(convId, calls)).toBe("posted");
+    expect(await turn(8214, calls)).toBe("taken-over-unread");
+    expect(calls.sent).toEqual([]);
+  });
+
+  test("a hand-back the mirror saw after the trip restarts the count", async () => {
+    await tripped(8213, [20, 15, 10], {
+      from: 1_700_000_000.5,
+      now: 1_700_000_300.25,
+    });
+    const calls = newCalls();
+    expect(await turn(8213, calls)).toBe("posted");
     expect(calls.sent).toEqual([REPLY]);
+  });
+
+  // A hand-back that landed while the transfer was still assigning, so before the trip was stamped
+  // here, or on a Chatwoot whose clock is behind ours: the version moved, and that is the answer.
+  test("a hand-back whose source time precedes the local trip stamp still counts", async () => {
+    const tripLocalSeconds = Date.now() / 1000 - 60;
+    await tripped(8215, [20, 15, 10], {
+      from: tripLocalSeconds - 600,
+      now: tripLocalSeconds - 300,
+    });
+    const calls = newCalls();
+    expect(await turn(8215, calls)).toBe("posted");
   });
 
   test("a stored 0 is no limit", async () => {

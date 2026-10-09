@@ -55,6 +55,8 @@ export interface TurnLimitVerdict {
   // Tripped inside the window and no change of holder has reached the mirror since: the hand-over is
   // in flight (its webhook lags), so the conversation is a person's and nothing restarts the count.
   handoverPending: boolean;
+  // The mirror's ownership mark as read here, which a trip stores as the version it handed over from.
+  ownershipMark: number | null;
 }
 
 // Over when the turns already delivered in the window reach the limit: the turn about to run would
@@ -82,18 +84,21 @@ export async function turnLimitVerdict(params: {
           where: { id: params.conversationDbId },
           select: {
             turnLimitTrippedAt: true,
+            turnLimitTripMark: true,
             chatwootOwnershipChangedAt: true,
           },
         });
         const windowStart = new Date(now.getTime() - TURN_LIMIT_WINDOW_MS);
         const tripped = conv?.turnLimitTrippedAt ?? null;
         const trippedInWindow = tripped !== null && tripped > windowStart;
-        // The count restarts on a hand-back, not on the trip: the holder has to have moved at
-        // the source after it. A row with no mark (an older Chatwoot) trusts the trip stamp.
-        const moved = conv?.chatwootOwnershipChangedAt ?? null;
+        // The count restarts on a hand-back, not on the trip: the holder has to have moved at the
+        // source past the version the trip handed over from. Both marks absent (an older Chatwoot)
+        // trusts the trip stamp.
+        const mark = conv?.chatwootOwnershipChangedAt ?? null;
+        const from = conv?.turnLimitTripMark ?? null;
         const handedBack =
           trippedInWindow &&
-          (moved === null || moved * 1000 > tripped.getTime());
+          (mark === null ? from === null : from === null || mark > from);
         const since = handedBack ? tripped : windowStart;
         const delivered = await db.agentTurnDelivery.count({
           where: {
@@ -101,7 +106,7 @@ export async function turnLimitVerdict(params: {
             deliveredAt: { gt: since },
           },
         });
-        return { delivered, pending: trippedInWindow && !handedBack };
+        return { delivered, pending: trippedInWindow && !handedBack, mark };
       },
     );
     return {
@@ -109,6 +114,7 @@ export async function turnLimitVerdict(params: {
       count: count.delivered,
       limit: params.limit,
       handoverPending: count.pending,
+      ownershipMark: count.mark,
     };
   } catch (err) {
     logger.warn(
@@ -120,6 +126,7 @@ export async function turnLimitVerdict(params: {
       count: 0,
       limit: params.limit,
       handoverPending: false,
+      ownershipMark: null,
     };
   }
 }
@@ -127,6 +134,8 @@ export async function turnLimitVerdict(params: {
 export async function markTurnLimitTripped(params: {
   tenantId: bigint;
   conversationDbId: bigint;
+  // The ownership mark read before the transfer (TurnLimitVerdict.ownershipMark).
+  fromMark: number | null;
   base?: PrismaClient;
   now?: Date;
 }): Promise<void> {
@@ -137,7 +146,10 @@ export async function markTurnLimitTripped(params: {
       (db) =>
         db.conversation.update({
           where: { id: params.conversationDbId },
-          data: { turnLimitTrippedAt: params.now ?? new Date() },
+          data: {
+            turnLimitTrippedAt: params.now ?? new Date(),
+            turnLimitTripMark: params.fromMark,
+          },
         }),
     );
   } catch (err) {

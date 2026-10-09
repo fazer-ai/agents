@@ -21,7 +21,8 @@ ALTER TABLE "agent_turn_deliveries" ADD CONSTRAINT "agent_turn_deliveries_tenant
 
 ALTER TABLE "agent_turn_deliveries" ADD CONSTRAINT "agent_turn_deliveries_conversation_id_fkey" FOREIGN KEY ("conversation_id") REFERENCES "conversations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
-ALTER TABLE "conversations" ADD COLUMN "turn_limit_tripped_at" TIMESTAMP(3);
+ALTER TABLE "conversations" ADD COLUMN "turn_limit_tripped_at" TIMESTAMP(3),
+ADD COLUMN "turn_limit_trip_mark" DOUBLE PRECISION;
 
 -- RLS: the policy pair every tenant-scoped table carries.
 ALTER TABLE "agent_turn_deliveries" ENABLE ROW LEVEL SECURITY;

@@ -662,6 +662,8 @@
       "badgeEventUnnamed": "Evento externo",
       "badgeN": "Follow-up {{step}}/{{total}}",
       "badgeRedirect": "Follow-up de redirecionamento",
+      "badgeSnoozed": "Lembrete da conversa adiada",
+      "badgeSnoozedN": "Lembrete {{step}} da conversa adiada",
       "cadenceFirst": "após {{delay}} de silêncio",
       "cadenceNext": "{{delay}} após a anterior",
       "closedToday": "Fechado hoje ({{label}})",
@@ -747,6 +749,8 @@
       "redirectSent": "Follow-up de redirecionamento enviado",
       "reminderSent": "Lembrete enviado",
       "result": "Resultado",
+      "snoozedReminderSent": "Lembrete da conversa adiada enviado",
+      "snoozedReminderSentN": "Lembrete {{step}} da conversa adiada enviado",
       "tool": "Usou uma ferramenta"
     },
     "usage": {

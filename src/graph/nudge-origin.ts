@@ -6,6 +6,9 @@
 // value without importing the nudge runtime.
 export const NUDGE_ORIGINS = [
   "followup",
+  // The reminder over a conversation a person snoozed: its own ladder, so its own badge, whose
+  // step is not counted against the bot ladder's steps.
+  "snoozed",
   "reminder",
   "redirect",
   "event",
@@ -13,10 +16,15 @@ export const NUDGE_ORIGINS = [
 ] as const;
 export type NudgeOrigin = (typeof NUDGE_ORIGINS)[number];
 
-export function nudgeOrigin(nudge: { source: string }): NudgeOrigin {
+export function nudgeOrigin(nudge: {
+  source: string;
+  kind?: string;
+}): NudgeOrigin {
   if (nudge.source === "appointment_reminder") return "reminder";
   if (nudge.source === "channel-redirect") return "redirect";
-  if (nudge.source === "followup") return "followup";
+  if (nudge.source === "followup") {
+    return nudge.kind === "snoozed" ? "snoozed" : "followup";
+  }
   // The turn that sends a document a person approved: the team spoke, not an external system.
   if (nudge.source === "document_approval") return "approval";
   // NOTE: every other source is an inbound integration's catalog type (ASAAS, GENERIC, …): an

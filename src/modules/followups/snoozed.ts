@@ -284,7 +284,9 @@ export function snoozedNudge(params: {
   return {
     source: "followup",
     kind: "snoozed",
-    summary: `A person on the team asked the customer for something about ${params.idleMin} minutes ago and is waiting for the answer; the customer has not replied. Write ONE short reminder on that person's behalf, about what they asked (their message is the text), without asking for anything new and without promising anything the conversation does not already say.`,
+    // The directive itself is the framing's (renderNudge); the summary carries only the facts.
+    framing: "snoozed_reminder",
+    summary: `a person asked the customer ${params.idleMin} minutes ago; no reply yet`,
     // The person's message in the fenced text block, which keeps it whole: the summary is capped.
     text: params.anchorText.trim() || undefined,
     instructions: params.instructions || undefined,

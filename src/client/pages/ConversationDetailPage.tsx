@@ -463,6 +463,16 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
             step: entry.step,
           })
         : t("conversation.trail.followUpSent", "Follow-up sent");
+  } else if (entry.kind === "snoozed") {
+    Icon = Megaphone;
+    label =
+      entry.step != null
+        ? t(
+            "conversation.trail.snoozedReminderSentN",
+            "Snoozed reminder {{step}} sent",
+            { step: entry.step },
+          )
+        : t("conversation.trail.snoozedReminderSent", "Snoozed reminder sent");
   } else if (entry.kind === "redirect") {
     Icon = Megaphone;
     label = t("conversation.trail.redirectSent", "Redirect follow-up sent");

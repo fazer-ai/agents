@@ -174,7 +174,9 @@ export interface AgentNudge {
   // message"), which fights an event whose text has to reach the customer as written.
   // `operator_event` is an event the operator's own system sent: the default is to pass its text on
   // faithfully, and the operator's guidance says what else to do.
-  framing?: "operator_event";
+  // `snoozed_reminder` is the snoozed ladder's step: a person is waiting on the customer, and a
+  // reminder that already went unanswered is the reason this one is due, not a duplicate of it.
+  framing?: "operator_event" | "snoozed_reminder";
   instructions?: string;
   // For a follow-up sequence: the 1-based step that fired. Surfaced on the conversation timeline
   // ("Follow-up N enviado") and in the flow log. Undefined for non-sequenced nudges (inbound events).
@@ -446,13 +448,16 @@ export function renderNudge(
       ? "call the `skip_reply` tool (reason `acknowledged`, unless this conversation needs a person) and produce NO text (end your turn)"
       : `reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else`;
   const operatorEvent = n.framing === "operator_event";
+  const snoozedReminder = n.framing === "snoozed_reminder";
   // An operator's event is framed as a RELAY, not a follow-up: a model told to be "brief,
   // warm" summarizes, and a summarized report drops the numbers it exists to carry.
   const directive = !canMessageCustomer
     ? `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise ${silenceInstruction}.`
-    : operatorEvent
-      ? `A system the operator connected sent an event for this conversation. By default, pass its text on to the customer faithfully: keep every number, date, name and line as written (without the "| " quote marks), in the conversation's language, adding nothing the text does not say. Follow the operator guidance below when there is one. If the event calls for no message at all, ${silenceInstruction}.`
-      : `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`;
+    : snoozedReminder
+      ? `A person on the team asked the customer for something (their message is the text below) and is waiting for the answer; the customer has not replied. Send the customer one short reminder on that person's behalf, in the conversation's language: about what they asked, asking for nothing new, and promising nothing the conversation does not already say. This is reminder number ${n.step ?? 1}. An earlier reminder that went unanswered is the reason this one is due, never a reason to stay silent. Stay silent ONLY if the conversation shows the request was already fulfilled; in that case ${silenceInstruction}.`
+      : operatorEvent
+        ? `A system the operator connected sent an event for this conversation. By default, pass its text on to the customer faithfully: keep every number, date, name and line as written (without the "| " quote marks), in the conversation's language, adding nothing the text does not say. Follow the operator guidance below when there is one. If the event calls for no message at all, ${silenceInstruction}.`
+        : `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`;
   const text = n.text ? sanitizeFreeBlock(n.text, GENERIC_TEXT_MAX_CHARS) : "";
   const parts = [
     directive,

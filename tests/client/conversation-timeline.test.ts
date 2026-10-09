@@ -214,6 +214,26 @@ describe("what the badge says", () => {
     expect(b({ kind: "redirect", step: 1 })).toBe("Redirect follow-up");
   });
 
+  test("a snoozed reminder is numbered on its own, never out of the bot ladder's total", () => {
+    expect(b({ kind: "snoozed", step: 2, total: 1 })).toBe(
+      "Snoozed reminder 2",
+    );
+    expect(b({ kind: "snoozed" })).toBe("Snoozed reminder");
+  });
+
+  test("a snoozed reminder badges the message it sent", () => {
+    const sent = msg(21, T0 + 30_000);
+    const tl = buildTimeline(
+      [sent],
+      [entry({ id: "s1", kind: "snoozed", step: 2, messageId: 21 })],
+      1,
+    );
+    expect([...tl.followUpBadges.values()]).toEqual([
+      { kind: "snoozed", step: 2, total: 1, integrationName: null },
+    ]);
+    expect(markers(tl)).toEqual([]);
+  });
+
   test("an inactivity follow-up keeps N/M", () => {
     expect(b({ step: 2 })).toBe("Follow-up 2/3");
     expect(b({})).toBe("Follow-up");

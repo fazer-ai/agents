@@ -2,7 +2,7 @@
 
 The ordinary follow-up (`followUp`) chases a customer who went quiet on the BOT: it only acts on a conversation the bot holds (`pending`, no person assigned). Nothing chased the other half: a person on the team asks the customer for something (an order number, a document), snoozes the conversation in Chatwoot "until next reply", and the customer never answers. Chatwoot only unsnoozes on an incoming message, so the conversation sits snoozed forever and nobody reminds the customer or closes it. `snoozedFollowUp` (issue #1184) is that ladder: a reminder on the person's behalf, then another, then a close.
 
-Off by default, configured per agent through MCP `agent_settings_set` or REST. There is no console section yet.
+Off by default, configured per agent through MCP `agent_settings_set` or REST. The console section is #1198.
 
 ## Configuration (`settings.snoozedFollowUp`)
 
@@ -52,6 +52,8 @@ The nudge was built around "the bot owns the conversation". Under `holder: "snoo
 - **no tools are bound.** The reminder is one message on a person's behalf; every tool would act over that person (transfer, close, labels, a case in another inbox). Silence stays possible through the follow-up's own token.
 - a repairable refusal (the agent's credential not resolving, the spend ceiling) is retried up to the nudge's limit, and that budget belongs to one message of the person (`nudgeRetriesAnchorId` in the payload): a new message starts it over.
 - every `stillWanted` ask, strict or not, reads the messages after the newest one the handler saw: a person or the customer writing while the model ran stops the reminder and the post-actions. An unreadable answer is a no.
+- the turn has its own directive (`framing: "snoozed_reminder"`): a reminder that is due, numbered, whose earlier reminder going unanswered is the reason for it and never a reason to stay silent. The generic follow-up directive lets the model skip a message that looks duplicated, and against its own reminder from the previous step it did, in 4 of 5 live conversations; silence stays only for a request the conversation shows was already fulfilled.
+- the console badges it apart (`origin: "snoozed"` on the flow line): "Snoozed reminder N", numbered on its own ladder, never out of the bot ladder's step total.
 - the person's message (up to 1,500 characters) goes in the nudge's fenced `text` block, not in the capped summary: the agent's thread may not hold it (a test-mode agent ingests only its own turns).
 - a reminder the WhatsApp service window kept from the customer (`noted-window`) ends the ladder on that message of the person, as in `followUp`: the whole cadence is recorded as spent on that anchor, so no later closing step resolves a conversation nobody was reminded on, and the note (itself an event the sweep re-arms on) is not written again. A new message from the person starts a new ladder.
 - a read that fails, or answers something the parser cannot use (a conversation body it cannot read, a person's snooze without its `snoozed_until` key, a message page that is not a list), is a failed read and not an answer: the step is tried again (`reschedule`), never dropped and never taken as "nobody spoke".
@@ -61,6 +63,6 @@ The nudge was built around "the bot owns the conversation". Under `holder: "snoo
 
 ## Not covered
 
-- No console UI for the block.
+- No console UI to configure the block yet (#1198, MCP and REST only); the reminders themselves show in the conversation's timeline.
 - The anchor search reads 3 pages of messages; a person's message older than that is not found and the conversation is not chased.
 - A snooze by a person on a conversation whose inbox has no agent is not chased: the ladder needs an agent's model and settings.

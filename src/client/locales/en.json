@@ -644,6 +644,8 @@
       "badgeEventUnnamed": "External event",
       "badgeN": "Follow-up {{step}}/{{total}}",
       "badgeRedirect": "Redirect follow-up",
+      "badgeSnoozed": "Snoozed reminder",
+      "badgeSnoozedN": "Snoozed reminder {{step}}",
       "cadenceFirst": "after {{delay}} of silence",
       "cadenceNext": "{{delay}} after the previous",
       "closedToday": "Closed today ({{label}})",
@@ -729,6 +731,8 @@
       "redirectSent": "Redirect follow-up sent",
       "reminderSent": "Reminder sent",
       "result": "Result",
+      "snoozedReminderSent": "Snoozed reminder sent",
+      "snoozedReminderSentN": "Snoozed reminder {{step}} sent",
       "tool": "Used a tool"
     },
     "usage": {

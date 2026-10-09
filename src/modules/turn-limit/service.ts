@@ -52,6 +52,9 @@ export interface TurnLimitVerdict {
   over: boolean;
   count: number;
   limit: number;
+  // Tripped inside the window and no change of holder has reached the mirror since: the hand-over is
+  // in flight (its webhook lags), so the conversation is a person's and nothing restarts the count.
+  handoverPending: boolean;
 }
 
 // Over when the turns already delivered in the window reach the limit: the turn about to run would
@@ -77,31 +80,47 @@ export async function turnLimitVerdict(params: {
       async (db) => {
         const conv = await db.conversation.findUnique({
           where: { id: params.conversationDbId },
-          select: { turnLimitTrippedAt: true },
+          select: {
+            turnLimitTrippedAt: true,
+            chatwootOwnershipChangedAt: true,
+          },
         });
         const windowStart = new Date(now.getTime() - TURN_LIMIT_WINDOW_MS);
         const tripped = conv?.turnLimitTrippedAt ?? null;
-        const since =
-          tripped !== null && tripped > windowStart ? tripped : windowStart;
-        return db.agentTurnDelivery.count({
+        const trippedInWindow = tripped !== null && tripped > windowStart;
+        // The count restarts on a hand-back, not on the trip: the holder has to have moved at
+        // the source after it. A row with no mark (an older Chatwoot) trusts the trip stamp.
+        const moved = conv?.chatwootOwnershipChangedAt ?? null;
+        const handedBack =
+          trippedInWindow &&
+          (moved === null || moved * 1000 > tripped.getTime());
+        const since = handedBack ? tripped : windowStart;
+        const delivered = await db.agentTurnDelivery.count({
           where: {
             conversationId: params.conversationDbId,
             deliveredAt: { gt: since },
           },
         });
+        return { delivered, pending: trippedInWindow && !handedBack };
       },
     );
     return {
-      over: turnLimitReached(count, params.limit),
-      count,
+      over: turnLimitReached(count.delivered, params.limit),
+      count: count.delivered,
       limit: params.limit,
+      handoverPending: count.pending,
     };
   } catch (err) {
     logger.warn(
       { err, conversationDbId: String(params.conversationDbId) },
       "turn limit: could not count the window, the turn goes ahead",
     );
-    return { over: false, count: 0, limit: params.limit };
+    return {
+      over: false,
+      count: 0,
+      limit: params.limit,
+      handoverPending: false,
+    };
   }
 }
 

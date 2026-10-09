@@ -1779,6 +1779,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // A follow-up whose only words to the customer were a slow tool's "just a moment" still reached
   // them, so it is one counted turn, once, even though the model then chose silence.
   async function followUpWithAck(convId: number, then: "silence" | "reply") {
+    let replyAt = 0;
     const agent = await suDb.agent.findFirstOrThrow({
       where: { tenantId },
       select: { id: true },
@@ -1854,12 +1855,28 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         base: appDb,
         deps: {
           makeModel: () => model as never,
-          makeClient: s.makeClient,
+          // The reply is held a moment, so the activity stamp can tell it from the ack's.
+          makeClient: async () => {
+            const c = await s.makeClient();
+            const send = c.sendMessage.bind(c);
+            c.sendMessage = (async (
+              conv: number,
+              text: string,
+              ...rest: never[]
+            ) => {
+              if (text !== "Só um momento!") {
+                await Bun.sleep(30);
+                replyAt = Date.now();
+              }
+              return send(conv, text, ...rest);
+            }) as typeof c.sendMessage;
+            return c;
+          },
           checkpointer: new MemorySaver(),
           persistUsage: async () => {},
         },
       });
-      return { messages: s.messages, speech: await speechOf(convId) };
+      return { messages: s.messages, speech: await speechOf(convId), replyAt };
     } finally {
       globalThis.fetch = realFetch;
       await suDb.agentToolSelection.delete({ where: { id: selection.id } });
@@ -1880,6 +1897,10 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       [9696, "Achei aqui!"],
     ]);
     expect(r.speech.proactiveTurns).toBe(1);
+    // NOTE: Counted once, but the activity stamp is the reply's, the last thing the customer got.
+    expect(r.speech.lastProactiveAt?.getTime()).toBeGreaterThanOrEqual(
+      r.replyAt,
+    );
   });
 
   test("a follow-up silent with needs_human goes to the pinned team, like handoff_to_human (#1027)", async () => {

@@ -583,6 +583,54 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     expect(calls.sent).toEqual([REPLY]);
   });
 
+  // The trip stamp alone restarts nothing: the hand-over's own status webhook can still be on its
+  // way, and a turn queued behind the trip would read a bot-owned mirror and an empty window.
+  test("before the hand-over reaches the mirror, a queued turn stands down quietly", async () => {
+    const convId = 8212;
+    const convDbId = await seedConversation(convId);
+    await seedDeliveries(convDbId, [
+      minutesAgo(20),
+      minutesAgo(15),
+      minutesAgo(10),
+    ]);
+    const trippedAt = minutesAgo(1);
+    await suDb.conversation.update({
+      where: { id: convDbId },
+      data: {
+        turnLimitTrippedAt: trippedAt,
+        chatwootOwnershipChangedAt: (trippedAt.getTime() - 60_000) / 1000,
+      },
+    });
+
+    const calls = newCalls();
+    expect(await turn(convId, calls)).toBe("taken-over-unread");
+    expect(calls.sent).toEqual([]);
+    expect(calls.status).toEqual([]);
+    expect(calls.notes).toEqual([]);
+  });
+
+  test("a hand-back the mirror saw after the trip restarts the count", async () => {
+    const convId = 8213;
+    const convDbId = await seedConversation(convId);
+    await seedDeliveries(convDbId, [
+      minutesAgo(20),
+      minutesAgo(15),
+      minutesAgo(10),
+    ]);
+    const trippedAt = minutesAgo(8);
+    await suDb.conversation.update({
+      where: { id: convDbId },
+      data: {
+        turnLimitTrippedAt: trippedAt,
+        chatwootOwnershipChangedAt: (trippedAt.getTime() + 120_000) / 1000,
+      },
+    });
+
+    const calls = newCalls();
+    expect(await turn(convId, calls)).toBe("posted");
+    expect(calls.sent).toEqual([REPLY]);
+  });
+
   test("a stored 0 is no limit", async () => {
     const convId = 8205;
     const convDbId = await seedConversation(convId);

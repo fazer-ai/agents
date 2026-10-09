@@ -666,15 +666,12 @@ async function runAgentNudgeBody(
   // reached the customer (message or template, never a note), so a refused or failed send marks
   // nothing. Best-effort: a throw would fail the nudge into a retry that sends it again, and a lost
   // stamp only costs the answer "nobody spoke".
-  let proactiveRecorded = false;
+  let deliveryCounted = false;
   let toolSpoke = false;
   closing.recordToolSpeech = async () => {
-    if (toolSpoke && !proactiveRecorded) await recordProactiveSpeech();
+    if (toolSpoke && !deliveryCounted) await recordProactiveSpeech();
   };
   const recordProactiveSpeech = async (): Promise<void> => {
-    // NOTE: One turn is one delivery, whether the reply, a template or a tool's send reached the customer.
-    if (proactiveRecorded) return;
-    proactiveRecorded = true;
     try {
       const row = await runScopedOn(base, sysCtx(tenantId), async (db) => {
         // By the conversation's natural key rather than the id loaded with the config, which is
@@ -690,14 +687,18 @@ async function runAgentNudgeBody(
         });
         return db.conversation.findFirst({ where, select: { id: true } });
       });
-      // The proactive message counts toward the per-conversation turn limit like a reply does.
-      if (row)
+      // The proactive message counts toward the per-conversation turn limit like a reply does, once
+      // per turn: a tool's send and the reply after it are one turn, while the stamp above moves on
+      // every send.
+      if (row && !deliveryCounted) {
+        deliveryCounted = true;
         await recordTurnDelivery({
           tenantId,
           conversationDbId: row.id,
           proactive: true,
           base,
         });
+      }
     } catch (err) {
       logger.warn(
         { err, conversationId: String(conversationId) },

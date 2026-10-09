@@ -1296,6 +1296,9 @@ async function runTurnBody(
       base,
     });
     if (!verdict.over) return null;
+    // NOTE: Already handed over by an earlier turn, and the mirror has not caught up: the person who
+    // holds it gets the message, with no second transfer and no second note.
+    if (verdict.handoverPending) return "taken-over-unread";
     const blocked = await postBlocked();
     if (blocked) return blocked;
     // NOTE: A failed read lets the transfer go ahead, as the guardrail's does. Before the invoke, so a

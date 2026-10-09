@@ -367,6 +367,29 @@ export function DecisionsFields({
       return next;
     });
   const unfold = (key: string) => setOpen((prev) => new Set(prev).add(key));
+  // A card a problem (or a warning) opened STAYS open once the problem is gone: the operator is
+  // typing in it, and folding it on the keystroke that fixes the field takes the input, and the
+  // focus, away mid-word. Latched after the render that showed it; folding is the operator's click.
+  const forced = [
+    ...decisions.questions
+      .filter((_, qi) => issuesUnder(issues, `questions.${qi}`).length > 0)
+      .map((q) => q.key),
+    ...decisions.rules
+      .filter(
+        (r, ri) =>
+          actionGap(r) !== null ||
+          issuesUnder(issues, `rules.${ri}`).length > 0,
+      )
+      .map((r) => r.key),
+  ];
+  const forcedKey = forced.join(" ");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `forced` is rebuilt every render; its keys are the dependency
+  useEffect(() => {
+    if (forced.length === 0) return;
+    setOpen((prev) =>
+      forced.every((k) => prev.has(k)) ? prev : new Set([...prev, ...forced]),
+    );
+  }, [forcedKey]);
 
   const patch = (p: Partial<DecisionsForm>) =>
     setDecisions((prev) => ({ ...prev, ...p }));
@@ -1135,9 +1158,7 @@ export function DecisionsFields({
         </div>
         {decisions.questions.map((q, qi) => {
           const samples = activity?.answers.get(q.name) ?? [];
-          const qOpen =
-            open.has(q.key) ||
-            issuesUnder(issues, `questions.${qi}`).length > 0;
+          const qOpen = open.has(q.key) || forced.includes(q.key);
           return (
             <div
               key={q.key}
@@ -1386,10 +1407,7 @@ export function DecisionsFields({
         {decisions.rules.map((rule, ri) => {
           const broken = ruleIsBroken(issues, ri);
           const gap = gapText(rule);
-          const rOpen =
-            open.has(rule.key) ||
-            gap !== null ||
-            issuesUnder(issues, `rules.${ri}`).length > 0;
+          const rOpen = open.has(rule.key) || forced.includes(rule.key);
           const counted =
             rule.origin === null ? undefined : activity?.rules.get(rule.origin);
           return (

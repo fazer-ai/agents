@@ -332,6 +332,37 @@ describe("the decisions engine in the agent editor", () => {
     ).toBe("conversation");
   });
 
+  // The keystroke that fixes a field must not fold the card it is typed in.
+  test("a card a problem opened stays open while its field is being filled", () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    const action = screen.getAllByRole("combobox", { name: "Action" });
+    fireEvent.change(action[action.length - 1] as HTMLElement, {
+      target: { value: "private_note" },
+    });
+    const note = () => screen.queryAllByRole("textbox", { name: "Note" });
+    expect(note().length).toBe(1);
+    fireEvent.change(note()[0] as HTMLElement, { target: { value: "v" } });
+    // The warning is gone and the textarea is still there to take the next character.
+    expect(screen.queryAllByText(/Without a note/).length).toBe(0);
+    expect(note().length).toBe(1);
+    expect((note()[0] as HTMLTextAreaElement).value).toBe("v");
+  });
+
+  test("a question card stays open while its name is being typed", () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    fireEvent.click(screen.getByRole("button", { name: "Add question" }));
+    const names = () => screen.queryAllByRole("textbox", { name: "Name" });
+    const before = names().length;
+    expect(before).toBeGreaterThan(0);
+    fireEvent.change(names()[before - 1] as HTMLElement, {
+      target: { value: "nova" },
+    });
+    expect(names().length).toBe(before);
+  });
+
   test("a refusal the server names a field for is shown at that field", () => {
     stubApi();
     renderSection(

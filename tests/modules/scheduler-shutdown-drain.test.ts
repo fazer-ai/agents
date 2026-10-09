@@ -5,12 +5,19 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
+import {
+  beginWork,
+  drainInFlight,
+  inFlightWork,
+  resetShutdownForTest,
+} from "@/lib/shutdown";
 import { runDebounceTick } from "@/modules/debounce/worker";
+import * as schedulerService from "@/modules/scheduler/service";
 import {
   type ClaimedJob,
   claimDueDebounceJobs,
@@ -273,6 +280,67 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
     ]);
     await runClaimed(job, appDb);
     expect(ran).toBe(false);
+  });
+
+  test("a row a turn's barrier claims after the bound is handed back at once", async () => {
+    const key = `ingest:shutdown-late-${process.pid}`;
+    const id = await pending("INGEST_MESSAGE", `${key}:1`);
+    // A run that takes a while to end once cut keeps the drain in its settle wait, past the bound.
+    const end = beginWork("DEBOUNCE", () => {
+      setTimeout(() => end(), 400);
+    });
+    const drained = drainInFlight({ boundMs: 100, settleMs: 1_000 });
+    await sleep(200);
+    const jobs = await claimPendingByKeyPrefix(
+      "INGEST_MESSAGE",
+      key,
+      10,
+      appDb,
+      tenantId,
+    );
+    expect(jobs.map((j) => j.id)).toEqual([id]);
+    expect((await drained).unsettled).toBe(0);
+    const row = await rowOf(id);
+    expect([row?.status, row?.attempts]).toEqual(["PENDING", 0]);
+  });
+
+  test("rows a tick claimed and then abandoned on a failed claim stop holding the drain", async () => {
+    const id = await pending("HEARTBEAT", "drain-abandoned");
+    const spy = spyOn(
+      schedulerService,
+      "claimDueTrafficJobs",
+    ).mockRejectedValue(new Error("pool exhausted"));
+    try {
+      await expect(
+        runSchedulerTick(appDb, {
+          staleMs: SCHEDULER_STALE_MS,
+          batchSize: 10,
+          tenantId,
+        }),
+      ).rejects.toThrow("pool exhausted");
+    } finally {
+      spy.mockRestore();
+    }
+    // Left CLAIMED for the reaper, as before, and the drain no longer waits for it.
+    expect((await rowOf(id))?.status).toBe("CLAIMED");
+    expect(inFlightWork().total).toBe(0);
+  });
+
+  test("a newer claim of the same row supersedes the older hold", async () => {
+    install("HEARTBEAT", async () => ({ outcome: "done" }));
+    const first = await claimed("HEARTBEAT", "drain-superseded");
+    // The reaper's move, by hand: the row is claimable again under a new token.
+    await suDb.schedulerJob.update({
+      where: { id: first.id },
+      data: { status: "PENDING", claimedAt: null },
+    });
+    const again = (await claimDueJobs(10, appDb, new Date(), tenantId)).find(
+      (j) => j.id === first.id,
+    );
+    expect(again?.claimSeq).toBe(first.claimSeq + 1);
+    expect(inFlightWork().total).toBe(1);
+    await runClaimed(again as ClaimedJob, appDb);
+    expect(inFlightWork().total).toBe(0);
   });
 
   test("from the drain on, no lane claims a due row, and the rows are untouched", async () => {

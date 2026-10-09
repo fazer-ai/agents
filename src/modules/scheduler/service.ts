@@ -1044,16 +1044,18 @@ async function selectClaim(
 // Claimed rows this process has not started running yet: queued for a provider permit, or waiting
 // their turn in a sequential drain. Each is registered with the shutdown drain from the claim on, and
 // one cut while still waiting is handed back unrun (attempts untouched, it never ran) instead of
-// staying CLAIMED until the reaper. `runClaimed` adopts the row when it starts it.
-const unstarted = new Map<string, () => void>();
+// staying CLAIMED until the reaper. `runClaimed` adopts the row when it starts it. Keyed by row: a
+// newer claim of the same row supersedes a hold its caller abandoned.
+const unstarted = new Map<bigint, { claimSeq: number; end: () => void }>();
 const handedBack = new Set<string>();
 const claimKey = (job: ClaimedJob) => `${job.id}:${job.claimSeq}`;
 
 function holdUnstarted(job: ClaimedJob, base: PrismaClient): void {
-  const key = claimKey(job);
+  unstarted.get(job.id)?.end();
   const end = beginWork(job.kind, () => {
-    if (!unstarted.delete(key)) return;
-    handedBack.add(key);
+    if (unstarted.get(job.id)?.claimSeq !== job.claimSeq) return;
+    unstarted.delete(job.id);
+    handedBack.add(claimKey(job));
     void releaseClaim(job, base)
       .catch((err) =>
         logger.warn(
@@ -1063,20 +1065,28 @@ function holdUnstarted(job: ClaimedJob, base: PrismaClient): void {
       )
       .finally(end);
   });
-  unstarted.set(key, end);
+  unstarted.set(job.id, { claimSeq: job.claimSeq, end });
+}
+
+function dropHold(job: ClaimedJob): void {
+  const hold = unstarted.get(job.id);
+  if (hold?.claimSeq !== job.claimSeq) return;
+  unstarted.delete(job.id);
+  hold.end();
 }
 
 // Called by the run that starts this row. False when the shutdown drain already handed it back, and
 // the row must not run.
 export function adoptClaimed(job: ClaimedJob): boolean {
-  const key = claimKey(job);
-  if (handedBack.has(key)) return false;
-  const end = unstarted.get(key);
-  if (end) {
-    unstarted.delete(key);
-    end();
-  }
+  if (handedBack.has(claimKey(job))) return false;
+  dropHold(job);
   return true;
+}
+
+// For a caller that claimed rows and will not run them (a later step of its tick threw): they stay
+// CLAIMED for the reaper, as before, and stop holding the drain open.
+export function abandonClaimed(jobs: readonly ClaimedJob[]): void {
+  for (const job of jobs) dropHold(job);
 }
 
 // CLAIMED back to PENDING under the same claim token, due now and without spending an attempt.

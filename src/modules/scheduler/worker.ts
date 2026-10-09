@@ -16,6 +16,7 @@ import {
 } from "@/modules/scheduler/lanes";
 import { markRunning, markSettled } from "./running";
 import {
+  abandonClaimed,
   adoptClaimed,
   type ClaimedJob,
   claimDeadLetterAnnouncement,
@@ -545,27 +546,36 @@ export async function runSchedulerTick(
   // A third claim, for the observe lane: OBSERVE's latency is read live, so it cannot wait
   // behind ingestion in the traffic share. Its limit is sized to the provider bound below, minus the
   // provider-spending rows the first two claims took, so it only spends permits the lane already had.
-  const earlier = [
-    ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
-    ...(await claimDueTrafficJobs(
-      trafficShare,
-      base,
-      new Date(),
-      opts.tenantId,
-    )),
-  ];
-  const jobs = [
-    ...earlier,
-    ...(await claimDueObserveJobs(
-      observeClaimLimit(
-        providerConcurrency,
-        earlier.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
-      ),
-      base,
-      new Date(),
-      opts.tenantId,
-    )),
-  ];
+  // NOTE: a claim that throws leaves the rows the earlier ones took unrun; they stay CLAIMED for the
+  // reaper and stop holding the shutdown drain open.
+  const jobs: ClaimedJob[] = [];
+  try {
+    jobs.push(
+      ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
+    );
+    jobs.push(
+      ...(await claimDueTrafficJobs(
+        trafficShare,
+        base,
+        new Date(),
+        opts.tenantId,
+      )),
+    );
+    jobs.push(
+      ...(await claimDueObserveJobs(
+        observeClaimLimit(
+          providerConcurrency,
+          jobs.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
+        ),
+        base,
+        new Date(),
+        opts.tenantId,
+      )),
+    );
+  } catch (err) {
+    abandonClaimed(jobs);
+    throw err;
+  }
   // The batch drains concurrently so short jobs do not queue behind long ones (an appointment
   // reminder must arrive before something). It gives up FIFO within a batch, which only shows when the
   // scheduler is hours behind. allSettled: runClaimed never re-throws, but a stray throw must not stall

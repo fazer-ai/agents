@@ -32,6 +32,8 @@ interface Holder {
   idle: Set<() => void>;
   installed: boolean;
   options?: ShutdownOptions;
+  // Set once the bound is reached: work registered after it is cut as it registers.
+  cutReason?: Error;
 }
 
 const KEY = Symbol.for("fazerai.shutdown");
@@ -57,6 +59,8 @@ export function beginWork(
   const h = holder();
   const id = ++h.seq;
   h.work.set(id, { kind, cut });
+  const reason = h.cutReason;
+  if (reason && cut) queueMicrotask(() => cut(reason));
   return () => {
     if (!h.work.delete(id) || h.work.size > 0) return;
     for (const notify of [...h.idle]) notify();
@@ -134,6 +138,7 @@ export async function drainInFlight(opts: {
     };
   const stillRunning = inFlightWork();
   const reason = new ShutdownCutError(opts.boundMs);
+  h.cutReason = reason;
   for (const work of [...h.work.values()]) {
     try {
       work.cut?.(reason);
@@ -240,6 +245,7 @@ export function installShutdownHandlers(opts: ShutdownOptions): void {
 export function resetShutdownForTest(): void {
   const h = holder();
   h.draining = false;
+  h.cutReason = undefined;
   h.work.clear();
   h.idle.clear();
   h.options = undefined;

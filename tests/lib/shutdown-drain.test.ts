@@ -74,6 +74,25 @@ describe("the shutdown drain", () => {
     expect(waited).toBeLessThan(900);
   });
 
+  // A claim query in flight at the bound returns its rows during the settle wait: they are cut as
+  // they register, or they would start and be left behind by the exit.
+  test("work registered after the bound is cut as it registers", async () => {
+    const end = beginWork("DEBOUNCE", () => {
+      setTimeout(() => end(), 300);
+    });
+    const drained = drainInFlight({ boundMs: 100, settleMs: 1_000 });
+    await sleep(200);
+    const lateCut: Error[] = [];
+    const lateEnd = beginWork("HEARTBEAT", (reason) => {
+      lateCut.push(reason);
+      lateEnd();
+    });
+    const result = await drained;
+    expect(lateCut).toHaveLength(1);
+    expect(lateCut[0]).toBeInstanceOf(ShutdownCutError);
+    expect(result.unsettled).toBe(0);
+  });
+
   test("work that does not end when cut is abandoned after the settle wait", async () => {
     beginWork("chatwoot_delivery");
     const t = performance.now();

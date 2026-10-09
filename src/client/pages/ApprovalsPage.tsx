@@ -29,15 +29,16 @@ export function ApprovalsPage() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role);
-  const { setKnowledgeCount, knowledgeCount, refresh } = usePendingApprovals();
+  const { setKnowledgeCount, refresh } = usePendingApprovals();
   const { showToast } = useToast();
-  // Whether the knowledge queue has answered at all: its count is 0 both before it loads and when
-  // it failed, and neither of those is "nothing waiting".
-  const [knowledgeKnown, setKnowledgeKnown] = useState(false);
+  // The count the knowledge queue on this page reported, null until it answers: the badge's own
+  // count is read separately and can land later from another snapshot, and a failed or loading
+  // queue is not "nothing waiting".
+  const [shownKnowledge, setShownKnowledge] = useState<number | null>(null);
   const onKnowledgeCount = useCallback(
     (count: number) => {
       setKnowledgeCount(count);
-      setKnowledgeKnown(true);
+      setShownKnowledge(count);
     },
     [setKnowledgeCount],
   );
@@ -213,7 +214,7 @@ export function ApprovalsPage() {
             {t("approvalQueue.knowledge", "Knowledge suggestions")}
           </h2>
           <KnowledgeApprovals onCountChange={onKnowledgeCount} />
-          {knowledgeKnown && knowledgeCount === 0 && (
+          {shownKnowledge === 0 && (
             <p className="text-sm text-text-muted">
               {t(
                 "approvalQueue.noKnowledge",

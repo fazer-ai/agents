@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 
 // The one approvals queue: a document waiting on the team is listed for every role and counted in
 // the sidebar badge, and the knowledge suggestions join both only for an admin, who alone reviews
@@ -46,6 +46,7 @@ const DOCUMENT = {
 const onePage = () => ({ requests: [DOCUMENT], total: 1, nextAfter: null });
 let pending: (url: string) => unknown = onePage;
 let knowledgeFails = false;
+let knowledgeNone = false;
 
 const SUGGESTION = {
   id: "a1",
@@ -116,7 +117,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ approvals: [] });
   }
   if (url.includes("/knowledge/approvals")) {
-    return json({ approvals: [SUGGESTION] });
+    return json({ approvals: knowledgeNone ? [] : [SUGGESTION] });
   }
   return json({});
 }) as typeof fetch;
@@ -126,6 +127,7 @@ afterEach(() => {
   asked.length = 0;
   pending = onePage;
   knowledgeFails = false;
+  knowledgeNone = false;
   decided = false;
 });
 afterAll(() => {
@@ -213,6 +215,43 @@ test("a knowledge queue that failed to load is never called empty", async () => 
   mount(<ApprovalsPage />);
   await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
   await new Promise((r) => setTimeout(r, 50));
+  expect(
+    screen.queryByText("No knowledge suggestion is waiting for review."),
+  ).toBeNull();
+});
+
+let goTo: (path: string) => void = () => {};
+function Navigator() {
+  const navigate = useNavigate();
+  goTo = navigate;
+  return null;
+}
+
+test("a badge count read later from another snapshot never calls a shown knowledge queue empty", async () => {
+  role = "TENANT_ADMIN";
+  mount(
+    <>
+      <Navigator />
+      <ApprovalsPage />
+    </>,
+  );
+  await screen.findByText("Refund window");
+  // The suggestion is decided elsewhere: the badge's own read, on the next navigation, finds none,
+  // while the queue on this page still shows the card it loaded.
+  knowledgeNone = true;
+  const before = asked.length;
+  goTo("/elsewhere");
+  await waitFor(() =>
+    expect(
+      asked
+        .slice(before)
+        .some(
+          (u) => u.includes("/knowledge/approvals") && !u.includes("discarded"),
+        ),
+    ).toBe(true),
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  expect(screen.getByText("Refund window")).toBeTruthy();
   expect(
     screen.queryByText("No knowledge suggestion is waiting for review."),
   ).toBeNull();

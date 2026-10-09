@@ -1,13 +1,14 @@
-// Refuses a real wait of 50ms or more in a test: `Bun.sleep(n)` or `setTimeout(fn, n)` with a
-// literal. A deadline or a cadence a test waits out costs that time on every run, and the margin
-// sized for an idle machine is what fails under `--parallel`. Inject the clock (or use fake timers)
-// and wait for a condition with the poll helper instead. Short sleeps that only order two writes
-// within a millisecond stay allowed. Files that predate the rule are listed in biome.jsonc.
+// Refuses a real wait of 50ms or more in a test: `Bun.sleep(n)` or `setTimeout(fn, n)` whose delay
+// is written with a number of 50 or more. A deadline or a cadence a test waits out costs that time on
+// every run, and the margin sized for an idle machine is what fails under `--parallel`. Inject the
+// clock (or use fake timers) and wait for a condition with `until` from tests/utils/poll.ts. Short
+// sleeps that only order two writes within a millisecond stay allowed. Files that predate the rule
+// are listed in biome.jsonc.
 language js;
 
 or {
-    `Bun.sleep($ms)` as $call where { $ms <: r"[5-9][0-9]|[0-9][0-9][0-9][0-9_]*" },
-    `setTimeout($fn, $ms)` as $call where { $ms <: r"[5-9][0-9]|[0-9][0-9][0-9][0-9_]*" }
+    `Bun.sleep($ms)` as $call where { $ms <: r"[5-9][0-9]|[0-9][0-9][0-9]" },
+    `setTimeout($fn, $ms)` as $call where { $ms <: r"[5-9][0-9]|[0-9][0-9][0-9]" }
 } where {
-    register_diagnostic(span = $call, message = "A test does not wait real time: inject the clock or use fake timers, and wait for a condition with the poll helper (testes.md, T6).")
+    register_diagnostic(span = $call, message = "A test does not wait real time: inject the clock or use fake timers, and wait for a condition with `until` from tests/utils/poll.ts (testes.md, T6).")
 }

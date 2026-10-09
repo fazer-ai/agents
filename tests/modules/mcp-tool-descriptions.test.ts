@@ -112,9 +112,10 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list. Measured at 32_926 with `limits.maxTurnsPerHour`, the conversation-type and label
-// conditions and the vision ceiling.
-const SETTINGS_SCHEMA_CEILING = 33_030;
+// tools/list. `snoozedFollowUp` too, whose cost is the step shape it shares with `followUp`. Measured at
+// 34_032 with `limits.maxTurnsPerHour`, the conversation-type and label conditions, the vision ceiling
+// and that block.
+const SETTINGS_SCHEMA_CEILING = 34_120;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -214,10 +215,10 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_950);
-    // Measured at 70_232, with `limits.maxProactivePerDay` on agent_settings_set, the approval
-    // switch and validity on the document template writes, the next number on them, and the search
-    // and cursor on issued_document_list.
-    expect(schema).toBeLessThanOrEqual(70_310);
+    // Measured at 71_249, with `limits.maxProactivePerDay` and the `snoozedFollowUp` block on
+    // agent_settings_set, the approval switch and validity on the document template writes, the
+    // next number on them, and the search and cursor on issued_document_list.
+    expect(schema).toBeLessThanOrEqual(71_340);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

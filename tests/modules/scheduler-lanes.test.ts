@@ -67,6 +67,7 @@ const past = () => new Date(Date.now() - 60_000);
 // the expectation have to be changed by two separate deliberate edits.
 const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   FOLLOWUP: "shared",
+  SNOOZED_FOLLOWUP: "shared",
   FOLLOWUP_SWEEP: "shared",
   WEBHOOK_RETRY: "shared",
   RAG_INGEST: "shared",
@@ -111,6 +112,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
 // so a silent demotion means twenty embedding batches at once on a bulk import.
 const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   FOLLOWUP: true,
+  SNOOZED_FOLLOWUP: true,
   APPOINTMENT_REMINDER: true,
   REDIRECT_FOLLOWUP: true,
   RAG_INGEST: true,
@@ -156,6 +158,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
 const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
   FOLLOWUP: false,
+  SNOOZED_FOLLOWUP: false,
   FOLLOWUP_SWEEP: false,
   WEBHOOK_RETRY: false,
   DEBOUNCE: false,
@@ -196,6 +199,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
   FOLLOWUP: false,
+  SNOOZED_FOLLOWUP: false,
   FOLLOWUP_SWEEP: false,
   WEBHOOK_RETRY: false,
   DEBOUNCE: false,
@@ -235,6 +239,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   "info" | "warn" | "error"
 > = {
   FOLLOWUP: "error",
+  SNOOZED_FOLLOWUP: "error",
   FOLLOWUP_SWEEP: "error",
   WEBHOOK_RETRY: "error",
   DEBOUNCE: "error",

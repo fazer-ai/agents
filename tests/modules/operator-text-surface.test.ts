@@ -69,6 +69,12 @@ const EVERY_BLOCK = {
   signature: { text: HUGE },
   vision: { extractionPrompt: HUGE },
   followUp: { steps: [{ instructions: HUGE }, { instructions: HUGE }] },
+  snoozedFollowUp: {
+    cadences: [
+      { steps: [{ instructions: HUGE }] },
+      { steps: [{ instructions: HUGE }] },
+    ],
+  },
   tts: { spokenNoticeText: HUGE, textChoiceNote: HUGE },
 };
 
@@ -76,7 +82,11 @@ const collapseYielded = (path: string): string =>
   path
     .replace(/^toolGuidance\..+$/, "toolGuidance.*")
     .replace(/^guardrails\.(input|output)\./, "guardrails.*.")
-    .replace(/^followUp\.steps\[\d+\]\./, "followUp.steps[*].");
+    .replace(/^followUp\.steps\[\d+\]\./, "followUp.steps[*].")
+    .replace(
+      /^snoozedFollowUp\.cadences\[\d+\]\.steps\[\d+\]\./,
+      "snoozedFollowUp.cadences[*].steps[*].",
+    );
 
 describe("the operator-text surface a rename has to follow", () => {
   test("every site in the walker's SOURCE is classified by who reads it", async () => {

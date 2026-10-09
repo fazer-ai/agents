@@ -17,6 +17,7 @@ import * as redirect from "@/modules/channel-redirect/followup";
 import * as debounce from "@/modules/debounce/handler";
 import * as approvalOutcome from "@/modules/documents/approval-outcome";
 import * as followups from "@/modules/followups/handlers";
+import * as snoozed from "@/modules/followups/snoozed";
 import { getJobHandler, type JobContext } from "@/modules/scheduler/worker";
 
 // Where a job's deadline meets the graph. The signal is never handed to `graph.invoke`:
@@ -325,6 +326,13 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       kind: "FOLLOWUP",
       register: followups.registerFollowUpHandlers,
       spy: () => spyOn(followups, "followUpHandler"),
+      signalOf: (args: unknown[]) =>
+        (args[3] as JobContext | undefined)?.signal,
+    },
+    {
+      kind: "SNOOZED_FOLLOWUP",
+      register: followups.registerFollowUpHandlers,
+      spy: () => spyOn(snoozed, "snoozedFollowUpHandler"),
       signalOf: (args: unknown[]) =>
         (args[3] as JobContext | undefined)?.signal,
     },

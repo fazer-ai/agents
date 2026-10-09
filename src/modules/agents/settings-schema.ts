@@ -314,6 +314,20 @@ const followUp = z.looseObject({
     .describe("replaced as a unit, not merged; first 10 kept"),
 });
 
+const snoozedFollowUpCadence = z.looseObject({
+  label: z.string().nullable().optional().describe("null = default cadence"),
+  steps: z.array(followUpStep).optional(),
+});
+
+const snoozedFollowUp = z.looseObject({
+  enabled: z.boolean().optional(),
+  cadences: z
+    .array(snoozedFollowUpCadence)
+    .optional()
+    .describe("replaced whole; first label match wins"),
+  signature: z.boolean().optional(),
+});
+
 const handoff = z.looseObject({
   mode: oneOf(HANDOFF_MODES)
     .optional()
@@ -976,6 +990,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   serviceWindow: serviceWindow.optional(),
   grounding: grounding.optional(),
   followUp: followUp.optional(),
+  snoozedFollowUp: snoozedFollowUp.optional(),
   handoff: handoff.optional(),
   takeover: takeover.optional(),
   limits: limits.optional(),

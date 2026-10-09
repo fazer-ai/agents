@@ -1,0 +1,852 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { MemorySaver } from "@langchain/langgraph";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
+import { isSnoozedForAPerson } from "@/modules/chatwoot/normalize";
+import {
+  findSnoozedAnchor,
+  snoozedDedupeKey,
+  snoozedFollowUpHandler,
+  snoozedLadderPosition,
+  someoneSpokeAfter,
+  sweepSnoozedFollowUps,
+} from "@/modules/followups/snoozed";
+import {
+  pickSnoozedCadence,
+  readSnoozedFollowUpConfig,
+} from "@/modules/followups/snoozed-settings";
+import type { ClaimedJob } from "@/modules/scheduler/service";
+import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnSchedulerJobId } from "../utils/scheduler";
+import { guardrailModel, ToolRecordingModel } from "../utils/scripted-models";
+
+// The snoozed ladder: a person snoozed a conversation "until next reply" and the
+// customer never answered. The pure half first, then the handler against a stubbed Chatwoot.
+
+function row(
+  over: Partial<ChatwootMessageRow> & { id: number },
+): ChatwootMessageRow {
+  return {
+    content: "",
+    createdAt: new Date(over.id * 1000),
+    messageType: "outgoing",
+    private: false,
+    attachmentTypes: [],
+    transcribedText: null,
+    imageDescription: null,
+    extractedText: null,
+    attachmentName: null,
+    visuals: [],
+    location: null,
+    inReplyTo: null,
+    isReaction: false,
+    emailSubject: null,
+    activityType: null,
+    senderType: "user",
+    senderId: 7,
+    externalSenderName: null,
+    imported: false,
+    ...over,
+  } as ChatwootMessageRow;
+}
+
+describe("snoozed ladder: what the live read decides", () => {
+  test("a person's public message is the anchor; a note and the bot's own message are not", () => {
+    const a = findSnoozedAnchor([
+      row({ id: 10, messageType: "incoming", senderType: "contact" }),
+      row({ id: 11 }),
+      row({ id: 12, private: true }),
+      row({ id: 13, senderType: "agent_bot" }),
+      row({ id: 14, messageType: "activity", senderType: null }),
+    ]);
+    expect(a?.messageId).toBe(11);
+    expect(a?.customerSpokeAfter).toBe(false);
+    expect(a?.newestMessageId).toBe(14);
+  });
+
+  test("the customer writing after the person's message is seen", () => {
+    const a = findSnoozedAnchor([
+      row({ id: 11 }),
+      row({ id: 12, messageType: "incoming", senderType: "contact" }),
+    ]);
+    expect(a?.customerSpokeAfter).toBe(true);
+  });
+
+  test("no person's message on the page: no anchor", () => {
+    expect(
+      findSnoozedAnchor([
+        row({ id: 1, messageType: "incoming", senderType: "contact" }),
+        row({ id: 2, senderType: "agent_bot" }),
+      ]),
+    ).toBeUndefined();
+  });
+
+  test("only a person or the customer speaking after the baseline counts", () => {
+    expect(
+      someoneSpokeAfter(
+        [
+          row({ id: 21, senderType: "agent_bot" }),
+          row({ id: 22, messageType: "activity", senderType: null }),
+          row({ id: 23, private: true }),
+        ],
+        20,
+      ),
+    ).toBe(false);
+    expect(someoneSpokeAfter([row({ id: 21 })], 20)).toBe(true);
+    expect(
+      someoneSpokeAfter(
+        [row({ id: 21, messageType: "incoming", senderType: "contact" })],
+        20,
+      ),
+    ).toBe(true);
+    expect(someoneSpokeAfter([row({ id: 19 })], 20)).toBe(false);
+  });
+
+  test("step 0 counts from the person's message, later steps from the previous step", () => {
+    const at = new Date("2026-10-09T10:00:00Z");
+    const p0 = snoozedLadderPosition({
+      anchor: { messageId: 5, at },
+      stored: { anchorId: null, step: null, at: null },
+      delaysMin: [60, 120],
+    });
+    expect(p0).toEqual({
+      stepIndex: 0,
+      dueAt: new Date("2026-10-09T11:00:00Z"),
+    });
+    const ranAt = new Date("2026-10-09T11:05:00Z");
+    const p1 = snoozedLadderPosition({
+      anchor: { messageId: 5, at },
+      stored: { anchorId: 5, step: 1, at: ranAt },
+      delaysMin: [60, 120],
+    });
+    expect(p1).toEqual({
+      stepIndex: 1,
+      dueAt: new Date("2026-10-09T13:05:00Z"),
+    });
+    expect(
+      snoozedLadderPosition({
+        anchor: { messageId: 5, at },
+        stored: { anchorId: 5, step: 2, at: ranAt },
+        delaysMin: [60, 120],
+      }),
+    ).toEqual({ done: true });
+  });
+
+  test("a new message from the person starts the ladder over", () => {
+    const at = new Date("2026-10-09T12:00:00Z");
+    expect(
+      snoozedLadderPosition({
+        anchor: { messageId: 9, at },
+        stored: { anchorId: 5, step: 2, at: new Date("2026-10-09T11:05:00Z") },
+        delaysMin: [60, 120],
+      }),
+    ).toEqual({ stepIndex: 0, dueAt: new Date("2026-10-09T13:00:00Z") });
+  });
+
+  test("only a snooze with no end date, held by a person, is this ladder's", () => {
+    const base = {
+      status: "snoozed",
+      assigneeType: "User",
+      snoozedUntil: null,
+    };
+    expect(isSnoozedForAPerson(base)).toBe(true);
+    expect(isSnoozedForAPerson({ ...base, snoozedUntil: new Date() })).toBe(
+      false,
+    );
+    // An end date the read could not see is not a yes.
+    expect(isSnoozedForAPerson({ ...base, snoozedUntil: undefined })).toBe(
+      false,
+    );
+    expect(isSnoozedForAPerson({ ...base, assigneeType: "AgentBot" })).toBe(
+      false,
+    );
+    expect(isSnoozedForAPerson({ ...base, assigneeType: null })).toBe(false);
+    expect(isSnoozedForAPerson({ ...base, status: "open" })).toBe(false);
+  });
+});
+
+describe("snoozed ladder: configuration", () => {
+  test("off by default", () => {
+    expect(readSnoozedFollowUpConfig({}).enabled).toBe(false);
+    expect(readSnoozedFollowUpConfig({ snoozedFollowUp: {} })).toEqual({
+      enabled: false,
+      cadences: [],
+      signature: false,
+    });
+  });
+
+  test("the first cadence whose label the conversation has wins; else the default", () => {
+    const cfg = readSnoozedFollowUpConfig({
+      snoozedFollowUp: {
+        enabled: true,
+        cadences: [
+          { label: null, steps: [{ delayValue: 24, delayUnit: "hours" }] },
+          { label: "Followup-Fast", steps: [{ delayValue: 1 }] },
+          {
+            label: "followup-slow",
+            steps: [{ delayValue: 3, delayUnit: "days" }],
+          },
+        ],
+      },
+    });
+    expect(pickSnoozedCadence(cfg, ["followup-fast"])?.label).toBe(
+      "Followup-Fast",
+    );
+    expect(
+      pickSnoozedCadence(cfg, ["followup-slow", "followup-fast"])?.label,
+    ).toBe("Followup-Fast");
+    expect(pickSnoozedCadence(cfg, ["outra"])?.label).toBeNull();
+    expect(pickSnoozedCadence(cfg, [])?.label).toBeNull();
+  });
+
+  test("no default and no matching label: nothing to chase", () => {
+    const cfg = readSnoozedFollowUpConfig({
+      snoozedFollowUp: {
+        enabled: true,
+        cadences: [{ label: "x", steps: [{ delayValue: 1 }] }],
+      },
+    });
+    expect(pickSnoozedCadence(cfg, ["y"])).toBeNull();
+  });
+
+  test("a cadence without steps is dropped, and resolve stays on the last step only", () => {
+    const cfg = readSnoozedFollowUpConfig({
+      snoozedFollowUp: {
+        enabled: true,
+        cadences: [
+          { label: "vazia", steps: [] },
+          {
+            label: null,
+            steps: [
+              { delayValue: 1, resolve: true },
+              { delayValue: 1, resolve: true },
+            ],
+          },
+        ],
+      },
+    });
+    expect(cfg.cadences).toHaveLength(1);
+    expect(cfg.cadences[0]?.steps[0]?.resolve).toBeUndefined();
+    expect(cfg.cadences[0]?.steps[1]?.resolve).toBe(true);
+  });
+});
+
+// ── the handler, against the database and a stubbed Chatwoot ─────────────────────────────────────
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+let phantomJobId = 0n;
+let tenantId = 0n;
+let instanceId = 0n;
+let inboxDbId = 0n;
+let agentId = 0n;
+const PERSON = 7;
+const REPLY = "Oi! Ainda precisamos do número do pedido para seguir.";
+
+const STEPS = [
+  { delayValue: 2, delayUnit: "minutes", instructions: "lembre o pedido" },
+  { delayValue: 2, delayUnit: "minutes", instructions: "lembre de novo" },
+  {
+    delayValue: 2,
+    delayUnit: "minutes",
+    instructions: "",
+    resolve: true,
+    assignLabels: ["sem-retorno"],
+  },
+];
+
+function threadOf(convId: number) {
+  return `${tenantId}:${instanceId}:${convId}`;
+}
+
+function jobFor(convId: number): ClaimedJob {
+  return {
+    id: phantomJobId,
+    tenantId,
+    kind: "SNOOZED_FOLLOWUP",
+    payload: { threadId: threadOf(convId) },
+    attempts: 0,
+    claimSeq: 0,
+  };
+}
+
+type Msg = {
+  id: number;
+  message_type: number;
+  private?: boolean;
+  created_at: number;
+  sender?: { type: string; id: number } | null;
+  content?: string;
+};
+
+function stub(over: {
+  status?: string;
+  assigneeType?: string | null;
+  snoozedUntil?: string | null;
+  labels?: string[];
+  messages: Msg[];
+  // A message that lands while the model runs, seen by the send-time check.
+  lateMessage?: Msg;
+  // The status every read after the first one sees: the handler's read finds it snoozed, the
+  // nudge's own probe finds what changed meanwhile.
+  statusLater?: string;
+  model?: (cfg: {
+    model: string;
+  }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
+}) {
+  const sent: string[] = [];
+  const toggles: string[] = [];
+  const labelSets: string[][] = [];
+  let currentLabels = over.labels ?? [];
+  let modelRan = false;
+  let reads = 0;
+  const client = {
+    getConversation: async (c: number) => ({
+      id: c,
+      status:
+        reads++ > 0 && over.statusLater
+          ? over.statusLater
+          : (over.status ?? "snoozed"),
+      snoozed_until: over.snoozedUntil === undefined ? null : over.snoozedUntil,
+      labels: currentLabels,
+      meta:
+        over.assigneeType === null
+          ? {}
+          : {
+              assignee_type: over.assigneeType ?? "User",
+              assignee: { id: over.assigneeType === "AgentBot" ? 5 : PERSON },
+            },
+    }),
+    getMessages: async (
+      _c: number,
+      opts?: { before?: number; after?: number },
+    ) => {
+      if (opts?.after !== undefined) {
+        const late = modelRan && over.lateMessage ? [over.lateMessage] : [];
+        return {
+          payload: [...over.messages, ...late].filter(
+            (m) => m.id > (opts.after as number),
+          ),
+        };
+      }
+      if (opts?.before !== undefined) return { payload: [] };
+      return { payload: over.messages };
+    },
+    sendMessage: async (_c: number, t: string) => {
+      sent.push(t);
+      return { id: 999 };
+    },
+    sendPrivateNote: async () => ({}),
+    getConversationLabels: async () => currentLabels,
+    setConversationLabels: async (_c: number, labels: string[]) => {
+      currentLabels = labels;
+      labelSets.push(labels);
+      return {};
+    },
+    toggleStatus: async (_c: number, status: string) => {
+      toggles.push(status);
+      return {};
+    },
+  } as unknown as ChatwootClient;
+  return {
+    sent,
+    toggles,
+    labelSets,
+    deps: {
+      makeModel: (cfg: { model: string }) => {
+        modelRan = true;
+        return (
+          over.model?.(cfg) ?? new FakeListChatModel({ responses: [REPLY] })
+        );
+      },
+      makeClient: async () => client,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    },
+  };
+}
+
+const minutesAgo = (m: number) => Math.floor((Date.now() - m * 60_000) / 1000);
+
+async function seed(
+  convId: number,
+  over: {
+    status?: string;
+    assigneeType?: string | null;
+    anchorId?: number | null;
+    step?: number | null;
+    at?: Date | null;
+    lastEventAt?: Date;
+  } = {},
+) {
+  const data = {
+    status: over.status ?? "snoozed",
+    assigneeType: over.assigneeType === undefined ? "User" : over.assigneeType,
+    assigneeId: PERSON,
+    lastEventAt: over.lastEventAt ?? new Date(Date.now() - 60_000),
+    snoozedFollowUpAnchorId: over.anchorId ?? null,
+    snoozedFollowUpStep: over.step ?? null,
+    snoozedFollowUpAt: over.at ?? null,
+  };
+  await suDb.conversation.upsert({
+    where: {
+      tenantId_chatwootInstanceId_chatwootConversationId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+      },
+    },
+    create: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      inboxId: inboxDbId,
+      chatwootConversationId: convId,
+      threadId: threadOf(convId),
+      ...data,
+    },
+    update: data,
+  });
+}
+
+async function stateOf(convId: number) {
+  return suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: {
+      snoozedFollowUpAnchorId: true,
+      snoozedFollowUpStep: true,
+      status: true,
+    },
+  });
+}
+
+async function setSettings(settings: Record<string, unknown>) {
+  await suDb.agent.update({
+    where: { id: agentId },
+    data: { settings: settings as never },
+  });
+}
+
+const LADDER = {
+  snoozedFollowUp: {
+    enabled: true,
+    signature: false,
+    cadences: [{ label: null, steps: STEPS }],
+  },
+  // The bot's own signature is on, so a reminder that carries it would show.
+  signature: { enabled: true, text: "Atenciosamente, Gi", frequency: "all" },
+};
+
+describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
+  beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
+    const t = await suDb.tenant.create({
+      data: { name: "SNZ", slug: `snz-${process.pid}` },
+    });
+    tenantId = t.id;
+    const inst = await seedChatwootInstance(suDb, {
+      tenantId,
+      accountId: 5,
+      baseUrl: "https://chat.example.com",
+      adminToken: encryptJson("ADMIN"),
+    });
+    instanceId = inst.id;
+    const llmKey = await suDb.vaultEntry.create({
+      data: { tenantId, name: "llm-key", secret: encryptJson("sk-test") },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Atendente",
+        systemPrompt: "Você é prestativa.",
+        snoozedFollowUpArmedAt: new Date(Date.now() - 30 * 86_400_000),
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: `vault:${llmKey.id}`,
+        },
+        settings: LADDER,
+      },
+    });
+    agentId = agent.id;
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: agent.id,
+        chatwootAgentBotId: 5,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `snz-route-${process.pid}`,
+        name: "Atendente",
+      },
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 77,
+        name: "E-mail",
+        agentId,
+        channelType: "Channel::Email",
+      },
+    });
+    inboxDbId = inbox.id;
+  });
+
+  afterAll(async () => {
+    if (tenantId) {
+      for (const table of [
+        "scheduler_jobs",
+        "llm_usage",
+        "conversations",
+        "inboxes",
+        "chatwoot_agent_bots",
+        "agents",
+        "vault_entries",
+        "chatwoot_instances",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  const personAsked = (id: number, minutes: number): Msg => ({
+    id,
+    message_type: 1,
+    created_at: minutesAgo(minutes),
+    sender: { type: "user", id: PERSON },
+    content: "Pode me mandar o número do pedido?",
+  });
+
+  test("step 1 goes out once due, unsigned, and the conversation is left as it was", async () => {
+    await setSettings(LADDER);
+    await seed(2001);
+    const s = stub({ messages: [personAsked(100, 3)] });
+    const r = await snoozedFollowUpHandler(jobFor(2001), appDb, s.deps);
+    expect(s.sent).toEqual([REPLY]);
+    // No status change: still snoozed, still the person's.
+    expect(s.toggles).toEqual([]);
+    expect(r.outcome).toBe("reschedule");
+    const st = await stateOf(2001);
+    expect(st.snoozedFollowUpAnchorId).toBe(100);
+    expect(st.snoozedFollowUpStep).toBe(1);
+  });
+
+  test("not yet due: rescheduled to the due instant, nothing sent", async () => {
+    await setSettings(LADDER);
+    await seed(2002);
+    const s = stub({ messages: [personAsked(110, 1)] });
+    const r = await snoozedFollowUpHandler(jobFor(2002), appDb, s.deps);
+    expect(s.sent).toEqual([]);
+    expect(r.outcome).toBe("reschedule");
+    if (r.outcome === "reschedule") {
+      const due = (minutesAgo(1) + 120) * 1000;
+      expect(Math.abs(r.runAt.getTime() - due)).toBeLessThan(2_000);
+    }
+  });
+
+  test("the last step labels and resolves, and the ladder then ends", async () => {
+    await setSettings(LADDER);
+    await seed(2003, {
+      anchorId: 120,
+      step: 2,
+      at: new Date(Date.now() - 3 * 60_000),
+    });
+    const s = stub({ messages: [personAsked(120, 10)] });
+    const r = await snoozedFollowUpHandler(jobFor(2003), appDb, s.deps);
+    // The closing step has no instructions: no model, no message, only its post-actions.
+    expect(s.sent).toEqual([]);
+    expect(s.labelSets.at(-1)).toContain("sem-retorno");
+    expect(s.toggles).toEqual(["resolved"]);
+    expect(r).toEqual({ outcome: "done" });
+  });
+
+  test("a snooze with an end date is not chased", async () => {
+    await setSettings(LADDER);
+    await seed(2004);
+    const s = stub({
+      snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      messages: [personAsked(130, 10)],
+    });
+    const r = await snoozedFollowUpHandler(jobFor(2004), appDb, s.deps);
+    expect(r).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
+
+  test("a conversation the bot holds, or nobody holds, is not chased", async () => {
+    await setSettings(LADDER);
+    for (const [conv, holder] of [
+      [2005, "AgentBot"],
+      [2006, null],
+    ] as const) {
+      await seed(conv);
+      const s = stub({
+        assigneeType: holder,
+        messages: [personAsked(140, 10)],
+      });
+      const r = await snoozedFollowUpHandler(jobFor(conv), appDb, s.deps);
+      expect(r).toEqual({ outcome: "done" });
+      expect(s.sent).toEqual([]);
+    }
+  });
+
+  test("the customer having written after the person: no reminder", async () => {
+    await setSettings(LADDER);
+    await seed(2007);
+    const s = stub({
+      messages: [
+        personAsked(150, 10),
+        {
+          id: 151,
+          message_type: 0,
+          created_at: minutesAgo(5),
+          sender: { type: "contact", id: 1 },
+        },
+      ],
+    });
+    const r = await snoozedFollowUpHandler(jobFor(2007), appDb, s.deps);
+    expect(r).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
+
+  test("a person writing while the model runs stops the reminder", async () => {
+    await setSettings(LADDER);
+    await seed(2008);
+    const s = stub({
+      messages: [personAsked(160, 10)],
+      lateMessage: {
+        id: 161,
+        message_type: 1,
+        created_at: minutesAgo(0),
+        sender: { type: "user", id: PERSON },
+      },
+    });
+    await snoozedFollowUpHandler(jobFor(2008), appDb, s.deps);
+    expect(s.sent).toEqual([]);
+  });
+
+  test("a person's message older than the switch-on is not chased", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { snoozedFollowUpArmedAt: new Date(Date.now() - 5 * 60_000) },
+    });
+    try {
+      await setSettings(LADDER);
+      await seed(2009);
+      const s = stub({ messages: [personAsked(170, 10)] });
+      const r = await snoozedFollowUpHandler(jobFor(2009), appDb, s.deps);
+      expect(r).toEqual({ outcome: "done" });
+      expect(s.sent).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          snoozedFollowUpArmedAt: new Date(Date.now() - 30 * 86_400_000),
+        },
+      });
+    }
+  });
+
+  test("the ladder switched off: nothing", async () => {
+    await setSettings({
+      snoozedFollowUp: { ...LADDER.snoozedFollowUp, enabled: false },
+    });
+    await seed(2010);
+    const s = stub({ messages: [personAsked(180, 10)] });
+    const r = await snoozedFollowUpHandler(jobFor(2010), appDb, s.deps);
+    expect(r).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    await setSettings(LADDER);
+  });
+
+  test("the sweep nominates a snoozed conversation a person holds, once", async () => {
+    await setSettings(LADDER);
+    await seed(2011);
+    await seed(2012, { status: "pending", assigneeType: null });
+    await seed(2013, { status: "snoozed", assigneeType: "AgentBot" });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "SNOOZED_FOLLOWUP" },
+      select: { dedupeKey: true },
+    });
+    const keys = jobs.map((j) => j.dedupeKey);
+    expect(keys).toContain(snoozedDedupeKey(threadOf(2011)));
+    expect(keys).not.toContain(snoozedDedupeKey(threadOf(2012)));
+    expect(keys).not.toContain(snoozedDedupeKey(threadOf(2013)));
+    expect(
+      keys.filter((k) => k === snoozedDedupeKey(threadOf(2011))),
+    ).toHaveLength(1);
+  });
+
+  test("the sweep leaves an agent with the ladder off alone", async () => {
+    await seed(2014);
+    await sweepSnoozedFollowUps(appDb, tenantId, []);
+    const n = await suDb.schedulerJob.count({
+      where: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: snoozedDedupeKey(threadOf(2014)),
+      },
+    });
+    expect(n).toBe(0);
+  });
+  test("the reminder is written with no tool bound, so it cannot act over the person", async () => {
+    await setSettings(LADDER);
+    await seed(2015);
+    const model = new ToolRecordingModel(REPLY);
+    const s = stub({ messages: [personAsked(190, 3)], model: () => model });
+    await snoozedFollowUpHandler(jobFor(2015), appDb, s.deps);
+    expect(s.sent).toEqual([REPLY]);
+    expect(model.boundToolNames ?? []).toEqual([]);
+  });
+
+  test("the cadence named by the conversation's label sets the pace", async () => {
+    const fastAndSlow = {
+      ...LADDER,
+      snoozedFollowUp: {
+        ...LADDER.snoozedFollowUp,
+        cadences: [
+          { label: null, steps: STEPS },
+          {
+            label: "adiar-rapido",
+            steps: [{ delayValue: 1, delayUnit: "minutes", instructions: "x" }],
+          },
+        ],
+      },
+    };
+    await setSettings(fastAndSlow);
+    try {
+      // 90 s after the person's message: due on the 1-minute cadence, not on the 2-minute default.
+      await seed(2016);
+      const plain = stub({ messages: [personAsked(200, 1.5)] });
+      await snoozedFollowUpHandler(jobFor(2016), appDb, plain.deps);
+      expect(plain.sent).toEqual([]);
+      await seed(2017);
+      const fast = stub({
+        labels: ["adiar-rapido"],
+        messages: [personAsked(210, 1.5)],
+      });
+      await snoozedFollowUpHandler(jobFor(2017), appDb, fast.deps);
+      expect(fast.sent).toEqual([REPLY]);
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
+  test("the sweep leaves a parked job's time alone while the conversation has not moved", async () => {
+    await setSettings(LADDER);
+    await seed(2018, { lastEventAt: new Date(Date.now() - 10 * 60_000) });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const later = new Date(Date.now() + 3_600_000);
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2018)) },
+      data: { runAt: later },
+    });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2018)) },
+      select: { runAt: true },
+    });
+    expect(job.runAt.getTime()).toBe(later.getTime());
+    // The conversation moved after the job was parked: the sweep asks the handler to look again.
+    await seed(2018, { lastEventAt: new Date(Date.now() + 1_000) });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const again = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2018)) },
+      select: { runAt: true },
+    });
+    expect(again.runAt.getTime()).toBeLessThan(later.getTime());
+  });
+  test("a guardrail that would hand the reminder over drops it, and the person keeps the conversation", async () => {
+    const key = await suDb.vaultEntry.findFirstOrThrow({
+      where: { tenantId, name: "llm-key" },
+      select: { id: true },
+    });
+    await setSettings({
+      ...LADDER,
+      handoff: { mode: "route" },
+      guardrails: {
+        credentialRef: `vault:${key.id}`,
+        enabled: true,
+        provider: "openai",
+        model: "guard-sentinel-snoozed",
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+    });
+    try {
+      await seed(2019);
+      const s = stub({
+        messages: [personAsked(220, 3)],
+        model: (cfg) =>
+          cfg.model === "guard-sentinel-snoozed"
+            ? guardrailModel(async () => ({
+                content: JSON.stringify({
+                  violated: true,
+                  categories: ["toxicity"],
+                  rationale: "x",
+                }),
+              }))
+            : new FakeListChatModel({ responses: [REPLY] }),
+      });
+      await snoozedFollowUpHandler(jobFor(2019), appDb, s.deps);
+      // Neither the refused text nor the hand-over line, and no transfer.
+      expect(s.sent).toEqual([]);
+      expect(s.toggles).toEqual([]);
+      expect((await stateOf(2019)).snoozedFollowUpStep).toBe(1);
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+  test("unsnoozed between the handler's read and the send: the nudge's own probe stops it", async () => {
+    await setSettings(LADDER);
+    await seed(2020);
+    const s = stub({ messages: [personAsked(230, 3)], statusLater: "open" });
+    await snoozedFollowUpHandler(jobFor(2020), appDb, s.deps);
+    expect(s.sent).toEqual([]);
+  });
+});

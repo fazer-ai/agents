@@ -20,6 +20,9 @@ export const SIGNATURE_MAX = 500;
 // Not a text cap: how many follow-up steps readFollowUpConfig keeps. It lives here because the walker
 // below has to stop where the reader stops — text in a step the reader discards is text nothing reads.
 export const FOLLOW_UP_MAX_STEPS = 10;
+// Not a text cap either: how many cadences readSnoozedFollowUpConfig keeps, here for the same reason.
+// Each cadence is a label the team picks by hand, so a handful is the whole useful range.
+export const SNOOZED_FOLLOW_UP_MAX_CADENCES = 10;
 
 export interface OversizedText {
   // Dotted path into the settings bag, e.g. `handoff.instructions`. It is what the operator reads in
@@ -190,6 +193,25 @@ function cappedFields(settings: unknown): CappedField[] {
       FOLLOW_UP_INSTRUCTIONS_MAX,
     );
   });
+  // The snoozed ladder's steps are the same steps, under the same cap, per cadence.
+  const snoozed = bagOf(root.snoozedFollowUp);
+  (Array.isArray(snoozed?.cadences) ? snoozed.cadences : [])
+    .slice(0, SNOOZED_FOLLOW_UP_MAX_CADENCES)
+    .forEach((rawCadence, c) => {
+      const cadence = bagOf(rawCadence);
+      (Array.isArray(cadence?.steps) ? cadence.steps : [])
+        .slice(0, FOLLOW_UP_MAX_STEPS)
+        .forEach((raw, i) => {
+          const step = bagOf(raw);
+          if (!step) return;
+          add(
+            step,
+            "instructions",
+            `snoozedFollowUp.cadences[${c}].steps[${i}].instructions`,
+            FOLLOW_UP_INSTRUCTIONS_MAX,
+          );
+        });
+    });
   return out;
 }
 

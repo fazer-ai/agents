@@ -420,7 +420,7 @@ const BARE_SLICES: Record<
   "src/lib/ssrf.ts": [1, "index"],
   "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],
-  "src/modules/agents/text-caps.ts": [1, "array"],
+  "src/modules/agents/text-caps.ts": [3, "array"],
   // Three, none bounding prose. `countNotStoredAsWritten` cuts the bundled entries a schedule cap lets
   // through (an array of JSON entries). `renamedToolName` trims the STEM of a tool name, already
   // `[a-z0-9_-]` from `normalizeToolName`, so the `_2` suffix fits the provider's 64. The third clamps
@@ -477,6 +477,7 @@ const BARE_SLICES: Record<
   // string already matched an ASCII-only pattern.
   "src/modules/flowlog/settings.ts": [1, "fixed-format"],
   "src/modules/followups/settings.ts": [1, "array"],
+  "src/modules/followups/snoozed-settings.ts": [2, "array"],
   "src/modules/images/fetch.ts": [1, "array"],
   // No response-body cap here: `lib/outbound.ts` caps the READ, cutting through `clipText`.
   "src/modules/integrations/toolpacks/asaas.ts": [1, "fixed-format"],

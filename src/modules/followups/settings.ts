@@ -140,8 +140,9 @@ export const FOLLOW_UP_DELAY_UNITS = [
 const VALID_UNITS = new Set<string>(FOLLOW_UP_DELAY_UNITS);
 
 // Normalize one raw step (clamp delay, trim/bound instructions + label). Returns null only for a
-// non-object input; missing numeric/string fields collapse to defaults.
-function readStep(raw: unknown): FollowUpStep | null {
+// non-object input; missing numeric/string fields collapse to defaults. Shared with the snoozed ladder
+// (./snoozed-settings.ts), so a step reads the same in both.
+export function parseFollowUpStep(raw: unknown): FollowUpStep | null {
   if (!raw || typeof raw !== "object") return null;
   const bag = raw as Record<string, unknown>;
   const delayValue = clampInt(bag.delayValue, 1, 100_000, 60);
@@ -200,7 +201,7 @@ export function readFollowUpConfig(settings: unknown): FollowUpConfig {
   // No legacy fallback: without a valid steps array the agent gets one default step.
   const parsed = (Array.isArray(bag.steps) ? bag.steps : [])
     .slice(0, FOLLOW_UP_MAX_STEPS)
-    .map(readStep)
+    .map(parseFollowUpStep)
     .filter((s): s is FollowUpStep => s !== null);
   let steps = parsed.length > 0 ? parsed : cloneDefaults().steps;
 

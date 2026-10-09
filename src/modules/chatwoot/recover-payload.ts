@@ -35,6 +35,10 @@ export interface RecoveryConversation {
   // without them answers the contact gate's label and attribute rules with empty values.
   customAttributes?: Record<string, unknown>;
   labels?: string[];
+  // The version the stated status and assignee were READ at (the live snapshot's `updated_at`), for
+  // the same conversation only: the row it creates carries the marks that let a delayed event older
+  // than that snapshot lose. Used only where no redirect version is stated.
+  stateVersion?: number;
 }
 
 // A message as the REST read gives it. REST and the wire spell two fields differently: `message_type`
@@ -155,7 +159,9 @@ export function buildRecoveryPayload(params: {
       // version for it would order every other field in this body by a number nobody measured.
       ...(c.redirectOriginAt !== null
         ? { updated_at: c.redirectOriginAt }
-        : {}),
+        : c.stateVersion !== undefined
+          ? { updated_at: c.stateVersion }
+          : {}),
       // The customer's own clock, on the field `normalizeChatwootEvent` reads it from. On the wire
       // this is the CONVERSATION's activity time, and for a `message_created` that is exactly this
       // message's, which is why the message's own timestamp is the right source for it.

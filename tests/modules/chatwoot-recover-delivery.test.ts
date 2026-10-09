@@ -159,6 +159,8 @@ function stubChatwoot(opts: {
     noMeta?: boolean;
     customAttributes?: Record<string, unknown>;
     labels?: string[];
+    // The snapshot's own version, `updated_at`.
+    updatedAt?: number;
     status?: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
@@ -184,6 +186,7 @@ function stubChatwoot(opts: {
           ? { custom_attributes: c.customAttributes }
           : {}),
         ...(c.labels ? { labels: c.labels } : {}),
+        ...(c.updatedAt !== undefined ? { updated_at: c.updatedAt } : {}),
         meta: c.noMeta
           ? undefined
           : {
@@ -865,6 +868,69 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       expect(row.customAttributes).toEqual({ plano: "ouro" });
       expect(row.labels).toEqual(["vip"]);
+    });
+
+    test("creates the row with the version its state was read at", async () => {
+      const convId = 7311;
+      const messageId = 7811;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const version = SENT_AT + 1800.25;
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { updatedAt: version },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      // A delayed event older than the snapshot then loses to it, instead of reading as newer.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { chatwootStatusAt: true },
+      });
+      expect(row.chatwootStatusAt).toBe(version);
+    });
+
+    test("repairs the route of a row a webhook created during the reads", async () => {
+      const convId = 7316;
+      const messageId = 7816;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        // A conversation event that named no inbox, newer than the stranded message.
+        onAnchoredRead: async () => {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: convId,
+              status: "pending",
+              inboxId: null,
+              threadId: threadOf(convId),
+              lastEventAt: new Date(),
+            },
+          });
+        },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { inboxId: true },
+      });
+      expect(row.inboxId).toBe(inboxDbId);
     });
 
     test("is not answered when Chatwoot does not say who holds it", async () => {

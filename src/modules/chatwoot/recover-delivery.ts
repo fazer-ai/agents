@@ -747,10 +747,16 @@ async function runRecovery(params: {
   // only when they win the ordering (./mirror.ts) and the rebuilt body is stale by construction, so it
   // is done here, before the gates read it. Only from NULL: a column naming an inbox is a statement
   // this module cannot overrule. The `if` is the cheap answer and the WHERE the one that holds.
-  if (conv !== null && conv.inbox === null && inbox != null) {
+  // By the source's key, so a row a webhook created during the REST reads is repaired too.
+  if (inbox != null && (conv === null || conv.inbox === null)) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.conversation.updateMany({
-        where: { id: conv.id, inboxId: null },
+        where: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+          inboxId: null,
+        },
         data: { inboxId: inbox.id },
       }),
     );
@@ -825,6 +831,9 @@ async function runRecovery(params: {
         contactInboxId,
         ...(sender !== undefined ? { sender } : {}),
         ...(mirrorNow ? {} : conversationFactsOf(liveRaw)),
+        ...(!mirrorNow && live.updatedAt !== null
+          ? { stateVersion: live.updatedAt }
+          : {}),
         redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
         // NOTE: a resolve that lands after this read is not ordered away here, by the delivery path's

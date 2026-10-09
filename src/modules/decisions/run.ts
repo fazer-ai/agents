@@ -150,6 +150,7 @@ export async function applyDecisions(
       end = j + 1;
     }
     const group = toRun.slice(i, end);
+    const start = i;
     i = end;
     const running: Promise<void>[] = [];
     let withdrawnAt: number | null = null;
@@ -174,6 +175,12 @@ export async function applyDecisions(
         break;
       }
       admitted.push(member);
+    }
+    // Asked again now that the fences ran: they read the live settings, and a grouping those no
+    // longer allow falls back to the head alone, with the rest admitted after it has written.
+    if (admitted.length > 1 && keyOf(head) !== key) {
+      admitted.length = 1;
+      i = start + 1;
     }
     // A refusal or a deadline met while asking stops the whole group, the members already admitted
     // included: none of them has started, and the answer that stopped the last one is the newest.

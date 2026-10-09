@@ -241,6 +241,40 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     expect(r.peak()).toBe(3);
   });
 
+  // The grouping is asked again after the fences, which are what read the live settings: a run
+  // they no longer allow goes out one action at a time, each after the one before it.
+  test("a grouping withdrawn while the fences were asked falls back to one at a time", async () => {
+    const r = recording();
+    let grouping = true;
+    let fences = 0;
+    const report = await applyDecisions(
+      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      answers,
+      [r.make("set_custom_attribute")],
+      [],
+      new AbortController().signal,
+      async () => {
+        fences += 1;
+        grouping = false;
+        return true;
+      },
+      10,
+      (a) => (grouping ? key(a) : null),
+    );
+    expect(r.peak()).toBe(1);
+    expect(r.startedOrder).toEqual([
+      "set_custom_attribute:k1",
+      "set_custom_attribute:k2",
+      "set_custom_attribute:k3",
+    ]);
+    expect(r.finishedBeforeStart("set_custom_attribute:k2")).toEqual([
+      "set_custom_attribute:k1",
+    ]);
+    // The two that were held back are asked again, each after the write ahead of it.
+    expect(fences).toBe(5);
+    expect(report.actions.map((a) => a.outcome)).toEqual(["ran", "ran", "ran"]);
+  });
+
   test("an action its tool's schema refuses rides inside the run, and does not part it", async () => {
     const r = recording();
     const strict = new DynamicStructuredTool({

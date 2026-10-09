@@ -1023,6 +1023,13 @@ async function agentStillOnInbox(
   }
 }
 
+// Whether these settings carry a contact gate with conditions, the ones the fence asks of the
+// conversation's labels and attributes.
+function hasGateRule(settings: unknown): boolean {
+  const gate = readContactAuthConfig(settings);
+  return gate.enabled && contactAuthHasRuleStage(gate);
+}
+
 export async function runObserve(
   tenantId: bigint,
   p: ObservePayload,
@@ -1433,6 +1440,8 @@ export async function runObserve(
   // (nothing else re-arms the row, and a resolve happens once), paying the model call again under
   // the spend ceiling.
   let refusal: Refusal | null = null;
+  // Whether the contact gate has conditions, as of the settings the last fence read.
+  let gatedByRule = hasGateRule(loaded.settings);
   const fence = async (): Promise<boolean> => {
     if (refusal !== null) return false;
     const observesNow = await agentObservesNow(tenantId, agentId, base);
@@ -1467,6 +1476,7 @@ export async function runObserve(
       refusal = "agent_no_longer_observes";
       return false;
     }
+    gatedByRule = hasGateRule(settingsNow);
     // The arm's own second question, asked again: an operator switching to `on_resolve` while the
     // call is in flight is refusing exactly this turn, and a fence that did not ask let it act.
     if (
@@ -1842,8 +1852,6 @@ export async function runObserve(
     // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
-    const gate = readContactAuthConfig(loaded.settings);
-    const gatedByRule = gate.enabled && contactAuthHasRuleStage(gate);
     try {
       report = await underSignal(
         applyDecisions(
@@ -1858,7 +1866,8 @@ export async function runObserve(
           // the two go out side by side as well, not one after the other. A tool with a precondition
           // stays on its own: its condition reads what the rules before it wrote. Under a contact
           // gate with conditions every action does, since the fence asks them of the same labels
-          // and attributes.
+          // and attributes; the engine asks this again after the fences, which is when a gate
+          // saved during the provider call is first seen.
           (action) =>
             gatedByRule ||
             Object.hasOwn(cfg.toolPreconditions, action.tool) ||

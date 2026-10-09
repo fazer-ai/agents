@@ -743,11 +743,11 @@ async function runRecovery(params: {
   // NOTE: the mirror learns the route, as a repair: `runAgentTurn` resolves the agent from the
   // EVENT's inbox, but `maybeConsumeCommandOrGate` resolves it from `Conversation.inboxId`, and on null
   // it runs NOTHING (not test mode, availability or contact authorization) while the turn still runs,
-  // so a never-activated test agent would post to a real customer. Ordinary events write this column
-  // only when they win the ordering (./mirror.ts) and the rebuilt body is stale by construction, so it
-  // is done here, before the gates read it. Only from NULL: a column naming an inbox is a statement
-  // this module cannot overrule. The `if` is the cheap answer and the WHERE the one that holds.
-  // By the source's key, so a row a webhook created during the REST reads is repaired too.
+  // so a never-activated test agent would post to a real customer. Done here before the gates read
+  // it, and again by the delivery path's own mirror write, whose stale branch fills a null route, so a
+  // row a webhook creates after this write is covered too. Only from NULL: a column naming an inbox is
+  // a statement this module cannot overrule. By the source's key, so a row a webhook created during
+  // the REST reads is repaired here as well.
   if (inbox != null && (conv === null || conv.inbox === null)) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.conversation.updateMany({

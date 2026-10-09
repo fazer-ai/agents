@@ -230,6 +230,8 @@ export async function mirrorChatwootEvent(
             // ahead of it. See the write there.
             lastInboundAt: true,
             lastInboundMessageId: true,
+            // Read for the stale branch, which fills a missing route. See the write there.
+            inboxId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
             statusClaimUntil: true,
@@ -390,6 +392,12 @@ export async function mirrorChatwootEvent(
               ? { lastInboundAt: inboundAt }
               : {}),
             ...forwardInboundId(existing.lastInboundMessageId, inboundId),
+            // NOTE: the route, from NULL only. A conversation never changes inbox in Chatwoot, so a
+            // stale event still names the right one, and a row without it runs no pre-turn gate
+            // (test mode, contact authorization) while the turn still resolves its agent from the event.
+            ...(existing.inboxId === null && inboxRowId != null
+              ? { inboxId: inboxRowId }
+              : {}),
           };
           if (Object.keys(staleWrites).length > 0) {
             await db.conversation.update({

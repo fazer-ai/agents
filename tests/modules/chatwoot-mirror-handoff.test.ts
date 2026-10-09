@@ -1905,6 +1905,54 @@ describe.skipIf(!dbUp)(
 
         expect((await inboundOf(convId))?.getTime()).toBe((T + 400) * 1000);
       });
+
+      test("a stale event fills a route the row never learned, and only that", async () => {
+        // A conversation never changes inbox, so a stale event still names the right one; a row
+        // without it runs no pre-turn gate while the turn resolves its agent from the event.
+        const convId = 97;
+        const inboxOf = async () =>
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: convId },
+              select: { inboxId: true },
+            })
+          ).inboxId;
+        await staleIncoming(convId, {
+          messageId: 9700,
+          at: T + 300,
+          snapshotAt: T + 300,
+        });
+        const learned = await inboxOf();
+        expect(learned).not.toBeNull();
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: convId },
+          data: { inboxId: null },
+        });
+        await staleIncoming(convId, {
+          messageId: 9701,
+          at: T + 100,
+          snapshotAt: T + 100,
+        });
+        expect(await inboxOf()).toBe(learned);
+        // A row that names its inbox keeps it against a stale event naming another.
+        await mirror({
+          event: "message_created",
+          id: 9702,
+          content: "oi",
+          message_type: "incoming",
+          private: false,
+          inbox_id: INBOX + 1,
+          conversation: {
+            ...convPayload(convId, {
+              status: "pending",
+              lastActivityAt: T + 50,
+              updatedAt: T + 50,
+            }),
+            inbox_id: INBOX + 1,
+          },
+        });
+        expect(await inboxOf()).toBe(learned);
+      });
     });
   },
 );

@@ -466,7 +466,9 @@ export async function snoozedFollowUpHandler(
         UPDATE conversations
            SET snoozed_follow_up_anchor_id = ${anchor.messageId},
                snoozed_follow_up_step = ${step},
-               snoozed_follow_up_at = now()
+               -- In UTC, the zone every stored timestamp is in: a bare now() would store the
+               -- session's wall time, and the ladder's next due time would move with it.
+               snoozed_follow_up_at = now() AT TIME ZONE 'UTC'
          WHERE id = ${ctx.conv.id}
            AND ${jobNotRetiredSql(job)}`),
     );

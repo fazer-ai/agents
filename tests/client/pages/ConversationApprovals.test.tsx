@@ -14,10 +14,15 @@ const { ConversationApprovals, shownApprovals } = await import(
 const realFetch = globalThis.fetch;
 const asked: string[] = [];
 let rows: unknown[] = [];
+// Set per test: how long a read takes, and a rewrite of the rows at each read.
+let readDelayMs = 0;
+let onRead: ((url: string) => void) | null = null;
 
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
+  onRead?.(url);
+  if (readDelayMs > 0) await new Promise((r) => setTimeout(r, readDelayMs));
   // As the server answers: the pending ones on their own, else the latest.
   const answer = url.includes("status=PENDING")
     ? rows.filter((r) => (r as { status: string }).status === "PENDING")
@@ -32,6 +37,8 @@ afterEach(() => {
   cleanup();
   asked.length = 0;
   rows = [];
+  readDelayMs = 0;
+  onRead = null;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -126,3 +133,31 @@ test("a waiting request older than many decided ones still shows", async () => {
   ).toBe("/document-approvals/3");
   expect(screen.queryByText("Rejected")).toBeNull();
 });
+
+test("a decision whose reads are slow still lands its outcome", async () => {
+  rows = [
+    row("7", {
+      status: "APPROVED",
+      decidedAt: new Date().toISOString(),
+      issuedDocumentId: "2",
+    }),
+  ];
+  let reads = 0;
+  onRead = (url) => {
+    // One read is the pending query and then the latest; count the latest.
+    if (url.includes("status=PENDING")) return;
+    reads += 1;
+    // Slower than the poll from the second read on, and answered by then.
+    if (reads >= 2) {
+      readDelayMs = 3500;
+      rows = [{ ...(rows[0] as object), outcome: "DELIVERED" }];
+    }
+  };
+  render(
+    <MemoryRouter>
+      <ConversationApprovals conversationId="29" refreshKey={0} />
+    </MemoryRouter>,
+  );
+  await screen.findByText("On its way to the customer");
+  await screen.findByText("Sent to the customer", {}, { timeout: 12_000 });
+}, 15_000);

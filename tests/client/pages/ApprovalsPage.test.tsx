@@ -47,6 +47,8 @@ const onePage = () => ({ requests: [DOCUMENT], total: 1, nextAfter: null });
 let pending: (url: string) => unknown = onePage;
 let knowledgeFails = false;
 let knowledgeNone = false;
+// Decided rows the history answers before the default one, set per test.
+let extraDecided: unknown[] = [];
 
 const SUGGESTION = {
   id: "a1",
@@ -74,6 +76,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes("/document-approvals/decided")) {
     return json({
       requests: [
+        ...extraDecided,
         {
           ...DOCUMENT,
           id: "40",
@@ -144,6 +147,7 @@ afterEach(() => {
   knowledgeFails = false;
   knowledgeNone = false;
   decided = false;
+  extraDecided = [];
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -373,3 +377,29 @@ test("the history tab lists the decided documents with who decided and what they
   expect(link.textContent).toContain("Sent to the customer");
   expect(screen.queryByText("Knowledge suggestions")).toBeNull();
 });
+
+test("an untouched history stops saying a document is on its way when that runs out", async () => {
+  role = "AGENT";
+  extraDecided = [
+    {
+      ...DOCUMENT,
+      id: "44",
+      contactName: "Caio Prado",
+      status: "APPROVED",
+      // Ten minutes after the decision, less a second and a half.
+      decidedAt: new Date(Date.now() - 10 * 60_000 + 1500).toISOString(),
+      reviewerName: null,
+      outcome: null,
+      issuedDocumentId: "3",
+    },
+  ];
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  const link = await screen.findByRole("link", { name: /for Caio Prado/ });
+  expect(link.textContent).toContain("On its way to the customer");
+  await waitFor(
+    () =>
+      expect(link.textContent).toContain("No confirmation that it was sent"),
+    { timeout: 5000 },
+  );
+}, 10_000);

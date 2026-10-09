@@ -10,6 +10,7 @@ import {
   approvalOutcomeLabel,
 } from "@/client/lib/approval-status";
 import { serverNow } from "@/client/lib/serverClock";
+import { useSendingClock } from "@/client/lib/useSendingClock";
 
 // The documents of one conversation that went through approval, on the conversation's page
 // (docs/documents.md, Approval): every request still waiting on the team, or else the latest one with
@@ -44,6 +45,9 @@ export function ConversationApprovals({
   const { t } = useTranslation();
   const [rows, setRows] = useState<ApprovalRow[]>([]);
   const [tick, setTick] = useState(0);
+  // Bumped when a read settles, answered or not: the next poll is armed from there, never on a clock
+  // of its own, so a slow read is never cut short by the next one.
+  const [reads, setReads] = useState(0);
 
   useEffect(() => {
     void refreshKey;
@@ -70,6 +74,8 @@ export function ConversationApprovals({
         if (!cancelled && latest.data) setRows(latest.data.requests);
       } catch {
         // Nothing to show is the safe reading: the conversation itself is what the page is for.
+      } finally {
+        if (!cancelled) setReads((n) => n + 1);
       }
     })();
     return () => {
@@ -88,12 +94,13 @@ export function ConversationApprovals({
       serverNow() - new Date(r.decidedAt).getTime() < SETTLE_WINDOW_MS,
   );
   useEffect(() => {
-    // Each read re-arms the next one while the decision is still on its way.
-    void tick;
+    // Each settled read arms the next one while the decision is still on its way.
+    void reads;
     if (!settling) return;
     const timer = setTimeout(() => setTick((n) => n + 1), SETTLE_POLL_MS);
     return () => clearTimeout(timer);
-  }, [settling, tick]);
+  }, [settling, reads]);
+  useSendingClock(shown);
   if (shown.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">

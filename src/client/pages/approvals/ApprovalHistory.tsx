@@ -16,6 +16,7 @@ import {
   approvalOutcomeLabel,
   approvalStatusLabel,
 } from "@/client/lib/approval-status";
+import { useSendingClock } from "@/client/lib/useSendingClock";
 
 // The approvals history (docs/documents.md, Approval): every document request no longer waiting on the
 // team, newest first, with who decided and what it came to in the conversation.
@@ -84,6 +85,8 @@ export function ApprovalHistory() {
       setLoadingMore(false);
     }
   };
+
+  useSendingClock(requests ?? []);
 
   const formatTime = (value: Date | string) =>
     new Date(value).toLocaleString(i18n.language);

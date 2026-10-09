@@ -20,10 +20,10 @@ import {
   APPROVAL_STATUS_VARIANT,
   approvalOutcomeLabel,
   approvalStatusLabel,
-  SENDING_FOR_MS,
 } from "@/client/lib/approval-status";
 import { mediaFetch } from "@/client/lib/media";
 import { serverNow } from "@/client/lib/serverClock";
+import { useSendingClock } from "@/client/lib/useSendingClock";
 import { DocumentPreview } from "@/client/pages/resources/documents/DocumentPreview";
 import type { DocumentPreviewState } from "@/client/pages/resources/documents/useDocumentPreview";
 
@@ -258,20 +258,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
 
   // "On its way" holds for a while after the decision (approvalOutcomeLabel); past the poll, the page
   // still renders once more when that runs out, so an untouched page does not keep claiming it.
-  const [, setLabelClock] = useState(0);
-  const sendingUntil =
-    request?.status === "APPROVED" &&
-    request.outcome === null &&
-    request.decidedAt !== null
-      ? new Date(request.decidedAt).getTime() + SENDING_FOR_MS
-      : null;
-  useEffect(() => {
-    if (sendingUntil === null) return;
-    const left = sendingUntil - serverNow();
-    if (left <= 0) return;
-    const timer = setTimeout(() => setLabelClock((n) => n + 1), left + 1000);
-    return () => clearTimeout(timer);
-  }, [sendingUntil]);
+  useSendingClock(request ? [request] : []);
 
   const endpoint = api.api.v1["document-approvals"]({ id });
 

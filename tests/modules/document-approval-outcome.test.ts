@@ -9,7 +9,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import { ChatwootStatusConflictError } from "@/modules/chatwoot/client";
-import { asRendered } from "@/modules/chatwoot/liquid";
+import { asRendered, literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   approveDocumentRequest,
   expireDueApprovalRequests,
@@ -819,6 +819,93 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     }
   });
 
+  test("an agent switched off after the replacement reached the customer still ends the job", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await withOutputGuardrail({
+      action: "template",
+      templateMessage: "MENSAGEM-SEGURA-DOC",
+    });
+    try {
+      const rec = recordingClient();
+      const client = await rec.makeClient();
+      const offAfterSend = new Proxy(client as object, {
+        get(t, name: string) {
+          if (name === "sendMessage") {
+            return async (...args: unknown[]) => {
+              const out = await (
+                Reflect.get(t, name) as (...a: unknown[]) => Promise<unknown>
+              )(...args);
+              await suDb.agent.update({
+                where: { id: agentId },
+                data: { enabled: false },
+              });
+              return out;
+            };
+          }
+          return Reflect.get(t, name);
+        },
+      });
+      const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: async () => offAfterSend as never,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: tripping(),
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("delivered");
+      expect(named(rec.calls, "sendMessage")).toHaveLength(1);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true },
+      });
+      await withoutGuardrail();
+    }
+  });
+
+  test("a number prefix with Liquid in it reaches the note as written", async () => {
+    await suDb.documentTemplate.update({
+      where: { id: templateId },
+      data: { numberPrefix: "{{contact.email}}-" },
+    });
+    try {
+      const { requestId } = await conversationWithRequest({
+        assigneeType: "User",
+      });
+      await approveDocumentRequest({
+        ctx: ctx(),
+        requestId,
+        base: appDb,
+        storageDir: DIR,
+      });
+      const rec = recordingClient();
+      await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        storageDir: DIR,
+        nudgeDeps: { makeModel: noModel },
+      });
+      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
+        String(c[2]),
+      );
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).not.toContain("{{contact.email}}");
+      expect(notes[0]).toContain(literalForChatwoot("{{contact.email}}-"));
+    } finally {
+      await suDb.documentTemplate.update({
+        where: { id: templateId },
+        data: { numberPrefix: "ORC-" },
+      });
+    }
+  });
+
   test("the default caption escapes a title with Liquid once", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({
@@ -1288,6 +1375,67 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
     expect(notes).toHaveLength(1);
     expect(notes[0]).not.toContain("passada para um atendente");
+  });
+
+  test("a rejection assigns the pinned team only while the bot still owns the conversation", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          serviceWindow: { templateName: "reengage" },
+          handoff: { mode: "pinned", targetTeamId: 77 },
+        },
+      },
+    });
+    try {
+      const control = await conversationWithRequest({});
+      await rejectDocumentRequest({
+        ctx: ctx(),
+        requestId: control.requestId,
+        base: appDb,
+      });
+      const ok = recordingClient();
+      await runApprovalOutcome(tenantId, control.requestId, appDb, {
+        makeClient: ok.makeClient,
+        nudgeDeps: { makeModel: noModel },
+      });
+      expect(named(ok.calls, "assignTeam")).toHaveLength(1);
+
+      const { requestId } = await conversationWithRequest({});
+      await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+      const rec = recordingClient();
+      const client = await rec.makeClient();
+      // A person takes the conversation after the first read, leaving it pending.
+      let reads = 0;
+      const takenAfterRead = new Proxy(client as object, {
+        get(t, name: string) {
+          if (name === "getConversation") {
+            return async (id: number) => {
+              reads += 1;
+              return reads === 1
+                ? { id, status: "pending", meta: {} }
+                : {
+                    id,
+                    status: "pending",
+                    meta: { assignee_type: "User", assignee: { id: 5 } },
+                  };
+            };
+          }
+          return Reflect.get(t, name);
+        },
+      });
+      await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: async () => takenAfterRead as never,
+        nudgeDeps: { makeModel: noModel },
+      });
+      expect(named(rec.calls, "assignTeam")).toHaveLength(0);
+      expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { serviceWindow: { templateName: "reengage" } } },
+      });
+    }
   });
 
   test("an expiry of a whole backlog arms one outcome per request", async () => {

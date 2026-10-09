@@ -220,6 +220,13 @@ export async function runApprovalOutcome(
     }
     if (owned) {
       commit();
+    }
+    // A person can take the conversation without changing its status, which the precondition above
+    // cannot see: asked again before the assignment, so it never overwrites theirs. The status has
+    // already moved, so the conversation is with the team either way.
+    const assignable =
+      owned && (await botOwnsLive(client, target))?.owned === true;
+    if (assignable) {
       await assignPinnedTarget({
         client,
         conversationId,
@@ -280,7 +287,7 @@ export async function runApprovalOutcome(
     }),
   );
   const named = issued
-    ? `${title} (${formatDocumentNumber(issued.number, issued.numberPrefix)})`
+    ? `${title} (${literalForChatwoot(formatDocumentNumber(issued.number, issued.numberPrefix))})`
     : title;
   const pdf = await getIssuedDocumentPdf(
     sysCtx(tenantId),

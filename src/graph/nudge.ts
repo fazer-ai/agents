@@ -994,7 +994,9 @@ async function runAgentNudgeBody(
     text: string,
   ): Promise<RunAgentNudgeOutcome> => {
     try {
-      return await noteApproved(text, "noted");
+      const outcome = await noteApproved(text, "noted");
+      // A refusal (the agent switched off meanwhile) is no retry either: the message went out.
+      return outcome === "noted" ? outcome : "messaged";
     } catch (err) {
       logger.error(
         { err, conversationId: String(conversationId) },

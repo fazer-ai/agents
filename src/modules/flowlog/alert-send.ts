@@ -298,6 +298,9 @@ export function buildAlertBody(a: AlertBodyInput): {
       inboxName: a.context?.inboxName ?? null,
       chatwootConversationId: a.context?.chatwootConversationId ?? null,
       firstAt: a.context?.firstAt?.toISOString() ?? null,
+      // Additive too: the same console links Discord prints, for a receiver that forwards the alert
+      // to a person, who needs somewhere to act (the turn limit's setting among them).
+      links: alertLinks(a),
     }),
     contentType: "application/json",
   };

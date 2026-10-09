@@ -47,3 +47,15 @@ test("the body names the limit and the count", () => {
   expect(rawBody).toContain("limit 3");
   expect(rawBody).toContain("/agents/12/behavior?focus=limits");
 });
+
+// The generic webhook is the other channel the alert goes through, and a receiver that forwards it to
+// a person needs the same places to act.
+test("the generic webhook carries the same links", () => {
+  const body = JSON.parse(
+    buildAlertBody({ ...tripped, type: "webhook" }).rawBody,
+  ) as { links: { label: string; url: string }[] };
+  expect(body.links).toEqual(alertLinks(tripped));
+  expect(body.links.map((l) => l.url).join(" ")).toContain(
+    "/agents/12/behavior?focus=limits&switchTenant=4",
+  );
+});

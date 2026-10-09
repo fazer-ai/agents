@@ -686,13 +686,33 @@ interface Holder {
   // drain asked for meanwhile (a slot freed mid-claim), which runs as soon as the claim returns.
   observing: boolean;
   observeAgain: boolean;
+  // Set while the drain runs: asks for a drain at a given instant (`wakeObserveDrainAt`).
+  wakeObserve?: (atMs: number) => void;
+  // The wake-ups not fired yet, by the instant they are for, so stopping clears them.
+  observeWakes: Map<number, ReturnType<typeof setTimeout>>;
+}
+
+// How far apart two wake-ups have to be to get a timer each. A burst arms its row on every message,
+// and the instants it names land within milliseconds of each other.
+const OBSERVE_WAKE_GRAIN_MS = 100;
+
+// Asks the observe drain to run when a row just armed becomes due, so the row does not also wait
+// for the drain's next interval on top of its own window. A hint from the process that armed the
+// row: with no drain running here it does nothing, and the interval still finds the row either way.
+export function wakeObserveDrainAt(runAt: Date): void {
+  holder().wakeObserve?.(runAt.getTime());
 }
 
 const KEY = Symbol.for("fazerai.scheduler.worker");
 
 function holder(): Holder {
   const g = globalThis as unknown as Record<symbol, Holder>;
-  g[KEY] ??= { running: false, observing: false, observeAgain: false };
+  g[KEY] ??= {
+    running: false,
+    observing: false,
+    observeAgain: false,
+    observeWakes: new Map(),
+  };
   return g[KEY];
 }
 
@@ -765,6 +785,22 @@ export function startScheduler(opts: StartOptions = {}): () => void {
       });
   };
   h.observeTimer = setInterval(drainObserve, observeIntervalMs);
+  h.wakeObserve = (atMs) => {
+    const slot =
+      Math.ceil(atMs / OBSERVE_WAKE_GRAIN_MS) * OBSERVE_WAKE_GRAIN_MS;
+    const wait = slot - Date.now();
+    if (h.observeWakes.has(slot)) return;
+    h.observeWakes.set(
+      slot,
+      setTimeout(
+        () => {
+          h.observeWakes.delete(slot);
+          drainObserve();
+        },
+        Math.max(0, wait),
+      ),
+    );
+  };
   logger.info(
     "scheduler worker started (interval=%dms, observe=%dms)",
     intervalMs,
@@ -783,4 +819,7 @@ export function stopScheduler(): void {
     clearInterval(h.observeTimer);
     h.observeTimer = undefined;
   }
+  h.wakeObserve = undefined;
+  for (const timer of h.observeWakes.values()) clearTimeout(timer);
+  h.observeWakes.clear();
 }

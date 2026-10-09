@@ -76,7 +76,11 @@ import {
   retireUnlessAllowedLaterOn,
   upsertJobRow,
 } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobResult,
+  registerJobHandler,
+  wakeObserveDrainAt,
+} from "@/modules/scheduler/worker";
 import {
   announceSpendCeiling,
   spendCeilingVerdict,
@@ -275,6 +279,7 @@ export async function armObserve(
   const dedupeKey = observeDedupeKey(threadId, p.agentId);
   const nowMs = (p.now ?? new Date()).getTime();
   let armed = true;
+  let dueAt: Date | null = null;
   try {
     await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
       withEntityLock(db, `observe-arm:${threadId}`, async () => {
@@ -384,8 +389,11 @@ export async function armObserve(
           },
           rearm,
         });
+        dueAt = new Date(runAtMs);
       }),
     );
+    // After the arm committed: the drain is asked for the instant the row becomes due.
+    if (dueAt !== null) wakeObserveDrainAt(dueAt);
     return armed ? "armed" : "off";
   } catch (err) {
     logger.warn(

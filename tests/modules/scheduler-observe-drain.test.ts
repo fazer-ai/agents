@@ -9,6 +9,8 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { Semaphore } from "@/lib/semaphore";
+import { armObserve } from "@/modules/observe/job";
+import type { MonitoringConfig } from "@/modules/observe/settings";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import {
   getJobHandler,
@@ -19,6 +21,7 @@ import {
   startScheduler,
   stopScheduler,
   unregisterJobHandler,
+  wakeObserveDrainAt,
 } from "@/modules/scheduler/worker";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
@@ -281,6 +284,90 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     await third.settled;
     expect(freed).toBe(1);
     expect(h.started).toHaveLength(2);
+  });
+
+  // The interval is set a minute away, so what runs here ran on the wake-up asked for at arm time.
+  test("a drain asked for at the instant a row becomes due does not wait for the interval", async () => {
+    const h = held();
+    h.release();
+    registerJobHandler("OBSERVE", h.handler);
+    startScheduler({
+      base: appDb,
+      intervalMs: 60_000,
+      observeIntervalMs: 60_000,
+      tenantId,
+      providerConcurrency: 2,
+    });
+    const dueAt = new Date(Date.now() + 300);
+    await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "OBSERVE",
+      dedupeKey: "woken",
+      runAt: dueAt,
+      base: appDb,
+    });
+    // Asked twice for the same instant, as two messages of one burst do: one timer, one drain.
+    wakeObserveDrainAt(dueAt);
+    wakeObserveDrainAt(dueAt);
+    await sleep(150);
+    expect(h.started).toEqual([]);
+    await until(() => h.started.length > 0, 3_000);
+    expect(h.started).toEqual(["woken"]);
+    expect(Date.now() - dueAt.getTime()).toBeLessThan(1_000);
+  });
+
+  test("arming an observation asks the drain for the instant its window ends", async () => {
+    const h = held();
+    h.release();
+    registerJobHandler("OBSERVE", h.handler);
+    startScheduler({
+      base: appDb,
+      intervalMs: 60_000,
+      observeIntervalMs: 60_000,
+      tenantId,
+      providerConcurrency: 2,
+    });
+    const armedAt = Date.now();
+    expect(
+      await armObserve({
+        tenantId,
+        instanceId: 1n,
+        conversationId: 7701,
+        agentId: 1n,
+        reason: "burst",
+        cfg: {
+          analysis: "incremental",
+          debounce: { windowSeconds: 0.3, maxWindowSeconds: 1 },
+        } as MonitoringConfig,
+        base: appDb,
+      }),
+    ).toBe("armed");
+    await until(() => h.started.length > 0, 3_000);
+    expect(h.started).toHaveLength(1);
+    const took = Date.now() - armedAt;
+    // Not before the window, and not an interval after it.
+    expect(took).toBeGreaterThanOrEqual(300);
+    expect(took).toBeLessThan(1_500);
+  });
+
+  test("a wake-up asked for with no drain running does nothing, and stopping drops the ones pending", async () => {
+    const h = held();
+    h.release();
+    registerJobHandler("OBSERVE", h.handler);
+    await arm("nobody-wakes");
+    wakeObserveDrainAt(new Date());
+    startScheduler({
+      base: appDb,
+      intervalMs: 60_000,
+      observeIntervalMs: 60_000,
+      tenantId,
+      providerConcurrency: 2,
+    });
+    wakeObserveDrainAt(new Date(Date.now() + 200));
+    stopScheduler();
+    await sleep(500);
+    expect(h.started).toEqual([]);
   });
 
   test("the shared tick leaves observations alone when a drain owns the lane", async () => {

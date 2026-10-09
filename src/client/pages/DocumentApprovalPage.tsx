@@ -118,6 +118,15 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  // Whether this request's page is still the one on screen: an action that answers after the
+  // reviewer moved on must not navigate them away from where they went.
+  const onScreen = useRef(true);
+  useEffect(() => {
+    onScreen.current = true;
+    return () => {
+      onScreen.current = false;
+    };
+  }, []);
   const [request, setRequest] = useState<ApprovalRequest | null>(null);
   const [context, setContext] = useState<ApprovalContext | null>(null);
   // The context is read apart from the request: it waits on Chatwoot, page by page, and the document
@@ -287,7 +296,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         ),
         "success",
       );
-      navigate(`/document-approvals/${data.request.id}`);
+      if (onScreen.current) navigate(`/document-approvals/${data.request.id}`);
     } catch {
       // The body could not be read (a cut connection, a malformed answer): the server may have
       // acted anyway, so the request is read again rather than guessed.

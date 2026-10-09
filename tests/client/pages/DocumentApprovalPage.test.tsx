@@ -339,3 +339,33 @@ test("an approval whose answer cannot be read says so and reads the request agai
   await screen.findByText("Could not approve.");
   await waitFor(() => expect(reads).toBe(2));
 });
+
+test("a request again that answers after the reviewer moved on leaves them where they went", async () => {
+  const answer = gate();
+  handler = async (url, init) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.endsWith("/request-again") && init?.method === "POST") {
+      await answer.shut;
+      return json({ request: request("30") });
+    }
+    if (url.includes("/document-approvals/30")) {
+      return json({ request: request("30") });
+    }
+    if (url.includes("/document-approvals/26")) {
+      return json({ request: request("26") });
+    }
+    if (url.includes("/document-approvals/16")) {
+      return json({ request: request("16", { status: "EXPIRED" }) });
+    }
+    return json({});
+  };
+  mount("/document-approvals/16");
+  fireEvent.click(await screen.findByRole("button", { name: "Request again" }));
+  act(() => goTo("/document-approvals/26"));
+  await screen.findByText("Orçamento 26");
+  answer.open();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(screen.getByText("Orçamento 26")).toBeTruthy();
+  expect(screen.queryByText("Orçamento 30")).toBeNull();
+});

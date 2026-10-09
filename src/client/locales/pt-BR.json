@@ -645,6 +645,7 @@
     },
     "attachment": "Anexo",
     "back": "Voltar para conversas",
+    "backToApproval": "Voltar para a aprovação",
     "configureAgent": "Configurar agente",
     "configureObserver": "Configurar {{name}}",
     "error": "Não foi possível carregar a conversa.",

@@ -462,7 +462,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 )}
                 {context?.conversation && (
                   <Link
-                    to={`/conversations/${context.conversation.id}`}
+                    to={`/conversations/${context.conversation.id}?from=/document-approvals/${id}`}
                     className="text-accent text-sm"
                   >
                     {t(

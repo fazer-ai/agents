@@ -627,6 +627,7 @@
     },
     "attachment": "Attachment",
     "back": "Back to conversations",
+    "backToApproval": "Back to the approval",
     "configureAgent": "Configure agent",
     "configureObserver": "Configure {{name}}",
     "error": "Could not load the conversation.",

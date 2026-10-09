@@ -146,12 +146,11 @@ describe("custom attribute writes against endpoints that replace", () => {
     expect(cw.conversations.get(61)).toEqual({ c: "3" });
   });
 
-  test("a read Chatwoot refuses fails only the call that made it", async () => {
+  test("a read Chatwoot refuses fails the calls waiting on it, and the next call is its own", async () => {
     const cw = fakeChatwootAttributeStore(5);
     let refuse = true;
     const flaky = (async (url: string, init?: RequestInit) => {
       if (refuse && (init?.method ?? "GET") === "GET") {
-        refuse = false;
         return { ok: false, status: 500, text: async () => "" } as Response;
       }
       return (
@@ -163,8 +162,86 @@ describe("custom attribute writes against endpoints that replace", () => {
       c.setConversationCustomAttributes(61, { a: "1" }),
       c.setConversationCustomAttributes(61, { b: "2" }),
     ]);
-    expect(settled.map((r) => r.status)).toEqual(["rejected", "fulfilled"]);
-    expect(cw.conversations.get(61)).toEqual({ b: "2" });
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    refuse = false;
+    await c.setConversationCustomAttributes(61, { c: "3" });
+    expect(cw.conversations.get(61)).toEqual({ c: "3" });
+  });
+
+  test("a call that arrives once the bag was read gets a read and a write of its own", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    let posts = 0;
+    let release!: () => void;
+    const slow = (async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts += 1;
+        // The first write is held, so the second call arrives after its read has come back.
+        if (posts === 1) await new Promise<void>((r) => (release = r));
+      }
+      return (
+        cw.fetchImpl as (u: string, i?: RequestInit) => Promise<Response>
+      )(url, init);
+    }) as unknown as typeof fetch;
+    const c = await client(slow);
+    const first = c.setConversationCustomAttributes(61, { a: "1" });
+    while (posts === 0) await new Promise((r) => setTimeout(r, 1));
+    const second = c.setConversationCustomAttributes(61, { b: "2" });
+    await new Promise((r) => setTimeout(r, 5));
+    release();
+    await Promise.all([first, second]);
+    expect(cw.requests.map((r) => r.method)).toEqual([
+      "GET",
+      "POST",
+      "GET",
+      "POST",
+    ]);
+    expect(cw.conversations.get(61)).toEqual({ a: "1", b: "2" });
+  });
+
+  // Only the entry at the tail of the queue can be joined. A call merged with an earlier entry
+  // across something queued in between would be written ahead of it.
+  test("a write asked after the reset's clear is not merged ahead of it", async () => {
+    const cw = fakeChatwootAttributeStore(5, {
+      conversations: { 61: { origem: "Instagram" } },
+    });
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { antes: "1" }),
+      c.clearConversationCustomAttributes(61),
+      c.setConversationCustomAttributes(61, { depois: "2" }),
+    ]);
+    expect(cw.conversations.get(61)).toEqual({ depois: "2" });
+  });
+
+  test("bot, admin and bot writes to one key leave the last value", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { etapa: "primeira" }),
+      c.setConversationCustomAttributes(
+        61,
+        { etapa: "segunda" },
+        { asAdmin: true },
+      ),
+      c.setConversationCustomAttributes(61, { etapa: "terceira" }),
+    ]);
+    expect(
+      cw.requests.filter((r) => r.method === "POST").map((r) => r.token),
+    ).toEqual(["BOT_TOK", "ADMIN_TOK", "BOT_TOK"]);
+    expect(cw.conversations.get(61)).toEqual({ etapa: "terceira" });
+  });
+
+  test("another client's write queued in between is not jumped", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const one = await client(cw.fetchImpl);
+    const other = await client(cw.fetchImpl);
+    await Promise.all([
+      one.setConversationCustomAttributes(61, { etapa: "a" }),
+      other.setConversationCustomAttributes(61, { etapa: "b" }),
+      one.setConversationCustomAttributes(61, { etapa: "c" }),
+    ]);
+    expect(cw.requests.filter((r) => r.method === "POST")).toHaveLength(3);
+    expect(cw.conversations.get(61)).toEqual({ etapa: "c" });
   });
 
   test("an admin write and a bot write to one conversation do not ride together", async () => {

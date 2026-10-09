@@ -1129,25 +1129,16 @@ export function claimDueTrafficJobs(
   return claimWhere(limit, base, now, laneFilter("shared", true), tenantId);
 }
 
-// The observe lane: OBSERVE only, claimed by the scheduler's fast drain into its free slots
+// The observe lane: OBSERVE only, claimed by the scheduler's fast drain for the permits it holds
 // (./worker.ts, runObserveTick), and by the shared tick with its own limit when no fast drain runs
-// (./lanes.ts, observeClaimLimit). `excludeIds` are the rows the drain already holds, which a burst
-// landing while they wait for a provider permit puts back to PENDING.
+// (./lanes.ts, observeClaimLimit).
 export function claimDueObserveJobs(
   limit: number,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   tenantId?: bigint,
-  excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
-  return claimWhere(
-    limit,
-    base,
-    now,
-    laneFilter("observe"),
-    tenantId,
-    excludeIds,
-  );
+  return claimWhere(limit, base, now, laneFilter("observe"), tenantId);
 }
 
 // Claims every PENDING job of one kind whose dedupeKey starts with `prefix`, DUE OR NOT. The one

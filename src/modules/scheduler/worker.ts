@@ -615,54 +615,63 @@ export async function runSchedulerTick(
   return { claimed: jobs.length, reaped: reaped.length };
 }
 
-// The rows the observe drain holds RIGHT NOW, waiting for a provider permit or running, kept out of
-// its own claim: a message landing meanwhile re-arms the SAME row back to PENDING (`armObserve`'s
-// upsert), and claimed again it would run the same observation twice at once. Per process, which is
-// what this worker is by construction.
-const observeInFlight = new Set<bigint>();
+// How many observations the drain is running RIGHT NOW. Per process, which is what this worker is by
+// construction.
+let observeRunning = 0;
 
 export interface ObserveTickOptions {
-  // How many observations may be held at once. `startScheduler` passes the provider bound, so a
-  // claimed row waits for a permit only behind the shared tick's own provider work.
+  // How many observations may run at once. `startScheduler` passes the provider bound.
   slots: number;
   // The bound the shared tick's provider-spending jobs also run under.
   gate: Semaphore;
   staleMs: number;
   // NOTE: test-only isolation, as on TickOptions. Unset in production.
   tenantId?: bigint;
-  // Called each time a held row finishes, so the caller can fill the freed slot at once.
+  // Called each time a row finishes, so the caller can fill the freed slot at once.
   onFreed?: () => void;
 }
 
-// The FAST drain of the observe lane. A monitoring agent's verdict is read while the conversation
-// is still happening, so a due OBSERVE row is claimed at this drain's own cadence and not the
-// shared tick's. SLOTS, NOT BATCHES, as the debounce lane: a tick fills only the free slots and
-// returns once its rows have STARTED, so one long observation never holds the rest. It runs under
-// the gate the shared tick's provider work runs under, so observers cannot take concurrency the
-// scheduler did not already have. The reaper stays on the shared tick. `settled` resolves when every
-// row this tick started has finished; the worker never waits on it, tests do.
+// The FAST drain of the observe lane: a verdict is read while the conversation is happening, so a
+// due OBSERVE row is claimed at this cadence and not the shared tick's. SLOTS, NOT BATCHES, as the
+// debounce lane: a tick fills the free slots and returns once its rows have STARTED. A PERMIT IS
+// TAKEN BEFORE THE ROW IS CLAIMED, from the gate the shared tick's provider work runs under, so
+// observers take no concurrency the scheduler did not already have and a claimed row never spends
+// its stale window waiting for capacity. The reaper stays on the shared tick. `settled` resolves
+// when every row this tick started has finished; the worker never waits on it, tests do.
 export async function runObserveTick(
   base: PrismaClient,
   opts: ObserveTickOptions,
 ): Promise<{ claimed: number; settled: Promise<void> }> {
-  const free = opts.slots - observeInFlight.size;
-  // NOTE: not a claim of zero. claimWhere clamps its limit to at least 1, so asking with every slot
-  // held would take one row past the slots on every tick.
-  if (free <= 0) return { claimed: 0, settled: Promise.resolve() };
-  const jobs = await claimDueObserveJobs(
-    free,
-    base,
-    new Date(),
-    opts.tenantId,
-    [...observeInFlight],
-  );
-  for (const job of jobs) observeInFlight.add(job.id);
+  const permits: (() => void)[] = [];
+  while (permits.length < opts.slots - observeRunning) {
+    const permit = opts.gate.tryAcquire();
+    if (!permit) break;
+    permits.push(permit);
+  }
+  // NOTE: not a claim of zero. claimWhere clamps its limit to at least 1, so asking with no permit
+  // in hand would take one row the drain cannot start.
+  if (permits.length === 0) return { claimed: 0, settled: Promise.resolve() };
+  let jobs: ClaimedJob[];
+  try {
+    // A row re-armed while its own run is in flight is left out by the claim itself (./running.ts).
+    jobs = await claimDueObserveJobs(
+      permits.length,
+      base,
+      new Date(),
+      opts.tenantId,
+    );
+  } catch (err) {
+    for (const permit of permits) permit();
+    throw err;
+  }
+  // The permits nothing was claimed for go back at once.
+  for (const permit of permits.splice(jobs.length)) permit();
+  observeRunning += jobs.length;
   const deadlineMs = jobDeadlineMs(opts.staleMs);
-  // allSettled: runClaimed never re-throws, but a stray throw must not strand a slot.
+  // allSettled: runClaimed never re-throws, but a stray throw must not strand a slot or a permit.
   const settled = Promise.allSettled(
-    jobs.map((job) =>
-      opts.gate
-        .run(() => runClaimed(job, base, { deadlineMs }))
+    jobs.map((job, i) =>
+      (async () => runClaimed(job, base, { deadlineMs }))()
         .catch((err) =>
           logger.error(
             { err, kind: job.kind, jobId: String(job.id) },
@@ -670,7 +679,8 @@ export async function runObserveTick(
           ),
         )
         .finally(() => {
-          observeInFlight.delete(job.id);
+          permits[i]?.();
+          observeRunning -= 1;
           opts.onFreed?.();
         }),
     ),

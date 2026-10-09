@@ -44,6 +44,19 @@ export class Semaphore {
     }
   }
 
+  // Takes a permit only if one is free right now, never joining the queue. Returns its release
+  // (idempotent), or null. For a caller that must not commit to work it cannot start at once.
+  tryAcquire(): (() => void) | null {
+    if (this.available <= 0) return null;
+    this.available -= 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
+  }
+
   async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     await this.acquire(signal);
     try {

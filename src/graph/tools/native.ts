@@ -38,7 +38,11 @@ import {
   isAdditionalContactField,
 } from "@/modules/chatwoot/contact-fields";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
-import { withConversationLabels } from "@/modules/chatwoot/labels";
+import {
+  closeConversationLabelsTail,
+  conversationLabelsTail,
+  withConversationLabels,
+} from "@/modules/chatwoot/labels";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   attributesForModel,
@@ -1174,16 +1178,21 @@ export function sharedWriteKey(
   return null;
 }
 
-// One `set_labels` call on the conversation scope that has not been written yet, per turn (the
-// tool context is one turn's): see the conversation branch of the handler.
+// One `set_labels` call on the conversation scope that has not been written yet.
 interface PendingLabelDelta {
   add: string[];
   remove: string[];
-  done: boolean;
   resolve: (report: string) => void;
   reject: (reason: unknown) => void;
 }
-const pendingLabelDeltas = new WeakMap<ToolCtx, PendingLabelDelta[]>();
+
+// The `set_labels` calls one entry of the conversation's label queue will write together. While it
+// is the queue's tail, which it stops being when its read comes back, a call of the same turn (the
+// tool context is one turn's) joins it instead of queueing behind it.
+class LabelBatch {
+  readonly deltas: PendingLabelDelta[] = [];
+  constructor(readonly ctx: ToolCtx) {}
+}
 
 // Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card (scope,
 // default 'conversation'). Endpoints, per the chatwoot-pro fork: conversation and contact labels GET
@@ -1243,6 +1252,91 @@ function setLabelsTool(ctx: ToolCtx) {
   ]
     .filter(Boolean)
     .join(" ");
+  // One entry of the conversation's label queue, shared with the observer's verdict and the nudge's
+  // own merge: the endpoint replaces the whole set, so an unqueued read-then-POST erases what
+  // another writer added between the two. Every call the entry holds is applied to ONE read, one
+  // delta after the other in the order the calls were made, and the set they add up to goes out in
+  // one POST; each call still answers for its own delta, with the set as it stood after it. Never
+  // rejects: each call is answered through its own promise.
+  const writeConversationLabels = async (batch: LabelBatch): Promise<void> => {
+    // From here on nobody joins: a call that arrives now queues an entry of its own.
+    const close = () =>
+      closeConversationLabelsTail(ctx.tenantId, ctx.conversationId, batch);
+    try {
+      const current = await ctx.client.getConversationLabels(
+        ctx.conversationId,
+      );
+      close();
+      let state = current;
+      const outcomes = batch.deltas.map((d) => {
+        const outcome = applyLabelDelta(
+          d.add,
+          d.remove,
+          state,
+          guarded,
+          allowed,
+        );
+        state = outcome.next;
+        return { delta: d, ...outcome };
+      });
+      const report = (o: (typeof outcomes)[number]) =>
+        labelWriteReport(
+          "conversation",
+          o.added,
+          o.removed,
+          o.next,
+          o.refusedAdd,
+          o.refusedRemove,
+          o.heldRemove,
+          o.refusedOutside,
+        );
+      const moved = (o: (typeof outcomes)[number]) =>
+        o.added.length > 0 || o.removed.length > 0;
+      if (!outcomes.some(moved)) {
+        // NOTE: Nothing moved: see the sibling scopes.
+        recordShown(ctx, "conversation", state);
+        for (const o of outcomes) {
+          ctx.onNoEffect?.("set_labels");
+          o.delta.resolve(report(o));
+        }
+        return;
+      }
+      // NOTE: ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
+      // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
+      // peels the episode's labels off in this very queue (webhook.ts), so a call that was
+      // wanted when it entered can land on a conversation the operator has just been told was
+      // cleared. Only an explicit `false` stops the write: a fence that could not answer is not
+      // a withdrawal.
+      if (ctx.stillWanted && !(await ctx.stillWanted())) {
+        for (const o of outcomes) {
+          ctx.onNoEffect?.("set_labels");
+          o.delta.resolve(
+            "Could not set the labels (the run was called off while this write waited its turn).",
+          );
+        }
+        return;
+      }
+      await ctx.client.setConversationLabels(ctx.conversationId, state);
+      recordShown(ctx, "conversation", state);
+      for (const o of outcomes) {
+        if (moved(o)) {
+          ctx.onLabelsWritten?.(
+            describeLabelWrite("conversation", o.added, o.removed, o.next, {
+              allowed: allowedList,
+              acceptedOutside: o.acceptedOutside,
+            }),
+          );
+        } else {
+          ctx.onNoEffect?.("set_labels");
+        }
+        o.delta.resolve(report(o));
+      }
+    } catch (err) {
+      close();
+      // Settling twice is a no-op, so the calls already answered are not disturbed.
+      for (const d of batch.deltas) d.reject(err);
+    }
+  };
   return tool(
     async (
       args: {
@@ -1414,142 +1508,25 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
         );
       }
-      // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: every call of this turn that joined the
-      // queue while the read was in flight is applied to the same read, one delta after the other in
-      // the order the calls were made, and the set they add up to goes out in one POST. Each call
-      // still answers for its own delta, with the set as it stood after it.
-      let resolve!: (report: string) => void;
-      let reject!: (reason: unknown) => void;
-      const settled = new Promise<string>((res, rej) => {
-        resolve = res;
-        reject = rej;
+      // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: a call that finds this turn's own entry at
+      // the TAIL of the label queue, its read still out, joins that entry. Only the tail can be
+      // joined, so a call is never merged ahead of a writer queued in between.
+      return new Promise<string>((resolve, reject) => {
+        const mine: PendingLabelDelta = { add, remove, resolve, reject };
+        const tail = conversationLabelsTail(ctx.tenantId, ctx.conversationId);
+        if (tail instanceof LabelBatch && tail.ctx === ctx) {
+          tail.deltas.push(mine);
+          return;
+        }
+        const batch = new LabelBatch(ctx);
+        batch.deltas.push(mine);
+        void withConversationLabels(
+          ctx.tenantId,
+          ctx.conversationId,
+          () => writeConversationLabels(batch),
+          batch,
+        );
       });
-      // The queue's own promise is what the caller awaits; this one may reject before its turn does.
-      settled.catch(() => {});
-      const mine: PendingLabelDelta = {
-        add,
-        remove,
-        done: false,
-        resolve,
-        reject,
-      };
-      const waiting = pendingLabelDeltas.get(ctx) ?? [];
-      waiting.push(mine);
-      pendingLabelDeltas.set(ctx, waiting);
-      const settle = (d: PendingLabelDelta, end: () => void) => {
-        if (d.done) return;
-        d.done = true;
-        end();
-      };
-      // Inside the conversation's label queue, shared with the observer's verdict and the nudge's
-      // own merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases
-      // what another writer added between the two. The queue serialises OUR writers; the delta is
-      // what survives the ones it does not reach.
-      return withConversationLabels(
-        ctx.tenantId,
-        ctx.conversationId,
-        async () => {
-          // An earlier turn of the queue already carried this call.
-          if (mine.done) return settled;
-          let batch = [mine];
-          try {
-            const current = await ctx.client.getConversationLabels(
-              ctx.conversationId,
-            );
-            batch = pendingLabelDeltas.get(ctx) ?? [mine];
-            pendingLabelDeltas.delete(ctx);
-            let state = current;
-            const outcomes = batch.map((d) => {
-              const outcome = applyLabelDelta(
-                d.add,
-                d.remove,
-                state,
-                guarded,
-                allowed,
-              );
-              state = outcome.next;
-              return outcome;
-            });
-            const report = (o: (typeof outcomes)[number]) =>
-              labelWriteReport(
-                "conversation",
-                o.added,
-                o.removed,
-                o.next,
-                o.refusedAdd,
-                o.refusedRemove,
-                o.heldRemove,
-                o.refusedOutside,
-              );
-            const moved = (o: (typeof outcomes)[number]) =>
-              o.added.length > 0 || o.removed.length > 0;
-            if (!outcomes.some(moved)) {
-              // NOTE: Nothing moved: see the sibling scopes above.
-              recordShown(ctx, "conversation", state);
-              batch.forEach((d, i) => {
-                const outcome = outcomes[i];
-                if (!outcome) return;
-                settle(d, () => {
-                  ctx.onNoEffect?.("set_labels");
-                  d.resolve(report(outcome));
-                });
-              });
-              return settled;
-            }
-            // NOTE: ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
-            // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
-            // peels the episode's labels off in this very queue (webhook.ts), so a call that was
-            // wanted when it entered can land on a conversation the operator has just been told was
-            // cleared. Only an explicit `false` stops the write: a fence that could not answer is not
-            // a withdrawal.
-            if (ctx.stillWanted && !(await ctx.stillWanted())) {
-              for (const d of batch) {
-                settle(d, () => {
-                  ctx.onNoEffect?.("set_labels");
-                  d.resolve(
-                    "Could not set the labels (the run was called off while this write waited its turn).",
-                  );
-                });
-              }
-              return settled;
-            }
-            await ctx.client.setConversationLabels(ctx.conversationId, state);
-            recordShown(ctx, "conversation", state);
-            batch.forEach((d, i) => {
-              const outcome = outcomes[i];
-              if (!outcome) return;
-              settle(d, () => {
-                if (moved(outcome)) {
-                  ctx.onLabelsWritten?.(
-                    describeLabelWrite(
-                      "conversation",
-                      outcome.added,
-                      outcome.removed,
-                      outcome.next,
-                      {
-                        allowed: allowedList,
-                        acceptedOutside: outcome.acceptedOutside,
-                      },
-                    ),
-                  );
-                } else {
-                  ctx.onNoEffect?.("set_labels");
-                }
-                d.resolve(report(outcome));
-              });
-            });
-          } catch (err) {
-            // A read that failed took nobody else along: only this call leaves the list.
-            const left = (pendingLabelDeltas.get(ctx) ?? []).filter(
-              (d) => d !== mine,
-            );
-            if (left.length > 0) pendingLabelDeltas.set(ctx, left);
-            else pendingLabelDeltas.delete(ctx);
-            for (const d of batch) settle(d, () => d.reject(err));
-          }
-          return settled;
-        },
-      );
     },
     {
       name: "set_labels",

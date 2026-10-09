@@ -11,6 +11,7 @@ import {
 } from "@/graph/tools/native";
 import { applyToolPreconditions } from "@/graph/tools/precondition";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 
 function recordingClient() {
@@ -1485,6 +1486,75 @@ describe("native tools", () => {
       [9, ["a"]],
       [9, ["a", "b"]],
     ]);
+  });
+
+  test("a call asked after another writer joined the queue is not merged ahead of it", async () => {
+    // The reset's clear, the nudge's merge and the close's labels all write in this queue. A call
+    // merged with an earlier one across such a writer would land before it.
+    let current: string[] = [];
+    const setCalls: string[][] = [];
+    let reads = 0;
+    let releaseRead!: () => void;
+    const client = {
+      getConversationLabels: async () => {
+        reads += 1;
+        // The first read is held, so what follows is queued while the first entry is still joinable.
+        if (reads === 1) await new Promise<void>((r) => (releaseRead = r));
+        return [...current];
+      },
+      setConversationLabels: async (_id: number, next: string[]) => {
+        setCalls.push(next);
+        current = [...next];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      tenantId: 77n,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    const first = tool.invoke({ add: ["a"] });
+    while (reads === 0) await new Promise((r) => setTimeout(r, 1));
+    const cleared = withConversationLabels(77n, 9, async () => {
+      setCalls.push([]);
+      current = [];
+    });
+    const second = tool.invoke({ add: ["b"] });
+    await new Promise((r) => setTimeout(r, 5));
+    releaseRead();
+    await Promise.all([first, cleared, second]);
+    expect(setCalls).toEqual([["a"], [], ["b"]]);
+    expect(current).toEqual(["b"]);
+  });
+
+  test("two turns writing one conversation's labels do not ride together", async () => {
+    let current: string[] = [];
+    const setCalls: string[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (_id: number, next: string[]) => {
+        setCalls.push(next);
+        current = [...next];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const turn = () =>
+      byName(
+        buildNativeTools({
+          client,
+          conversationId: 9,
+          tenantId: 77n,
+          shownLabels: { conversation: [] },
+        }),
+        "set_labels",
+      );
+    await Promise.all([
+      turn().invoke({ add: ["a"] }),
+      turn().invoke({ add: ["b"] }),
+    ]);
+    expect(setCalls).toEqual([["a"], ["a", "b"]]);
   });
 
   test("a failed write fails every call that rode on it, and the next call starts clean", async () => {

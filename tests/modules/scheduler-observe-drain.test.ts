@@ -181,13 +181,31 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     h.release();
   });
 
-  test("an observation waits for a permit the shared tick's provider work holds", async () => {
+  // The permit comes first: a row claimed and then left waiting for capacity would spend its stale
+  // window in the wait, and the reaper would take it from under its own run.
+  test("with no permit free the drain claims nothing, and the row is still PENDING", async () => {
     const h = held();
+    h.release();
     registerJobHandler("OBSERVE", h.handler);
     const gate = new Semaphore(1);
     let free!: () => void;
     const busy = gate.run(() => new Promise<void>((r) => (free = r)));
     await arm("permit");
+    const blocked = await runObserveTick(appDb, {
+      slots: 1,
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    });
+    expect(blocked.claimed).toBe(0);
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, kind: "OBSERVE", status: "PENDING" },
+      }),
+    ).toBe(1);
+    expect(h.started).toEqual([]);
+    free();
+    await busy;
     const tick = await runObserveTick(appDb, {
       slots: 1,
       gate,
@@ -195,22 +213,39 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
       tenantId,
     });
     expect(tick.claimed).toBe(1);
-    await sleep(100);
-    expect(h.started).toEqual([]);
-    free();
-    await busy;
-    h.release();
     await tick.settled;
     expect(h.started).toEqual(["permit"]);
   });
 
-  // A burst landing while the row waits puts the SAME row back to PENDING (armObserve's upsert).
-  test("a row the drain already holds is not claimed again when a burst re-arms it", async () => {
+  test("a running observation holds one permit of the shared bound, and gives it back", async () => {
     const h = held();
     registerJobHandler("OBSERVE", h.handler);
-    const gate = new Semaphore(1);
-    let free!: () => void;
-    const busy = gate.run(() => new Promise<void>((r) => (free = r)));
+    const gate = new Semaphore(3);
+    await arm("one-row");
+    // Three slots and three permits free, one row due: two permits go straight back.
+    const tick = await runObserveTick(appDb, {
+      slots: 3,
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    });
+    expect(tick.claimed).toBe(1);
+    await until(() => h.started.length === 1, 3_000);
+    const taken = [gate.tryAcquire(), gate.tryAcquire(), gate.tryAcquire()];
+    expect(taken.map((p) => p !== null)).toEqual([true, true, false]);
+    for (const p of taken) p?.();
+    h.release();
+    await tick.settled;
+    const after = [gate.tryAcquire(), gate.tryAcquire(), gate.tryAcquire()];
+    expect(after.every((p) => p !== null)).toBe(true);
+    for (const p of after) p?.();
+  });
+
+  // A burst landing while the row runs puts the SAME row back to PENDING (armObserve's upsert).
+  test("a row the drain is running is not claimed again when a burst re-arms it", async () => {
+    const h = held();
+    registerJobHandler("OBSERVE", h.handler);
+    const gate = new Semaphore(2);
     await arm("held-row");
     const first = await runObserveTick(appDb, {
       slots: 2,
@@ -219,6 +254,7 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
       tenantId,
     });
     expect(first.claimed).toBe(1);
+    await until(() => h.started.length === 1, 3_000);
     await enqueueJob({
       rearm: "new-work",
       tenantId,
@@ -239,8 +275,6 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
       tenantId,
     });
     expect(second.claimed).toBe(0);
-    free();
-    await busy;
     h.release();
     await first.settled;
     expect(h.started).toEqual(["held-row"]);

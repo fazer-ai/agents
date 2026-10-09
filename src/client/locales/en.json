@@ -1065,7 +1065,8 @@
       "noAgent": "No agent left in the conversation to tell",
       "notSent": "Not sent: a private note in the conversation says why",
       "rejectedNoted": "A person already had the conversation",
-      "sending": "On its way to the customer"
+      "sending": "On its way to the customer",
+      "unconfirmed": "No confirmation that it was sent"
     },
     "phone": "Phone",
     "previewError": "The preview could not be rendered.",

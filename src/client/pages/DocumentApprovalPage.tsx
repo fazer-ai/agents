@@ -681,7 +681,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                             "Sent to the customer {{at}}.",
                             { at: formatTime(request.outcomeAt) },
                           )
-                        : request.outcome === null
+                        : request.outcome === null && outcomePending
                           ? t(
                               "documentApproval.approvedHint",
                               "Approved. The agent sends the document in the conversation, or leaves a note when it cannot.",
@@ -721,6 +721,11 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                           "documentApproval.rejectedHint",
                           "Rejected. Nothing was sent to the customer.",
                         )}
+                  </p>
+                )}
+                {request.status === "REJECTED" && request.outcome !== null && (
+                  <p className="text-sm text-text-secondary">
+                    {approvalOutcomeLabel(request, t)}
                   </p>
                 )}
               </Card>

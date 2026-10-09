@@ -1096,7 +1096,8 @@
       "noAgent": "Nenhum agente na conversa para avisar",
       "notSent": "Não enviado: uma nota privada na conversa explica o motivo",
       "rejectedNoted": "A conversa já estava com um atendente",
-      "sending": "A caminho do cliente"
+      "sending": "A caminho do cliente",
+      "unconfirmed": "Sem confirmação de envio"
     },
     "phone": "Telefone",
     "previewError": "Não foi possível gerar a prévia.",

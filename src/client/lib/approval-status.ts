@@ -1,4 +1,5 @@
 import type { TFunction } from "i18next";
+import { serverNow } from "@/client/lib/serverClock";
 
 // How a document approval request reads in the console (docs/documents.md, Approval): its status, and
 // what the decision came to in the conversation. Shared by the request's page, the approvals history
@@ -30,10 +31,18 @@ export function approvalStatusLabel(status: string, t: TFunction): string {
   );
 }
 
+// How long an approval may go without a recorded outcome before "on its way" stops being true: the
+// outcome lands seconds after the decision, and a run still failing past this is not on its way.
+const SENDING_FOR_MS = 10 * 60_000;
+
 // What happened in the conversation after the decision, or null when there is nothing to add (still
 // pending, or an expiry or cancellation, whose status already says nothing was sent).
 export function approvalOutcomeLabel(
-  r: { status: string; outcome: string | null },
+  r: {
+    status: string;
+    outcome: string | null;
+    decidedAt?: Date | string | null;
+  },
   t: TFunction,
 ): string | null {
   if (r.outcome === "NO_AGENT") {
@@ -50,6 +59,13 @@ export function approvalOutcomeLabel(
       return t(
         "documentApproval.outcome.notSent",
         "Not sent: a private note in the conversation says why",
+      );
+    }
+    const decided = r.decidedAt ? new Date(r.decidedAt).getTime() : null;
+    if (decided !== null && serverNow() - decided > SENDING_FOR_MS) {
+      return t(
+        "documentApproval.outcome.unconfirmed",
+        "No confirmation that it was sent",
       );
     }
     return t("documentApproval.outcome.sending", "On its way to the customer");

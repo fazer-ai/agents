@@ -496,3 +496,26 @@ test("an approval whose outcome has not landed yet is read again until it does",
   await screen.findByText(/The agent sends the document/);
   await screen.findByText(/Sent to the customer/, {}, { timeout: 6000 });
 }, 10_000);
+
+test("a rejected request says what the rejection came to in the conversation", async () => {
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/20")) {
+      return json({
+        request: request("20", {
+          status: "REJECTED",
+          reviewerName: "Ana Souza",
+          note: "valor errado",
+          decidedAt: new Date().toISOString(),
+          outcome: "HANDED",
+          outcomeAt: new Date().toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/20");
+  await screen.findByText(/Rejected with the note: valor errado/);
+  await screen.findByText("Conversation handed to a person");
+});

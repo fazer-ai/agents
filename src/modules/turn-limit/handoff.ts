@@ -4,6 +4,13 @@ import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
 import type { HandoffConfig } from "@/modules/handoff/settings";
 
+export class TurnLimitHandoffFailedError extends Error {
+  constructor() {
+    super("turn-limit hand-over did not reach Chatwoot");
+    this.name = "TurnLimitHandoffFailedError";
+  }
+}
+
 // The hand-over a tripped turn limit makes: the same two moves as `handoff_to_human` and the
 // guardrail's transfer, status `open` first (it takes the conversation off the bot) and then the
 // agent's own pinned target, best-effort. No new paused state: once the conversation is open, the

@@ -73,6 +73,7 @@ interface Calls {
 function chatwootDouble(
   calls: Calls,
   onToggle?: () => Promise<void>,
+  failToggle = false,
 ): () => Promise<ChatwootClient> {
   let nextId = 1;
   const client = new Proxy(
@@ -88,6 +89,8 @@ function chatwootDouble(
             calls.status.push(String(args[1]));
             await onToggle?.();
           }
+          if (prop === "toggleStatus" && failToggle)
+            throw new Error("chatwoot unavailable");
           // NOTE: Reads (labels, attributes) answer an empty list; creates answer an id.
           return String(prop).startsWith("send") ? { id: nextId++ } : [];
         };
@@ -157,6 +160,7 @@ async function turn(
     base?: PrismaClient;
     contactInboxId?: number;
     onToggle?: () => Promise<void>;
+    failToggle?: boolean;
   } = {},
 ) {
   return runAgentTurn({
@@ -172,7 +176,7 @@ async function turn(
     deps: {
       makeModel: () =>
         new StubModel(opts.reply ?? REPLY) as unknown as BaseChatModel,
-      makeClient: chatwootDouble(calls, opts.onToggle),
+      makeClient: chatwootDouble(calls, opts.onToggle, opts.failToggle),
       checkpointer: new MemorySaver(),
     },
   });
@@ -460,6 +464,51 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       await suDb.agentToolSelection.delete({ where: { id: selection.id } });
       await suDb.toolDefinition.delete({ where: { id: tool.id } });
     }
+  });
+
+  // A hand-over that did not reach Chatwoot leaves the customer with neither a reply nor a person, so
+  // the turn fails and the message stays owed instead of being settled as answered.
+  test("a hand-over that fails keeps the message owed", async () => {
+    const convId = 8210;
+    const convDbId = await seedConversation(convId);
+    await seedDeliveries(convDbId, [
+      minutesAgo(30),
+      minutesAgo(20),
+      minutesAgo(10),
+    ]);
+
+    const calls = newCalls();
+    await expect(turn(convId, calls, { failToggle: true })).rejects.toThrow(
+      "turn-limit hand-over did not reach Chatwoot",
+    );
+    expect(calls.sent).toEqual([]);
+    const row = await suDb.conversation.findUnique({
+      where: { id: convDbId },
+      select: { turnLimitTrippedAt: true },
+    });
+    expect(row?.turnLimitTrippedAt).toBeNull();
+  });
+
+  // A person who took the conversation while the turn prepared gets it with the message unread, so
+  // the receiver folds it into memory rather than settling it as handled.
+  test("a takeover seen at the gate leaves the message unread", async () => {
+    const convId = 8211;
+    const convDbId = await seedConversation(convId);
+    await seedDeliveries(convDbId, [
+      minutesAgo(30),
+      minutesAgo(20),
+      minutesAgo(10),
+    ]);
+    await suDb.conversation.update({
+      where: { id: convDbId },
+      data: { status: "open" },
+    });
+
+    const calls = newCalls();
+    expect(await turn(convId, calls)).toBe("taken-over-unread");
+    expect(calls.sent).toEqual([]);
+    expect(calls.status).toEqual([]);
+    expect(calls.notes).toEqual([]);
   });
 
   // A /reset that lands while the conversation is being handed over gives it back to the agent, so

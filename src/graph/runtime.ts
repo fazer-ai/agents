@@ -82,7 +82,10 @@ import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
-import { applyTurnLimitHandoff } from "@/modules/turn-limit/handoff";
+import {
+  applyTurnLimitHandoff,
+  TurnLimitHandoffFailedError,
+} from "@/modules/turn-limit/handoff";
 import {
   markTurnLimitTripped,
   recordTurnDelivery,
@@ -1295,8 +1298,9 @@ async function runTurnBody(
     if (!verdict.over) return null;
     const blocked = await postBlocked();
     if (blocked) return blocked;
-    // NOTE: A failed read lets the transfer go ahead, as the guardrail's does.
-    if (!(await ownershipNow().catch(() => true))) return "taken-over";
+    // NOTE: A failed read lets the transfer go ahead, as the guardrail's does. Before the invoke, so a
+    // person who took it over meanwhile gets the message unread (docs/graph.md).
+    if (!(await ownershipNow().catch(() => true))) return "taken-over-unread";
     if (await writeCalledOff()) return standDown();
     const handed = await applyTurnLimitHandoff({
       client,
@@ -1350,6 +1354,10 @@ async function runTurnBody(
       limit,
       String(handed),
     );
+    if (!handed) {
+      turnLimitHandoffFailed = true;
+      return "empty";
+    }
     return "blocked";
   };
 
@@ -1626,6 +1634,9 @@ async function runTurnBody(
   // A guardrail hand-over that did not land: the turn ends through its ordinary refusal and
   // throws on the way out, after every release, since only a throw keeps the message owed.
   let handoffFailed: "input" | "output" | null = null;
+  // The same for a tripped turn limit whose hand-over did not land: neither a reply nor a person
+  // reached the customer, so the message stays owed.
+  let turnLimitHandoffFailed = false;
   // The hand-back note was owed but an older invoke was reading the channel, so it rides in
   // this turn's own invoke input: the durable write waits, the correction does not.
   let handbackDeferred = false;
@@ -2779,6 +2790,8 @@ async function runTurnBody(
     // NOTE: Last, so nothing above is skipped by it.
     // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose
     if (handoffFailed) throw new GuardrailHandoffFailedError(handoffFailed);
+    // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose
+    if (turnLimitHandoffFailed) throw new TurnLimitHandoffFailedError();
   }
 }
 

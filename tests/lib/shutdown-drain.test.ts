@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   beginWork,
   drainInFlight,
@@ -14,6 +14,11 @@ import {
 // tests/modules/scheduler-shutdown-drain.test.ts; the real signal is tests/lib/shutdown-signal.test.ts.
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// The registry is process-wide: a suite that claimed rows without running them leaves them held.
+beforeEach(() => {
+  resetShutdownForTest();
+});
 
 afterEach(() => {
   resetShutdownForTest();
@@ -96,22 +101,22 @@ describe("the shutdown drain", () => {
   });
 
   test("a second signal during the drain exits at once", async () => {
-    beginWork("DEBOUNCE");
-    const exits: number[] = [];
+    const end = beginWork("DEBOUNCE");
+    const exits: string[] = [];
     const opts = {
       stop: () => {},
       boundMs: 5_000,
-      settleMs: 100,
-      exit: (code: number) => exits.push(code),
+      exit: (code: number) => exits.push(`exit ${code}`),
     };
     const first = shutdown("SIGTERM", opts);
     await sleep(50);
     const t = performance.now();
     await shutdown("SIGINT", opts);
     expect(performance.now() - t).toBeLessThan(100);
-    expect(exits).toEqual([0]);
-    resetShutdownForTest();
-    // The first drain is left waiting on a registry that was cleared under it; it times out on its own.
-    void first;
+    expect(exits).toEqual(["exit 0"]);
+    // The first drain ends with the work, and exits too (a real process is already gone by then).
+    end();
+    await first;
+    expect(exits).toEqual(["exit 0", "exit 0"]);
   });
 });

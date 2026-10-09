@@ -16,6 +16,7 @@ import {
 } from "@/modules/scheduler/lanes";
 import { markRunning, markSettled } from "./running";
 import {
+  adoptClaimed,
   type ClaimedJob,
   claimDeadLetterAnnouncement,
   claimDueJobs,
@@ -269,14 +270,30 @@ export async function runClaimed(
 ): Promise<void> {
   // The shutdown drain waits for this run until its outcome is written, and at its bound ends it the
   // way the deadline does, so the row is failed for retry before the process exits.
+  // The registration lasts until the handler has returned too: a cut run that had committed still has
+  // its late outcome to write (settleAfterDeadline).
   let cut: ((reason: Error) => void) | undefined;
+  let late: Promise<unknown> | undefined;
   const end = beginWork(job.kind, (reason) => cut?.(reason));
-  try {
-    await runWithDeadline(job, base, opts, (c) => {
-      cut = c;
-    });
-  } finally {
+  if (!adoptClaimed(job)) {
     end();
+    return;
+  }
+  try {
+    await runWithDeadline(
+      job,
+      base,
+      opts,
+      (c) => {
+        cut = c;
+      },
+      (l) => {
+        late = l;
+      },
+    );
+  } finally {
+    if (late) void late.finally(end);
+    else end();
   }
 }
 
@@ -285,6 +302,7 @@ async function runWithDeadline(
   base: PrismaClient,
   opts: RunClaimedOptions,
   onCut: (cut: (reason: Error) => void) => void,
+  onLate: (late: Promise<unknown>) => void,
 ): Promise<void> {
   const handler = getJobHandler(job.kind);
   if (!handler) {
@@ -313,7 +331,7 @@ async function runWithDeadline(
         committed = true;
       },
     }))();
-  running
+  const lateChain = running
     .catch(() => null)
     .then(async (late) => {
       if (!controller.signal.aborted) return;
@@ -332,6 +350,7 @@ async function runWithDeadline(
     )
     // NOTE: only now, so the row stays out of every claim until its late outcome, if any, is written.
     .finally(() => markSettled(job.id));
+  onLate(lateChain);
   let result: JobResult;
   try {
     result = await withinDeadline(running, deadlineMs, controller, onCut);

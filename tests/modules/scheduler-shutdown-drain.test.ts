@@ -2,6 +2,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   test,
@@ -23,6 +24,8 @@ import {
   type JobHandler,
   registerJobHandler,
   runClaimed,
+  runSchedulerTick,
+  SCHEDULER_STALE_MS,
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
 
@@ -119,6 +122,11 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
     tenantId = t.id;
   });
 
+  // The registry is process-wide: a suite that claimed rows without running them leaves them held.
+  beforeEach(() => {
+    resetShutdownForTest();
+  });
+
   afterEach(async () => {
     resetShutdownForTest();
     for (const { kind, previous } of installed.splice(0).reverse()) {
@@ -194,6 +202,77 @@ describe.skipIf(!dbUp)("the job lanes under the shutdown drain", () => {
     const rows = await Promise.all(ids.map(rowOf));
     expect(rows.map((r) => r?.status)).toEqual(["DONE", "PENDING", "PENDING"]);
     await tick.settled;
+  });
+
+  // A run that committed (a message sent) and is cut still writes the outcome it returns late, so
+  // the next process does not repeat the committed work; the drain waits for that write.
+  test("a cut run that had committed has its late outcome written before the drain returns", async () => {
+    install("HEARTBEAT", async (_job, _base, ctx) => {
+      ctx?.commit();
+      await new Promise((r) => ctx?.signal.addEventListener("abort", r));
+      await sleep(200);
+      return { outcome: "done" };
+    });
+    const job = await claimed("HEARTBEAT", "drain-committed");
+    void runClaimed(job, appDb);
+    const result = await drainInFlight({ boundMs: 200, settleMs: 1_500 });
+    expect(result.unsettled).toBe(0);
+    expect((await rowOf(job.id))?.status).toBe("DONE");
+  });
+
+  // The shared tick claims a batch and queues the provider-spending rows behind a permit. A row still
+  // queued is the process's CLAIMED row all the same: it is handed back unrun, without an attempt.
+  test("a claimed row still waiting for a provider permit is handed back unrun", async () => {
+    const ran: string[] = [];
+    const saw: { signal?: AbortSignal } = {};
+    const hang = untilAborted(saw);
+    const handler: JobHandler = async (job, base, ctx) => {
+      ran.push(job.kind);
+      return hang(job, base, ctx);
+    };
+    install("FOLLOWUP", handler);
+    install("APPOINTMENT_REMINDER", handler);
+    const first = await pending("FOLLOWUP", "drain-permit-first");
+    const second = await pending("APPOINTMENT_REMINDER", "drain-permit-second");
+    const tick = runSchedulerTick(appDb, {
+      staleMs: SCHEDULER_STALE_MS,
+      batchSize: 10,
+      tenantId,
+      providerConcurrency: 1,
+    });
+    await sleep(300);
+    expect(ran).toHaveLength(1);
+    const result = await drainInFlight({ boundMs: 200, settleMs: 1_500 });
+    expect(result.stillRunning.total).toBe(2);
+    expect(result.unsettled).toBe(0);
+    const rows = await Promise.all([first, second].map(rowOf));
+    const byStarted = ran[0] === "FOLLOWUP" ? rows : [rows[1], rows[0]];
+    expect(byStarted.map((r) => [r?.status, r?.attempts])).toEqual([
+      ["PENDING", 1],
+      ["PENDING", 0],
+    ]);
+    expect(byStarted[1]?.claimedAt).toBeNull();
+    await tick;
+    expect(ran).toHaveLength(1);
+  });
+
+  test("a row claimed and not yet started is handed back, and is not run after", async () => {
+    let ran = false;
+    install("HEARTBEAT", async () => {
+      ran = true;
+      return { outcome: "done" };
+    });
+    const job = await claimed("HEARTBEAT", "drain-unstarted");
+    const result = await drainInFlight({ boundMs: 100, settleMs: 1_500 });
+    expect(result.stillRunning.byKind).toEqual({ HEARTBEAT: 1 });
+    const row = await rowOf(job.id);
+    expect([row?.status, row?.attempts, row?.claimedAt]).toEqual([
+      "PENDING",
+      0,
+      null,
+    ]);
+    await runClaimed(job, appDb);
+    expect(ran).toBe(false);
   });
 
   test("from the drain on, no lane claims a due row, and the rows are untouched", async () => {

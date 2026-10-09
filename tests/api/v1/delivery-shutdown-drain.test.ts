@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chatwootController } from "@/api/v1/chatwoot.controller";
 import { integrationsController } from "@/api/v1/integrations.controller";
 import {
@@ -17,6 +17,11 @@ import * as inbound from "@/modules/webhooks/inbound/service";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const restore: Array<{ mockRestore: () => void }> = [];
+
+// The registry is process-wide: a suite that claimed rows without running them leaves them held.
+beforeEach(() => {
+  resetShutdownForTest();
+});
 
 afterEach(() => {
   for (const spy of restore.splice(0)) spy.mockRestore();

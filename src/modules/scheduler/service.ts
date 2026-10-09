@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { sanitizeErrorMessage } from "@/lib/redact";
-import { isDraining } from "@/lib/shutdown";
+import { beginWork, isDraining, trackWork } from "@/lib/shutdown";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -975,6 +975,34 @@ async function claimWhere(
   // claim (`keyPrefix`) belongs to a turn already running, which the drain is waiting for.
   if (keyPrefix === undefined && isDraining()) return [];
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
+  // NOTE: tracked, and every row held before the claim is released, so the drain never sees an empty
+  // registry while this process owns a CLAIMED row it has not started.
+  return trackWork("claim", async () => {
+    const jobs = await selectClaim(
+      lim,
+      base,
+      now,
+      kindFilter,
+      tenantId,
+      excludeIds,
+      keyPrefix,
+      share,
+    );
+    for (const job of jobs) holdUnstarted(job, base);
+    return jobs;
+  });
+}
+
+async function selectClaim(
+  lim: number,
+  base: PrismaClient,
+  now: Date,
+  kindFilter: Prisma.Sql,
+  tenantId: TenantFence | undefined,
+  excludeIds: bigint[] | undefined,
+  keyPrefix: string | undefined,
+  share: boolean | undefined,
+): Promise<ClaimedJob[]> {
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -1011,6 +1039,58 @@ async function claimWhere(
       claimSeq: r.claimSeq,
     }));
   });
+}
+
+// Claimed rows this process has not started running yet: queued for a provider permit, or waiting
+// their turn in a sequential drain. Each is registered with the shutdown drain from the claim on, and
+// one cut while still waiting is handed back unrun (attempts untouched, it never ran) instead of
+// staying CLAIMED until the reaper. `runClaimed` adopts the row when it starts it.
+const unstarted = new Map<string, () => void>();
+const handedBack = new Set<string>();
+const claimKey = (job: ClaimedJob) => `${job.id}:${job.claimSeq}`;
+
+function holdUnstarted(job: ClaimedJob, base: PrismaClient): void {
+  const key = claimKey(job);
+  const end = beginWork(job.kind, () => {
+    if (!unstarted.delete(key)) return;
+    handedBack.add(key);
+    void releaseClaim(job, base)
+      .catch((err) =>
+        logger.warn(
+          { err, kind: job.kind, jobId: String(job.id) },
+          "scheduler: could not hand back an unstarted claim at shutdown",
+        ),
+      )
+      .finally(end);
+  });
+  unstarted.set(key, end);
+}
+
+// Called by the run that starts this row. False when the shutdown drain already handed it back, and
+// the row must not run.
+export function adoptClaimed(job: ClaimedJob): boolean {
+  const key = claimKey(job);
+  if (handedBack.has(key)) return false;
+  const end = unstarted.get(key);
+  if (end) {
+    unstarted.delete(key);
+    end();
+  }
+  return true;
+}
+
+// CLAIMED back to PENDING under the same claim token, due now and without spending an attempt.
+export async function releaseClaim(
+  job: ClaimedJob,
+  base: PrismaClient = basePrisma,
+): Promise<{ applied: boolean }> {
+  const { count } = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+    db.schedulerJob.updateMany({
+      where: { id: job.id, status: "CLAIMED", claimSeq: job.claimSeq },
+      data: { status: "PENDING", claimedAt: null },
+    }),
+  );
+  return { applied: count > 0 };
 }
 
 // The main (slow) tick claims everything except debounce, which needs the fast tick to honor the

@@ -237,6 +237,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // NOTE: One reader, tenant-wide on purpose: its subject is HOW MANY lines a discarded outcome wrote, and
   // each case empties this file's tenant first.
   "tests/modules/scheduler-discard-announced.test.ts": 1,
+  "tests/modules/snoozed-followup.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,
   "tests/modules/spend-ceiling-poll.test.ts": 3,

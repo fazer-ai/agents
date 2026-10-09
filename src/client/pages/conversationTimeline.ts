@@ -20,7 +20,7 @@ export type TurnUsageEntry =
 // channel-redirect follow-up, or an inbound integration's event, named when the integration still
 // exists.
 export type FollowUpBadgeInfo = {
-  kind: "followup" | "redirect" | "event" | "approval";
+  kind: "followup" | "snoozed" | "redirect" | "event" | "approval";
   step: number | null;
   total: number;
   integrationName: string | null;
@@ -41,6 +41,14 @@ export function followUpBadgeText(b: FollowUpBadgeInfo, t: TFunction): string {
   }
   if (b.kind === "redirect") {
     return t("conversation.followUp.badgeRedirect", "Redirect follow-up");
+  }
+  // Its own ladder: the step is not out of the bot ladder's total.
+  if (b.kind === "snoozed") {
+    return b.step != null
+      ? t("conversation.followUp.badgeSnoozedN", "Snoozed reminder {{step}}", {
+          step: b.step,
+        })
+      : t("conversation.followUp.badgeSnoozed", "Snoozed reminder");
   }
   return b.step != null
     ? t("conversation.followUp.badgeN", "Follow-up {{step}}/{{total}}", {
@@ -95,6 +103,7 @@ export function buildTimeline(
   // before the line to five minutes after.
   const badgeable = (e: TrailEntry) =>
     e.kind === "followup" ||
+    e.kind === "snoozed" ||
     e.kind === "redirect" ||
     e.kind === "event" ||
     e.kind === "approval";

@@ -33,6 +33,7 @@ import {
 } from "@/modules/followups/snoozed-settings";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import {
   guardrailModel,
@@ -672,6 +673,27 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(st.snoozedFollowUpStep).toBe(1);
   });
 
+  test("the flow line records the snoozed origin, so the console badges it apart", async () => {
+    await setSettings(LADDER);
+    await seed(2043);
+    const s = stub({ messages: [personAsked(360, 3)] });
+    await snoozedFollowUpHandler(jobFor(2043), appDb, s.deps);
+    expect(s.sent).toEqual([REPLY]);
+    let origin: unknown = null;
+    for (let i = 0; i < 30 && origin === null; i++) {
+      const rows = await flowLogRows(suDb, {
+        where: { tenantId, stage: "generate", threadId: threadOf(2043) },
+        select: { detail: true },
+      });
+      const hit = rows
+        .map((r) => r.detail as Record<string, unknown> | null)
+        .find((d) => typeof d?.outcome === "string");
+      if (hit) origin = hit.origin;
+      else await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(origin).toBe("snoozed");
+  });
+
   test("not yet due: rescheduled to the due instant, nothing sent", async () => {
     await setSettings(LADDER);
     await seed(2002);
@@ -1111,6 +1133,8 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     });
     await snoozedFollowUpHandler(jobFor(2026), appDb, s.deps);
     expect(s.sent).toEqual([REPLY]);
+    // Framed as a reminder that is due, not as an event a model may judge a duplicate of the last one.
+    expect(seen.join("\n")).toContain("never a reason to stay silent");
     // Whole, even past the summary's cap: the ask at the end of a long message reaches the model.
     expect(seen.join("\n")).toContain("Pode me mandar a foto do documento?");
   });

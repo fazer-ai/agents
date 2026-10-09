@@ -1326,6 +1326,21 @@ export async function runObserve(
       expiresOn: deadline,
     },
   );
+  // The labels standing now are asked for WITH the window, not after it: the two reads do not
+  // depend on each other, and one after the other is a round trip the verdict waits through.
+  // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
+  // all. `null`, not `[]`: "no labels" would let the model clear everything.
+  const labelsRead: Promise<string[] | null> = client
+    .getConversationLabels(conversationId)
+    .catch((e: unknown) => {
+      logger.warn(
+        "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
+        String(tenantId),
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    });
   const fetched = await readWindowRows(
     client,
     conversationId,
@@ -1370,19 +1385,7 @@ export async function runObserve(
   }
   // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
   // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
-  // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
-  // all. `null`, not `[]`: "no labels" would let the model clear everything.
-  let current: string[] | null = null;
-  try {
-    current = await client.getConversationLabels(conversationId);
-  } catch (e) {
-    logger.warn(
-      "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
-      String(tenantId),
-      String(conversationId),
-      e instanceof Error ? e.message : String(e),
-    );
-  }
+  const current = await labelsRead;
   // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
   // move them): the same projection the tool renders (label-view.ts).
   const currentForPrompt =
@@ -1838,7 +1841,12 @@ export async function runObserve(
           deadline,
           () => fence(),
           cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
-          (action) => sharedWriteKey(action.tool, action.args),
+          // The label write and the attribute write touch different things on the conversation, so
+          // the two groups go out side by side as well, not one after the other.
+          (action) =>
+            sharedWriteKey(action.tool, action.args) === null
+              ? null
+              : "conversation",
         ),
         deadline,
       );

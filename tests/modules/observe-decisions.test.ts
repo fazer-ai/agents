@@ -1262,6 +1262,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         notes: [] as string[],
       };
       const requests: string[] = [];
+      let inFlight = 0;
+      let peak = 0;
       const fetchImpl = (async (
         input: RequestInfo | URL,
         init?: RequestInit,
@@ -1272,7 +1274,10 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         );
         const method = init?.method ?? "GET";
         requests.push(`${method} ${path}`);
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
         await new Promise((r) => setTimeout(r, 2));
+        inFlight -= 1;
         const body = init?.body
           ? (JSON.parse(String(init.body)) as Record<string, unknown>)
           : {};
@@ -1316,7 +1321,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         }
         return json({}, 404);
       }) as typeof fetch;
-      return { state, requests, fetchImpl };
+      return { state, requests, fetchImpl, peak: () => peak };
     }
 
     const onConversation = (requests: string[]) =>
@@ -1412,19 +1417,36 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       ]);
       expect(res).toEqual({ outcome: "done" });
       const conv = `/conversations/${CONV}`;
-      expect(onConversation(chatwoot.requests)).toEqual([
-        // The window: one page, and a page Chatwoot did not fill has nothing older behind it.
-        `GET ${conv}/messages`,
-        // The labels the evidence shows.
-        `GET ${conv}/labels`,
-        // Both label rules: one fresh read, one write of the set they add up to.
-        `GET ${conv}/labels`,
-        `POST ${conv}/labels`,
-        // The three attribute rules: one read of the bag, one write.
-        `GET ${conv}`,
-        `POST ${conv}/custom_attributes`,
-        `POST ${conv}/messages`,
-      ]);
+      const seen = onConversation(chatwoot.requests);
+      expect([...seen].sort()).toEqual(
+        [
+          // The window: one page, and a page Chatwoot did not fill has nothing older behind it.
+          `GET ${conv}/messages`,
+          // The labels the evidence shows.
+          `GET ${conv}/labels`,
+          // Both label rules: one fresh read, one write of the set they add up to.
+          `GET ${conv}/labels`,
+          `POST ${conv}/labels`,
+          // The three attribute rules: one read of the bag, one write.
+          `GET ${conv}`,
+          `POST ${conv}/custom_attributes`,
+          `POST ${conv}/messages`,
+        ].sort(),
+      );
+      // The evidence is read before anything is written, each write follows its own read, and the
+      // note, which shares a write with nothing, goes out after the group ahead of it in rule order.
+      const at = (r: string, from = 0) => seen.indexOf(r, from);
+      expect(at(`GET ${conv}/messages`)).toBeLessThan(2);
+      expect(at(`GET ${conv}/labels`)).toBeLessThan(2);
+      expect(at(`POST ${conv}/labels`)).toBeGreaterThan(
+        at(`GET ${conv}/labels`, 2),
+      );
+      expect(at(`POST ${conv}/custom_attributes`)).toBeGreaterThan(
+        at(`GET ${conv}`),
+      );
+      expect(at(`POST ${conv}/messages`)).toBe(6);
+      // Reads that do not depend on each other are out at the same time, and so are the two writes.
+      expect(chatwoot.peak()).toBeGreaterThanOrEqual(2);
       // What the conversation holds is what six separate writes would have left.
       expect([...chatwoot.state.labels].sort()).toEqual([
         "sentimento-negativo",

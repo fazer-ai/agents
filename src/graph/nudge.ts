@@ -2642,8 +2642,9 @@ async function runAgentNudgeBody(
         String(conversationId),
         params.nudge.source,
       );
-      // NOTE: a silence the caption stood in for is a sentence nobody read; it leaves the thread.
-      if (attach && drafted.silent) {
+      // NOTE: a silence the caption stood in for is a sentence nobody read; it leaves the thread,
+      // whether the caption went with the PDF or the guardrail replaced it.
+      if (approved && drafted.silent) {
         await takeBackUndeliveredSilence(drafted.wroteText);
       }
       markFollowUp("messaged");

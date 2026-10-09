@@ -906,6 +906,56 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     }
   });
 
+  test("a silence the guardrail's replacement stands in for leaves the thread too", async () => {
+    const { requestId, chatwootConversationId } = await conversationWithRequest(
+      {},
+    );
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await withOutputGuardrail({
+      action: "template",
+      templateMessage: "MENSAGEM-SEGURA-DOC",
+    });
+    try {
+      const checkpointer = new MemorySaver();
+      const rec = recordingClient();
+      await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: ((cfg: { model: string }) =>
+            cfg.model === "guard-sentinel-doc"
+              ? guardrailModel(async () => ({
+                  content: JSON.stringify({
+                    violated: true,
+                    categories: ["toxicity"],
+                    rationale: "fora da política",
+                  }),
+                }))
+              : new ScriptedCaptureModel([{ reply: "[[SKIP]]" }])) as never,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+      const state = await buildThreadStateGraph(checkpointer).getState({
+        configurable: {
+          thread_id: `${tenantId}:${instanceId}:${chatwootConversationId}`,
+        },
+      });
+      const said = (
+        (state.values as { messages?: BaseMessage[] }).messages ?? []
+      ).filter((m) => m.getType() === "ai");
+      expect(JSON.stringify(said)).not.toContain("[[SKIP]]");
+    } finally {
+      await withoutGuardrail();
+    }
+  });
+
   test("the default caption escapes a title with Liquid once", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({

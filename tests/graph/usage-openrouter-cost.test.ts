@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import type { LLMResult } from "@langchain/core/outputs";
 import { tool } from "@langchain/core/tools";
@@ -444,6 +444,15 @@ describe.skipIf(!dbUp)(
     const appDb = app as PrismaClient;
     let tenantId = 0n;
 
+    // Created here and not in the first test: under `bun test --randomize` the second can run first,
+    // and it would write its row for tenant 0.
+    beforeAll(async () => {
+      const t = await suDb.tenant.create({
+        data: { name: "OR-COST", slug: `or-cost-${process.pid}` },
+      });
+      tenantId = t.id;
+    });
+
     afterAll(async () => {
       if (tenantId) {
         await suDb.$executeRawUnsafe(
@@ -458,10 +467,6 @@ describe.skipIf(!dbUp)(
     });
 
     test("reported and table rows are stamped apart", async () => {
-      const t = await suDb.tenant.create({
-        data: { name: "OR-COST", slug: `or-cost-${process.pid}` },
-      });
-      tenantId = t.id;
       const persist = defaultUsagePersist(appDb);
       const base = {
         tenantId,
@@ -491,7 +496,8 @@ describe.skipIf(!dbUp)(
         priceTable: PRICE_TABLE_VERSION,
       });
       const rows = await suDb.llmUsage.findMany({
-        where: { tenantId },
+        // Its own two threads: the tenant is the describe's, and the other test's row may be there.
+        where: { tenantId, threadId: { in: ["or-reported", "or-table"] } },
         select: { threadId: true, costUsd: true, priceTable: true },
         orderBy: { id: "asc" },
       });

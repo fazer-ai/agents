@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { jest } from "bun:test";
+import { afterEach, beforeEach, jest } from "bun:test";
 import { configure } from "@testing-library/dom";
 import {
   DB_GATE_OPT_OUT,
@@ -30,6 +30,20 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
 // and the per-test cost note in tests/tooling/stale-base-guard.test.ts.
 jest.setTimeout(30_000);
 configure({ asyncUtilTimeout: 5_000 });
+
+// A TIMED-OUT TEST KEEPS RUNNING, and Bun moves on without waiting for its body. A `globalThis.fetch`
+// stub that body restores in its own `finally` stays installed until the hung call settles, and every
+// file the process runs meanwhile calls the fake. These two hooks wrap every test in every file,
+// outside the file's own (a preload's `beforeEach` runs first and its `afterEach` last, timed out or
+// not), so the fetch a test started with is the fetch the next test gets. A stub a file installs in
+// `beforeAll` or at module scope is already there when a test starts, and is left alone.
+let fetchAtTestStart: typeof fetch | undefined;
+beforeEach(() => {
+  fetchAtTestStart = globalThis.fetch;
+});
+afterEach(() => {
+  if (fetchAtTestStart) globalThis.fetch = fetchAtTestStart;
+});
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";

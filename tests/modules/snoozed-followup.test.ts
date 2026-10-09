@@ -377,6 +377,8 @@ function stub(over: {
   omitSnoozedUntil?: boolean;
   // Only the reads after the handler's first one carry no `snoozed_until`.
   omitSnoozedUntilLater?: boolean;
+  // Runs inside the send, after every ask that precedes it.
+  onSend?: () => Promise<void>;
   model?: (cfg: {
     model: string;
   }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
@@ -434,6 +436,7 @@ function stub(over: {
     },
     sendMessage: async (_c: number, t: string) => {
       sent.push(t);
+      await over.onSend?.();
       return { id: 999 };
     },
     sendPrivateNote: async (_c: number, t: string) => {
@@ -487,6 +490,7 @@ async function seed(
     lastInboundAt?: Date;
     // Chatwoot's conversation version (epoch seconds), moved by a status or holder change.
     statusAt?: number;
+    resetAtMessageId?: number;
   } = {},
 ) {
   const data = {
@@ -501,6 +505,7 @@ async function seed(
     inboxId: over.whatsapp ? whatsappInboxDbId : inboxDbId,
     ...(over.lastInboundAt ? { lastInboundAt: over.lastInboundAt } : {}),
     chatwootStatusAt: over.statusAt ?? null,
+    resetAtMessageId: over.resetAtMessageId ?? null,
   };
   await suDb.conversation.upsert({
     where: {
@@ -1304,6 +1309,84 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         data: { responderBoundAt: null },
       });
     }
+  });
+
+  test("a message of the person at or below a /reset is not chased, whatever re-armed the job", async () => {
+    await setSettings(LADDER);
+    await seed(2038, { resetAtMessageId: 320 });
+    const s = stub({ messages: [personAsked(320, 3)] });
+    const r = await snoozedFollowUpHandler(jobFor(2038), appDb, s.deps);
+    expect(r).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    // A message after the command is a new request, and is chased.
+    await seed(2039, { resetAtMessageId: 320 });
+    const after = stub({ messages: [personAsked(321, 3)] });
+    await snoozedFollowUpHandler(jobFor(2039), appDb, after.deps);
+    expect(after.sent).toEqual([REPLY]);
+  });
+
+  test("a step retired while it sent does not record its progress", async () => {
+    await setSettings(LADDER);
+    await seed(2040);
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: snoozedDedupeKey(threadOf(2040)),
+        runAt: new Date(),
+        status: "CLAIMED",
+        claimSeq: 1,
+        payload: { threadId: threadOf(2040) },
+      },
+    });
+    const s = stub({
+      messages: [personAsked(330, 3)],
+      // The /reset lands while the reminder is on the wire.
+      onSend: async () => {
+        await suDb.schedulerJob.update({
+          where: { id: row.id },
+          data: { claimSeq: 2, status: "DONE" },
+        });
+      },
+    });
+    await snoozedFollowUpHandler(
+      { ...jobFor(2040), id: row.id, claimSeq: 1 },
+      appDb,
+      s.deps,
+    );
+    expect(s.sent).toEqual([REPLY]);
+    expect((await stateOf(2040)).snoozedFollowUpStep).toBeNull();
+  });
+
+  test("a waiting row re-armed by an unrelated event keeps its refusal budget", async () => {
+    await setSettings(LADDER);
+    await seed(2041, { lastEventAt: new Date(Date.now() + 5_000) });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: snoozedDedupeKey(threadOf(2041)),
+        runAt: new Date(Date.now() + 900_000),
+        status: "PENDING",
+        payload: {
+          threadId: threadOf(2041),
+          nudgeRetries: 3,
+          nudgeRetriesAnchorId: 340,
+        },
+      },
+    });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2041)) },
+      select: { payload: true, runAt: true },
+    });
+    // Re-armed (due now), with the budget it had.
+    expect(job.runAt.getTime()).toBeLessThan(Date.now() + 60_000);
+    expect(job.payload).toMatchObject({
+      threadId: threadOf(2041),
+      nudgeRetries: 3,
+      nudgeRetriesAnchorId: 340,
+    });
   });
 
   test("a finished row re-armed by a new event gets a fresh failure budget", async () => {

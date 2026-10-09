@@ -115,24 +115,25 @@ export async function applyDecisions(
   }
   const reported = (upTo = fired.length): ActionReport[] =>
     slots.filter((a, at): a is ActionReport => a !== undefined && at < upTo);
-  // A group is the actions whose tool commits calls that arrive together as ONE write: dispatched at
-  // the place of its first one, each after its own fence, and awaited as one.
-  const started = new Set<number>();
-  for (const head of toRun) {
-    if (started.has(head.at)) continue;
-    const headAction = fired[head.at];
-    const key = headAction ? together(headAction) : null;
-    const group =
-      key === null
-        ? [head]
-        : toRun.filter((r) => {
-            const action = fired[r.at];
-            return (
-              !started.has(r.at) &&
-              action !== undefined &&
-              together(action) === key
-            );
-          });
+  // A group is a RUN of consecutive actions whose tool commits calls that arrive together as one
+  // write: dispatched together, each after its own fence, and awaited as one. Only neighbours are
+  // grouped, so no action runs ahead of one the rules put before it.
+  const keyOf = (r: { at: number }): string | null => {
+    const action = fired[r.at];
+    return action ? together(action) : null;
+  };
+  for (let i = 0; i < toRun.length; ) {
+    const head = toRun[i];
+    if (!head) break;
+    const key = keyOf(head);
+    let end = i + 1;
+    while (key !== null && end < toRun.length) {
+      const next = toRun[end];
+      if (!next || keyOf(next) !== key) break;
+      end += 1;
+    }
+    const group = toRun.slice(i, end);
+    i = end;
     const running: Promise<void>[] = [];
     let withdrawnAt: number | null = null;
     let cancelled: { err: unknown } | null = null;
@@ -163,7 +164,6 @@ export async function applyDecisions(
       for (const member of admitted) {
         const f = fired[member.at];
         if (!f) continue;
-        started.add(member.at);
         running.push(
           member.tool.invoke(f.args, { callbacks, signal }).then(
             () => {
@@ -195,11 +195,10 @@ export async function applyDecisions(
     if (fenceError !== null) throw fenceError.err;
     if (cancelled !== null) throw (cancelled as { err: unknown }).err;
     if (withdrawnAt !== null) {
-      const head = group[0];
       return {
         fired,
         missed,
-        actions: reported(head ? head.at : withdrawnAt),
+        actions: reported(head.at),
         withdrawn: true,
       };
     }

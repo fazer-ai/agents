@@ -142,6 +142,8 @@ describe("applyDecisions dispatching the actions that share a write", () => {
 
   function recording() {
     const startedOrder: string[] = [];
+    const finished: string[] = [];
+    const finishedAtStart = new Map<string, string[]>();
     let inFlight = 0;
     let peak = 0;
     const make = (
@@ -153,22 +155,31 @@ describe("applyDecisions dispatching the actions that share a write", () => {
         description: name,
         schema: z.object({}).passthrough(),
         func: async (input: Record<string, unknown>) => {
-          startedOrder.push(`${name}:${String(input.key ?? "")}`);
+          const id = `${name}:${String(input.key ?? "")}`;
+          finishedAtStart.set(id, [...finished]);
+          startedOrder.push(id);
           inFlight += 1;
           peak = Math.max(peak, inFlight);
           await new Promise((r) => setTimeout(r, 5));
           inFlight -= 1;
+          finished.push(id);
           if (fail?.(input)) throw new Error("boom");
           return "ok";
         },
       });
-    return { startedOrder, peak: () => peak, make };
+    return {
+      startedOrder,
+      peak: () => peak,
+      // What had already returned when this call started.
+      finishedBeforeStart: (id: string) => finishedAtStart.get(id) ?? [],
+      make,
+    };
   }
 
   const key = (a: { tool: string }) =>
     a.tool === "set_custom_attribute" ? "attributes" : null;
 
-  test("a group runs side by side at the place of its first action, the rest one at a time", async () => {
+  test("neighbours that share a write run side by side, and nothing runs ahead of its place", async () => {
     const r = recording();
     const report = await applyDecisions(
       {
@@ -193,14 +204,19 @@ describe("applyDecisions dispatching the actions that share a write", () => {
       10,
       key,
     );
+    // The attribute rule ahead of the note is not joined by the two behind it.
     expect(r.startedOrder).toEqual([
       "set_labels:",
       "set_custom_attribute:k1",
+      "private_note:",
       "set_custom_attribute:k2",
       "set_custom_attribute:k3",
-      "private_note:",
     ]);
-    expect(r.peak()).toBe(3);
+    expect(r.finishedBeforeStart("private_note:")).toEqual([
+      "set_labels:",
+      "set_custom_attribute:k1",
+    ]);
+    expect(r.peak()).toBe(2);
     expect(report.actions).toEqual([
       { rule: 0, tool: "set_labels", outcome: "ran" },
       { rule: 1, tool: "set_custom_attribute", outcome: "ran" },
@@ -208,6 +224,21 @@ describe("applyDecisions dispatching the actions that share a write", () => {
       { rule: 3, tool: "set_custom_attribute", outcome: "ran" },
       { rule: 4, tool: "set_custom_attribute", outcome: "ran" },
     ]);
+  });
+
+  test("a run of three neighbours is three in flight at once", async () => {
+    const r = recording();
+    await applyDecisions(
+      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      answers,
+      [r.make("set_custom_attribute")],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      key,
+    );
+    expect(r.peak()).toBe(3);
   });
 
   test("without a grouping every action runs alone, in rule order", async () => {

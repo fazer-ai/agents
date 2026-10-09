@@ -422,7 +422,14 @@ export async function mirrorChatwootEvent(
 
         if (!existing) {
           const createdStatus = decision.status ?? "open";
-          const createdLastEventAt = decision.activityAt;
+          // A recovery's row is stamped no older than the live reading its facts came from; the
+          // inbound watermark below keeps the message's own clock.
+          const createdLastEventAt =
+            n.createActivityAt != null &&
+            (decision.activityAt === null ||
+              n.createActivityAt * 1000 > decision.activityAt.getTime())
+              ? new Date(n.createActivityAt * 1000)
+              : decision.activityAt;
           const created = await db.conversation.create({
             data: {
               tenantId,

@@ -42,6 +42,10 @@ export interface RecoveryConversation {
   // the same conversation only: the row it creates carries the marks that let a delayed event older
   // than that snapshot lose. Used only where no redirect version is stated.
   stateVersion?: number;
+  // The live snapshot's `last_activity_at`, for the same conversation only: the row it creates is
+  // stamped no older than the facts it carries, so a delayed event older than that reading loses.
+  // Separate from the message's own clock, which keeps the inbound watermark.
+  liveActivityAt?: number;
 }
 
 // A message as the REST read gives it. REST and the wire spell two fields differently: `message_type`
@@ -157,6 +161,9 @@ export function buildRecoveryPayload(params: {
         : {}),
       ...(c.liveFacts !== undefined
         ? { fazer_facts_on_create_only: true }
+        : {}),
+      ...(c.liveActivityAt !== undefined
+        ? { fazer_create_activity_at: c.liveActivityAt }
         : {}),
       // Only when there IS one. A row nothing ever stamped cannot be regressed, and inventing a
       // version for it would order every other field in this body by a number nobody measured.

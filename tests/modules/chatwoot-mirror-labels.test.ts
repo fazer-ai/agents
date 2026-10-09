@@ -221,4 +221,23 @@ describe.skipIf(!dbUp)("mirror: the conversation's labels", () => {
     });
     expect(await stored(6)).toEqual(["do-webhook"]);
   });
+
+  test("a recovery's row is stamped no older than the live reading, so a delayed event loses", async () => {
+    await mirror({
+      ...convEvent("conversation_updated", 7, {
+        lastActivityAt: T + 10,
+        labels: ["lido-ao-vivo"],
+      }),
+      fazer_facts_on_create_only: true,
+      fazer_create_activity_at: T + 50,
+    });
+    // Newer than the stranded message, older than the live reading the facts came from.
+    await mirror(
+      convEvent("conversation_updated", 7, {
+        lastActivityAt: T + 30,
+        labels: ["defasado"],
+      }),
+    );
+    expect(await stored(7)).toEqual(["lido-ao-vivo"]);
+  });
 });

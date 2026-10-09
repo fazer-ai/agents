@@ -817,6 +817,17 @@ async function runRecovery(params: {
     }),
   );
   const contactInboxId = mirrorNow ? mirrorNow.contactInboxId : inherited;
+  // A memory-only replay is owed to the shared memory, which only a pairing names: with no row and
+  // none to inherit it would settle as `no-thread` with the words remembered nowhere. Refused before
+  // the claim, so it stays on the worklist with its attempts intact.
+  if (!replayPosts && mirrorNow === null && contactInboxId == null) {
+    logger.warn(
+      "chatwoot recovery: %s owes memory on conversation %d, which has no mirror row and no pairing to inherit; left DEAD",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unrecoverable";
+  }
   // Asked only where the re-read still finds no row; awaits nothing (see `contactToStateFor`).
   const sender = mirrorNow ? undefined : contactToState;
 
@@ -833,6 +844,11 @@ async function runRecovery(params: {
         ...(mirrorNow ? {} : conversationFactsOf(liveRaw)),
         ...(!mirrorNow && live.updatedAt !== null
           ? { stateVersion: live.updatedAt }
+          : {}),
+        ...(!mirrorNow && live.lastActivityAt !== null
+          ? {
+              liveActivityAt: Math.floor(live.lastActivityAt.getTime() / 1000),
+            }
           : {}),
         // Unstated without a row: only the mirror knows the pairing.
         redirectOriginDisplayId: mirrorNow

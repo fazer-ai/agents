@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7326 },
+          chatwootConversationId: { gte: 7310, lte: 7327 },
         },
       });
       await dropContact(77);
@@ -686,6 +686,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     test("is answered from Chatwoot's own reading, and the mirror learns it", async () => {
       const convId = 7310;
       const messageId = 7810;
+      // A contact the mirror never saw: an earlier test's conversation may have mirrored this one.
+      await dropContact(77);
       const rowId = await seedDeadDelivery({
         conversationId: convId,
         inboundMessageId: messageId,
@@ -975,7 +977,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       const stub = stubChatwoot({
         page: pageWith([{ id: messageId, content: "oi" }]),
-        conv: { labels: ["vip"] },
+        conv: { labels: ["vip"], lastActivityAt: SENT_AT + 600 },
       });
       const real = webhookModule.processChatwootDelivery;
       const path = spyOn(webhookModule, "processChatwootDelivery");
@@ -996,6 +998,33 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
       expect(handed?.normalized.redirectOriginDisplayId).toBeUndefined();
       expect(handed?.normalized.factsOnCreateOnly).toBe(true);
+      // The row it creates is stamped no older than the reading those facts came from.
+      expect(handed?.normalized.createActivityAt).toBe(SENT_AT + 600);
+    });
+
+    test("leaves a memory-only replay DEAD when no pairing names the memory it owes", async () => {
+      // A transcription replay is owed to the contact's shared memory; with no row and nothing to
+      // inherit it would settle with the words remembered nowhere.
+      const convId = 7327;
+      const messageId = 7827;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        event: "message_updated",
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     });
 
     test("leaves a mirrored conversation's attributes to the events that stored them", async () => {

@@ -44,7 +44,9 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   CANCELLED: "secondary",
 };
 
-function usePreview(id: string, status: string | null): DocumentPreviewState {
+// The preview of one request, fetched once: its bytes do not change while the request moves, and
+// each fetch renders the PDF again on the server.
+function usePreview(id: string): DocumentPreviewState {
   const { t } = useTranslation();
   const [state, setState] = useState<DocumentPreviewState>({
     url: null,
@@ -53,9 +55,6 @@ function usePreview(id: string, status: string | null): DocumentPreviewState {
   });
   const urlRef = useRef<string | null>(null);
   useEffect(() => {
-    // NOTE: read so the preview is fetched again when the request moves; the bytes do not change,
-    // but an approved request is then shown beside its outcome without a stale loading state.
-    void status;
     let cancelled = false;
     (async () => {
       try {
@@ -89,7 +88,7 @@ function usePreview(id: string, status: string | null): DocumentPreviewState {
     return () => {
       cancelled = true;
     };
-  }, [id, status, t]);
+  }, [id, t]);
   useEffect(
     () => () => {
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
@@ -140,7 +139,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   const [busy, setBusy] = useState<"approve" | "reject" | "again" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState("");
-  const preview = usePreview(id, request?.status ?? null);
+  const preview = usePreview(id);
 
   const loadContext = useCallback(async () => {
     setContextState("loading");

@@ -369,3 +369,27 @@ test("a request again that answers after the reviewer moved on leaves them where
   expect(screen.getByText("Orçamento 26")).toBeTruthy();
   expect(screen.queryByText("Orçamento 30")).toBeNull();
 });
+
+test("a page load renders the request's preview once", async () => {
+  let previews = 0;
+  handler = async (url) => {
+    if (url.includes("/preview")) {
+      previews += 1;
+      return pdf("p");
+    }
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/17")) {
+      return json({ request: request("17") });
+    }
+    return json({});
+  };
+  mount("/document-approvals/17");
+  await screen.findByRole("button", { name: "Approve and send" });
+  await waitFor(() =>
+    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+      "blob:p",
+    ),
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  expect(previews).toBe(1);
+});

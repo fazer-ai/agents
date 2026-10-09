@@ -2568,19 +2568,22 @@ async function runAgentNudgeBody(
     // where the reply can still fall through to the template/note branch below instead of being
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
-      if (approved && !(await approved.stillValid())) {
-        return refuse(await noteApproved(approved.revokedNote, "noted"));
+      // A transfer the judge made carries its line and no file: the conversation is a person's now,
+      // so the approved document is theirs to send, as after the agent's own transfer.
+      const attach = approved && !handoffState.completed ? approved : null;
+      if (attach && !(await attach.stillValid())) {
+        return refuse(await noteApproved(attach.revokedNote, "noted"));
       }
       // NOTE: the validity read is I/O between the last ask and the send, so the ask is repeated.
-      if (approved && !(await stillWanted())) return refuse(standDown());
+      if (attach && !(await stillWanted())) return refuse(standDown());
       const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;
       keepSentId(
-        await (approved
+        await (attach
           ? client.sendFileAttachment(
               conversationId,
-              approved.bytes,
-              approved.fileName,
+              attach.bytes,
+              attach.fileName,
               "application/pdf",
               { caption: signedReply },
             )
@@ -2594,6 +2597,7 @@ async function runAgentNudgeBody(
       );
       markFollowUp("messaged");
       await applyPostActions({ canMessage: canMessagePost });
+      if (approved && !attach) return noteApproved(approved.heldNote, "noted");
       return "messaged";
     }
     // A human arrived while the judge was reading, or the window closed while it did. Everything

@@ -8,6 +8,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
+import { asRendered } from "@/modules/chatwoot/liquid";
 import {
   approveDocumentRequest,
   expireDueApprovalRequests,
@@ -21,6 +22,7 @@ import { createDocumentTemplate } from "@/modules/documents/templates";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow } from "../utils/flowlog";
 import {
+  guardrailModel,
   HandoffThenReplyModel,
   ScriptedCaptureModel,
 } from "../utils/scripted-models";
@@ -59,6 +61,7 @@ let agentId = 0n;
 let inboxId = 0n;
 let templateId = 0n;
 let seq = 0;
+let vaultId = 0n;
 
 const ctx = (): TenantContext => ({
   tenantId,
@@ -85,7 +88,8 @@ function recordingClient() {
           calls.push([name, ...args]);
           if (name === "getConversationLabels" || name.startsWith("list"))
             return [];
-          if (name === "getConversation") return { id: args[0], meta: {} };
+          if (name === "getConversation")
+            return { id: args[0], status: "pending", meta: {} };
           return { id: 90_000 + calls.length };
         };
       },
@@ -169,6 +173,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       data: { tenantId, name: "k", secret: encryptJson("sk") },
       select: { id: true },
     });
+    vaultId = vault.id;
     const agent = await suDb.agent.create({
       data: {
         tenantId,
@@ -460,6 +465,177 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
   });
 
+  test("a rejection over a person who took the conversation live leaves the note and moves nothing", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    const held = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "getConversation") {
+          return async (id: number) => {
+            rec.calls.push(["getConversation", id]);
+            return {
+              id,
+              status: "open",
+              meta: { assignee_type: "User", assignee: { id: 5 } },
+            };
+          };
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: async () => held as never,
+      nudgeDeps: { makeModel: noModel },
+    });
+    expect(outcome).toBe("noted");
+    expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
+    expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
+    expect(named(rec.calls, "assignToTeam")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).not.toContain("passada para um atendente");
+  });
+
+  test("a hand-over that fails posts no note, and its retry posts one", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    let failing = true;
+    const flaky = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "toggleStatus" && failing) {
+          return async () => {
+            throw new Error("chatwoot 502");
+          };
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const run = () =>
+      runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: async () => flaky as never,
+        nudgeDeps: { makeModel: noModel },
+      });
+    await expect(run()).rejects.toThrow("chatwoot 502");
+    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    failing = false;
+    expect(await run()).toBe("handed");
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain("passada para um atendente");
+  });
+
+  test("a transfer the output guardrail makes sends its line without the PDF and leaves the document to the person", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          serviceWindow: { templateName: "reengage" },
+          handoff: { mode: "route" },
+          guardrails: {
+            credentialRef: `vault:${vaultId}`,
+            enabled: true,
+            provider: "openai",
+            model: "guard-sentinel-doc",
+            input: { enabled: false },
+            output: {
+              enabled: true,
+              action: "handoff",
+              handoffMessage: "ENCAMINHADO-DOC",
+              checks: {
+                toxicity: true,
+                unsafeContent: false,
+                competitorMentions: false,
+                promptAdherence: false,
+              },
+            },
+          },
+        },
+      },
+    });
+    try {
+      const rec = recordingClient();
+      const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: ((cfg: { model: string }) =>
+            cfg.model === "guard-sentinel-doc"
+              ? guardrailModel(async () => ({
+                  content: JSON.stringify({
+                    violated: true,
+                    categories: ["toxicity"],
+                    rationale: "fora da política",
+                  }),
+                }))
+              : new ScriptedCaptureModel([
+                  { reply: "Segue o seu orçamento!" },
+                ])) as never,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("noted");
+      expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+      expect(named(rec.calls, "sendMessage").map((c) => String(c[2]))).toEqual([
+        "ENCAMINHADO-DOC",
+      ]);
+      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
+        String(c[2]),
+      );
+      expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { serviceWindow: { templateName: "reengage" } } },
+      });
+    }
+  });
+
+  test("the default caption escapes a title with Liquid once", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await suDb.documentApprovalRequest.update({
+      where: { id: requestId },
+      data: { title: "Orçamento {{ especial }}" },
+    });
+    const rec = recordingClient();
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () =>
+          new ScriptedCaptureModel([{ reply: "" }]) as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("delivered");
+    const caption = (
+      named(rec.calls, "sendFileAttachment")[0]?.[5] as
+        | { caption?: string }
+        | undefined
+    )?.caption;
+    expect(asRendered(caption ?? "")).toBe(
+      "Segue o documento Orçamento {{ especial }}, aprovado pela equipe.",
+    );
+  });
+
   test("an aborted run writes nothing, and a run that wrote commits its outcome", async () => {
     const { requestId } = await conversationWithRequest({});
     await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
@@ -490,7 +666,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       }),
     ).toBe("handed");
     expect(named(live.calls, "sendPrivateNote")).toHaveLength(1);
-    expect(commits).toBe(1);
+    expect(commits).toBeGreaterThan(0);
   });
 
   test("an approved document over a person is a note, with no model and no message", async () => {

@@ -16,7 +16,10 @@ import { runScopedOn } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
-import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import {
+  parseLiveConversation,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
@@ -159,17 +162,55 @@ export async function runApprovalOutcome(
     return "no-agent";
   }
   const title = titleOf(request.title);
-  // An aborted run has been failed and its retry owns the outcome, so it writes nothing more.
-  const note = async (client: ChatwootClient, text: string) => {
-    if (deps.signal?.aborted) return false;
-    await client.sendPrivateNote(target.conv.chatwootConversationId, text);
+  // An aborted run has been failed and its retry owns the outcome, so it writes nothing more, unless
+  // it already wrote something the retry cannot take back: then the outcome is this run's to finish.
+  let committed = false;
+  const commit = () => {
+    committed = true;
     deps.commit?.();
+  };
+  const note = async (client: ChatwootClient, text: string) => {
+    if (deps.signal?.aborted && !committed) return false;
+    await client.sendPrivateNote(target.conv.chatwootConversationId, text);
+    commit();
     return true;
   };
 
   if (request.status === "REJECTED") {
     const client = await clientFor(tenantId, target, base, deps);
-    const owned = botOwns(target);
+    const conversationId = target.conv.chatwootConversationId;
+    // Asked live, right before the routing writes: the mirror can lag a person who just took or
+    // closed the conversation, and a hand-over over them would reopen or reassign it.
+    let owned = false;
+    if (botOwns(target)) {
+      const live = parseLiveConversation(
+        await client.getConversation(conversationId).catch(() => null),
+      );
+      if (!live) return "retry";
+      owned = shouldBotHandle(
+        {
+          assigneeType: live.assigneeType,
+          status: live.status,
+          assigneeId: live.assigneeId,
+          resolvedBy: target.conv.resolvedBy,
+        },
+        { ourAgentBotId: target.botId },
+      );
+    }
+    if (deps.signal?.aborted) return "retry";
+    // NOTE: the hand-over goes before the note, so a failure in it retries with nothing posted, and
+    // the note only says what already happened.
+    if (owned) {
+      await client.toggleStatus(conversationId, "open");
+      commit();
+      await assignPinnedTarget({
+        client,
+        conversationId,
+        instanceId: target.conv.chatwootInstanceId,
+        handoff: target.handoff,
+        logLabel: "document approval rejected",
+      });
+    }
     const reviewerNote = request.note
       ? ` Nota de quem revisou: ${literalForChatwoot(request.note)}`
       : "";
@@ -178,16 +219,7 @@ export async function runApprovalOutcome(
       `Documento não aprovado pela equipe: ${title}. Nada foi enviado ao cliente.${owned ? " A conversa foi passada para um atendente." : ""}${reviewerNote}`,
     );
     if (!noted) return "retry";
-    if (!owned) return "noted";
-    await client.toggleStatus(target.conv.chatwootConversationId, "open");
-    await assignPinnedTarget({
-      client,
-      conversationId: target.conv.chatwootConversationId,
-      instanceId: target.conv.chatwootInstanceId,
-      handoff: target.handoff,
-      logLabel: "document approval rejected",
-    });
-    return "handed";
+    return owned ? "handed" : "noted";
   }
 
   if (request.status === "EXPIRED") {
@@ -260,7 +292,8 @@ export async function runApprovalOutcome(
     approvedDocument: {
       bytes: pdf.bytes,
       fileName: pdf.fileName,
-      caption: `Segue o documento ${title}, aprovado pela equipe.`,
+      // NOTE: unescaped here: the caption is signed, and the signature escapes it once.
+      caption: `Segue o documento ${request.title.replace(/\s+/g, " ").trim()}, aprovado pela equipe.`,
       heldNote: `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
       windowNote: `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
       revokedNote: unavailable,
@@ -282,7 +315,7 @@ export async function runApprovalOutcome(
     outcome === "noted" ||
     outcome === "noted-window"
   ) {
-    deps.commit?.();
+    commit();
     return outcome === "messaged" ? "delivered" : "noted";
   }
   if (outcome === "live-unavailable") return "retry";

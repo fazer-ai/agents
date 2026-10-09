@@ -1386,6 +1386,7 @@ export async function runObserve(
   // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
   // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
   const current = await labelsRead;
+  const currentReadAt = Date.now();
   // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
   // move them): the same projection the tool renders (label-view.ts).
   const currentForPrompt =
@@ -1620,6 +1621,11 @@ export async function runObserve(
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
           // degradation if that fails too — one extra request on the failing path only.
           ...(current === null ? {} : { conversationLabels: current }),
+          // The `decisions` tick writes one provider call after this read, so its label rules
+          // apply to it. A model's turn takes seconds and reads again.
+          ...(current !== null && decisions?.ok === true
+            ? { conversationLabelsRead: { labels: current, at: currentReadAt } }
+            : {}),
         },
         { buildNativeTools, mcp: deps.mcp, flow },
       ),

@@ -241,6 +241,74 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     expect(r.peak()).toBe(3);
   });
 
+  test("an action its tool's schema refuses rides inside the run, and does not part it", async () => {
+    const r = recording();
+    const strict = new DynamicStructuredTool({
+      name: "private_note",
+      description: "note",
+      schema: z.object({ content: z.string() }),
+      func: async () => "ok",
+    });
+    const report = await applyDecisions(
+      {
+        apply: "enforce",
+        // A note with no content between two attribute rules: it can write nothing.
+        rules: [args(1), rule("private_note"), args(2)],
+      },
+      answers,
+      [r.make("set_custom_attribute"), strict],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      key,
+    );
+    expect(r.peak()).toBe(2);
+    expect(report.actions).toEqual([
+      { rule: 0, tool: "set_custom_attribute", outcome: "ran" },
+      {
+        rule: 1,
+        tool: "private_note",
+        outcome: "failed",
+        failure: "invalid_arguments",
+      },
+      { rule: 2, tool: "set_custom_attribute", outcome: "ran" },
+    ]);
+  });
+
+  test("a run does not stretch to an invalid action at its end", async () => {
+    const r = recording();
+    let fences = 0;
+    const strict = new DynamicStructuredTool({
+      name: "private_note",
+      description: "note",
+      schema: z.object({ content: z.string() }),
+      func: async () => "ok",
+    });
+    await applyDecisions(
+      {
+        apply: "enforce",
+        rules: [args(1), rule("private_note"), rule("set_labels")],
+      },
+      answers,
+      [r.make("set_custom_attribute"), strict, r.make("set_labels")],
+      [],
+      new AbortController().signal,
+      async () => {
+        fences += 1;
+        // Asked alone for the attribute rule: the invalid note behind it is not in its group.
+        if (fences === 1) expect(r.startedOrder).toEqual([]);
+        if (fences === 2) {
+          expect(r.startedOrder).toEqual(["set_custom_attribute:k1"]);
+        }
+        return true;
+      },
+      10,
+      key,
+    );
+    expect(fences).toBe(3);
+  });
+
   test("without a grouping every action runs alone, in rule order", async () => {
     const r = recording();
     await applyDecisions(

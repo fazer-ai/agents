@@ -1388,7 +1388,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       await suDb.agentToolSelection.delete({ where: { id: grantId } });
     });
 
-    test("six actions on a short conversation reach Chatwoot in seven requests", async () => {
+    test("six actions on a short conversation reach Chatwoot in six requests", async () => {
       const chatwoot = fakeChatwoot({
         labels: ["sentimento-neutro", "vip"],
         attributes: { origem: "site" },
@@ -1423,9 +1423,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         [
           // The window: one page, and a page Chatwoot did not fill has nothing older behind it.
           `GET ${conv}/messages`,
-          // The labels the evidence shows.
-          `GET ${conv}/labels`,
-          // Both label rules: one fresh read, one write of the set they add up to.
+          // The labels, read ONCE: the evidence shows them and both label rules are applied to them.
           `GET ${conv}/labels`,
           `POST ${conv}/labels`,
           // The three attribute rules: one read of the bag, one write.
@@ -1434,18 +1432,15 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           `POST ${conv}/messages`,
         ].sort(),
       );
-      // The evidence is read before anything is written, each write follows its own read, and the
-      // note, which shares a write with nothing, goes out after the group ahead of it in rule order.
-      const at = (r: string, from = 0) => seen.indexOf(r, from);
+      // The evidence is read before anything is written, the attribute write follows its own read,
+      // and the note, which shares a write with nothing, goes out after the run ahead of it.
+      const at = (r: string) => seen.indexOf(r);
       expect(at(`GET ${conv}/messages`)).toBeLessThan(2);
       expect(at(`GET ${conv}/labels`)).toBeLessThan(2);
-      expect(at(`POST ${conv}/labels`)).toBeGreaterThan(
-        at(`GET ${conv}/labels`, 2),
-      );
       expect(at(`POST ${conv}/custom_attributes`)).toBeGreaterThan(
         at(`GET ${conv}`),
       );
-      expect(at(`POST ${conv}/messages`)).toBe(6);
+      expect(at(`POST ${conv}/messages`)).toBe(5);
       // Reads that do not depend on each other are out at the same time: the second of the two
       // evidence reads starts while the first is still out, and the attribute bag is being read
       // before the label write has gone.
@@ -1536,7 +1531,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       const conv = `/conversations/${CONV}`;
       const seen = onConversation(chatwoot.requests);
       expect(seen.indexOf(`POST ${conv}/custom_attributes`)).toBeLessThan(
-        seen.lastIndexOf(`GET ${conv}/labels`),
+        seen.indexOf(`POST ${conv}/labels`),
       );
     });
 
@@ -1559,6 +1554,48 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         );
       }
     });
+
+    // An invalid rule in the middle is that rule's failure. It does not part the valid rules around
+    // it into two writes.
+    for (const [name, bad] of [
+      ["a value of the wrong type", { key: "obs_meio", value: 5 }],
+      ["no value at all", { key: "obs_meio" }],
+      [
+        "a scope that does not exist",
+        { key: "obs_meio", value: "x", scope: "galaxy" },
+      ],
+    ] as const) {
+      test(`an attribute rule with ${name} between two valid ones leaves one write`, async () => {
+        const chatwoot = fakeChatwoot({
+          labels: [],
+          attributes: { origem: "site" },
+        });
+        await decide(chatwoot, [
+          attribute("obs_reembolso", "sim"),
+          { when: yes, action: { tool: "set_custom_attribute", args: bad } },
+          attribute("obs_irritacao", "alta"),
+        ]);
+        const conv = `/conversations/${CONV}`;
+        expect(
+          onConversation(chatwoot.requests).filter((r) => r.startsWith("POST")),
+        ).toEqual([`POST ${conv}/custom_attributes`]);
+        expect(chatwoot.state.attributes).toEqual({
+          origem: "site",
+          obs_reembolso: "sim",
+          obs_irritacao: "alta",
+        });
+        expect((await detail()).actions).toEqual([
+          { rule: 0, tool: "set_custom_attribute", outcome: "ran" },
+          {
+            rule: 1,
+            tool: "set_custom_attribute",
+            outcome: "failed",
+            failure: "invalid_arguments",
+          },
+          { rule: 2, tool: "set_custom_attribute", outcome: "ran" },
+        ]);
+      });
+    }
 
     test("a label rule that changes nothing writes nothing, and its neighbour still writes", async () => {
       const chatwoot = fakeChatwoot({ labels: ["urgente"], attributes: {} });

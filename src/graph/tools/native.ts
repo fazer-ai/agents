@@ -405,6 +405,13 @@ export interface ToolCtx {
     contact?: string[];
     task?: string[];
   };
+  // THE CONVERSATION'S LABELS AS THE CALLER JUST READ THEM, with when. Handed over by a caller that
+  // read them moments before its writes (the `decisions` tick, whose read and write are one provider
+  // call apart): while it is fresh, `set_labels` applies its delta to this set instead of reading
+  // again, and leaves here the set it wrote. Absent, or older than `LABELS_READ_FRESH_MS`, the tool
+  // reads. The cost is the window: a label another writer puts on in between is not in the set that
+  // goes back, so a caller whose model thinks for seconds does not hand this over.
+  conversationLabelsRead?: { labels: string[]; at: number };
   // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE. Operator control labels live on the same
   // conversation as the classifier's, and this list keeps the agent from moving one on purpose (the
   // delta already keeps an unnamed label standing). The model still sees them: see applyLabelDelta
@@ -1201,6 +1208,9 @@ interface PendingLabelDelta {
   reject: (reason: unknown) => void;
 }
 
+// How long a caller's own read of the conversation's labels stands in for the tool's.
+const LABELS_READ_FRESH_MS = 10_000;
+
 // The `set_labels` calls one entry of the conversation's label queue will write together. While it
 // is the queue's tail, which it stops being when its read comes back, a call of the same turn (the
 // tool context is one turn's) joins it instead of queueing behind it.
@@ -1278,9 +1288,16 @@ function setLabelsTool(ctx: ToolCtx) {
     const close = () =>
       closeConversationLabelsTail(ctx.tenantId, ctx.conversationId, batch);
     try {
-      const current = await ctx.client.getConversationLabels(
-        ctx.conversationId,
-      );
+      const known = ctx.conversationLabelsRead;
+      let current: string[];
+      if (known && Date.now() - known.at <= LABELS_READ_FRESH_MS) {
+        // No request to wait on, so one turn of the event loop instead: the calls dispatched beside
+        // this one are still on their way to the queue.
+        await new Promise((r) => setImmediate(r));
+        current = known.labels;
+      } else {
+        current = await ctx.client.getConversationLabels(ctx.conversationId);
+      }
       close();
       let state = current;
       const outcomes = batch.deltas.map((d) => {
@@ -1331,7 +1348,10 @@ function setLabelsTool(ctx: ToolCtx) {
         }
         return;
       }
+      // Forgotten before the write: a write that fails leaves nothing known about the set.
+      ctx.conversationLabelsRead = undefined;
       await ctx.client.setConversationLabels(ctx.conversationId, state);
+      if (known) ctx.conversationLabelsRead = { labels: state, at: Date.now() };
       recordShown(ctx, "conversation", state);
       for (const o of outcomes) {
         if (moved(o)) {

@@ -122,15 +122,32 @@ export async function applyDecisions(
     const action = fired[r.at];
     return action ? together(action) : null;
   };
+  // An action whose arguments its tool's schema refuses is dispatched like any other and fails
+  // before its handler runs, so it writes nothing: it rides inside the run it sits in instead of
+  // parting the valid actions around it.
+  const inert = new Set<number>();
+  for (const r of toRun) {
+    const action = fired[r.at];
+    if (
+      action &&
+      isInteropZodSchema(r.tool.schema) &&
+      !(await interopSafeParseAsync(r.tool.schema, action.args)).success
+    ) {
+      inert.add(r.at);
+    }
+  }
   for (let i = 0; i < toRun.length; ) {
     const head = toRun[i];
     if (!head) break;
-    const key = keyOf(head);
+    const key = inert.has(head.at) ? null : keyOf(head);
     let end = i + 1;
-    while (key !== null && end < toRun.length) {
-      const next = toRun[end];
-      if (!next || keyOf(next) !== key) break;
-      end += 1;
+    // The run ends on its last member that shares the write, never on an inert one.
+    for (let j = end; key !== null && j < toRun.length; j++) {
+      const next = toRun[j];
+      if (!next) break;
+      if (inert.has(next.at)) continue;
+      if (keyOf(next) !== key) break;
+      end = j + 1;
     }
     const group = toRun.slice(i, end);
     i = end;

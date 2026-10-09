@@ -1557,6 +1557,96 @@ describe("native tools", () => {
     expect(setCalls).toEqual([["a"], ["a", "b"]]);
   });
 
+  // A caller that read the labels moments before its writes hands the read over, and the tool
+  // applies its delta to it instead of asking Chatwoot again.
+  function countingLabels(initial: string[]) {
+    let current = [...initial];
+    const calls = { reads: 0, writes: [] as string[][], fail: false };
+    const client = {
+      getConversationLabels: async () => {
+        calls.reads += 1;
+        return [...current];
+      },
+      setConversationLabels: async (_id: number, next: string[]) => {
+        if (calls.fail) throw new Error("chatwoot down");
+        calls.writes.push(next);
+        current = [...next];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    return { client, calls };
+  }
+
+  test("a read the caller just made is the one the write applies to, for every call of the batch", async () => {
+    const { client, calls } = countingLabels(["vip"]);
+    const tool = byName(
+      buildNativeTools({
+        client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+        conversationLabelsRead: { labels: ["vip"], at: Date.now() },
+      }),
+      "set_labels",
+    );
+    await Promise.all([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"], remove: ["vip"] }),
+    ]);
+    expect(calls.reads).toBe(0);
+    expect(calls.writes).toEqual([["a", "b"]]);
+    // The next write of the same turn applies to the set this one left, still without a read.
+    await tool.invoke({ add: ["c"] });
+    expect(calls.reads).toBe(0);
+    expect(calls.writes[1]).toEqual(["a", "b", "c"]);
+  });
+
+  test("a read that is no longer fresh is not trusted, and neither is one a failed write left", async () => {
+    const stale = countingLabels(["vip", "novo"]);
+    await byName(
+      buildNativeTools({
+        client: stale.client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+        conversationLabelsRead: { labels: ["vip"], at: Date.now() - 60_000 },
+      }),
+      "set_labels",
+    ).invoke({ add: ["a"] });
+    expect(stale.calls.reads).toBe(1);
+    expect(stale.calls.writes).toEqual([["vip", "novo", "a"]]);
+
+    const failed = countingLabels(["vip"]);
+    const tool = byName(
+      buildNativeTools({
+        client: failed.client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+        conversationLabelsRead: { labels: ["vip"], at: Date.now() },
+      }),
+      "set_labels",
+    );
+    failed.calls.fail = true;
+    await expect(tool.invoke({ add: ["a"] })).rejects.toThrow();
+    failed.calls.fail = false;
+    await tool.invoke({ add: ["b"] });
+    expect(failed.calls.reads).toBe(1);
+    expect(failed.calls.writes).toEqual([["vip", "b"]]);
+  });
+
+  test("without a read handed over the tool reads, as a model's turn needs", async () => {
+    const { client, calls } = countingLabels(["vip"]);
+    const tool = byName(
+      buildNativeTools({
+        client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+      }),
+      "set_labels",
+    );
+    await tool.invoke({ add: ["a"] });
+    await tool.invoke({ add: ["b"] });
+    expect(calls.reads).toBe(2);
+  });
+
   test("a failed write fails every call that rode on it, and the next call starts clean", async () => {
     let current: string[] = [];
     let fail = true;

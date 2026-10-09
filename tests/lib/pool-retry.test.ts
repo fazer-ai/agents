@@ -99,6 +99,34 @@ describe("isDatabaseUnavailable", () => {
     expect(isDatabaseUnavailable(wrapped)).toBe(true);
   });
 
+  test("the adapter's connection kinds are the database's, under a raw query's P2010 too", () => {
+    const rawQuery = (kind: string) =>
+      Object.assign(new Error("Raw query failed"), {
+        code: "P2010",
+        meta: {
+          driverAdapterError: { name: "DriverAdapterError", cause: { kind } },
+        },
+      });
+    for (const kind of [
+      "ConnectionClosed",
+      "DatabaseNotReachable",
+      "SocketTimeout",
+      "TooManyConnections",
+    ]) {
+      expect(isDatabaseUnavailable(rawQuery(kind))).toBe(true);
+    }
+    expect(
+      isDatabaseUnavailable(
+        new Error("adapter", { cause: { kind: "ConnectionClosed" } }),
+      ),
+    ).toBe(true);
+    // A raw query that failed on its own merits is not.
+    expect(isDatabaseUnavailable(rawQuery("UniqueConstraintViolation"))).toBe(
+      false,
+    );
+    expect(isDatabaseUnavailable(rawQuery("postgres"))).toBe(false);
+  });
+
   test("a query that failed on its own merits, or an HTTP error, is not", () => {
     expect(isDatabaseUnavailable(prismaError("P2002"))).toBe(false);
     expect(

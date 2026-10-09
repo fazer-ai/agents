@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7316 },
+          chatwootConversationId: { gte: 7310, lte: 7325 },
         },
       });
       await dropContact(77);
@@ -814,6 +814,85 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await dropContact(77);
     });
 
+    test("takes no pairing from the contact's conversation on another inbox", async () => {
+      // A pairing is per inbox: borrowing one from another inbox would write this turn into the
+      // memory of a channel the customer never wrote on.
+      const convId = 7320;
+      const messageId = 7820;
+      const contact = await contactOf(77);
+      const elsewhere = await seedConversation(7321, {
+        inboxId: observedInboxDbId,
+      });
+      await suDb.conversation.update({
+        where: { id: elsewhere.id },
+        data: { contactId: contact.id, contactInboxId: 71_701 },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBeNull();
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: { in: [convId, 7321] } },
+      });
+      await dropContact(77);
+    });
+
+    test("takes the pairing two of the contact's conversations share", async () => {
+      const convId = 7322;
+      const messageId = 7822;
+      const contact = await contactOf(77);
+      for (const other of [7323, 7324]) {
+        const row = await seedConversation(other);
+        await suDb.conversation.update({
+          where: { id: row.id },
+          data: { contactId: contact.id, contactInboxId: 71_702 },
+        });
+      }
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBe(71_702);
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId,
+          chatwootConversationId: { in: [convId, 7323, 7324] },
+        },
+      });
+      await dropContact(77);
+    });
+
     test("links a contact the mirror already has without restating its identity", async () => {
       const convId = 7312;
       const messageId = 7812;
@@ -883,6 +962,44 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(row.customAttributes).toEqual({ plano: "ouro" });
       expect(row.labels).toEqual(["vip"]);
       expect(row.conversationType).toBe("group");
+    });
+
+    test("leaves a mirrored conversation's attributes to the events that stored them", async () => {
+      // The body is filed at the stranded message's clock, so attributes restated in it would land on
+      // the row as that old a reading, over what the events stored. The mirror keeps its own.
+      const convId = 7325;
+      const messageId = 7825;
+      const conv = await seedConversation(convId, {
+        lastEventAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      });
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { customAttributes: { plano: "prata" }, labels: ["antigo"] },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { customAttributes: { plano: "ouro" }, labels: ["vip"] },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { id: conv.id },
+        select: { customAttributes: true, labels: true },
+      });
+      expect(row).toEqual({
+        customAttributes: { plano: "prata" },
+        labels: ["antigo"],
+      });
     });
 
     test("teaches an inbox that never learned its channel the one Chatwoot renders", async () => {
@@ -5578,6 +5695,67 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
               ),
             ),
           ).rejects.toThrow("trigger refused the insert");
+          const lines = await deliveryLines(conv.id);
+          expect(
+            lines.map((l) => [
+              l.level,
+              (l.detail as Record<string, unknown> | null)?.outcome,
+            ]),
+          ).toEqual(expected.map((e) => [...e]));
+        } finally {
+          path.mockRestore();
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+      }
+    });
+
+    test("a database lost after a claim the scheduler already gave up on still says the message went unanswered", async () => {
+      for (const [convId, messageId, status, expected] of [
+        [18952, 19462, "DEAD", [["error", "unanswered"]]],
+        [18953, 19463, "CLAIMED", []],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+        });
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status,
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true },
+        });
+        const path = spyOn(
+          webhookModule,
+          "processChatwootDelivery",
+        ).mockRejectedValueOnce(
+          Object.assign(new Error("Server has closed the connection."), {
+            code: "P1017",
+          }),
+        );
+        try {
+          const result = await runRecoveryJob(
+            {
+              id: job.id,
+              tenantId,
+              kind: "DELIVERY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              attempts: 4,
+              claimSeq: job.claimSeq,
+            },
+            appDb,
+            depsWith(
+              stubChatwoot({
+                page: pageWith([{ id: messageId, content: "oi" }]),
+              }),
+            ),
+          );
+          expect(result.outcome).toBe("reschedule");
           const lines = await deliveryLines(conv.id);
           expect(
             lines.map((l) => [

@@ -614,6 +614,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         "inboxes",
         "chatwoot_agent_bots",
         "agents",
+        "business_hours",
         "vault_entries",
         "chatwoot_instances",
       ]) {
@@ -1049,13 +1050,15 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     await setSettings(LADDER);
     await seed(2026);
     const seen: string[] = [];
+    const long = `${"Contexto do atendimento. ".repeat(40)}Pode me mandar a foto do documento?`;
     const s = stub({
-      messages: [personAsked(270, 3)],
+      messages: [{ ...personAsked(270, 3), content: long }],
       model: () => new AllMessagesModel(REPLY, seen),
     });
     await snoozedFollowUpHandler(jobFor(2026), appDb, s.deps);
     expect(s.sent).toEqual([REPLY]);
-    expect(seen.join("\n")).toContain("Pode me mandar o número do pedido?");
+    // Whole, even past the summary's cap: the ask at the end of a long message reaches the model.
+    expect(seen.join("\n")).toContain("Pode me mandar a foto do documento?");
   });
   async function finishedJob(
     conv: number,
@@ -1078,11 +1081,12 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
 
   test("a status or holder change after the last run re-arms, though no message moved", async () => {
     await setSettings(LADDER);
-    const claimed = new Date(Date.now() - 60_000);
+    // The run started after the agent's last edit, so only the conversation can re-arm it.
+    const claimed = new Date(Date.now() + 1_000);
     // The last message is older than the run; the snooze changed (dated to indefinite) after it.
     await seed(2028, {
       lastEventAt: new Date(Date.now() - 10 * 60_000),
-      statusAt: (Date.now() - 30_000) / 1000,
+      statusAt: (Date.now() + 30_000) / 1000,
     });
     await finishedJob(2028, "DONE", claimed);
     // And one whose status moved BEFORE the run: left alone.
@@ -1101,6 +1105,81 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       ).status;
     expect(await statusOf(2028)).toBe("PENDING");
     expect(await statusOf(2029)).toBe("DONE");
+  });
+
+  test("the status version is compared in UTC whatever the session's zone", async () => {
+    // The same status-only move as above, swept over a connection whose session zone is not UTC.
+    const url = new URL(process.env.TEST_APP_DATABASE_URL as string);
+    url.searchParams.set("options", "-c TimeZone=America/Sao_Paulo");
+    const tzApp = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: url.toString() }),
+    });
+    try {
+      await setSettings(LADDER);
+      await seed(2031, {
+        lastEventAt: new Date(Date.now() - 10 * 60_000),
+        statusAt: (Date.now() + 30_000) / 1000,
+      });
+      await finishedJob(2031, "DONE", new Date(Date.now() + 1_000));
+      await sweepSnoozedFollowUps(tzApp, tenantId, [agentId]);
+      const job = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2031)) },
+        select: { status: true },
+      });
+      expect(job.status).toBe("PENDING");
+    } finally {
+      await tzApp.$disconnect();
+    }
+  });
+
+  test("an edit of the agent after the last run re-arms: the cadence may now apply", async () => {
+    await setSettings(LADDER);
+    await seed(2032, { lastEventAt: new Date(Date.now() - 10 * 60_000) });
+    await finishedJob(2032, "DONE", new Date(Date.now() - 60_000));
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    // setSettings above bumped the agent's updated_at after the job's run: re-armed.
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2032)) },
+      select: { status: true },
+    });
+    expect(job.status).toBe("PENDING");
+  });
+
+  test("an edit of the agent's schedule after the last run re-arms", async () => {
+    await setSettings(LADDER);
+    const hours = await suDb.businessHours.create({
+      data: { tenantId, name: "Comercial" },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { followUpHoursId: hours.id },
+    });
+    try {
+      await seed(2033, { lastEventAt: new Date(Date.now() - 10 * 60_000) });
+      // The run started after the agent's edit; then the schedule changed.
+      await finishedJob(2033, "DONE", new Date(Date.now() + 1_000));
+      await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+      const before = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2033)) },
+        select: { status: true },
+      });
+      expect(before.status).toBe("DONE");
+      await suDb.businessHours.update({
+        where: { id: hours.id },
+        data: { name: "Comercial 2", updatedAt: new Date(Date.now() + 5_000) },
+      });
+      await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+      const after = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2033)) },
+        select: { status: true },
+      });
+      expect(after.status).toBe("PENDING");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { followUpHoursId: null },
+      });
+    }
   });
 
   test("a finished row re-armed by a new event gets a fresh failure budget", async () => {

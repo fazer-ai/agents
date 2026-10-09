@@ -113,6 +113,9 @@ export async function sweepSnoozedFollowUps(
         FROM conversations c
         JOIN inboxes i ON i.id = c.inbox_id
         JOIN agents a ON a.id = i.agent_id
+        -- The schedule the handler reads (follow-up hours, else business hours), for its version.
+        LEFT JOIN business_hours h
+          ON h.id = COALESCE(a.follow_up_hours_id, a.business_hours_id)
        WHERE c.tenant_id = ${tenantId}
          AND c.status = 'snoozed'
          AND c.assignee_type = 'User'
@@ -133,15 +136,18 @@ export async function sweepSnoozedFollowUps(
               AND (
                 -- A run in flight is left alone. Otherwise the watermark is the last run's START
                 -- (its live read comes after the claim), or the arming for a row never run: an event
-                -- after it is one no run has seen, even when that run completed later. The event is
-                -- the later of the last message and the last status or holder change, which
-                -- last_event_at (Chatwoot last_activity_at) does not move with.
+                -- after it is one no run has seen, even when that run completed later. What counts
+                -- as an event: the last message; the last status or holder change, which
+                -- last_event_at (Chatwoot last_activity_at) does not move with; and an edit of the
+                -- agent or of its schedule, which can change the cadence, the due time or whether
+                -- one applies at all. The epoch is read as UTC, the zone the stored columns are in.
                 j.status = 'CLAIMED'
                 OR COALESCE(j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at,
-                  to_timestamp(c.chatwoot_status_at)
+                  to_timestamp(c.chatwoot_status_at) AT TIME ZONE 'UTC',
+                  a.updated_at,
+                  h.updated_at
                 )
-                OR (c.last_event_at IS NULL AND c.chatwoot_status_at IS NULL)
               )
          )
        LIMIT 500`,
@@ -263,7 +269,9 @@ export function snoozedNudge(params: {
   return {
     source: "followup",
     kind: "snoozed",
-    summary: `A person on the team asked the customer for something about ${params.idleMin} minutes ago and is waiting for the answer; the customer has not replied. Write ONE short reminder on that person's behalf, about what they asked, without asking for anything new and without promising anything the conversation does not already say.${params.anchorText.trim() ? ` What they wrote: «${params.anchorText.trim()}»` : ""}`,
+    summary: `A person on the team asked the customer for something about ${params.idleMin} minutes ago and is waiting for the answer; the customer has not replied. Write ONE short reminder on that person's behalf, about what they asked (their message is the text), without asking for anything new and without promising anything the conversation does not already say.`,
+    // The person's message in the fenced text block, which keeps it whole: the summary is capped.
+    text: params.anchorText.trim() || undefined,
     instructions: params.instructions || undefined,
     step: params.step,
     // One occasion per message of the person: a new message is a new ladder, and its refusals must

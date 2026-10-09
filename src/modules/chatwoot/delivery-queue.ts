@@ -151,6 +151,8 @@ export interface DrainStoredParams {
   // Rows younger than this are left to whoever holds them; see `STORED_DELIVERY_MIN_AGE_MS`.
   minAgeMs?: number;
   now?: number;
+  // Rows read per pass; tests shrink it to reach the paging past held rows.
+  batch?: number;
 }
 
 // Admits the stored rows nothing here holds, and clears the body of those past the sweep's window.
@@ -181,15 +183,19 @@ export async function drainStoredChatwootDeliveries(
       data: { payload: null },
     }),
   );
+  // Rows this process already holds are skipped in the query, not after it: otherwise a full batch of
+  // them would hide every row a dead process left behind.
+  const held = [...admission().held].map((id) => BigInt(id));
   const rows = (await run((db) =>
     db.chatwootWebhookDelivery.findMany({
       where: {
         status: "PENDING",
         payload: { not: null },
         receivedAt: { gt: oldest, lte: youngest },
+        ...(held.length > 0 ? { id: { notIn: held } } : {}),
       },
       orderBy: { id: "asc" },
-      take: DRAIN_BATCH,
+      take: params.batch ?? DRAIN_BATCH,
       select: {
         id: true,
         tenantId: true,

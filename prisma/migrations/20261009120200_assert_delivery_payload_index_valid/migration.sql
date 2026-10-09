@@ -1,7 +1,7 @@
 -- THE CATALOG HAS TO AGREE WITH THE MIGRATION BEFORE THIS ONE, which builds the partial index on
 -- (tenant_id, received_at) WHERE payload IS NOT NULL CONCURRENTLY. Same file as
--- `20261006210200_assert_chatwoot_webhook_deliveries_indexes_valid`, with its own table and its own name in
--- step 4; that file's lineage holds every measurement behind the message below.
+-- `20261006210200_assert_alert_deliveries_indexes_valid`, with its own table and its own name in step 4;
+-- that file's lineage holds every measurement behind the message below.
 --
 -- In a file of its own, because with anything else beside it the concurrent build it checks is
 -- refused with `25001` (.claude/rules/prisma.md).
@@ -28,7 +28,7 @@ Every index it still returns is abandoned, and they come in two kinds.
 Reindexing either of those instead of dropping it ends with TWO valid indexes carrying the same definition, measured for both suffixes: a duplicate that costs storage and every write from then on, and that nothing in this file will ever report again, because both are valid.
 The REINDEX has a wait phase of its own and waits for ANY transaction whose snapshot is older than itself, including one that never touches this table, so it can sit for exactly as long as the build step 2 excused you from waiting for: measured on one index, 1s with nothing else running, 28s against a single open transaction on an unrelated table, and 111s beside a live concurrent build on another table, ending with that build. Looked up in pg_stat_activity it shows as Lock / virtualxid, which reads like a lock problem and is not one: the progress view names the same operation ..._ccnew | waiting for old snapshots. It is NOT stuck, and you must not interrupt it: an interrupted REINDEX leaves the original still invalid AND adds an invalid ..._ccnew beside it, which is one more of exactly what this migration is reporting.
 If a REINDEX fails on its own, READ THE ERROR. "could not create unique index" means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew that attempt left behind, then reindex the original. Any other error, such as no disk space, a deadlock, or a statement or lock timeout, is its own problem with its own fix and has nothing to do with duplicate data.
-STEP 4, ALWAYS: prisma migrate resolve --rolled-back 20261006210200_assert_chatwoot_webhook_deliveries_indexes_valid, then re-deploy. This migration''s own row is FAILED from the moment it raised, so without step 4 the next deploy stops with P3009 no matter what you did about the index.',
+STEP 4, ALWAYS: prisma migrate resolve --rolled-back 20261009120200_assert_delivery_payload_index_valid, then re-deploy. This migration''s own row is FAILED from the moment it raised, so without step 4 the next deploy stops with P3009 no matter what you did about the index.',
       dead;
   END IF;
 END $$;

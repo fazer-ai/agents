@@ -370,4 +370,30 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     g.release();
     expect((await settled(id)).status).toBe("PROCESSED");
   });
+
+  test("rows this process holds do not use up the batch that reaches a row nobody holds", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate);
+    const mine = await ackOnly("queue-held-batch-a", 605);
+    const first = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(first.admitted).toBe(1);
+    // The held row has the lower id: a one-row batch that still counted it would never reach this one.
+    const orphan = await ackOnly("queue-held-batch-b", 606);
+    const second = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(second.admitted).toBe(1);
+    g.release();
+    expect((await settled(mine)).status).toBe("PROCESSED");
+    expect((await settled(orphan)).status).toBe("PROCESSED");
+  });
 });

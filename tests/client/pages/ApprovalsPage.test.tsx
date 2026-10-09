@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";
 
 // The one approvals queue: a document waiting on the team is listed for every role and counted in
 // the sidebar badge, and the knowledge suggestions join both only for an admin, who alone reviews
@@ -25,6 +25,9 @@ const { ApprovalsProvider, usePendingApprovals } = await import(
   "@/client/contexts/ApprovalsContext"
 );
 const { ApprovalsPage } = await import("@/client/pages/ApprovalsPage");
+const { DocumentApprovalPage } = await import(
+  "@/client/pages/DocumentApprovalPage"
+);
 const { ToastProvider } = await import("@/client/components/Toast");
 
 const realFetch = globalThis.fetch;
@@ -59,11 +62,52 @@ function json(body: unknown) {
   });
 }
 
-globalThis.fetch = (async (input: RequestInfo | URL) => {
+// A request's own page, for the decision that has to clear the badge.
+let decided = false;
+URL.createObjectURL = (() => "blob:p") as typeof URL.createObjectURL;
+URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL;
+
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
   if (url.includes("/document-approvals/pending")) {
-    return json(pending(url));
+    const answer = pending(url);
+    return answer instanceof Response ? answer : json(answer);
+  }
+  if (
+    url.endsWith("/document-approvals/41/approve") &&
+    init?.method === "POST"
+  ) {
+    decided = true;
+    return json({ request: {}, document: { number: "ORC-0009" } });
+  }
+  if (url.includes("/document-approvals/41/preview")) {
+    return new Response("%PDF-", {
+      headers: { "content-type": "application/pdf" },
+    });
+  }
+  if (url.includes("/document-approvals/41/context")) {
+    return json({
+      conversation: null,
+      contact: null,
+      messages: [],
+      messagesUnavailable: false,
+    });
+  }
+  if (url.includes("/document-approvals/41")) {
+    return json({
+      request: {
+        ...DOCUMENT,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        templateId: "1",
+        status: decided ? "APPROVED" : "PENDING",
+        threadId: "t",
+        reviewerUserId: null,
+        note: null,
+        decidedAt: null,
+        issuedDocumentId: decided ? "5" : null,
+      },
+    });
   }
   if (knowledgeFails && url.includes("/knowledge/approvals")) {
     return new Response("{}", { status: 500 });
@@ -82,6 +126,7 @@ afterEach(() => {
   asked.length = 0;
   pending = onePage;
   knowledgeFails = false;
+  decided = false;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -171,4 +216,55 @@ test("a knowledge queue that failed to load is never called empty", async () => 
   expect(
     screen.queryByText("No knowledge suggestion is waiting for review."),
   ).toBeNull();
+});
+
+test("a decision on a request's page clears it from the badge without another navigation", async () => {
+  role = "AGENT";
+  pending = () =>
+    decided
+      ? { requests: [], total: 0, nextAfter: null }
+      : { requests: [DOCUMENT], total: 1, nextAfter: null };
+  render(
+    <MemoryRouter initialEntries={["/document-approvals/41"]}>
+      <ToastProvider>
+        <ApprovalsProvider>
+          <Badge />
+          <Routes>
+            <Route
+              path="/document-approvals/:id"
+              element={<DocumentApprovalPage />}
+            />
+          </Routes>
+        </ApprovalsProvider>
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("badge").textContent).toBe("1"),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Approve and send" }),
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("badge").textContent).toBe("0"),
+  );
+});
+
+test("a next page that fails says so and keeps what was loaded", async () => {
+  role = "AGENT";
+  pending = (url) =>
+    url.includes("after=41")
+      ? new Response(JSON.stringify({ error: "Fila indisponível agora." }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        })
+      : { requests: [DOCUMENT], total: 2, nextAfter: "41" };
+  mount(<ApprovalsPage />);
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await screen.findByText("Fila indisponível agora.");
+  expect(
+    screen.getByRole("link", { name: /Orçamento for Ana Ribeiro/ }),
+  ).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
 });

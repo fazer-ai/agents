@@ -2,10 +2,17 @@ import { ClipboardCheck, FileText } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import { Button, Card, DataBoundary, PageContainer } from "@/client/components";
+import {
+  Button,
+  Card,
+  DataBoundary,
+  PageContainer,
+  useToast,
+} from "@/client/components";
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { isAdminRole } from "@/client/lib/roles";
 import { KnowledgeApprovals } from "@/client/pages/resources/KnowledgeApprovals";
 
@@ -23,6 +30,7 @@ export function ApprovalsPage() {
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role);
   const { setKnowledgeCount, knowledgeCount, refresh } = usePendingApprovals();
+  const { showToast } = useToast();
   // Whether the knowledge queue has answered at all: its count is 0 both before it loads and when
   // it failed, and neither of those is "nothing waiting".
   const [knowledgeKnown, setKnowledgeKnown] = useState(false);
@@ -67,12 +75,27 @@ export function ApprovalsPage() {
     if (!nextAfter) return;
     setLoadingMore(true);
     try {
-      const { data } = await api.api.v1["document-approvals"].pending.get({
+      const { data, error: err } = await api.api.v1[
+        "document-approvals"
+      ].pending.get({
         query: { after: nextAfter },
       });
-      if (!data) return;
+      if (err || !data) {
+        // The rows and the cursor stay, so the button retries the same page.
+        showToast(
+          apiErrorMessage(err) ??
+            t("approvalQueue.moreFailed", "Could not load more documents."),
+          "error",
+        );
+        return;
+      }
       setRequests((prev) => [...(prev ?? []), ...data.requests]);
       setNextAfter(data.nextAfter);
+    } catch {
+      showToast(
+        t("approvalQueue.moreFailed", "Could not load more documents."),
+        "error",
+      );
     } finally {
       setLoadingMore(false);
     }

@@ -231,6 +231,7 @@
     "knowledge": "Sugestões da base de conhecimento",
     "loadError": "Não foi possível carregar os documentos aguardando aprovação.",
     "more": "Mostrar mais",
+    "moreFailed": "Não foi possível carregar mais documentos.",
     "noDocuments": "Nenhum documento aguardando aprovação.",
     "noKnowledge": "Nenhuma sugestão da base de conhecimento aguardando revisão.",
     "review": "Revisar",

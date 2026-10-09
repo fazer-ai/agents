@@ -98,6 +98,26 @@ function usePreview(id: string): DocumentPreviewState {
   return state;
 }
 
+// A message's attachment with no transcription, named by its kind in the reviewer's language.
+function attachmentLabel(
+  fileType: string | null,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  switch (fileType) {
+    case "audio":
+      return t(
+        "documentApproval.attachmentAudio",
+        "Voice note, not transcribed",
+      );
+    case "image":
+      return t("documentApproval.attachmentImage", "Image");
+    case "video":
+      return t("documentApproval.attachmentVideo", "Video");
+    default:
+      return t("documentApproval.attachmentFile", "File");
+  }
+}
+
 // One page instance per request: moving to another id (request again, the browser's back) starts
 // from nothing, so neither a preview nor a load of the previous request can show beside the next one's
 // buttons.
@@ -487,9 +507,26 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                           : (m.senderName ?? t("documentApproval.us", "Agent"))}
                         {m.createdAt ? ` · ${formatTime(m.createdAt)}` : ""}
                       </div>
-                      <p className="whitespace-pre-wrap text-text-primary">
-                        {m.content ?? ""}
-                      </p>
+                      {m.content ? (
+                        <p className="whitespace-pre-wrap text-text-primary">
+                          {m.content}
+                        </p>
+                      ) : null}
+                      {m.attachments.map((a, j) => (
+                        <p
+                          // biome-ignore lint/suspicious/noArrayIndexKey: a message's attachments have no id of their own here and never reorder
+                          key={j}
+                          className="whitespace-pre-wrap text-text-secondary italic"
+                        >
+                          {a.transcribedText
+                            ? t(
+                                "documentApproval.transcription",
+                                "Transcription: {{text}}",
+                                { text: a.transcribedText },
+                              )
+                            : attachmentLabel(a.fileType, t)}
+                        </p>
+                      ))}
                     </li>
                   ))}
                 </ul>

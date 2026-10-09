@@ -393,3 +393,43 @@ test("a page load renders the request's preview once", async () => {
   await new Promise((r) => setTimeout(r, 50));
   expect(previews).toBe(1);
 });
+
+test("a message that is only a voice note shows its transcription, and a bare file says what it was", async () => {
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) {
+      return json({
+        conversation: null,
+        contact: { name: "Ana", phone: null, email: null },
+        messages: [
+          {
+            id: 1,
+            content: null,
+            fromCustomer: true,
+            senderName: null,
+            createdAt: null,
+            attachments: [
+              { fileType: "audio", transcribedText: "três salas, por favor" },
+            ],
+          },
+          {
+            id: 2,
+            content: null,
+            fromCustomer: true,
+            senderName: null,
+            createdAt: null,
+            attachments: [{ fileType: "image", transcribedText: null }],
+          },
+        ],
+        messagesUnavailable: false,
+      });
+    }
+    if (url.includes("/document-approvals/18")) {
+      return json({ request: request("18") });
+    }
+    return json({});
+  };
+  mount("/document-approvals/18");
+  await screen.findByText("Transcription: três salas, por favor");
+  expect(screen.getByText("Image")).toBeTruthy();
+});

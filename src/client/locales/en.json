@@ -1007,6 +1007,10 @@
     "approved": "Approved: {{number}} is on its way to the customer.",
     "approvedHint": "Approved. The agent sends the document in the conversation, or leaves a note when it cannot.",
     "approveFailed": "Could not approve.",
+    "attachmentAudio": "Voice note, not transcribed",
+    "attachmentFile": "File",
+    "attachmentImage": "Image",
+    "attachmentVideo": "Video",
     "confirmReject": "Reject",
     "contextError": "The customer and the messages could not be loaded.",
     "customer": "Customer",
@@ -1043,6 +1047,7 @@
       "pending": "Waiting for approval",
       "rejected": "Rejected"
     },
+    "transcription": "Transcription: {{text}}",
     "us": "Agent"
   },
   "documents": {

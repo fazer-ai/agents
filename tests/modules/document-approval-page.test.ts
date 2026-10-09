@@ -565,6 +565,48 @@ describe.skipIf(!dbUp)(
       expect(context.messagesUnavailable).toBe(false);
     });
 
+    test("a voice note or a file with no caption reaches the reviewer as what it was", async () => {
+      const { requestId } = await newRequest();
+      const rec = recordingClient([
+        {
+          id: 1,
+          content: null,
+          message_type: 0,
+          attachments: [
+            {
+              id: 11,
+              file_type: "audio",
+              data_url: "https://chat.example.com/a.ogg",
+              transcribed_text: "quero o orçamento para três salas",
+            },
+          ],
+        },
+        {
+          id: 2,
+          content: "",
+          message_type: 0,
+          attachments: [
+            { id: 12, file_type: "image", data_url: "https://x/y.png" },
+          ],
+        },
+      ]);
+      const context = await getApprovalContext(
+        ctx(),
+        requestId,
+        { makeClient: rec.makeClient },
+        appDb,
+      );
+      expect(context.messages.map((m) => m.attachments)).toEqual([
+        [
+          {
+            fileType: "audio",
+            transcribedText: "quero o orçamento para três salas",
+          },
+        ],
+        [{ fileType: "image", transcribedText: null }],
+      ]);
+    });
+
     test("the context reads older pages until it has the last ten public messages", async () => {
       const { requestId } = await newRequest();
       // Sixty messages, one in five public: Chatwoot's latest page of twenty holds only four.

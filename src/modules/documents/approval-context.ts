@@ -18,6 +18,9 @@ export interface ApprovalContextMessage {
   fromCustomer: boolean;
   senderName: string | null;
   createdAt: number | null;
+  // What a message carried besides its text: a voice note or a file with no caption is the customer
+  // saying something, so the reviewer sees its kind and the transcription when one exists.
+  attachments: { fileType: string | null; transcribedText: string | null }[];
 }
 
 export interface ApprovalContextDto {
@@ -137,6 +140,10 @@ export async function getApprovalContext(
     fromCustomer: m.messageType === 0,
     senderName: m.senderName,
     createdAt: m.createdAt,
+    attachments: m.attachments.map((a) => ({
+      fileType: a.fileType,
+      transcribedText: a.transcribedText,
+    })),
   }));
   return {
     conversation: {

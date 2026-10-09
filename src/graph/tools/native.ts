@@ -22,6 +22,7 @@ import {
 } from "@/graph/silence";
 import { SKIP_NOTE_DETAIL_MAX as SKIP_DETAIL_MAX } from "@/graph/skip-handover";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
@@ -793,18 +794,31 @@ async function mirrorAttributeWrite(
   const base = ctx.base;
   const tenantId = ctx.tenantId;
   const patch = JSON.stringify({ [key]: value });
+  const target =
+    scope === "contact" ? ctx.contactDbId : (ctx.conversationDbId ?? null);
+  // In the order the writes reached Chatwoot: calls that shared one write return together, and two
+  // of them naming the same key would otherwise race here, leaving the mirror on the value Chatwoot
+  // did not keep.
+  const inOrder = <T>(fn: () => Promise<T>) =>
+    target == null
+      ? fn()
+      : withKeyedQueue(
+          `attribute-mirror:${String(tenantId)}:${scope}:${String(target)}`,
+          fn,
+        );
   try {
-    await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      if (scope === "contact") {
-        if (ctx.contactDbId == null) return;
-        // NOTE: The write-through also ADVANCES the contact's source watermark: an event generated
-        // before now carries a pre-write snapshot, and one delivered late but stamped after the last
-        // mirrored event would pass upsertContact's compare-and-set and erase this key, which nothing
-        // puts back (bots never get contact_updated). GREATEST (NULL-ignoring) never moves it back.
-        // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
-        // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
-        // non-UTC session the stored value reads as hours ahead and the barrier never advances.
-        await db.$executeRaw`
+    await inOrder(() =>
+      runScopedOn(base, sysCtx(tenantId), async (db) => {
+        if (scope === "contact") {
+          if (ctx.contactDbId == null) return;
+          // NOTE: The write-through also ADVANCES the contact's source watermark: an event generated
+          // before now carries a pre-write snapshot, and one delivered late but stamped after the last
+          // mirrored event would pass upsertContact's compare-and-set and erase this key, which nothing
+          // puts back (bots never get contact_updated). GREATEST (NULL-ignoring) never moves it back.
+          // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
+          // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
+          // non-UTC session the stored value reads as hours ahead and the barrier never advances.
+          await db.$executeRaw`
           UPDATE contacts
           SET custom_attributes = custom_attributes || ${patch}::jsonb,
               custom_attributes_at = GREATEST(
@@ -813,23 +827,24 @@ async function mirrorAttributeWrite(
               )
           WHERE id = ${ctx.contactDbId} AND tenant_id = ${tenantId}
         `;
-        return;
-      }
-      if (ctx.conversationDbId == null) return;
-      if (scope === "task") {
-        await db.$executeRaw`
+          return;
+        }
+        if (ctx.conversationDbId == null) return;
+        if (scope === "task") {
+          await db.$executeRaw`
           UPDATE conversations
           SET kanban_attributes = kanban_attributes || ${patch}::jsonb
           WHERE id = ${ctx.conversationDbId} AND tenant_id = ${tenantId}
         `;
-        return;
-      }
-      await db.$executeRaw`
+          return;
+        }
+        await db.$executeRaw`
         UPDATE conversations
         SET custom_attributes = custom_attributes || ${patch}::jsonb
         WHERE id = ${ctx.conversationDbId} AND tenant_id = ${tenantId}
       `;
-    });
+      }),
+    );
   } catch (e) {
     logger.warn(
       "attribute mirror write-through failed (scope=%s): %s",

@@ -1480,6 +1480,86 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       ]);
     });
 
+    // A precondition reads what the rules before it wrote, so a tool carrying one is never sent out
+    // beside its neighbours: the attribute lands, and only then is the condition asked.
+    test("a rule whose tool has a precondition waits for the attribute rule ahead of it", async () => {
+      const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { customAttributes: {} },
+      });
+      const rules = [
+        attribute("consent", "yes"),
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["autorizado"] } },
+        },
+      ];
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            monitoring: decisionsBlock({ rules }),
+            toolPreconditions: {
+              set_labels: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "consent",
+                equals: "yes",
+              },
+            },
+          } as never,
+        },
+      });
+      const p = providerDouble(() =>
+        typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.95 } }),
+      );
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async (cfg) =>
+            new ChatwootClient(cfg, chatwoot.fetchImpl),
+          makeModel: () => new CountingModel() as never,
+          decisionFetch: p.fetchImpl,
+        },
+      );
+      expect(chatwoot.state.attributes).toEqual({ consent: "yes" });
+      expect(chatwoot.state.labels).toEqual(["autorizado"]);
+      const conv = `/conversations/${CONV}`;
+      const seen = onConversation(chatwoot.requests);
+      expect(seen.indexOf(`POST ${conv}/custom_attributes`)).toBeLessThan(
+        seen.lastIndexOf(`GET ${conv}/labels`),
+      );
+    });
+
+    test("two neighbouring rules writing one attribute leave the mirror on the value Chatwoot kept", async () => {
+      for (let round = 0; round < 4; round++) {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const last = `valor-${round}`;
+        await decide(chatwoot, [
+          attribute("etapa", "primeira"),
+          attribute("etapa", "segunda"),
+          attribute("etapa", last),
+        ]);
+        expect(chatwoot.state.attributes).toEqual({ etapa: last });
+        const row = await suDb.conversation.findUniqueOrThrow({
+          where: { id: convRowId },
+          select: { customAttributes: true },
+        });
+        expect((row.customAttributes as Record<string, unknown>).etapa).toBe(
+          last,
+        );
+      }
+    });
+
     test("a label rule that changes nothing writes nothing, and its neighbour still writes", async () => {
       const chatwoot = fakeChatwoot({ labels: ["urgente"], attributes: {} });
       await decide(chatwoot, [

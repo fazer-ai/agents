@@ -1842,8 +1842,10 @@ export async function runObserve(
           () => fence(),
           cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
           // The label write and the attribute write touch different things on the conversation, so
-          // the two groups go out side by side as well, not one after the other.
+          // the two go out side by side as well, not one after the other. A tool with a precondition
+          // stays on its own: its condition reads what the rules before it wrote.
           (action) =>
+            Object.hasOwn(cfg.toolPreconditions, action.tool) ||
             sharedWriteKey(action.tool, action.args) === null
               ? null
               : "conversation",

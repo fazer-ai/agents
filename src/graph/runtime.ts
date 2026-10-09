@@ -2671,8 +2671,10 @@ async function runTurnBody(
     });
     return "posted";
   } finally {
-    // NOTE: Before either claim is released: the next turn on this thread waits on them, and its
-    // turn-limit gate must already see this delivery.
+    clearTurnInFlight(threadId);
+    // NOTE: Before the durable claim is released: the next turn on this thread waits on it, and its
+    // turn-limit gate must already see this delivery. After the in-flight mark, which no turn waits
+    // on and an unawaited rollback reads.
     if (
       loaded.conversationDbId !== null &&
       flow.source === "inbox" &&
@@ -2688,7 +2690,6 @@ async function runTurnBody(
         proactive: false,
         base,
       });
-    clearTurnInFlight(threadId);
     if (graphOwner) {
       const heldOwner: ThreadOwner = graphOwner;
       try {

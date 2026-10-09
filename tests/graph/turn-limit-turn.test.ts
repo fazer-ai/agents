@@ -318,7 +318,7 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
   // between the release and the write, if there is one, is wide enough to be seen.
   test("a turn waiting on the previous one sees its delivery", async () => {
     const convId = 8207;
-    // NOTE: A contact-inbox thread, the one whose turns take the durable claim and wait on it.
+    // A contact-inbox thread, the one whose turns take the durable claim and wait on it.
     const convDbId = await seedConversation(convId, 7207);
     await seedDeliveries(convDbId, [minutesAgo(10), minutesAgo(5)]);
     const slow = appDb.$extends({

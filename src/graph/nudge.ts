@@ -2097,6 +2097,8 @@ async function runAgentNudgeBody(
               if (
                 // Both answers, for the reason the keyed branch above states.
                 canMessagePre &&
+                // A reminder over a person's snooze is not the conversation coming back to the bot.
+                !snoozedHolder &&
                 owesHandbackNote(channelNow ?? []) &&
                 (await botOwnsItNow().catch((err) => {
                   logger.warn(
@@ -2258,6 +2260,7 @@ async function runAgentNudgeBody(
             // lands mid-preparation leaves the note owed, and the next turn — prepared in bot mode, with
             // a directive that agrees with it — writes it.
             canMessagePre &&
+            !snoozedHolder &&
             owesHandbackNote(channelNow ?? []) &&
             (await botOwnsItNow().catch((err) => {
               logger.warn(

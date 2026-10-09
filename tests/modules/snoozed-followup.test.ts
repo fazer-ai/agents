@@ -1,9 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BaseMessage } from "@langchain/core/messages";
+import { ToolMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { contactInboxThreadId } from "@/graph/checkpointer";
+import { HUMAN_HANDBACK_NOTE } from "@/graph/markers";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import { isSnoozedForAPerson } from "@/modules/chatwoot/normalize";
@@ -22,7 +28,11 @@ import {
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
-import { guardrailModel, ToolRecordingModel } from "../utils/scripted-models";
+import {
+  guardrailModel,
+  SideEffectModel,
+  ToolRecordingModel,
+} from "../utils/scripted-models";
 
 // The snoozed ladder: a person snoozed a conversation "until next reply" and the
 // customer never answered. The pure half first, then the handler against a stubbed Chatwoot.
@@ -74,6 +84,17 @@ describe("snoozed ladder: what the live read decides", () => {
       row({ id: 12, messageType: "incoming", senderType: "contact" }),
     ]);
     expect(a?.customerSpokeAfter).toBe(true);
+  });
+
+  test("a user row the platform sent is not a person asking, nor a person answering", () => {
+    const a = findSnoozedAnchor([
+      row({ id: 11 }),
+      row({ id: 12, platformSent: true }),
+    ]);
+    expect(a?.messageId).toBe(11);
+    expect(someoneSpokeAfter([row({ id: 21, platformSent: true })], 20)).toBe(
+      false,
+    );
   });
 
   test("no person's message on the page: no anchor", () => {
@@ -323,7 +344,9 @@ function stub(over: {
   const toggles: string[] = [];
   const labelSets: string[][] = [];
   let currentLabels = over.labels ?? [];
-  let modelRan = false;
+  // Shown only once the model is GENERATING: after every ask that precedes the invoke, so only a
+  // check at the send boundary can see it.
+  let lateVisible = false;
   let reads = 0;
   const client = {
     getConversation: async (c: number) => ({
@@ -347,7 +370,7 @@ function stub(over: {
       opts?: { before?: number; after?: number },
     ) => {
       if (opts?.after !== undefined) {
-        const late = modelRan && over.lateMessage ? [over.lateMessage] : [];
+        const late = lateVisible && over.lateMessage ? [over.lateMessage] : [];
         return {
           payload: [...over.messages, ...late].filter(
             (m) => m.id > (opts.after as number),
@@ -378,12 +401,13 @@ function stub(over: {
     toggles,
     labelSets,
     deps: {
-      makeModel: (cfg: { model: string }) => {
-        modelRan = true;
-        return (
-          over.model?.(cfg) ?? new FakeListChatModel({ responses: [REPLY] })
-        );
-      },
+      makeModel: (cfg: { model: string }) =>
+        over.model?.(cfg) ??
+        (over.lateMessage
+          ? new SideEffectModel(async () => {
+              lateVisible = true;
+            }, REPLY)
+          : new FakeListChatModel({ responses: [REPLY] })),
       makeClient: async () => client,
       checkpointer: new MemorySaver(),
       persistUsage: async () => {},
@@ -402,6 +426,7 @@ async function seed(
     step?: number | null;
     at?: Date | null;
     lastEventAt?: Date;
+    contactInboxId?: number;
   } = {},
 ) {
   const data = {
@@ -412,6 +437,7 @@ async function seed(
     snoozedFollowUpAnchorId: over.anchorId ?? null,
     snoozedFollowUpStep: over.step ?? null,
     snoozedFollowUpAt: over.at ?? null,
+    contactInboxId: over.contactInboxId ?? null,
   };
   await suDb.conversation.upsert({
     where: {
@@ -849,4 +875,74 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     await snoozedFollowUpHandler(jobFor(2020), appDb, s.deps);
     expect(s.sent).toEqual([]);
   });
+  test("an event during a run that then completed is still swept: the watermark is the run's start", async () => {
+    await setSettings(LADDER);
+    const started = new Date(Date.now() - 60_000);
+    // The person wrote 30 s into a run that completed afterwards.
+    await seed(2021, { lastEventAt: new Date(Date.now() - 30_000) });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: snoozedDedupeKey(threadOf(2021)),
+        runAt: started,
+        claimedAt: started,
+        status: "DONE",
+        payload: { threadId: threadOf(2021) },
+      },
+    });
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2021)) },
+      select: { status: true },
+    });
+    expect(job.status).toBe("PENDING");
+  });
+
+  // Both places the note is written: the thread keyed by conversation, and the one keyed by contact
+  // inbox, which is a separate block.
+  for (const [conv, contactInbox] of [
+    [2022, null],
+    [2023, 88_023],
+  ] as const) {
+    test(`a reminder after a past hand-over records no hand-back (contact inbox ${contactInbox})`, async () => {
+      await setSettings(LADDER);
+      await seed(
+        conv,
+        contactInbox === null ? {} : { contactInboxId: contactInbox },
+      );
+      const checkpointer = new MemorySaver();
+      const graphThread =
+        contactInbox === null
+          ? threadOf(conv)
+          : contactInboxThreadId(tenantId, instanceId, contactInbox);
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThread } },
+        {
+          messages: [
+            new ToolMessage({
+              content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+              tool_call_id: "h1",
+              name: "handoff_to_human",
+            }),
+          ],
+        },
+        THREAD_STATE_NODE,
+      );
+      const s = stub({ messages: [personAsked(conv * 10, 3)] });
+      await snoozedFollowUpHandler(jobFor(conv), appDb, {
+        ...s.deps,
+        checkpointer,
+      });
+      expect(s.sent).toEqual([REPLY]);
+      const cp = await checkpointer.get({
+        configurable: { thread_id: graphThread },
+      });
+      const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+        ?.messages ?? []) as BaseMessage[];
+      expect(
+        messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+      ).toBe(false);
+    });
+  }
 });

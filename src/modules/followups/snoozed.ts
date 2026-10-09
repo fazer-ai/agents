@@ -104,11 +104,12 @@ export async function sweepSnoozedFollowUps(
               AND j.kind = 'SNOOZED_FOLLOWUP'
               AND j.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
               AND (
-                -- A run in flight is left alone; one parked for later is left alone too, unless the
-                -- conversation moved after it was parked, and then the handler has to look again.
+                -- A run in flight is left alone. Otherwise the watermark is the last run's START
+                -- (its live read comes after the claim), or the arming for a row never run: an event
+                -- after it is one no run has seen, even when that run completed later.
                 j.status = 'CLAIMED'
                 OR c.last_event_at IS NULL
-                OR j.updated_at >= c.last_event_at
+                OR COALESCE(j.claimed_at, j.updated_at) >= c.last_event_at
               )
          )
        LIMIT 500`,
@@ -157,6 +158,9 @@ export function findSnoozedAnchor(
       m.messageType === "outgoing" &&
       !m.private &&
       m.senderType === "user" &&
+      // Sent by the platform under an admin token (a cross-inbox case opening): a user row that no
+      // person wrote.
+      !m.platformSent &&
       m.createdAt
     ) {
       const after = sorted.slice(i + 1);
@@ -185,7 +189,9 @@ export function someoneSpokeAfter(
       r.id > baselineId &&
       !r.private &&
       ((r.messageType === "incoming" && !r.isReaction) ||
-        (r.messageType === "outgoing" && r.senderType === "user")),
+        (r.messageType === "outgoing" &&
+          r.senderType === "user" &&
+          !r.platformSent)),
   );
 }
 
@@ -411,12 +417,11 @@ export async function snoozedFollowUpHandler(
     holder: "snoozed-human",
     signature: ctx.cfg.signature,
     // The live probe answers "still snoozed by a person"; this answers "and nobody spoke since the
-    // read above". Asked strictly right before a write, so a person who answered while the model ran
-    // is not followed by a reminder of what they just said.
+    // read above". Read at every boundary, strict or not: the send and the post-actions come after
+    // the model's wait, when a person is likeliest to have answered. An unreadable answer is a no.
     stillWanted: async ({ strict }) => {
       if (await (strict ? jobRetiredStrict(job, base) : jobRetired(job, base)))
         return false;
-      if (!strict) return true;
       try {
         const since = parseChatwootMessages(
           await client.getMessages(conversationId, {

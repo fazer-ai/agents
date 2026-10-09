@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   actionScope,
   conditionFor,
+  DECISION_TEXT_FIELD_MAX,
   decisionsFormIssues,
   decisionsRefusalFrom,
   decisionsRefusalStanding,
   decisionsToForm,
   decisionsToStored,
   decisionsUntouched,
+  decisionTextCap,
   issuesUnder,
   ruleIsBroken,
   withActionScope,
@@ -706,5 +709,31 @@ describe("a refusal the server answers about the block", () => {
       decisionsRefusalStanding(held, { ...BLOCK, apply: "enforce" }),
     ).toBeNull();
     expect(decisionsRefusalStanding(null, BLOCK)).toBeNull();
+  });
+});
+
+// The two free-text fields are bounded when typed and cut nowhere, so a longer text stored through
+// the API must not be drawn as past a limit: the shared counter would say the agent receives only
+// the first part of it, which is false for these fields.
+describe("the cap a free-text field declares", () => {
+  test("is the typing bound, raised to a stored text that is already longer", () => {
+    expect(decisionTextCap("")).toBe(DECISION_TEXT_FIELD_MAX);
+    expect(decisionTextCap("x".repeat(DECISION_TEXT_FIELD_MAX))).toBe(
+      DECISION_TEXT_FIELD_MAX,
+    );
+    const long = "x".repeat(DECISION_TEXT_FIELD_MAX + 500);
+    expect(decisionTextCap(long)).toBe(long.length);
+  });
+
+  test("both fields declare it through the value they hold", () => {
+    const src = readFileSync(
+      "src/client/pages/agents/DecisionsFields.tsx",
+      "utf8",
+    );
+    expect(src).not.toContain("maxLength={DECISION_TEXT_FIELD_MAX}");
+    expect(src).toContain("maxLength={decisionTextCap(q.instructions)}");
+    expect(src).toContain(
+      "maxLength={decisionTextCap(str(rule.args.content))}",
+    );
   });
 });

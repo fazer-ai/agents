@@ -65,6 +65,13 @@ export interface DecisionsForm {
 // longer text written through the API is shown and saved whole.
 export const DECISION_TEXT_FIELD_MAX = 2000;
 
+// The cap a free-text field declares for the value it holds. A text already past the bound (written
+// through the API, stored whole) raises it to its own length: it is shown as it is, not marked as
+// cut, since nothing cuts it; it only cannot grow from here.
+export function decisionTextCap(value: string): number {
+  return Math.max(DECISION_TEXT_FIELD_MAX, value.length);
+}
+
 let fresh = 0;
 // A key for an entry created on screen. Loaded entries are keyed by position instead, so the same
 // stored block always produces the same form (the editor compares forms to tell dirty from clean).

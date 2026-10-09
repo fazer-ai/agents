@@ -47,13 +47,13 @@ import {
   actionGap,
   actionScope,
   conditionFor,
-  DECISION_TEXT_FIELD_MAX,
   type DecisionConditionForm,
   type DecisionOptionForm,
   type DecisionQuestionForm,
   type DecisionRuleForm,
   type DecisionsForm,
   decisionsFormIssues,
+  decisionTextCap,
   emptyCondition,
   freshDecisionKey,
   issuesUnder,
@@ -946,7 +946,7 @@ export function DecisionsFields({
         <FormField label={t("editor.decisionsNoteContent", "Note")}>
           <Textarea
             rows={2}
-            maxLength={DECISION_TEXT_FIELD_MAX}
+            maxLength={decisionTextCap(str(rule.args.content))}
             value={str(rule.args.content)}
             onChange={(e) => setArg(ri, "content", e.target.value)}
           />
@@ -1288,7 +1288,7 @@ export function DecisionsFields({
                   >
                     <Textarea
                       rows={2}
-                      maxLength={DECISION_TEXT_FIELD_MAX}
+                      maxLength={decisionTextCap(q.instructions)}
                       value={q.instructions}
                       onChange={(e) =>
                         setQuestion(qi, { instructions: e.target.value })

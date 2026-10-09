@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -25,6 +25,7 @@ import {
   guardrailModel,
   HandoffThenReplyModel,
   ScriptedCaptureModel,
+  ToolRecordingModel,
 } from "../utils/scripted-models";
 
 // What a decided or expired approval request says in its conversation (docs/documents.md, Approval):
@@ -347,6 +348,30 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(await outcomeJobs(requestId)).toHaveLength(0);
   });
 
+  test("the turn that delivers an approved document binds no tool", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const rec = recordingClient();
+    const model = new ToolRecordingModel("O documento segue em anexo.");
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("delivered");
+    expect(model.boundToolNames ?? []).toEqual([]);
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(1);
+  });
+
   test("an agent that writes nothing still sends the approved PDF, with the default caption", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({
@@ -454,7 +479,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(String(notes[0]?.[2])).toContain("não está disponível");
   });
 
-  test("a transfer during the approval turn sends its line and leaves the document to the person", async () => {
+  test("a hand-over the model asks for in the approval turn has no tool to run, so the PDF goes and nothing is handed", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({
       ctx: ctx(),
@@ -476,10 +501,11 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         persistUsage: async () => {},
       },
     });
-    expect(outcome).toBe("noted");
-    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
-    expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
+    expect(outcome).toBe("delivered");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(1);
+    expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
+    expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
+    expect(named(rec.calls, "assignTeam")).toHaveLength(0);
   });
 
   test("a rejection over a person who took the conversation live leaves the note and moves nothing", async () => {
@@ -509,7 +535,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(outcome).toBe("noted");
     expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
     expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
-    expect(named(rec.calls, "assignToTeam")).toHaveLength(0);
+    expect(named(rec.calls, "assignTeam")).toHaveLength(0);
     const notes = named(rec.calls, "sendPrivateNote");
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).not.toContain("passada para um atendente");
@@ -763,7 +789,11 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         thread_id: `${tenantId}:${instanceId}:${chatwootConversationId}`,
       },
     });
-    expect(JSON.stringify(state.values ?? {})).not.toContain("[[SKIP]]");
+    // The directive names the token; what must not stay is the model's own reply carrying it.
+    const said = (
+      (state.values as { messages?: BaseMessage[] }).messages ?? []
+    ).filter((m) => m.getType() === "ai");
+    expect(JSON.stringify(said)).not.toContain("[[SKIP]]");
   });
 
   test("two documents refused by the spend ceiling in one conversation are two refusals", async () => {

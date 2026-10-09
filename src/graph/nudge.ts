@@ -1416,65 +1416,70 @@ async function runAgentNudgeBody(
   // sources yielded nothing is tool-less in practice, and binding one no-op tool at a provider that
   // refuses schemas costs the entire follow-up. `followupSilenceChannel` then reads `sentinel` off
   // this same list, so the directive and the binding cannot disagree.
-  const tools = withoutLoneSilenceTool(
-    nudgeCfg,
-    await buildToolset(
-      nudgeCfg,
-      {
-        tenantId,
-        instanceId,
-        base,
-        client,
-        conversationId,
-        threadId: params.threadId,
-        checkpointer: params.deps?.checkpointer,
-        // NOTE: the slow-tool ack's own ask, after its send.
-        stillWanted: toolFence,
-        // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
-        // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
-        // one that had already happened — but only as a FALLBACK: this snapshot is taken before
-        // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
-        // tool re-reads the live state itself and falls back here only when that read fails.
-        observed: { status: loaded.status, statusAt: loaded.statusAt },
-        handoffState,
-        // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
-        // verdict takes the transfer this path's own trip takes.
-        screenCustomerText: async (text) => {
-          const d = await screenOutput(text);
-          if (!guardrailTripped(d)) return "send";
-          if (d.kind !== "handed-off") return "drop";
-          // Asked after the screening and before the transfer: the screening was a wait, and inside
-          // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
-          if (!(await toolFence())) return "drop";
-          const handed = await ownTransfer(
+  // A turn that delivers an approved document binds NO tool: its one job is the line the PDF rides
+  // on, and with tools bound a real model tried to attach the file itself, wrote notes and handed
+  // the conversation over (docs/documents.md, Approval).
+  const tools = approved
+    ? []
+    : withoutLoneSilenceTool(
+        nudgeCfg,
+        await buildToolset(
+          nudgeCfg,
+          {
+            tenantId,
+            instanceId,
+            base,
+            client,
+            conversationId,
+            threadId: params.threadId,
+            checkpointer: params.deps?.checkpointer,
+            // NOTE: the slow-tool ack's own ask, after its send.
+            stillWanted: toolFence,
+            // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+            // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
+            // one that had already happened — but only as a FALLBACK: this snapshot is taken before
+            // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
+            // tool re-reads the live state itself and falls back here only when that read fails.
+            observed: { status: loaded.status, statusAt: loaded.statusAt },
             handoffState,
-            () =>
-              applyGuardrailHandoff({
-                client,
-                conversationId,
-                instanceId,
-                handoff: nudgeCfg.handoffConfig,
-                direction: "output",
-                flow,
-                stillWanted: toolFence,
-              }),
-            (r) => r,
-          );
-          handoffState.completed = handed;
-          if (handed) {
-            handoffState.customerMessage = d.reply;
-            handoffState.lineByOperator = true;
-            // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
-            // the model's own next reply could still reach the customer before the mirror catches up.
-            handoffState.declinedToSpeak = d.reply === null;
-          }
-          // Not landing is a failed transfer, not a dropped line (see the reactive binding).
-          return handed ? "handed" : "failed";
-        },
-      },
-      { buildNativeTools, mcp: params.deps?.mcp, flow },
-    ),
-  );
+            // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
+            // verdict takes the transfer this path's own trip takes.
+            screenCustomerText: async (text) => {
+              const d = await screenOutput(text);
+              if (!guardrailTripped(d)) return "send";
+              if (d.kind !== "handed-off") return "drop";
+              // Asked after the screening and before the transfer: the screening was a wait, and inside
+              // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
+              if (!(await toolFence())) return "drop";
+              const handed = await ownTransfer(
+                handoffState,
+                () =>
+                  applyGuardrailHandoff({
+                    client,
+                    conversationId,
+                    instanceId,
+                    handoff: nudgeCfg.handoffConfig,
+                    direction: "output",
+                    flow,
+                    stillWanted: toolFence,
+                  }),
+                (r) => r,
+              );
+              handoffState.completed = handed;
+              if (handed) {
+                handoffState.customerMessage = d.reply;
+                handoffState.lineByOperator = true;
+                // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
+                // the model's own next reply could still reach the customer before the mirror catches up.
+                handoffState.declinedToSpeak = d.reply === null;
+              }
+              // Not landing is a failed transfer, not a dropped line (see the reactive binding).
+              return handed ? "handed" : "failed";
+            },
+          },
+          { buildNativeTools, mcp: params.deps?.mcp, flow },
+        ),
+      );
 
   // 3. Model + graph + callbacks (node="nudge").
   // The SAME checkpointer the graph is built on, so the divider written below and the invoke's own

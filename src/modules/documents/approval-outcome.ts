@@ -315,7 +315,7 @@ export async function runApprovalOutcome(
       source: "document_approval",
       kind: "approved",
       occasionId: String(requestId),
-      instructions: `A equipe aprovou o documento "${request.title}" que o cliente pediu nesta conversa, e o PDF vai anexado a esta mensagem. Escreva uma frase curta avisando que ele segue anexo. Não repita valores nem o conteúdo do documento.`,
+      instructions: `A equipe aprovou o documento "${request.title}" que o cliente pediu nesta conversa. O sistema já anexa o PDF a esta mesma mensagem, então o cliente recebe o arquivo junto com o que você escrever. Escreva uma frase curta, no presente, dizendo que o documento segue em anexo. Não diga que ele será enviado depois, não repita valores nem o conteúdo do documento.`,
     },
     approvedDocument: {
       bytes: pdf.bytes,

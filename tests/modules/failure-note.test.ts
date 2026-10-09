@@ -644,6 +644,42 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(mirror.status).toBe("pending");
   });
 
+  test("a customer message mirrored after the last ask keeps the conversation with the agent", async () => {
+    const conv = await seedConversation();
+    let asks = 0;
+    const outcome = await withHandoff(
+      { mode: "pinned", targetTeamId: 77 },
+      () =>
+        announceFailedTurn({
+          tenantId,
+          instanceId,
+          chatwootConversationId: conv,
+          assess: async () => {
+            // Answered "lost" for the message it was asked about; the newer one is mirrored after,
+            // and its direct turn does not wait on the hand-over's reservation.
+            if (asks++ === 1) {
+              await suDb.conversation.updateMany({
+                where: { tenantId, chatwootConversationId: conv },
+                data: { lastInboundAt: new Date() },
+              });
+            }
+            return { path: "job", deadLettered: true };
+          },
+          error: new Error("boom"),
+          base: appDb,
+        }),
+    );
+    expect(outcome).toBe("posted");
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+    const mirror = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+      select: { status: true },
+    });
+    expect(mirror.status).toBe("pending");
+  });
+
   test("an opened hand-over stamps its claim from Chatwoot's versioned read", async () => {
     const conv = await seedConversation();
     liveConversations.set(conv, { status: "pending", meta: {} });

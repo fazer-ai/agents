@@ -154,6 +154,10 @@ export async function claimOpenForHumanQueue(p: {
     // back to `pending`). Without it the swap would win against a newer decision.
     consoleWriteAtMessageId: number | null;
   };
+  // Also pinned when given: the newest customer message the caller decided on. The failed-turn
+  // hand-over passes it, because a direct turn for a newer message does not wait on its reservation
+  // and the message is mirrored, under this same lock, before that turn starts.
+  lastInboundAt?: Date | null;
   base: PrismaClient;
 }): Promise<Date | null> {
   return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
@@ -186,6 +190,9 @@ export async function claimOpenForHumanQueue(p: {
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
             consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
+            ...(p.lastInboundAt !== undefined
+              ? { lastInboundAt: p.lastInboundAt }
+              : {}),
           },
           data: {
             status: "open",

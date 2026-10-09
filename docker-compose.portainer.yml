@@ -112,6 +112,10 @@ services:
       - RATE_LIMIT_MCP_PER_MIN=${RATE_LIMIT_MCP_PER_MIN:-1200}
       - RATE_LIMIT_CREDENTIAL_MAX=${RATE_LIMIT_CREDENTIAL_MAX:-20}
       - RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES=${RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES:-5}
+      # The Chatwoot receiver: deliveries processed at once (the rest wait as ledger rows) and the
+      # connections reserved for the webhook ack's own write. See .env.example and docs/deploy.md.
+      - CHATWOOT_DELIVERY_CONCURRENCY=${CHATWOOT_DELIVERY_CONCURRENCY:-15}
+      - CHATWOOT_ACK_POOL_MAX=${CHATWOOT_ACK_POOL_MAX:-4}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

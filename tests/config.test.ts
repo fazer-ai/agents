@@ -275,3 +275,23 @@ describe("documentsStorageDir fallback chain", () => {
     }
   });
 });
+
+// A setting the deploy composes do not forward cannot be tuned there: the stack's variable never
+// reaches the container, which keeps the default in silence.
+describe("Chatwoot receiver settings in the deploy composes", () => {
+  test("every deploy compose forwards both, with the documented defaults", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      expect(compose).toMatch(
+        /CHATWOOT_DELIVERY_CONCURRENCY=\$\{CHATWOOT_DELIVERY_CONCURRENCY:-15\}/,
+      );
+      expect(compose).toMatch(
+        /CHATWOOT_ACK_POOL_MAX=\$\{CHATWOOT_ACK_POOL_MAX:-4\}/,
+      );
+    }
+  });
+});

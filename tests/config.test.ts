@@ -171,7 +171,7 @@ describe("the timer bound is the runtime's, not a policy", () => {
   });
 });
 
-// Issue #1180: an agent's burst window may be shorter than the observe drain's interval, so the
+// An agent's burst window may be shorter than the observe drain's interval, so the
 // interval is a safety net with a floor of its own, and the operator reads both numbers where the
 // variable is set.
 describe("the observe drain's interval", () => {

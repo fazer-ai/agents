@@ -30,7 +30,7 @@ import {
 } from "@/modules/scheduler/worker";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
-// The observer's burst window down to ZERO (issue #1180): what the reader keeps, what the write
+// The observer's burst window down to ZERO: what the reader keeps, what the write
 // boundary refuses, and when the observation of a message starts with no window at all, against
 // the database and the worker's own timers.
 
@@ -95,6 +95,11 @@ describe("what the write boundary answers for the window", () => {
     expect(err?.translationKey).toBe("errors.invalidSettingsValue");
     expect(String(err?.translationParams?.expected)).toBe(
       "a number of at least 0",
+    );
+    // The value, not its type: "expects a number, got number" tells the operator nothing.
+    expect(err?.translationParams?.got).toBe("-1");
+    expect(err?.message).toBe(
+      "settings.monitoring.debounce.windowSeconds expects a number of at least 0, got -1",
     );
     expect(caught(withWindow(-0.5))?.field).toBe(
       "monitoring.debounce.windowSeconds",

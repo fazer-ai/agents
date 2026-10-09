@@ -75,7 +75,7 @@ describe("agent editor observation round-trip", () => {
     );
   });
 
-  // Issue #1180: the window goes down to zero, which is a setting and not a floor.
+  // The window goes down to zero, which is a setting and not a floor.
   test("a window of 0, 1 or 2 is offered and saved as typed", () => {
     expect(OBSERVATION_LIMITS.secondsMin).toBe(0);
     for (const seconds of ["0", "1", "2"]) {

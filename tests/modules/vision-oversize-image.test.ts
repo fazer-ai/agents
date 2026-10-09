@@ -310,6 +310,24 @@ describe("the fit converters", () => {
     ).rejects.toBeInstanceOf(MediaTooLargeError);
   });
 
+  test("a JPEG with more than one frame header is refused before it is decoded", async () => {
+    // jpeg-js would allocate buffers for every SOF before refusing the second.
+    const jpg = jpegOf(16, 8);
+    let sof = 2;
+    while (!(jpg[sof] === 0xff && jpg[sof + 1] === 0xc0))
+      sof += 2 + jpg.readUInt16BE(sof + 2);
+    const frame = jpg.subarray(sof, sof + 2 + jpg.readUInt16BE(sof + 2));
+    const repeated = Buffer.concat([
+      jpg.subarray(0, sof),
+      frame,
+      frame,
+      jpg.subarray(sof + frame.length),
+    ]);
+    await expect(runMediaConverter("jpeg-fit", ab(repeated))).rejects.toThrow(
+      "more than one frame",
+    );
+  });
+
   test("a PNG whose header is repeated is refused before pngjs reads the second one", async () => {
     // pngjs decodes with the LAST IHDR, so the cap checked against the first would not hold.
     const png = rawPng([

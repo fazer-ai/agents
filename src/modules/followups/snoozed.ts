@@ -383,8 +383,20 @@ export async function snoozedFollowUpHandler(
       runAt: new Date(Date.now() + LIVE_UNAVAILABLE_BACKOFF_MS),
     };
   }
+  // A body the parser could not read, or a person's snooze whose end date the payload left out, is a
+  // read that failed and not an answer: tried again, like a thrown one, and never taken as "not ours".
+  const endDateMissing =
+    live?.status === "snoozed" &&
+    live.assigneeType === "User" &&
+    live.snoozedUntil === undefined;
+  if (!live || endDateMissing) {
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + LIVE_UNAVAILABLE_BACKOFF_MS),
+    };
+  }
   // Unsnoozed, given to the bot, unassigned, resolved, or snoozed with an end date: not this ladder's.
-  if (!live || !isSnoozedForAPerson(live)) return { outcome: "done" };
+  if (!isSnoozedForAPerson(live)) return { outcome: "done" };
   const anchor = findSnoozedAnchor(rows);
   if (!anchor || anchor.customerSpokeAfter) return { outcome: "done" };
   // The backlog fence: a person's message older than the switch-on is not chased.

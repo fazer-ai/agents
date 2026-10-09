@@ -898,9 +898,19 @@ async function runAgentNudgeBody(
       );
       return "unavailable";
     }
+    // A person's snooze whose end date the payload left out cannot be judged: a failed read, tried
+    // again, and not an answer that would end the ladder.
+    if (
+      snoozedHolder &&
+      decided.status === "snoozed" &&
+      decided.assigneeType === "User" &&
+      live.snoozedUntil === undefined
+    ) {
+      return "unavailable";
+    }
     const owned = snoozedHolder
       ? // NOTE: the end date from the live read and not from `decided`, which a refused reconcile may
-        // have taken from the row, and the row carries no end date. Absent (`undefined`) fails closed.
+        // have taken from the row, and the row carries no end date.
         isSnoozedForAPerson({
           status: decided.status,
           assigneeType: decided.assigneeType,

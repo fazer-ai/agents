@@ -370,6 +370,10 @@ function stub(over: {
   degradedAfter?: boolean;
   // The handler's own page read answers a body that is not a message list.
   degradedPage?: boolean;
+  // The conversation payload carries no `snoozed_until` key at all.
+  omitSnoozedUntil?: boolean;
+  // Only the reads after the handler's first one carry no `snoozed_until`.
+  omitSnoozedUntilLater?: boolean;
   model?: (cfg: {
     model: string;
   }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
@@ -384,22 +388,30 @@ function stub(over: {
   let lateVisible = false;
   let reads = 0;
   const client = {
-    getConversation: async (c: number) => ({
-      id: c,
-      status:
-        reads++ > 0 && over.statusLater
-          ? over.statusLater
-          : (over.status ?? "snoozed"),
-      snoozed_until: over.snoozedUntil === undefined ? null : over.snoozedUntil,
-      labels: currentLabels,
-      meta:
-        over.assigneeType === null
+    getConversation: async (c: number) => {
+      const later = reads++ > 0;
+      return {
+        id: c,
+        status:
+          later && over.statusLater
+            ? over.statusLater
+            : (over.status ?? "snoozed"),
+        ...(over.omitSnoozedUntil || (later && over.omitSnoozedUntilLater)
           ? {}
           : {
-              assignee_type: over.assigneeType ?? "User",
-              assignee: { id: over.assigneeType === "AgentBot" ? 5 : PERSON },
-            },
-    }),
+              snoozed_until:
+                over.snoozedUntil === undefined ? null : over.snoozedUntil,
+            }),
+        labels: currentLabels,
+        meta:
+          over.assigneeType === null
+            ? {}
+            : {
+                assignee_type: over.assigneeType ?? "User",
+                assignee: { id: over.assigneeType === "AgentBot" ? 5 : PERSON },
+              },
+      };
+    },
     getMessages: async (
       _c: number,
       opts?: { before?: number; after?: number },
@@ -1034,6 +1046,40 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const r = await snoozedFollowUpHandler(jobFor(2025), appDb, s.deps);
     expect(s.sent).toEqual([]);
     // Tried again, not dropped.
+    expect(r.outcome).toBe("reschedule");
+  });
+
+  test("an unreadable conversation, or a snooze whose end date is missing, is tried again", async () => {
+    await setSettings(LADDER);
+    await seed(2034);
+    const garbled = stub({ messages: [personAsked(290, 3)] });
+    const client = await garbled.deps.makeClient();
+    (
+      client as unknown as { getConversation: () => Promise<unknown> }
+    ).getConversation = async () => "<html>bad gateway</html>";
+    const r1 = await snoozedFollowUpHandler(jobFor(2034), appDb, {
+      ...garbled.deps,
+      makeClient: async () => client,
+    });
+    expect(r1.outcome).toBe("reschedule");
+    const noEnd = stub({
+      messages: [personAsked(290, 3)],
+      omitSnoozedUntil: true,
+    });
+    const r2 = await snoozedFollowUpHandler(jobFor(2034), appDb, noEnd.deps);
+    expect(r2.outcome).toBe("reschedule");
+    expect([...garbled.sent, ...noEnd.sent]).toEqual([]);
+  });
+
+  test("the end date going missing between the handler's read and the send is tried again", async () => {
+    await setSettings(LADDER);
+    await seed(2035);
+    const s = stub({
+      messages: [personAsked(300, 3)],
+      omitSnoozedUntilLater: true,
+    });
+    const r = await snoozedFollowUpHandler(jobFor(2035), appDb, s.deps);
+    expect(s.sent).toEqual([]);
     expect(r.outcome).toBe("reschedule");
   });
 

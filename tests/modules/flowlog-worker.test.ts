@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import type { TenantContext } from "@/lib/tenancy";
 import { processAlertBatch } from "@/modules/flowlog/alert-worker";
 import { createAlertChannel } from "@/modules/flowlog/channels";
@@ -154,6 +155,35 @@ describe.skipIf(!dbUp)("alert worker", () => {
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("DELIVERED");
     expect(row?.attempts).toBe(1);
+  });
+
+  test("claims nothing once the shutdown drain started, and the row stays PENDING", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      {
+        name: "draining",
+        type: "discord",
+        url: outboundUrl("/api/webhooks/draining"),
+      },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    await drainInFlight({ boundMs: 10 });
+    try {
+      const batch = await processAlertBatch({
+        base: appDb,
+        tenantId,
+        coalesceWindowMs: 0,
+        fetchImpl: ok204,
+        now: () => Date.now(),
+      });
+      expect(batch.claimed).toBe(0);
+      expect(
+        (await suDb.alertDelivery.findUnique({ where: { id } }))?.status,
+      ).toBe("PENDING");
+    } finally {
+      resetShutdownForTest();
+    }
   });
 
   test("retries on a non-2xx response (back to PENDING with a next attempt)", async () => {

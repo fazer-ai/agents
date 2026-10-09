@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { ingestKeyPrefix } from "@/graph/ingest-job";
 import {
+  abandonClaimed,
   claimPendingByKeyPrefix,
   countOwedByKeyPrefix,
   reapStaleJobs,
@@ -71,11 +72,17 @@ export async function drainPendingIngest(
         seen,
       );
       if (claimed.length === 0) break;
-      for (const job of claimed) {
+      for (const [i, job] of claimed.entries()) {
         seen.push(job.id);
-        await runClaimed(job, base, {
-          deadlineMs: jobDeadlineMs(STALE_CLAIM_MS),
-        });
+        try {
+          await runClaimed(job, base, {
+            deadlineMs: jobDeadlineMs(STALE_CLAIM_MS),
+          });
+        } catch (err) {
+          // NOTE: the rows after this one are not run; they stop holding the shutdown drain open.
+          abandonClaimed(claimed.slice(i + 1));
+          throw err;
+        }
       }
     }
     const owed = await countOwedByKeyPrefix(

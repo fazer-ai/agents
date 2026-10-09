@@ -6,6 +6,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { Semaphore } from "@/lib/semaphore";
+import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
@@ -15,6 +16,8 @@ import {
 } from "@/modules/scheduler/lanes";
 import { markRunning, markSettled } from "./running";
 import {
+  abandonClaimed,
+  adoptClaimed,
   type ClaimedJob,
   claimDeadLetterAnnouncement,
   claimDueJobs,
@@ -90,17 +93,21 @@ export class JobDeadlineError extends Error {
 
 // The handler's promise against the run's deadline. When the deadline fires first, the signal aborts
 // with the JobDeadlineError and the race rejects with it at once, whether or not the handler listens.
+// `onCut` receives the same ending under another reason, for the shutdown drain's bound.
 function withinDeadline<T>(
   running: Promise<T>,
   ms: number,
   controller: AbortController,
+  onCut?: (cut: (reason: Error) => void) => void,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const err = new JobDeadlineError(ms);
+    const end = (err: Error) => {
+      clearTimeout(timer);
       controller.abort(err);
       reject(err);
-    }, ms);
+    };
+    const timer = setTimeout(() => end(new JobDeadlineError(ms)), ms);
+    onCut?.(end);
     running.then(
       (v) => {
         clearTimeout(timer);
@@ -262,6 +269,42 @@ export async function runClaimed(
   base: PrismaClient = basePrisma,
   opts: RunClaimedOptions = {},
 ): Promise<void> {
+  // The shutdown drain waits for this run until its outcome is written, and at its bound ends it the
+  // way the deadline does, so the row is failed for retry before the process exits.
+  // The registration lasts until the handler has returned too: a cut run that had committed still has
+  // its late outcome to write (settleAfterDeadline).
+  let cut: ((reason: Error) => void) | undefined;
+  let late: Promise<unknown> | undefined;
+  const end = beginWork(job.kind, (reason) => cut?.(reason));
+  if (!adoptClaimed(job)) {
+    end();
+    return;
+  }
+  try {
+    await runWithDeadline(
+      job,
+      base,
+      opts,
+      (c) => {
+        cut = c;
+      },
+      (l) => {
+        late = l;
+      },
+    );
+  } finally {
+    if (late) void late.finally(end);
+    else end();
+  }
+}
+
+async function runWithDeadline(
+  job: ClaimedJob,
+  base: PrismaClient,
+  opts: RunClaimedOptions,
+  onCut: (cut: (reason: Error) => void) => void,
+  onLate: (late: Promise<unknown>) => void,
+): Promise<void> {
   const handler = getJobHandler(job.kind);
   if (!handler) {
     await fail(job, `no handler: ${job.kind}`, base);
@@ -289,7 +332,7 @@ export async function runClaimed(
         committed = true;
       },
     }))();
-  running
+  const lateChain = running
     .catch(() => null)
     .then(async (late) => {
       if (!controller.signal.aborted) return;
@@ -308,9 +351,10 @@ export async function runClaimed(
     )
     // NOTE: only now, so the row stays out of every claim until its late outcome, if any, is written.
     .finally(() => markSettled(job.id));
+  onLate(lateChain);
   let result: JobResult;
   try {
-    result = await withinDeadline(running, deadlineMs, controller);
+    result = await withinDeadline(running, deadlineMs, controller, onCut);
   } catch (err) {
     failedWith = errMsg(err);
     try {
@@ -502,27 +546,36 @@ export async function runSchedulerTick(
   // A third claim, for the observe lane: OBSERVE's latency is read live, so it cannot wait
   // behind ingestion in the traffic share. Its limit is sized to the provider bound below, minus the
   // provider-spending rows the first two claims took, so it only spends permits the lane already had.
-  const earlier = [
-    ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
-    ...(await claimDueTrafficJobs(
-      trafficShare,
-      base,
-      new Date(),
-      opts.tenantId,
-    )),
-  ];
-  const jobs = [
-    ...earlier,
-    ...(await claimDueObserveJobs(
-      observeClaimLimit(
-        providerConcurrency,
-        earlier.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
-      ),
-      base,
-      new Date(),
-      opts.tenantId,
-    )),
-  ];
+  // NOTE: a claim that throws leaves the rows the earlier ones took unrun; they stay CLAIMED for the
+  // reaper and stop holding the shutdown drain open.
+  const jobs: ClaimedJob[] = [];
+  try {
+    jobs.push(
+      ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
+    );
+    jobs.push(
+      ...(await claimDueTrafficJobs(
+        trafficShare,
+        base,
+        new Date(),
+        opts.tenantId,
+      )),
+    );
+    jobs.push(
+      ...(await claimDueObserveJobs(
+        observeClaimLimit(
+          providerConcurrency,
+          jobs.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
+        ),
+        base,
+        new Date(),
+        opts.tenantId,
+      )),
+    );
+  } catch (err) {
+    abandonClaimed(jobs);
+    throw err;
+  }
   // The batch drains concurrently so short jobs do not queue behind long ones (an appointment
   // reminder must arrive before something). It gives up FIFO within a batch, which only shows when the
   // scheduler is hours behind. allSettled: runClaimed never re-throws, but a stray throw must not stall

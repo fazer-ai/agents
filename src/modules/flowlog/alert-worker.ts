@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { isDraining } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { alertErrMsg, loadAlertContext, sendAlert } from "./alert-send";
@@ -118,6 +119,8 @@ async function claimDue(
   coalesceWindowMs: number,
   tenantId?: bigint,
 ): Promise<ClaimedAlert[]> {
+  // NOTE: a tick already past its timer when SIGTERM arrives claims nothing new (src/lib/shutdown.ts).
+  if (isDraining()) return [];
   const coalesceSeconds = Math.max(0, Math.floor(coalesceWindowMs / 1000));
   const tenantClause =
     tenantId != null

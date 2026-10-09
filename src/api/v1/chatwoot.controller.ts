@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import logger from "@/api/lib/logger";
 import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
+import { trackWork } from "@/lib/shutdown";
 import {
   receiveChatwootWebhook,
   recordAndProcessChatwootDelivery,
@@ -44,13 +45,16 @@ export const chatwootController = new Elysia({
         agentBotId = null,
         normalized,
       } = result;
-      void recordAndProcessChatwootDelivery({
-        tenantId,
-        instanceId,
-        deliveryId,
-        agentBotId,
-        normalized,
-      }).catch((err) => {
+      // NOTE: tracked, so a shutdown waits for the turn a direct delivery runs (src/lib/shutdown.ts).
+      void trackWork("chatwoot_delivery", () =>
+        recordAndProcessChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryId,
+          agentBotId,
+          normalized,
+        }),
+      ).catch((err) => {
         logger.error(
           "chatwoot async dispatch failed (delivery %s): %s",
           deliveryId,

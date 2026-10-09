@@ -29,6 +29,7 @@ const {
   COMPACTION_WORKER_ENABLED,
   COMPACTION_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_INTERVAL_MS,
+  SHUTDOWN_DRAIN_MS,
   ALERT_WORKER_ENABLED,
   ALERT_WORKER_INTERVAL_MS,
   ALERT_COALESCE_WINDOW_MS,
@@ -450,6 +451,18 @@ const config = {
       "COMPACTION_WORKER_INTERVAL_MS",
       15_000,
       "It is how often the compaction lane claims MEMORY_COMPACT jobs.",
+      MAX_DURATION_MS,
+    ),
+  },
+  // How long SIGTERM/SIGINT waits for the work already running before cutting it and exiting
+  // (src/lib/shutdown.ts). The exit lands at most CUT_SETTLE_MS (1.5s) after it, so it must stay below
+  // the orchestrator's stop grace period minus that: Docker's default grace is 10s.
+  shutdown: {
+    drainMs: parseIntSetting(
+      SHUTDOWN_DRAIN_MS,
+      "SHUTDOWN_DRAIN_MS",
+      7_000,
+      "It is how long shutdown waits for running turns, and it must fit inside the container's stop grace period.",
       MAX_DURATION_MS,
     ),
   },

@@ -30,11 +30,12 @@ export interface RecoveryConversation {
   // recovery chose to state it (see `contactToStateFor` in ./recover-delivery.ts). Absent everywhere
   // else, for the reason in the header.
   sender?: Record<string, unknown>;
-  // ...and the conversation's own attributes and labels, from the live read, for the same
-  // conversation only: with no row there is nothing a stale read could undo, and a row created
-  // without them answers the contact gate's label and attribute rules with empty values.
-  customAttributes?: Record<string, unknown>;
-  labels?: string[];
+  // ...and the conversation's own facts as the live read states them (attributes, labels, group type,
+  // channel, kanban card, creation and first-reply times), for the same conversation only: with no row
+  // there is nothing a stale read could undo, and a row created without them answers the gates that
+  // read them (the contact gate's label, attribute and conversation-type rules) with empty values.
+  // Spread under the keys this body sets itself.
+  liveFacts?: Record<string, unknown>;
   // The version the stated status and assignee were READ at (the live snapshot's `updated_at`), for
   // the same conversation only: the row it creates carries the marks that let a delayed event older
   // than that snapshot lose. Used only where no redirect version is stated.
@@ -140,11 +141,8 @@ export function buildRecoveryPayload(params: {
       ? { inbox: { id: params.inboxId, name: params.inboxName } }
       : {}),
     conversation: {
+      ...c.liveFacts,
       id: c.chatwootConversationId,
-      ...(c.customAttributes !== undefined
-        ? { custom_attributes: c.customAttributes }
-        : {}),
-      ...(c.labels !== undefined ? { labels: c.labels } : {}),
       ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
       status: c.status,
       // ALWAYS emitted, nil included, because PRESENCE of this key is the statement the normalizer

@@ -159,6 +159,7 @@ function stubChatwoot(opts: {
     noMeta?: boolean;
     customAttributes?: Record<string, unknown>;
     labels?: string[];
+    groupType?: string;
     // The snapshot's own version, `updated_at`.
     updatedAt?: number;
     status?: string;
@@ -186,6 +187,7 @@ function stubChatwoot(opts: {
           ? { custom_attributes: c.customAttributes }
           : {}),
         ...(c.labels ? { labels: c.labels } : {}),
+        ...(c.groupType ? { group_type: c.groupType } : {}),
         ...(c.updatedAt !== undefined ? { updated_at: c.updatedAt } : {}),
         meta: c.noMeta
           ? undefined
@@ -844,7 +846,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await dropContact(77);
     });
 
-    test("carries the conversation's attributes and labels into the row it creates", async () => {
+    test("carries the conversation's attributes, labels and type into the row it creates", async () => {
       const convId = 7313;
       const messageId = 7813;
       const rowId = await seedDeadDelivery({
@@ -853,7 +855,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       const stub = stubChatwoot({
         page: pageWith([{ id: messageId, content: "oi" }]),
-        conv: { customAttributes: { plano: "ouro" }, labels: ["vip"] },
+        conv: {
+          customAttributes: { plano: "ouro" },
+          labels: ["vip"],
+          groupType: "group",
+        },
       });
       await recoverStrandedDelivery({
         tenantId,
@@ -864,10 +870,15 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // What a contact gate's label and attribute rules read, from Chatwoot rather than empty.
       const row = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: convId },
-        select: { customAttributes: true, labels: true },
+        select: {
+          customAttributes: true,
+          labels: true,
+          conversationType: true,
+        },
       });
       expect(row.customAttributes).toEqual({ plano: "ouro" });
       expect(row.labels).toEqual(["vip"]);
+      expect(row.conversationType).toBe("group");
     });
 
     test("creates the row with the version its state was read at", async () => {

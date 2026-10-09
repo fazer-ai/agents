@@ -1370,24 +1370,27 @@ async function contactToStateFor(p: {
   return known ? { id } : live;
 }
 
-// The attributes and labels a REST conversation states, for the body of one the mirror never learned.
+// The facts a REST conversation states that the delivery path mirrors, for the body of one the mirror
+// never learned. The keys the normalizer reads off a conversation and this body does not set itself.
+const LIVE_FACT_KEYS = [
+  "custom_attributes",
+  "labels",
+  "kanban_task",
+  "group_type",
+  "channel",
+  "created_at",
+  "first_reply_created_at",
+] as const;
+
 function conversationFactsOf(raw: unknown): {
-  customAttributes?: Record<string, unknown>;
-  labels?: string[];
+  liveFacts?: Record<string, unknown>;
 } {
   if (!isRecord(raw)) return {};
-  return {
-    ...(isRecord(raw.custom_attributes)
-      ? { customAttributes: raw.custom_attributes }
-      : {}),
-    ...(Array.isArray(raw.labels)
-      ? {
-          labels: raw.labels.filter(
-            (l): l is string => typeof l === "string" && l.length > 0,
-          ),
-        }
-      : {}),
-  };
+  const facts: Record<string, unknown> = {};
+  for (const key of LIVE_FACT_KEYS) {
+    if (key in raw) facts[key] = raw[key];
+  }
+  return { liveFacts: facts };
 }
 
 // The contact a REST conversation names, `meta.sender.id`.

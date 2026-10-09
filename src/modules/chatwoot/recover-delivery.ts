@@ -1628,6 +1628,7 @@ export async function announceUnanswered(
             }),
           };
         },
+        aboutMessageId: row.inboundMessageId,
         error: new Error(RECOVERY_GAVE_UP),
         base,
         deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,

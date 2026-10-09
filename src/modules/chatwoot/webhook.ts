@@ -5300,6 +5300,7 @@ export async function processChatwootDelivery(
                   base,
                 }),
               }),
+              aboutMessageId: triggerId,
               error: err,
               base,
             });

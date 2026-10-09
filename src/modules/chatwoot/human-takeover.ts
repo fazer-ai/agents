@@ -154,10 +154,12 @@ export async function claimOpenForHumanQueue(p: {
     // back to `pending`). Without it the swap would win against a newer decision.
     consoleWriteAtMessageId: number | null;
   };
-  // Also pinned when given: the newest customer message the caller decided on, by its Chatwoot id.
-  // The failed-turn hand-over passes it, because a direct turn for a newer message does not wait on
-  // its reservation and the message is mirrored, under this same lock, before that turn starts.
-  newestInbound?: { messageId: number | null };
+  // Also pinned when given: no customer message newer than the one the caller decided on, by Chatwoot
+  // id. The failed-turn hand-over passes it, because a direct turn for a newer message does not wait
+  // on its reservation and the message is mirrored, under this same lock, before that turn starts.
+  // `atMost` is the failed turn's own message, when the caller names it; `exactly` is the mirror's
+  // newest as the fence read it, for a caller that cannot.
+  newestInbound?: { atMost: number } | { exactly: number | null };
   base: PrismaClient;
 }): Promise<Date | null> {
   return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
@@ -190,9 +192,18 @@ export async function claimOpenForHumanQueue(p: {
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
             consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
-            ...(p.newestInbound !== undefined
-              ? { lastInboundMessageId: p.newestInbound.messageId }
-              : {}),
+            ...(p.newestInbound === undefined
+              ? {}
+              : "atMost" in p.newestInbound
+                ? {
+                    OR: [
+                      { lastInboundMessageId: null },
+                      {
+                        lastInboundMessageId: { lte: p.newestInbound.atMost },
+                      },
+                    ],
+                  }
+                : { lastInboundMessageId: p.newestInbound.exactly }),
           },
           data: {
             status: "open",

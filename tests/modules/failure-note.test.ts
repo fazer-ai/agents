@@ -1363,6 +1363,75 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(await noticeAt(conv)).toBeNull();
   });
 
+  test("a dead burst whose conversation already mirrored a newer message hands nothing over", async () => {
+    const conv = await seedConversation();
+    // The newer delivery is mirrored and still on its way to re-arming this row: no turn claim yet.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { lastInboundMessageId: 6_001 },
+    });
+    const payload = {
+      threadId: `${tenantId}:${instanceId}:${conv}`,
+      lastMessageId: 6_000,
+    };
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: KIND,
+        dedupeKey: `failnote-dead-superseded-${process.pid}`,
+        payload,
+        runAt: new Date(),
+        status: "DEAD",
+        attempts: 5,
+        claimSeq: 0,
+      },
+      select: { id: true },
+    });
+    await withHandoff({ mode: "pinned", targetTeamId: 77 }, () =>
+      announceDeadDebounceFlush(
+        { id: row.id, tenantId, kind: KIND, payload, attempts: 4, claimSeq: 0 },
+        "model provider returned 503",
+        appDb,
+      ),
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+  });
+
+  test("a dead burst whose own message is the newest mirrored one is handed over", async () => {
+    const conv = await seedConversation();
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { lastInboundMessageId: 6_100 },
+    });
+    const payload = {
+      threadId: `${tenantId}:${instanceId}:${conv}`,
+      lastMessageId: 6_100,
+    };
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: KIND,
+        dedupeKey: `failnote-dead-own-${process.pid}`,
+        payload,
+        runAt: new Date(),
+        status: "DEAD",
+        attempts: 5,
+        claimSeq: 0,
+      },
+      select: { id: true },
+    });
+    await announceDeadDebounceFlush(
+      { id: row.id, tenantId, kind: KIND, payload, attempts: 4, claimSeq: 0 },
+      "model provider returned 503",
+      appDb,
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+  });
+
   test("a job the reaper kills is announced too", async () => {
     const conv = await seedConversation();
     const row = await suDb.schedulerJob.create({
@@ -1829,6 +1898,33 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     ).toEqual(["toggle", "note"]);
   });
 
+  test("a live turn whose conversation already mirrored a newer message hands nothing over", async () => {
+    const conv = await seedConversation();
+    const deliveryId = `failnote-other-newer-${process.pid}-${conv}`;
+    // The next message's delivery was mirrored first (deliveries are not ordered), and its own turn is
+    // coming; this delivery's older id does not move the mark back.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { lastInboundMessageId: 6_501 + conv },
+    });
+    await recordAndProcessChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryId,
+      agentBotId: 9,
+      normalized: incoming(conv, 6_500 + conv),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FailingModel(new Error("model provider returned 400")),
+        sleep: async () => {},
+      },
+    });
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+  });
+
   test("a debounce arm the pool refused once is armed on the next try, and no direct turn runs", async () => {
     const conv = await seedConversation();
     const real = debounceService.armDebounce;
@@ -1920,6 +2016,33 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     writes = [];
     await announceUnanswered(tenantId, row.id, appDb);
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a given-up row whose conversation mirrored a newer message hands nothing over", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-mirrored-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_800 + conv,
+      },
+      select: { id: true },
+    });
+    // Chatwoot's page still ends at the row's message; the mirror already holds the next one,
+    // whose delivery is on its way.
+    incoming(conv, 8_800 + conv);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { lastInboundMessageId: 8_801 + conv },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
   });
 
   test("a given-up row hands over BEFORE its line decides the row", async () => {

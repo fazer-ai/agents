@@ -266,6 +266,9 @@ export async function announceFailedTurn(params: {
   instanceId: bigint;
   chatwootConversationId: number;
   assess: () => Promise<TurnFailure>;
+  // The Chatwoot id of the customer message the failed turn was answering (the newest of its burst),
+  // when the caller knows it. A message mirrored past it is a turn still owed, whenever it landed.
+  aboutMessageId?: number | null;
   error: unknown;
   now?: Date;
   cooldownMs?: number;
@@ -393,7 +396,10 @@ export async function announceFailedTurn(params: {
             seen: ownership,
             // Read before the last ask: a customer message mirrored since starts a direct turn that
             // the reservation does not hold back, and loses the swap here instead of its reply.
-            newestInbound: { messageId: keys.lastInboundMessageId },
+            newestInbound:
+              params.aboutMessageId != null
+                ? { atMost: params.aboutMessageId }
+                : { exactly: keys.lastInboundMessageId },
             base,
           });
           // The turn is still lost (`lastAsk` stays so): only the hand-over yields, and the note asks

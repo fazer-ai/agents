@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { deflateSync } from "node:zlib";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 import {
@@ -6,6 +7,7 @@ import {
   readJpegOrientation,
 } from "@/modules/vision/convert/dimensions";
 import {
+  MediaConversionError,
   MediaSourceMismatchError,
   MediaTooLargeError,
   runMediaConverter,
@@ -61,6 +63,64 @@ function withOrientation(jpg: Buffer, orientation: number): Buffer {
   const header = Buffer.from([0xff, 0xe1, 0, 0]);
   header.writeUInt16BE(payload.length + 2, 2);
   return Buffer.concat([jpg.subarray(0, 2), header, payload, jpg.subarray(2)]);
+}
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function chunk(type: string, data: Buffer): Buffer {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(data.length, 0);
+  head.write(type, 4, "latin1");
+  let crc = 0xffffffff;
+  for (const byte of Buffer.concat([head.subarray(4), data]))
+    crc = (CRC_TABLE[(crc ^ byte) & 0xff] as number) ^ (crc >>> 8);
+  const tail = Buffer.alloc(4);
+  tail.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 0);
+  return Buffer.concat([head, data, tail]);
+}
+
+function ihdr(width: number, height: number, interlace: number): Buffer {
+  const d = Buffer.alloc(13);
+  d.writeUInt32BE(width, 0);
+  d.writeUInt32BE(height, 4);
+  d[8] = 8; // bit depth
+  d[9] = 6; // RGBA
+  d[12] = interlace;
+  return chunk("IHDR", d);
+}
+
+// A PNG assembled chunk by chunk, so the tests can write what no encoder would: a second IHDR, or
+// pixel data far larger than the header admits.
+function rawPng(chunks: Buffer[]): Buffer {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    ...chunks,
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// Every Adam7 pass of a width x height RGBA image, each scanline a zero filter byte and zero pixels.
+function interlacedPixels(width: number, height: number): Buffer {
+  const passes = [
+    [0, 0, 8, 8],
+    [4, 0, 8, 8],
+    [0, 4, 4, 8],
+    [2, 0, 4, 4],
+    [0, 2, 2, 4],
+    [1, 0, 2, 2],
+    [0, 1, 1, 2],
+  ] as const;
+  let size = 0;
+  for (const [xs, ys, dx, dy] of passes) {
+    const w = width > xs ? Math.ceil((width - xs) / dx) : 0;
+    const h = height > ys ? Math.ceil((height - ys) / dy) : 0;
+    if (w > 0 && h > 0) size += h * (1 + w * 4);
+  }
+  return Buffer.alloc(size);
 }
 
 function ab(b: Buffer): ArrayBuffer {
@@ -235,6 +295,41 @@ describe("the fit converters", () => {
         maxSourcePixels: 1000,
       }),
     ).rejects.toBeInstanceOf(MediaTooLargeError);
+  });
+
+  test("a PNG whose header is repeated is refused before pngjs reads the second one", async () => {
+    // pngjs decodes with the LAST IHDR, so the cap checked against the first would not hold.
+    const png = rawPng([
+      ihdr(9000, 1, 0),
+      // Its pixel data fits the FIRST header's length too, so only the IHDR check refuses it.
+      ihdr(100, 80, 0),
+      chunk("IDAT", deflateSync(Buffer.alloc(80 * (1 + 400)))),
+    ]);
+    await expect(
+      runMediaConverter("png-fit", ab(png), { maxSourcePixels: 9000 }),
+    ).rejects.toThrow("repeated IHDR");
+  });
+
+  test("interlaced pixel data larger than its header admits is refused before it is inflated", async () => {
+    // 8 KB of IDAT that inflates to 8 MiB under a 9000x1 header (whose data is ~36 KB).
+    const bomb = rawPng([
+      ihdr(9000, 1, 1),
+      chunk("IDAT", deflateSync(Buffer.alloc(8 * 1024 * 1024))),
+    ]);
+    // Refused by the bounded inflate, not by pngjs after it materialised the whole stream.
+    const err = await runMediaConverter("png-fit", ab(bomb)).catch((e) => e);
+    expect(err).toBeInstanceOf(MediaConversionError);
+    expect(String(err.message)).toContain("does not inflate within");
+  });
+
+  test("an honest interlaced PNG still converts", async () => {
+    const png = rawPng([
+      ihdr(37, 23, 1),
+      chunk("IDAT", deflateSync(interlacedPixels(37, 23))),
+    ]);
+    const out = Buffer.from(await runMediaConverter("png-fit", ab(png)));
+    const d = jpeg.decode(out, { useTArray: true });
+    expect([d.width, d.height]).toEqual([37, 23]);
   });
 
   test("bytes that are not the declared type are a mismatch, sent as received", async () => {

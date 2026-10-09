@@ -2,6 +2,7 @@
 // to be importable by the frontend (its sibling `document-support` already is); this file is where
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
+import { inflateSync } from "node:zlib";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 import type { MediaConverterId } from "../media-conversion";
@@ -325,6 +326,72 @@ async function jpegFit(
   );
 }
 
+const PNG_CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+// Adam7: x start, y start, x step, y step of each of the seven passes.
+const ADAM7 = [
+  [0, 0, 8, 8],
+  [4, 0, 8, 8],
+  [0, 4, 4, 8],
+  [2, 0, 4, 4],
+  [0, 2, 2, 4],
+  [1, 0, 2, 2],
+  [0, 1, 1, 2],
+] as const;
+
+// The pixel cap holds only if pngjs decodes the size headerPixels read, and pngjs trusts neither
+// side of that: it takes the LAST IHDR it meets, and inflates an interlaced image with no output
+// limit, so a few KB of IDAT can expand to gigabytes before it notices the excess. So the chunk
+// list is walked first (one IHDR: only the first chunk may be one), and the IDAT stream is inflated
+// against the exact length that IHDR implies; only a file that fits is handed to pngjs.
+function boundPngInflate(bytes: ArrayBuffer): void {
+  const v = new DataView(bytes);
+  const idat: Uint8Array[] = [];
+  let ihdr: number | null = null;
+  let i = 8;
+  while (i + 12 <= bytes.byteLength) {
+    const length = v.getUint32(i);
+    const type = String.fromCharCode(...new Uint8Array(bytes, i + 4, 4));
+    const data = i + 8;
+    if (data + length + 4 > bytes.byteLength) break;
+    if (type === "IHDR") {
+      if (i !== 8 || length !== 13)
+        throw new MediaConversionError("png has a misplaced or repeated IHDR");
+      ihdr = data;
+    } else if (type === "IDAT") {
+      idat.push(new Uint8Array(bytes, data, length));
+    } else if (type === "IEND") {
+      break;
+    }
+    i = data + length + 4;
+  }
+  if (ihdr === null) throw new MediaConversionError("png has no IHDR");
+  const width = v.getUint32(ihdr);
+  const height = v.getUint32(ihdr + 4);
+  const depth = v.getUint8(ihdr + 8);
+  const channels = PNG_CHANNELS[v.getUint8(ihdr + 9)];
+  const interlaced = v.getUint8(ihdr + 12) === 1;
+  if (channels === undefined)
+    throw new MediaConversionError("png declares an unknown color type");
+  const rowBytes = (w: number) => 1 + Math.ceil((w * channels * depth) / 8);
+  let expected = 0;
+  if (!interlaced) expected = height * rowBytes(width);
+  else
+    for (const [xs, ys, dx, dy] of ADAM7) {
+      const w = width > xs ? Math.ceil((width - xs) / dx) : 0;
+      const h = height > ys ? Math.ceil((height - ys) / dy) : 0;
+      if (w > 0 && h > 0) expected += h * rowBytes(w);
+    }
+  try {
+    inflateSync(Buffer.concat(idat), {
+      maxOutputLength: Math.max(1, expected),
+    });
+  } catch {
+    throw new MediaConversionError(
+      "png pixel data does not inflate within its declared size",
+    );
+  }
+}
+
 async function pngFit(
   bytes: ArrayBuffer,
   opts: ConvertOptions,
@@ -332,6 +399,7 @@ async function pngFit(
   if (!isPng(bytes))
     throw new MediaSourceMismatchError("declared as png but is not one");
   headerPixels(bytes, "image/png", opts.maxSourcePixels ?? MAX_SOURCE_PIXELS);
+  boundPngInflate(bytes);
   // pngjs hands back 8-bit RGBA whatever the source (palette, 16-bit, interlaced), and a PNG may be
   // transparent, so this one takes the full tail: flatten, fit, encode.
   const png = PNG.sync.read(Buffer.from(bytes));

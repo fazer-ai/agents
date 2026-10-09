@@ -319,6 +319,12 @@ export function snoozedNudge(params: {
   };
 }
 
+// The step stamped on a ladder ENDED on its anchor (no reminder could reach the customer), past any
+// cadence: a stamp of the cadence's length would turn into an unfinished step the moment an operator
+// adds one, and a resolve-only step would close a conversation nobody was reminded on. Only a new
+// anchor clears it. The column's ceiling (int4).
+export const SNOOZED_LADDER_ENDED = 2_147_483_647;
+
 // ── the handler ────────────────────────────────────────────────────────────────────────────────────
 
 export async function snoozedFollowUpHandler(
@@ -490,7 +496,7 @@ export async function snoozedFollowUpHandler(
   // ONE statement, as the bot's ladder stamps: /reset retires the job, and a separate read could find
   // it live and write after the retirement.
   const stampStep = async (ended = false): Promise<boolean> => {
-    const step = ended ? cadence.steps.length : stepIndex + 1;
+    const step = ended ? SNOOZED_LADDER_ENDED : stepIndex + 1;
     const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.$executeRaw(Prisma.sql`
         UPDATE conversations
@@ -530,13 +536,27 @@ export async function snoozedFollowUpHandler(
     requireLiveBotOwnership: true,
     holder: "snoozed-human",
     signature: ctx.cfg.signature,
-    // The live probe answers "still snoozed by a person"; this answers "and nobody spoke since the
-    // read above". Read at every boundary, strict or not: the send and the post-actions come after
-    // the model's wait, when a person is likeliest to have answered. An unreadable answer is a no.
+    // "Still snoozed by a person, and nobody spoke since the read above", at every boundary, strict
+    // or not: the post-actions ask only this (the live probe runs before the model and the send),
+    // and they come after the model's wait, when a person is likeliest to have acted.
     stillWanted: async ({ strict }) => {
       if (await (strict ? jobRetiredStrict(job, base) : jobRetired(job, base)))
         return false;
       try {
+        // The conversation first: an operator who unsnoozed it, dated the snooze or took it over
+        // while the model ran (or while the post-actions read the labels) has taken it back, and no
+        // message marks that. Same reading as the handler's, so an unreadable body is a failed read.
+        const now = parseLiveConversation(
+          await client.getConversation(conversationId),
+        );
+        if (
+          !now ||
+          (now.status === "snoozed" && now.snoozedUntil === undefined)
+        ) {
+          messageReadFailed = true;
+          return false;
+        }
+        if (!isSnoozedForAPerson(now)) return false;
         const since = readMessagePage(
           await client.getMessages(conversationId, {
             after: anchor.newestMessageId,

@@ -14,10 +14,14 @@ import {
   approveDocumentRequest,
   expireDueApprovalRequests,
   issueOrRequestApproval,
+  openedJobKey,
   outcomeJobKey,
   rejectDocumentRequest,
 } from "@/modules/documents/approval";
-import { runApprovalOutcome } from "@/modules/documents/approval-outcome";
+import {
+  runApprovalOpened,
+  runApprovalOutcome,
+} from "@/modules/documents/approval-outcome";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -287,6 +291,45 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     await rm(DIR, { recursive: true, force: true });
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  test("a request just opened tells the conversation's people in a private note, with the page", async () => {
+    const { requestId } = await conversationWithRequest({});
+    const armed = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "DOCUMENT_APPROVAL_OUTCOME",
+        dedupeKey: openedJobKey(requestId),
+      },
+      select: { payload: true },
+    });
+    expect(armed).toEqual([
+      { payload: { requestId: String(requestId), phase: "opened" } },
+    ]);
+    const rec = recordingClient();
+    expect(
+      await runApprovalOpened(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+      }),
+    ).toBe("noted");
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain("Pedido de aprovação aberto");
+    expectPageLink(notes[0]?.[2], requestId);
+    expect(named(rec.calls, "sendMessage")).toHaveLength(0);
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+  });
+
+  test("a request decided before its opening note runs leaves that note to the decision", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    const rec = recordingClient();
+    expect(
+      await runApprovalOpened(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+      }),
+    ).toBe("decided");
+    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
   });
 
   test("approval sends the numbered PDF on the agent's message, and approving again sends nothing", async () => {

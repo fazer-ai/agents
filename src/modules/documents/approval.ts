@@ -111,6 +111,12 @@ export function outcomeJobKey(requestId: bigint): string {
   return `doc-approval-outcome:${requestId}`;
 }
 
+// The note that tells the conversation's people a request is open runs on the outcome job's kind
+// under its own key, so it never stands in the queue of the decision's job.
+export function openedJobKey(requestId: bigint): string {
+  return `doc-approval-opened:${requestId}`;
+}
+
 async function armApprovalOutcome(
   db: ScopedDb,
   tenantId: bigint,
@@ -217,6 +223,14 @@ export async function createApprovalRequest(params: {
       dedupeKey: expiryJobKey(row.id),
       runAt: expiresAt,
       rearm: "new-work",
+    });
+    await upsertJobRow(db, {
+      tenantId,
+      kind: "DOCUMENT_APPROVAL_OUTCOME",
+      dedupeKey: openedJobKey(row.id),
+      runAt: new Date(),
+      rearm: "new-work",
+      payload: { requestId: String(row.id), phase: "opened" },
     });
     await params.onCreate?.(db, row.id);
     return row;

@@ -311,7 +311,7 @@ so approving again, in parallel or later, finds it linked and arms nothing. The 
 - **Expired:** nothing to the customer, a private note, and a `warn` line (`tool`,
   `document_approval_expired`), which the alert channels pick up.
 
-Every private note the outcome leaves ends on the request's page (`Ver aprovação: <console>/document-approvals/<id>?switchTenant=<tenant>`), so the person the conversation falls to opens the decision, or asks an expired one again, from Chatwoot. The page stays readable after the decision: the status, when it was decided, and a rejection's note.
+A request also leaves a private note the moment it opens (`Pedido de aprovação aberto: <title>`), from the outcome job's kind under its own key (`doc-approval-opened:<id>`), so a person watching Chatwoot knows the document is waiting on the team; a request already decided when it runs writes nothing, since the decision's note says more. Every private note the approval flow leaves ends on the request's page (`Ver aprovação: <console>/document-approvals/<id>?switchTenant=<tenant>`), so the person the conversation falls to opens the decision, or asks an expired one again, from Chatwoot. The page stays readable after the decision: the status, when it was decided, and a rejection's note.
 
 Any user of the tenant decides a request (`requireRole: "AGENT"`): approving is reading a document and
 saying yes, not configuring anything.

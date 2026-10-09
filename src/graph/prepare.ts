@@ -63,6 +63,7 @@ import {
 } from "@/modules/chatwoot/kanban";
 import { literalForChatwoot, markValue } from "@/modules/chatwoot/liquid";
 import {
+  attributesForModel,
   type ChatwootVocab,
   loadChatwootVocab,
 } from "@/modules/chatwoot/vocab";
@@ -1177,6 +1178,17 @@ export function sideEffectFlowEvent(
   };
 }
 
+// The native tools that read this conversation's kanban card from the turn's snapshot (`ctx.kanban`):
+// the two card tools, and the two whose `task` scope is one use among several (buildToolset).
+const KANBAN_CARD_TOOLS: readonly string[] = [
+  "kanban_move_card",
+  "update_kanban_task",
+];
+const KANBAN_CARD_SCOPE_TOOLS: readonly string[] = [
+  "set_custom_attribute",
+  "set_labels",
+];
+
 export interface ToolBuildDeps {
   buildNativeTools: (
     ctx: {
@@ -1493,11 +1505,20 @@ export async function buildToolset(
       );
     }
   }
-  // Resolve this conversation's kanban card (board + current step + steps) ONLY when the funnel tool
-  // is granted (it is the costlier 2-3 call resolve), so the common case stays cheap. Grounds
-  // kanban_move_card (step by name) + enables set_custom_attribute's task scope. Best-effort.
+  // Resolve this conversation's kanban card (board + current step + steps) ONLY when a tool that reads
+  // it is granted. kanban_move_card (step by name) and update_kanban_task (`<current_card>`) exist for
+  // the card, so either one resolves it. set_custom_attribute and set_labels are everyday tools whose
+  // `task` scope is one use among several, so they resolve it only on an account that defines card
+  // attributes: without that gate every attribute or label agent, the decisions observer included,
+  // would pay the read on accounts with no funnel at all. The cost is one conversation GET per turn
+  // (the board's steps are cached); a conversation with no card answers from that GET alone.
+  // Best-effort.
+  const allow = cfg.nativeToolsAllow;
   const grantsKanban =
-    !cfg.nativeToolsAllow || cfg.nativeToolsAllow.includes("kanban_move_card");
+    !allow ||
+    allow.some((n) => KANBAN_CARD_TOOLS.includes(n)) ||
+    (allow.some((n) => KANBAN_CARD_SCOPE_TOOLS.includes(n)) &&
+      attributesForModel(vocab, "task_attribute").length > 0);
   let kanban: KanbanContext | undefined;
   if (grantsKanban && ctx.conversationId > 0) {
     try {

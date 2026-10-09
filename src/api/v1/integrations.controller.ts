@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import logger from "@/api/lib/logger";
 import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
+import { trackWork } from "@/lib/shutdown";
 import {
   processInboundDelivery,
   receiveInbound,
@@ -35,7 +36,10 @@ export const integrationsController = new Elysia({
       (result.outcome === "queued" || result.outcome === "duplicate")
     ) {
       const { deliveryId, tenantId } = result;
-      void processInboundDelivery({ deliveryId, tenantId }).catch((err) => {
+      // NOTE: tracked, so a shutdown waits for the turn the event runs (src/lib/shutdown.ts).
+      void trackWork("inbound_delivery", () =>
+        processInboundDelivery({ deliveryId, tenantId }),
+      ).catch((err) => {
         logger.error(
           "inbound async dispatch failed (delivery %s): %s",
           String(deliveryId),

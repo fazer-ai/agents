@@ -89,6 +89,14 @@ The realtime pub/sub, the scheduler tick, the debounce worker, the outbound-webh
 
 Production serves `dist/index.html`; its inline-script hashes are baked into the CSP at build time. Rebuild (`bun run build`) after editing any inline script. Per-tenant theming uses `setProperty` (DOM API, no inline `<style>`) precisely so it does not break the CSP hash.
 
+### 6. Shutdown drains, bounded by the stop grace period
+
+On `SIGTERM`/`SIGINT` the process stops every lane's claim, waits for the work it already started (claimed jobs, which carry every debounce flush and proactive turn, and the detached Chatwoot and inbound deliveries, which carry a direct turn), and exits as soon as that work ends (`src/lib/shutdown.ts`). The wait is bounded by `SHUTDOWN_DRAIN_MS` (default 7000). At the bound, a claimed job still running is ended the way its own deadline ends it: its signal aborts (a debounce flush hands that signal to its turn, which then sends nothing), and its row goes back to `PENDING` with the usual retry backoff, which the next process claims within seconds instead of waiting out the reaper's 5-minute stale window. The exit follows within 1.5s, after a log line naming how many were still running and of which kind.
+
+**The bound only works if it fits inside the orchestrator's stop grace period**, the time between `SIGTERM` and `SIGKILL`. Past it the process is killed mid-drain, with no cut and no log line, which is what every deploy did before the drain existed. The default of 7000 fits the smallest grace period in use: Docker and compose default to 10s, and none of the compose files in this repo declare one. A Coolify **Application** defaults to 30s (`Stop grace period` in the application's advanced settings, `stop_grace_period` in its API).
+
+The default does not cover a slow turn: a single model call may take up to 120s (`AGENT_MODEL_CALL_TIMEOUT_MS`). To drain those, raise both together, keeping the grace period at least 3s above the bound: for example `SHUTDOWN_DRAIN_MS=140000` with a stop grace period of 150s. On a rolling deploy (a Coolify Application) the cost is deploy time only: the new container is already serving, and the old one keeps answering HTTP while it drains, but claims nothing. Where the old container stops before the new one starts (`docker compose up -d` recreating it), the drain is also the downtime.
+
 ## Environment variables
 
 See `.env.example` for the full list. Deploy-critical:

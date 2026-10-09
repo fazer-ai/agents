@@ -6,6 +6,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { Semaphore } from "@/lib/semaphore";
+import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
@@ -90,17 +91,21 @@ export class JobDeadlineError extends Error {
 
 // The handler's promise against the run's deadline. When the deadline fires first, the signal aborts
 // with the JobDeadlineError and the race rejects with it at once, whether or not the handler listens.
+// `onCut` receives the same ending under another reason, for the shutdown drain's bound.
 function withinDeadline<T>(
   running: Promise<T>,
   ms: number,
   controller: AbortController,
+  onCut?: (cut: (reason: Error) => void) => void,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const err = new JobDeadlineError(ms);
+    const end = (err: Error) => {
+      clearTimeout(timer);
       controller.abort(err);
       reject(err);
-    }, ms);
+    };
+    const timer = setTimeout(() => end(new JobDeadlineError(ms)), ms);
+    onCut?.(end);
     running.then(
       (v) => {
         clearTimeout(timer);
@@ -262,6 +267,25 @@ export async function runClaimed(
   base: PrismaClient = basePrisma,
   opts: RunClaimedOptions = {},
 ): Promise<void> {
+  // The shutdown drain waits for this run until its outcome is written, and at its bound ends it the
+  // way the deadline does, so the row is failed for retry before the process exits.
+  let cut: ((reason: Error) => void) | undefined;
+  const end = beginWork(job.kind, (reason) => cut?.(reason));
+  try {
+    await runWithDeadline(job, base, opts, (c) => {
+      cut = c;
+    });
+  } finally {
+    end();
+  }
+}
+
+async function runWithDeadline(
+  job: ClaimedJob,
+  base: PrismaClient,
+  opts: RunClaimedOptions,
+  onCut: (cut: (reason: Error) => void) => void,
+): Promise<void> {
   const handler = getJobHandler(job.kind);
   if (!handler) {
     await fail(job, `no handler: ${job.kind}`, base);
@@ -310,7 +334,7 @@ export async function runClaimed(
     .finally(() => markSettled(job.id));
   let result: JobResult;
   try {
-    result = await withinDeadline(running, deadlineMs, controller);
+    result = await withinDeadline(running, deadlineMs, controller, onCut);
   } catch (err) {
     failedWith = errMsg(err);
     try {

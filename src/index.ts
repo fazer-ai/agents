@@ -7,6 +7,7 @@ import {
   assertRuntimeRoleIsNotSuperuser,
   RuntimeIsolationError,
 } from "@/lib/db-guard";
+import { installShutdownHandlers } from "@/lib/shutdown";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
 import {
@@ -238,22 +239,14 @@ if (config.compactionWorker.enabled) {
   startCompactionWorker();
 }
 
-// Reached through the EventEmitter surface because `process.on("SIGTERM", …)` does not
-// type-check. @types/node 25 declares `Process extends InternalEventEmitter<ProcessEventMap>`, so
-// the signal handlers are INHERITED from an event map rather than declared as overloads, and
-// bun-types 1.4.0 augments `NodeJS.Process` with an explicit `on(event: "memoryPressure", …)`. A
-// member declared on the interface shadows the inherited one, so `on` narrows to "memoryPressure"
-// alone. Under this tsconfig the literal call, `node:process`, a `NodeJS.Signals` cast,
-// `addListener` and `once` all fail; only the EventEmitter surface compiles. Upstream bug in
-// bun-types, not in this code — drop the cast once it declares these as overloads.
-const processEvents = process as NodeJS.EventEmitter;
-for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  processEvents.on(signal, () => {
+// SIGTERM/SIGINT stop the lanes, drain the work in flight up to SHUTDOWN_DRAIN_MS, then exit.
+installShutdownHandlers({
+  stop: () => {
     stopOutboundWorker();
     stopScheduler();
     stopDebounceWorker();
     stopCompactionWorker();
     stopAlertWorker();
-    process.exit(0);
-  });
-}
+  },
+  boundMs: config.shutdown.drainMs,
+});

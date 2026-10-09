@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { sanitizeErrorMessage } from "@/lib/redact";
+import { isDraining } from "@/lib/shutdown";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -970,6 +971,9 @@ async function claimWhere(
   keyPrefix?: string,
   share?: boolean,
 ): Promise<ClaimedJob[]> {
+  // NOTE: a lane claims nothing once the shutdown drain started (src/lib/shutdown.ts). The barrier's
+  // claim (`keyPrefix`) belongs to a turn already running, which the drain is waiting for.
+  if (keyPrefix === undefined && isDraining()) return [];
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<

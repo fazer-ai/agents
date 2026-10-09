@@ -713,6 +713,56 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(String(notes[0]?.[2])).toContain("atendente");
   });
 
+  test("a person who takes the conversation while the PDF is checked gets the note, not the PDF", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    // Chatwoot is asked four times on the way to the send: before the turn, at the turn's own
+    // gate, after the model, and after the PDF's validity read. Only the last one sees the person.
+    let reads = 0;
+    const takenDuringCheck = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "getConversation") {
+          return async (id: number) => {
+            reads += 1;
+            return reads >= 4
+              ? {
+                  id,
+                  status: "open",
+                  meta: { assignee_type: "User", assignee: { id: 5 } },
+                }
+              : { id, status: "pending", meta: {} };
+          };
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: async () => takenDuringCheck as never,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () =>
+          new ScriptedCaptureModel([
+            { reply: "O documento segue em anexo." },
+          ]) as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(reads).toBe(4);
+    expect(outcome).toBe("noted");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("atendente");
+  });
+
   test("a window that closes just before the send leaves the window note, never the PDF", async () => {
     const { requestId } = await conversationWithRequest({
       lastInboundAt: new Date(Date.now() - 23.9 * 3_600_000),
@@ -987,6 +1037,61 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     ]);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+  });
+
+  test("a rejection on a conversation handed back to the bot, ahead of the mirror, hands it to a person", async () => {
+    const { requestId, chatwootConversationId } = await conversationWithRequest(
+      { assigneeType: "User" },
+    );
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    const handedBack = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "getConversation") {
+          return async (id: number) => ({ id, status: "pending", meta: {} });
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: async () => handedBack as never,
+      nudgeDeps: { makeModel: noModel },
+    });
+    expect(outcome).toBe("handed");
+    expect(named(rec.calls, "toggleStatus")).toEqual([
+      ["toggleStatus", chatwootConversationId, "open"],
+    ]);
+  });
+
+  test("an expiry of a whole backlog arms one outcome per request", async () => {
+    const ids: bigint[] = [];
+    for (let i = 0; i < 40; i++) {
+      ids.push((await conversationWithRequest({})).requestId);
+    }
+    await suDb.documentApprovalRequest.updateMany({
+      where: { id: { in: ids } },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    const expired = await expireDueApprovalRequests(
+      tenantId,
+      new Date(),
+      appDb,
+    );
+    expect(new Set(expired.map(String))).toEqual(new Set(ids.map(String)));
+    const jobs = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "DOCUMENT_APPROVAL_OUTCOME",
+        dedupeKey: { in: ids.map((id) => outcomeJobKey(id)) },
+      },
+      select: { status: true, payload: true },
+    });
+    expect(jobs).toHaveLength(40);
+    expect(jobs.every((j) => j.status === "PENDING")).toBe(true);
+    expect(
+      new Set(jobs.map((j) => (j.payload as { requestId: string }).requestId)),
+    ).toEqual(new Set(ids.map(String)));
   });
 
   test("an expiry sends nothing to the customer, leaves one note and raises a warn line", async () => {

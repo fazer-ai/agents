@@ -281,7 +281,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: true,
   // One per request, and requests follow the conversations the agent answers.
   DOCUMENT_APPROVAL_EXPIRY: true,
-  DOCUMENT_APPROVAL_OUTCOME: false,
+  // One per decided or expired request, and an expiry arms a whole overdue backlog at once.
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 // What one kind's death means to the operator, read by the generic dead-letter announcement in

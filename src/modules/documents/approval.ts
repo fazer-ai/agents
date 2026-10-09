@@ -6,7 +6,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
-import { upsertJobRow } from "@/modules/scheduler/service";
+import { upsertJobRow, upsertJobRows } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
 import { formatDate } from "./format";
@@ -516,9 +516,18 @@ export async function expireDueApprovalRequests(
          AND "expires_at" <= ${now}
       RETURNING "id"
     `;
-    for (const r of expired) {
-      await armApprovalOutcome(db, tenantId, r.id, now);
-    }
+    // One statement for the whole backlog: a row per request would be N round trips inside the
+    // five-second transaction, and running past it rolls back the expiry along with every outcome.
+    await upsertJobRows(db, {
+      tenantId,
+      kind: "DOCUMENT_APPROVAL_OUTCOME",
+      rearm: "new-work",
+      runAt: now,
+      rows: expired.map((r) => ({
+        dedupeKey: outcomeJobKey(r.id),
+        payload: { requestId: String(r.id) },
+      })),
+    });
     return expired;
   });
   return rows.map((r) => r.id);

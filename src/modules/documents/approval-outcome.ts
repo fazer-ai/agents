@@ -122,12 +122,23 @@ async function clientFor(
   });
 }
 
-function botOwns(target: Target): boolean {
+// Whether the bot owns the conversation in Chatwoot itself, asked live: the mirror can lag a person
+// who just took, closed or handed it back, in either direction. `null` when Chatwoot did not answer.
+async function botOwnsLive(
+  client: ChatwootClient,
+  target: Target,
+): Promise<boolean | null> {
+  const live = parseLiveConversation(
+    await client
+      .getConversation(target.conv.chatwootConversationId)
+      .catch(() => null),
+  );
+  if (!live) return null;
   return shouldBotHandle(
     {
-      assigneeType: target.conv.assigneeType,
-      status: target.conv.status,
-      assigneeId: target.conv.assigneeId,
+      assigneeType: live.assigneeType,
+      status: live.status,
+      assigneeId: live.assigneeId,
       resolvedBy: target.conv.resolvedBy,
     },
     { ourAgentBotId: target.botId },
@@ -179,24 +190,11 @@ export async function runApprovalOutcome(
   if (request.status === "REJECTED") {
     const client = await clientFor(tenantId, target, base, deps);
     const conversationId = target.conv.chatwootConversationId;
-    // Asked live, right before the routing writes: the mirror can lag a person who just took or
-    // closed the conversation, and a hand-over over them would reopen or reassign it.
-    let owned = false;
-    if (botOwns(target)) {
-      const live = parseLiveConversation(
-        await client.getConversation(conversationId).catch(() => null),
-      );
-      if (!live) return "retry";
-      owned = shouldBotHandle(
-        {
-          assigneeType: live.assigneeType,
-          status: live.status,
-          assigneeId: live.assigneeId,
-          resolvedBy: target.conv.resolvedBy,
-        },
-        { ourAgentBotId: target.botId },
-      );
-    }
+    // Asked live, right before the routing writes, whatever the mirror says: a hand-over over a person
+    // would reopen or reassign their conversation, and a conversation handed back to the bot that the
+    // mirror still shows with a person would be left with the bot, unrouted.
+    const owned = await botOwnsLive(client, target);
+    if (owned === null) return "retry";
     if (deps.signal?.aborted) return "retry";
     // NOTE: the hand-over goes before the note, so a failure in it retries with nothing posted, and
     // the note only says what already happened.
@@ -284,21 +282,8 @@ export async function runApprovalOutcome(
   // conversation, and the PDF must not go out over a person. The turn rechecks live too
   // (requireLiveBotOwnership), so a takeover while the agent writes ends in a note as well.
   const liveClient = await clientFor(tenantId, target, base, deps);
-  const live = parseLiveConversation(
-    await liveClient
-      .getConversation(target.conv.chatwootConversationId)
-      .catch(() => null),
-  );
-  if (!live) return "retry";
-  const ownedLive = shouldBotHandle(
-    {
-      assigneeType: live.assigneeType,
-      status: live.status,
-      assigneeId: live.assigneeId,
-      resolvedBy: target.conv.resolvedBy,
-    },
-    { ourAgentBotId: target.botId },
-  );
+  const ownedLive = await botOwnsLive(liveClient, target);
+  if (ownedLive === null) return "retry";
   if (!ownedLive) {
     return (await note(
       liveClient,

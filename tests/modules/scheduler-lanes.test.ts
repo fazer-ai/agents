@@ -189,7 +189,8 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: true,
   SUGGESTION_REVIEW: true,
   DOCUMENT_APPROVAL_EXPIRY: true,
-  DOCUMENT_APPROVAL_OUTCOME: false,
+  // One per decided or expired request, and an expiry arms a whole backlog at once.
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {

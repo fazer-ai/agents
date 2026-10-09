@@ -2579,11 +2579,19 @@ async function runAgentNudgeBody(
       if (attach && !(await attach.stillValid())) {
         return refuse(await noteApproved(attach.revokedNote, "noted"));
       }
-      // NOTE: the validity read is I/O between the last ask and the send, so the ask, and the
-      // window, are repeated.
-      if (attach && !(await stillWanted())) return refuse(standDown());
-      if (attach && sendModeNow() !== "freeform") {
-        return refuse(await noteApproved(attach.windowNote, "noted-window"));
+      // NOTE: the validity read is I/O between the last ask and the send, so the ownership, the ask
+      // and the window are all asked again after it, in that order, with nothing awaited between
+      // the last of them and the send.
+      if (attach) {
+        const owned = await botStillOwnsIt();
+        if (!(await stillWanted())) return refuse(standDown());
+        if (owned === "unavailable") return refuse("live-unavailable");
+        if (owned === "not-ours") {
+          return refuse(await noteApproved(attach.heldNote, "noted"));
+        }
+        if (sendModeNow() !== "freeform") {
+          return refuse(await noteApproved(attach.windowNote, "noted-window"));
+        }
       }
       const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;

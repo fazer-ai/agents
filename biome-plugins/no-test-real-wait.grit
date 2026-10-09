@@ -5,14 +5,14 @@
 // from tests/utils/poll.ts. Short sleeps that only order two writes within a millisecond stay
 // allowed, and a delay held in a variable is not matched. Files that predate the rule are listed in
 // biome.jsonc. GritQL anchors a regex to the whole literal and does not take a `|` group, so the
-// threshold is four alternatives: 50-99 and 100+, each as an integer and as a decimal.
+// threshold is four alternatives: 50-99 and 100+, each as an integer and as a decimal. Only digits,
+// `_` and `.` can match the whole text, so nothing but a numeric literal is ever refused.
 language js;
 
 or {
     `Bun.sleep($ms)` as $call,
     `setTimeout($fn, $ms)` as $call
 } where {
-    $ms <: JsNumberLiteralExpression(),
     or {
         $ms <: r"[5-9]_?[0-9][0-9_]*",
         $ms <: r"[1-9]_?[0-9]_?[0-9][0-9_]*",

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
   DELIVERY_HEADER,
   LEGACY_DELIVERY_HEADER,
@@ -154,6 +155,31 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     expect(row.attempts).toBe(1);
     expect(row.deliveredAt).not.toBeNull();
     expect(row.lastError).toBeNull();
+  });
+
+  test("claims nothing once the shutdown drain started, and the row stays PENDING", async () => {
+    const id = await seedDelivery({ subscriptionId: unsignedSubId });
+    const { fetchImpl } = stubFetch(200);
+    await drainInFlight({ boundMs: 10 });
+    try {
+      const summary = await processOutboundBatch({
+        base: appDb,
+        tenantId,
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      expect(summary.claimed).toBe(0);
+      expect((await readDelivery(id)).status).toBe("PENDING");
+    } finally {
+      resetShutdownForTest();
+    }
+    const after = await processOutboundBatch({
+      base: appDb,
+      tenantId,
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    expect(after.claimed).toBeGreaterThanOrEqual(1);
   });
 
   test("signs the request with the per-tenant vault secret", async () => {

@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { sanitizeErrorMessage } from "@/lib/redact";
+import { isDraining } from "@/lib/shutdown";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitDeliveryDead } from "@/modules/flowlog/webhook";
@@ -128,6 +129,8 @@ async function claimDueDeliveries(
   limit: number,
   tenantId?: bigint,
 ): Promise<ClaimedDelivery[]> {
+  // NOTE: a tick already past its timer when SIGTERM arrives claims nothing new (src/lib/shutdown.ts).
+  if (isDraining()) return [];
   const tenantClause =
     tenantId != null
       ? Prisma.sql`AND d2.tenant_id = ${tenantId}`

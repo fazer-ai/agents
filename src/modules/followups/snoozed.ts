@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
+import { resetLandedAfter } from "@/graph/reset-episode";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -23,6 +24,7 @@ import {
 import {
   type ClaimedJob,
   enqueueJobUnlessClaimed,
+  jobNotRetiredSql,
   jobRetired,
   jobRetiredStrict,
 } from "@/modules/scheduler/service";
@@ -97,7 +99,9 @@ export async function sweepSnoozedFollowUps(
     base,
     sysCtx(tenantId),
     (db) =>
-      db.$queryRaw<Array<{ thread_id: string; finished: boolean }>>`
+      db.$queryRaw<
+        Array<{ thread_id: string; finished: boolean; waiting: boolean }>
+      >`
       SELECT c.thread_id,
              -- A row whose run finished (DONE or DEAD) spent its budget on what that run saw; what
              -- re-arms it now is an event after it, so the arm is new work with a fresh budget.
@@ -108,7 +112,17 @@ export async function sweepSnoozedFollowUps(
                   AND jf.kind = 'SNOOZED_FOLLOWUP'
                   AND jf.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
                   AND jf.status IN ('DONE', 'DEAD')
-             ) AS finished
+             ) AS finished,
+             -- A row still waiting to run (PENDING, or FAILED and backing off) carries state of the
+             -- step it is on, the refusal budget among it: re-armed, it keeps its payload.
+             EXISTS (
+               SELECT 1
+                 FROM scheduler_jobs jw
+                WHERE jw.tenant_id = c.tenant_id
+                  AND jw.kind = 'SNOOZED_FOLLOWUP'
+                  AND jw.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
+                  AND jw.status IN ('PENDING', 'FAILED')
+             ) AS waiting
         FROM conversations c
         JOIN inboxes i ON i.id = c.inbox_id
         JOIN agents a ON a.id = i.agent_id
@@ -161,7 +175,8 @@ export async function sweepSnoozedFollowUps(
       dedupeKey: snoozedDedupeKey(t.thread_id),
       runAt: new Date(),
       rearm: t.finished ? "new-work" : "same-work",
-      payload: { threadId: t.thread_id },
+      // Absent = the row's own payload is kept (the handler resets what belongs to an older anchor).
+      payload: t.waiting ? undefined : { threadId: t.thread_id },
       base,
     });
   }
@@ -313,6 +328,7 @@ export async function snoozedFollowUpHandler(
         snoozedFollowUpAnchorId: true,
         snoozedFollowUpStep: true,
         snoozedFollowUpAt: true,
+        resetAtMessageId: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -401,6 +417,11 @@ export async function snoozedFollowUpHandler(
   if (!anchor || anchor.customerSpokeAfter) return { outcome: "done" };
   // The backlog fence: a person's message older than the switch-on is not chased.
   if (anchor.at < ctx.armedAt) return { outcome: "done" };
+  // The /reset fence: a message of the person at or below the command is work the operator withdrew,
+  // whatever re-armed this job since. Ordered by Chatwoot's ids, as every withdrawal fence is.
+  if (resetLandedAfter(anchor.messageId, ctx.conv.resetAtMessageId)) {
+    return { outcome: "done" };
+  }
 
   const cadence = pickSnoozedCadence(ctx.cfg, live.labels ?? ctx.conv.labels);
   if (!cadence) return { outcome: "done" };
@@ -436,20 +457,21 @@ export async function snoozedFollowUpHandler(
 
   // Records the step as spent on THIS anchor. Under the same retirement fence the bot's ladder uses:
   // a job retired while it ran does not move the ladder. `ended` spends the whole ladder instead.
+  // ONE statement, as the bot's ladder stamps: /reset retires the job, and a separate read could find
+  // it live and write after the retirement.
   const stampStep = async (ended = false): Promise<boolean> => {
-    if (await jobRetired(job, base)) return false;
-    await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.conversation.update({
-        where: { id: ctx.conv.id },
-        data: {
-          snoozedFollowUpAnchorId: anchor.messageId,
-          snoozedFollowUpStep: ended ? cadence.steps.length : stepIndex + 1,
-          snoozedFollowUpAt: new Date(),
-        },
-      }),
+    const step = ended ? cadence.steps.length : stepIndex + 1;
+    const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.$executeRaw(Prisma.sql`
+        UPDATE conversations
+           SET snoozed_follow_up_anchor_id = ${anchor.messageId},
+               snoozed_follow_up_step = ${step},
+               snoozed_follow_up_at = now()
+         WHERE id = ${ctx.conv.id}
+           AND ${jobNotRetiredSql(job)}`),
     );
-    run?.commit();
-    return true;
+    if (stamped > 0) run?.commit();
+    return stamped > 0;
   };
 
   // A send-time message read that failed is not a withdrawal: the step is tried again, not dropped.

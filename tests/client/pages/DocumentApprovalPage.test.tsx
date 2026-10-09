@@ -287,3 +287,31 @@ test("a context that never answers does not hold back the document and the decis
   await screen.findByText("Orçamento 13");
   await screen.findByRole("button", { name: "Approve and send" });
 });
+
+test("an overdue request read back still pending is read again until the expiry closes it", async () => {
+  let reads = 0;
+  // One instant for every read, as the server returns the same row until the expiry runs.
+  const overdue = new Date(Date.now() - 1000).toISOString();
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/14")) {
+      reads += 1;
+      // The first two reads still find it pending past its time; the third finds it closed.
+      return json({
+        request:
+          reads < 3
+            ? request("14", { expiresAt: overdue })
+            : request("14", { status: "EXPIRED" }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/14");
+  await screen.findByRole(
+    "button",
+    { name: "Request again" },
+    { timeout: 9000 },
+  );
+  expect(reads).toBe(3);
+}, 12_000);

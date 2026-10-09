@@ -111,6 +111,9 @@ export function DocumentApprovalPage() {
   );
 }
 
+// How often a request past its time is read again until the expiry closes it.
+const OVERDUE_POLL_MS = 3000;
+
 function DocumentApprovalRequestPage({ id }: { id: string }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -170,19 +173,23 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
     void loadContext();
   }, [load, loadContext]);
 
-  // A pending request is read again when its time runs out, and every ten seconds after that until
+  // A pending request is read again when its time runs out, and every few seconds after that until
   // the expiry closes it, so the page moves from the decision to "request again" without a reload.
   const status = request?.status;
   const expiresAtMs = request ? new Date(request.expiresAt).getTime() : null;
+  // Bumped after every read, so a read that comes back unchanged (the expiry has not run yet) still
+  // schedules the next one.
+  const [reads, setReads] = useState(0);
   useEffect(() => {
+    void reads;
     if (status !== "PENDING" || expiresAtMs === null) return;
     const left = expiresAtMs - serverNow();
     const timer = setTimeout(
-      () => void load(),
-      left > 0 ? left + 1000 : 10_000,
+      () => void load().then(() => setReads((n) => n + 1)),
+      left > 0 ? left + 1000 : OVERDUE_POLL_MS,
     );
     return () => clearTimeout(timer);
-  }, [status, expiresAtMs, load]);
+  }, [status, expiresAtMs, load, reads]);
 
   const endpoint = api.api.v1["document-approvals"]({ id });
 

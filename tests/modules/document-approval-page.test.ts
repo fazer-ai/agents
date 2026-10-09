@@ -506,6 +506,26 @@ describe.skipIf(!dbUp)(
       expect(audits[0]?.after).toEqual({ requestId: a.id });
     });
 
+    test("a document a caller issued under the old again key does not block asking again", async () => {
+      const { requestId } = await newRequest();
+      await expire(requestId);
+      // Any key the REST route accepts, including the one older builds opened a replacement under.
+      await suDb.issuedDocument.create({
+        data: {
+          tenantId,
+          title: "Planted",
+          idempotencyKey: `again:${requestId}`,
+        },
+      });
+      const replacement = await requestApprovalAgain({
+        ctx: ctx(),
+        requestId,
+        base: appDb,
+      });
+      expect(replacement.status).toBe("PENDING");
+      expect(replacement.id).not.toBe(String(requestId));
+    });
+
     test("only an expired request can be asked again", async () => {
       const { requestId } = await newRequest();
       await expect(

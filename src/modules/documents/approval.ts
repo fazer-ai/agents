@@ -413,6 +413,18 @@ function approvalDocumentKey(row: {
   return `${APPROVAL_KEY_PREFIX}${row.id}:${hasher.digest("hex")}`;
 }
 
+// The key a request asked again is opened under, in the same reserved namespace and for the same
+// reason: no document a caller issued through the REST route can already hold it.
+function againKey(row: {
+  id: bigint;
+  idempotencyKey: string;
+  createdAt: Date;
+}): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(`${row.idempotencyKey}|${row.createdAt.toISOString()}`);
+  return `${APPROVAL_KEY_PREFIX}again:${row.id}:${hasher.digest("hex")}`;
+}
+
 // A decision in the tenant's trail, written in the transaction that made it. The status only: the
 // document's values and the reviewer's note are customer and team text, which the trail does not keep.
 async function auditDecision(
@@ -623,7 +635,7 @@ export async function requestApprovalAgain(params: {
   if (row.status !== "EXPIRED") throw notExpired(row.status);
   // Asked before the template is: a replacement already made answers the retry (a lost response, a
   // second click) even when the template has since been switched off or changed.
-  const again = `again:${row.id}`;
+  const again = againKey(row);
   const existing = await runScopedOn(base, ctx, (db) =>
     db.documentApprovalRequest.findFirst({
       where: { idempotencyKey: again },

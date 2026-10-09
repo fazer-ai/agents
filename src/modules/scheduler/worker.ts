@@ -557,6 +557,9 @@ export async function runSchedulerTick(
 interface Holder {
   timer?: ReturnType<typeof setInterval>;
   running: boolean;
+  // The started worker's tick, for `wakeScheduler`; and whether a wake landed while a tick ran.
+  tick?: () => void;
+  again?: boolean;
 }
 
 const KEY = Symbol.for("fazerai.scheduler.worker");
@@ -572,6 +575,8 @@ export interface StartOptions {
   intervalMs?: number;
   staleMs?: number;
   batchSize?: number;
+  // What a tick runs; tests replace it, since a real tick drains every tenant's rows.
+  runTick?: () => Promise<unknown>;
 }
 
 // Idempotent singleton (survives `bun --hot` reloads via globalThis, so no ghost timers). The tick
@@ -583,15 +588,23 @@ export function startScheduler(opts: StartOptions = {}): () => void {
   const intervalMs = opts.intervalMs ?? config.schedulerWorker.intervalMs;
   const staleMs = opts.staleMs ?? SCHEDULER_STALE_MS;
   const batchSize = opts.batchSize ?? 20;
-  h.timer = setInterval(() => {
+  const run =
+    opts.runTick ?? (() => runSchedulerTick(base, { staleMs, batchSize }));
+  const tick = () => {
     if (h.running) return;
     h.running = true;
-    void runSchedulerTick(base, { staleMs, batchSize })
+    void run()
       .catch((err) => logger.error({ err }, "scheduler tick failed"))
       .finally(() => {
         h.running = false;
+        if (h.again) {
+          h.again = false;
+          tick();
+        }
       });
-  }, intervalMs);
+  };
+  h.tick = tick;
+  h.timer = setInterval(tick, intervalMs);
   logger.info("scheduler worker started (interval=%dms)", intervalMs);
   return stopScheduler;
 }
@@ -602,4 +615,20 @@ export function stopScheduler(): void {
     clearInterval(h.timer);
     h.timer = undefined;
   }
+  h.tick = undefined;
+  h.again = false;
+}
+
+// Drains the shared lane now rather than on the next interval, for a job a person is watching for (a
+// document they just approved). A tick already running drains once more when it ends, so a job armed
+// after its claim is not left for the interval. Without a started worker in this process (an API-only
+// replica, a script) it does nothing, and the job runs on the worker's next tick as it would anyway.
+export function wakeScheduler(): void {
+  const h = holder();
+  if (!h.tick) return;
+  if (h.running) {
+    h.again = true;
+    return;
+  }
+  h.tick();
 }

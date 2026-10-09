@@ -10,7 +10,11 @@ import { auditMutation } from "@/modules/audit/service";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { upsertJobRow, upsertJobRows } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobResult,
+  registerJobHandler,
+  wakeScheduler,
+} from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
 import { formatDate } from "./format";
 import {
@@ -307,6 +311,8 @@ export async function createApprovalRequest(params: {
   });
   if (created) {
     await announceRequest(base, tenantId, created);
+    // The opening note is for a person watching the conversation now, not on the next interval.
+    wakeScheduler();
     return toDto(created);
   }
   const existing = await runScopedOn(base, ctx, (db) =>
@@ -769,6 +775,7 @@ export async function approveDocumentRequest(params: {
   });
   // The call that LINKS the document is the one that arms its delivery, in the same
   // transaction: approving again, in parallel or later, finds it linked and delivers nothing twice.
+  let armed = false;
   const linked = await runScopedOn(base, ctx, async (db) => {
     const issued = await db.issuedDocument.findUniqueOrThrow({
       where: {
@@ -785,6 +792,7 @@ export async function approveDocumentRequest(params: {
     });
     if (link.count === 1) {
       await armApprovalOutcome(db, ctx.tenantId as bigint, requestId, now);
+      armed = true;
     }
     return toDtoNamed(
       db,
@@ -794,6 +802,8 @@ export async function approveDocumentRequest(params: {
       }),
     );
   });
+  // The reviewer is watching for it: the outcome runs now, not on the scheduler's next interval.
+  if (armed) wakeScheduler();
   return { request: linked, document };
 }
 
@@ -827,6 +837,7 @@ export async function rejectDocumentRequest(params: {
     }
     return r;
   });
+  if (claimed.count === 1) wakeScheduler();
   const row = await loadRequest(ctx, requestId, base);
   if (claimed.count === 0) {
     if (row.status === "PENDING") {

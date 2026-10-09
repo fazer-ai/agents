@@ -11,9 +11,8 @@ import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { clearFlowLog } from "../utils/flowlog";
 
 // The card snapshot (`kanban` on the native tools' ctx) is what update_kanban_task reads as
-// `<current_card>` and what opens the `task` scope of set_custom_attribute and set_labels. It used to
-// be resolved only when kanban_move_card was granted, so each of the other three, granted without
-// the move tool, answered "no linked card" on a conversation that had one (issue #219).
+// `<current_card>` and what opens the `task` scope of set_custom_attribute and set_labels, so each
+// of the four tools that read it, granted alone, has to get it.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

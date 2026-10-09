@@ -1504,10 +1504,9 @@ export async function buildToolset(
   }
   // Resolve this conversation's kanban card (board + current step + steps) ONLY when a tool that reads
   // it is granted: kanban_move_card (step by name), update_kanban_task (`<current_card>`), and the
-  // `task` scope of set_custom_attribute and set_labels. Keyed on the move tool alone, the other three
-  // failed on their own with a card linked ("no linked card", no task scope). The cost is one
-  // conversation GET per turn (the board's steps are cached), paid only by an agent granted one of
-  // these; a conversation with no card answers from that GET alone. Best-effort.
+  // `task` scope of set_custom_attribute and set_labels; any one of them granted alone needs the card.
+  // The cost is one conversation GET per turn (the board's steps are cached), paid only by an agent
+  // granted one of these; a conversation with no card answers from that GET alone. Best-effort.
   const grantsKanban =
     !cfg.nativeToolsAllow ||
     cfg.nativeToolsAllow.some((n) => KANBAN_CARD_TOOLS.includes(n));

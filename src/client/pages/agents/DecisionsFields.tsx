@@ -19,6 +19,7 @@ import {
   Input,
   Select,
   Textarea,
+  Tooltip,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
@@ -47,6 +48,7 @@ import {
   actionGap,
   actionScope,
   conditionFor,
+  conditionSummary,
   type DecisionConditionForm,
   type DecisionOptionForm,
   type DecisionQuestionForm,
@@ -173,20 +175,21 @@ function IconButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
-      className={
-        danger
-          ? "flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error disabled:opacity-40"
-          : "flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-text-primary disabled:opacity-40"
-      }
-    >
-      {children}
-    </button>
+    <Tooltip content={label}>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        className={
+          danger
+            ? "flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error disabled:opacity-40"
+            : "flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-text-primary disabled:opacity-40"
+        }
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -978,19 +981,12 @@ export function DecisionsFields({
       Array.isArray(v)
         ? v.filter((x): x is string => typeof x === "string")
         : [];
-    const when = rule.when.map((c) => {
-      const name = c.question;
-      const q = decisions.questions.find((x) => x.name === name);
-      if (q?.type === "yes_no") return `${name} ≥ ${c.minProbability}`;
-      if (q?.type === "choice") return `${name} = ${c.equals}`;
-      if (q?.type === "score") {
-        const level = (v: string) => q.levels[Number(v)]?.value.trim() || v;
-        return c.minLevel === c.maxLevel
-          ? `${name} = ${level(c.minLevel)}`
-          : `${name} = ${level(c.minLevel)}…${level(c.maxLevel)}`;
-      }
-      return name;
-    });
+    const when = rule.when.map((c) =>
+      conditionSummary(
+        c,
+        decisions.questions.find((x) => x.name === c.question),
+      ),
+    );
     const a = rule.args;
     const detail =
       rule.tool === "set_labels"

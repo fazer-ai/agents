@@ -36,6 +36,25 @@ export interface DecisionConditionForm {
   maxLevel: string;
 }
 
+// One condition of a folded rule, in the terms the engine checks it. The confidence floor is part
+// of when the rule fires, so two rules that differ only in it must not read the same.
+export function conditionSummary(
+  c: DecisionConditionForm,
+  q: DecisionQuestionForm | undefined,
+): string {
+  const name = c.question;
+  const floor = c.minConfidence.trim() === "" ? "" : ` (≥ ${c.minConfidence})`;
+  if (q?.type === "yes_no") return `${name} ≥ ${c.minProbability}`;
+  if (q?.type === "choice") return `${name} = ${c.equals}${floor}`;
+  if (q?.type === "score") {
+    const level = (v: string) => q.levels[Number(v)]?.value.trim() || v;
+    return c.minLevel === c.maxLevel
+      ? `${name} = ${level(c.minLevel)}${floor}`
+      : `${name} = ${level(c.minLevel)}…${level(c.maxLevel)}${floor}`;
+  }
+  return name;
+}
+
 export interface DecisionRuleForm {
   key: string;
   // The rule's index in the block as it was LOADED, or null for one added since. The engine's log

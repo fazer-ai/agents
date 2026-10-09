@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   actionScope,
   conditionFor,
+  conditionSummary,
   DECISION_TEXT_FIELD_MAX,
   decisionsFormIssues,
   decisionsRefusalFrom,
@@ -735,5 +736,78 @@ describe("the cap a free-text field declares", () => {
     expect(src).toContain(
       "maxLength={decisionTextCap(str(rule.args.content))}",
     );
+  });
+});
+
+// A folded rule is read in one line, and the confidence floor decides when it fires: a rule asking
+// for 10% and one asking for 95% must not look the same.
+describe("a folded rule's condition", () => {
+  const cond = (over: Record<string, string>) => ({
+    question: "assunto",
+    minProbability: "",
+    equals: "",
+    minConfidence: "",
+    minLevel: "",
+    maxLevel: "",
+    ...over,
+  });
+  const question = (type: string) =>
+    got(
+      formOf({
+        ...BLOCK,
+        questions: [
+          {
+            name: "assunto",
+            type,
+            instructions: "x",
+            options: [{ value: "reembolso" }, { value: "outro" }],
+            levels: [{ value: "baixo" }, { value: "alto" }],
+          },
+        ],
+        rules: [],
+      }),
+    ).questions[0];
+
+  test("names the confidence floor of a choice", () => {
+    const q = question("choice");
+    expect(conditionSummary(cond({ equals: "reembolso" }), q)).toBe(
+      "assunto = reembolso",
+    );
+    const low = conditionSummary(
+      cond({ equals: "reembolso", minConfidence: "0.1" }),
+      q,
+    );
+    const high = conditionSummary(
+      cond({ equals: "reembolso", minConfidence: "0.95" }),
+      q,
+    );
+    expect(low).toBe("assunto = reembolso (≥ 0.1)");
+    expect(high).toBe("assunto = reembolso (≥ 0.95)");
+  });
+
+  test("names it on a score, for one level and for a range", () => {
+    const q = question("score");
+    expect(
+      conditionSummary(
+        cond({ minLevel: "1", maxLevel: "1", minConfidence: "0.8" }),
+        q,
+      ),
+    ).toBe("assunto = alto (≥ 0.8)");
+    expect(
+      conditionSummary(
+        cond({ minLevel: "0", maxLevel: "1", minConfidence: "0.8" }),
+        q,
+      ),
+    ).toBe("assunto = baixo…alto (≥ 0.8)");
+    expect(conditionSummary(cond({ minLevel: "0", maxLevel: "1" }), q)).toBe(
+      "assunto = baixo…alto",
+    );
+  });
+
+  test("a yes or no condition reads by its probability", () => {
+    expect(
+      conditionSummary(cond({ minProbability: "0.7" }), question("yes_no")),
+    ).toBe("assunto ≥ 0.7");
+    expect(conditionSummary(cond({}), undefined)).toBe("assunto");
   });
 });

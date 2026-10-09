@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   cleanup,
   fireEvent,
@@ -155,7 +156,9 @@ function renderSection(
     <MemoryRouter>
       <ThemeProvider>
         <ToastProvider>
-          <Harness />
+          <TooltipProvider>
+            <Harness />
+          </TooltipProvider>
         </ToastProvider>
       </ThemeProvider>
     </MemoryRouter>,
@@ -387,5 +390,19 @@ describe("the decisions engine in the agent editor", () => {
     );
     expect(count("decisions-problems")).toBe(1);
     expect(screen.queryAllByText("the server refused the rule").length).toBe(1);
+  });
+});
+
+// Reorder and remove are icon-only: their hint has to reach a keyboard user, which a native `title`
+// does not, so they go through the shared tooltip and keep their accessible name.
+describe("the icon buttons of a card", () => {
+  test("carry an accessible name and no native title", () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button[aria-label]"),
+    ).filter((b) => b.querySelector("svg") && (b.textContent ?? "") === "");
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.filter((b) => b.hasAttribute("title")).length).toBe(0);
   });
 });

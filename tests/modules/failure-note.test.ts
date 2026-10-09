@@ -959,6 +959,27 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(await noticeAt(conv)).toBeNull();
   });
 
+  test("a person the mirror shows on the conversation keeps it, with Chatwoot unreadable", async () => {
+    const conv = await seedConversation();
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { assigneeType: "User", assigneeId: 41 },
+    });
+    await withHandoff({ mode: "pinned", targetTeamId: 77 }, () =>
+      announceFailedTurn({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conv,
+        assess: async () => ({ path: "job", deadLettered: true }),
+        error: new Error("boom"),
+        base: appDb,
+      }),
+    );
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["note"]);
+  });
+
   test("a person who claimed the conversation in Chatwoot keeps it, even with the mirror behind", async () => {
     const conv = await seedConversation();
     // The mirror still says pending and unassigned; Chatwoot already has an attendant on it.
@@ -1909,6 +1930,35 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       globalThis.fetch = realFetch;
     }
     expect(writes.filter((w) => w.conversationId === conv)).toHaveLength(0);
+  });
+
+  test("a given-up row announced again after a hand-back does not hand the conversation over twice", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-again-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_600 + conv,
+      },
+      select: { id: true },
+    });
+    incoming(conv, 8_600 + conv);
+    await announceUnanswered(tenantId, row.id, appDb);
+    // An operator returns it to the agent; the same give-up announced again owes nothing new.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { status: "pending", statusClaimUntil: null },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes
+        .filter((w) => w.conversationId === conv && w.kind === "toggle")
+        .map((w) => w.kind),
+    ).toEqual(["toggle"]);
   });
 
   test("two announcers racing on one given-up row hand the conversation over once", async () => {

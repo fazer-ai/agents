@@ -50,12 +50,18 @@ export function ApprovalHistory() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
 
+  // Bumped whenever the rows start over (the first read, a refresh that found nothing in common): a
+  // "Show more" asked before that answers into rows that no longer exist, so its page is dropped.
+  const generation = useRef(0);
   const load = useCallback(async () => {
+    generation.current += 1;
+    const asked = generation.current;
     setLoading(true);
     setError(false);
     try {
       const { data, error: err } =
         await api.api.v1["document-approvals"].decided.get();
+      if (asked !== generation.current) return;
       if (err || !data) {
         setError(true);
         return;
@@ -75,11 +81,13 @@ export function ApprovalHistory() {
 
   const loadMore = async () => {
     if (!nextCursor) return;
+    const asked = generation.current;
     setLoadingMore(true);
     try {
       const { data, error: err } = await api.api.v1[
         "document-approvals"
       ].decided.get({ query: { cursor: nextCursor } });
+      if (asked !== generation.current) return;
       if (err || !data) {
         // The rows and the cursor stay, so the button retries the same page.
         showToast(
@@ -148,6 +156,7 @@ export function ApprovalHistory() {
         // page just read, with its own cursor.
         const shownIds = new Set((shownRef.current ?? []).map((r) => r.id));
         if (!data.requests.some((r) => shownIds.has(r.id))) {
+          generation.current += 1;
           setRequests(data.requests);
           setNextCursor(data.nextCursor);
           return;

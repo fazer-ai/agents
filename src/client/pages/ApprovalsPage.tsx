@@ -53,16 +53,19 @@ export function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  // Bumped by every first-page read: a "Show more" asked before it answers into a list that no
-  // longer exists, so its page is dropped instead of appended after the fresh first page.
+  // Bumped by every first-page read: only the latest read's answer is applied, and a "Show more"
+  // asked before it answers into a list that no longer exists, so its page is dropped instead of
+  // appended after the fresh first page.
   const generation = useRef(0);
   const load = useCallback(async () => {
     generation.current += 1;
+    const asked = generation.current;
     setLoading(true);
     setError(false);
     try {
       const { data, error: err } =
         await api.api.v1["document-approvals"].pending.get();
+      if (asked !== generation.current) return;
       if (err || !data) {
         setError(true);
         return;
@@ -70,9 +73,9 @@ export function ApprovalsPage() {
       setRequests(data.requests);
       setNextAfter(data.nextAfter);
     } catch {
-      setError(true);
+      if (asked === generation.current) setError(true);
     } finally {
-      setLoading(false);
+      if (asked === generation.current) setLoading(false);
     }
   }, []);
 

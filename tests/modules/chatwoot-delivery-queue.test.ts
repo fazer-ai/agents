@@ -385,6 +385,24 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(row.payload).toBeNull();
   });
 
+  // ...and is still retried, with the room the others leave, on the very next pass.
+  test("a row that failed here is retried on the next pass when the batch has room", async () => {
+    resetChatwootAdmissionForTest();
+    const failing = await ackOnly("queue-fails-once", 614);
+    admitChatwootDelivery(failing, async () => {
+      throw new Error("fails before its claim");
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.admitted).toBe(1);
+    expect((await settled(failing)).status).toBe("PROCESSED");
+  });
+
   // A row an older build wrote has no body. Its redelivery stores one while the row still owes its
   // first attempt, so a redelivery the full queue turned away (here: one nobody admitted) is drained.
   test("a bodyless legacy row gets its body from a redelivery and is drained from it", async () => {

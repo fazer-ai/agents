@@ -23,10 +23,6 @@ import { processRecordedChatwootDelivery } from "./webhook";
 // a module cycle); tests/modules/chatwoot-delivery-queue.test.ts pins both.
 export const STORED_DELIVERY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
-// How long a row whose processing threw here is left out of this process's drain. Several passes apart,
-// so a row that keeps failing is retried a few times an hour until the age ceiling, never every pass.
-export const STORED_DELIVERY_RETRY_BACKOFF_MS = 15 * 60 * 1000;
-
 // How old a stored row must be before the periodic pass treats it as nobody's: a younger one is most
 // likely waiting in the queue of the process that acked it (this one or another replica). The boot
 // pass uses zero, since nothing in a process that just started holds anything.
@@ -54,10 +50,10 @@ interface Admission {
   // Row ids waiting or running here: a drain or a redelivery of a row this process already holds is
   // not admitted twice.
   held: Map<string, bigint>;
-  // Row ids whose processing threw here, until when the drain leaves them out: a row that keeps failing
-  // before its claim stays PENDING with its body, and without this the same oldest rows would fill
-  // every pass and starve the ones behind them.
-  failed: Map<string, { id: bigint; until: number }>;
+  // Row ids whose last processing here threw. A row that fails before its claim stays PENDING with its
+  // body, and if the drain read it first the same oldest rows could fill every pass and starve the
+  // ones behind them, so the drain reads these last, with whatever room the batch has left.
+  failed: Map<string, bigint>;
 }
 
 // On globalThis, like the shutdown registry, so `bun --hot` does not split the count.
@@ -111,23 +107,25 @@ function pump(a: Admission): void {
     const next = a.waiting.shift() as Pending;
     a.running++;
     void trackWork("chatwoot_delivery", next.run)
-      .catch((err) => {
-        logger.error(
-          "chatwoot: delivery row %s failed: %s",
-          next.rowId,
-          err instanceof Error ? err.message : String(err),
-        );
-        a.failed.delete(next.rowId);
-        a.failed.set(next.rowId, {
-          id: next.id,
-          until: Date.now() + STORED_DELIVERY_RETRY_BACKOFF_MS,
-        });
-        // Bounded like the waiting list; the oldest entry is the first to expire anyway.
-        if (a.failed.size > ADMISSION_MAX_WAITING) {
-          const oldest = a.failed.keys().next().value;
-          if (oldest !== undefined) a.failed.delete(oldest);
-        }
-      })
+      .then(
+        () => {
+          a.failed.delete(next.rowId);
+        },
+        (err) => {
+          logger.error(
+            "chatwoot: delivery row %s failed: %s",
+            next.rowId,
+            err instanceof Error ? err.message : String(err),
+          );
+          a.failed.delete(next.rowId);
+          a.failed.set(next.rowId, next.id);
+          // Bounded like the waiting list, dropping the oldest failure first.
+          if (a.failed.size > ADMISSION_MAX_WAITING) {
+            const oldest = a.failed.keys().next().value;
+            if (oldest !== undefined) a.failed.delete(oldest);
+          }
+        },
+      )
       .finally(() => {
         a.running--;
         a.held.delete(next.rowId);
@@ -211,33 +209,41 @@ export async function drainStoredChatwootDeliveries(
       data: { payload: null },
     }),
   );
-  // Rows this process already holds, or saw fail a moment ago, are skipped in the query, not after it:
-  // otherwise a full batch of them would hide every row behind them.
+  // Rows this process already holds are skipped in the query, not after it, and rows whose last attempt
+  // here threw are read only with the room left after the others: otherwise a full batch of either
+  // would hide every row behind it.
   const a = admission();
-  const clock = Date.now();
-  for (const [key, f] of a.failed) if (f.until <= clock) a.failed.delete(key);
-  const held = [...a.held.values(), ...[...a.failed.values()].map((f) => f.id)];
-  const rows = (await run((db) =>
-    db.chatwootWebhookDelivery.findMany({
-      where: {
-        status: "PENDING",
-        payload: { not: null },
-        receivedAt: { lte: youngest },
-        ...(held.length > 0 ? { id: { notIn: held } } : {}),
-      },
-      orderBy: { id: "asc" },
-      take: params.batch ?? DRAIN_BATCH,
-      select: {
-        id: true,
-        tenantId: true,
-        chatwootInstanceId: true,
-        routeAgentBotId: true,
-        bindingGeneration: true,
-        payload: true,
-        receivedAt: true,
-      },
-    }),
-  )) as StoredRow[];
+  const held = [...a.held.values()];
+  const failed = [...a.failed.entries()]
+    .filter(([key]) => !a.held.has(key))
+    .map(([, id]) => id);
+  const batch = params.batch ?? DRAIN_BATCH;
+  const read = (id: { notIn: bigint[] } | { in: bigint[] }, take: number) =>
+    run((db) =>
+      db.chatwootWebhookDelivery.findMany({
+        where: {
+          status: "PENDING",
+          payload: { not: null },
+          receivedAt: { lte: youngest },
+          id,
+        },
+        orderBy: { id: "asc" },
+        take,
+        select: {
+          id: true,
+          tenantId: true,
+          chatwootInstanceId: true,
+          routeAgentBotId: true,
+          bindingGeneration: true,
+          payload: true,
+          receivedAt: true,
+        },
+      }),
+    ) as Promise<StoredRow[]>;
+  const rows = await read({ notIn: [...held, ...failed] }, batch);
+  if (rows.length < batch && failed.length > 0) {
+    rows.push(...(await read({ in: failed }, batch - rows.length)));
+  }
 
   let admitted = 0;
   for (const row of rows) {

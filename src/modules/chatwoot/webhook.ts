@@ -228,6 +228,7 @@ import {
   readRouteTokenCache,
   routeTokenCacheGeneration,
   routeTokenRefreshDue,
+  setRouteTokenRewarm,
   trackRouteTokenRefresh,
   writeRouteTokenCache,
 } from "./route-token-cache";
@@ -911,6 +912,21 @@ function refreshRouteToken(
 ): Promise<void> {
   return trackRouteTokenRefresh(webhookRouteTokenHash, async () => {
     await queryRouteToken(webhookRouteTokenHash, base);
+  });
+}
+
+// After a full cache invalidation, looks the dropped tokens up again (see `invalidateRouteTokenCache`),
+// so a bot that was not retired keeps an entry to serve if the lookup starts failing later.
+export function enableRouteTokenRewarm(base: PrismaClient = basePrisma): void {
+  setRouteTokenRewarm((hashes) => {
+    for (const hash of hashes) {
+      refreshRouteToken(hash, base).catch((err) =>
+        logger.warn(
+          "chatwoot: route token lookup after an invalidation failed: %s",
+          errMsg(err),
+        ),
+      );
+    }
   });
 }
 

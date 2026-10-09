@@ -6,9 +6,12 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import {
   invalidateRouteTokenCache,
   ROUTE_TOKEN_CACHE_TTL_MS,
+  readRouteTokenCache,
+  setRouteTokenRewarm,
   writeRouteTokenCache,
 } from "@/modules/chatwoot/route-token-cache";
 import {
+  enableRouteTokenRewarm,
   receiveChatwootWebhook,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
@@ -413,6 +416,80 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
   // Part 3 of the issue. Rule three of the cache ("a failed lookup closes the stale window") existed
   // because a 200 was a promise nothing durable backed; now the ack's own write is that backing, so a
   // refresh that cannot reach the shared pool no longer turns every ack into a 500.
+  // The writers that retire a token clear the whole cache. Without the lookup again right after, every
+  // bot nobody retired would have nothing to serve if the lookup failed next.
+  test("retiring one bot leaves the others an entry to serve when the lookup fails next", async () => {
+    const agent2 = await suDb.agent.create({
+      data: { tenantId, name: "Outro", systemPrompt: "x" },
+    });
+    const second = generateRouteToken();
+    const bot2 = await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: agent2.id,
+        chatwootAgentBotId: 10,
+        accessToken: encryptJson("BOT2"),
+        webhookSecret: encryptJson(SECRET),
+        webhookRouteTokenHash: second.hash,
+        name: "Outro",
+      },
+    });
+    enableRouteTokenRewarm(appDb);
+    try {
+      invalidateRouteTokenCache();
+      for (const [token, id] of [
+        [routeToken, "durable-retire-warm-1"],
+        [second.token, "durable-retire-warm-2"],
+      ] as const) {
+        const body = messageBody(5400 + id.length, 540);
+        await receiveChatwootWebhook({
+          routeToken: token,
+          rawBody: body,
+          getHeader: signedHeaders(body, id),
+          nowSeconds: NOW,
+          base: appDb,
+        });
+      }
+      // The second bot is retired by its own row going, and the writer clears the cache after.
+      await suDb.chatwootAgentBot.delete({ where: { id: bot2.id } });
+      invalidateRouteTokenCache();
+      const kept = hashRouteToken(routeToken);
+      for (let i = 0; i < 200 && !readRouteTokenCache(kept)?.bot; i++)
+        await new Promise((r) => setTimeout(r, 5));
+      expect(readRouteTokenCache(kept)?.bot?.agentBotId).toBe(9);
+
+      const failing = refusing("the shared pool is exhausted");
+      const live = messageBody(5410, 541);
+      const r = await receiveChatwootWebhook({
+        routeToken,
+        rawBody: live,
+        getHeader: signedHeaders(live, "durable-retire-live"),
+        nowSeconds: NOW,
+        base: failing,
+        ackBase: appDb,
+      });
+      expect(r.outcome).toBe("queued");
+      expect(await rowOf("durable-retire-live")).toHaveLength(1);
+
+      const retired = messageBody(5411, 541);
+      await expect(
+        receiveChatwootWebhook({
+          routeToken: second.token,
+          rawBody: retired,
+          getHeader: signedHeaders(retired, "durable-retire-gone"),
+          nowSeconds: NOW,
+          base: failing,
+          ackBase: appDb,
+        }),
+      ).rejects.toThrow();
+      expect(await rowOf("durable-retire-gone")).toHaveLength(0);
+    } finally {
+      setRouteTokenRewarm(null);
+      invalidateRouteTokenCache();
+    }
+  });
+
   test("a stale entry keeps answering while its refresh fails, with one lookup between them", async () => {
     invalidateRouteTokenCache();
     writeRouteTokenCache(

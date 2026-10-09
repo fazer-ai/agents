@@ -67,6 +67,8 @@ interface Store {
   // afterwards: the writer already committed and cleared the cache, and the in-flight read holds the
   // row as it was BEFORE that commit, so landing it would resurrect exactly what was retired.
   generation: number;
+  // What a full invalidation asks of the receiver: look the tokens it dropped up again right away.
+  rewarm?: ((routeTokenHashes: string[]) => void) | null;
 }
 
 function store(): Store {
@@ -92,6 +94,14 @@ function store(): Store {
     };
   }
   return g[KEY] as Store;
+}
+
+// Installed once by the server at boot (`enableRouteTokenRewarm` in ./webhook.ts); tests that do not
+// install it get the plain clear.
+export function setRouteTokenRewarm(
+  fn: ((routeTokenHashes: string[]) => void) | null,
+): void {
+  store().rewarm = fn;
 }
 
 // Snapshot to pass back to `writeRouteTokenCache` after the lookup returns.
@@ -265,10 +275,17 @@ export function invalidateRouteTokenCache(routeTokenHash?: string): void {
   // any more. Detached, not cancelled: the lookup runs to completion and its write is refused by the
   // generation guard.
   if (routeTokenHash === undefined) {
+    // The writers that retire a token (an agent deleted, an instance disconnected) do not name
+    // it, so they clear everything, and a full clear would leave every other bot with nothing to
+    // serve if the lookup fails next. The dropped tokens are looked up again at once, while the
+    // database that just took the writer's commit is answering; each lookup writes only what it finds
+    // (a retired token comes back as nothing), under the generation guard.
+    const dropped = [...s.positive.keys()];
     s.positive.clear();
     s.negative.clear();
     s.refreshing.clear();
     s.refreshFailedUntil.clear();
+    if (s.rewarm && dropped.length > 0) s.rewarm(dropped);
     return;
   }
   s.positive.delete(routeTokenHash);

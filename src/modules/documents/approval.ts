@@ -550,6 +550,9 @@ export interface DecidedApprovalItem extends PendingApprovalItem {
   decidedAt: Date | null;
   reviewerName: string | null;
   outcome: ApprovalOutcome | null;
+  // Null on an approval whose document was never issued (the failure after the claim): approving
+  // again completes it, and nothing is on its way.
+  issuedDocumentId: string | null;
 }
 
 // The history beside the queue: every request no longer waiting on the team, newest first; `before`
@@ -578,6 +581,7 @@ export async function listDecidedApprovals(
         decidedAt: true,
         reviewerUserId: true,
         outcome: true,
+        issuedDocumentId: true,
       },
     });
     const names = await reviewerNames(
@@ -593,6 +597,8 @@ export async function listDecidedApprovals(
           ? null
           : (names.get(r.reviewerUserId) ?? null),
       outcome: r.outcome as ApprovalOutcome | null,
+      issuedDocumentId:
+        r.issuedDocumentId === null ? null : String(r.issuedDocumentId),
     }));
   });
 }

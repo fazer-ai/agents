@@ -33,3 +33,17 @@ test("an approval with no outcome is on its way only for a while", () => {
     approvalOutcomeLabel({ status: "EXPIRED", outcome: null }, t),
   ).toBeNull();
 });
+
+test("an approval whose document was never issued is not on its way", () => {
+  expect(
+    approvalOutcomeLabel(
+      {
+        status: "APPROVED",
+        outcome: null,
+        decidedAt: new Date().toISOString(),
+        issuedDocumentId: null,
+      },
+      t,
+    ),
+  ).toBe("Not issued: approve it again");
+});

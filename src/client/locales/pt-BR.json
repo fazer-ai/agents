@@ -1097,6 +1097,7 @@
       "delivered": "Enviado ao cliente",
       "handed": "Conversa passada para um atendente",
       "noAgent": "Nenhum agente na conversa para avisar",
+      "notIssued": "Não emitido: aprove de novo",
       "notSent": "Não enviado: uma nota privada na conversa explica o motivo",
       "rejectedNoted": "A conversa já estava com um atendente",
       "sending": "A caminho do cliente",

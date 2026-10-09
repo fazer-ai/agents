@@ -33,7 +33,7 @@ export function approvalStatusLabel(status: string, t: TFunction): string {
 
 // How long an approval may go without a recorded outcome before "on its way" stops being true: the
 // outcome lands seconds after the decision, and a run still failing past this is not on its way.
-const SENDING_FOR_MS = 10 * 60_000;
+export const SENDING_FOR_MS = 10 * 60_000;
 
 // What happened in the conversation after the decision, or null when there is nothing to add (still
 // pending, or an expiry or cancellation, whose status already says nothing was sent).
@@ -42,6 +42,7 @@ export function approvalOutcomeLabel(
     status: string;
     outcome: string | null;
     decidedAt?: Date | string | null;
+    issuedDocumentId?: string | null;
   },
   t: TFunction,
 ): string | null {
@@ -59,6 +60,13 @@ export function approvalOutcomeLabel(
       return t(
         "documentApproval.outcome.notSent",
         "Not sent: a private note in the conversation says why",
+      );
+    }
+    // The failure after the claim: nothing was issued, so nothing is on its way.
+    if (r.outcome === null && r.issuedDocumentId === null) {
+      return t(
+        "documentApproval.outcome.notIssued",
+        "Not issued: approve it again",
       );
     }
     const decided = r.decidedAt ? new Date(r.decidedAt).getTime() : null;

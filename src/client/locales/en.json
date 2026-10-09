@@ -1066,6 +1066,7 @@
       "delivered": "Sent to the customer",
       "handed": "Conversation handed to a person",
       "noAgent": "No agent left in the conversation to tell",
+      "notIssued": "Not issued: approve it again",
       "notSent": "Not sent: a private note in the conversation says why",
       "rejectedNoted": "A person already had the conversation",
       "sending": "On its way to the customer",

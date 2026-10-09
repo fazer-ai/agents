@@ -554,3 +554,83 @@ test("an approval that could not be sent points to the numbered document to send
   await screen.findByText(/^Expired /);
   expect(screen.queryByText(/^Decided /)).toBeNull();
 });
+
+test("approving drops the draft at once and shows the issued document when it arrives", async () => {
+  let approved = false;
+  const issued = gate();
+  handler = async (url, init) => {
+    if (url.includes("/preview")) return pdf("draft");
+    if (url.includes("/documents/9/pdf")) {
+      await issued.shut;
+      return pdf("issued");
+    }
+    if (url.includes("/context")) return context();
+    if (
+      url.endsWith("/document-approvals/23/approve") &&
+      init?.method === "POST"
+    ) {
+      approved = true;
+      return json({ request: {}, document: { number: "ORC-9" } });
+    }
+    if (url.includes("/document-approvals/23")) {
+      return json({
+        request: request(
+          "23",
+          approved
+            ? {
+                status: "APPROVED",
+                decidedAt: new Date().toISOString(),
+                issuedDocumentId: "9",
+                outcome: "DELIVERED",
+                outcomeAt: new Date().toISOString(),
+              }
+            : {},
+        ),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/23");
+  await waitFor(() =>
+    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+      "blob:draft",
+    ),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Approve and send" }));
+  await screen.findByText(/Sent to the customer/);
+  expect(
+    document.querySelector("iframe")?.getAttribute("src") ?? null,
+  ).not.toBe("blob:draft");
+  issued.open();
+  await waitFor(() =>
+    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+      "blob:issued",
+    ),
+  );
+});
+
+test("an untouched page stops saying the document is on its way when that runs out", async () => {
+  handler = async (url) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/24")) {
+      return json({
+        request: request("24", {
+          status: "APPROVED",
+          // Ten minutes after the decision, less a second and a half.
+          decidedAt: new Date(Date.now() - 10 * 60_000 + 1500).toISOString(),
+          issuedDocumentId: "10",
+          outcome: null,
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/24");
+  await screen.findByText("On its way to the customer");
+  await screen.findByText(
+    "No confirmation that it was sent",
+    {},
+    { timeout: 5000 },
+  );
+}, 10_000);

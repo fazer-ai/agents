@@ -73,6 +73,7 @@ const LOG_LINES = [
         assunto: { type: "choice", choice: "reembolso", confidence: 0.8 },
       },
       actions: [{ rule: 0, tool: "set_labels", outcome: "shadow" }],
+      notFired: [{ rule: 1, miss: { why: "other_choice" } }],
     },
   },
   {
@@ -84,6 +85,7 @@ const LOG_LINES = [
       block: MARK,
       answers: { pede_reembolso: { type: "yes_no", probability: 0.1 } },
       actions: [],
+      notFired: [0, 1].map((rule) => ({ rule, miss: { why: "refused" } })),
     },
   },
 ];

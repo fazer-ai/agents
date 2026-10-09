@@ -239,6 +239,13 @@ function ruleActivityText(
       }),
     );
   }
+  if (a.merged > 0) {
+    parts.push(
+      t("editor.decisionsRuleMerged", "same action as an earlier rule {{n}}", {
+        n: a.merged,
+      }),
+    );
+  }
   if (a.blocked > 0) {
     parts.push(
       t("editor.decisionsRuleBlocked", "could not run {{n}}", {
@@ -255,6 +262,7 @@ export function DecisionsFields({
   agentId,
   savedAt,
   storedBlock,
+  storedRuleCount,
   decisions,
   setDecisions,
   credentialError,
@@ -266,6 +274,8 @@ export function DecisionsFields({
   // The mark of the questions and rules as STORED, which is what the engine's lines are matched
   // against (decisionsActivity). Null when the stored block could not run.
   storedBlock: string | null;
+  // How many rules that stored block has (a line is read against the list it indexes).
+  storedRuleCount: number;
   decisions: DecisionsForm;
   setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
   credentialError: string | null;
@@ -321,7 +331,11 @@ export function DecisionsFields({
         });
         if (cancelled || !data) return;
         setActivity(
-          summarizeDecisions(data.items as DecisionLine[], storedBlock),
+          summarizeDecisions(
+            data.items as DecisionLine[],
+            storedBlock,
+            storedRuleCount,
+          ),
         );
       } catch {
         // NOTE: best-effort: the block is editable without its history
@@ -330,7 +344,7 @@ export function DecisionsFields({
     return () => {
       cancelled = true;
     };
-  }, [agentId, savedAt, storedBlock]);
+  }, [agentId, savedAt, storedBlock, storedRuleCount]);
 
   // Which cards are unfolded. A stored block opens folded, one line per question and per rule, so a
   // block of thirty rules reads as a list; a card with a problem is always open, since the mark is

@@ -188,6 +188,11 @@ export function ObservationSection({
           agentId={agentId}
           savedAt={savedAt}
           storedBlock={decisionsBlockFingerprint(observation.storedDecisions)}
+          storedRuleCount={
+            Array.isArray(observation.storedDecisions?.rules)
+              ? observation.storedDecisions.rules.length
+              : 0
+          }
           decisions={observation.decisions}
           setDecisions={(next) =>
             setObservation((prev) =>

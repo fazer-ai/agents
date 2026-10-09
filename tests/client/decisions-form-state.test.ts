@@ -475,14 +475,24 @@ describe("what a save of the Observation block writes", () => {
     form.decisions.rules = [];
     expect(decisionsBlockToStore(form, false)).toEqual(BLOCK);
     expect(observationToStored(form, false).decisions).toEqual(BLOCK);
-    // A draft that CAN run is still written from there: nothing is refused, nothing is lost.
+    // ...and so is the engine choice: an agent with no block that was switched to decisions on
+    // screen and then flipped to production must not write `engine: "decisions"` with no block.
+    const fresh = observationToForm({});
+    const drafted = {
+      ...fresh,
+      engine: "decisions" as const,
+      decisions: formOf({ provider: "openai", apply: "shadow" }),
+    };
+    const out = observationToStored(drafted, false);
+    expect(out.engine).toBe("llm");
+    expect(out.decisions).toBeNull();
+    // The stored pair goes back whole even when the draft could run: half of an unseen change.
     const fine = observationToForm(stored);
     if (!fine.decisions) throw new Error("fixture");
     fine.decisions.apply = "enforce";
-    expect(decisionsBlockToStore(fine, false)).toEqual({
-      ...BLOCK,
-      apply: "enforce",
-    });
+    expect(observationToStored({ ...fine, engine: "llm" }, false)).toEqual(
+      readMonitoringConfig(stored),
+    );
   });
 
   test("an agent that never had a block writes none", () => {

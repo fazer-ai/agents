@@ -24,6 +24,9 @@ import {
 
 export interface ObservationState {
   engine: MonitoringEngine;
+  // The engine as it was read. Written back, with the stored block, while the section that chooses
+  // it is hidden (an agent flipped to production): a choice nobody can see is not a choice to save.
+  storedEngine: MonitoringEngine;
   // The decisions block as the form edits it (./decisionsFormState), null while the agent has none.
   decisions: DecisionsForm | null;
   // The block as it was read, carried beside the form: an untouched block is written back as stored,
@@ -51,6 +54,7 @@ export function observationToForm(settings: unknown): ObservationState {
   const c = readMonitoringConfig(settings);
   return {
     engine: c.engine,
+    storedEngine: c.engine,
     decisions: decisionsToForm(c.decisions),
     storedDecisions: c.decisions,
     analysis: c.analysis,
@@ -85,14 +89,17 @@ export function observationToStored(
 }
 
 // The decisions block a save writes: a form nobody touched writes the stored block back as it is; a
-// draft that could not run and whose fields are NOT ON SCREEN (the model engine, or an agent flipped
-// to production with the section hidden) is not stored over the block that was there, since the
-// server would refuse the whole save about fields nobody can see; anything else is the form.
+// draft that could not run while the model engine is chosen (its fields are not on screen) is not
+// stored over the block that was there, since the server would refuse the whole save about fields
+// nobody can see; anything else is the form. `watcher` false is the section hidden altogether.
 export function decisionsBlockToStore(
   form: ObservationState,
   watcher = true,
 ): Record<string, unknown> | null {
-  const drawn = watcher && form.engine === "decisions";
+  // Hidden means the STORED pair goes back whole, engine and block: a block that runs under an
+  // engine choice that was never saved is still half of a change nobody can see.
+  if (!watcher) return form.storedDecisions;
+  const drawn = form.engine === "decisions";
   if (form.decisions === null) return form.storedDecisions;
   if (decisionsUntouched(form.decisions, form.storedDecisions)) {
     return form.storedDecisions;
@@ -111,7 +118,10 @@ function draftFromForm(
   const d = MONITORING_DEFAULTS;
   const windowSeconds = intOr(form.windowSeconds, d.debounce.windowSeconds);
   return {
-    engine: form.engine === "decisions" ? "decisions" : "llm",
+    engine:
+      (watcher ? form.engine : form.storedEngine) === "decisions"
+        ? "decisions"
+        : "llm",
     decisions: decisionsBlockToStore(form, watcher),
     analysis: form.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: { messages: intOr(form.windowMessages, d.window.messages) },

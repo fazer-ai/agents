@@ -1554,6 +1554,7 @@
     "decisionsRuleBroken": "Broken",
     "decisionsRuleBrokenHint": "This rule names a question, an option or a level that no longer exists, so the agent cannot be saved until it points at one that does.",
     "decisionsRuleFired": "Fired in {{fired}} of {{total}} decisions",
+    "decisionsRuleMerged": "same action as an earlier rule {{n}}",
     "decisionsRuleN": "Rule {{n}}",
     "decisionsRuleNeverFired": "Fired in 0 of {{total}} decisions.",
     "decisionsRuleNew": "Not saved yet, so it has not decided anything.",

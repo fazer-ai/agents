@@ -1593,6 +1593,7 @@
     "decisionsRuleBroken": "Quebrada",
     "decisionsRuleBrokenHint": "Esta regra cita uma pergunta, uma opção ou um nível que não existe mais, então o agente não pode ser salvo até ela apontar para um que exista.",
     "decisionsRuleFired": "Disparou em {{fired}} de {{total}} decisões",
+    "decisionsRuleMerged": "mesma ação de uma regra anterior {{n}}",
     "decisionsRuleN": "Regra {{n}}",
     "decisionsRuleNeverFired": "Disparou em 0 de {{total}} decisões.",
     "decisionsRuleNew": "Ainda não foi salva, então não decidiu nada.",

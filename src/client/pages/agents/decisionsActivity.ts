@@ -11,11 +11,13 @@ export interface DecisionLine {
 export interface RuleActivity {
   // Decisions in which every condition of the rule held.
   fired: number;
-  // ...and of those: the tool ran, was only logged (shadow), or could not run (not granted, over
-  // the tool budget, failed).
+  // ...and of those: the tool ran, was only logged (shadow), could not run (not granted, over the
+  // tool budget, failed), or was the same call an earlier rule had already fired (`merged`: two
+  // rules firing the same tool with the same arguments run it once, under the first one's index).
   ran: number;
   shadow: number;
   blocked: number;
+  merged: number;
 }
 
 export type AnswerSample =
@@ -31,6 +33,14 @@ export interface DecisionsActivity {
   // Newest first.
   answers: ReadonlyMap<string, AnswerSample[]>;
 }
+
+const NONE: RuleActivity = {
+  fired: 0,
+  ran: 0,
+  shadow: 0,
+  blocked: 0,
+  merged: 0,
+};
 
 const bag = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -63,14 +73,15 @@ function sample(v: unknown): AnswerSample | null {
   return null;
 }
 
-// `block` is the mark of the questions and rules being shown (`decisionsBlockFingerprint`). A line
-// names a rule by its index in the block AS IT WAS when the tick ran and carries that block's mark,
-// so only the lines that ran THIS block are counted: one written before the rules were reordered,
-// or by a tick that was in flight across the save, is left out rather than attributed to whatever
-// sits at that index today. A block that could not run has no mark and counts nothing.
+// `block` is the mark of the questions and rules being shown (`decisionsBlockFingerprint`), and
+// only lines carrying it are counted: a line names a rule by its index in the block the tick ran,
+// so one from another block is left out rather than read against today's order. `ruleCount` is that
+// block's size: a line lists the actions it dispatched and the rules that did NOT fire, and a rule in
+// neither list fired and was merged into an earlier rule's identical call, so it counts as fired.
 export function summarizeDecisions(
   lines: readonly DecisionLine[],
   block: string | null,
+  ruleCount: number,
   samples = 3,
 ): DecisionsActivity {
   const rules = new Map<number, RuleActivity>();
@@ -89,16 +100,26 @@ export function summarizeDecisions(
       const a = bag(raw);
       const rule = numberOrNull(a?.rule);
       if (!a || rule === null) continue;
-      const cur = rules.get(rule) ?? {
-        fired: 0,
-        ran: 0,
-        shadow: 0,
-        blocked: 0,
-      };
+      const cur = rules.get(rule) ?? { ...NONE };
       cur.fired += 1;
       if (a.outcome === "ran") cur.ran += 1;
       else if (a.outcome === "shadow") cur.shadow += 1;
       else cur.blocked += 1;
+      rules.set(rule, cur);
+    }
+    const accounted = new Set<number>();
+    for (const raw of [
+      ...d.actions,
+      ...(Array.isArray(d.notFired) ? d.notFired : []),
+    ]) {
+      const rule = numberOrNull(bag(raw)?.rule);
+      if (rule !== null) accounted.add(rule);
+    }
+    for (let rule = 0; rule < ruleCount; rule++) {
+      if (accounted.has(rule)) continue;
+      const cur = rules.get(rule) ?? { ...NONE };
+      cur.fired += 1;
+      cur.merged += 1;
       rules.set(rule, cur);
     }
     for (const [name, raw] of Object.entries(bag(d.answers) ?? {})) {

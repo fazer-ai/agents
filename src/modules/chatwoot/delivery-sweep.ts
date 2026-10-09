@@ -539,6 +539,9 @@ export async function sweepStrandedDeliveries(
           { claimedAt: { not: null, lt: cutoff } },
           { claimedAt: null, receivedAt: { lt: cutoff } },
         ],
+        // A PENDING row that still holds its body is the drain's (delivery-queue.ts), which the
+        // handler ran just before this pass and which drops the body of every row it gives up on.
+        NOT: { status: "PENDING", payload: { not: null } },
       },
       // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
       // cutoff above already excluded every row a live attempt could be working, so ORDER is

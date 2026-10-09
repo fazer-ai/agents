@@ -16,6 +16,7 @@ import {
   chatwootAdmissionState,
   drainStoredChatwootDeliveries,
   resetChatwootAdmissionForTest,
+  STORED_DELIVERY_MAX_AGE_MS,
   STORED_DELIVERY_STALE_MS,
 } from "@/modules/chatwoot/delivery-queue";
 import {
@@ -291,16 +292,28 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect((await settled(id)).status).toBe("PROCESSED");
   });
 
-  // Past the sweep's window the row is the sweep's (DEAD and a recovery), so the drain does not race
-  // it; it only takes the words off a row that will not be processed from them.
-  test("a row past the sweep's window is not drained, and its payload is cleared", async () => {
-    const id = await ackOnly("queue-old", 603);
-    await suDb.chatwootWebhookDelivery.update({
+  const pastWindow = (id: bigint, ms = STORED_DELIVERY_STALE_MS + 60_000) =>
+    suDb.chatwootWebhookDelivery.update({
       where: { id },
+      data: { receivedAt: new Date(Date.now() - ms) },
+    });
+  const mirror = (conversationId: number) =>
+    suDb.conversation.create({
       data: {
-        receivedAt: new Date(Date.now() - STORED_DELIVERY_STALE_MS - 60_000),
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${conversationId}`,
       },
     });
+
+  // Past the sweep's window a row whose conversation is mirrored is the sweep's: DEAD and a recovery
+  // that rebuilds it from Chatwoot's live state, which an hour-old body no longer is.
+  test("a row past the sweep's window with a mirrored conversation is not drained, and its payload is cleared", async () => {
+    const id = await ackOnly("queue-old", 603);
+    await mirror(603);
+    await pastWindow(id);
     const r = await drainStoredChatwootDeliveries({
       base: appDb,
       tenantId,
@@ -311,6 +324,59 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     const row = await rowById(id);
     expect(row.status).toBe("PENDING");
     expect(row.payload).toBeNull();
+  });
+
+  // Without the mirror the recovery returns `unrecoverable`, so the stored body is the only way to
+  // answer: the drain keeps it and processes the row, and the sweep leaves it alone meanwhile.
+  test("a row past the sweep's window whose conversation is not mirrored is drained, not swept", async () => {
+    const id = await ackOnly("queue-old-nomirror", 607);
+    await pastWindow(id);
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate);
+    registerDeliverySweepHandler();
+    await getJobHandler("DELIVERY_SWEEP")?.(
+      { tenantId } as unknown as ClaimedJob,
+      appDb,
+    );
+    // Admitted and waiting behind the busy slot, so the sweep that ran after it found it PENDING.
+    expect((await rowById(id)).status).toBe("PENDING");
+    g.release();
+    const row = await settled(id);
+    expect(row.status).toBe("PROCESSED");
+    expect(row.attempts).toBe(0);
+  });
+
+  // The sweep leaves a PENDING row with a body to the drain, so a body the drain cannot read must not
+  // stay: it is dropped and the row goes back to the sweep.
+  test("a stored body that no longer normalizes is dropped, not kept", async () => {
+    const id = await ackOnly("queue-garbled", 609);
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { payload: "not json" },
+    });
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.admitted).toBe(0);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.payload).toBeNull();
+  });
+
+  test("past the ceiling a stored body is cleared even without a mirror", async () => {
+    const id = await ackOnly("queue-ceiling", 608);
+    await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS + 60_000);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 60_000,
+    });
+    expect(r.admitted).toBe(0);
+    expect(r.cleared).toBe(1);
+    expect((await rowById(id)).payload).toBeNull();
   });
 
   // The periodic pass rides the sweep's own scheduler job: no second timer, and a stored row that no

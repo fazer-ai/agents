@@ -546,8 +546,8 @@ model ChatwootWebhookDelivery {
   //
   // The exception to "nothing here holds what the customer wrote" (issue #228), and kept as narrow as
   // that rule allows: the claim that moves the row off PENDING clears it in the same statement, the
-  // drain clears it on a row the sweep has taken over, and nothing reads it but the drain. The raw
-  // text, not `jsonb`: it is processed again exactly as it arrived, and `jsonb` refuses an escaped
+  // drain clears it on every row it gives up on (6 hours at most), and nothing reads it but the drain.
+  // The raw text, not `jsonb`: it is processed again exactly as it arrived, and `jsonb` refuses an escaped
   // NUL that a valid JSON body may carry. Null on every row an older build wrote, and on every row
   // whose first attempt has begun.
   payload                    String?
@@ -2214,10 +2214,10 @@ model SpendCostSnapshot {
 // (src/modules/pricing/unpriced-alert.ts). The row is the claim: inserting it is what entitles the
 // caller to announce, and a line that did not land deletes it so the next call tries again.
 model UnpricedModelAnnouncement {
-  id         BigInt   @id @default(autoincrement())
-  tenantId   BigInt   @map("tenant_id")
-  source     String
-  monthStart DateTime @map("month_start")
+  id          BigInt    @id @default(autoincrement())
+  tenantId    BigInt    @map("tenant_id")
+  source      String
+  monthStart  DateTime  @map("month_start")
   model       String
   claimedAt   DateTime  @default(now()) @map("claimed_at")
   deliveredAt DateTime? @map("delivered_at")
@@ -2229,45 +2229,45 @@ model UnpricedModelAnnouncement {
 }
 
 model LlmUsage {
-  id                  BigInt   @id @default(autoincrement())
-  tenantId            BigInt   @map("tenant_id")
-  agentId             BigInt?  @map("agent_id")
-  conversationId      BigInt?  @map("conversation_id")
+  id                    BigInt   @id @default(autoincrement())
+  tenantId              BigInt   @map("tenant_id")
+  agentId               BigInt?  @map("agent_id")
+  conversationId        BigInt?  @map("conversation_id")
   // The DB Inbox.id this usage was attributed to (null in the playground and for legacy rows).
   // Granularity for the per-inbox dashboard break-down.
-  inboxId             BigInt?  @map("inbox_id")
-  threadId            String?  @map("thread_id")
-  model               String
-  node                String?
+  inboxId               BigInt?  @map("inbox_id")
+  threadId              String?  @map("thread_id")
+  model                 String
+  node                  String?
   // "inbox" (real customer traffic) | "playground" (operator test turns). Lets the dashboard
   // keep test usage from polluting the real figures.
-  source              String   @default("inbox")
-  promptTokens        Int      @default(0) @map("prompt_tokens")
-  completionTokens    Int      @default(0) @map("completion_tokens")
+  source                String   @default("inbox")
+  promptTokens          Int      @default(0) @map("prompt_tokens")
+  completionTokens      Int      @default(0) @map("completion_tokens")
   // Cached-input accounting (a discounted SUBSET of promptTokens, never additive):
   // cachedReadTokens = prompt tokens served from the provider cache (OpenAI/Anthropic/Google);
   // cacheCreationTokens = tokens written to the cache this call (Anthropic, billed at a premium).
-  cachedReadTokens    Int      @default(0) @map("cached_read_tokens")
-  cacheCreationTokens Int      @default(0) @map("cache_creation_tokens")
+  cachedReadTokens      Int      @default(0) @map("cached_read_tokens")
+  cacheCreationTokens   Int      @default(0) @map("cache_creation_tokens")
   // Of cacheCreationTokens, the writes made under the 1-hour TTL (Anthropic bills them at 2x the input
   // rate against 1.25x for the 5-minute ones). A SUBSET, like the two above: 0 for every row before the
   // column and every call without a 1-hour mark.
-  cacheCreation1hTokens Int    @default(0) @map("cache_creation_1h_tokens")
+  cacheCreation1hTokens Int      @default(0) @map("cache_creation_1h_tokens")
   // The turn this call was billed to, the same id as its ExecutionLog rows and its Langfuse trace
   // (issue #839). Null for rows from before the column and for a call no turn owns. The playground
   // groups a reopened session's calls by it, so each message gets back the line it had live.
-  turnId              String?  @map("turn_id")
+  turnId                String?  @map("turn_id")
   // How long the call took, in milliseconds, as the capture measured it (issue #855). Null for rows
   // from before the column and for a call nothing timed.
-  durationMs          Int?     @map("duration_ms")
+  durationMs            Int?     @map("duration_ms")
   // What the call cost in USD, priced from the price table when the row was written (issue #863).
   // Null for a call the table could not price and for rows from before the column: never zero,
   // which would enter every total silently.
-  costUsd             Decimal? @map("cost_usd") @db.Decimal(18, 10)
+  costUsd               Decimal? @map("cost_usd") @db.Decimal(18, 10)
   // Which price table was in force when the row was written (`litellm@<commit>`), so a table found
   // wrong later can be corrected on exactly the rows it priced. Null on rows from before the column.
-  priceTable          String?  @map("price_table")
-  createdAt           DateTime @default(now()) @map("created_at")
+  priceTable            String?  @map("price_table")
+  createdAt             DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

@@ -15,11 +15,16 @@ import { processRecordedChatwootDelivery } from "./webhook";
 // later drain processes from their body.
 
 // A PENDING row whose body is still stored and that nothing in this process holds is drained from the
-// ledger. Past the sweep's window it is the sweep's instead (`DEAD` and a recovery that rebuilds the
-// body from Chatwoot), so the drain does not race it and only takes the words off it. The same number
-// as the sweep's `STALE_AFTER_MS`, restated rather than imported because the sweep's handler runs this
-// drain (a module cycle evaluated at load); tests/modules/chatwoot-delivery-queue.test.ts pins both.
+// ledger. Past the sweep's window the body is dropped where the conversation is mirrored, and the row
+// becomes the sweep's (`DEAD` and a recovery that rebuilds the body from Chatwoot's live state). The
+// same number as the sweep's `STALE_AFTER_MS`, restated rather than imported because the sweep's
+// handler runs this drain (a module cycle); tests/modules/chatwoot-delivery-queue.test.ts pins both.
 export const STORED_DELIVERY_STALE_MS = 30 * 60 * 1000;
+
+// Where the conversation is NOT mirrored the recovery cannot rebuild the delivery, so the stored body
+// is the only way to answer it and the drain keeps trying past the window, up to this age. Past it the
+// body goes too and the sweep reports the row like any other strand.
+export const STORED_DELIVERY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 // How old a stored row must be before the periodic pass treats it as nobody's: a younger one is most
 // likely waiting in the queue of the process that acked it (this one or another replica). The boot
@@ -165,23 +170,29 @@ export async function drainStoredChatwootDeliveries(
     now - (params.minAgeMs ?? STORED_DELIVERY_MIN_AGE_MS),
   );
   const oldest = new Date(now - STORED_DELIVERY_STALE_MS);
+  const ceiling = new Date(now - STORED_DELIVERY_MAX_AGE_MS);
   const run = <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) =>
     params.tenantId === undefined
       ? asSuperAdminOn(base, fn)
       : runScopedOn(base, sysCtx(params.tenantId), fn);
 
-  // The body leaves every row that will not be processed from it: one past the sweep's window, and one
-  // that left PENDING by a road that does not clear it (the sweep's verdict on a row that crossed the
-  // window between two passes, or an older release's claim during a rolling deploy). Both statements
+  // The body leaves every row that will not be processed from it: one that left PENDING by a road that
+  // does not clear it (an older release's claim during a rolling deploy), one past the window whose
+  // conversation the recovery can rebuild from its mirror, and one past the ceiling. Both statements
   // read the partial index of the rows that still hold a body.
-  const { count: cleared } = await run((db) =>
-    db.chatwootWebhookDelivery.updateMany({
-      where: {
-        payload: { not: null },
-        OR: [{ status: { not: "PENDING" } }, { receivedAt: { lte: oldest } }],
-      },
-      data: { payload: null },
-    }),
+  const cleared = await run(
+    (db) =>
+      db.$executeRaw`
+      UPDATE chatwoot_webhook_deliveries d SET payload = NULL
+      WHERE d.payload IS NOT NULL
+        AND (d.status <> 'PENDING'
+          OR d.received_at <= ${ceiling}
+          OR (d.received_at <= ${oldest}
+            AND (d.conversation_id IS NULL OR EXISTS (
+              SELECT 1 FROM conversations c
+              WHERE c.tenant_id = d.tenant_id
+                AND c.chatwoot_instance_id = d.chatwoot_instance_id
+                AND c.chatwoot_conversation_id = d.conversation_id))))`,
   );
   // Rows this process already holds are skipped in the query, not after it: otherwise a full batch of
   // them would hide every row a dead process left behind.
@@ -191,7 +202,7 @@ export async function drainStoredChatwootDeliveries(
       where: {
         status: "PENDING",
         payload: { not: null },
-        receivedAt: { gt: oldest, lte: youngest },
+        receivedAt: { lte: youngest },
         ...(held.length > 0 ? { id: { notIn: held } } : {}),
       },
       orderBy: { id: "asc" },
@@ -211,11 +222,17 @@ export async function drainStoredChatwootDeliveries(
   for (const row of rows) {
     const normalized = parseStored(row.payload);
     // NOTE: Unreachable for a row the ack wrote (it normalized this same body before writing it); a
-    // body that does not parse is left to the sweep, which reports the row by its ids.
+    // body that does not parse is dropped, which hands the row to the sweep and its report.
     if (normalized === null) {
       logger.error(
         "chatwoot: stored delivery row %s holds a body that no longer normalizes; left to the sweep",
         String(row.id),
+      );
+      await run((db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: { id: row.id, status: "PENDING" },
+          data: { payload: null },
+        }),
       );
       continue;
     }
@@ -234,7 +251,7 @@ export async function drainStoredChatwootDeliveries(
   }
   if (admitted > 0 || cleared > 0) {
     logger.warn(
-      "chatwoot: drained %d stored deliveries%s; %d past the sweep's window cleared",
+      "chatwoot: drained %d stored deliveries%s; %d bodies cleared",
       admitted,
       params.tenantId === undefined ? "" : ` for tenant ${params.tenantId}`,
       cleared,

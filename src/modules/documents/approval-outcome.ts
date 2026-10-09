@@ -33,6 +33,7 @@ import {
   type JobResult,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
+import { openedJobKey } from "./approval";
 import { formatDocumentNumber } from "./format";
 import { getIssuedDocumentPdf, sysCtx } from "./issue";
 
@@ -261,19 +262,6 @@ export async function runApprovalOutcome(
     return true;
   };
 
-  // A request just opened tells the people of its conversation, with the page link: the customer
-  // heard from the agent that the team is preparing it, and a person watching Chatwoot heard
-  // nothing. A request decided before this ran reads its decision here instead, which says more.
-  if (request.status === "PENDING") {
-    const client = await clientFor(tenantId, target, base, deps);
-    return (await note(
-      client,
-      `Pedido de aprovação aberto: ${title}. Nada vai ao cliente até alguém da equipe aprovar.`,
-    ))
-      ? "noted"
-      : "retry";
-  }
-
   if (request.status === "REJECTED") {
     const client = await clientFor(tenantId, target, base, deps);
     const conversationId = target.conv.chatwootConversationId;
@@ -442,7 +430,67 @@ export async function runApprovalOutcome(
     : "retry";
 }
 
-async function runOutcomeJob(
+// A request just opened tells the people of its conversation in a private note, with the page link:
+// the customer heard from the agent that the team is preparing it, and a person watching Chatwoot
+// heard nothing. The status is read again right before the send, after the Chatwoot reads, so a
+// decision taken while they waited leaves this run with nothing to write; the decision's own run
+// waits for this one while it is claimed, so its note can never come first.
+export async function runApprovalOpened(
+  tenantId: bigint,
+  requestId: bigint,
+  base: PrismaClient = basePrisma,
+  deps: ApprovalOutcomeDeps = {},
+): Promise<"noted" | "decided" | "no-conversation" | "no-agent"> {
+  const pending = async () => {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.documentApprovalRequest.findUnique({
+        where: { id: requestId },
+        select: { status: true, title: true, conversationId: true },
+      }),
+    );
+    return row?.status === "PENDING" ? row : null;
+  };
+  const request = await pending();
+  if (!request) return "decided";
+  if (!request.conversationId) return "no-conversation";
+  const target = await conversationOf(tenantId, request.conversationId, base);
+  if (!target) return "no-agent";
+  const client = await clientFor(tenantId, target, base, deps);
+  if (deps.signal?.aborted || !(await pending())) return "decided";
+  await client.sendPrivateNote(
+    target.conv.chatwootConversationId,
+    withPageLink(
+      `Pedido de aprovação aberto: ${titleOf(request.title)}. Nada vai ao cliente até alguém da equipe aprovar.`,
+      tenantId,
+      requestId,
+    ),
+  );
+  deps.commit?.();
+  return "noted";
+}
+
+// How long a decision's run waits for the opening note still being written, before it looks again.
+const OPENING_WAIT_MS = 5_000;
+
+async function openingClaimed(
+  tenantId: bigint,
+  requestId: bigint,
+  base: PrismaClient,
+): Promise<boolean> {
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "DOCUMENT_APPROVAL_OUTCOME",
+        dedupeKey: openedJobKey(requestId),
+      },
+      select: { status: true },
+    }),
+  );
+  return row?.status === "CLAIMED";
+}
+
+export async function runOutcomeJob(
   tenantId: bigint,
   payload: unknown,
   base: PrismaClient,
@@ -451,6 +499,21 @@ async function runOutcomeJob(
   const raw = (payload as { requestId?: unknown } | null)?.requestId;
   const requestId = parseDbId(typeof raw === "string" ? raw : null);
   if (requestId === null) return { outcome: "done" };
+  if ((payload as { phase?: unknown } | null)?.phase === "opened") {
+    await runApprovalOpened(tenantId, requestId, base, {
+      signal: run?.signal,
+      commit: run?.commit,
+    });
+    return { outcome: "done" };
+  }
+  // NOTE: the opening note may be on its way: the decision waits for it, so the conversation reads
+  // "open" before it reads the outcome.
+  if (await openingClaimed(tenantId, requestId, base)) {
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + OPENING_WAIT_MS),
+    };
+  }
   const outcome = await runApprovalOutcome(tenantId, requestId, base, {
     signal: run?.signal,
     commit: run?.commit,

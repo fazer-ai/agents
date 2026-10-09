@@ -13,8 +13,8 @@ export interface LimitsConfig {
   // counted: they are not trimmable, and the operator's budget has to sit above them.
   maxHistoryTokens: number | null;
   retrySilence: boolean;
-  // null = no limit.
-  maxTurnsPerHour: number | null;
+  // 0 = no limit. Not null: this shape is written back to storage, where null reads as the default.
+  maxTurnsPerHour: number;
 }
 
 export const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -67,7 +67,7 @@ export function readLimitsConfig(settings: unknown): LimitsConfig {
   const maxTurnsPerHour =
     typeof turns === "number" && Number.isFinite(turns)
       ? turns <= 0
-        ? null
+        ? 0
         : Math.min(MAX_TURNS_PER_HOUR, Math.max(1, Math.round(turns)))
       : DEFAULT_MAX_TURNS_PER_HOUR;
 

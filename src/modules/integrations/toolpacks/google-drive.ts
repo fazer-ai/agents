@@ -316,6 +316,7 @@ function buildSendFileTool(
           // The caption is the model's text, escaped for Chatwoot's Liquid.
           input.caption ? { caption: literalForChatwoot(input.caption) } : {},
         );
+        ctx.chatwoot.onSent?.();
       } catch (err) {
         logger.warn({ err }, "drive: send file delivery failed");
         return toolFailure(

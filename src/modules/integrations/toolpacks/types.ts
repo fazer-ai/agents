@@ -69,7 +69,12 @@ export interface ToolpackCtx {
   // The live conversation handle, present ONLY on a real inbox turn (conversationId > 0). A tool
   // that delivers something to the customer (e.g. Drive send_file) uses it; absent on the
   // playground (conversationId 0 + stub client), so such tools degrade gracefully.
-  chatwoot?: { client: ChatwootClient; conversationId: number };
+  // `onSent` is called after each delivery, so the turn counts as having reached the customer.
+  chatwoot?: {
+    client: ChatwootClient;
+    conversationId: number;
+    onSent?: () => void;
+  };
   // Resolves an integration's chosen BusinessHours by id → the whole schedule (weekly windows, date
   // exceptions, timezone; short scoped DB read, no network). The Calendar availability tool uses it to
   // bound bookable slots to the service hours; null when unset/deleted/other-tenant ⇒ "always on".

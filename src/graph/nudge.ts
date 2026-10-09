@@ -445,6 +445,8 @@ interface NudgeClosing {
   // The turn reached the model. Before that, a gate that stops the turn (stale, not owned, a refused
   // contact) ran nothing and owes no line, unless it left a message.
   generating: boolean;
+  // Records a turn whose only customer-facing send was a tool's (an ack, a file), once, at the end.
+  recordToolSpeech: () => Promise<void>;
 }
 
 // EVERY PROACTIVE TURN CLOSES ON ONE LINE. The outcome line carries the messages the turn created
@@ -461,10 +463,12 @@ export async function runAgentNudge(
     sentIds: () => [],
     written: false,
     generating: false,
+    recordToolSpeech: async () => {},
   };
   try {
     return await runAgentNudgeBody(params, closing, turnStartedAt);
   } finally {
+    await closing.recordToolSpeech();
     const sentMessageIds = closing.sentIds();
     if (
       closing.flow &&
@@ -662,7 +666,15 @@ async function runAgentNudgeBody(
   // reached the customer (message or template, never a note), so a refused or failed send marks
   // nothing. Best-effort: a throw would fail the nudge into a retry that sends it again, and a lost
   // stamp only costs the answer "nobody spoke".
+  let proactiveRecorded = false;
+  let toolSpoke = false;
+  closing.recordToolSpeech = async () => {
+    if (toolSpoke && !proactiveRecorded) await recordProactiveSpeech();
+  };
   const recordProactiveSpeech = async (): Promise<void> => {
+    // NOTE: One turn is one delivery, whether the reply, a template or a tool's send reached the customer.
+    if (proactiveRecorded) return;
+    proactiveRecorded = true;
     try {
       const row = await runScopedOn(base, sysCtx(tenantId), async (db) => {
         // By the conversation's natural key rather than the id loaded with the config, which is
@@ -1394,6 +1406,9 @@ async function runAgentNudgeBody(
         checkpointer: params.deps?.checkpointer,
         // NOTE: the slow-tool ack's own ask, after its send.
         stillWanted: toolFence,
+        onCustomerSend: () => {
+          toolSpoke = true;
+        },
         // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
         // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
         // one that had already happened — but only as a FALLBACK: this snapshot is taken before

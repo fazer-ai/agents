@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import {
   BEHAVIOR_SETTINGS_KEYS,
   behaviorSettingsMaxDepth,
@@ -6,6 +7,8 @@ import {
   mergeBehaviorSettings,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
+import { readLimitsConfig } from "@/modules/agents/limits";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 
 // EVERY BLOCK THIS SURFACE OWNS IS WRITTEN BACK NORMALIZED, and the check is over the key list
 // rather than over the eighteen assignments that implement it.
@@ -171,6 +174,31 @@ describe("behavior-settings — observability", () => {
       retrySilence: true,
       maxTurnsPerHour: 60,
     });
+  });
+});
+
+// "No limit" is a stored 0, and the merge writes the read shape back: if that shape said null, an
+// unrelated MCP edit would store null, which reads as the default and turns the limit back on.
+describe("behavior-settings — a disabled turn limit through a merge", () => {
+  const limitsSchema = z.object(BEHAVIOR_PATCH_SHAPE).shape.limits;
+
+  test("an unrelated patch keeps the stored 0, and the stored block passes the schema", () => {
+    const next = mergeBehaviorSettings(
+      { limits: { maxToolCalls: 7, maxTurnsPerHour: 0 } },
+      { observability: { logToolValues: "true" } },
+    );
+    expect((next.limits as Record<string, unknown>).maxTurnsPerHour).toBe(0);
+    expect(readLimitsConfig(next).maxTurnsPerHour).toBe(0);
+    expect(limitsSchema.safeParse(next.limits).success).toBe(true);
+  });
+
+  test("a patch that turns it off stores 0", () => {
+    const next = mergeBehaviorSettings(
+      { limits: { maxTurnsPerHour: 20 } },
+      { limits: { maxTurnsPerHour: 0 } },
+    );
+    expect((next.limits as Record<string, unknown>).maxTurnsPerHour).toBe(0);
+    expect(limitsSchema.safeParse(next.limits).success).toBe(true);
   });
 });
 

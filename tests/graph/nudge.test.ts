@@ -47,6 +47,7 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { outboundUrl } from "../utils/outbound";
 import {
   EmptyThenReplyModel,
   FailingModel,
@@ -1773,6 +1774,112 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(closing.sentMessageIds).toEqual(s.noteIds);
     // The label still applies: it is how the operator triages what the bot left behind.
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  // A follow-up whose only words to the customer were a slow tool's "just a moment" still reached
+  // them, so it is one counted turn, once, even though the model then chose silence.
+  async function followUpWithAck(convId: number, then: "silence" | "reply") {
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tool = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "consulta_lenta",
+        label: "Consulta lenta",
+        method: "GET",
+        urlTemplate: outboundUrl("/v1/slow"),
+        allowedHosts: [new URL(outboundUrl()).hostname],
+        ackEnabled: true,
+        ackMessage: "Só um momento!",
+      },
+    });
+    const selection = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "HTTP",
+        toolDefinitionId: tool.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    let n = 0;
+    const model = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          n++;
+          if (n === 1)
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "consulta_lenta",
+                  args: { __wait_message: "Só um momento!" },
+                  id: "call_slow",
+                },
+              ],
+            });
+          if (n === 2 && then === "reply") return new AIMessage("Achei aqui!");
+          if (n === 2)
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "skip_reply",
+                  args: { reason: "acknowledged" },
+                  id: "call_skip",
+                },
+              ],
+            });
+          return new AIMessage("");
+        },
+      }),
+    };
+    try {
+      await seedConv(convId, null);
+      const s = stub();
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      return { messages: s.messages, speech: await speechOf(convId) };
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: selection.id } });
+      await suDb.toolDefinition.delete({ where: { id: tool.id } });
+    }
+  }
+
+  test("a follow-up that only sent a tool's ack is one counted turn", async () => {
+    const r = await followUpWithAck(9695, "silence");
+    expect(r.messages).toEqual([[9695, "Só um momento!"]]);
+    expect(r.speech.proactiveTurns).toBe(1);
+  });
+
+  test("a follow-up that sent a tool's ack and then a reply is still one counted turn", async () => {
+    const r = await followUpWithAck(9696, "reply");
+    expect(r.messages).toEqual([
+      [9696, "Só um momento!"],
+      [9696, "Achei aqui!"],
+    ]);
+    expect(r.speech.proactiveTurns).toBe(1);
   });
 
   test("a follow-up silent with needs_human goes to the pinned team, like handoff_to_human (#1027)", async () => {

@@ -92,8 +92,8 @@ describe("readLimitsConfig — maxTurnsPerHour", () => {
   });
 
   test("0 or below turns it off", () => {
-    expect(read({ maxTurnsPerHour: 0 }).maxTurnsPerHour).toBeNull();
-    expect(read({ maxTurnsPerHour: -5 }).maxTurnsPerHour).toBeNull();
+    expect(read({ maxTurnsPerHour: 0 }).maxTurnsPerHour).toBe(0);
+    expect(read({ maxTurnsPerHour: -5 }).maxTurnsPerHour).toBe(0);
   });
 
   test("a positive value is rounded and clamped to 1..1000", () => {

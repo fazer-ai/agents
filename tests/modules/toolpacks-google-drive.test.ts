@@ -79,7 +79,11 @@ function fakeChatwoot(conversationId = 5) {
       return null;
     },
   } as unknown as ChatwootClient;
-  return { chatwoot: { client, conversationId }, sent };
+  const delivered = { count: 0 };
+  const onSent = () => {
+    delivered.count++;
+  };
+  return { chatwoot: { client, conversationId, onSent }, sent, delivered };
 }
 
 describe("google drive toolpack — allowlist (fail-closed)", () => {
@@ -278,6 +282,8 @@ describe("google drive toolpack — send file", () => {
       bytes: 5,
       caption: "Segue o manual",
     });
+    // NOTE: The file reached the customer, so the turn is told it spoke (and counts toward the limit).
+    expect(cw.delivered.count).toBe(1);
   });
 
   // The caption is the model's text, rendered by Chatwoot as Liquid, so it goes escaped.
@@ -326,6 +332,7 @@ describe("google drive toolpack — send file", () => {
     // doing and not ours. Reading to the 15 MB cap would take 240 of these.
     expect(pulled).toBeLessThanOrEqual(1);
     expect(cw.sent).toHaveLength(0);
+    expect(cw.delivered.count).toBe(0);
   });
 
   test("a non-2xx download does not have its error page read", async () => {
@@ -369,6 +376,7 @@ describe("google drive toolpack — send file", () => {
     const out = (await tool?.invoke({ fileId: "f1" })) as string;
     expect(out).toContain("too large");
     expect(cw.sent).toHaveLength(0);
+    expect(cw.delivered.count).toBe(0);
   });
 
   test("Google-apps doc is exported to PDF (name + mime adjusted)", async () => {
@@ -411,6 +419,7 @@ describe("google drive toolpack — send file", () => {
     const out = (await tool?.invoke({ fileId: "f1" })) as string;
     expect(out).toContain("too large");
     expect(cw.sent).toHaveLength(0);
+    expect(cw.delivered.count).toBe(0);
   });
 });
 

@@ -197,6 +197,45 @@ describe.skipIf(!dbUp)(
       ).toBeUndefined();
     });
 
+    // A proactive turn carries no turnState, so the ack reaches it through `onCustomerSend`, which is
+    // what counts that turn toward the per-conversation turn limit.
+    async function semTurnState(muted = false) {
+      let sends = 0;
+      const client = {
+        muted,
+        sendMessage: async () => ({}),
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const tools = await buildToolset(
+        config(),
+        {
+          tenantId: 1n,
+          instanceId: 1n,
+          base: appDb,
+          client,
+          conversationId: 77,
+          threadId: `t-nots-${process.pid}-${muted}`,
+          stillWanted: async () => true,
+          onCustomerSend: () => {
+            sends++;
+          },
+        },
+        { buildNativeTools: () => [] },
+      );
+      const tool = tools.find((t) => t.name === "consulta_lenta");
+      if (!tool) throw new Error("the HTTP tool was not built");
+      await tool.invoke({ __wait_message: "Só um momento!" });
+      return sends;
+    }
+
+    test("without a turnState the ack is reported through onCustomerSend", async () => {
+      expect(await semTurnState()).toBe(1);
+    });
+
+    test("a muted turn reports no customer send", async () => {
+      expect(await semTurnState(true)).toBe(0);
+    });
+
     test("the fence reaches the HTTP tool itself, not only the ack", async () => {
       // The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
       // fence down. Without an ack there is nothing else that could stop the request, so a call

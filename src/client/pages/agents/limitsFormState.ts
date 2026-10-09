@@ -18,7 +18,7 @@ export function limitsToForm(settings: unknown): LimitsState {
     retrySilence: read.retrySilence,
     // NOTE: Empty means no limit, as with the history ceiling; a key never set shows the default.
     maxTurnsPerHour:
-      read.maxTurnsPerHour == null ? "" : String(read.maxTurnsPerHour),
+      read.maxTurnsPerHour === 0 ? "" : String(read.maxTurnsPerHour),
   };
 }
 

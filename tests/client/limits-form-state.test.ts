@@ -55,7 +55,7 @@ describe("limits form ↔ stored round trip", () => {
     const form = { ...limitsToForm({}), maxTurnsPerHour: "" };
     const stored = limitsToStored(form);
     expect(stored.maxTurnsPerHour).toBe(0);
-    expect(readLimitsConfig({ limits: stored }).maxTurnsPerHour).toBeNull();
+    expect(readLimitsConfig({ limits: stored }).maxTurnsPerHour).toBe(0);
     expect(limitsToForm({ limits: stored }).maxTurnsPerHour).toBe("");
   });
 });

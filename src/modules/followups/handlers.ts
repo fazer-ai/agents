@@ -48,6 +48,8 @@ import {
   silenceStartedAt,
   stepDelayMinutes,
 } from "./settings";
+import { snoozedFollowUpHandler, sweepSnoozedFollowUps } from "./snoozed";
+import { readSnoozedFollowUpConfig } from "./snoozed-settings";
 
 // Follow-up handlers for the scheduler. The SWEEP is coarse: it enqueues a FOLLOWUP per inactive,
 // bot-handled conversation and re-arms itself. The FOLLOWUP is precise: it re-checks the gate
@@ -95,6 +97,12 @@ async function sweepHandler(
     id: a.id,
     cfg: readFollowUpConfig(a.settings),
   }));
+  // The snoozed ladder rides the same pass: one perpetual sweep row per tenant carries
+  // both, so switching either on is what keeps the pass alive. Its own selection, its own job kind.
+  const snoozedAgentIds = agents
+    .filter((a) => readSnoozedFollowUpConfig(a.settings).enabled)
+    .map((a) => a.id);
+  await sweepSnoozedFollowUps(base, tenantId, snoozedAgentIds);
   // The sweep only ever STARTS a sequence (step 0), so its cutoff is the minimum FIRST-step delay
   // across enabled agents. Later steps are scheduled precisely by the handler, not the sweep.
   const enabledDelays = configs
@@ -896,6 +904,9 @@ export function registerFollowUpHandlers(): void {
   // NOTE: wrapped, because the handler's third parameter is a test seam and not the JobContext.
   registerJobHandler("FOLLOWUP", (job, base, ctx) =>
     followUpHandler(job, base, undefined, ctx),
+  );
+  registerJobHandler("SNOOZED_FOLLOWUP", (job, base, ctx) =>
+    snoozedFollowUpHandler(job, base, undefined, ctx),
   );
   registered = true;
 }

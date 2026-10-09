@@ -20,6 +20,7 @@ import {
   storableObservability,
 } from "@/modules/flowlog/settings";
 import { readFollowUpConfig } from "@/modules/followups/settings";
+import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import {
   readHandoffConfig,
@@ -67,6 +68,8 @@ export interface BehaviorSettings {
   serviceWindow: ReturnType<typeof readServiceWindowConfig>;
   grounding: { maxDistance: number | null };
   followUp: ReturnType<typeof readFollowUpConfig>;
+  // NOTE: The ladder for a snoozed conversation a PERSON owns; `followUp` is the bot's.
+  snoozedFollowUp: ReturnType<typeof readSnoozedFollowUpConfig>;
   handoff: ReturnType<typeof readHandoffConfig>;
   // NOTE: The second block whose default is ON (see modules/handoff/settings for why), and it is kept
   // apart from `handoff` above because the Tools tab REPLACES that one wholesale.
@@ -116,6 +119,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "serviceWindow",
   "grounding",
   "followUp",
+  "snoozedFollowUp",
   "handoff",
   "takeover",
   "sendImage",
@@ -157,6 +161,7 @@ export function readBehaviorSettings(
     serviceWindow: readServiceWindowConfig(settings),
     grounding: readGrounding(settings),
     followUp: readFollowUpConfig(settings),
+    snoozedFollowUp: readSnoozedFollowUpConfig(settings),
     handoff: readHandoffConfig(settings),
     takeover: readTakeoverConfig(settings),
     sendImage: readSendImageConfig(settings),
@@ -197,6 +202,7 @@ export interface BehaviorSettingsPatch {
   serviceWindow?: Record<string, unknown>;
   grounding?: Record<string, unknown>;
   followUp?: Record<string, unknown>;
+  snoozedFollowUp?: Record<string, unknown>;
   handoff?: Record<string, unknown>;
   takeover?: Record<string, unknown>;
   sendImage?: Record<string, unknown>;

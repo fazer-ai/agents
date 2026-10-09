@@ -80,6 +80,7 @@ enum SchedulerJobKind {
   SUGGESTION_REVIEW
   DOCUMENT_APPROVAL_EXPIRY
   DOCUMENT_APPROVAL_OUTCOME
+  SNOOZED_FOLLOWUP
 }
 
 enum SchedulerJobStatus {
@@ -1010,6 +1011,12 @@ model Conversation {
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.
   lastFollowUpAt               DateTime? @map("last_follow_up_at")
+  // Where the SNOOZED ladder stands (issue #1184): the Chatwoot id of the person's message it chases, how
+  // many steps it has spent on that message, and when the last one ran. A new message from the person
+  // is a new anchor, and the ladder starts over at step 0. NULL = the ladder never ran here.
+  snoozedFollowUpAnchorId      Int?      @map("snoozed_follow_up_anchor_id")
+  snoozedFollowUpStep          Int?      @map("snoozed_follow_up_step")
+  snoozedFollowUpAt            DateTime? @map("snoozed_follow_up_at")
   // Last agent-turn failure for this conversation, surfaced to the operator with a manual
   // "re-engage" action. Sanitized (no PII/secret in the clear); cleared on a successful turn.
   // NULL = the last turn was fine (or none ran yet).
@@ -1379,6 +1386,10 @@ model Agent {
   // or after this instant, so arming follow-up never blasts the historical backlog. NULL = never
   // armed (fail-safe: the sweep skips this agent's conversations entirely).
   followUpArmedAt     DateTime? @map("follow_up_armed_at")
+  // NOTE: The same fence for the snoozed ladder (snoozedFollowUp, issue #1184), stamped on its own OFF→ON
+  // transition: a person's message older than this instant never starts that ladder, so switching it on
+  // does not remind the whole snoozed backlog at once. NULL = never armed, and the sweep skips the agent.
+  snoozedFollowUpArmedAt DateTime? @map("snoozed_follow_up_armed_at")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 

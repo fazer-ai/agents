@@ -365,6 +365,14 @@ export interface LiveConversationState {
   // `meta` silence means nobody. A payload with no `meta` reads `assigneeType: null` too without
   // saying so. Optional only for hand-built states; the parser always sets it.
   assigneeStated?: boolean;
+  // When a snooze ends by itself (`snoozed_until`), read by the snoozed ladder, which
+  // chases only a snooze "until next reply". `undefined` = the payload did not carry the field at all,
+  // which is not the same as `null` (no end date): a reader that needs the answer fails closed on it.
+  // Optional only for hand-built states; the parser always sets it.
+  snoozedUntil?: Date | null | undefined;
+  // The conversation's label titles as the REST show renders them (`labels`). `undefined` = not
+  // carried. Optional only for hand-built states.
+  labels?: string[] | undefined;
 }
 
 export function parseLiveConversation(
@@ -395,7 +403,28 @@ export function parseLiveConversation(
     updatedAt: num(raw.updated_at),
     latestMessageId: latestMessageId(raw),
     assigneeStated: meta !== null,
+    snoozedUntil: liveSnoozedUntil(raw),
+    labels: Array.isArray(raw.labels)
+      ? raw.labels.filter((l): l is string => typeof l === "string")
+      : undefined,
   };
+}
+
+// `snoozed_until` as the REST show renders it: an ISO string, epoch seconds on some builds, or null.
+// Absent stays `undefined`, and a value that parses to nothing is treated as absent too: an end date
+// nobody can read is not evidence that there is none.
+function liveSnoozedUntil(
+  raw: Record<string, unknown>,
+): Date | null | undefined {
+  if (!("snoozed_until" in raw)) return undefined;
+  const v = raw.snoozed_until;
+  if (v === null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return new Date(v * 1000);
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? new Date(t) : undefined;
+  }
+  return undefined;
 }
 
 // The highest message id a conversation payload names. The REST show renders `messages` as a
@@ -483,6 +512,21 @@ export function shouldBotHandle(
       closedByTheAgentSide(e.resolvedBy));
   if (!statusIsOurs) return false;
   return !heldByAnotherParty(e, opts);
+}
+
+// THE SNOOZED LADDER'S OWNERSHIP QUESTION: a person holds the conversation and snoozed it
+// until the customer's next reply. A snooze with an end date comes back by itself and is nobody's to
+// chase, and an end date the read could not see (`undefined`) is not a yes.
+export function isSnoozedForAPerson(s: {
+  status: string | null;
+  assigneeType: string | null;
+  snoozedUntil?: Date | null | undefined;
+}): boolean {
+  return (
+    s.status === "snoozed" &&
+    s.assigneeType === "User" &&
+    s.snoozedUntil === null
+  );
 }
 
 export function isIncomingMessage(e: NormalizedChatwootEvent): boolean {

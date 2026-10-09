@@ -19,6 +19,7 @@ import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
+  isSnoozedForAPerson,
   parseLiveConversation,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
@@ -284,6 +285,18 @@ export interface RunAgentNudgeParams {
   // keep the mirror-only gate, since a private note on a human-owned or even resolved conversation
   // is still useful signal.
   requireLiveBotOwnership?: boolean;
+  // WHO HAS TO HOLD THE CONVERSATION for this nudge to speak. `bot` (the default) is every other
+  // caller: the bot owns it, or a person does and the nudge only notes. `snoozed-human` is
+  // the snoozed ladder: a PERSON owns it and snoozed it "until next reply", and the nudge reminds the
+  // customer on that person's behalf. In that mode every ownership read below asks the snoozed
+  // question instead of the bot one, the turn gets no tools (it writes one reminder and nothing else:
+  // no transfer, no close of its own, no labels), and a guardrail that would transfer drops the text
+  // instead, because a transfer would take the conversation from the person who holds it. Honored only
+  // with `requireLiveBotOwnership`, the mode whose probe reads the live state the question needs.
+  holder?: "bot" | "snoozed-human";
+  // Whether the agent's signature goes under the text. Absent = the agent's own signature config.
+  // The snoozed ladder passes its own switch: the reminder speaks for the person who asked.
+  signature?: boolean;
   // A conversation the bot itself RESOLVED still counts as the bot's: an event the operator's
   // system sends for a job the customer asked for reaches the customer even after the agent closed
   // the conversation, and is sent without reopening it. Held by anybody else, or handed off
@@ -817,6 +830,16 @@ async function runAgentNudgeBody(
   // caller must not SEND (fail-closed). Used BOTH before any model spend AND again right before
   // delivery — an operator can resolve/take over during model execution, and a delayed or lost
   // webhook would leave the mirror bot-owned.
+  const snoozedHolder = params.holder === "snoozed-human";
+  // A snoozed-holder nudge without the live gate would decide on the mirror, which carries neither the
+  // snooze's end date nor a fresh status. A caller error, refused before anything is spent.
+  if (snoozedHolder && !params.requireLiveBotOwnership) {
+    logger.warn(
+      { conversationId: String(conversationId) },
+      "agentNudge: snoozed-human holder without the live gate; refusing",
+    );
+    return "stale";
+  }
   const probeLiveOwnership = async (): Promise<
     "owned" | "not-owned" | "unavailable"
   > => {
@@ -875,21 +898,29 @@ async function runAgentNudgeBody(
       );
       return "unavailable";
     }
-    const owned = shouldBotHandle(
-      {
-        assigneeType: decided.assigneeType,
-        status: decided.status,
-        assigneeId: decided.assigneeId,
-        // The live read carries no origin (Chatwoot never reports who closed it), and the stamp read
-        // before this probe may describe a close the reconcile just replaced. No stamp, so a
-        // `resolved` here is not the bot's: the live path fails closed on `alsoResolved`.
-        resolvedBy: null,
-      },
-      {
-        ourAgentBotId: cfg.agentBotId,
-        alsoResolved: params.deliverToResolved,
-      },
-    );
+    const owned = snoozedHolder
+      ? // NOTE: the end date from the live read and not from `decided`, which a refused reconcile may
+        // have taken from the row, and the row carries no end date. Absent (`undefined`) fails closed.
+        isSnoozedForAPerson({
+          status: decided.status,
+          assigneeType: decided.assigneeType,
+          snoozedUntil: live.snoozedUntil,
+        })
+      : shouldBotHandle(
+          {
+            assigneeType: decided.assigneeType,
+            status: decided.status,
+            assigneeId: decided.assigneeId,
+            // The live read carries no origin (Chatwoot never reports who closed it), and the stamp read
+            // before this probe may describe a close the reconcile just replaced. No stamp, so a
+            // `resolved` here is not the bot's: the live path fails closed on `alsoResolved`.
+            resolvedBy: null,
+          },
+          {
+            ourAgentBotId: cfg.agentBotId,
+            alsoResolved: params.deliverToResolved,
+          },
+        );
     if (!owned) {
       logger.info(
         "agentNudge: live state not bot-owned (conv=%s status=%s assignee=%s) — skipping",
@@ -1259,18 +1290,24 @@ async function runAgentNudgeBody(
           resolvedBy: true,
         },
       });
-      return shouldBotHandle(
-        {
-          assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
-          status: conv?.status ?? null,
-          resolvedBy: conv?.resolvedBy ?? null,
-        },
-        {
-          ourAgentBotId: cfg.agentBotId,
-          alsoResolved: params.deliverToResolved,
-        },
-      )
+      // The snoozed holder asks its own question of the mirror too. The mirror has no end date,
+      // so this reads only status and holder; the live probe is what checks the date, before the
+      // model and again before the send.
+      const holds = snoozedHolder
+        ? conv?.status === "snoozed" && conv.assigneeType === "User"
+        : shouldBotHandle(
+            {
+              assigneeType: conv?.assigneeType ?? null,
+              assigneeId: conv?.assigneeId ?? null,
+              status: conv?.status ?? null,
+              resolvedBy: conv?.resolvedBy ?? null,
+            },
+            {
+              ourAgentBotId: cfg.agentBotId,
+              alsoResolved: params.deliverToResolved,
+            },
+          );
+      return holds
         ? { ours: true as const }
         : {
             ours: false as const,
@@ -1588,8 +1625,9 @@ async function runAgentNudgeBody(
   // this same list, so the directive and the binding cannot disagree.
   // A turn that delivers an approved document binds NO tool: its one job is the line the PDF rides
   // on, and with tools bound a real model tried to attach the file itself, wrote notes and handed
-  // the conversation over (docs/documents.md, Approval).
-  const tools = approved
+  // the conversation over (docs/documents.md, Approval). Nor does the snoozed holder's reminder: it
+  // is one message on a person's behalf, and every tool here would act over that person.
+  const tools = approved || snoozedHolder
     ? []
     : withoutLoneSilenceTool(
         nudgeCfg,
@@ -1830,6 +1868,7 @@ async function runAgentNudgeBody(
     // The model's text is escaped for Chatwoot's Liquid. The operator's is not: the signature, and a
     // guardrail's template or hand-over message standing in for the model's (`modelText` false).
     const literal = modelText ? literalForChatwoot : (t: string) => t;
+    if (params.signature === false) return literal(text);
     const sig = signatureFor(
       cfg.signatureConfig,
       cfg.promptVars,
@@ -2694,6 +2733,14 @@ async function runAgentNudgeBody(
     // sent, and the ladder's resolve falls with the transfer as it does for the tool's. Only while
     // the bot still owns the conversation, the answer every send here waits for: a person already on
     // it needs no transfer.
+    // NOTE: never a transfer under the snoozed holder: the conversation is a person's, and handing it to
+    // the team would take it from them. The judge refused the text, so the reminder is not sent, and
+    // the step ends as a silent one does.
+    if (decision.kind === "handed-off" && snoozedHolder) {
+      const applied = await applyPostActions({ canMessage: canMessagePost });
+      if (applied === "stale") return refuse(standDown());
+      return refuse("silent");
+    }
     if (decision.kind === "handed-off" && canMessagePost) {
       const handed = await applyGuardrailHandoff({
         client,

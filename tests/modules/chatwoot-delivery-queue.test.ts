@@ -12,6 +12,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
+  ADMISSION_MAX_WAITING,
   admissionLaneOf,
   admitChatwootDelivery,
   chatwootAdmissionState,
@@ -110,6 +111,16 @@ describe("admission", () => {
     g.release();
   });
 
+  test("a full turn backlog does not turn a takeover event away", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    for (let i = 0; i <= ADMISSION_MAX_WAITING; i++)
+      admitChatwootDelivery(BigInt(10_000 + i), () => g.gate, "turn");
+    expect(admitChatwootDelivery(20_000n, async () => {}, "turn")).toBe(false);
+    expect(admitChatwootDelivery(20_001n, async () => {}, "meta")).toBe(true);
+    g.release();
+  });
+
   test("only a customer's incoming public message takes the turn lane", () => {
     const msg = (messageType: string, priv = false) =>
       ({
@@ -121,12 +132,17 @@ describe("admission", () => {
         message: { messageType, private: priv },
       }) as unknown as Parameters<typeof admissionLaneOf>[0];
     expect(admissionLaneOf(msg("incoming"))).toBe("turn");
+    // Late media on a customer's message runs its transcription or vision: a turn's cost.
+    expect(
+      admissionLaneOf({ ...msg("incoming"), event: "message_updated" }),
+    ).toBe("turn");
     expect(admissionLaneOf(msg("outgoing"))).toBe("meta");
     expect(admissionLaneOf(msg("incoming", true))).toBe("meta");
     expect(
       admissionLaneOf({
         ...msg("incoming"),
         event: "conversation_status_changed",
+        message: undefined,
       }),
     ).toBe("meta");
   });

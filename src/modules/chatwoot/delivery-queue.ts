@@ -33,21 +33,19 @@ export const STORED_DELIVERY_MIN_AGE_MS = 60_000;
 // for the next pass.
 const DRAIN_BATCH = 500;
 
-// How many deliveries may wait in memory. Past it a delivery is not queued here and stays a PENDING
+// How many deliveries may wait in memory, in each lane. Past it a delivery is not queued here and stays a PENDING
 // row with its body, which the periodic drain takes once it is old enough: memory stays bounded by
 // this, never by the size of a burst.
 export const ADMISSION_MAX_WAITING = 5_000;
 
-// Two lanes with the same limit each. A delivery that can start a turn (a customer's incoming message)
-// may hold its slot for a whole model call; every other event (a status or assignment change, an
-// agent's or a colleague's reply) is what tells a running turn it lost the conversation, so it must
-// not wait behind those turns, or a takeover stays invisible to the turn it should stop.
+// Two lanes with the same limits each. A customer's incoming message, created or updated (late media
+// runs its transcription or vision there), may hold its slot for a whole model call; every other event
+// (a status or assignment change, an agent's or a colleague's reply) is what tells a running turn it
+// lost the conversation, so it must not wait behind those, or a takeover stays invisible to the turn.
 export type AdmissionLane = "turn" | "meta";
 
 export function admissionLaneOf(event: NormalizedChatwootEvent): AdmissionLane {
-  return event.event === "message_created" &&
-    event.message?.messageType === "incoming" &&
-    !event.message.private
+  return event.message?.messageType === "incoming" && !event.message.private
     ? "turn"
     : "meta";
 }
@@ -108,6 +106,8 @@ function admission(): Admission {
 const waitingCount = (a: Admission) =>
   a.lanes.turn.waiting.length + a.lanes.meta.waiting.length;
 
+const failedBound = 2 * ADMISSION_MAX_WAITING;
+
 // Totals over both lanes; `limit` is each lane's.
 export function chatwootAdmissionState(): {
   running: number;
@@ -149,7 +149,7 @@ function pump(a: Admission, laneName: AdmissionLane): void {
           a.failed.delete(next.rowId);
           a.failed.set(next.rowId, next.id);
           // Bounded like the waiting list, dropping the oldest failure first.
-          if (a.failed.size > ADMISSION_MAX_WAITING) {
+          if (a.failed.size > failedBound) {
             const oldest = a.failed.keys().next().value;
             if (oldest !== undefined) a.failed.delete(oldest);
           }
@@ -173,10 +173,11 @@ export function admitChatwootDelivery(
   const a = admission();
   const key = String(rowId);
   if (a.held.has(key)) return false;
-  if (waitingCount(a) >= ADMISSION_MAX_WAITING) {
+  if (a.lanes[lane].waiting.length >= ADMISSION_MAX_WAITING) {
     logger.warn(
-      "chatwoot: %d deliveries already waiting; row %s stays in the ledger for the drain",
-      waitingCount(a),
+      "chatwoot: %d deliveries already waiting in the %s lane; row %s stays in the ledger for the drain",
+      a.lanes[lane].waiting.length,
+      lane,
       key,
     );
     return false;

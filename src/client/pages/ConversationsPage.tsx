@@ -142,6 +142,10 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
   );
 }
 
+// How often a row flagged as awaiting approval is asked again while the list stays open. An object so
+// a test can shorten it.
+export const flagRefresh = { ms: 30_000 };
+
 // Static keys so the skeleton rows don't key off the array index.
 const CONV_SKELETON_KEYS = [
   "conv-0",
@@ -350,6 +354,20 @@ export function ConversationsPage() {
     },
     [],
   );
+
+  // A flagged row is also read again on a slow clock: a decision does not always leave an event (no
+  // bot left to write the note), and the flag must not outlive the request it stands for.
+  const flagged = conversations
+    .filter((c) => c.awaitingApproval)
+    .map((c) => c.id)
+    .join(",");
+  useEffect(() => {
+    if (!flagged) return;
+    const timer = setInterval(() => {
+      for (const id of flagged.split(",")) void refreshAwaitingApproval(id);
+    }, flagRefresh.ms);
+    return () => clearInterval(timer);
+  }, [flagged, refreshAwaitingApproval]);
 
   // Live updates on the active tenant's channel. Known rows merge in place (and
   // re-sort by recency); an unknown id (a brand-new conversation) triggers a

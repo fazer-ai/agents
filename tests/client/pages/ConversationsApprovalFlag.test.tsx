@@ -27,7 +27,9 @@ mock.module("@/client/hooks/useTenantEvents", () => ({
   },
 }));
 
-const { ConversationsPage } = await import("@/client/pages/ConversationsPage");
+const { ConversationsPage, flagRefresh } = await import(
+  "@/client/pages/ConversationsPage"
+);
 
 const realFetch = globalThis.fetch;
 let pending: unknown[] = [];
@@ -157,4 +159,30 @@ test("an older flag answer arriving last does not put back a cleared flag", asyn
     await new Promise((r) => setTimeout(r, 50));
   });
   expect(screen.queryByText("Document awaiting approval")).toBeNull();
+});
+
+test("a flagged row is read again on its own, without any event", async () => {
+  const before = flagRefresh.ms;
+  flagRefresh.ms = 100;
+  render(
+    withI18n(
+      <MemoryRouter initialEntries={["/conversations"]}>
+        <TooltipPrimitive.Provider>
+          <ToastProvider>
+            <ConversationsPage />
+          </ToastProvider>
+        </TooltipPrimitive.Provider>
+      </MemoryRouter>,
+    ),
+  );
+  await screen.findByText("Document awaiting approval");
+  // Decided with no bot left to write in the conversation: no event comes.
+  pending = [];
+  try {
+    await waitFor(() =>
+      expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+    );
+  } finally {
+    flagRefresh.ms = before;
+  }
 });

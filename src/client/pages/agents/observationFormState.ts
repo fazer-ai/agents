@@ -24,6 +24,9 @@ import {
 // next save; the round-trip test (tests/client/observation-form-state.test.ts) guards the next field.
 
 export interface ObservationState {
+  // Whether the settings as read carried a `monitoring` key at all. An answering agent that never
+  // had one saves without one (./monitoringPatch).
+  storedPresent: boolean;
   engine: MonitoringEngine;
   // The engine as it was read. Written back, with the stored block, while the section that chooses
   // it is hidden (an agent flipped to production): a choice nobody can see is not a choice to save.
@@ -54,6 +57,10 @@ export function observationToForm(settings: unknown): ObservationState {
   // persist the difference on the next save.
   const c = readMonitoringConfig(settings);
   return {
+    storedPresent:
+      typeof settings === "object" &&
+      settings !== null &&
+      (settings as Record<string, unknown>).monitoring !== undefined,
     engine: c.engine,
     storedEngine: c.engine,
     // An agent stored on the decisions engine with NO block is one every tick skips. It opens on
@@ -82,16 +89,35 @@ function intOr(v: string, fallback: number): number {
 export function observationToStored(
   form: ObservationState,
   watcher = true,
-): MonitoringConfig {
-  const draft = draftFromForm(form, watcher);
-  const stored = readMonitoringConfig({ monitoring: draft });
+): StoredMonitoring {
+  const { decisions, ...rest } = readMonitoringConfig({
+    monitoring: draftFromForm(form, watcher),
+  });
   // A negative window is REFUSED by the write boundary, so it travels as typed: read through the
   // reader it would become 0, the one value that changes what the agent costs, saved by a typo.
   // Asked of what was TYPED, before the draft rounds it: -0.5 rounds to a zero.
   const typed = Number(form.windowSeconds);
   if (form.windowSeconds.trim() !== "" && typed < 0)
-    stored.debounce.windowSeconds = typed;
-  return stored;
+    rest.debounce.windowSeconds = typed;
+  // No block, no key: the reader answers null for a missing `decisions`, and writing that null
+  // back would store a key the agent never had.
+  return decisions === null ? rest : { ...rest, decisions };
+}
+
+// What the save stores: the reader's shape, with `decisions` present only when there is a block.
+export type StoredMonitoring = Omit<MonitoringConfig, "decisions"> & {
+  decisions?: Record<string, unknown>;
+};
+
+// The `monitoring` part of a Behavior save, spread into the settings it writes. The block is
+// replaced for a watcher and for an agent that already has one; an answering agent whose settings
+// never carried it saves without it, so a save that changed nothing writes nothing there.
+export function monitoringPatch(
+  form: ObservationState,
+  watcher: boolean,
+): { monitoring?: StoredMonitoring } {
+  if (!watcher && !form.storedPresent) return {};
+  return { monitoring: observationToStored(form, watcher) };
 }
 
 // The decisions block a save writes: a form nobody touched writes the stored block back as it is; a

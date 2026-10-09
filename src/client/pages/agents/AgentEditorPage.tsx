@@ -164,9 +164,9 @@ import {
 } from "./observabilityFormState";
 import {
   decisionsBlockToStore,
+  monitoringPatch,
   type ObservationState,
   observationToForm,
-  observationToStored,
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
@@ -1784,7 +1784,7 @@ function AgentEditor() {
       modelFallback: modelFallbackToStored(modelFallback),
       // NOTE: The Observation block replaces `monitoring` the same way; the round-trip test over
       // ./observationFormState is its guard.
-      monitoring: observationToStored(observation, agentMode === "monitoring"),
+      ...monitoringPatch(observation, agentMode === "monitoring"),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,

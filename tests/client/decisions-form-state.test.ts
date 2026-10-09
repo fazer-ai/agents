@@ -125,7 +125,7 @@ describe("the decisions block round trip", () => {
     const emptyRules = { ...minimal, rules: [] };
     for (const decisions of [BLOCK, minimal, emptyRules]) {
       const stored = { monitoring: { engine: "decisions", decisions } };
-      expect(observationToStored(observationToForm(stored))).toEqual(
+      expect<unknown>(observationToStored(observationToForm(stored))).toEqual(
         readMonitoringConfig(stored),
       );
     }
@@ -548,14 +548,14 @@ describe("what a save of the Observation block writes", () => {
     };
     const out = observationToStored(drafted, false);
     expect(out.engine).toBe("llm");
-    expect(out.decisions).toBeNull();
+    expect(out).not.toHaveProperty("decisions");
     // The stored pair goes back whole even when the draft could run: half of an unseen change.
     const fine = observationToForm(stored);
     if (!fine.decisions) throw new Error("fixture");
     fine.decisions.apply = "enforce";
-    expect(observationToStored({ ...fine, engine: "llm" }, false)).toEqual(
-      readMonitoringConfig(stored),
-    );
+    expect<unknown>(
+      observationToStored({ ...fine, engine: "llm" }, false),
+    ).toEqual(readMonitoringConfig(stored));
   });
 
   // Every tick of such an agent is skipped (`decisions_config_invalid`), so the editor must show
@@ -580,7 +580,9 @@ describe("what a save of the Observation block writes", () => {
   });
 
   test("an agent that never had a block writes none", () => {
-    expect(observationToStored(observationToForm({})).decisions).toBeNull();
+    expect(observationToStored(observationToForm({}))).not.toHaveProperty(
+      "decisions",
+    );
   });
 });
 

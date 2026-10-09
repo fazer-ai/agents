@@ -8,6 +8,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
+import { ChatwootStatusConflictError } from "@/modules/chatwoot/client";
 import { asRendered } from "@/modules/chatwoot/liquid";
 import {
   approveDocumentRequest,
@@ -776,6 +777,48 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     }
   });
 
+  test("a note that fails after the replacement reached the customer does not run the turn again", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await withOutputGuardrail({
+      action: "template",
+      templateMessage: "MENSAGEM-SEGURA-DOC",
+    });
+    try {
+      const rec = recordingClient();
+      const client = await rec.makeClient();
+      const noteFails = new Proxy(client as object, {
+        get(t, name: string) {
+          if (name === "sendPrivateNote") {
+            return async () => {
+              throw new Error("chatwoot 502");
+            };
+          }
+          return Reflect.get(t, name);
+        },
+      });
+      const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: async () => noteFails as never,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: tripping(),
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).not.toBe("retry");
+      expect(named(rec.calls, "sendMessage")).toHaveLength(1);
+      expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    } finally {
+      await withoutGuardrail();
+    }
+  });
+
   test("the default caption escapes a title with Liquid once", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({
@@ -1164,7 +1207,12 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("preço do item 2 errado, refazer");
     expect(named(rec.calls, "toggleStatus")).toEqual([
-      ["toggleStatus", chatwootConversationId, "open"],
+      [
+        "toggleStatus",
+        chatwootConversationId,
+        "open",
+        { expectedStatus: "pending" },
+      ],
     ]);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
@@ -1191,8 +1239,55 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     });
     expect(outcome).toBe("handed");
     expect(named(rec.calls, "toggleStatus")).toEqual([
-      ["toggleStatus", chatwootConversationId, "open"],
+      [
+        "toggleStatus",
+        chatwootConversationId,
+        "open",
+        { expectedStatus: "pending" },
+      ],
     ]);
+  });
+
+  test("a rejection whose conversation a person resolves before the hand-over lands leaves only the note", async () => {
+    const { requestId, chatwootConversationId } = await conversationWithRequest(
+      {},
+    );
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    const resolvedMeanwhile = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "toggleStatus") {
+          return async (
+            id: number,
+            status: string,
+            opts?: { expectedStatus?: string },
+          ) => {
+            rec.calls.push(["toggleStatus", id, status, opts]);
+            throw new ChatwootStatusConflictError(id);
+          };
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: async () => resolvedMeanwhile as never,
+      nudgeDeps: { makeModel: noModel },
+    });
+    expect(outcome).toBe("noted");
+    expect(named(rec.calls, "toggleStatus")).toEqual([
+      [
+        "toggleStatus",
+        chatwootConversationId,
+        "open",
+        { expectedStatus: "pending" },
+      ],
+    ]);
+    expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
+    expect(named(rec.calls, "assignTeam")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).not.toContain("passada para um atendente");
   });
 
   test("an expiry of a whole backlog arms one outcome per request", async () => {

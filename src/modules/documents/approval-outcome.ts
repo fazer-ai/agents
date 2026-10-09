@@ -13,7 +13,10 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { parseDbId } from "@/lib/db-id";
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn } from "@/lib/tenancy";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ChatwootClient,
+  ChatwootStatusConflictError,
+} from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
@@ -124,25 +127,29 @@ async function clientFor(
 
 // Whether the bot owns the conversation in Chatwoot itself, asked live: the mirror can lag a person
 // who just took, closed or handed it back, in either direction. `null` when Chatwoot did not answer.
+// The status it read comes along, so a write can be made conditional on it.
 async function botOwnsLive(
   client: ChatwootClient,
   target: Target,
-): Promise<boolean | null> {
+): Promise<{ owned: boolean; status: string } | null> {
   const live = parseLiveConversation(
     await client
       .getConversation(target.conv.chatwootConversationId)
       .catch(() => null),
   );
   if (!live) return null;
-  return shouldBotHandle(
-    {
-      assigneeType: live.assigneeType,
-      status: live.status,
-      assigneeId: live.assigneeId,
-      resolvedBy: target.conv.resolvedBy,
-    },
-    { ourAgentBotId: target.botId },
-  );
+  return {
+    owned: shouldBotHandle(
+      {
+        assigneeType: live.assigneeType,
+        status: live.status,
+        assigneeId: live.assigneeId,
+        resolvedBy: target.conv.resolvedBy,
+      },
+      { ourAgentBotId: target.botId },
+    ),
+    status: live.status,
+  };
 }
 
 export async function runApprovalOutcome(
@@ -193,13 +200,25 @@ export async function runApprovalOutcome(
     // Asked live, right before the routing writes, whatever the mirror says: a hand-over over a person
     // would reopen or reassign their conversation, and a conversation handed back to the bot that the
     // mirror still shows with a person would be left with the bot, unrouted.
-    const owned = await botOwnsLive(client, target);
-    if (owned === null) return "retry";
+    const live = await botOwnsLive(client, target);
+    if (live === null) return "retry";
     if (deps.signal?.aborted) return "retry";
-    // NOTE: the hand-over goes before the note, so a failure in it retries with nothing posted, and
-    // the note only says what already happened.
+    // The hand-over goes before the note, so a failure in it retries with nothing posted, and
+    // the note only says what already happened. The status change is conditional on the status just
+    // read: a person who resolved or took the conversation since then wins, and the outcome is the
+    // note alone.
+    let owned = live.owned;
     if (owned) {
-      await client.toggleStatus(conversationId, "open");
+      try {
+        await client.toggleStatus(conversationId, "open", {
+          expectedStatus: live.status,
+        });
+      } catch (err) {
+        if (!(err instanceof ChatwootStatusConflictError)) throw err;
+        owned = false;
+      }
+    }
+    if (owned) {
       commit();
       await assignPinnedTarget({
         client,
@@ -282,8 +301,9 @@ export async function runApprovalOutcome(
   // conversation, and the PDF must not go out over a person. The turn rechecks live too
   // (requireLiveBotOwnership), so a takeover while the agent writes ends in a note as well.
   const liveClient = await clientFor(tenantId, target, base, deps);
-  const ownedLive = await botOwnsLive(liveClient, target);
-  if (ownedLive === null) return "retry";
+  const liveState = await botOwnsLive(liveClient, target);
+  if (liveState === null) return "retry";
+  const ownedLive = liveState.owned;
   if (!ownedLive) {
     return (await note(
       liveClient,

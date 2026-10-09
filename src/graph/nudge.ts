@@ -988,6 +988,21 @@ async function runAgentNudgeBody(
     markFollowUp(outcome);
     return outcome;
   };
+  // After a message already reached the customer, the document's note is best-effort: a throw would
+  // fail the job, and its retry would run the whole turn and message the customer again.
+  const noteApprovedAfterSend = async (
+    text: string,
+  ): Promise<RunAgentNudgeOutcome> => {
+    try {
+      return await noteApproved(text, "noted");
+    } catch (err) {
+      logger.error(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: the approved document's note could not be posted after the message went out",
+      );
+      return "messaged";
+    }
+  };
   if (approved && !canMessagePre) {
     return noteApproved(approved.heldNote, "noted");
   }
@@ -2390,7 +2405,7 @@ async function runAgentNudgeBody(
     }
     // NOTE: the transfer spoke for this turn and carried no file, so the approved document is now the
     // person's to send, and saying so is the note a held conversation gets.
-    if (approved) return noteApproved(approved.heldNote, "noted");
+    if (approved) return noteApprovedAfterSend(approved.heldNote);
     return promised;
   }
 
@@ -2632,9 +2647,8 @@ async function runAgentNudgeBody(
       markFollowUp("messaged");
       await applyPostActions({ canMessage: canMessagePost });
       if (approved && !attach) {
-        return noteApproved(
+        return noteApprovedAfterSend(
           handoffState.completed ? approved.heldNote : approved.blockedNote,
-          "noted",
         );
       }
       return "messaged";

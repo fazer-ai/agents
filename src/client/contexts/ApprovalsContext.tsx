@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useLocation } from "react-router";
@@ -47,8 +48,13 @@ export function ApprovalsProvider({ children }: { children: ReactNode }) {
   const [knowledgeCount, setKnowledgeCount] = useState(0);
   const [documentCount, setDocumentCount] = useState(0);
   const location = useLocation();
+  // Each refresh numbers its reads, and only the latest one's answers are kept: a navigation's read
+  // still in flight when a decision refreshes again must not bring the old count back.
+  const generation = useRef(0);
 
   const refresh = useCallback(() => {
+    const mine = ++generation.current;
+    const current = () => mine === generation.current;
     if (!signedIn) {
       setKnowledgeCount(0);
       setDocumentCount(0);
@@ -57,7 +63,7 @@ export function ApprovalsProvider({ children }: { children: ReactNode }) {
     api.api.v1["document-approvals"].pending
       .get()
       .then(({ data }) => {
-        if (data) setDocumentCount(data.total);
+        if (data && current()) setDocumentCount(data.total);
       })
       .catch(() => {});
     if (!isAdmin) {
@@ -67,7 +73,7 @@ export function ApprovalsProvider({ children }: { children: ReactNode }) {
     api.api.v1.knowledge.approvals
       .get()
       .then(({ data }) => {
-        if (data) setKnowledgeCount(data.approvals.length);
+        if (data && current()) setKnowledgeCount(data.approvals.length);
       })
       .catch(() => {});
   }, [isAdmin, signedIn]);

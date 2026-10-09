@@ -71,7 +71,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
   if (url.includes("/document-approvals/pending")) {
-    const answer = pending(url);
+    const answer = await pending(url);
     return answer instanceof Response ? answer : json(answer);
   }
   if (
@@ -267,4 +267,42 @@ test("a next page that fails says so and keeps what was loaded", async () => {
     screen.getByRole("link", { name: /Orçamento for Ana Ribeiro/ }),
   ).toBeTruthy();
   expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
+});
+
+test("an older count that lands after a newer refresh does not bring the old number back", async () => {
+  role = "AGENT";
+  let open: () => void = () => {};
+  const slow = new Promise<void>((r) => {
+    open = r;
+  });
+  let calls = 0;
+  pending = () => {
+    calls += 1;
+    // The first read (the mount's) is held; the second (the refresh) answers at once.
+    if (calls === 1) {
+      return slow.then(() => json({ requests: [], total: 5, nextAfter: null }));
+    }
+    return { requests: [DOCUMENT], total: 1, nextAfter: null };
+  };
+  function Refresher() {
+    const { refresh } = usePendingApprovals();
+    return (
+      <button type="button" onClick={refresh}>
+        again
+      </button>
+    );
+  }
+  mount(
+    <>
+      <Badge />
+      <Refresher />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "again" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("badge").textContent).toBe("1"),
+  );
+  open();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(screen.getByTestId("badge").textContent).toBe("1");
 });

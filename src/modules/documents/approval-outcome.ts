@@ -424,6 +424,9 @@ export async function runApprovalOutcome(
         ),
       );
   }
+  // Whether the PDF itself went out: a turn can message the customer without it (the guardrail replaced
+  // the line, the judge handed over), and that is not a delivery.
+  let attached = false;
   const outcome: RunAgentNudgeOutcome = await runAgentNudge({
     tenantId,
     threadId: target.conv.threadId,
@@ -449,6 +452,9 @@ export async function runApprovalOutcome(
       blockedNote: withPage(
         `Documento aprovado${by}: ${named}. A resposta do agente foi barrada pela política de saída, então o PDF não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
       ),
+      onAttached: () => {
+        attached = true;
+      },
       stillValid: async () => {
         const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.issuedDocument.findUnique({
@@ -469,7 +475,7 @@ export async function runApprovalOutcome(
     outcome === "noted-window"
   ) {
     commit();
-    return outcome === "messaged" ? "delivered" : "noted";
+    return outcome === "messaged" && attached ? "delivered" : "noted";
   }
   if (outcome === "live-unavailable") return "retry";
   // Every other end sent nothing (the spend ceiling, an agent switched off, a contact the gate
@@ -574,7 +580,19 @@ export async function runOutcomeJob(
   if (outcome === "retry") {
     return { outcome: "fail", error: "conversation ownership unavailable" };
   }
-  await recordOutcome(tenantId, requestId, outcome, base);
+  // Best effort: the outcome already reached the conversation, and a throw here would fail the job and
+  // run the delivery again.
+  await recordOutcome(tenantId, requestId, outcome, base).catch(
+    (err: unknown) =>
+      logger.warn(
+        {
+          tenantId: String(tenantId),
+          requestId: String(requestId),
+          err: (err as Error).message,
+        },
+        "document approval: the outcome could not be recorded",
+      ),
+  );
   return { outcome: "done" };
 }
 

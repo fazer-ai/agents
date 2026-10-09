@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
+import { listConversations } from "@/modules/conversations/service";
 import {
   countPendingApprovals,
   getApprovalRequest,
@@ -764,6 +765,20 @@ describe.skipIf(!dbUp)(
       const read = await getApprovalRequest(ctx(), approved.requestId, appDb);
       expect(read.reviewerName).toBe("Bruno Revisor");
       await suDb.user.delete({ where: { id: reviewer.id } });
+    });
+
+    test("the conversations list flags a conversation whose document waits on the team", async () => {
+      const waiting = await newRequest();
+      const lapsed = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: lapsed.requestId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const page = await listConversations(ctx(), { limit: 100 }, appDb);
+      const flag = (id: bigint) =>
+        page.items.find((c) => c.id === String(id))?.awaitingApproval;
+      expect(flag(waiting.conversationId)).toBe(true);
+      expect(flag(lapsed.conversationId)).toBe(false);
     });
 
     test("a conversation's requests are listed apart from every other conversation's", async () => {

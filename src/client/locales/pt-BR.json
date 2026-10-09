@@ -767,6 +767,7 @@
       "ai": "IA",
       "human": "Humano #{{id}}"
     },
+    "awaitingApproval": "Documento aguardando aprovação",
     "drill": {
       "all": "todas as conversas",
       "clear": "Limpar o filtro do painel",
@@ -1076,6 +1077,7 @@
     "decidedByAt": "Decidido por {{name}} em {{at}}",
     "deliveredHint": "Enviado ao cliente em {{at}}.",
     "email": "E-mail",
+    "expiredAt": "Venceu em {{at}}",
     "expiredHint": "Ninguém respondeu a tempo, então nada foi enviado. Pedir de novo gera o documento com a data de hoje, como um pedido novo.",
     "expiresAt": "Vence em {{at}}",
     "expiring": "Este pedido passou do prazo e está sendo encerrado.",
@@ -1089,6 +1091,7 @@
     "notePlaceholder": "O que está errado",
     "notFound": "Ele não existe nesta organização, ou pertence a outra.",
     "notFoundTitle": "Este pedido de aprovação não está aqui",
+    "notSentHint": "Não enviado ao cliente: uma nota privada na conversa explica o motivo. O documento numerado está aqui ao lado para enviar pelo Chatwoot.",
     "openConversation": "Abrir a conversa #{{number}}",
     "outcome": {
       "delivered": "Enviado ao cliente",

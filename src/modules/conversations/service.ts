@@ -137,6 +137,9 @@ export interface ConversationListItem {
   // True when the bound agent's availability schedule is currently closed (item 23). Computed
   // server-side; false when no agent / no schedule.
   outOfHours: boolean;
+  // True when a document of this conversation waits on the team (docs/documents.md, Approval):
+  // pending and not past its validity, as the approvals queue counts it.
+  awaitingApproval: boolean;
 }
 
 export interface ConversationsPage {
@@ -328,6 +331,24 @@ export async function listConversations(
       );
     }
   }
+  // The page's conversations with a document waiting on the team, in one query.
+  const awaiting = new Set<string>();
+  if (rows.length > 0) {
+    const now = new Date();
+    const pending = await runScopedOn(base, ctx, (db) =>
+      db.documentApprovalRequest.findMany({
+        where: {
+          conversationId: { in: rows.map((r) => r.id) },
+          status: "PENDING",
+          expiresAt: { gt: now },
+        },
+        select: { conversationId: true },
+      }),
+    );
+    for (const p of pending) {
+      if (p.conversationId !== null) awaiting.add(String(p.conversationId));
+    }
+  }
   const agentOutOfHours = (agentId: bigint | null | undefined): boolean => {
     if (agentId == null) return false;
     const hId = agentHoursId.get(String(agentId));
@@ -353,6 +374,7 @@ export async function listConversations(
         ? (agentNameById.get(String(r.inbox.agentId)) ?? null)
         : null,
     outOfHours: agentOutOfHours(r.inbox?.agentId),
+    awaitingApproval: awaiting.has(String(r.id)),
     observerNames: (r.inbox?.observers ?? [])
       .map((o) => agentNameById.get(String(o.agentId)))
       .filter((n): n is string => n != null),

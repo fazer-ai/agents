@@ -3,6 +3,7 @@ import {
   Bot,
   ChevronRight,
   Eye,
+  FileClock,
   MessagesSquare,
   Search,
   User,
@@ -77,6 +78,15 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
               </Badge>
             )}
             {c.outOfHours && <OutOfHoursBadge />}
+            {c.awaitingApproval && (
+              <Badge variant="warning" className="flex items-center gap-1">
+                <FileClock className="h-3 w-3" aria-hidden="true" />
+                {t(
+                  "conversations.awaitingApproval",
+                  "Document awaiting approval",
+                )}
+              </Badge>
+            )}
             {c.observerNames.length > 0 && (
               <Badge variant="secondary" className="flex items-center gap-1">
                 <Eye className="h-3 w-3" aria-hidden="true" />

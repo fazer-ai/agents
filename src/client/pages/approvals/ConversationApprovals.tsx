@@ -22,9 +22,9 @@ type ListResp = Awaited<
 >;
 type ApprovalRow = NonNullable<ListResp["data"]>["requests"][number];
 
-// Enough to find every pending request of one conversation; a conversation with more is not a case
-// the agent's own tool lets happen (one request per template, thread and day).
-const SHOWN = 10;
+// The pending requests of one conversation are read on their own, so a run of newer decided ones can
+// never push a waiting document out of the strip; the latest is read only when none waits.
+const PENDING_SHOWN = 50;
 const SETTLE_POLL_MS = 3000;
 const SETTLE_WINDOW_MS = 2 * 60_000;
 
@@ -51,10 +51,23 @@ export function ConversationApprovals({
     let cancelled = false;
     (async () => {
       try {
-        const { data } = await api.api.v1["document-approvals"].get({
-          query: { conversationId, limit: String(SHOWN) },
+        const list = api.api.v1["document-approvals"];
+        const waiting = await list.get({
+          query: {
+            conversationId,
+            status: "PENDING",
+            limit: String(PENDING_SHOWN),
+          },
         });
-        if (!cancelled && data) setRows(data.requests);
+        if (cancelled || !waiting.data) return;
+        if (waiting.data.requests.length > 0) {
+          setRows(waiting.data.requests);
+          return;
+        }
+        const latest = await list.get({
+          query: { conversationId, limit: "1" },
+        });
+        if (!cancelled && latest.data) setRows(latest.data.requests);
       } catch {
         // Nothing to show is the safe reading: the conversation itself is what the page is for.
       }

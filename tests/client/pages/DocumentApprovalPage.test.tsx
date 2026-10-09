@@ -519,3 +519,38 @@ test("a rejected request says what the rejection came to in the conversation", a
   await screen.findByText(/Rejected with the note: valor errado/);
   await screen.findByText("Conversation handed to a person");
 });
+
+test("an approval that could not be sent points to the numbered document to send by hand, and an expiry says when it expired", async () => {
+  handler = async (url) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/21")) {
+      return json({
+        request: request("21", {
+          status: "APPROVED",
+          reviewerName: "Ana Souza",
+          decidedAt: new Date().toISOString(),
+          issuedDocumentId: "8",
+          outcome: "NOTED",
+          outcomeAt: new Date().toISOString(),
+        }),
+      });
+    }
+    if (url.includes("/document-approvals/22")) {
+      return json({
+        request: request("22", {
+          status: "EXPIRED",
+          expiresAt: new Date(0).toISOString(),
+          decidedAt: new Date().toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/21");
+  await screen.findByText(/to send from Chatwoot/);
+  cleanup();
+  mount("/document-approvals/22");
+  await screen.findByText(/^Expired /);
+  expect(screen.queryByText(/^Decided /)).toBeNull();
+});

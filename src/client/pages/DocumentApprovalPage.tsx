@@ -433,20 +433,24 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 ? t("documentApproval.expiresAt", "Expires {{at}}", {
                     at: formatTime(request.expiresAt),
                   })
-                : request.decidedAt
-                  ? request.reviewerName
-                    ? t(
-                        "documentApproval.decidedByAt",
-                        "Decided by {{name}} {{at}}",
-                        {
-                          name: request.reviewerName,
+                : request.status === "EXPIRED"
+                  ? t("documentApproval.expiredAt", "Expired {{at}}", {
+                      at: formatTime(request.expiresAt),
+                    })
+                  : request.decidedAt
+                    ? request.reviewerName
+                      ? t(
+                          "documentApproval.decidedByAt",
+                          "Decided by {{name}} {{at}}",
+                          {
+                            name: request.reviewerName,
+                            at: formatTime(request.decidedAt),
+                          },
+                        )
+                      : t("documentApproval.decidedAt", "Decided {{at}}", {
                           at: formatTime(request.decidedAt),
-                        },
-                      )
-                    : t("documentApproval.decidedAt", "Decided {{at}}", {
-                        at: formatTime(request.decidedAt),
-                      })
-                  : null}
+                        })
+                    : null}
             </span>
           </div>
 
@@ -686,7 +690,12 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                               "documentApproval.approvedHint",
                               "Approved. The agent sends the document in the conversation, or leaves a note when it cannot.",
                             )
-                          : approvalOutcomeLabel(request, t)}
+                          : request.outcome === "NOTED"
+                            ? t(
+                                "documentApproval.notSentHint",
+                                "Not sent to the customer: a private note in the conversation says why. The document is beside this, numbered, to send from Chatwoot.",
+                              )
+                            : approvalOutcomeLabel(request, t)}
                     </p>
                   )}
                 {/* Approved, but the document was never issued (the template went away after the

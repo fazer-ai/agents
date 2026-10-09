@@ -18,7 +18,11 @@ let rows: unknown[] = [];
 globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
-  return new Response(JSON.stringify({ requests: rows }), {
+  // As the server answers: the pending ones on their own, else the latest.
+  const answer = url.includes("status=PENDING")
+    ? rows.filter((r) => (r as { status: string }).status === "PENDING")
+    : rows.slice(0, 1);
+  return new Response(JSON.stringify({ requests: answer }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
@@ -102,4 +106,23 @@ test("a conversation with no request shows nothing", async () => {
   );
   await new Promise((r) => setTimeout(r, 20));
   expect(container.textContent).toBe("");
+});
+
+test("a waiting request older than many decided ones still shows", async () => {
+  rows = [
+    ...Array.from({ length: 12 }, (_, i) =>
+      row(String(100 - i), { status: "REJECTED" }),
+    ),
+    row("3"),
+  ];
+  render(
+    <MemoryRouter>
+      <ConversationApprovals conversationId="29" refreshKey={0} />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Waiting for approval");
+  expect(
+    screen.getByRole("link", { name: "Review" }).getAttribute("href"),
+  ).toBe("/document-approvals/3");
+  expect(screen.queryByText("Rejected")).toBeNull();
 });

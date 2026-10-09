@@ -749,6 +749,7 @@
       "ai": "AI",
       "human": "Human #{{id}}"
     },
+    "awaitingApproval": "Document awaiting approval",
     "drill": {
       "all": "every conversation",
       "clear": "Clear the dashboard filter",
@@ -1045,6 +1046,7 @@
     "decidedByAt": "Decided by {{name}} {{at}}",
     "deliveredHint": "Sent to the customer {{at}}.",
     "email": "Email",
+    "expiredAt": "Expired {{at}}",
     "expiredHint": "Nobody answered in time, so nothing was sent. Requesting it again renders it with today's date as a new request.",
     "expiresAt": "Expires {{at}}",
     "expiring": "This request ran out of time and is being closed.",
@@ -1058,6 +1060,7 @@
     "notePlaceholder": "What is wrong with it",
     "notFound": "It does not exist in this organization, or it belongs to another one.",
     "notFoundTitle": "This approval request is not here",
+    "notSentHint": "Not sent to the customer: a private note in the conversation says why. The document is beside this, numbered, to send from Chatwoot.",
     "openConversation": "Open conversation #{{number}}",
     "outcome": {
       "delivered": "Sent to the customer",

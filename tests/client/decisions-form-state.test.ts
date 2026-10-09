@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  actionScope,
   conditionFor,
   decisionsFormIssues,
   decisionsRefusalFrom,
@@ -9,6 +10,7 @@ import {
   decisionsUntouched,
   issuesUnder,
   ruleIsBroken,
+  withActionScope,
 } from "@/client/pages/agents/decisionsFormState";
 import {
   decisionsBlockToStore,
@@ -579,6 +581,41 @@ describe("what a save of the Observation block writes", () => {
 
   test("an agent that never had a block writes none", () => {
     expect(observationToStored(observationToForm({})).decisions).toBeNull();
+  });
+});
+
+describe("where a labels or attribute action writes", () => {
+  const rule = (args: Record<string, unknown>, tool = "set_custom_attribute") =>
+    got(
+      formOf({ ...BLOCK, rules: [{ when: [], action: { tool, args } }] })
+        .rules[0],
+    );
+
+  test("is the conversation unless the stored argument says otherwise", () => {
+    expect(actionScope(rule({ key: "a", value: "b" }))).toBe("conversation");
+    expect(actionScope(rule({ key: "a", value: "b", scope: "contact" }))).toBe(
+      "contact",
+    );
+  });
+
+  test("changing it drops the attribute key, which belonged to the other scope", () => {
+    const contact = rule({ key: "tier", value: "gold", scope: "contact" });
+    expect(withActionScope(contact, "conversation").args).toEqual({
+      value: "gold",
+    });
+    expect(
+      withActionScope(rule({ key: "a", value: "b" }), "contact").args,
+    ).toEqual({ value: "b", scope: "contact" });
+    // Choosing the scope it already has changes nothing.
+    expect(withActionScope(contact, "contact").args).toEqual(contact.args);
+  });
+
+  test("a labels action keeps its labels across a scope change", () => {
+    const labels = rule({ add: ["vip"] }, "set_labels");
+    expect(withActionScope(labels, "contact").args).toEqual({
+      add: ["vip"],
+      scope: "contact",
+    });
   });
 });
 

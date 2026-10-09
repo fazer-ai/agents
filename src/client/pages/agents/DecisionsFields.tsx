@@ -22,6 +22,7 @@ import {
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
+import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import {
   CHOICE_OPTIONS_MAX,
   DECISION_ACTION_TOOLS,
@@ -44,6 +45,7 @@ import {
 } from "./decisionsActivity";
 import {
   actionGap,
+  actionScope,
   conditionFor,
   DECISION_TEXT_FIELD_MAX,
   type DecisionConditionForm,
@@ -57,6 +59,7 @@ import {
   issuesUnder,
   moveItem,
   ruleIsBroken,
+  withActionScope,
 } from "./decisionsFormState";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 
@@ -807,9 +810,40 @@ export function DecisionsFields({
         ? v.filter((x): x is string => typeof x === "string")
         : [];
     const str = (v: unknown): string => (typeof v === "string" ? v : "");
+    const scope = actionScope(rule);
+    const scopeField = (
+      <FormField
+        label={t("editor.decisionsScope", "Written to")}
+        className="sm:col-span-2"
+      >
+        <Select
+          value={scope}
+          wrapperClassName="max-w-52"
+          onChange={(e) =>
+            setDecisions((prev) => ({
+              ...prev,
+              rules: prev.rules.map((r, n) =>
+                n === ri ? withActionScope(r, e.target.value) : r,
+              ),
+            }))
+          }
+        >
+          {!["conversation", "contact"].includes(scope) && (
+            <option value={scope}>{scope}</option>
+          )}
+          <option value="conversation">
+            {t("editor.decisionsScopeConversation", "The conversation")}
+          </option>
+          <option value="contact">
+            {t("editor.decisionsScopeContact", "The contact")}
+          </option>
+        </Select>
+      </FormField>
+    );
     if (rule.tool === "set_labels") {
       return (
         <div className="grid gap-3 sm:grid-cols-2">
+          {scopeField}
           <FormField group label={t("editor.decisionsLabelsAdd", "Add labels")}>
             <LabelPicker
               values={strings(rule.args.add)}
@@ -837,6 +871,7 @@ export function DecisionsFields({
     if (rule.tool === "set_custom_attribute") {
       return (
         <div className="grid gap-3 sm:grid-cols-2">
+          {scopeField}
           <FormField
             group
             label={t("editor.decisionsAttributeKey", "Attribute")}
@@ -845,7 +880,10 @@ export function DecisionsFields({
               value={str(rule.args.key)}
               onChange={(v) => setArg(ri, "key", v)}
               items={attributes
-                .filter((d) => d.model === "conversation_attribute")
+                .filter(
+                  (d) =>
+                    d.model === (SCOPE_MODEL as Record<string, string>)[scope],
+                )
                 .map((d) => ({
                   id: d.key,
                   label: d.displayName || d.key,
@@ -853,7 +891,7 @@ export function DecisionsFields({
                 }))}
               placeholder={t(
                 "editor.decisionsAttributeKeyPlaceholder",
-                "Pick a conversation attribute…",
+                "Pick an attribute…",
               )}
               searchPlaceholder={t(
                 "editor.attributeContextSearch",

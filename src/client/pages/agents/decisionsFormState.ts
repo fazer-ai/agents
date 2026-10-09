@@ -342,6 +342,30 @@ export function actionGap(rule: DecisionRuleForm): ActionGap | null {
   return null;
 }
 
+// WHERE a labels or attribute action writes: the conversation unless `args.scope` says otherwise
+// (the tools' own default). Read and written here so the picker and the stored argument cannot
+// disagree: an attribute key belongs to one scope, and offering a conversation's keys for a rule
+// stored with `scope: "contact"` would save a rule that writes the wrong thing to the contact.
+export function actionScope(rule: DecisionRuleForm): string {
+  return typeof rule.args.scope === "string" && rule.args.scope
+    ? rule.args.scope
+    : "conversation";
+}
+
+export function withActionScope(
+  rule: DecisionRuleForm,
+  scope: string,
+): DecisionRuleForm {
+  const args = { ...rule.args };
+  if (scope === "conversation") delete args.scope;
+  else args.scope = scope;
+  // The key named an attribute of the scope it was picked in.
+  if (rule.tool === "set_custom_attribute" && scope !== actionScope(rule)) {
+    delete args.key;
+  }
+  return { ...rule, args };
+}
+
 // The pieces the list editors share: every one returns a new form, so a `setState` can take them.
 export function moveItem<T>(items: T[], from: number, to: number): T[] {
   if (to < 0 || to >= items.length || from === to) return items;

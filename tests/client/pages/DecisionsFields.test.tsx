@@ -298,6 +298,40 @@ describe("the decisions engine in the agent editor", () => {
     ]);
   });
 
+  test("an attribute rule stored for the contact says so, and offers the contact's attributes", () => {
+    stubApi();
+    renderSection({
+      monitoring: {
+        engine: "decisions",
+        decisions: {
+          ...BLOCK,
+          rules: [
+            {
+              when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+              // No key yet, so the card opens on its warning and the fields are drawn.
+              action: {
+                tool: "set_custom_attribute",
+                args: { value: "x", scope: "contact" },
+              },
+            },
+          ],
+        },
+      },
+    });
+    const scope = screen.getByRole("combobox", {
+      name: /Written to/,
+    }) as HTMLSelectElement;
+    expect(scope.value).toBe("contact");
+    fireEvent.change(scope, { target: { value: "conversation" } });
+    expect(
+      (
+        screen.getByRole("combobox", {
+          name: /Written to/,
+        }) as HTMLSelectElement
+      ).value,
+    ).toBe("conversation");
+  });
+
   test("a refusal the server names a field for is shown at that field", () => {
     stubApi();
     renderSection(

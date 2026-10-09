@@ -197,7 +197,7 @@ async function turnKeysOf(
   // The mirror row, for the console broadcast of the claim; null when the mirror does not know it.
   rowId: bigint | null;
   lastEventAt: Date | null;
-  lastInboundAt: Date | null;
+  lastInboundMessageId: number | null;
 }> {
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findFirst({
@@ -210,7 +210,7 @@ async function turnKeysOf(
         id: true,
         contactInboxId: true,
         lastEventAt: true,
-        lastInboundAt: true,
+        lastInboundMessageId: true,
       },
     }),
   );
@@ -226,7 +226,7 @@ async function turnKeysOf(
     contactInboxId,
     rowId: row?.id ?? null,
     lastEventAt: row?.lastEventAt ?? null,
-    lastInboundAt: row?.lastInboundAt ?? null,
+    lastInboundMessageId: row?.lastInboundMessageId ?? null,
   };
 }
 
@@ -393,7 +393,7 @@ export async function announceFailedTurn(params: {
             seen: ownership,
             // Read before the last ask: a customer message mirrored since starts a direct turn that
             // the reservation does not hold back, and loses the swap here instead of its reply.
-            newestInbound: { lastInboundAt: keys.lastInboundAt },
+            newestInbound: { messageId: keys.lastInboundMessageId },
             base,
           });
           // The turn is still lost (`lastAsk` stays so): only the hand-over yields, and the note asks

@@ -1804,6 +1804,54 @@ describe.skipIf(!dbUp)(
           }),
         });
 
+      test("the newest inbound message id moves forward with every message and never back", async () => {
+        const convId = 94;
+        const idOf = async () =>
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: convId },
+              select: { lastInboundMessageId: true },
+            })
+          ).lastInboundMessageId;
+        // Created by the first message, applied in order.
+        await staleIncoming(convId, {
+          messageId: 9100,
+          at: T + 100,
+          snapshotAt: T + 100,
+        });
+        expect(await idOf()).toBe(9100);
+        // A second message in the SAME second: the time mark cannot move, the id does.
+        await staleIncoming(convId, {
+          messageId: 9101,
+          at: T + 100,
+          snapshotAt: T + 100.5,
+        });
+        expect(await idOf()).toBe(9101);
+        // An older message re-sent late (stale branch) never moves it back.
+        await staleIncoming(convId, {
+          messageId: 9050,
+          at: T + 50,
+          snapshotAt: T + 50,
+        });
+        expect(await idOf()).toBe(9101);
+        // A newer message whose snapshot is behind the conversation's state (a recovered delivery)
+        // takes the stale branch and still moves it: the id is a message's, not the state's.
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(convId, {
+            status: "pending",
+            lastActivityAt: T + 600,
+            updatedAt: T + 600,
+          }),
+        });
+        await staleIncoming(convId, {
+          messageId: 9200,
+          at: T + 300,
+          snapshotAt: T + 300,
+        });
+        expect(await idOf()).toBe(9200);
+      });
+
       test("a stale incoming message AHEAD of the watermark moves it", async () => {
         const convId = 90;
         // The conversation exists and its state is at T + 600.

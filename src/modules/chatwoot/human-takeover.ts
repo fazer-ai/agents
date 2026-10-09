@@ -154,14 +154,10 @@ export async function claimOpenForHumanQueue(p: {
     // back to `pending`). Without it the swap would win against a newer decision.
     consoleWriteAtMessageId: number | null;
   };
-  // Also pinned when given: the newest customer message the caller decided on, by both marks a new
-  // message moves. The failed-turn hand-over passes them, because a direct turn for a newer message
-  // does not wait on its reservation and the message is mirrored, under this same lock, before that
-  // turn starts. `lastInboundAt` is whole seconds, so two messages in one second share it; the status
-  // version is the source's fractional `updated_at`, which every versioned message event moves (a
-  // restatement too, which here is the right side to err on), and the inbound mark covers a Chatwoot
-  // that sends no version.
-  newestInbound?: { lastInboundAt: Date | null };
+  // Also pinned when given: the newest customer message the caller decided on, by its Chatwoot id.
+  // The failed-turn hand-over passes it, because a direct turn for a newer message does not wait on
+  // its reservation and the message is mirrored, under this same lock, before that turn starts.
+  newestInbound?: { messageId: number | null };
   base: PrismaClient;
 }): Promise<Date | null> {
   return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
@@ -195,10 +191,7 @@ export async function claimOpenForHumanQueue(p: {
             assigneeId: p.seen.assigneeId,
             consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
             ...(p.newestInbound !== undefined
-              ? {
-                  lastInboundAt: p.newestInbound.lastInboundAt,
-                  chatwootStatusAt: p.seen.statusAt,
-                }
+              ? { lastInboundMessageId: p.newestInbound.messageId }
               : {}),
           },
           data: {

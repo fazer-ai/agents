@@ -947,6 +947,12 @@ model Conversation {
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.
   lastInboundAt                DateTime? @map("last_inbound_at")
+  // The Chatwoot id of the newest incoming customer message mirrored here, moved with
+  // `lastInboundAt` and only forward. An IDENTITY where that one is a time: two messages in one
+  // second share `lastInboundAt`, never this. Pinned by the failed-turn hand-over's claim
+  // (src/modules/conversations/failure-note.ts), so a message mirrored after its last ask makes the
+  // claim lose. NULL = none mirrored since the column existed.
+  lastInboundMessageId         Int?      @map("last_inbound_message_id")
   // The newest Chatwoot message id the contact authorization gate REFUSED here (issue #890). Media of a
   // message at or below it is never sent to an STT or vision provider, whatever the gate answers
   // later: a consent given after a file was sent does not cover that file, and a late update of the

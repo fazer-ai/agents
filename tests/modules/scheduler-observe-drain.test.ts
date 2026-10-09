@@ -162,25 +162,22 @@ describe.skipIf(!dbUp)("the observe lane's fast drain", () => {
     const h = held();
     registerJobHandler("OBSERVE", h.handler);
     for (const key of ["slot-a", "slot-b", "slot-c"]) await arm(key);
-    // A drain interval far longer than the test: what starts after the first claim was started by a
-    // slot being freed, not by the clock.
+    // The interval is a minute away: the first claim is asked for by hand, and what starts after it
+    // was started by a slot being freed, not by the clock.
     startScheduler({
       base: appDb,
       intervalMs: 60_000,
-      observeIntervalMs: 400,
+      observeIntervalMs: 60_000,
       tenantId,
       providerConcurrency: 2,
     });
-    await until(() => h.started.length >= 2, 3_000);
-    // Two ticks more, and the third row is still waiting for a slot.
-    await sleep(900);
+    wakeObserveDrainAt(new Date());
+    await until(() => h.started.length >= 2, 5_000);
+    await sleep(400);
     expect(h.started).toHaveLength(2);
-    const freedAt = Date.now();
     h.release(h.started[0]);
-    await until(() => h.started.length >= 3, 3_000);
+    await until(() => h.started.length >= 3, 5_000);
     expect(h.started).toHaveLength(3);
-    // Well inside one interval: the freed slot was filled at once.
-    expect(Date.now() - freedAt).toBeLessThan(300);
     h.release();
   });
 

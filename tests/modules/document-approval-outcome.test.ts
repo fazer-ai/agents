@@ -1395,8 +1395,31 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         base: appDb,
       });
       const ok = recordingClient();
+      const okClient = await ok.makeClient();
+      // Chatwoot answers the status this run's own toggle set.
+      let opened = false;
+      const opening = new Proxy(okClient as object, {
+        get(t, name: string) {
+          if (name === "toggleStatus") {
+            return async (...args: unknown[]) => {
+              opened = true;
+              return (
+                Reflect.get(t, name) as (...a: unknown[]) => Promise<unknown>
+              )(...args);
+            };
+          }
+          if (name === "getConversation") {
+            return async (id: number) => ({
+              id,
+              status: opened ? "open" : "pending",
+              meta: {},
+            });
+          }
+          return Reflect.get(t, name);
+        },
+      });
       await runApprovalOutcome(tenantId, control.requestId, appDb, {
-        makeClient: ok.makeClient,
+        makeClient: async () => opening as never,
         nudgeDeps: { makeModel: noModel },
       });
       expect(named(ok.calls, "assignTeam")).toHaveLength(1);
@@ -1416,7 +1439,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
                 ? { id, status: "pending", meta: {} }
                 : {
                     id,
-                    status: "pending",
+                    status: "open",
                     meta: { assignee_type: "User", assignee: { id: 5 } },
                   };
             };

@@ -125,6 +125,21 @@ async function clientFor(
   });
 }
 
+// After this run opened the conversation for the team: still open, and no person assigned to it.
+async function stillUnclaimed(
+  client: ChatwootClient,
+  target: Target,
+): Promise<boolean> {
+  const live = parseLiveConversation(
+    await client
+      .getConversation(target.conv.chatwootConversationId)
+      .catch(() => null),
+  );
+  return (
+    live !== null && live.status === "open" && live.assigneeType !== "User"
+  );
+}
+
 // Whether the bot owns the conversation in Chatwoot itself, asked live: the mirror can lag a person
 // who just took, closed or handed it back, in either direction. `null` when Chatwoot did not answer.
 // The status it read comes along, so a write can be made conditional on it.
@@ -222,10 +237,10 @@ export async function runApprovalOutcome(
       commit();
     }
     // A person can take the conversation without changing its status, which the precondition above
-    // cannot see: asked again before the assignment, so it never overwrites theirs. The status has
-    // already moved, so the conversation is with the team either way.
-    const assignable =
-      owned && (await botOwnsLive(client, target))?.owned === true;
+    // cannot see: asked again before the assignment, so it never overwrites theirs. Not through
+    // `botOwnsLive`, which wants `pending`: this run just opened it, so what is asked is whether it is
+    // still open and nobody holds it.
+    const assignable = owned && (await stillUnclaimed(client, target));
     if (assignable) {
       await assignPinnedTarget({
         client,

@@ -430,6 +430,47 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
   };
 }
 
+// WHICH QUESTIONS AND RULES A TICK RAN, as a short stable mark the tick writes on its log line
+// (`block`). A line names a rule by its index, and an index means nothing without the list it
+// indexes: a tick that was in flight while the rules were reordered finishes after the save and
+// would otherwise be read against the new order. Whoever counts lines (the console's "what it has
+// been doing") compares this mark with the block it is showing and counts only the lines that ran
+// it. Over the questions and rules alone, so flipping `apply` or the credential keeps the history.
+// Keys are sorted at every level: the stored block comes back from `jsonb` in its own key order.
+export function decisionsFingerprint(
+  config: Pick<DecisionsConfig, "questions" | "rules">,
+): string {
+  const canon = (v: unknown): unknown =>
+    Array.isArray(v)
+      ? v.map(canon)
+      : v && typeof v === "object"
+        ? Object.fromEntries(
+            Object.entries(v as Record<string, unknown>)
+              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+              .map(([k, x]) => [k, canon(x)]),
+          )
+        : v;
+  const text = JSON.stringify(
+    canon({ questions: config.questions, rules: config.rules }),
+  );
+  // FNV-1a, twice with different offsets: not a secret, only a mark two honest sides compute.
+  const fnv = (seed: number) => {
+    let h = seed;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16).padStart(8, "0");
+  };
+  return fnv(0x811c9dc5) + fnv(0x01234567);
+}
+
+// The same mark for a stored block, or null when the block could not run (no tick ran it).
+export function decisionsBlockFingerprint(block: unknown): string | null {
+  const read = readDecisionsConfig({ decisions: block });
+  return read.ok ? decisionsFingerprint(read.config) : null;
+}
+
 function opt(o: { value?: string; description?: string }): DecisionOption {
   return { value: o.value ?? "", description: o.description ?? "" };
 }

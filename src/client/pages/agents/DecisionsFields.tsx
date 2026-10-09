@@ -254,14 +254,18 @@ type CustomAttribute = { key: string; displayName: string; model: string };
 export function DecisionsFields({
   agentId,
   savedAt,
+  storedBlock,
   decisions,
   setDecisions,
   credentialError,
   serverRefusal,
 }: {
   agentId: string;
-  // When the agent was last saved, which bounds what "recent decisions" can honestly count.
+  // When the agent was last saved: the activity is read again after every save.
   savedAt: string | null;
+  // The mark of the questions and rules as STORED, which is what the engine's lines are matched
+  // against (decisionsActivity). Null when the stored block could not run.
+  storedBlock: string | null;
   decisions: DecisionsForm;
   setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
   credentialError: string | null;
@@ -301,6 +305,7 @@ export function DecisionsFields({
     };
   }, [agentId]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: savedAt is the trigger: a save is when new lines can match
   useEffect(() => {
     let cancelled = false;
     setActivity(null);
@@ -312,12 +317,11 @@ export function DecisionsFields({
             stage: "observe",
             agentId,
             limit: HOW_MANY_LINES,
-            ...(savedAt ? { since: savedAt } : {}),
           },
         });
         if (cancelled || !data) return;
         setActivity(
-          summarizeDecisions(data.items as DecisionLine[], savedAt ?? null),
+          summarizeDecisions(data.items as DecisionLine[], storedBlock),
         );
       } catch {
         // NOTE: best-effort: the block is editable without its history
@@ -326,7 +330,7 @@ export function DecisionsFields({
     return () => {
       cancelled = true;
     };
-  }, [agentId, savedAt]);
+  }, [agentId, savedAt, storedBlock]);
 
   // Which cards are unfolded. A stored block opens folded, one line per question and per rule, so a
   // block of thirty rules reads as a list; a card with a problem is always open, since the mark is
@@ -1048,7 +1052,7 @@ export function DecisionsFields({
         >
           {t(
             "editor.decisionsActivityTotal",
-            "{{count}} decisions since this agent was last saved. The numbers beside each question and rule count those.",
+            "{{count}} of this agent's latest decisions ran these questions and rules as saved. The numbers beside each question and rule count those.",
             { count: activity.decisions },
           )}
         </p>

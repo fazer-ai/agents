@@ -1190,8 +1190,10 @@ function AgentEditor() {
     "settings.knowledge.suggestionReview.credentialRef": review.credentialRef,
     "settings.modelFallback.credentialRef": modelFallback.credentialRef,
     // NOTE: Through the writer: an untouched block goes out as stored, not as the form holds it.
-    "settings.monitoring.decisions.credentialRef":
-      decisionsBlockToStore(observation)?.credentialRef,
+    "settings.monitoring.decisions.credentialRef": decisionsBlockToStore(
+      observation,
+      agentMode === "monitoring",
+    )?.credentialRef,
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
@@ -1782,7 +1784,7 @@ function AgentEditor() {
       modelFallback: modelFallbackToStored(modelFallback),
       // NOTE: The Observation block replaces `monitoring` the same way; the round-trip test over
       // ./observationFormState is its guard.
-      monitoring: observationToStored(observation),
+      monitoring: observationToStored(observation, agentMode === "monitoring"),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -4059,7 +4061,10 @@ function AgentEditor() {
                 agentSavedAt={loadedUpdatedAtRef.current}
                 decisionsRefusal={decisionsRefusalStanding(
                   decisionsRefused,
-                  decisionsBlockToStore(observation),
+                  decisionsBlockToStore(
+                    observation,
+                    agentMode === "monitoring",
+                  ),
                 )}
                 modelFallback={modelFallback}
                 setModelFallback={setModelFallback}

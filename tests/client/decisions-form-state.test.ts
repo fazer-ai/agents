@@ -17,6 +17,7 @@ import {
 } from "@/client/pages/agents/observationFormState";
 import {
   CHOICE_OPTIONS_MAX,
+  decisionsBlockFingerprint,
   decisionsIssues,
   decisionsSchema,
   QUESTIONS_MAX,
@@ -466,8 +467,68 @@ describe("what a save of the Observation block writes", () => {
     expect(decisionsBlockToStore(form)).not.toEqual(BLOCK);
   });
 
+  test("an agent flipped to production does not send a broken draft nobody can see", () => {
+    // The bag keeps `engine: "decisions"` while the whole Observation section is hidden.
+    const form = observationToForm(stored);
+    if (!form.decisions) throw new Error("fixture");
+    form.decisions.questions = [];
+    form.decisions.rules = [];
+    expect(decisionsBlockToStore(form, false)).toEqual(BLOCK);
+    expect(observationToStored(form, false).decisions).toEqual(BLOCK);
+    // A draft that CAN run is still written from there: nothing is refused, nothing is lost.
+    const fine = observationToForm(stored);
+    if (!fine.decisions) throw new Error("fixture");
+    fine.decisions.apply = "enforce";
+    expect(decisionsBlockToStore(fine, false)).toEqual({
+      ...BLOCK,
+      apply: "enforce",
+    });
+  });
+
   test("an agent that never had a block writes none", () => {
     expect(observationToStored(observationToForm({})).decisions).toBeNull();
+  });
+});
+
+describe("the mark of the questions and rules a tick ran", () => {
+  test("is the same whatever order the keys come back in", () => {
+    // `args` is the one object the tick's reader carries as stored, key order included.
+    const twoArgs = clone();
+    got(twoArgs.rules[0]).action.args = { add: ["a"], remove: ["b"] };
+    const shuffled = clone();
+    got(shuffled.rules[0]).action.args = { remove: ["b"], add: ["a"] };
+    expect(decisionsBlockFingerprint(shuffled)).toBe(
+      decisionsBlockFingerprint(twoArgs) as string,
+    );
+    expect(decisionsBlockFingerprint(twoArgs)).not.toBe(
+      decisionsBlockFingerprint(BLOCK),
+    );
+  });
+
+  test("changes when the rules are reordered or a question changes", () => {
+    const mark = decisionsBlockFingerprint(BLOCK);
+    const reordered = clone();
+    reordered.rules.reverse();
+    expect(decisionsBlockFingerprint(reordered)).not.toBe(mark);
+    const reworded = clone();
+    got(reworded.questions[0]).instructions = "Outra pergunta?";
+    expect(decisionsBlockFingerprint(reworded)).not.toBe(mark);
+  });
+
+  test("survives what does not change what a rule index means", () => {
+    const mark = decisionsBlockFingerprint(BLOCK);
+    expect(
+      decisionsBlockFingerprint({
+        ...BLOCK,
+        apply: "enforce",
+        credentialRef: "vault:99",
+      }),
+    ).toBe(mark as string);
+  });
+
+  test("a block that could not run has none", () => {
+    expect(decisionsBlockFingerprint({ ...BLOCK, questions: [] })).toBeNull();
+    expect(decisionsBlockFingerprint(null)).toBeNull();
   });
 });
 

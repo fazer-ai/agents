@@ -5,15 +5,19 @@ import {
 } from "@/client/pages/agents/decisionsActivity";
 
 // What the agent editor says a decisions agent has been doing, counted off the engine's own
-// `observe` lines. The counts are by rule index, so a line older than the last save is left out:
-// nothing on it says which block it ran.
+// `observe` lines. The counts are by rule index, so only the lines that carry the mark of the block
+// being shown are counted: an index means nothing without the list it indexes.
 
 function line(
   createdAt: string,
   detail: Record<string, unknown>,
   status = "ok",
 ): DecisionLine {
-  return { createdAt, status, detail: { engine: "decisions", ...detail } };
+  return {
+    createdAt,
+    status,
+    detail: { engine: "decisions", block: "aaaa", ...detail },
+  };
 }
 
 const LINES: DecisionLine[] = [
@@ -43,7 +47,7 @@ const LINES: DecisionLine[] = [
 
 describe("what a decisions agent has been doing", () => {
   test("counts each rule's fired, ran, shadow and blocked decisions", () => {
-    const a = summarizeDecisions(LINES, null);
+    const a = summarizeDecisions(LINES, "aaaa");
     expect(a.decisions).toBe(3);
     expect(a.rules.get(0)).toEqual({ fired: 2, ran: 1, shadow: 1, blocked: 0 });
     expect(a.rules.get(2)).toEqual({ fired: 1, ran: 0, shadow: 0, blocked: 1 });
@@ -52,7 +56,7 @@ describe("what a decisions agent has been doing", () => {
   });
 
   test("keeps each question's latest answers, newest first", () => {
-    const a = summarizeDecisions(LINES, null);
+    const a = summarizeDecisions(LINES, "aaaa");
     expect(a.answers.get("pede_reembolso")).toEqual([
       { type: "refusal" },
       { type: "yes_no", probability: 0.12 },
@@ -62,21 +66,37 @@ describe("what a decisions agent has been doing", () => {
       { type: "score", score: 1.4, confidence: 0.6 },
     ]);
     expect(
-      summarizeDecisions(LINES, null, 1).answers.get("pede_reembolso"),
+      summarizeDecisions(LINES, "aaaa", 1).answers.get("pede_reembolso"),
     ).toEqual([{ type: "refusal" }]);
   });
 
   test("the order the lines arrive in does not change the answer", () => {
-    const a = summarizeDecisions([...LINES].reverse(), null);
+    const a = summarizeDecisions([...LINES].reverse(), "aaaa");
     expect(a.answers.get("pede_reembolso")?.[0]).toEqual({ type: "refusal" });
   });
 
-  test("leaves out what was decided before the agent was last saved", () => {
-    const a = summarizeDecisions(LINES, "2026-10-08T12:03:00Z");
+  test("counts only the lines that ran the block being shown", () => {
+    // The middle line ran another block: the rules were reordered and a tick was in flight.
+    const lines = LINES.map((l, i) =>
+      i === 1
+        ? { ...l, detail: { ...(l.detail as object), block: "bbbb" } }
+        : l,
+    );
+    const a = summarizeDecisions(lines, "aaaa");
     expect(a.decisions).toBe(2);
-    expect(a.rules.get(0)).toEqual({ fired: 1, ran: 0, shadow: 1, blocked: 0 });
-    expect(a.rules.has(2)).toBe(false);
-    expect(a.answers.has("assunto")).toBe(false);
+    expect(a.rules.get(0)).toEqual({ fired: 1, ran: 1, shadow: 0, blocked: 0 });
+    expect(a.answers.has("irritacao")).toBe(false);
+    // ...and the other block's line is counted when THAT block is the one shown.
+    expect(summarizeDecisions(lines, "bbbb").decisions).toBe(1);
+  });
+
+  test("a line with no mark, and a block that cannot run, count nothing", () => {
+    const unmarked = LINES.map((l) => {
+      const { block: _block, ...rest } = l.detail as Record<string, unknown>;
+      return { ...l, detail: rest };
+    });
+    expect(summarizeDecisions(unmarked, "aaaa").decisions).toBe(0);
+    expect(summarizeDecisions(LINES, null).decisions).toBe(0);
   });
 
   test("counts only ticks the decisions engine decided", () => {
@@ -86,7 +106,7 @@ describe("what a decisions agent has been doing", () => {
         {
           createdAt: "2026-10-08T12:00:00Z",
           status: "ok",
-          detail: { engine: "llm", actions: [], answers: {} },
+          detail: { engine: "llm", block: "aaaa", actions: [], answers: {} },
         },
         line("2026-10-08T12:00:00Z", { failed: "decision_call" }, "error"),
         line(
@@ -96,7 +116,7 @@ describe("what a decisions agent has been doing", () => {
         ),
         { createdAt: "2026-10-08T12:00:00Z", status: "ok", detail: null },
       ],
-      null,
+      "aaaa",
     );
     expect(a.decisions).toBe(0);
     expect(a.rules.size).toBe(0);

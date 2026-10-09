@@ -128,7 +128,9 @@ describe("the editor of a monitoring agent", () => {
     const first = BEHAVIOR.indexOf('<Section\n            id="availability"');
     expect(at).toBeLessThan(first);
     // The save REPLACES the `monitoring` block through the form-state pair, like memory.
-    expect(EDITOR).toContain("monitoring: observationToStored(observation)");
+    expect(EDITOR).toContain(
+      'monitoring: observationToStored(observation, agentMode === "monitoring")',
+    );
   });
 });
 

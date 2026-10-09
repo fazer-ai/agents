@@ -64,6 +64,7 @@ import {
 } from "@/modules/contact-auth/settings";
 import {
   type DecisionsConfig,
+  decisionsFingerprint,
   readDecisionsConfig,
 } from "@/modules/decisions/config";
 import type { DecisionResult } from "@/modules/decisions/providers";
@@ -1791,6 +1792,8 @@ export async function runObserve(
           reason,
           engine: "decisions",
           apply: config.apply,
+          // Which questions and rules this tick ran: the rule indices below mean nothing without it.
+          block: decisionsFingerprint(config),
           ...detail,
           ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
         },

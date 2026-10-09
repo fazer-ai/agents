@@ -12,7 +12,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  listInboxCustomAttributes,
+  listInboxLabels,
+} from "@/modules/chatwoot/management";
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
+import { decisionsBlockFingerprint } from "@/modules/decisions/config";
 import { runObserve } from "@/modules/observe/job";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
@@ -583,6 +588,10 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     const d = line.detail as Record<string, unknown>;
     expect(d.engine).toBe("decisions");
     expect(d.apply).toBe("enforce");
+    // The mark of the questions and rules the tick ran, which the console matches its counts by.
+    expect(d.block).toBe(
+      decisionsBlockFingerprint(decisionsBlock().decisions) as string,
+    );
     expect(d.acted).toBe(true);
     expect(d.modelVersion).toBe("jev-1.13.0");
     expect(d.actions).toEqual([
@@ -1898,5 +1907,26 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         { rule: 2, tool: "set_labels", outcome: "ran" },
       ]);
     });
+  });
+
+  // The agent editor lists the account's labels and attributes for the rules' actions, and a
+  // monitoring agent is attached through an observer row and answers no inbox at all.
+  test("the editor's label and attribute listings cover the inboxes the agent observes", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const makeClient = async () =>
+      ({
+        listLabelsDetailed: async () => [{ title: "reembolso", color: null }],
+        listCustomAttributeDefinitions: async () => [],
+      }) as unknown as ChatwootClient;
+    const labels = await listInboxLabels(ctx, agentId, { makeClient }, suDb);
+    expect(labels.accountCount).toBe(1);
+    expect(labels.labels.map((l) => l.title)).toEqual(["reembolso"]);
+    const attributes = await listInboxCustomAttributes(
+      ctx,
+      agentId,
+      { makeClient },
+      suDb,
+    );
+    expect(attributes.accountCount).toBe(1);
   });
 });

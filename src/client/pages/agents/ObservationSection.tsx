@@ -2,6 +2,7 @@ import { Eye } from "lucide-react";
 import type React from "react";
 import { useTranslation } from "react-i18next";
 import { FormField, Input, Select } from "@/client/components";
+import { decisionsBlockFingerprint } from "@/modules/decisions/config";
 import {
   DecisionsFields,
   type DecisionsServerRefusal,
@@ -186,6 +187,7 @@ export function ObservationSection({
         <DecisionsFields
           agentId={agentId}
           savedAt={savedAt}
+          storedBlock={decisionsBlockFingerprint(observation.storedDecisions)}
           decisions={observation.decisions}
           setDecisions={(next) =>
             setObservation((prev) =>

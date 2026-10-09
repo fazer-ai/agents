@@ -63,16 +63,16 @@ function sample(v: unknown): AnswerSample | null {
   return null;
 }
 
-// `since` is when the agent was last saved. A line names a rule by its index in the block AS IT WAS
-// when the tick ran, and nothing on the line says which block that was, so a line older than the
-// last save may be counting against a rule that has since moved or changed: those are left out
-// rather than attributed to whatever sits at that index today.
+// `block` is the mark of the questions and rules being shown (`decisionsBlockFingerprint`). A line
+// names a rule by its index in the block AS IT WAS when the tick ran and carries that block's mark,
+// so only the lines that ran THIS block are counted: one written before the rules were reordered,
+// or by a tick that was in flight across the save, is left out rather than attributed to whatever
+// sits at that index today. A block that could not run has no mark and counts nothing.
 export function summarizeDecisions(
   lines: readonly DecisionLine[],
-  since: string | Date | null,
+  block: string | null,
   samples = 3,
 ): DecisionsActivity {
-  const floor = since === null ? null : new Date(since).getTime();
   const rules = new Map<number, RuleActivity>();
   const answers = new Map<string, AnswerSample[]>();
   let decisions = 0;
@@ -83,8 +83,7 @@ export function summarizeDecisions(
     const d = bag(line.detail);
     if (d?.engine !== "decisions" || line.status !== "ok") continue;
     if (!bag(d.answers) || !Array.isArray(d.actions)) continue;
-    const at = new Date(line.createdAt).getTime();
-    if (floor !== null && Number.isFinite(floor) && !(at >= floor)) continue;
+    if (block === null || d.block !== block) continue;
     decisions += 1;
     for (const raw of d.actions) {
       const a = bag(raw);

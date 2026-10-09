@@ -19,6 +19,7 @@ import {
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
+import { decisionsBlockFingerprint } from "@/modules/decisions/config";
 
 // THE DECISIONS ENGINE IN THE AGENT EDITOR, drawn. The engine choice, the questions and the rules
 // are on screen for a monitoring agent; a rule that names a question that is gone is shown broken;
@@ -56,6 +57,9 @@ const BLOCK = {
   apply: "shadow",
 };
 
+// The mark the engine writes on each line for the block above (docs/decisions.md).
+const MARK = decisionsBlockFingerprint(BLOCK) as string;
+
 const LOG_LINES = [
   {
     id: "2",
@@ -63,6 +67,7 @@ const LOG_LINES = [
     status: "ok",
     detail: {
       engine: "decisions",
+      block: MARK,
       answers: {
         pede_reembolso: { type: "yes_no", probability: 0.91 },
         assunto: { type: "choice", choice: "reembolso", confidence: 0.8 },
@@ -76,6 +81,7 @@ const LOG_LINES = [
     status: "ok",
     detail: {
       engine: "decisions",
+      block: MARK,
       answers: { pede_reembolso: { type: "yes_no", probability: 0.1 } },
       actions: [],
     },
@@ -232,7 +238,7 @@ describe("the decisions engine in the agent editor", () => {
     await waitFor(() => expect(count("decisions-activity-total")).toBe(1));
     const text = (testId: string) =>
       screen.queryAllByTestId(testId).map((el) => el.textContent ?? "");
-    expect(text("decisions-activity-total")[0]).toContain("2 decisions");
+    expect(text("decisions-activity-total")[0]).toContain("2 of");
     expect(text("decisions-rule-activity")).toEqual([
       "Fired in 1 of 2 decisions, would have run 1 (shadow).",
       "Fired in 0 of 2 decisions.",
@@ -241,11 +247,23 @@ describe("the decisions engine in the agent editor", () => {
       "Latest answers: yes 91% · yes 10%",
       "Latest answers: reembolso (80%)",
     ]);
-    // The read is this agent's observe lines, since it was last saved.
+    // The read is this agent's observe lines.
     const q = logQueries[0];
     expect(q?.get("agentId")).toBe("7");
     expect(q?.get("stage")).toBe("observe");
-    expect(q?.get("since")).toBe("2026-10-08T11:00:00.000Z");
+  });
+
+  test("lines a different set of rules wrote are not counted against these", async () => {
+    stubApi();
+    const reordered = { ...BLOCK, rules: [...BLOCK.rules].reverse() };
+    renderSection({
+      monitoring: { engine: "decisions", decisions: reordered },
+    });
+    await waitFor(() => expect(count("decisions-activity-total")).toBe(1));
+    expect(
+      screen.queryAllByTestId("decisions-activity-total")[0]?.textContent,
+    ).toContain("0 of");
+    expect(count("decisions-rule-activity")).toBe(0);
   });
 
   test("a rule added on screen has decided nothing, and the counts stay with the rule when it moves", async () => {

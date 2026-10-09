@@ -1713,9 +1713,12 @@ async function agentInboxScope(
   agentId: bigint,
   base: PrismaClient,
 ): Promise<{ instanceIds: bigint[]; accountCount: number }> {
+  // The inboxes it ANSWERS and the ones it OBSERVES: a monitoring agent is attached through
+  // `InboxObserver` and answers none, and its editor lists labels and attributes too (the decisions
+  // engine's rules write them).
   const inboxes = await runScopedOn(base, ctx, (db) =>
     db.inbox.findMany({
-      where: { agentId },
+      where: { OR: [{ agentId }, { observers: { some: { agentId } } }] },
       select: {
         chatwootInstanceId: true,
         instance: { select: { accountId: true } },

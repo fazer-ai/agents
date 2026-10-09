@@ -69,8 +69,11 @@ function intOr(v: string, fallback: number): number {
 // narrows on load; otherwise "saved" would show one value while the runtime runs another. Normalize
 // a field here only if the write boundary lets it through: anything the server REFUSES must travel
 // as typed, or the save succeeds with the value quietly deleted.
-export function observationToStored(form: ObservationState): MonitoringConfig {
-  const draft = draftFromForm(form);
+export function observationToStored(
+  form: ObservationState,
+  watcher = true,
+): MonitoringConfig {
+  const draft = draftFromForm(form, watcher);
   const stored = readMonitoringConfig({ monitoring: draft });
   // A negative window is REFUSED by the write boundary, so it travels as typed: read through the
   // reader it would become 0, the one value that changes what the agent costs, saved by a typo.
@@ -81,30 +84,35 @@ export function observationToStored(form: ObservationState): MonitoringConfig {
   return stored;
 }
 
-// The decisions block a save writes. Three cases, in order: a form nobody touched writes the stored
-// block back as it is (so saving another field never rewrites it); a draft the engine is not running
-// and could not run is not stored over the block that was there, since the server would refuse the
-// whole save for a block the operator switched away from; anything else is what the form holds.
+// The decisions block a save writes: a form nobody touched writes the stored block back as it is; a
+// draft that could not run and whose fields are NOT ON SCREEN (the model engine, or an agent flipped
+// to production with the section hidden) is not stored over the block that was there, since the
+// server would refuse the whole save about fields nobody can see; anything else is the form.
 export function decisionsBlockToStore(
   form: ObservationState,
+  watcher = true,
 ): Record<string, unknown> | null {
+  const drawn = watcher && form.engine === "decisions";
   if (form.decisions === null) return form.storedDecisions;
   if (decisionsUntouched(form.decisions, form.storedDecisions)) {
     return form.storedDecisions;
   }
   const block = decisionsToStored(form.decisions);
-  if (form.engine !== "decisions" && decisionsIssues(block).length > 0) {
+  if (!drawn && decisionsIssues(block).length > 0) {
     return form.storedDecisions;
   }
   return block;
 }
 
-function draftFromForm(form: ObservationState): MonitoringConfig {
+function draftFromForm(
+  form: ObservationState,
+  watcher: boolean,
+): MonitoringConfig {
   const d = MONITORING_DEFAULTS;
   const windowSeconds = intOr(form.windowSeconds, d.debounce.windowSeconds);
   return {
     engine: form.engine === "decisions" ? "decisions" : "llm",
-    decisions: decisionsBlockToStore(form),
+    decisions: decisionsBlockToStore(form, watcher),
     analysis: form.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: { messages: intOr(form.windowMessages, d.window.messages) },
     debounce: {

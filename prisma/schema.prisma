@@ -572,6 +572,8 @@ model ChatwootWebhookDelivery {
   // `(chatwoot_instance_id, conversation_id, human_reply_message_id) WHERE human_reply_message_id IS NOT NULL`.
   // The inbound half is the named index above; see 20260908170004 for why the absence case is the
   // one that had to be indexed.
+  // NOTE: and so is the drain's, `(tenant_id, received_at) WHERE payload IS NOT NULL`: only the rows still
+  // holding a body (20261009120100).
   @@map("chatwoot_webhook_deliveries")
 }
 

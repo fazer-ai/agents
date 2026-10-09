@@ -168,14 +168,15 @@ export async function drainStoredChatwootDeliveries(
       ? asSuperAdminOn(base, fn)
       : runScopedOn(base, sysCtx(params.tenantId), fn);
 
-  // The sweep's own partial index (PENDING/PROCESSING by tenant and receipt) serves both statements,
-  // since the body is only ever held on a PENDING row.
+  // The body leaves every row that will not be processed from it: one past the sweep's window, and one
+  // that left PENDING by a road that does not clear it (the sweep's verdict on a row that crossed the
+  // window between two passes, or an older release's claim during a rolling deploy). Both statements
+  // read the partial index of the rows that still hold a body.
   const { count: cleared } = await run((db) =>
     db.chatwootWebhookDelivery.updateMany({
       where: {
-        status: "PENDING",
         payload: { not: null },
-        receivedAt: { lte: oldest },
+        OR: [{ status: { not: "PENDING" } }, { receivedAt: { lte: oldest } }],
       },
       data: { payload: null },
     }),

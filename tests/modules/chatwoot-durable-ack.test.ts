@@ -281,6 +281,45 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     expect(rows[0]?.payload).toBeNull();
   });
 
+  // Chatwoot retries exactly when the first ack was slow, so the retry's own ack must not cost more round
+  // trips than the first: one statement answers it, filling only what a row an older build wrote lacks.
+  test("a redelivery is answered by one transaction and fills what a legacy row lacks", async () => {
+    warmCache();
+    // The shape an older build left: PENDING, the event name, none of the facts.
+    const legacy = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "durable-legacy",
+        event: "message_created",
+        status: "PENDING",
+      },
+    });
+    const body = messageBody(5300, 530);
+    let ackTx = 0;
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, "durable-legacy"),
+      nowSeconds: NOW,
+      base: appDb,
+      ackBase: counted(appDb, () => ackTx++),
+    });
+    expect(ackTx).toBe(1);
+    expect(r.deliveryRowId).toBe(legacy.id);
+    expect(r.dispatch).toBe(true);
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: legacy.id },
+    });
+    expect(row.conversationId).toBe(530);
+    expect(row.inboundMessageId).toBe(5300);
+    expect(row.routeAgentBotId).toBe(9);
+    // The body and the generation are facts about the first receipt, never filled by a retry.
+    expect(row.payload).toBeNull();
+    expect(row.bindingGeneration).toBeNull();
+    invalidateRouteTokenCache();
+  });
+
   test("ten acks of one delivery id at once leave one row and all answer 2xx", async () => {
     invalidateRouteTokenCache();
     warmCache();

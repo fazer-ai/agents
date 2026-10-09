@@ -330,6 +330,25 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(row.payload).toBeNull();
   });
 
+  // A row can leave PENDING by a road that does not clear the body: the sweep's verdict on a row that
+  // crossed its window between two passes, or an older release claiming it during a rolling deploy.
+  test("a row that left PENDING without its claim clearing the body loses it on the next pass", async () => {
+    const id = await ackOnly("queue-left", 606);
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 60_000,
+    });
+    expect(r.cleared).toBeGreaterThanOrEqual(1);
+    const row = await rowById(id);
+    expect(row.status).toBe("PROCESSED");
+    expect(row.payload).toBeNull();
+  });
+
   test("a stored row held by this process is not admitted a second time", async () => {
     resetChatwootAdmissionForTest(1);
     const g = held();

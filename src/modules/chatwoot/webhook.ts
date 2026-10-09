@@ -1369,8 +1369,10 @@ async function claimDelivery(
 // rather than an interactive one, because this runs before the 200 on a process whose first limit
 // under load is CPU, and the interactive form costs about twice the CPU per delivery. The binding
 // generation is read by a subquery of the same INSERT, which keeps it in the transaction that writes
-// the row (see `recordDelivery`); the GUC is what RLS scopes the statement by. A redelivery (the
-// conflict, which writes nothing) takes `recordDelivery`'s own path, which fills a legacy row's facts.
+// the row (see `recordDelivery`); the GUC is what RLS scopes the statement by. A redelivery is the
+// conflict, answered by the same statement: it fills only what the existing row is missing
+// (`LEDGER_FILLABLE`, never the generation nor the body) and returns that row's status, so a retry
+// costs no second round trip on the path Chatwoot is timing.
 async function recordDeliveryOnAck(
   base: PrismaClient,
   scope: { tenantId: bigint; instanceId: bigint },
@@ -1398,7 +1400,14 @@ async function recordDeliveryOnAck(
         : Prisma.sql`NULL`;
   const [, inserted] = await base.$transaction([
     base.$executeRaw`SELECT set_config('app.tenant_id', ${String(scope.tenantId)}, true)`,
-    base.$queryRaw<{ id: bigint; binding_generation: number | null }[]>`
+    base.$queryRaw<
+      {
+        id: bigint;
+        binding_generation: number | null;
+        status: string;
+        inserted: boolean;
+      }[]
+    >`
       INSERT INTO chatwoot_webhook_deliveries
         (tenant_id, chatwoot_instance_id, delivery_id, event, conversation_id, inbound_message_id,
          human_reply_shape, route_agent_bot_id, human_reply_message_id, binding_generation, payload)
@@ -1406,19 +1415,26 @@ async function recordDeliveryOnAck(
         (${scope.tenantId}, ${scope.instanceId}, ${deliveryId}, ${facts.event}, ${facts.conversationId},
          ${facts.inboundMessageId}, ${facts.humanReplyShape}, ${facts.routeAgentBotId},
          ${facts.humanReplyMessageId}, ${generation}, ${payload})
-      ON CONFLICT (chatwoot_instance_id, delivery_id) DO NOTHING
-      RETURNING id, binding_generation`,
+      ON CONFLICT (chatwoot_instance_id, delivery_id) DO UPDATE SET
+        conversation_id = COALESCE(chatwoot_webhook_deliveries.conversation_id, EXCLUDED.conversation_id),
+        inbound_message_id = COALESCE(chatwoot_webhook_deliveries.inbound_message_id, EXCLUDED.inbound_message_id),
+        human_reply_shape = COALESCE(chatwoot_webhook_deliveries.human_reply_shape, EXCLUDED.human_reply_shape),
+        route_agent_bot_id = COALESCE(chatwoot_webhook_deliveries.route_agent_bot_id, EXCLUDED.route_agent_bot_id),
+        human_reply_message_id = COALESCE(chatwoot_webhook_deliveries.human_reply_message_id, EXCLUDED.human_reply_message_id)
+      RETURNING id, binding_generation, status::text AS status, (xmax = 0) AS inserted`,
   ]);
   const row = inserted[0];
-  if (row !== undefined) {
-    return {
-      rowId: row.id,
-      duplicate: false,
-      status: "PENDING",
-      bindingGeneration: row.binding_generation,
-    };
+  if (row === undefined) {
+    throw new Error(
+      `the ledger write for delivery ${deliveryId} returned no row`,
+    );
   }
-  return recordDelivery(base, scope, deliveryId, facts, at);
+  return {
+    rowId: row.id,
+    duplicate: !row.inserted,
+    status: row.status,
+    bindingGeneration: row.binding_generation,
+  };
 }
 
 // Idempotency ledger insert: create-then-catch across two transactions (a unique violation

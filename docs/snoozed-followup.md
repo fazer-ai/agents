@@ -32,7 +32,7 @@ A conversation is this ladder's only while all of these hold, checked LIVE again
 
 - status `snoozed` with **no end date** (`snoozed_until` null). A snooze until a date is the person saying when they will look again.
 - assigned to a **person** (`assignee_type` `User`). The bot's own conversations belong to `followUp`.
-- the newest public message from a person (the **anchor**) has no customer message after it. A message the platform posted under an admin token (`platformSent`, such as a cross-inbox case opening) is a user row no person wrote, and is neither an anchor nor a person answering.
+- the newest public message from a person (the **anchor**) has no customer message after it. A person writes by either route `foreignReplyBoundary` trusts: the Chatwoot composer, or the phone paired to the inbox's number (a sender-less row marked `WhatsApp`, trusted only on providers that reserve echo ids). A message the platform posted under an admin token (`platformSent`, such as a cross-inbox case opening) is a user row no person wrote, an emoji reaction is a nod and an imported row is old history; none of them is an anchor or a person answering.
 - the anchor is above the conversation's `/reset` boundary (`reset_at_message_id`, ordered by Chatwoot's message ids like every withdrawal fence): a request the operator withdrew stays withdrawn whatever re-arms the job later.
 - the anchor is newer than the moment the ladder was switched on for the agent (`agents.snoozed_follow_up_armed_at`, stamped on the off-to-on transition, on create and on promotion to production). Turning the ladder on does not remind the whole snoozed backlog at once.
 

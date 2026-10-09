@@ -6,6 +6,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   approveDocumentRequest,
@@ -19,7 +20,10 @@ import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow } from "../utils/flowlog";
-import { ScriptedCaptureModel } from "../utils/scripted-models";
+import {
+  HandoffThenReplyModel,
+  ScriptedCaptureModel,
+} from "../utils/scripted-models";
 
 // What a decided or expired approval request says in its conversation (docs/documents.md, Approval):
 // the PDF on the agent's message when approved, a note and a hand-over when rejected, a note and an
@@ -76,7 +80,7 @@ function recordingClient() {
     {},
     {
       get(_t, name: string) {
-        if (name === "then") return undefined;
+        if (name === "then" || name === "muted") return undefined;
         return async (...args: unknown[]) => {
           calls.push([name, ...args]);
           if (name === "getConversationLabels" || name.startsWith("list"))
@@ -370,6 +374,47 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       bindTools: () => ({ invoke: takeOver }),
     };
     const rec = recordingClient();
+    const checkpointer = new MemorySaver();
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        checkpointer,
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("noted");
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain("Documento aprovado");
+    expect(String(notes[0]?.[2])).not.toContain("Texto do agente");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: {
+        thread_id: `${tenantId}:${instanceId}:${chatwootConversationId}`,
+      },
+    });
+    expect(JSON.stringify(state.values ?? {})).not.toContain("Texto do agente");
+  });
+
+  test("a document revoked while the agent writes is a note, never the PDF", async () => {
+    const { requestId } = await conversationWithRequest({});
+    const { document } = await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const revoke = async () => {
+      await suDb.issuedDocument.update({
+        where: { id: BigInt(document.id) },
+        data: { revoked: true },
+      });
+      return new AIMessage("Seu orçamento segue em anexo.");
+    };
+    const model = { invoke: revoke, bindTools: () => ({ invoke: revoke }) };
+    const rec = recordingClient();
     const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
       makeClient: rec.makeClient,
       storageDir: DIR,
@@ -380,11 +425,72 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       },
     });
     expect(outcome).toBe("noted");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     const notes = named(rec.calls, "sendPrivateNote");
     expect(notes).toHaveLength(1);
-    expect(String(notes[0]?.[2])).toContain("Documento aprovado");
-    expect(String(notes[0]?.[2])).not.toContain("Texto do agente");
+    expect(String(notes[0]?.[2])).toContain("não está disponível");
+  });
+
+  test("a transfer during the approval turn sends its line and leaves the document to the person", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const rec = recordingClient();
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Segue o orçamento.",
+            "Vou te passar para a nossa equipe.",
+          ) as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("noted");
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
+  });
+
+  test("an aborted run writes nothing, and a run that wrote commits its outcome", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    const aborted = new AbortController();
+    aborted.abort();
+    let commits = 0;
+    const rec = recordingClient();
+    expect(
+      await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        nudgeDeps: { makeModel: noModel },
+        signal: aborted.signal,
+        commit: () => {
+          commits++;
+        },
+      }),
+    ).toBe("retry");
+    expect(rec.calls.filter((c) => c[0] !== "getConversation")).toEqual([]);
+    expect(commits).toBe(0);
+    const live = recordingClient();
+    expect(
+      await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: live.makeClient,
+        nudgeDeps: { makeModel: noModel },
+        commit: () => {
+          commits++;
+        },
+      }),
+    ).toBe("handed");
+    expect(named(live.calls, "sendPrivateNote")).toHaveLength(1);
+    expect(commits).toBe(1);
   });
 
   test("an approved document over a person is a note, with no model and no message", async () => {

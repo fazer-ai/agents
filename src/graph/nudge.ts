@@ -302,6 +302,10 @@ export interface ApprovedDocumentDelivery {
   windowNote: string;
   // Sent as the caption when the agent wrote nothing for it.
   caption: string;
+  // Asked immediately before the send, since the team can revoke the document while the agent
+  // writes; `revokedNote` is left instead when it did.
+  stillValid: () => Promise<boolean>;
+  revokedNote: string;
 }
 
 export function parseThreadId(
@@ -2376,6 +2380,9 @@ async function runAgentNudgeBody(
     if (promised === "silent" && applied === "stale") {
       return refuse(standDown());
     }
+    // NOTE: the transfer spoke for this turn and carried no file, so the approved document is now the
+    // person's to send, and saying so is the note a held conversation gets.
+    if (approved) return noteApproved(approved.heldNote, "noted");
     return promised;
   }
 
@@ -2561,6 +2568,11 @@ async function runAgentNudgeBody(
     // where the reply can still fall through to the template/note branch below instead of being
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
+      if (approved && !(await approved.stillValid())) {
+        return refuse(await noteApproved(approved.revokedNote, "noted"));
+      }
+      // NOTE: the validity read is I/O between the last ask and the send, so the ask is repeated.
+      if (approved && !(await stillWanted())) return refuse(standDown());
       const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;
       keepSentId(
@@ -2589,10 +2601,16 @@ async function runAgentNudgeBody(
     // second is answered by asking again.
   }
 
+  // NOTE: through `refuse`, because the agent's reply is in the thread and was never sent: left
+  // there, the next turn would read "segue em anexo" as said.
   if (approved) {
-    return noteApproved(
-      canMessagePre && canMessagePost ? approved.windowNote : approved.heldNote,
-      canMessagePre && canMessagePost ? "noted-window" : "noted",
+    return refuse(
+      await noteApproved(
+        canMessagePre && canMessagePost
+          ? approved.windowNote
+          : approved.heldNote,
+        canMessagePre && canMessagePost ? "noted-window" : "noted",
+      ),
     );
   }
   if (canMessagePre && canMessagePost) {

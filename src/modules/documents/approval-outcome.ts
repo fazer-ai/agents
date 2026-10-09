@@ -21,7 +21,11 @@ import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
 import { readHandoffConfig } from "@/modules/handoff/settings";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobContext,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import { formatDocumentNumber } from "./format";
 import { getIssuedDocumentPdf, sysCtx } from "./issue";
 
@@ -30,6 +34,9 @@ export interface ApprovalOutcomeDeps {
   nudgeDeps?: RuntimeDeps;
   storageDir?: string;
   signal?: AbortSignal;
+  // Called once something reached the conversation, so a run that outlives its deadline still has
+  // its outcome written and the retry does not repeat the note or the PDF.
+  commit?: () => void;
 }
 
 type Outcome =
@@ -152,6 +159,13 @@ export async function runApprovalOutcome(
     return "no-agent";
   }
   const title = titleOf(request.title);
+  // An aborted run has been failed and its retry owns the outcome, so it writes nothing more.
+  const note = async (client: ChatwootClient, text: string) => {
+    if (deps.signal?.aborted) return false;
+    await client.sendPrivateNote(target.conv.chatwootConversationId, text);
+    deps.commit?.();
+    return true;
+  };
 
   if (request.status === "REJECTED") {
     const client = await clientFor(tenantId, target, base, deps);
@@ -159,10 +173,11 @@ export async function runApprovalOutcome(
     const reviewerNote = request.note
       ? ` Nota de quem revisou: ${literalForChatwoot(request.note)}`
       : "";
-    await client.sendPrivateNote(
-      target.conv.chatwootConversationId,
+    const noted = await note(
+      client,
       `Documento não aprovado pela equipe: ${title}. Nada foi enviado ao cliente.${owned ? " A conversa foi passada para um atendente." : ""}${reviewerNote}`,
     );
+    if (!noted) return "retry";
     if (!owned) return "noted";
     await client.toggleStatus(target.conv.chatwootConversationId, "open");
     await assignPinnedTarget({
@@ -177,10 +192,11 @@ export async function runApprovalOutcome(
 
   if (request.status === "EXPIRED") {
     const client = await clientFor(tenantId, target, base, deps);
-    await client.sendPrivateNote(
-      target.conv.chatwootConversationId,
+    const noted = await note(
+      client,
       `O pedido de aprovação do documento ${title} venceu sem resposta da equipe. Nada foi enviado ao cliente.`,
     );
+    if (!noted) return "retry";
     emitFlowEvent(
       {
         tenantId,
@@ -226,14 +242,12 @@ export async function runApprovalOutcome(
     if (err instanceof NotFoundError) return null;
     throw err;
   });
+  const unavailable = `Documento aprovado: ${named}, mas o PDF não está disponível para envio (revogado ou ausente). Nada foi enviado ao cliente.`;
   if (!pdf) {
     const client = await clientFor(tenantId, target, base, deps);
-    await client.sendPrivateNote(
-      target.conv.chatwootConversationId,
-      `Documento aprovado: ${named}, mas o PDF não está disponível para envio (revogado ou ausente). Nada foi enviado ao cliente.`,
-    );
-    return "noted";
+    return (await note(client, unavailable)) ? "noted" : "retry";
   }
+  const issuedId = request.issuedDocumentId;
   const outcome: RunAgentNudgeOutcome = await runAgentNudge({
     tenantId,
     threadId: target.conv.threadId,
@@ -249,34 +263,52 @@ export async function runApprovalOutcome(
       caption: `Segue o documento ${title}, aprovado pela equipe.`,
       heldNote: `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
       windowNote: `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+      revokedNote: unavailable,
+      stillValid: async () => {
+        const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.issuedDocument.findUnique({
+            where: { id: issuedId },
+            select: { revoked: true },
+          }),
+        );
+        return row?.revoked === false;
+      },
     },
     base,
     deps: { ...deps.nudgeDeps, makeClient: deps.makeClient },
   });
-  if (outcome === "messaged") return "delivered";
-  if (outcome === "noted" || outcome === "noted-window") return "noted";
+  if (
+    outcome === "messaged" ||
+    outcome === "noted" ||
+    outcome === "noted-window"
+  ) {
+    deps.commit?.();
+    return outcome === "messaged" ? "delivered" : "noted";
+  }
   if (outcome === "live-unavailable") return "retry";
   // Every other end sent nothing (the spend ceiling, an agent switched off, a contact the gate
   // refused): the document is still approved and a person has to send it.
   const client = await clientFor(tenantId, target, base, deps);
-  await client.sendPrivateNote(
-    target.conv.chatwootConversationId,
+  return (await note(
+    client,
     `Documento aprovado: ${named}, mas o agente não pôde enviá-lo agora. Ele precisa ser enviado por uma pessoa.`,
-  );
-  return "noted";
+  ))
+    ? "noted"
+    : "retry";
 }
 
 async function runOutcomeJob(
   tenantId: bigint,
   payload: unknown,
   base: PrismaClient,
-  signal?: AbortSignal,
+  run?: JobContext,
 ): Promise<JobResult> {
   const raw = (payload as { requestId?: unknown } | null)?.requestId;
   const requestId = parseDbId(typeof raw === "string" ? raw : null);
   if (requestId === null) return { outcome: "done" };
   const outcome = await runApprovalOutcome(tenantId, requestId, base, {
-    signal,
+    signal: run?.signal,
+    commit: run?.commit,
   });
   if (outcome === "retry") {
     return { outcome: "fail", error: "conversation ownership unavailable" };
@@ -288,7 +320,7 @@ let registered = false;
 export function registerDocumentApprovalOutcomeHandler(): void {
   if (registered) return;
   registerJobHandler("DOCUMENT_APPROVAL_OUTCOME", (job, base, ctx) =>
-    runOutcomeJob(job.tenantId, job.payload, base, ctx?.signal),
+    runOutcomeJob(job.tenantId, job.payload, base, ctx),
   );
   registered = true;
 }

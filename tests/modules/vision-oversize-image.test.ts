@@ -310,21 +310,51 @@ describe("the fit converters", () => {
     ).rejects.toBeInstanceOf(MediaTooLargeError);
   });
 
-  test("a JPEG with more than one frame header is refused before it is decoded", async () => {
-    // jpeg-js would allocate buffers for every SOF before refusing the second.
-    const jpg = jpegOf(16, 8);
-    let sof = 2;
-    while (!(jpg[sof] === 0xff && jpg[sof + 1] === 0xc0))
-      sof += 2 + jpg.readUInt16BE(sof + 2);
+  // jpeg-js counts each buffer against its memory budget before allocating it, and the budget comes
+  // from the header the pixel cap checked, so what a crafted file adds on top is refused there.
+  function sofOf(jpg: Buffer): number {
+    let i = 2;
+    while (!(jpg[i] === 0xff && jpg[i + 1] === 0xc0))
+      i += 2 + jpg.readUInt16BE(i + 2);
+    return i;
+  }
+
+  test("repeated frame headers after the scan are refused at the memory budget", async () => {
+    const jpg = jpegOf(8101, 1);
+    const sof = sofOf(jpg);
     const frame = jpg.subarray(sof, sof + 2 + jpg.readUInt16BE(sof + 2));
-    const repeated = Buffer.concat([
-      jpg.subarray(0, sof),
-      frame,
-      frame,
-      jpg.subarray(sof + frame.length),
+    const eoi = jpg.length - 2;
+    const crafted = Buffer.concat([
+      jpg.subarray(0, eoi),
+      ...Array.from({ length: 100 }, () => frame),
+      jpg.subarray(eoi),
     ]);
-    await expect(runMediaConverter("jpeg-fit", ab(repeated))).rejects.toThrow(
-      "more than one frame",
+    await expect(runMediaConverter("jpeg-fit", ab(crafted))).rejects.toThrow(
+      "maxMemoryUsageInMB",
+    );
+  });
+
+  test("a frame declaring 255 components is refused at the memory budget", async () => {
+    const jpg = jpegOf(2000, 2000);
+    const sof = sofOf(jpg);
+    const length = jpg.readUInt16BE(sof + 2);
+    const head = Buffer.alloc(10);
+    jpg.copy(head, 0, sof, sof + 9); // marker, length, precision, height, width
+    head.writeUInt16BE(8 + 3 * 255, 2);
+    head[9] = 255;
+    const comps = Buffer.alloc(3 * 255);
+    for (let c = 0; c < 255; c++) {
+      comps[c * 3] = c + 1;
+      comps[c * 3 + 1] = 0x11;
+    }
+    const crafted = Buffer.concat([
+      jpg.subarray(0, sof),
+      head,
+      comps,
+      jpg.subarray(sof + 2 + length),
+    ]);
+    await expect(runMediaConverter("jpeg-fit", ab(crafted))).rejects.toThrow(
+      "maxMemoryUsageInMB",
     );
   });
 

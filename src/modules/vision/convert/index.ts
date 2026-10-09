@@ -289,7 +289,7 @@ async function heicToJpeg(
 // MAX_IMAGE_EDGE). Same tail as the HEIC path, fitted to MAX_OUTPUT_EDGE, and the same pixel cap,
 // applied to the size the HEADER declares before a byte is decoded: a JPEG that claims 60000x60000
 // is refused here instead of asking jpeg-js for 14 GB.
-function headerPixels(bytes: ArrayBuffer, mime: string, cap: number): void {
+function headerPixels(bytes: ArrayBuffer, mime: string, cap: number): number {
   const d = readImageDimensions(bytes);
   if (d === null)
     throw new MediaConversionError(
@@ -299,34 +299,24 @@ function headerPixels(bytes: ArrayBuffer, mime: string, cap: number): void {
     throw new MediaTooLargeError(
       `${mime.slice(6)} is ${d.width}x${d.height}, over the ${cap} px cap`,
     );
+  return d.width * d.height;
 }
 
-// jpeg-js allocates the coefficient buffers of every frame header it meets and refuses a second
-// frame only afterwards, so a few hundred SOFs each just under the cap add up to its 2 GB ceiling
-// before it says no. The segments before the scan are walked here and a second SOF is refused.
-function singleJpegFrame(bytes: ArrayBuffer): void {
-  const v = new DataView(bytes);
-  let frames = 0;
-  let i = 2;
-  while (i + 4 <= bytes.byteLength) {
-    if (v.getUint8(i) !== 0xff) return;
-    const marker = v.getUint8(i + 1);
-    if (marker === 0xff) {
-      i++;
-      continue;
-    }
-    if (marker === 0xda || marker === 0xd9) return;
-    if (
-      marker >= 0xc0 &&
-      marker <= 0xcf &&
-      marker !== 0xc4 &&
-      marker !== 0xc8 &&
-      marker !== 0xcc &&
-      ++frames > 1
-    )
-      throw new MediaConversionError("jpeg declares more than one frame");
-    i += 2 + v.getUint16(i + 2);
-  }
+// jpeg-js counts every buffer against `maxMemoryUsageInMB` BEFORE allocating it, so that budget is
+// the guard, sized from the pixels the header declared. A 4:4:4 color JPEG needs ~12 B/px of it
+// (measured: 3000x3000 refused at 100 MB, decoded at 103), so 24 covers a four-component (CMYK) one
+// with room to spare; plus the file itself and slack for the tables.
+// Anything a crafted file adds on top (a second frame, after the scan or before it, or 255
+// components) is refused at the allocation that would cross it. The 2 GB fixed ceiling did not do
+// that: it let a small file claim gigabytes the pixel cap had never admitted.
+const JPEG_BYTES_PER_PIXEL = 24;
+const JPEG_SLACK_BYTES = 16 * 1024 * 1024;
+
+function jpegMemoryBudgetMB(bytes: ArrayBuffer, pixels: number): number {
+  return Math.ceil(
+    (pixels * JPEG_BYTES_PER_PIXEL + bytes.byteLength + JPEG_SLACK_BYTES) /
+      (1024 * 1024),
+  );
 }
 
 async function jpegFit(
@@ -336,15 +326,13 @@ async function jpegFit(
   if (!isJpeg(bytes))
     throw new MediaSourceMismatchError("declared as jpeg but is not one");
   const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
-  headerPixels(bytes, "image/jpeg", cap);
-  singleJpegFrame(bytes);
-  // jpeg-js enforces its own ceilings too, set from the cap so they never refuse what it admits. The
-  // memory one counts its working buffers on top of the RGBA (~680 MB peak at 36 MP, measured).
+  const pixels = headerPixels(bytes, "image/jpeg", cap);
+  // jpeg-js enforces its own ceilings too: resolution from the cap, memory from the header (above).
   const raw = jpeg.decode(new Uint8Array(bytes), {
     useTArray: true,
     formatAsRGBA: true,
     maxResolutionInMP: Math.ceil(cap / 1_000_000),
-    maxMemoryUsageInMB: 2048,
+    maxMemoryUsageInMB: jpegMemoryBudgetMB(bytes, pixels),
   });
   // Opaque by construction, so there is nothing to flatten: fit, then turn upright, then encode.
   // The turn runs on the fitted raster so its copy is of 1568 px and not of the original.

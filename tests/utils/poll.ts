@@ -7,3 +7,23 @@
 // these helpers RETURN what they have when the deadline lapses, so a lapse surfaces as an assertion
 // about the data; throwing instead needs each caller's `expected` count checked (not all are >= 1).
 export const POLL_DEADLINE_MS = 15_000;
+
+/**
+ * Resolves with the first truthy value `check` returns, asking again every `everyMs` until
+ * POLL_DEADLINE_MS lapses, and then throws naming `what`. A test waits for a condition with this
+ * instead of sleeping for a guessed duration: a passing run pays only the time the work took.
+ */
+export async function until<T>(
+  what: string,
+  check: () => T | Promise<T>,
+  { everyMs = 10, deadlineMs = POLL_DEADLINE_MS } = {},
+): Promise<NonNullable<T>> {
+  const stopAt = Date.now() + deadlineMs;
+  for (;;) {
+    const value = await check();
+    if (value) return value as NonNullable<T>;
+    if (Date.now() >= stopAt)
+      throw new Error(`gave up waiting for ${what} after ${deadlineMs}ms`);
+    await Bun.sleep(everyMs);
+  }
+}

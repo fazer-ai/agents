@@ -70,7 +70,7 @@ const SHAPES: { event: string; body: Record<string, unknown> }[] = [
     event: "webwidget_triggered",
     body: {
       id: CONTACT_INBOX_ID,
-      source_id: "src",
+      source_id: "contact-source",
       inbox: { id: INBOX_ID, name: "Widget" },
       current_conversation: conversationBody(),
     },

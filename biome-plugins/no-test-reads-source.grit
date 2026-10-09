@@ -1,0 +1,17 @@
+// Refuses a path into src/ or docs/ written in a test. A test that reads the source and looks for a
+// string pins how the code is written, not what it does: it breaks on a refactor and stays green when
+// the same rule is broken with other spelling, and `bun test --changed` never selects it because it
+// imports nothing. Call the code and assert the effect; a rule over the whole tree is a lint plugin
+// here. Files that predate the rule are listed in biome.jsonc.
+language js;
+
+or {
+    JsStringLiteralExpression() as $hit where { $hit <: r".[./]*src." },
+    JsStringLiteralExpression() as $hit where { $hit <: r".[./]*src/.*" },
+    JsStringLiteralExpression() as $hit where { $hit <: r".[./]*docs/.*" },
+    JsTemplateExpression() as $hit where { $hit <: r".[./]*src/[\s\S]*" },
+    JsTemplateExpression() as $hit where { $hit <: r"[\s\S]*/src/[\s\S]*" },
+    JsTemplateExpression() as $hit where { $hit <: r".[./]*docs/[\s\S]*" }
+} where {
+    register_diagnostic(span = $hit, message = "A test asserts what the code does, not how its source reads: call the code and assert the effect. A rule over the whole tree is a lint plugin in biome-plugins/ (testes.md, T5).")
+}

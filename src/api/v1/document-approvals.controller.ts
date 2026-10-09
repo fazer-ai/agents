@@ -10,6 +10,7 @@ import {
   countPendingApprovals,
   getApprovalRequest,
   listApprovalRequests,
+  listDecidedApprovals,
   listPendingApprovals,
   PENDING_PAGE_SIZE,
   rejectDocumentRequest,
@@ -56,6 +57,10 @@ export const documentApprovalsController = new Elysia({
       instance: instanceIdentity,
       requests: await listApprovalRequests(ctxOrThrow(tenantContext), {
         status: query.status,
+        conversationId:
+          query.conversationId === undefined
+            ? undefined
+            : requireDbId(query.conversationId),
         limit: query.limit ? Number(query.limit) : undefined,
       }),
     }),
@@ -63,6 +68,13 @@ export const documentApprovalsController = new Elysia({
       requireRole: "AGENT",
       query: t.Object({
         status: t.Optional(STATUS),
+        conversationId: t.Optional(
+          t.String({
+            pattern: "^[0-9]+$",
+            description:
+              "Only the requests of this conversation (the console's conversation id).",
+          }),
+        ),
         limit: t.Optional(
           t.String({
             pattern: "^[1-9][0-9]*$",
@@ -106,6 +118,37 @@ export const documentApprovalsController = new Elysia({
       detail: doc(
         "List pending document approvals",
         "The requests waiting on the team now: pending and not past their validity, oldest first, with the conversation and the customer's name. The console's approvals queue and its badge read this.",
+      ),
+      response: errors(401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/decided",
+    async ({ tenantContext, query }) => {
+      const requests = await listDecidedApprovals(
+        ctxOrThrow(tenantContext),
+        undefined,
+        {
+          before:
+            query.before === undefined ? undefined : requireDbId(query.before),
+          limit: PENDING_PAGE_SIZE + 1,
+        },
+      );
+      const more = requests.length > PENDING_PAGE_SIZE;
+      const shown = more ? requests.slice(0, PENDING_PAGE_SIZE) : requests;
+      return {
+        requests: shown,
+        nextBefore: more ? (shown[shown.length - 1]?.id ?? null) : null,
+      };
+    },
+    {
+      requireRole: "AGENT",
+      query: t.Object({
+        before: t.Optional(t.String({ pattern: "^[0-9]+$" })),
+      }),
+      detail: doc(
+        "List decided document approvals",
+        "The approvals history: every request no longer waiting on the team (approved, rejected, expired, cancelled), newest first, with who decided, what it came to in the conversation, and the customer's name.",
       ),
       response: errors(401, 403, 404, 422),
     },

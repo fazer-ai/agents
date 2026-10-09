@@ -2151,6 +2151,14 @@ model DocumentApprovalRequest {
   note               String?
   decidedAt          DateTime? @map("decided_at")
   issuedDocumentId   BigInt?   @unique @map("issued_document_id")
+  // When the conversation was told the document is approved and on its way, claimed before the note
+  // goes out so a retried outcome never repeats it.
+  approvedNoteAt     DateTime? @map("approved_note_at")
+  // What the decision came to in the conversation, for the console: "DELIVERED" (the PDF reached the
+  // customer), "NOTED" (a private note says why it did not), "HANDED" (rejected, handed to a person),
+  // "NO_AGENT" (no bot left to write in it). Null while the outcome is on its way.
+  outcome            String?
+  outcomeAt          DateTime? @map("outcome_at")
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
@@ -2161,6 +2169,7 @@ model DocumentApprovalRequest {
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, status, expiresAt])
   @@index([tenantId, templateId])
+  @@index([tenantId, conversationId])
   @@map("document_approval_requests")
 }
 

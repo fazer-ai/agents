@@ -71,6 +71,21 @@ URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
+  if (url.includes("/document-approvals/decided")) {
+    return json({
+      requests: [
+        {
+          ...DOCUMENT,
+          id: "40",
+          status: "APPROVED",
+          decidedAt: new Date(0).toISOString(),
+          reviewerName: "Bruno Lima",
+          outcome: "DELIVERED",
+        },
+      ],
+      nextBefore: null,
+    });
+  }
   if (url.includes("/document-approvals/pending")) {
     const answer = await pending(url);
     return answer instanceof Response ? answer : json(answer);
@@ -344,4 +359,17 @@ test("an older count that lands after a newer refresh does not bring the old num
   open();
   await new Promise((r) => setTimeout(r, 50));
   expect(screen.getByTestId("badge").textContent).toBe("1");
+});
+
+test("the history tab lists the decided documents with who decided and what they came to", async () => {
+  role = "AGENT";
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  const link = await screen.findByRole("link", {
+    name: /Orçamento for Ana Ribeiro/,
+  });
+  expect(link.getAttribute("href")).toBe("/document-approvals/40");
+  expect(link.textContent).toContain("by Bruno Lima");
+  expect(link.textContent).toContain("Sent to the customer");
+  expect(screen.queryByText("Knowledge suggestions")).toBeNull();
 });

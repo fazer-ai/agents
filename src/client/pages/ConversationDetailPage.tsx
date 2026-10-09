@@ -65,6 +65,7 @@ import { approvalBreadcrumb } from "@/client/lib/approval-breadcrumb";
 import { isAdminRole } from "@/client/lib/roles";
 import { type TurnFacts, toolLabel } from "@/client/lib/tool-label";
 import { cn, formatRelativeTime } from "@/client/lib/utils";
+import { ConversationApprovals } from "@/client/pages/approvals/ConversationApprovals";
 import {
   buildTimeline,
   type FollowUpBadgeInfo,
@@ -207,9 +208,9 @@ function MessageBubble({
           {t("conversation.privateNote", "Private note")}
           {m.senderName ? ` · ${m.senderName}` : ""}
         </div>
-        <p className="whitespace-pre-wrap text-sm text-text-primary">
-          {m.content}
-        </p>
+        {/* NOTE: Chatwoot renders a private note as Markdown, and the notes the platform writes link with it
+            (docs/documents.md, Approval), so the console renders it the same way. */}
+        <Markdown className="text-sm">{m.content ?? ""}</Markdown>
         {(when || turnUsage) && (
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-text-muted">
             {when && <span>{when}</span>}
@@ -1635,22 +1636,24 @@ export function ConversationDetailPage() {
 
   return (
     <PageContainer size="wide" className="flex h-full min-h-0 flex-col gap-4">
-      <Link
-        to="/conversations"
-        className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        {t("conversation.back", "Back to conversations")}
-      </Link>
-      {backToApproval && (
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <Link
-          to={backToApproval}
-          className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+          to="/conversations"
+          className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          {t("conversation.backToApproval", "Back to the approval")}
+          {t("conversation.back", "Back to conversations")}
         </Link>
-      )}
+        {backToApproval && (
+          <Link
+            to={backToApproval}
+            className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            {t("conversation.backToApproval", "Back to the approval")}
+          </Link>
+        )}
+      </div>
 
       <DataBoundary
         loading={metaLoading}
@@ -1935,6 +1938,11 @@ export function ConversationDetailPage() {
                 </div>
               </div>
             </Card>
+
+            <ConversationApprovals
+              conversationId={id}
+              refreshKey={messages.length}
+            />
 
             {conv.lastError && (
               <Card className="flex flex-wrap items-center justify-between gap-3 border-warning/40 bg-warning-soft">

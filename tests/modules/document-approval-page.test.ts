@@ -8,6 +8,8 @@ import {
   countPendingApprovals,
   getApprovalRequest,
   issueOrRequestApproval,
+  listApprovalRequests,
+  listDecidedApprovals,
   listPendingApprovals,
   requestApprovalAgain,
 } from "@/modules/documents/approval";
@@ -708,6 +710,75 @@ describe.skipIf(!dbUp)(
       expect(nextPage[0]?.id).not.toBe(firstPage[0]?.id);
       expect(Number(nextPage[0]?.id)).toBeGreaterThan(Number(firstPage[0]?.id));
       expect(await countPendingApprovals(ctx(), appDb)).toBe(countBefore + 2);
+    });
+
+    test("the history lists what is no longer waiting, newest first, with who decided and what it came to", async () => {
+      const reviewer = await suDb.user.create({
+        data: {
+          email: `hist-${Date.now()}@local.test`,
+          name: "Bruno Revisor",
+          passwordHash: "x",
+        },
+      });
+      const waiting = await newRequest();
+      const approved = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: approved.requestId },
+        data: {
+          status: "APPROVED",
+          reviewerUserId: reviewer.id,
+          decidedAt: new Date(),
+          outcome: "DELIVERED",
+          outcomeAt: new Date(),
+        },
+      });
+      const expired = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: expired.requestId },
+        data: { status: "EXPIRED" },
+      });
+      const history = await listDecidedApprovals(ctx(), appDb);
+      const ids = history.map((r) => r.id);
+      expect(ids).not.toContain(String(waiting.requestId));
+      expect(ids.indexOf(String(expired.requestId))).toBeLessThan(
+        ids.indexOf(String(approved.requestId)),
+      );
+      const row = history.find((r) => r.id === String(approved.requestId));
+      expect(row?.status).toBe("APPROVED");
+      expect(row?.reviewerName).toBe("Bruno Revisor");
+      expect(row?.outcome).toBe("DELIVERED");
+      expect(row?.contactName).toBe("Ana Ribeiro");
+      // A page starts before the last id of the one before.
+      const next = await listDecidedApprovals(ctx(), appDb, {
+        before: BigInt(String(expired.requestId)),
+        limit: 50,
+      });
+      expect(next.map((r) => r.id)).toContain(String(approved.requestId));
+      expect(next.map((r) => r.id)).not.toContain(String(expired.requestId));
+      const foreign: TenantContext = {
+        tenantId: otherTenantId,
+        userId: null,
+        role: "TENANT_ADMIN",
+      };
+      expect(await listDecidedApprovals(foreign, appDb)).toEqual([]);
+      const read = await getApprovalRequest(ctx(), approved.requestId, appDb);
+      expect(read.reviewerName).toBe("Bruno Revisor");
+      await suDb.user.delete({ where: { id: reviewer.id } });
+    });
+
+    test("a conversation's requests are listed apart from every other conversation's", async () => {
+      const mine = await newRequest();
+      await newRequest();
+      const listed = await listApprovalRequests(
+        ctx(),
+        { conversationId: mine.conversationId },
+        appDb,
+      );
+      expect(listed.length).toBeGreaterThan(0);
+      for (const r of listed) {
+        expect(r.conversationId).toBe(String(mine.conversationId));
+      }
+      expect(listed.map((r) => r.id)).toContain(String(mine.requestId));
     });
 
     test("another tenant reads nothing of the request, its page or its context", async () => {

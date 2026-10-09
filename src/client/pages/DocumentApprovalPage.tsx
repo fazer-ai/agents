@@ -1,4 +1,4 @@
-import { FileQuestion } from "lucide-react";
+import { ArrowLeft, FileQuestion } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router";
@@ -16,6 +16,11 @@ import {
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import {
+  APPROVAL_STATUS_VARIANT,
+  approvalOutcomeLabel,
+  approvalStatusLabel,
+} from "@/client/lib/approval-status";
 import { mediaFetch } from "@/client/lib/media";
 import { serverNow } from "@/client/lib/serverClock";
 import { DocumentPreview } from "@/client/pages/resources/documents/DocumentPreview";
@@ -36,18 +41,11 @@ type ContextResp = Awaited<
 >;
 type ApprovalContext = NonNullable<ContextResp["data"]>;
 
-type BadgeVariant = "warning" | "success" | "error" | "secondary";
-const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  PENDING: "warning",
-  APPROVED: "success",
-  REJECTED: "error",
-  EXPIRED: "secondary",
-  CANCELLED: "secondary",
-};
-
-// The preview of one request, fetched once: its bytes do not change while the request moves, and
-// each fetch renders the PDF again on the server.
-function usePreview(id: string): DocumentPreviewState {
+// The document beside the decision, fetched once per source: the request's preview while it waits (its
+// bytes do not change while the request moves, and each fetch renders the PDF again on the server), the
+// issued document, with its number, once approval issued it. Null until the request is read, so a
+// decided request does not fetch the draft first.
+function usePreview(source: string | null): DocumentPreviewState {
   const { t } = useTranslation();
   const [state, setState] = useState<DocumentPreviewState>({
     url: null,
@@ -56,12 +54,11 @@ function usePreview(id: string): DocumentPreviewState {
   });
   const urlRef = useRef<string | null>(null);
   useEffect(() => {
+    if (source === null) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await mediaFetch(
-          `/api/v1/document-approvals/${id}/preview`,
-        );
+        const res = await mediaFetch(source);
         if (cancelled) return;
         if (!res.ok) {
           setState({
@@ -89,7 +86,7 @@ function usePreview(id: string): DocumentPreviewState {
     return () => {
       cancelled = true;
     };
-  }, [id, t]);
+  }, [source, t]);
   useEffect(
     () => () => {
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
@@ -131,8 +128,12 @@ export function DocumentApprovalPage() {
   );
 }
 
-// How often a request past its time is read again until the expiry closes it.
+// How often a request past its time is read again until the expiry closes it, and a decided one until
+// its outcome is recorded.
 const OVERDUE_POLL_MS = 3000;
+// How long after the decision the page keeps waiting for the outcome: past it, a run that failed and
+// backs off is the scheduler's to finish, and the page says what it knows.
+const OUTCOME_POLL_WINDOW_MS = 2 * 60_000;
 
 function DocumentApprovalRequestPage({ id }: { id: string }) {
   const { t, i18n } = useTranslation();
@@ -161,7 +162,14 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   const [busy, setBusy] = useState<"approve" | "reject" | "again" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [note, setNote] = useState("");
-  const preview = usePreview(id);
+  const issuedId = request?.issuedDocumentId ?? null;
+  const preview = usePreview(
+    request === null
+      ? null
+      : issuedId === null
+        ? `/api/v1/document-approvals/${id}/preview`
+        : `/api/v1/documents/${issuedId}/pdf`,
+  );
 
   const loadContext = useCallback(async () => {
     setContextState("loading");
@@ -220,6 +228,25 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
     );
     return () => clearTimeout(timer);
   }, [status, expiresAtMs, load, reads]);
+
+  // A decision's outcome lands in the conversation a few seconds after it (the agent writes the
+  // message the PDF goes with), so a request decided in the last minutes is read again until it does.
+  const outcomePending =
+    request !== null &&
+    (request.status === "APPROVED" || request.status === "REJECTED") &&
+    request.outcome === null &&
+    request.decidedAt !== null &&
+    serverNow() - new Date(request.decidedAt).getTime() <
+      OUTCOME_POLL_WINDOW_MS;
+  useEffect(() => {
+    void reads;
+    if (!outcomePending) return;
+    const timer = setTimeout(
+      () => void load().then(() => setReads((n) => n + 1)),
+      OVERDUE_POLL_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [outcomePending, load, reads]);
 
   const endpoint = api.api.v1["document-approvals"]({ id });
 
@@ -344,14 +371,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
           typeof value === "number" && value < 1e12 ? value * 1000 : value,
         ).toLocaleString(i18n.language);
 
-  const statusLabel = (status: string) =>
-    ({
-      PENDING: t("documentApproval.status.pending", "Waiting for approval"),
-      APPROVED: t("documentApproval.status.approved", "Approved"),
-      REJECTED: t("documentApproval.status.rejected", "Rejected"),
-      EXPIRED: t("documentApproval.status.expired", "Expired"),
-      CANCELLED: t("documentApproval.status.cancelled", "Cancelled"),
-    })[status] ?? status;
+  const statusLabel = (status: string) => approvalStatusLabel(status, t);
 
   const pending =
     request?.status === "PENDING" &&
@@ -388,11 +408,24 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
       )}
       {request && (
         <>
+          <Link
+            to={
+              request.status === "PENDING"
+                ? "/approvals"
+                : "/approvals?tab=history"
+            }
+            className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            {t("documentApproval.back", "Back to approvals")}
+          </Link>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="font-semibold text-lg text-text-primary">
               {request.title}
             </h1>
-            <Badge variant={STATUS_VARIANT[request.status] ?? "secondary"}>
+            <Badge
+              variant={APPROVAL_STATUS_VARIANT[request.status] ?? "secondary"}
+            >
               {statusLabel(request.status)}
             </Badge>
             <span className="text-sm text-text-muted">
@@ -401,9 +434,18 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                     at: formatTime(request.expiresAt),
                   })
                 : request.decidedAt
-                  ? t("documentApproval.decidedAt", "Decided {{at}}", {
-                      at: formatTime(request.decidedAt),
-                    })
+                  ? request.reviewerName
+                    ? t(
+                        "documentApproval.decidedByAt",
+                        "Decided by {{name}} {{at}}",
+                        {
+                          name: request.reviewerName,
+                          at: formatTime(request.decidedAt),
+                        },
+                      )
+                    : t("documentApproval.decidedAt", "Decided {{at}}", {
+                        at: formatTime(request.decidedAt),
+                      })
                   : null}
             </span>
           </div>
@@ -633,10 +675,18 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 {request.status === "APPROVED" &&
                   request.issuedDocumentId !== null && (
                     <p className="text-sm text-text-secondary">
-                      {t(
-                        "documentApproval.approvedHint",
-                        "Approved. The agent sends the document in the conversation, or leaves a note when it cannot.",
-                      )}
+                      {request.outcome === "DELIVERED"
+                        ? t(
+                            "documentApproval.deliveredHint",
+                            "Sent to the customer {{at}}.",
+                            { at: formatTime(request.outcomeAt) },
+                          )
+                        : request.outcome === null
+                          ? t(
+                              "documentApproval.approvedHint",
+                              "Approved. The agent sends the document in the conversation, or leaves a note when it cannot.",
+                            )
+                          : approvalOutcomeLabel(request, t)}
                     </p>
                   )}
                 {/* Approved, but the document was never issued (the template went away after the

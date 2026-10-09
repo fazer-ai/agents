@@ -433,3 +433,66 @@ test("a message that is only a voice note shows its transcription, and a bare fi
   await screen.findByText("Transcription: três salas, por favor");
   expect(screen.getByText("Image")).toBeTruthy();
 });
+
+test("a decided request shows who decided, what it came to, and the issued document instead of the draft", async () => {
+  let drafts = 0;
+  handler = async (url) => {
+    if (url.includes("/preview")) {
+      drafts += 1;
+      return pdf("draft");
+    }
+    if (url.includes("/documents/5/pdf")) return pdf("issued");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/18")) {
+      return json({
+        request: request("18", {
+          status: "APPROVED",
+          reviewerName: "Ana Souza",
+          decidedAt: new Date().toISOString(),
+          issuedDocumentId: "5",
+          outcome: "DELIVERED",
+          outcomeAt: new Date().toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/18");
+  await screen.findByText(/Decided by Ana Souza/);
+  await screen.findByText(/Sent to the customer/);
+  await waitFor(() =>
+    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
+      "blob:issued",
+    ),
+  );
+  expect(drafts).toBe(0);
+  expect(
+    screen
+      .getByRole("link", { name: "Back to approvals" })
+      .getAttribute("href"),
+  ).toBe("/approvals?tab=history");
+});
+
+test("an approval whose outcome has not landed yet is read again until it does", async () => {
+  let reads = 0;
+  handler = async (url) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/19")) {
+      reads += 1;
+      return json({
+        request: request("19", {
+          status: "APPROVED",
+          decidedAt: new Date().toISOString(),
+          issuedDocumentId: "6",
+          outcome: reads > 1 ? "DELIVERED" : null,
+          outcomeAt: reads > 1 ? new Date().toISOString() : null,
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/19");
+  await screen.findByText(/The agent sends the document/);
+  await screen.findByText(/Sent to the customer/, {}, { timeout: 6000 });
+}, 10_000);

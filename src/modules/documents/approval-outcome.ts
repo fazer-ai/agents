@@ -33,7 +33,7 @@ import {
   type JobResult,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
-import { openedJobKey } from "./approval";
+import { type ApprovalOutcome, openedJobKey, reviewerNames } from "./approval";
 import { formatDocumentNumber } from "./format";
 import { getIssuedDocumentPdf, sysCtx } from "./issue";
 
@@ -56,13 +56,14 @@ type Outcome =
   | "retry";
 
 // Every note ends on the request's page, so the person the conversation falls to opens the decision
-// (and, on an expired one, asks again) from where they are working.
+// (and, on an expired one, asks again) from where they are working. A Markdown link: Chatwoot and the
+// console both render a private note as Markdown.
 function withPageLink(
   text: string,
   tenantId: bigint,
   requestId: bigint,
 ): string {
-  return `${text}\n\nVer aprovação: ${consoleUrl(`/document-approvals/${requestId}`, { tenantId })}`;
+  return `${text}\n\n[Ver aprovação](${consoleUrl(`/document-approvals/${requestId}`, { tenantId })})`;
 }
 
 function titleOf(title: string): string {
@@ -179,6 +180,20 @@ async function botOwnsLive(
   };
 }
 
+async function claimApprovedNote(
+  tenantId: bigint,
+  requestId: bigint,
+  base: PrismaClient,
+): Promise<boolean> {
+  const claimed = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.documentApprovalRequest.updateMany({
+      where: { id: requestId, approvedNoteAt: null },
+      data: { approvedNoteAt: new Date() },
+    }),
+  );
+  return claimed.count === 1;
+}
+
 export async function runApprovalOutcome(
   tenantId: bigint,
   requestId: bigint,
@@ -194,10 +209,21 @@ export async function runApprovalOutcome(
         note: true,
         conversationId: true,
         issuedDocumentId: true,
+        reviewerUserId: true,
       },
     }),
   );
   if (!request?.conversationId) return "no-conversation";
+  // Who decided, named in every note the decision leaves, so the team reads in Chatwoot who to ask.
+  const reviewer =
+    request.reviewerUserId === null
+      ? null
+      : ((
+          await runScopedOn(base, sysCtx(tenantId), (db) =>
+            reviewerNames(db, [request.reviewerUserId]),
+          )
+        ).get(request.reviewerUserId) ?? null);
+  const by = reviewer ? ` por ${literalForChatwoot(reviewer)}` : "";
   const target = await conversationOf(tenantId, request.conversationId, base);
   // The expiry's alert is the team's, not the bot's: it goes out even when no bot is left to write
   // the note (an agent deleted, an inbox unbound while the request waited).
@@ -308,7 +334,7 @@ export async function runApprovalOutcome(
       : "";
     const noted = await note(
       client,
-      `Documento não aprovado pela equipe: ${title}. Nada foi enviado ao cliente.${owned ? " A conversa foi passada para um atendente." : ""}${reviewerNote}`,
+      `Documento não aprovado${by || " pela equipe"}: ${title}. Nada foi enviado ao cliente.${owned ? " A conversa foi passada para um atendente." : ""}${reviewerNote}`,
     );
     if (!noted) return "retry";
     return owned ? "handed" : "noted";
@@ -350,7 +376,7 @@ export async function runApprovalOutcome(
     if (err instanceof NotFoundError) return null;
     throw err;
   });
-  const unavailable = `Documento aprovado: ${named}, mas o PDF não está disponível para envio (revogado ou ausente). Nada foi enviado ao cliente.`;
+  const unavailable = `Documento aprovado${by}: ${named}, mas o PDF não está disponível para envio (revogado ou ausente). Nada foi enviado ao cliente.`;
   if (!pdf) {
     const client = await clientFor(tenantId, target, base, deps);
     return (await note(client, unavailable)) ? "noted" : "retry";
@@ -366,10 +392,37 @@ export async function runApprovalOutcome(
   if (!ownedLive) {
     return (await note(
       liveClient,
-      `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
+      `Documento aprovado${by}: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
     ))
       ? "noted"
       : "retry";
+  }
+  // The team hears at once that the document is approved and on its way: the agent's turn takes a few
+  // seconds more, and a person watching Chatwoot would otherwise see nothing until the PDF lands. Claimed
+  // before the send, so a retried outcome never repeats it, and best effort: a Chatwoot that fails it
+  // must not hold the PDF back, and the PDF or the note that follows still says what happened. Not a
+  // commit either: the PDF is still this run's or its retry's to send.
+  if (
+    !deps.signal?.aborted &&
+    (await claimApprovedNote(tenantId, requestId, base))
+  ) {
+    await liveClient
+      .sendPrivateNote(
+        target.conv.chatwootConversationId,
+        withPage(
+          `Documento aprovado${by}: ${named}. O agente está enviando ao cliente.`,
+        ),
+      )
+      .catch((err: unknown) =>
+        logger.warn(
+          {
+            tenantId: String(tenantId),
+            requestId: String(requestId),
+            err: (err as Error).message,
+          },
+          "document approval: the approved note could not be posted; the PDF goes on",
+        ),
+      );
   }
   const outcome: RunAgentNudgeOutcome = await runAgentNudge({
     tenantId,
@@ -387,14 +440,14 @@ export async function runApprovalOutcome(
       // NOTE: unescaped here: the caption is signed, and the signature escapes it once.
       caption: `Segue o documento ${request.title.replace(/\s+/g, " ").trim()}, aprovado pela equipe.`,
       heldNote: withPage(
-        `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
+        `Documento aprovado${by}: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
       ),
       windowNote: withPage(
-        `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+        `Documento aprovado${by}: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
       ),
       revokedNote: withPage(unavailable),
       blockedNote: withPage(
-        `Documento aprovado: ${named}. A resposta do agente foi barrada pela política de saída, então o PDF não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+        `Documento aprovado${by}: ${named}. A resposta do agente foi barrada pela política de saída, então o PDF não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
       ),
       stillValid: async () => {
         const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -424,7 +477,7 @@ export async function runApprovalOutcome(
   const client = await clientFor(tenantId, target, base, deps);
   return (await note(
     client,
-    `Documento aprovado: ${named}, mas o agente não pôde enviá-lo agora. Ele precisa ser enviado por uma pessoa.`,
+    `Documento aprovado${by}: ${named}, mas o agente não pôde enviá-lo agora. Ele precisa ser enviado por uma pessoa.`,
   ))
     ? "noted"
     : "retry";
@@ -521,7 +574,33 @@ export async function runOutcomeJob(
   if (outcome === "retry") {
     return { outcome: "fail", error: "conversation ownership unavailable" };
   }
+  await recordOutcome(tenantId, requestId, outcome, base);
   return { outcome: "done" };
+}
+
+const RECORDED: Partial<Record<Outcome, ApprovalOutcome>> = {
+  delivered: "DELIVERED",
+  noted: "NOTED",
+  handed: "HANDED",
+  "no-agent": "NO_AGENT",
+};
+
+// What the decision came to, for the console's request page and history. The first run to finish
+// writes it; a request with no conversation has nothing to show.
+async function recordOutcome(
+  tenantId: bigint,
+  requestId: bigint,
+  outcome: Outcome,
+  base: PrismaClient,
+): Promise<void> {
+  const recorded = RECORDED[outcome];
+  if (!recorded) return;
+  await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.documentApprovalRequest.updateMany({
+      where: { id: requestId, outcome: null },
+      data: { outcome: recorded, outcomeAt: new Date() },
+    }),
+  );
 }
 
 let registered = false;

@@ -185,10 +185,20 @@ async function outcomeJobs(requestId: bigint) {
 function expectPageLink(note: unknown, requestId: bigint) {
   expect(String(note)).toMatch(
     new RegExp(
-      `\\n\\nVer aprovação: \\S+/document-approvals/${requestId}\\?switchTenant=${tenantId}$`,
+      `\\n\\n\\[Ver aprovação\\]\\(\\S+/document-approvals/${requestId}\\?switchTenant=${tenantId}\\)$`,
     ),
   );
 }
+
+// The note an approval leaves the moment the agent starts sending, apart from the note that says how
+// the outcome ended.
+const SENDING = "O agente está enviando ao cliente";
+const outcomeNotes = (calls: Call[]) =>
+  named(calls, "sendPrivateNote").filter(
+    (c) => !String(c[2]).includes(SENDING),
+  );
+const sendingNotes = (calls: Call[]) =>
+  named(calls, "sendPrivateNote").filter((c) => String(c[2]).includes(SENDING));
 
 describe.skipIf(!dbUp)("document approval outcomes", () => {
   beforeAll(async () => {
@@ -315,7 +325,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         makeClient: rec.makeClient,
       }),
     ).toBe("noted");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("Pedido de aprovação aberto");
     expectPageLink(notes[0]?.[2], requestId);
@@ -335,7 +345,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         makeClient: decidedMeanwhile as never,
       }),
     ).toBe("decided");
-    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    expect(outcomeNotes(rec.calls)).toHaveLength(0);
   });
 
   test("a decision's run waits while the opening note is still being written", async () => {
@@ -398,7 +408,15 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(new TextDecoder().decode(bytes.slice(0, 5))).toBe("%PDF-");
     expect(opts.caption).toContain("aprovado");
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
-    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    // The team hears the document is on its way before the agent's turn, and nothing else.
+    const sending = sendingNotes(rec.calls);
+    expect(sending).toHaveLength(1);
+    expect(String(sending[0]?.[2])).toContain(document.number as string);
+    expectPageLink(sending[0]?.[2], requestId);
+    expect(rec.calls.indexOf(sending[0] as Call)).toBeLessThan(
+      rec.calls.indexOf(files[0] as Call),
+    );
+    expect(outcomeNotes(rec.calls)).toHaveLength(0);
     expect(named(rec.calls, "sendTemplate")).toHaveLength(0);
 
     await suDb.schedulerJob.deleteMany({
@@ -425,6 +443,98 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       }),
     ]);
     expect(await outcomeJobs(requestId)).toHaveLength(0);
+  });
+
+  test("the notes name who decided, and a retried outcome never repeats the sending note", async () => {
+    const reviewer = await suDb.user.create({
+      data: {
+        email: `ana-${Date.now()}@local.test`,
+        name: "Ana Revisora",
+        passwordHash: "x",
+      },
+    });
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      reviewerUserId: reviewer.id,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const run = async () => {
+      const rec = recordingClient();
+      const model = new ScriptedCaptureModel([
+        { reply: "Seu orçamento segue em anexo." },
+      ]);
+      await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      return rec;
+    };
+    const first = await run();
+    const sending = sendingNotes(first.calls);
+    expect(sending).toHaveLength(1);
+    expect(String(sending[0]?.[2])).toContain(
+      "Documento aprovado por Ana Revisora",
+    );
+    const again = await run();
+    expect(sendingNotes(again.calls)).toHaveLength(0);
+
+    const rejected = await conversationWithRequest({});
+    await rejectDocumentRequest({
+      ctx: ctx(),
+      requestId: rejected.requestId,
+      reviewerUserId: reviewer.id,
+      base: appDb,
+    });
+    const rec = recordingClient();
+    await runApprovalOutcome(tenantId, rejected.requestId, appDb, {
+      makeClient: rec.makeClient,
+      nudgeDeps: { makeModel: noModel },
+    });
+    const notes = outcomeNotes(rec.calls);
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain(
+      "Documento não aprovado por Ana Revisora",
+    );
+    await suDb.user.delete({ where: { id: reviewer.id } });
+  });
+
+  test("the job records what the decision came to, once", async () => {
+    const { requestId, conversationId } = await conversationWithRequest({});
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    // No bot left on the conversation: the outcome is that nobody could be told.
+    await suDb.conversation.update({
+      where: { id: conversationId },
+      data: { inboxId: null },
+    });
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, dedupeKey: openedJobKey(requestId) },
+    });
+    await runOutcomeJob(tenantId, { requestId: String(requestId) }, appDb);
+    const recorded = await suDb.documentApprovalRequest.findUniqueOrThrow({
+      where: { id: requestId },
+      select: { outcome: true, outcomeAt: true },
+    });
+    expect(recorded.outcome).toBe("NO_AGENT");
+    expect(recorded.outcomeAt).not.toBeNull();
+
+    await suDb.documentApprovalRequest.update({
+      where: { id: requestId },
+      data: { outcome: "HANDED" },
+    });
+    await runOutcomeJob(tenantId, { requestId: String(requestId) }, appDb);
+    const kept = await suDb.documentApprovalRequest.findUniqueOrThrow({
+      where: { id: requestId },
+      select: { outcome: true },
+    });
+    expect(kept.outcome).toBe("HANDED");
   });
 
   test("the turn that delivers an approved document binds no tool", async () => {
@@ -511,7 +621,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       },
     });
     expect(outcome).toBe("noted");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("Documento aprovado");
     expect(String(notes[0]?.[2])).not.toContain("Texto do agente");
@@ -553,7 +663,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(outcome).toBe("noted");
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("não está disponível");
   });
@@ -615,7 +725,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
     expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
     expect(named(rec.calls, "assignTeam")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).not.toContain("passada para um atendente");
   });
@@ -642,10 +752,10 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         nudgeDeps: { makeModel: noModel },
       });
     await expect(run()).rejects.toThrow("chatwoot 502");
-    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    expect(outcomeNotes(rec.calls)).toHaveLength(0);
     failing = false;
     expect(await run()).toBe("handed");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("passada para um atendente");
   });
@@ -712,9 +822,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       expect(named(rec.calls, "sendMessage").map((c) => String(c[2]))).toEqual([
         "ENCAMINHADO-DOC",
       ]);
-      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
-        String(c[2]),
-      );
+      const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
       expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
     } finally {
       await suDb.agent.update({
@@ -801,9 +909,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       expect(named(rec.calls, "sendMessage").map((c) => String(c[2]))).toEqual([
         "MENSAGEM-SEGURA-DOC",
       ]);
-      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
-        String(c[2]),
-      );
+      const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
       expect(notes.some((n) => n.includes("barrada pela política"))).toBe(true);
       expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
     } finally {
@@ -845,9 +951,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       expect(outcome).toBe("noted");
       expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
       expect(named(rec.calls, "sendMessage")).toHaveLength(0);
-      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
-        String(c[2]),
-      );
+      const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
       expect(notes.some((n) => n.includes("ENCAMINHADO-DOC"))).toBe(true);
       expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
     } finally {
@@ -970,9 +1074,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         storageDir: DIR,
         nudgeDeps: { makeModel: noModel },
       });
-      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
-        String(c[2]),
-      );
+      const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
       expect(notes).toHaveLength(1);
       expect(notes[0]).not.toContain("{{contact.email}}");
       expect(notes[0]).toContain(literalForChatwoot("{{contact.email}}-"));
@@ -1097,7 +1199,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     });
     expect(outcome).toBe("noted");
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("atendente");
   });
@@ -1147,7 +1249,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(outcome).toBe("noted");
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("não está disponível");
   });
@@ -1197,7 +1299,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(reads).toBe(4);
     expect(outcome).toBe("noted");
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("atendente");
   });
@@ -1242,7 +1344,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(outcome).toBe("noted");
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendTemplate")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("janela de 24h");
   });
@@ -1415,7 +1517,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       nudgeDeps: { makeModel: noModel, checkpointer: new MemorySaver() },
     });
     expect(outcome).toBe("noted");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("Documento aprovado");
     expect(String(notes[0]?.[2])).toContain("atendente");
@@ -1443,7 +1545,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       nudgeDeps: { makeModel: noModel, checkpointer: new MemorySaver() },
     });
     expect(outcome).toBe("noted");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("janela de 24h");
     expect(String(notes[0]?.[2])).toContain("enviado por uma pessoa");
@@ -1470,7 +1572,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       nudgeDeps: { makeModel: noModel },
     });
     expect(outcome).toBe("handed");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("preço do item 2 errado, refazer");
     expectPageLink(notes[0]?.[2], requestId);
@@ -1553,7 +1655,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     ]);
     expect(named(rec.calls, "assignToAgent")).toHaveLength(0);
     expect(named(rec.calls, "assignTeam")).toHaveLength(0);
-    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    const notes = outcomeNotes(rec.calls).map((c) => String(c[2]));
     expect(notes).toHaveLength(1);
     expect(notes[0]).not.toContain("passada para um atendente");
   });
@@ -1691,7 +1793,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       nudgeDeps: { makeModel: noModel },
     });
     expect(outcome).toBe("noted");
-    const notes = named(rec.calls, "sendPrivateNote");
+    const notes = outcomeNotes(rec.calls);
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("venceu");
     expectPageLink(notes[0]?.[2], requestId);
@@ -1731,7 +1833,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       nudgeDeps: { makeModel: noModel },
     });
     expect(outcome).toBe("no-agent");
-    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    expect(outcomeNotes(rec.calls)).toHaveLength(0);
     const line = await flowLogRow(suDb, {
       where: {
         tenantId,
@@ -1762,7 +1864,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
       nudgeDeps: { makeModel: noModel },
     });
     expect(outcome).toBe("noted");
-    expect(String(named(rec.calls, "sendPrivateNote")[0]?.[2])).toContain(
+    expect(String(outcomeNotes(rec.calls)[0]?.[2])).toContain(
       "não está disponível",
     );
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
@@ -1788,7 +1890,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
         nudgeDeps: { makeModel: noModel, checkpointer: new MemorySaver() },
       });
       expect(outcome).toBe("noted");
-      expect(String(named(rec.calls, "sendPrivateNote")[0]?.[2])).toContain(
+      expect(String(outcomeNotes(rec.calls)[0]?.[2])).toContain(
         "precisa ser enviado por uma pessoa",
       );
       expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);

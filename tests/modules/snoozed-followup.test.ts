@@ -377,6 +377,7 @@ function stub(over: {
   const sent: string[] = [];
   const toggles: string[] = [];
   const labelSets: string[][] = [];
+  const notes: string[] = [];
   let currentLabels = over.labels ?? [];
   // Shown only once the model is GENERATING: after every ask that precedes the invoke, so only a
   // check at the send boundary can see it.
@@ -420,7 +421,10 @@ function stub(over: {
       sent.push(t);
       return { id: 999 };
     },
-    sendPrivateNote: async () => ({}),
+    sendPrivateNote: async (_c: number, t: string) => {
+      notes.push(t);
+      return {};
+    },
     getConversationLabels: async () => currentLabels,
     setConversationLabels: async (_c: number, labels: string[]) => {
       currentLabels = labels;
@@ -436,6 +440,7 @@ function stub(over: {
     sent,
     toggles,
     labelSets,
+    notes,
     deps: {
       makeModel: (cfg: { model: string }) =>
         over.model?.(cfg) ??
@@ -465,6 +470,8 @@ async function seed(
     contactInboxId?: number;
     whatsapp?: boolean;
     lastInboundAt?: Date;
+    // Chatwoot's conversation version (epoch seconds), moved by a status or holder change.
+    statusAt?: number;
   } = {},
 ) {
   const data = {
@@ -478,6 +485,7 @@ async function seed(
     contactInboxId: over.contactInboxId ?? null,
     inboxId: over.whatsapp ? whatsappInboxDbId : inboxDbId,
     ...(over.lastInboundAt ? { lastInboundAt: over.lastInboundAt } : {}),
+    chatwootStatusAt: over.statusAt ?? null,
   };
   await suDb.conversation.upsert({
     where: {
@@ -1008,7 +1016,14 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(s.sent).toEqual([]);
     expect(r).toEqual({ outcome: "done" });
     // The step is not spent: nothing reached the customer, and a later closing step must not run.
-    expect((await stateOf(2024)).snoozedFollowUpStep).toBeNull();
+    // The ladder is spent on this message of the person: no later closing step runs.
+    expect((await stateOf(2024)).snoozedFollowUpStep).toBe(STEPS.length);
+    expect(s.notes).toHaveLength(1);
+    // The note is an event the sweep re-arms on; the re-armed run writes nothing more.
+    const again = stub({ messages: [personAsked(250, 3)] });
+    await snoozedFollowUpHandler(jobFor(2024), appDb, again.deps);
+    expect(again.notes).toEqual([]);
+    expect(again.sent).toEqual([]);
   });
 
   test("a degraded message page is a failed read, not silence", async () => {
@@ -1041,5 +1056,62 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     await snoozedFollowUpHandler(jobFor(2026), appDb, s.deps);
     expect(s.sent).toEqual([REPLY]);
     expect(seen.join("\n")).toContain("Pode me mandar o número do pedido?");
+  });
+  async function finishedJob(
+    conv: number,
+    status: "DONE" | "DEAD",
+    claimedAt: Date,
+  ) {
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "SNOOZED_FOLLOWUP",
+        dedupeKey: snoozedDedupeKey(threadOf(conv)),
+        runAt: claimedAt,
+        claimedAt,
+        status,
+        attempts: status === "DEAD" ? 5 : 0,
+        payload: { threadId: threadOf(conv) },
+      },
+    });
+  }
+
+  test("a status or holder change after the last run re-arms, though no message moved", async () => {
+    await setSettings(LADDER);
+    const claimed = new Date(Date.now() - 60_000);
+    // The last message is older than the run; the snooze changed (dated to indefinite) after it.
+    await seed(2028, {
+      lastEventAt: new Date(Date.now() - 10 * 60_000),
+      statusAt: (Date.now() - 30_000) / 1000,
+    });
+    await finishedJob(2028, "DONE", claimed);
+    // And one whose status moved BEFORE the run: left alone.
+    await seed(2029, {
+      lastEventAt: new Date(Date.now() - 10 * 60_000),
+      statusAt: (Date.now() - 5 * 60_000) / 1000,
+    });
+    await finishedJob(2029, "DONE", claimed);
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const statusOf = async (conv: number) =>
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(conv)) },
+          select: { status: true },
+        })
+      ).status;
+    expect(await statusOf(2028)).toBe("PENDING");
+    expect(await statusOf(2029)).toBe("DONE");
+  });
+
+  test("a finished row re-armed by a new event gets a fresh failure budget", async () => {
+    await setSettings(LADDER);
+    await seed(2030, { lastEventAt: new Date(Date.now() - 10_000) });
+    await finishedJob(2030, "DEAD", new Date(Date.now() - 60_000));
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2030)) },
+      select: { status: true, attempts: true },
+    });
+    expect(job).toEqual({ status: "PENDING", attempts: 0 });
   });
 });

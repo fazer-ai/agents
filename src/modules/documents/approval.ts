@@ -617,6 +617,16 @@ export async function requestApprovalAgain(params: {
   const now = params.now ?? new Date();
   const row = await loadRequestWithSnapshot(ctx, requestId, base);
   if (row.status !== "EXPIRED") throw notExpired(row.status);
+  // Asked before the template is: a replacement already made answers the retry (a lost response, a
+  // second click) even when the template has since been switched off or changed.
+  const again = `again:${row.id}`;
+  const existing = await runScopedOn(base, ctx, (db) =>
+    db.documentApprovalRequest.findFirst({
+      where: { idempotencyKey: again },
+      select: { id: true },
+    }),
+  );
+  if (existing) return toDto(await loadRequest(ctx, existing.id, base));
   if (row.templateId === null) {
     throw new NotFoundError(
       "document template not found",
@@ -639,7 +649,7 @@ export async function requestApprovalAgain(params: {
     ctx,
     base,
     frozen,
-    idempotencyKey: `again:${row.id}`,
+    idempotencyKey: again,
     threadId: row.threadId,
     chatwootInstanceId: row.chatwootInstanceId,
     conversationId: row.conversationId,

@@ -459,6 +459,33 @@ describe.skipIf(!dbUp)(
       ).toHaveLength(1);
     });
 
+    test("asking again after the template was switched off answers with the replacement already made", async () => {
+      const { requestId } = await newRequest();
+      await expire(requestId);
+      const first = await requestApprovalAgain({
+        ctx: ctx(),
+        requestId,
+        base: appDb,
+      });
+      await suDb.documentTemplate.update({
+        where: { id: templateId },
+        data: { enabled: false },
+      });
+      try {
+        const retry = await requestApprovalAgain({
+          ctx: ctx(),
+          requestId,
+          base: appDb,
+        });
+        expect(retry.id).toBe(first.id);
+      } finally {
+        await suDb.documentTemplate.update({
+          where: { id: templateId },
+          data: { enabled: true },
+        });
+      }
+    });
+
     test("only an expired request can be asked again", async () => {
       const { requestId } = await newRequest();
       await expect(
@@ -496,6 +523,61 @@ describe.skipIf(!dbUp)(
         ["quero um orçamento", true],
       ]);
       expect(context.messagesUnavailable).toBe(false);
+    });
+
+    test("the context reads older pages until it has the last ten public messages", async () => {
+      const { requestId } = await newRequest();
+      // Sixty messages, one in five public: Chatwoot's latest page of twenty holds only four.
+      const all = Array.from({ length: 60 }, (_, i) => ({
+        id: i + 1,
+        content: `m${i + 1}`,
+        message_type: (i + 1) % 5 === 0 ? 0 : 1,
+        private: (i + 1) % 5 !== 0,
+      }));
+      const asked: (number | undefined)[] = [];
+      const client = new Proxy(
+        {},
+        {
+          get(_t, name: string) {
+            if (name === "then" || name === "muted") return undefined;
+            return async (_id: number, opts?: { before?: number }) => {
+              if (name !== "getMessages") return {};
+              asked.push(opts?.before);
+              const older = all.filter(
+                (m) => opts?.before === undefined || m.id < opts.before,
+              );
+              return { payload: older.slice(-20) };
+            };
+          },
+        },
+      );
+      const context = await getApprovalContext(
+        ctx(),
+        requestId,
+        { makeClient: async () => client as never },
+        appDb,
+      );
+      expect(context.messages.map((m) => m.content)).toEqual(
+        [15, 20, 25, 30, 35, 40, 45, 50, 55, 60].map((n) => `m${n}`),
+      );
+      expect(asked).toEqual([undefined, 41, 21]);
+    });
+
+    test("a Chatwoot client that cannot be built leaves the customer on the page, without the messages", async () => {
+      const { requestId } = await newRequest();
+      const context = await getApprovalContext(
+        ctx(),
+        requestId,
+        {
+          makeClient: async () => {
+            throw new Error("getaddrinfo ENOTFOUND chat.example.com");
+          },
+        },
+        appDb,
+      );
+      expect(context.contact?.name).toBe("Ana Ribeiro");
+      expect(context.messages).toEqual([]);
+      expect(context.messagesUnavailable).toBe(true);
     });
 
     test("another tenant reads nothing of the request, its page or its context", async () => {

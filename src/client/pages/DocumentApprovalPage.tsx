@@ -14,6 +14,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { mediaFetch } from "@/client/lib/media";
 import { DocumentPreview } from "@/client/pages/resources/documents/DocumentPreview";
 import type { DocumentPreviewState } from "@/client/pages/resources/documents/useDocumentPreview";
@@ -97,14 +98,20 @@ function usePreview(id: string, status: string | null): DocumentPreviewState {
   return state;
 }
 
-function errorMessage(err: unknown): string | null {
-  const value = (err as { value?: { message?: string } } | null)?.value;
-  return value?.message ?? null;
+// One page instance per request: moving to another id (request again, the browser's back) starts
+// from nothing, so neither a preview nor a load of the previous request can show beside the next one's
+// buttons.
+export function DocumentApprovalPage() {
+  const { id = "" } = useParams();
+  return (
+    <PageContainer size="wide" className="space-y-6">
+      <DocumentApprovalRequestPage key={id} id={id} />
+    </PageContainer>
+  );
 }
 
-export function DocumentApprovalPage() {
+function DocumentApprovalRequestPage({ id }: { id: string }) {
   const { t, i18n } = useTranslation();
-  const { id = "" } = useParams();
   const navigate = useNavigate();
   const { showToast } = useToast();
   const [request, setRequest] = useState<ApprovalRequest | null>(null);
@@ -160,7 +167,7 @@ export function DocumentApprovalPage() {
       const { data, error: err } = await endpoint.approve.post();
       if (err || !data) {
         showToast(
-          errorMessage(err) ??
+          apiErrorMessage(err) ??
             t("documentApproval.approveFailed", "Could not approve."),
           "error",
         );
@@ -190,7 +197,7 @@ export function DocumentApprovalPage() {
       );
       if (err) {
         showToast(
-          errorMessage(err) ??
+          apiErrorMessage(err) ??
             t("documentApproval.rejectFailed", "Could not reject."),
           "error",
         );
@@ -218,7 +225,7 @@ export function DocumentApprovalPage() {
       const { data, error: err } = await endpoint["request-again"].post();
       if (err || !data) {
         showToast(
-          errorMessage(err) ??
+          apiErrorMessage(err) ??
             t("documentApproval.againFailed", "Could not request it again."),
           "error",
         );
@@ -259,252 +266,251 @@ export function DocumentApprovalPage() {
     new Date(request.expiresAt).getTime() > Date.now();
 
   return (
-    <PageContainer size="wide" className="space-y-6">
-      <DataBoundary
-        loading={loading && !request}
-        error={error}
-        onRetry={load}
-        errorLabel={t(
-          "documentApproval.loadError",
-          "Could not load this approval request.",
-        )}
-        skeleton={
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Skeleton className="h-64 w-full" />
-            <Skeleton className="h-96 w-full" />
-          </div>
-        }
-      >
-        {missing && (
-          <EmptyState
-            icon={FileQuestion}
-            title={t(
-              "documentApproval.notFoundTitle",
-              "This approval request is not here",
-            )}
-            description={t(
-              "documentApproval.notFound",
-              "It does not exist in this organization, or it belongs to another one.",
-            )}
-          />
-        )}
-        {request && (
-          <>
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="font-semibold text-lg text-text-primary">
-                {request.title}
-              </h1>
-              <Badge variant={STATUS_VARIANT[request.status] ?? "secondary"}>
-                {statusLabel(request.status)}
-              </Badge>
-              <span className="text-sm text-text-muted">
-                {request.status === "PENDING"
-                  ? t("documentApproval.expiresAt", "Expires {{at}}", {
-                      at: formatTime(request.expiresAt),
+    <DataBoundary
+      loading={loading && !request}
+      error={error}
+      onRetry={load}
+      errorLabel={t(
+        "documentApproval.loadError",
+        "Could not load this approval request.",
+      )}
+      skeleton={
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-96 w-full" />
+        </div>
+      }
+    >
+      {missing && (
+        <EmptyState
+          icon={FileQuestion}
+          title={t(
+            "documentApproval.notFoundTitle",
+            "This approval request is not here",
+          )}
+          description={t(
+            "documentApproval.notFound",
+            "It does not exist in this organization, or it belongs to another one.",
+          )}
+        />
+      )}
+      {request && (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="font-semibold text-lg text-text-primary">
+              {request.title}
+            </h1>
+            <Badge variant={STATUS_VARIANT[request.status] ?? "secondary"}>
+              {statusLabel(request.status)}
+            </Badge>
+            <span className="text-sm text-text-muted">
+              {request.status === "PENDING"
+                ? t("documentApproval.expiresAt", "Expires {{at}}", {
+                    at: formatTime(request.expiresAt),
+                  })
+                : request.decidedAt
+                  ? t("documentApproval.decidedAt", "Decided {{at}}", {
+                      at: formatTime(request.decidedAt),
                     })
-                  : request.decidedAt
-                    ? t("documentApproval.decidedAt", "Decided {{at}}", {
-                        at: formatTime(request.decidedAt),
-                      })
-                    : null}
-              </span>
-            </div>
+                  : null}
+            </span>
+          </div>
 
-            <div className="grid gap-6 lg:grid-cols-2">
-              <div className="space-y-4">
-                <Card className="space-y-2 p-4">
-                  <h2 className="font-medium text-sm text-text-primary">
-                    {t("documentApproval.customer", "Customer")}
-                  </h2>
-                  {context?.contact ? (
-                    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                      <dt className="text-text-muted">
-                        {t("documentApproval.name", "Name")}
-                      </dt>
-                      <dd className="text-text-primary">
-                        {context.contact.name ?? "—"}
-                      </dd>
-                      {context.contact.phone && (
-                        <>
-                          <dt className="text-text-muted">
-                            {t("documentApproval.phone", "Phone")}
-                          </dt>
-                          <dd className="text-text-primary">
-                            {context.contact.phone}
-                          </dd>
-                        </>
-                      )}
-                      {context.contact.email && (
-                        <>
-                          <dt className="text-text-muted">
-                            {t("documentApproval.email", "Email")}
-                          </dt>
-                          <dd className="text-text-primary">
-                            {context.contact.email}
-                          </dd>
-                        </>
-                      )}
-                    </dl>
-                  ) : (
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-4">
+              <Card className="space-y-2 p-4">
+                <h2 className="font-medium text-sm text-text-primary">
+                  {t("documentApproval.customer", "Customer")}
+                </h2>
+                {context?.contact ? (
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+                    <dt className="text-text-muted">
+                      {t("documentApproval.name", "Name")}
+                    </dt>
+                    <dd className="text-text-primary">
+                      {context.contact.name ?? "—"}
+                    </dd>
+                    {context.contact.phone && (
+                      <>
+                        <dt className="text-text-muted">
+                          {t("documentApproval.phone", "Phone")}
+                        </dt>
+                        <dd className="text-text-primary">
+                          {context.contact.phone}
+                        </dd>
+                      </>
+                    )}
+                    {context.contact.email && (
+                      <>
+                        <dt className="text-text-muted">
+                          {t("documentApproval.email", "Email")}
+                        </dt>
+                        <dd className="text-text-primary">
+                          {context.contact.email}
+                        </dd>
+                      </>
+                    )}
+                  </dl>
+                ) : (
+                  <p className="text-sm text-text-muted">
+                    {t(
+                      "documentApproval.noContact",
+                      "No customer is recorded for this request.",
+                    )}
+                  </p>
+                )}
+                {context?.conversation && (
+                  <Link
+                    to={`/conversations/${context.conversation.id}`}
+                    className="text-accent text-sm"
+                  >
+                    {t(
+                      "documentApproval.openConversation",
+                      "Open conversation #{{number}}",
+                      {
+                        number: context.conversation.chatwootConversationId,
+                      },
+                    )}
+                  </Link>
+                )}
+              </Card>
+
+              <Card className="space-y-3 p-4">
+                <h2 className="font-medium text-sm text-text-primary">
+                  {t("documentApproval.recent", "Recent messages")}
+                </h2>
+                {context?.messagesUnavailable && (
+                  <p className="text-sm text-text-muted">
+                    {t(
+                      "documentApproval.messagesUnavailable",
+                      "Chatwoot did not answer, so the messages are not shown.",
+                    )}
+                  </p>
+                )}
+                {context &&
+                  !context.messagesUnavailable &&
+                  context.messages.length === 0 && (
                     <p className="text-sm text-text-muted">
-                      {t(
-                        "documentApproval.noContact",
-                        "No customer is recorded for this request.",
-                      )}
+                      {t("documentApproval.noMessages", "No messages.")}
                     </p>
                   )}
-                  {context?.conversation && (
-                    <Link
-                      to={`/conversations/${context.conversation.id}`}
-                      className="text-accent text-sm"
+                <ul className="flex flex-col gap-2">
+                  {context?.messages.map((m, i) => (
+                    <li
+                      key={m.id ?? `m-${i}`}
+                      className={
+                        m.fromCustomer
+                          ? "mr-8 rounded-md bg-bg-tertiary p-2 text-sm"
+                          : "ml-8 rounded-md bg-accent-soft p-2 text-sm"
+                      }
+                    >
+                      <div className="text-text-muted text-xs">
+                        {m.fromCustomer
+                          ? (context.contact?.name ??
+                            t("documentApproval.customer", "Customer"))
+                          : (m.senderName ?? t("documentApproval.us", "Agent"))}
+                        {m.createdAt ? ` · ${formatTime(m.createdAt)}` : ""}
+                      </div>
+                      <p className="whitespace-pre-wrap text-text-primary">
+                        {m.content ?? ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+
+              <Card className="space-y-3 p-4">
+                {pending && !rejecting && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      onClick={approve}
+                      loading={busy === "approve"}
+                      disabled={busy !== null}
+                    >
+                      {t("documentApproval.approve", "Approve and send")}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setRejecting(true)}
+                      disabled={busy !== null}
+                    >
+                      {t("documentApproval.reject", "Reject")}
+                    </Button>
+                  </div>
+                )}
+                {pending && rejecting && (
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="approval-note"
+                      className="font-medium text-sm text-text-primary"
                     >
                       {t(
-                        "documentApproval.openConversation",
-                        "Open conversation #{{number}}",
-                        {
-                          number: context.conversation.chatwootConversationId,
-                        },
+                        "documentApproval.noteLabel",
+                        "Note for the team (optional)",
                       )}
-                    </Link>
-                  )}
-                </Card>
-
-                <Card className="space-y-3 p-4">
-                  <h2 className="font-medium text-sm text-text-primary">
-                    {t("documentApproval.recent", "Recent messages")}
-                  </h2>
-                  {context?.messagesUnavailable && (
-                    <p className="text-sm text-text-muted">
+                    </label>
+                    <Textarea
+                      id="approval-note"
+                      value={note}
+                      maxLength={2000}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder={t(
+                        "documentApproval.notePlaceholder",
+                        "What is wrong with it",
+                      )}
+                    />
+                    <p className="text-text-muted text-xs">
                       {t(
-                        "documentApproval.messagesUnavailable",
-                        "Chatwoot did not answer, so the messages are not shown.",
+                        "documentApproval.rejectHint",
+                        "Nothing is sent to the customer. The note goes to the conversation as a private note, and the conversation goes to a person.",
                       )}
                     </p>
-                  )}
-                  {context &&
-                    !context.messagesUnavailable &&
-                    context.messages.length === 0 && (
-                      <p className="text-sm text-text-muted">
-                        {t("documentApproval.noMessages", "No messages.")}
-                      </p>
-                    )}
-                  <ul className="flex flex-col gap-2">
-                    {context?.messages.map((m, i) => (
-                      <li
-                        key={m.id ?? `m-${i}`}
-                        className={
-                          m.fromCustomer
-                            ? "mr-8 rounded-md bg-bg-tertiary p-2 text-sm"
-                            : "ml-8 rounded-md bg-accent-soft p-2 text-sm"
-                        }
-                      >
-                        <div className="text-text-muted text-xs">
-                          {m.fromCustomer
-                            ? (context.contact?.name ??
-                              t("documentApproval.customer", "Customer"))
-                            : (m.senderName ??
-                              t("documentApproval.us", "Agent"))}
-                          {m.createdAt ? ` · ${formatTime(m.createdAt)}` : ""}
-                        </div>
-                        <p className="whitespace-pre-wrap text-text-primary">
-                          {m.content ?? ""}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-
-                <Card className="space-y-3 p-4">
-                  {pending && !rejecting && (
                     <div className="flex flex-wrap gap-2">
                       <Button
-                        onClick={approve}
-                        loading={busy === "approve"}
+                        variant="danger"
+                        onClick={reject}
+                        loading={busy === "reject"}
                         disabled={busy !== null}
                       >
-                        {t("documentApproval.approve", "Approve and send")}
+                        {t("documentApproval.confirmReject", "Reject")}
                       </Button>
                       <Button
-                        variant="secondary"
-                        onClick={() => setRejecting(true)}
+                        variant="ghost"
+                        onClick={() => setRejecting(false)}
                         disabled={busy !== null}
                       >
-                        {t("documentApproval.reject", "Reject")}
+                        {t("common.cancel", "Cancel")}
                       </Button>
                     </div>
-                  )}
-                  {pending && rejecting && (
-                    <div className="space-y-2">
-                      <label
-                        htmlFor="approval-note"
-                        className="font-medium text-sm text-text-primary"
-                      >
-                        {t(
-                          "documentApproval.noteLabel",
-                          "Note for the team (optional)",
-                        )}
-                      </label>
-                      <Textarea
-                        id="approval-note"
-                        value={note}
-                        maxLength={2000}
-                        onChange={(e) => setNote(e.target.value)}
-                        placeholder={t(
-                          "documentApproval.notePlaceholder",
-                          "What is wrong with it",
-                        )}
-                      />
-                      <p className="text-text-muted text-xs">
-                        {t(
-                          "documentApproval.rejectHint",
-                          "Nothing is sent to the customer. The note goes to the conversation as a private note, and the conversation goes to a person.",
-                        )}
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="danger"
-                          onClick={reject}
-                          loading={busy === "reject"}
-                          disabled={busy !== null}
-                        >
-                          {t("documentApproval.confirmReject", "Reject")}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          onClick={() => setRejecting(false)}
-                          disabled={busy !== null}
-                        >
-                          {t("common.cancel", "Cancel")}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  {request.status === "EXPIRED" && (
-                    <div className="space-y-2">
-                      <p className="text-sm text-text-secondary">
-                        {t(
-                          "documentApproval.expiredHint",
-                          "Nobody answered in time, so nothing was sent. Requesting it again renders it with today's date as a new request.",
-                        )}
-                      </p>
-                      <Button
-                        onClick={requestAgain}
-                        loading={busy === "again"}
-                        disabled={busy !== null}
-                      >
-                        {t("documentApproval.requestAgain", "Request again")}
-                      </Button>
-                    </div>
-                  )}
-                  {request.status === "PENDING" && !pending && (
+                  </div>
+                )}
+                {request.status === "EXPIRED" && (
+                  <div className="space-y-2">
                     <p className="text-sm text-text-secondary">
                       {t(
-                        "documentApproval.expiring",
-                        "This request ran out of time and is being closed.",
+                        "documentApproval.expiredHint",
+                        "Nobody answered in time, so nothing was sent. Requesting it again renders it with today's date as a new request.",
                       )}
                     </p>
-                  )}
-                  {request.status === "APPROVED" && (
+                    <Button
+                      onClick={requestAgain}
+                      loading={busy === "again"}
+                      disabled={busy !== null}
+                    >
+                      {t("documentApproval.requestAgain", "Request again")}
+                    </Button>
+                  </div>
+                )}
+                {request.status === "PENDING" && !pending && (
+                  <p className="text-sm text-text-secondary">
+                    {t(
+                      "documentApproval.expiring",
+                      "This request ran out of time and is being closed.",
+                    )}
+                  </p>
+                )}
+                {request.status === "APPROVED" &&
+                  request.issuedDocumentId !== null && (
                     <p className="text-sm text-text-secondary">
                       {t(
                         "documentApproval.approvedHint",
@@ -512,28 +518,47 @@ export function DocumentApprovalPage() {
                       )}
                     </p>
                   )}
-                  {request.status === "REJECTED" && (
-                    <p className="text-sm text-text-secondary">
-                      {request.note
-                        ? t(
-                            "documentApproval.rejectedWithNote",
-                            "Rejected with the note: {{note}}",
-                            { note: request.note },
-                          )
-                        : t(
-                            "documentApproval.rejectedHint",
-                            "Rejected. Nothing was sent to the customer.",
-                          )}
-                    </p>
+                {/* Approved, but the document was never issued (the template went away after the
+                      claim): approving again completes it, and nothing has reached the customer. */}
+                {request.status === "APPROVED" &&
+                  request.issuedDocumentId === null && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-text-secondary">
+                        {t(
+                          "documentApproval.incomplete",
+                          "Approved, but the document could not be issued, so nothing was sent. Try approving again.",
+                        )}
+                      </p>
+                      <Button
+                        onClick={approve}
+                        loading={busy === "approve"}
+                        disabled={busy !== null}
+                      >
+                        {t("documentApproval.approveAgain", "Approve again")}
+                      </Button>
+                    </div>
                   )}
-                </Card>
-              </div>
-
-              <DocumentPreview state={preview} className="h-[70vh]" />
+                {request.status === "REJECTED" && (
+                  <p className="text-sm text-text-secondary">
+                    {request.note
+                      ? t(
+                          "documentApproval.rejectedWithNote",
+                          "Rejected with the note: {{note}}",
+                          { note: request.note },
+                        )
+                      : t(
+                          "documentApproval.rejectedHint",
+                          "Rejected. Nothing was sent to the customer.",
+                        )}
+                  </p>
+                )}
+              </Card>
             </div>
-          </>
-        )}
-      </DataBoundary>
-    </PageContainer>
+
+            <DocumentPreview state={preview} className="h-[70vh]" />
+          </div>
+        </>
+      )}
+    </DataBoundary>
   );
 }

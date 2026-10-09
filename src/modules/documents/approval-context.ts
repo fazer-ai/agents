@@ -3,6 +3,7 @@
 // Chatwoot. Private notes are left out: the page shows what was said to the customer.
 
 import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -32,6 +33,55 @@ export interface ApprovalContextDto {
   } | null;
   messages: ApprovalContextMessage[];
   messagesUnavailable: boolean;
+}
+
+// Chatwoot pages twenty messages at a time, notes and activity included, so the last ten public ones
+// can sit pages back. Older pages are read until ten are found, the history ends, or the page cap is
+// reached. Anything that fails, building the client included, leaves the page with the customer and
+// without the messages.
+const MAX_PAGES = 5;
+type ThreadMessage = Awaited<
+  ReturnType<typeof getConversationMessages>
+>["messages"][number];
+async function recentPublicMessages(
+  ctx: TenantContext,
+  conversationId: bigint,
+  deps: LoadChatwootClientDeps,
+  base: PrismaClient,
+): Promise<{ messages: ThreadMessage[]; messagesUnavailable: boolean }> {
+  const isPublic = (m: ThreadMessage) =>
+    !m.private && (m.messageType === 0 || m.messageType === 1);
+  let found: ThreadMessage[] = [];
+  let before: number | undefined;
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const thread = await getConversationMessages(
+        ctx,
+        conversationId,
+        deps,
+        base,
+        before,
+      );
+      if (thread.messagesUnavailable) {
+        return { messages: [], messagesUnavailable: true };
+      }
+      found = [...thread.messages.filter(isPublic), ...found];
+      const ids = thread.messages
+        .map((m) => m.id)
+        .filter((id): id is number => typeof id === "number");
+      if (found.length >= RECENT || !thread.hasMoreOlder || ids.length === 0) {
+        break;
+      }
+      before = Math.min(...ids);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, conversationId: String(conversationId) },
+      "document approval context: Chatwoot messages could not be read",
+    );
+    return { messages: [], messagesUnavailable: true };
+  }
+  return { messages: found, messagesUnavailable: false };
 }
 
 export async function getApprovalContext(
@@ -80,17 +130,14 @@ export async function getApprovalContext(
       messagesUnavailable: false,
     };
   }
-  const thread = await getConversationMessages(ctx, found.conv.id, deps, base);
-  const messages = thread.messages
-    .filter((m) => !m.private && (m.messageType === 0 || m.messageType === 1))
-    .slice(-RECENT)
-    .map((m) => ({
-      id: m.id,
-      content: m.content,
-      fromCustomer: m.messageType === 0,
-      senderName: m.senderName,
-      createdAt: m.createdAt,
-    }));
+  const thread = await recentPublicMessages(ctx, found.conv.id, deps, base);
+  const messages = thread.messages.slice(-RECENT).map((m) => ({
+    id: m.id,
+    content: m.content,
+    fromCustomer: m.messageType === 0,
+    senderName: m.senderName,
+    createdAt: m.createdAt,
+  }));
   return {
     conversation: {
       id: String(found.conv.id),

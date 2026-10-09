@@ -330,6 +330,46 @@ describe("custom attribute writes against endpoints that replace", () => {
     expect(cw.conversations.get(61)).toEqual({ produto: "cadeira" });
   });
 
+  test("a key named __proto__ survives the merge, in the bag and in a call", async () => {
+    // The endpoint replaces the bag, so a key the merge drops is a key the write erases.
+    const cw = fakeChatwootAttributeStore(5);
+    const bodies: string[] = [];
+    const odd = (async (url: string, init?: RequestInit) => {
+      if (
+        (init?.method ?? "GET") === "GET" &&
+        url.endsWith("/conversations/61")
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            '{"custom_attributes":{"__proto__":"guardado","origem":"site"}}',
+        } as unknown as Response;
+      }
+      if (init?.method === "POST") bodies.push(String(init.body));
+      return (
+        cw.fetchImpl as (u: string, i?: RequestInit) => Promise<Response>
+      )(url, init);
+    }) as unknown as typeof fetch;
+    const c = await client(odd);
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { produto: "cadeira" }),
+      c.setConversationCustomAttributes(
+        61,
+        JSON.parse('{"__proto__":"novo"}') as Record<string, unknown>,
+      ),
+    ]);
+    expect(bodies).toEqual([
+      '{"custom_attributes":{"__proto__":"novo","origem":"site","produto":"cadeira"}}',
+    ]);
+    const alone = await client(odd);
+    bodies.length = 0;
+    await alone.setConversationCustomAttributes(61, { produto: "mesa" });
+    expect(bodies).toEqual([
+      '{"custom_attributes":{"__proto__":"guardado","origem":"site","produto":"mesa"}}',
+    ]);
+  });
+
   test("writes to different targets are not serialized against each other", async () => {
     // The serialization has to be keyed by target. A single global lock would also make these two
     // tests pass, and would throttle every unrelated conversation in the process.

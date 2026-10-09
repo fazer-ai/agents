@@ -921,11 +921,12 @@ export class ChatwootClient {
         "POST",
         `/conversations/${conversationId}/custom_attributes`,
         {
-          custom_attributes: Object.assign(
-            {},
-            attributeBag(existing?.custom_attributes),
-            ...wanted.map((w) => w.attributes),
-          ),
+          // From entries, never `Object.assign` into `{}`: a key named `__proto__` has to stay an
+          // own property, or the write drops it and the endpoint, which replaces the bag, erases it.
+          custom_attributes: Object.fromEntries([
+            ...Object.entries(attributeBag(existing?.custom_attributes)),
+            ...wanted.flatMap((w) => Object.entries(w.attributes)),
+          ]),
         },
       );
       for (const w of wanted) w.resolve(written);

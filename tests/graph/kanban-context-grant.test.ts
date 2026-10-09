@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { type AgentConfig, buildToolset } from "@/graph/prepare";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
@@ -11,8 +12,9 @@ import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { clearFlowLog } from "../utils/flowlog";
 
 // The card snapshot (`kanban` on the native tools' ctx) is what update_kanban_task reads as
-// `<current_card>` and what opens the `task` scope of set_custom_attribute and set_labels, so each
-// of the four tools that read it, granted alone, has to get it.
+// `<current_card>` and what opens the `task` scope of set_custom_attribute and set_labels. The two
+// card tools get it granted alone; the two scope tools get it on an account that defines card
+// attributes, and an account without them pays no read for them.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -81,7 +83,8 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
     await app?.$disconnect();
   });
 
-  async function cardSeen(allow: string[] | undefined) {
+  async function cardSeen(allow: string[] | undefined, taskDefs = true) {
+    __resetChatwootVocabCache();
     let reads = 0;
     let seen: Record<string, unknown> | undefined;
     // A conversation with a linked card and no board: the snapshot comes from this one read, and
@@ -102,11 +105,26 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
                   labels: [],
                 };
               }
-            : prop === "then"
-              ? undefined
-              : async () => {
-                  throw new Error(`not stubbed: ${String(prop)}`);
-                },
+            : prop === "listLabels"
+              ? async () => []
+              : prop === "listCustomAttributeDefinitions"
+                ? async () =>
+                    taskDefs
+                      ? [
+                          {
+                            key: "faturamento_mensal",
+                            displayName: "Faturamento mensal",
+                            model: "task_attribute",
+                            displayType: "text",
+                            values: [],
+                          },
+                        ]
+                      : []
+                : prop === "then"
+                  ? undefined
+                  : async () => {
+                      throw new Error(`not stubbed: ${String(prop)}`);
+                    },
       },
     ) as unknown as ChatwootClient;
     await buildToolset(
@@ -144,6 +162,20 @@ describe.skipIf(!dbUp)("which granted tools resolve the card", () => {
   ]) {
     test(`${tool} granted alone resolves the card`, async () => {
       expect((await cardSeen([tool])).taskId).toBe(41);
+    });
+  }
+
+  for (const tool of ["kanban_move_card", "update_kanban_task"]) {
+    test(`${tool} resolves the card on an account with no card attributes`, async () => {
+      expect((await cardSeen([tool], false)).taskId).toBe(41);
+    });
+  }
+
+  for (const tool of ["set_custom_attribute", "set_labels"]) {
+    test(`${tool} on an account with no card attributes does not read the card`, async () => {
+      const r = await cardSeen([tool], false);
+      expect(r.taskId).toBeUndefined();
+      expect(r.reads).toBe(0);
     });
   }
 

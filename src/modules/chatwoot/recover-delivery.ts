@@ -1120,7 +1120,13 @@ async function runRecovery(params: {
           : "NO, the write failed; the sweep will report it stranded again",
       e instanceof Error ? e.message : String(e),
     );
-    return "unreachable";
+    // The account was read before the claim, so this is never `unreachable`. The error reaches the
+    // job with its cause: a database with no connection is rescheduled there, anything else fails
+    // the job with a message naming what failed, and the scheduler backs off.
+    throw new Error(
+      `recovery: the delivery path failed after the claim: ${e instanceof Error ? e.message : String(e)}`,
+      { cause: e },
+    );
   } finally {
     // Both, in the same place, for the reason the mark states: an unbalanced one makes every reader
     // of that key defer on this conversation until the process restarts, and for the graph key that
@@ -1484,7 +1490,15 @@ export async function runRecoveryJob(
   } catch (err) {
     // A database that could not serve the recovery's own reads says nothing about the delivery or
     // the account: it is retried later, without spending the attempts the dead-letter line counts.
-    if (!isDatabaseUnavailable(err)) throw err;
+    // Any other error fails the job with its own message, announced first when this was the last try.
+    if (!isDatabaseUnavailable(err)) {
+      if (await schedulerGaveUp(job, base)) {
+        await announceUnanswered(job.tenantId, deliveryRowId, base, {
+          makeClient: deps?.makeClient,
+        });
+      }
+      throw err;
+    }
     logger.warn(
       "chatwoot recovery: the database had no free connection for delivery row %s; retrying later",
       String(deliveryRowId),

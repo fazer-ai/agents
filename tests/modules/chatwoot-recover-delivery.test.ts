@@ -40,6 +40,7 @@ import {
   registerDeliveryRecoveryHandler,
   runRecoveryJob,
 } from "@/modules/chatwoot/recover-delivery";
+import * as webhookModule from "@/modules/chatwoot/webhook";
 import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
@@ -4126,8 +4127,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // The write itself is `putRowBack`, which has its own DB-backed tests below; what only the source
     // can say is which state THIS branch names.
     expect(block).toContain('from: "PROCESSING"');
-    // `unreachable`, so the scheduler backs off and the retry finds a row it can claim.
-    expect(block).toContain('return "unreachable"');
+    // Never `unreachable`: the account was read before the claim. The two exits are covered
+    // behaviourally in the job tests below.
+    expect(block).not.toContain('return "unreachable"');
   });
 
   test("nothing awaits between the fence answering free and the mark that holds it", async () => {
@@ -5191,6 +5193,76 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(result.outcome).toBe("reschedule");
     });
 
+    test("a database lost after the claim is retried with the row put back, not reported as an unreadable account", async () => {
+      const convId = 7318;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 7818,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: 7818, content: "oi" }]),
+      });
+      const path = spyOn(
+        webhookModule,
+        "processChatwootDelivery",
+      ).mockRejectedValueOnce(
+        Object.assign(new Error("Server has closed the connection."), {
+          code: "P1017",
+        }),
+      );
+      let calls = 0;
+      let result: Awaited<ReturnType<typeof runRecoveryJob>>;
+      try {
+        result = await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+      } finally {
+        calls = path.mock.calls.length;
+        path.mockRestore();
+      }
+      expect(calls).toBe(1);
+      expect(result.outcome).toBe("reschedule");
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    });
+
+    test("any other failure after the claim fails the job with its own error", async () => {
+      const convId = 7319;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 7819,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: 7819, content: "oi" }]),
+      });
+      const path = spyOn(
+        webhookModule,
+        "processChatwootDelivery",
+      ).mockRejectedValueOnce(new Error("trigger refused the insert"));
+      let calls = 0;
+      let thrown: unknown;
+      try {
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+      } catch (e) {
+        thrown = e;
+      } finally {
+        calls = path.mock.calls.length;
+        path.mockRestore();
+      }
+      expect(calls).toBe(1);
+      const message = thrown instanceof Error ? thrown.message : "";
+      expect(message).toContain("trigger refused the insert");
+      expect(message).not.toContain("could not be read");
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    });
+
     test("a BUSY conversation reschedules, so the ladder is not spent waiting on a turn", async () => {
       // `fail` would be the intuitive answer and it is the wrong one here. A turn is deliberately
       // unbounded — the sweep waits thirty minutes before calling one abandoned — while the
@@ -5455,6 +5527,66 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             ]),
           ).toEqual(expected.map((e) => [...e]));
         } finally {
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+      }
+    });
+
+    // The same for an attempt whose delivery path threw: the error fails the job, and when the
+    // scheduler already gave up on this claim nothing else is left to say the message went unanswered.
+    test("a failure after the claim the scheduler already gave up on says the message went unanswered", async () => {
+      for (const [convId, messageId, status, expected] of [
+        [18950, 19460, "DEAD", [["error", "unanswered"]]],
+        [18951, 19461, "CLAIMED", []],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+        });
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status,
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true },
+        });
+        const path = spyOn(
+          webhookModule,
+          "processChatwootDelivery",
+        ).mockRejectedValueOnce(new Error("trigger refused the insert"));
+        try {
+          await expect(
+            runRecoveryJob(
+              {
+                id: job.id,
+                tenantId,
+                kind: "DELIVERY_RECOVERY",
+                payload: { deliveryRowId: String(rowId) },
+                attempts: 4,
+                claimSeq: job.claimSeq,
+              },
+              appDb,
+              depsWith(
+                stubChatwoot({
+                  page: pageWith([{ id: messageId, content: "oi" }]),
+                }),
+              ),
+            ),
+          ).rejects.toThrow("trigger refused the insert");
+          const lines = await deliveryLines(conv.id);
+          expect(
+            lines.map((l) => [
+              l.level,
+              (l.detail as Record<string, unknown> | null)?.outcome,
+            ]),
+          ).toEqual(expected.map((e) => [...e]));
+        } finally {
+          path.mockRestore();
           await suDb.schedulerJob.delete({ where: { id: job.id } });
         }
       }

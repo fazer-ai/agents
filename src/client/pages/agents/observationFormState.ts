@@ -1,3 +1,4 @@
+import { decisionsIssues } from "@/modules/decisions/config";
 import {
   MONITORING_DEFAULTS,
   type MonitoringAnalysis,
@@ -9,6 +10,12 @@ import {
   WINDOW_MESSAGES_MAX,
   WINDOW_MESSAGES_MIN,
 } from "@/modules/observe/settings";
+import {
+  type DecisionsForm,
+  decisionsToForm,
+  decisionsToStored,
+  decisionsUntouched,
+} from "./decisionsFormState";
 
 // The agent editor's Observation block, as the same pair of pure functions the Memory and TTS blocks
 // are: stored settings → form state → stored settings. The Behavior save REPLACES the whole
@@ -16,11 +23,12 @@ import {
 // next save; the round-trip test (tests/client/observation-form-state.test.ts) guards the next field.
 
 export interface ObservationState {
-  // Carried, not edited: the console has no control for the engine or its questions yet (they are
-  // written through REST and MCP), and the save replaces the whole block, so dropping them here would
-  // switch a `decisions` agent back to `llm` the first time someone saved its Behavior tab.
   engine: MonitoringEngine;
-  decisions: Record<string, unknown> | null;
+  // The decisions block as the form edits it (./decisionsFormState), null while the agent has none.
+  decisions: DecisionsForm | null;
+  // The block as it was read, carried beside the form: an untouched block is written back as stored,
+  // and a draft that cannot run is not written over a block that can while the engine is `llm`.
+  storedDecisions: Record<string, unknown> | null;
   analysis: MonitoringAnalysis;
   // Numbers travel as text: an emptied field is a state the operator passes through, not a value.
   windowMessages: string;
@@ -43,7 +51,8 @@ export function observationToForm(settings: unknown): ObservationState {
   const c = readMonitoringConfig(settings);
   return {
     engine: c.engine,
-    decisions: c.decisions,
+    decisions: decisionsToForm(c.decisions),
+    storedDecisions: c.decisions,
     analysis: c.analysis,
     windowMessages: String(c.window.messages),
     windowSeconds: String(c.debounce.windowSeconds),
@@ -72,12 +81,30 @@ export function observationToStored(form: ObservationState): MonitoringConfig {
   return stored;
 }
 
+// The decisions block a save writes. Three cases, in order: a form nobody touched writes the stored
+// block back as it is (so saving another field never rewrites it); a draft the engine is not running
+// and could not run is not stored over the block that was there, since the server would refuse the
+// whole save for a block the operator switched away from; anything else is what the form holds.
+export function decisionsBlockToStore(
+  form: ObservationState,
+): Record<string, unknown> | null {
+  if (form.decisions === null) return form.storedDecisions;
+  if (decisionsUntouched(form.decisions, form.storedDecisions)) {
+    return form.storedDecisions;
+  }
+  const block = decisionsToStored(form.decisions);
+  if (form.engine !== "decisions" && decisionsIssues(block).length > 0) {
+    return form.storedDecisions;
+  }
+  return block;
+}
+
 function draftFromForm(form: ObservationState): MonitoringConfig {
   const d = MONITORING_DEFAULTS;
   const windowSeconds = intOr(form.windowSeconds, d.debounce.windowSeconds);
   return {
     engine: form.engine === "decisions" ? "decisions" : "llm",
-    decisions: form.decisions,
+    decisions: decisionsBlockToStore(form),
     analysis: form.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: { messages: intOr(form.windowMessages, d.window.messages) },
     debounce: {

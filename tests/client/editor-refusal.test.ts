@@ -146,6 +146,7 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     contactAuthEndpointShown: true,
     memoryCompactionEnabled: true,
     modelFallbackChosen: true,
+    decisionsEngineShown: true,
     guardrailsEnabled: true,
     followUpEnabled: true,
     followUpSteps: 2,

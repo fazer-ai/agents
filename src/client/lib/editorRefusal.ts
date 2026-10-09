@@ -95,6 +95,13 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
     tab: "behavior",
     sectionId: "observability",
   },
+  // The decisions engine's block: a list of questions and rules, which the Observation section marks
+  // field by field from the path itself (DecisionsFields), so it is targeted here and not owned.
+  {
+    match: /^monitoring\.(engine|decisions)(\.|$)/,
+    tab: "behavior",
+    sectionId: "observation",
+  },
   // TARGETED AND NOT OWNED, all three of them, which is a distinction this map makes on purpose.
   // Owning a name means marking a control with the server's sentence, and that needs one box holding
   // one value: the tool preconditions are edited as a list rather than a control per tool, the
@@ -180,6 +187,9 @@ export interface EditorControlsShown {
   memoryCompactionEnabled: boolean;
   // The fallback's credential picker appears once a provider is chosen, not behind a switch.
   modelFallbackChosen: boolean;
+  // The decisions engine's fields, its API key among them, are drawn for a monitoring agent whose
+  // engine is `decisions`.
+  decisionsEngineShown: boolean;
   guardrailsEnabled: boolean;
   followUpEnabled: boolean;
   // How many follow-up steps the Proactive section is showing. The note of a step that does not
@@ -202,6 +212,7 @@ const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "contactAuth.credentialRef": "contactAuthEndpointShown",
   "memory.compaction.credentialRef": "memoryCompactionEnabled",
   "modelFallback.credentialRef": "modelFallbackChosen",
+  "monitoring.decisions.credentialRef": "decisionsEngineShown",
   "guardrails.credentialRef": "guardrailsEnabled",
 };
 

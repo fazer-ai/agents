@@ -101,6 +101,8 @@ import {
   contactAuthGateEmpty,
   contactAuthRuleInvalid,
 } from "./contactAuthRuleForm";
+import type { DecisionsServerRefusal } from "./DecisionsFields";
+import { decisionsFormIssues } from "./decisionsFormState";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 import {
@@ -416,6 +418,10 @@ interface BehaviorTabProps {
   mode: AgentMode;
   observation: ObservationState;
   setObservation: React.Dispatch<React.SetStateAction<ObservationState>>;
+  // When the agent was last saved, and what the server last refused about the decisions block
+  // (./DecisionsFields): the first bounds the activity it counts, the second lands on its field.
+  agentSavedAt: string | null;
+  decisionsRefusal: DecisionsServerRefusal | null;
   modelFallback: ModelFallbackState;
   setModelFallback: React.Dispatch<React.SetStateAction<ModelFallbackState>>;
   modelFallbackCredBaseUrl: string | null;
@@ -1256,6 +1262,8 @@ export function BehaviorTab({
   mode,
   observation,
   setObservation,
+  agentSavedAt,
+  decisionsRefusal,
   modelFallback,
   setModelFallback,
   modelFallbackCredBaseUrl,
@@ -1547,6 +1555,14 @@ export function BehaviorTab({
   // (`assertSettingsModelFallback`, which is what covers the MCP patch); this is what keeps the
   // operator from meeting that refusal as a 400 on a button they were never stopped from pressing.
   const fallbackModelMissing = fallbackModelIsMissing(modelFallback);
+  // The decisions block, asked the write boundary's own schema. On the gate only where its fields
+  // are drawn (a watcher running the decisions engine): a draft left behind an agent on the model
+  // engine has no field on screen to say why Save is off, and its save keeps the stored block.
+  const decisionsBlockInvalid =
+    mode === "monitoring" &&
+    observation.engine === "decisions" &&
+    observation.decisions !== null &&
+    decisionsFormIssues(observation.decisions).size > 0;
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,
@@ -1700,8 +1716,12 @@ export function BehaviorTab({
         <div className="flex min-w-0 grow flex-col gap-4">
           {watcher && (
             <ObservationSection
+              agentId={agentId}
+              savedAt={agentSavedAt}
               observation={observation}
               setObservation={setObservation}
+              decisionsCredentialError={refusals.decisionsCredential}
+              decisionsRefusal={decisionsRefusal}
             />
           )}
           <Section
@@ -4243,6 +4263,7 @@ export function BehaviorTab({
           fallbackBaseUrlInvalid ||
           fallbackBaseUrlUnsupported ||
           fallbackModelMissing ||
+          decisionsBlockInvalid ||
           // NOTE: A watcher draws the gate's conditions and its endpoint's fields, so a rule or a url
           // it cannot use is said there.
           contactAuthRuleBad ||

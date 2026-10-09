@@ -33,6 +33,7 @@ export function behaviorTabProps(
       contactAuthDenyMessage: null,
       memoryCredential: null,
       modelFallbackCredential: null,
+      decisionsCredential: null,
       awayMessage: null,
       followUpSteps: [],
     },
@@ -131,6 +132,8 @@ export function behaviorTabProps(
     mode: "production",
     observation: observationToForm({}),
     setObservation: noop,
+    agentSavedAt: null,
+    decisionsRefusal: null,
     memoryCredBaseUrl: null,
     modelFallback: {
       provider: "",

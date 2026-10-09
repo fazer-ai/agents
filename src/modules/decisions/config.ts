@@ -145,7 +145,7 @@ export const decisionsSchema = decisionsPatchSchema.superRefine((v, ctx) => {
       code: "custom",
       path: p.path,
       message: p.message,
-      params: { wholeBlock: p.path.length },
+      params: { wholeBlock: p.path.length, problem: p.code, ...p.params },
     });
   }
 });
@@ -164,9 +164,27 @@ interface RawDecisions {
   rules?: { when?: Bag[]; action?: Bag }[];
 }
 
+// `code` and `params` say the same thing as `message` in a form a screen can translate: the console
+// runs this schema before a save (docs/decisions.md, "The console") and words each problem in the
+// operator's language, so it reads the code and never parses the sentence.
+export type DecisionsProblemCode =
+  | "required"
+  | "repeated_value"
+  | "repeated_name"
+  | "choice_needs_options"
+  | "score_needs_levels"
+  | "unknown_question"
+  | "needs_min_probability"
+  | "needs_equals"
+  | "unknown_option"
+  | "needs_level_range"
+  | "level_out_of_range";
+
 interface Problem {
   path: (string | number)[];
   message: string;
+  code: DecisionsProblemCode;
+  params?: Record<string, string | number>;
 }
 
 // What a block can get wrong across fields. Shared by the schema (write) and the reader (tick).
@@ -182,7 +200,12 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
   ) => {
     for (const k of keys) {
       if (bag?.[k] === undefined) {
-        out.push({ path, message: `${k} is required` });
+        out.push({
+          path,
+          message: `${k} is required`,
+          code: "required",
+          params: { key: k },
+        });
       }
     }
   };
@@ -200,6 +223,8 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
           out.push({
             path: ["questions", i, key, j, "value"],
             message: `"${o.value}" is repeated`,
+            code: "repeated_value",
+            params: { value: o.value },
           });
         }
         seen.add(o.value);
@@ -223,18 +248,22 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
       out.push({
         path: ["questions", i, "name"],
         message: `question name "${q.name}" is repeated`,
+        code: "repeated_name",
+        params: { value: q.name },
       });
     }
     if (q.type === "choice" && !Array.isArray(q.options)) {
       out.push({
         path: ["questions", i],
         message: "a choice question needs options",
+        code: "choice_needs_options",
       });
     }
     if (q.type === "score" && !Array.isArray(q.levels)) {
       out.push({
         path: ["questions", i],
         message: "a score question needs levels",
+        code: "score_needs_levels",
       });
     }
     byName.set(q.name, {
@@ -253,6 +282,8 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
         out.push({
           path: [...at, "question"],
           message: `no question named "${String(cond?.question)}"`,
+          code: "unknown_question",
+          params: { value: String(cond?.question) },
         });
         continue;
       }
@@ -260,17 +291,21 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
         out.push({
           path: at,
           message: "a yes_no condition needs minProbability",
+          code: "needs_min_probability",
         });
       }
       if (q.type === "choice" && typeof cond.equals !== "string") {
         out.push({
           path: at,
           message: "a choice condition needs equals",
+          code: "needs_equals",
         });
       } else if (q.type === "choice" && !q.options.has(cond.equals)) {
         out.push({
           path: [...at, "equals"],
           message: `"${String(cond.equals)}" is not one of the question's options`,
+          code: "unknown_option",
+          params: { value: String(cond.equals) },
         });
       }
       if (q.type === "score") {
@@ -280,17 +315,57 @@ function crossFieldProblems(v: RawDecisions): Problem[] {
           out.push({
             path: at,
             message: "a score condition needs minLevel <= maxLevel",
+            code: "needs_level_range",
           });
         } else if (hi >= q.size) {
           out.push({
             path: [...at, "maxLevel"],
             message: `the question has ${q.size} levels (0 to ${q.size - 1})`,
+            code: "level_out_of_range",
+            params: { size: q.size },
           });
         }
       }
     }
   }
   return out;
+}
+
+// Every problem the write boundary would refuse a block for, in the shape a form can place and word:
+// the path to the field (or to the object lacking one), a stable code, and the numbers a sentence
+// about it needs. The SAME parse the boundary runs, so a form that asks this cannot disagree with it.
+export interface DecisionsIssue {
+  path: (string | number)[];
+  code: string;
+  message: string;
+  params: Record<string, string | number>;
+}
+
+export function decisionsIssues(block: unknown): DecisionsIssue[] {
+  const parsed = decisionsSchema.safeParse(block);
+  if (parsed.success) return [];
+  return parsed.error.issues.map((issue) => {
+    const raw = issue as unknown as Record<string, unknown>;
+    const custom = (raw.params ?? {}) as Record<string, unknown>;
+    const params: Record<string, string | number> = {};
+    const source = issue.code === "custom" ? custom : raw;
+    for (const k of ["key", "value", "size", "minimum", "maximum", "origin"]) {
+      const v = source[k];
+      if (typeof v === "string" || typeof v === "number") params[k] = v;
+    }
+    return {
+      path: issue.path.filter(
+        (s): s is string | number =>
+          typeof s === "string" || typeof s === "number",
+      ),
+      code:
+        issue.code === "custom" && typeof custom.problem === "string"
+          ? custom.problem
+          : String(issue.code),
+      message: issue.message,
+      params,
+    };
+  });
 }
 
 export type DecisionsReading =

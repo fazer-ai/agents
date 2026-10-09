@@ -239,13 +239,19 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
 
   // A decision's outcome lands in the conversation a few seconds after it (the agent writes the
   // message the PDF goes with), so a request decided in the last minutes is read again until it does.
+  // The window runs from the decision, or from this page's own last action when that is later: approving
+  // again an approval whose issuance failed keeps its first decidedAt but arms a new delivery.
+  const [actedAt, setActedAt] = useState<number | null>(null);
+  const pollFrom = Math.max(
+    request?.decidedAt ? new Date(request.decidedAt).getTime() : 0,
+    actedAt ?? 0,
+  );
   const outcomePending =
     request !== null &&
     (request.status === "APPROVED" || request.status === "REJECTED") &&
     request.outcome === null &&
     request.decidedAt !== null &&
-    serverNow() - new Date(request.decidedAt).getTime() <
-      OUTCOME_POLL_WINDOW_MS;
+    serverNow() - pollFrom < OUTCOME_POLL_WINDOW_MS;
   useEffect(() => {
     void reads;
     if (!outcomePending) return;
@@ -264,6 +270,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
 
   // A decision changes what waits on the team, so the sidebar badge is asked again with the page.
   const reloadAfterAction = async () => {
+    setActedAt(serverNow());
     await load();
     refreshApprovals();
   };

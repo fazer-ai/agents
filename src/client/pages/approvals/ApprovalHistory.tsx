@@ -15,8 +15,13 @@ import {
   APPROVAL_STATUS_VARIANT,
   approvalOutcomeLabel,
   approvalStatusLabel,
+  SENDING_FOR_MS,
 } from "@/client/lib/approval-status";
+import { serverNow } from "@/client/lib/serverClock";
 import { useSendingClock } from "@/client/lib/useSendingClock";
+
+// How often the history asks again while a decision's outcome is still to land.
+const REFRESH_MS = 5000;
 
 // The approvals history (docs/documents.md, Approval): every document request no longer waiting on the
 // team, newest first, with who decided and what it came to in the conversation.
@@ -87,6 +92,47 @@ export function ApprovalHistory() {
   };
 
   useSendingClock(requests ?? []);
+
+  // A decision whose outcome has not landed yet is read again until it does: the first page is asked
+  // again and merged by id, so the pages already loaded stay, and a decision taken meanwhile joins the
+  // top.
+  const unresolved = (requests ?? []).some(
+    (r) =>
+      (r.status === "APPROVED" || r.status === "REJECTED") &&
+      r.outcome === null &&
+      !(r.status === "APPROVED" && r.issuedDocumentId === null) &&
+      r.decidedAt !== null &&
+      serverNow() - new Date(r.decidedAt).getTime() < SENDING_FOR_MS,
+  );
+  const [refreshes, setRefreshes] = useState(0);
+  useEffect(() => {
+    void refreshes;
+    if (!unresolved) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const { data } = await api.api.v1["document-approvals"].decided.get();
+        if (cancelled || !data) return;
+        setRequests((prev) => {
+          if (!prev) return data.requests;
+          const fresh = new Map(data.requests.map((r) => [r.id, r]));
+          const known = new Set(prev.map((r) => r.id));
+          const newer = data.requests.filter(
+            (r) => !known.has(r.id) && Number(r.id) > Number(prev[0]?.id ?? 0),
+          );
+          return [...newer, ...prev.map((r) => fresh.get(r.id) ?? r)];
+        });
+      } catch {
+        // The rows already shown stay; the next refresh asks again.
+      } finally {
+        if (!cancelled) setRefreshes((n) => n + 1);
+      }
+    }, REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [unresolved, refreshes]);
 
   const formatTime = (value: Date | string) =>
     new Date(value).toLocaleString(i18n.language);

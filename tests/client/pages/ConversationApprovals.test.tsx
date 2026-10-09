@@ -161,3 +161,22 @@ test("a decision whose reads are slow still lands its outcome", async () => {
   await screen.findByText("On its way to the customer");
   await screen.findByText("Sent to the customer", {}, { timeout: 12_000 });
 }, 15_000);
+
+test("a waiting request decided without a new message still moves on", async () => {
+  rows = [row("8")];
+  render(
+    <MemoryRouter>
+      <ConversationApprovals conversationId="29" refreshKey={0} />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Waiting for approval");
+  rows = [
+    row("8", {
+      status: "REJECTED",
+      reviewerName: "Ana Souza",
+      decidedAt: new Date().toISOString(),
+      outcome: "NO_AGENT",
+    }),
+  ];
+  await screen.findByText("Rejected by Ana Souza", {}, { timeout: 18_000 });
+}, 22_000);

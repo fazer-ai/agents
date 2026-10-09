@@ -48,7 +48,7 @@ let pending: (url: string) => unknown = onePage;
 let knowledgeFails = false;
 let knowledgeNone = false;
 // Decided rows the history answers before the default one, set per test.
-let extraDecided: unknown[] = [];
+let extraDecided: unknown[] | (() => unknown[]) = [];
 
 const SUGGESTION = {
   id: "a1",
@@ -76,7 +76,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.includes("/document-approvals/decided")) {
     return json({
       requests: [
-        ...extraDecided,
+        ...(typeof extraDecided === "function" ? extraDecided() : extraDecided),
         {
           ...DOCUMENT,
           id: "40",
@@ -403,3 +403,34 @@ test("an untouched history stops saying a document is on its way when that runs 
     { timeout: 5000 },
   );
 }, 10_000);
+
+test("the history reads again a decision whose outcome has not landed, until it does", async () => {
+  role = "AGENT";
+  let reads = 0;
+  extraDecided = () => {
+    reads += 1;
+    return [
+      {
+        ...DOCUMENT,
+        id: "45",
+        contactName: "Rita Gomes",
+        status: "APPROVED",
+        decidedAt: new Date().toISOString(),
+        reviewerName: null,
+        outcome: reads > 1 ? "DELIVERED" : null,
+        issuedDocumentId: "4",
+      },
+    ];
+  };
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  const link = await screen.findByRole("link", { name: /for Rita Gomes/ });
+  expect(link.textContent).toContain("On its way to the customer");
+  await waitFor(
+    () =>
+      expect(
+        screen.getByRole("link", { name: /for Rita Gomes/ }).textContent,
+      ).toContain("Sent to the customer"),
+    { timeout: 8000 },
+  );
+}, 12_000);

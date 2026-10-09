@@ -634,3 +634,36 @@ test("an untouched page stops saying the document is on its way when that runs o
     { timeout: 5000 },
   );
 }, 10_000);
+
+test("approving again an old approval whose document was never issued reads its new outcome", async () => {
+  let completed = false;
+  let reads = 0;
+  handler = async (url, init) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (
+      url.endsWith("/document-approvals/25/approve") &&
+      init?.method === "POST"
+    ) {
+      completed = true;
+      return json({ request: {}, document: { number: "ORC-11" } });
+    }
+    if (url.includes("/document-approvals/25")) {
+      if (completed) reads += 1;
+      return json({
+        request: request("25", {
+          status: "APPROVED",
+          // The first decision, long before this page.
+          decidedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+          issuedDocumentId: completed ? "11" : null,
+          outcome: completed && reads > 1 ? "DELIVERED" : null,
+          outcomeAt: completed && reads > 1 ? new Date().toISOString() : null,
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/25");
+  fireEvent.click(await screen.findByRole("button", { name: "Approve again" }));
+  await screen.findByText(/Sent to the customer/, {}, { timeout: 6000 });
+}, 10_000);

@@ -27,6 +27,7 @@ type ApprovalRow = NonNullable<ListResp["data"]>["requests"][number];
 // never push a waiting document out of the strip; the latest is read only when none waits.
 const PENDING_SHOWN = 50;
 const SETTLE_POLL_MS = 3000;
+const PENDING_POLL_MS = 15_000;
 const SETTLE_WINDOW_MS = 2 * 60_000;
 
 export function shownApprovals(rows: ApprovalRow[]): ApprovalRow[] {
@@ -93,13 +94,17 @@ export function ConversationApprovals({
       r.decidedAt !== null &&
       serverNow() - new Date(r.decidedAt).getTime() < SETTLE_WINDOW_MS,
   );
+  // A waiting request is read again too, on a slower clock: its decision does not always leave a
+  // message that would change the conversation (no bot left to write the note).
+  const waiting = shown.some((r) => r.status === "PENDING");
   useEffect(() => {
-    // Each settled read arms the next one while the decision is still on its way.
+    // Each settled read arms the next one while something is still to land.
     void reads;
-    if (!settling) return;
-    const timer = setTimeout(() => setTick((n) => n + 1), SETTLE_POLL_MS);
+    const delay = settling ? SETTLE_POLL_MS : waiting ? PENDING_POLL_MS : null;
+    if (delay === null) return;
+    const timer = setTimeout(() => setTick((n) => n + 1), delay);
     return () => clearTimeout(timer);
-  }, [settling, reads]);
+  }, [settling, waiting, reads]);
   useSendingClock(shown);
   if (shown.length === 0) return null;
   return (

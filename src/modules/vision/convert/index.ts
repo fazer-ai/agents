@@ -2,9 +2,18 @@
 // to be importable by the frontend (its sibling `document-support` already is); this file is where
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
+import { inflateSync } from "node:zlib";
+import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 import type { MediaConverterId } from "../media-conversion";
+import {
+  isJpeg,
+  isPng,
+  readImageDimensions,
+  readJpegOrientation,
+} from "./dimensions";
 import { decodeGridFitted, type HeicFrame, withHeicFrames } from "./heic";
-import { encodeJpeg, rasterToJpeg } from "./raster";
+import { encodeJpeg, fitRgba, orientRgba, rasterToJpeg } from "./raster";
 
 // Thrown for every refusal a conversion can make, so the caller has one thing to catch and one
 // message to put on the operator's line. A conversion that fails is NOT the same as an extraction
@@ -276,6 +285,175 @@ async function heicToJpeg(
   return encodeJpeg(grid.image, JPEG_QUALITY);
 }
 
+// THE FIT CONVERTERS: a type the provider reads, at a size it refuses (../media-conversion,
+// MAX_IMAGE_EDGE). Same tail as the HEIC path, fitted to MAX_OUTPUT_EDGE, and the same pixel cap,
+// applied to the size the HEADER declares before a byte is decoded: a JPEG that claims 60000x60000
+// is refused here instead of asking jpeg-js for 14 GB.
+function headerPixels(bytes: ArrayBuffer, mime: string, cap: number): number {
+  const d = readImageDimensions(bytes);
+  if (d === null)
+    throw new MediaConversionError(
+      `${mime} does not declare its size, so the pixel cap cannot be applied`,
+    );
+  if (d.width * d.height > cap)
+    throw new MediaTooLargeError(
+      `${mime.slice(6)} is ${d.width}x${d.height}, over the ${cap} px cap`,
+    );
+  return d.width * d.height;
+}
+
+// jpeg-js counts every buffer against `maxMemoryUsageInMB` BEFORE allocating it, so that budget is
+// the guard, sized from the pixels the header declared. A 4:4:4 color JPEG needs ~12 B/px of it
+// (measured: 3000x3000 refused at 100 MB, decoded at 103), so 24 covers a four-component (CMYK) one
+// with room to spare; plus the file itself and slack for the tables.
+// Anything a crafted file adds on top (a second frame, after the scan or before it, or 255
+// components) is refused at the allocation that would cross it. The 2 GB fixed ceiling did not do
+// that: it let a small file claim gigabytes the pixel cap had never admitted.
+const JPEG_BYTES_PER_PIXEL = 24;
+const JPEG_SLACK_BYTES = 16 * 1024 * 1024;
+
+function jpegMemoryBudgetMB(bytes: ArrayBuffer, pixels: number): number {
+  return Math.ceil(
+    (pixels * JPEG_BYTES_PER_PIXEL + bytes.byteLength + JPEG_SLACK_BYTES) /
+      (1024 * 1024),
+  );
+}
+
+async function jpegFit(
+  bytes: ArrayBuffer,
+  opts: ConvertOptions,
+): Promise<ArrayBuffer> {
+  if (!isJpeg(bytes))
+    throw new MediaSourceMismatchError("declared as jpeg but is not one");
+  const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+  const pixels = headerPixels(bytes, "image/jpeg", cap);
+  // jpeg-js enforces its own ceilings too: resolution from the cap, memory from the header (above).
+  const raw = jpeg.decode(new Uint8Array(bytes), {
+    useTArray: true,
+    formatAsRGBA: true,
+    maxResolutionInMP: Math.ceil(cap / 1_000_000),
+    maxMemoryUsageInMB: jpegMemoryBudgetMB(bytes, pixels),
+  });
+  // Opaque by construction, so there is nothing to flatten: fit, then turn upright, then encode.
+  // The turn runs on the fitted raster so its copy is of 1568 px and not of the original.
+  const fitted = fitRgba(raw, MAX_OUTPUT_EDGE);
+  return encodeJpeg(
+    orientRgba(fitted, readJpegOrientation(bytes)),
+    JPEG_QUALITY,
+  );
+}
+
+const PNG_CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+// The bit depths the spec allows per color type. The inflate bound is computed from the depth, so a
+// forged one (255) would raise it by 30x past what any real image of that size needs.
+const PNG_DEPTHS: Record<number, readonly number[]> = {
+  0: [1, 2, 4, 8, 16],
+  2: [8, 16],
+  3: [1, 2, 4, 8],
+  4: [8, 16],
+  6: [8, 16],
+};
+// Adam7: x start, y start, x step, y step of each of the seven passes.
+const ADAM7 = [
+  [0, 0, 8, 8],
+  [4, 0, 8, 8],
+  [0, 4, 4, 8],
+  [2, 0, 4, 4],
+  [0, 2, 2, 4],
+  [1, 0, 2, 2],
+  [0, 1, 1, 2],
+] as const;
+
+// pngjs keeps one Buffer per scanline until the end of the decode, so the row count costs memory of
+// its own that the pixel cap does not see (a 1x50,000,000 image is under the cap). A side this long
+// is no photo or screenshot anyone sends.
+const PNG_MAX_ROWS = 100_000;
+
+// The pixel cap holds only if pngjs decodes the size headerPixels read, and pngjs trusts neither
+// side of that: it takes the LAST IHDR it meets, and inflates an interlaced image with no output
+// limit, so a few KB of IDAT can expand to gigabytes before it notices the excess. So the chunk
+// list is walked first (one IHDR: only the first chunk may be one), and the IDAT stream is inflated
+// against the exact length that IHDR implies; only a file that fits is handed to pngjs.
+function checkPngStructure(bytes: ArrayBuffer): void {
+  const v = new DataView(bytes);
+  const idat: Uint8Array[] = [];
+  let ihdr: number | null = null;
+  let palettes = 0;
+  let i = 8;
+  while (i + 12 <= bytes.byteLength) {
+    const length = v.getUint32(i);
+    const type = String.fromCharCode(...new Uint8Array(bytes, i + 4, 4));
+    const data = i + 8;
+    if (data + length + 4 > bytes.byteLength) break;
+    if (type === "IHDR") {
+      if (i !== 8 || length !== 13)
+        throw new MediaConversionError("png has a misplaced or repeated IHDR");
+      ihdr = data;
+    } else if (type === "PLTE") {
+      // pngjs appends every entry of every PLTE to one array, with no 256-entry limit.
+      if (palettes++ > 0 || length > 768 || length % 3 !== 0)
+        throw new MediaConversionError("png has a repeated or oversized PLTE");
+    } else if (type === "IDAT") {
+      idat.push(new Uint8Array(bytes, data, length));
+    } else if (type === "IEND") {
+      break;
+    }
+    i = data + length + 4;
+  }
+  if (ihdr === null) throw new MediaConversionError("png has no IHDR");
+  const width = v.getUint32(ihdr);
+  const height = v.getUint32(ihdr + 4);
+  const depth = v.getUint8(ihdr + 8);
+  const colorType = v.getUint8(ihdr + 9);
+  const channels = PNG_CHANNELS[colorType];
+  const interlaced = v.getUint8(ihdr + 12) === 1;
+  if (channels === undefined)
+    throw new MediaConversionError("png declares an unknown color type");
+  if (height > PNG_MAX_ROWS)
+    throw new MediaConversionError(
+      `png is ${height} rows tall, over the ${PNG_MAX_ROWS} the decoder is held to`,
+    );
+  if (!PNG_DEPTHS[colorType]?.includes(depth))
+    throw new MediaConversionError(
+      "png declares a bit depth its color type does not allow",
+    );
+  const rowBytes = (w: number) => 1 + Math.ceil((w * channels * depth) / 8);
+  let expected = 0;
+  if (!interlaced) expected = height * rowBytes(width);
+  else
+    for (const [xs, ys, dx, dy] of ADAM7) {
+      const w = width > xs ? Math.ceil((width - xs) / dx) : 0;
+      const h = height > ys ? Math.ceil((height - ys) / dy) : 0;
+      if (w > 0 && h > 0) expected += h * rowBytes(w);
+    }
+  try {
+    inflateSync(Buffer.concat(idat), {
+      maxOutputLength: Math.max(1, expected),
+    });
+  } catch {
+    throw new MediaConversionError(
+      "png pixel data does not inflate within its declared size",
+    );
+  }
+}
+
+async function pngFit(
+  bytes: ArrayBuffer,
+  opts: ConvertOptions,
+): Promise<ArrayBuffer> {
+  if (!isPng(bytes))
+    throw new MediaSourceMismatchError("declared as png but is not one");
+  headerPixels(bytes, "image/png", opts.maxSourcePixels ?? MAX_SOURCE_PIXELS);
+  checkPngStructure(bytes);
+  // pngjs hands back 8-bit RGBA whatever the source (palette, 16-bit, interlaced), and a PNG may be
+  // transparent, so this one takes the full tail: flatten, fit, encode.
+  const png = PNG.sync.read(Buffer.from(bytes));
+  return rasterToJpeg(
+    { data: png.data, width: png.width, height: png.height },
+    { maxEdge: MAX_OUTPUT_EDGE, quality: JPEG_QUALITY },
+  );
+}
+
 // A `Record` over the id union and not a lookup that can miss: adding an entry to MEDIA_CONVERTERS
 // without writing its implementation is a compile error here, which is the whole reason the registry
 // is split across two files.
@@ -284,6 +462,8 @@ const IMPLS: Record<
   (bytes: ArrayBuffer, opts: ConvertOptions) => Promise<ArrayBuffer>
 > = {
   "heic-to-jpeg": heicToJpeg,
+  "jpeg-fit": jpegFit,
+  "png-fit": pngFit,
 };
 
 // ONE ERROR TYPE OUT, whatever went wrong inside. libheif answers with its own classes, and so does

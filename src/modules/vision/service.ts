@@ -29,9 +29,14 @@ import {
   MediaTooLargeError,
   runMediaConverter,
 } from "./convert";
+import { readImageDimensions } from "./convert/dimensions";
 import { isDecorativeImage } from "./decorative";
 import { visionAcceptsDocuments } from "./document-support";
-import { normalizeMediaType, planImageConversion } from "./media-conversion";
+import {
+  MAX_IMAGE_EDGE,
+  normalizeMediaType,
+  planImageConversion,
+} from "./media-conversion";
 import {
   getVisionProvider,
   type VisionKind,
@@ -300,6 +305,12 @@ async function convertForProvider(args: {
   const plan = planImageConversion({
     mimeType: args.mimeType,
     provider: args.provider,
+    // Read only where a limit exists to compare against; a header walk is cheap but not free.
+    dimensions:
+      MAX_IMAGE_EDGE[args.provider] === undefined
+        ? null
+        : readImageDimensions(args.bytes),
+    byteLength: args.bytes.byteLength,
   });
   if (plan.action === "as-is")
     return { ok: true, bytes: args.bytes, mimeType: args.mimeType };

@@ -142,7 +142,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
     const inst = await seedChatwootInstance(suDb, {
       tenantId,
       accountId: 41,
-      baseUrl: "https://chat.example.com",
+      baseUrl: "https://vision-limit.example.com",
       adminToken: encryptJson("ADMIN"),
     });
     instanceId = inst.id;
@@ -209,7 +209,7 @@ describe.skipIf(!dbUp)("an image over Anthropic's dimension limit", () => {
       conversationId: 910,
       messageId: nextId,
       attachmentId: nextId,
-      dataUrl: "https://chat.example.com/IMG_0003.jpg",
+      dataUrl: "https://vision-limit.example.com/IMG_0003.jpg",
       cfg: (await resolveVisionConfig(
         tenantId,
         instanceId,

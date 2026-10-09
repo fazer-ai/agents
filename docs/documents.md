@@ -312,8 +312,11 @@ so approving again, in parallel or later, finds it linked and arms nothing. The 
   `document_approval_expired`), which the alert channels pick up.
 
 Any user of the tenant decides a request (`requireRole: "AGENT"`): approving is reading a document and
-saying yes, not configuring anything. The alert on a new request and the console page are the sibling
-issues of #1077.
+saying yes, not configuring anything.
+
+**The team hears of a request through the alert channels.** A new request writes an `info` `tool` line `{outcome: "document_approval_requested", requestId}`, and the expiry's `warn` line carries the same `requestId`; both are cause alerts (`document_approval_requested:<id>`, `document_approval_expired:<id>`, see [`logs.md`](logs.md)), so they reach every channel whatever its `minLevel`, once per request and event. Their link is the request's console page, `/document-approvals/:id` with the tenant selector and nothing else: the console session is the only credential, and the link carries no token. The generic webhook body carries it as `documentApproval` `{requestId, url}`. A retried tool call that lands on the same request writes nothing.
+
+**The page** reads the request, the preview, and `GET /v1/document-approvals/:id/context`: who the customer is, from the contact mirror, and the conversation's last ten public messages, read live from Chatwoot (private notes are left out, and a Chatwoot that does not answer leaves the page with the customer and without the messages). A pending request offers approve and reject with an optional note; an expired one offers **request again** (`POST /v1/document-approvals/:id/request-again`), which freezes the same values again from the template as it is now, dated today in the agent's business-hours timezone, as a new request for the same conversation. The expired request stays `EXPIRED`; the key is `again:<expired id>`, so asking twice opens one request, and the new one raises its own alert.
 
 ## Granting
 

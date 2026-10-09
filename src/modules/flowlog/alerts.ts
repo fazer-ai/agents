@@ -143,6 +143,10 @@ const ACCOUNT_FAILURES: ReadonlySet<string> = new Set([
 // code is a slug), so the key never carries text a server wrote.
 export function causeKeyOf(ev: FlowEvent): string | null {
   const detail = ev.detail ?? {};
+  // A document waiting on the team, or whose request ran out, needs a person whatever the channel's
+  // level: one alert per request and event, linking to the request's page (alertLinks).
+  const approval = approvalAlertOf(detail);
+  if (approval !== null) return `${approval.outcome}:${approval.requestId}`;
   if (ev.stage === "spend_ceiling") {
     return detail.state === "over" ? "spend_ceiling:over" : null;
   }
@@ -185,6 +189,33 @@ export function causeKeyOf(ev: FlowEvent): string | null {
     return `${ev.stage}:${vocabulary("provider", ev.provider) ?? "-"}:${failure}`;
   }
   return null;
+}
+
+const APPROVAL_OUTCOMES: ReadonlySet<string> = new Set([
+  "document_approval_requested",
+  "document_approval_expired",
+]);
+
+function approvalAlertOf(
+  detail: Record<string, unknown>,
+): { outcome: string; requestId: string } | null {
+  const outcome = detail.outcome;
+  const requestId = detail.requestId;
+  if (typeof outcome !== "string" || !APPROVAL_OUTCOMES.has(outcome)) {
+    return null;
+  }
+  if (typeof requestId !== "string" || !/^[1-9][0-9]{0,18}$/.test(requestId)) {
+    return null;
+  }
+  return { outcome, requestId };
+}
+
+// The approval request a cause key names, for the alert's link; null for every other key.
+export function approvalRequestOfCause(causeKey: string | null): string | null {
+  const m = /^document_approval_(?:requested|expired):([1-9][0-9]{0,18})$/.exec(
+    causeKey ?? "",
+  );
+  return m?.[1] ?? null;
 }
 
 // A line whose failure a fallback's line already classified as an account failure: that line is the

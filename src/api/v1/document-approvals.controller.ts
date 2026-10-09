@@ -11,7 +11,9 @@ import {
   listApprovalRequests,
   rejectDocumentRequest,
   renderApprovalPreview,
+  requestApprovalAgain,
 } from "@/modules/documents/approval";
+import { getApprovalContext } from "@/modules/documents/approval-context";
 
 // Document approval requests (docs/documents.md, Approval). Any user of the tenant decides one, the
 // AGENT role included: approving is reading a document and saying yes, not configuring anything.
@@ -21,6 +23,7 @@ import {
 // translate('errors.documentApprovalNotFound', 'Document approval request not found')
 // translate('errors.documentApprovalNotPending', 'This approval request was already decided ({{status}})')
 // translate('errors.documentApprovalExpired', 'This approval request expired, so the document can no longer be issued from it')
+// translate('errors.documentApprovalNotExpired', 'Only an expired approval request can be requested again ({{status}})')
 // translate('errors.invalidDocumentApprovalTtl', 'This approval validity is not valid: {{reason}}')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
@@ -85,6 +88,20 @@ export const documentApprovalsController = new Elysia({
       detail: doc(
         "Get document approval request",
         "Returns one document approval request.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/:id/context",
+    async ({ tenantContext, params }) =>
+      getApprovalContext(ctxOrThrow(tenantContext), requireDbId(params.id)),
+    {
+      requireRole: "AGENT",
+      params: idParam,
+      detail: doc(
+        "Get document approval context",
+        "Who the customer is and the conversation's last messages, for the reviewer. Private notes are left out.",
       ),
       response: errors(400, 401, 403, 404, 422),
     },
@@ -173,6 +190,24 @@ export const documentApprovalsController = new Elysia({
       detail: doc(
         "Reject document approval request",
         "Rejects a pending request. Nothing is issued and no number is taken.",
+      ),
+      response: errors(400, 401, 403, 404, 409, 422),
+    },
+  )
+  .post(
+    "/:id/request-again",
+    async ({ tenantContext, params }) => ({
+      request: await requestApprovalAgain({
+        ctx: ctxOrThrow(tenantContext),
+        requestId: requireDbId(params.id),
+      }),
+    }),
+    {
+      requireRole: "AGENT",
+      params: idParam,
+      detail: doc(
+        "Request a document approval again",
+        "On an expired request, freezes the same values again from the template, dated today, as a new pending request for the same conversation. The expired request stays expired; asking twice opens one request.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },

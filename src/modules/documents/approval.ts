@@ -1,11 +1,14 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import { emitFlowEvent } from "@/modules/flowlog/service";
 import { upsertJobRow, upsertJobRows } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
@@ -235,7 +238,10 @@ export async function createApprovalRequest(params: {
     }
     throw err;
   });
-  if (created) return toDto(created);
+  if (created) {
+    await announceRequest(base, tenantId, created);
+    return toDto(created);
+  }
   const existing = await runScopedOn(base, ctx, (db) =>
     db.documentApprovalRequest.findUnique({
       where: {
@@ -251,6 +257,65 @@ export async function createApprovalRequest(params: {
     throw new AppError("failed to persist the approval request", 500);
   }
   return toDto(existing);
+}
+
+// The team hears of a request the moment it exists: an `info` line the alert path sends to every
+// channel as a cause (it needs a person, whatever the channel's level), linking to the request's
+// page. Best-effort: the request stands, and it is in the console's list either way.
+async function announceRequest(
+  base: PrismaClient,
+  tenantId: bigint,
+  row: Row,
+): Promise<void> {
+  try {
+    const agent =
+      row.conversationId === null
+        ? null
+        : await runScopedOn(base, sysCtx(tenantId), async (db) => {
+            const conv = await db.conversation.findUnique({
+              where: { id: row.conversationId as bigint },
+              select: { inboxId: true },
+            });
+            if (!conv?.inboxId) return null;
+            const inbox = await db.inbox.findUnique({
+              where: { id: conv.inboxId },
+              select: { agentId: true },
+            });
+            if (!inbox?.agentId) return null;
+            return db.agent.findUnique({
+              where: { id: inbox.agentId },
+              select: { id: true, settings: true },
+            });
+          });
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: row.conversationId,
+        agentId: agent?.id ?? null,
+        threadId: row.threadId,
+        base,
+        fullDetail: agent
+          ? readDebugModes(agent.settings, null).fullDetail
+          : false,
+      },
+      {
+        stage: "tool",
+        level: "info",
+        status: "ok",
+        detail: {
+          outcome: "document_approval_requested",
+          requestId: String(row.id),
+        },
+      },
+    );
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: String(tenantId), requestId: String(row.id) },
+      "document approval: the request could not be announced",
+    );
+  }
 }
 
 export async function listApprovalRequests(
@@ -498,6 +563,97 @@ export async function rejectDocumentRequest(params: {
     throw notPending(row.status);
   }
   return toDto(row);
+}
+
+function notExpired(status: string): AppError {
+  return new AppError(
+    `this approval request is ${status.toLowerCase()}, not expired`,
+    409,
+    "errors.documentApprovalNotExpired",
+    { status },
+  );
+}
+
+// The calendar a request asked again is dated in: the conversation's agent's business hours, the
+// one the agent's own call reads, else the default.
+async function timezoneOf(
+  db: ScopedDb,
+  conversationId: bigint | null,
+): Promise<string> {
+  if (conversationId === null) return DEFAULT_TIMEZONE;
+  const conv = await db.conversation.findUnique({
+    where: { id: conversationId },
+    select: { inboxId: true },
+  });
+  if (!conv?.inboxId) return DEFAULT_TIMEZONE;
+  const inbox = await db.inbox.findUnique({
+    where: { id: conv.inboxId },
+    select: { agentId: true },
+  });
+  if (!inbox?.agentId) return DEFAULT_TIMEZONE;
+  const agent = await db.agent.findUnique({
+    where: { id: inbox.agentId },
+    select: { businessHoursId: true },
+  });
+  if (!agent?.businessHoursId) return DEFAULT_TIMEZONE;
+  const hours = await db.businessHours.findUnique({
+    where: { id: agent.businessHoursId },
+    select: { timezone: true },
+  });
+  return hours?.timezone || DEFAULT_TIMEZONE;
+}
+
+// "Request again" on an expired request: the same values frozen again from the template as it is
+// now, dated today, as a NEW request for the same conversation. The expired one stays EXPIRED. The
+// key names the expired request, so asking twice opens one request, not two.
+export async function requestApprovalAgain(params: {
+  ctx: TenantContext;
+  requestId: bigint;
+  base?: PrismaClient;
+  now?: Date;
+}): Promise<ApprovalRequestDto> {
+  const base = params.base ?? basePrisma;
+  const { ctx, requestId } = params;
+  const now = params.now ?? new Date();
+  const row = await loadRequestWithSnapshot(ctx, requestId, base);
+  if (row.status !== "EXPIRED") throw notExpired(row.status);
+  if (row.templateId === null) {
+    throw new NotFoundError(
+      "document template not found",
+      "errors.documentTemplateNotFound",
+    );
+  }
+  const stored = row.snapshot as unknown as DocumentSnapshot;
+  const timezone = await runScopedOn(base, ctx, (db) =>
+    timezoneOf(db, row.conversationId),
+  );
+  const frozen = await freezeDocumentSnapshot({
+    ctx,
+    base,
+    templateId: row.templateId,
+    values: stored.values,
+    now,
+    timezone,
+  });
+  const request = await createApprovalRequest({
+    ctx,
+    base,
+    frozen,
+    idempotencyKey: `again:${row.id}`,
+    threadId: row.threadId,
+    chatwootInstanceId: row.chatwootInstanceId,
+    conversationId: row.conversationId,
+    now,
+  });
+  await runScopedOn(base, ctx, (db) =>
+    auditMutation(db, ctx, {
+      action: "document_approval.request_again",
+      target: `document_approval:${row.id}`,
+      before: { status: "EXPIRED" },
+      after: { requestId: request.id },
+    }),
+  );
+  return request;
 }
 
 // Moves the tenant's overdue PENDING requests to EXPIRED and returns their ids. Idempotent: a second

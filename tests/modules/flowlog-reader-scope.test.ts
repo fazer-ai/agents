@@ -194,6 +194,8 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/delivery-sweep.test.ts": 7,
   // NOTE: The expiry line one request's conversation wrote, read by that conversation.
   "tests/modules/document-approval-outcome.test.ts": 3,
+  // NOTE: The line a new request wrote, read by its conversation.
+  "tests/modules/document-approval-page.test.ts": 1,
   "tests/modules/eager-media-flow-context.test.ts": 6,
   "tests/modules/failure-note.test.ts": 1,
   "tests/modules/flowlog-astral-detail.test.ts": 1,

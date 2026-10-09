@@ -1365,14 +1365,13 @@ async function claimDelivery(
   throw lastErr;
 }
 
-// The ack's write: the same row `recordDelivery` writes, as ONE statement in a batch transaction
-// rather than an interactive one, because this runs before the 200 on a process whose first limit
-// under load is CPU, and the interactive form costs about twice the CPU per delivery. The binding
-// generation is read by a subquery of the same INSERT, which keeps it in the transaction that writes
-// the row (see `recordDelivery`); the GUC is what RLS scopes the statement by. A redelivery is the
-// conflict, answered by the same statement: it fills only what the existing row is missing
-// (`LEDGER_FILLABLE`, never the generation nor the body) and returns that row's status, so a retry
-// costs no second round trip on the path Chatwoot is timing.
+// The ack's write: the row `recordDelivery` writes, as ONE statement in a batch transaction, because
+// this runs before the 200 on a process whose first limit is CPU and the interactive form costs about
+// twice as much. The generation comes from a subquery of the same INSERT; the GUC scopes RLS. A
+// redelivery is the conflict, answered by the same statement and with that row's status: it fills
+// what the row is missing (`LEDGER_FILLABLE`, never the generation), and the body only while the row
+// is PENDING, since a row an older build wrote has none and a redelivery the full queue turns away
+// must leave something the drain can process.
 async function recordDeliveryOnAck(
   base: PrismaClient,
   scope: { tenantId: bigint; instanceId: bigint },
@@ -1420,7 +1419,10 @@ async function recordDeliveryOnAck(
         inbound_message_id = COALESCE(chatwoot_webhook_deliveries.inbound_message_id, EXCLUDED.inbound_message_id),
         human_reply_shape = COALESCE(chatwoot_webhook_deliveries.human_reply_shape, EXCLUDED.human_reply_shape),
         route_agent_bot_id = COALESCE(chatwoot_webhook_deliveries.route_agent_bot_id, EXCLUDED.route_agent_bot_id),
-        human_reply_message_id = COALESCE(chatwoot_webhook_deliveries.human_reply_message_id, EXCLUDED.human_reply_message_id)
+        human_reply_message_id = COALESCE(chatwoot_webhook_deliveries.human_reply_message_id, EXCLUDED.human_reply_message_id),
+        payload = CASE WHEN chatwoot_webhook_deliveries.status = 'PENDING'
+          THEN COALESCE(chatwoot_webhook_deliveries.payload, EXCLUDED.payload)
+          ELSE chatwoot_webhook_deliveries.payload END
       RETURNING id, binding_generation, status::text AS status, (xmax = 0) AS inserted`,
   ]);
   const row = inserted[0];

@@ -334,6 +334,31 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(row.attempts).toBe(0);
   });
 
+  // A row an older build wrote has no body. Its redelivery stores one while the row still owes its
+  // first attempt, so a redelivery the full queue turned away (here: one nobody admitted) is drained.
+  test("a bodyless legacy row gets its body from a redelivery and is drained from it", async () => {
+    const legacy = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "queue-legacy",
+        event: "conversation_updated",
+        status: "PENDING",
+      },
+    });
+    const id = await ackOnly("queue-legacy", 610);
+    expect(id).toBe(legacy.id);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.admitted).toBe(1);
+    const row = await settled(id);
+    expect(row.status).toBe("PROCESSED");
+    expect(row.payload).toBeNull();
+  });
+
   // The sweep leaves a PENDING row with a body to the drain, so a body the drain cannot read must not
   // stay: it is dropped and the row goes back to the sweep.
   test("a stored body that no longer normalizes is dropped, not kept", async () => {

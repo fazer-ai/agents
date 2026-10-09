@@ -314,8 +314,10 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     expect(row.conversationId).toBe(530);
     expect(row.inboundMessageId).toBe(5300);
     expect(row.routeAgentBotId).toBe(9);
-    // The body and the generation are facts about the first receipt, never filled by a retry.
-    expect(row.payload).toBeNull();
+    // The generation is a fact about the first receipt, never filled by a retry. The body is filled,
+    // since the row still owes its first attempt: a redelivery the full queue turns away is then
+    // still one the drain can process.
+    expect(row.payload).toBe(body);
     expect(row.bindingGeneration).toBeNull();
     invalidateRouteTokenCache();
   });

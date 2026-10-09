@@ -27,6 +27,7 @@ import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
 import { readHandoffConfig } from "@/modules/handoff/settings";
+import { consoleUrl } from "@/modules/mcp/console-links";
 import {
   type JobContext,
   type JobResult,
@@ -239,9 +240,16 @@ export async function runApprovalOutcome(
     committed = true;
     deps.commit?.();
   };
+  // Every note ends on the request's page, so the person the conversation falls to opens the decision
+  // (and, on an expired one, asks again) from where they are working.
+  const withPage = (text: string) =>
+    `${text}\n\nVer aprovação: ${consoleUrl(`/document-approvals/${requestId}`, { tenantId })}`;
   const note = async (client: ChatwootClient, text: string) => {
     if (deps.signal?.aborted && !committed) return false;
-    await client.sendPrivateNote(target.conv.chatwootConversationId, text);
+    await client.sendPrivateNote(
+      target.conv.chatwootConversationId,
+      withPage(text),
+    );
     commit();
     return true;
   };
@@ -370,10 +378,16 @@ export async function runApprovalOutcome(
       fileName: pdf.fileName,
       // NOTE: unescaped here: the caption is signed, and the signature escapes it once.
       caption: `Segue o documento ${request.title.replace(/\s+/g, " ").trim()}, aprovado pela equipe.`,
-      heldNote: `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
-      windowNote: `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
-      revokedNote: unavailable,
-      blockedNote: `Documento aprovado: ${named}. A resposta do agente foi barrada pela política de saída, então o PDF não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+      heldNote: withPage(
+        `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
+      ),
+      windowNote: withPage(
+        `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+      ),
+      revokedNote: withPage(unavailable),
+      blockedNote: withPage(
+        `Documento aprovado: ${named}. A resposta do agente foi barrada pela política de saída, então o PDF não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+      ),
       stillValid: async () => {
         const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.issuedDocument.findUnique({

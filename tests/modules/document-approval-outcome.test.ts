@@ -175,6 +175,16 @@ async function outcomeJobs(requestId: bigint) {
   });
 }
 
+// A note ends on the request's page, named for the tenant, so the person the conversation falls to
+// opens the decision from Chatwoot.
+function expectPageLink(note: unknown, requestId: bigint) {
+  expect(String(note)).toMatch(
+    new RegExp(
+      `\\n\\nVer aprovação: \\S+/document-approvals/${requestId}\\?switchTenant=${tenantId}$`,
+    ),
+  );
+}
+
 describe.skipIf(!dbUp)("document approval outcomes", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -1341,6 +1351,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("Documento aprovado");
     expect(String(notes[0]?.[2])).toContain("atendente");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
@@ -1368,6 +1379,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("janela de 24h");
     expect(String(notes[0]?.[2])).toContain("enviado por uma pessoa");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendTemplate")).toHaveLength(0);
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
@@ -1393,6 +1405,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const notes = named(rec.calls, "sendPrivateNote");
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("preço do item 2 errado, refazer");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "toggleStatus")).toEqual([
       [
         "toggleStatus",
@@ -1613,6 +1626,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const notes = named(rec.calls, "sendPrivateNote");
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("venceu");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     const line = await flowLogRow(suDb, {
       where: {

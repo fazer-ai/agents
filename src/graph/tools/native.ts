@@ -1290,7 +1290,10 @@ function setLabelsTool(ctx: ToolCtx) {
   // delta after the other in the order the calls were made, and the set they add up to goes out in
   // one POST; each call still answers for its own delta, with the set as it stood after it. Never
   // rejects: each call is answered through its own promise.
-  const writeConversationLabels = async (batch: LabelBatch): Promise<void> => {
+  const writeLabelBatch = async (
+    batch: LabelBatch,
+    later: PendingLabelDelta[],
+  ): Promise<void> => {
     // From here on nobody joins: a call that arrives now queues an entry of its own.
     const close = () =>
       closeConversationLabelsTail(ctx.tenantId, ctx.conversationId, batch);
@@ -1356,15 +1359,9 @@ function setLabelsTool(ctx: ToolCtx) {
         return;
       }
       // Calls that must go alone, found here together because they joined before the fence ran:
-      // the first is written now and each of the others queues an entry of its own, in order.
+      // the first is written now and the others after it, one write each (`writeConversationLabels`).
       if (outcomes.length > 1 && ctx.writesAlone?.()) {
-        for (const d of batch.deltas.splice(1)) {
-          const one = new LabelBatch(ctx);
-          one.deltas.push(d);
-          void withConversationLabels(ctx.tenantId, ctx.conversationId, () =>
-            writeConversationLabels(one),
-          );
-        }
+        later.push(...batch.deltas.splice(1));
         outcomes.length = 1;
         const first = outcomes[0];
         if (first) state = first.next;
@@ -1397,6 +1394,16 @@ function setLabelsTool(ctx: ToolCtx) {
       close();
       // Settling twice is a no-op, so the calls already answered are not disturbed.
       for (const d of batch.deltas) d.reject(err);
+    }
+  };
+  const writeConversationLabels = async (batch: LabelBatch): Promise<void> => {
+    const later: PendingLabelDelta[] = [];
+    await writeLabelBatch(batch, later);
+    // Inside this same entry of the queue, so a writer queued meanwhile stays behind all of them.
+    for (const d of later) {
+      const one = new LabelBatch(ctx);
+      one.deltas.push(d);
+      await writeConversationLabels(one);
     }
   };
   return tool(

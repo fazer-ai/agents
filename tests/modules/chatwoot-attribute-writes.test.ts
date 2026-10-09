@@ -132,6 +132,34 @@ describe("custom attribute writes against endpoints that replace", () => {
     });
   });
 
+  test("a writer queued while a joined write was read stays behind every call that write is split into", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    const other = await client(cw.fetchImpl);
+    let alone = false;
+    let queued: Promise<unknown> | null = null;
+    const opts = {
+      alone: () => alone,
+      stillWanted: async () => {
+        // Another client's write arrives while the two joined calls are being decided.
+        queued ??= other.setConversationCustomAttributes(61, {
+          produto: "de-outro",
+        });
+        alone = true;
+        return true;
+      },
+    };
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { medida: "90cm" }, opts),
+      c.setConversationCustomAttributes(61, { produto: "mesa" }, opts),
+    ]);
+    await queued;
+    expect(cw.conversations.get(61)).toEqual({
+      medida: "90cm",
+      produto: "de-outro",
+    });
+  });
+
   test("a call that was called off is left out of the shared write and rejected alone", async () => {
     const cw = fakeChatwootAttributeStore(5);
     const c = await client(cw.fetchImpl);

@@ -894,6 +894,7 @@ export class ChatwootClient {
     key: string,
     batch: AttributeBatch,
   ): Promise<void> {
+    const later: PendingAttributeWrite[] = [];
     try {
       // The read uses the admin token although the write is a bot-token call:
       // `conversations#show` is in BOT_ACCESSIBLE_ENDPOINTS only on Chatwoot from 2026-06-05 on, so
@@ -926,17 +927,10 @@ export class ChatwootClient {
       }
       if (wanted.length === 0) return;
       // A call that must go alone, found here with company it joined before the fences ran: the
-      // first is written now and each of the others queues an entry of its own, in order.
+      // first is written now and the others after it, one read and one write each (below).
       if (wanted.length > 1 && wanted.some((w) => w.alone?.())) {
-        const later = wanted.splice(1);
+        later.push(...wanted.splice(1));
         batch.writes.splice(0, batch.writes.length, ...wanted);
-        for (const w of later) {
-          const one = new AttributeBatch(this, batch.asAdmin);
-          one.writes.push(w);
-          void withKeyedQueue(key, () =>
-            this.writeAttributeBatch(conversationId, key, one),
-          );
-        }
       }
       const written = await this.request(
         batch.asAdmin ? this.config.adminToken : this.config.botToken,
@@ -957,6 +951,12 @@ export class ChatwootClient {
       // A failed read fails whoever had joined by then; a failed write, whoever rode on it.
       // Settling twice is a no-op, so the calls already answered are not disturbed.
       for (const w of batch.writes) w.reject(err);
+    }
+    // Inside this same entry of the queue, so a writer queued meanwhile stays behind all of them.
+    for (const w of later) {
+      const one = new AttributeBatch(this, batch.asAdmin);
+      one.writes.push(w);
+      await this.writeAttributeBatch(conversationId, key, one);
     }
   }
 

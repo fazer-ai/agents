@@ -1285,8 +1285,7 @@ async function runTurnBody(
   const turnLimitGate = async (): Promise<RunAgentTurnOutcome | null> => {
     const limit = loaded.maxTurnsPerHour;
     const convDbId = loaded.conversationDbId;
-    if (limit <= 0 || convDbId === null || flow.source !== "inbox")
-      return null;
+    if (limit <= 0 || convDbId === null || flow.source !== "inbox") return null;
     const verdict = await turnLimitVerdict({
       tenantId,
       conversationDbId: convDbId,

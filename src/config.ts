@@ -173,7 +173,6 @@ const MAX_COUNT = 1_000_000;
 // other three are date and cache arithmetic, where the same values produce an Invalid Date rather
 // than a hot loop; 24 days is past any real span for them too.
 const MAX_DURATION_MS = 2_147_483_647;
-const OBSERVE_WORKER_INTERVAL_MIN_MS = 100;
 // The protocol's own limit.
 const MAX_PORT = 65_535;
 // A century. Any real retention policy is orders of magnitude under this, and every span whose
@@ -443,7 +442,7 @@ const config = {
       MAX_DURATION_MS,
       // A claim is a query. Below this the interval is no longer the safety net it is (the row a
       // message arms is started by its own wake-up, `wakeObserveDrainAt`), only load.
-      OBSERVE_WORKER_INTERVAL_MIN_MS,
+      100,
     ),
   },
   // NOTE: Dedicated FAST tick that drains only DEBOUNCE jobs (inbound message coalescing). It is

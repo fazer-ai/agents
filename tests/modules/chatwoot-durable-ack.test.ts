@@ -305,6 +305,68 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     invalidateRouteTokenCache();
   });
 
+  // The receipt's binding generation is read by the ack's own INSERT, from the payload's inbox when it
+  // names one and from the conversation's mirrored inbox when it does not.
+  test("the row carries the inbox's binding generation, by the payload's inbox or the conversation's", async () => {
+    invalidateRouteTokenCache();
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 77,
+        name: "generation",
+        bindingGeneration: 3,
+      },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 577,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:577`,
+        inboxId: inbox.id,
+      },
+    });
+    const byInbox = JSON.stringify({
+      event: "message_created",
+      id: 5770,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: { id: 578, inbox_id: 77, status: "pending" },
+    });
+    const byConversation = JSON.stringify({
+      event: "conversation_updated",
+      id: 577,
+      status: "pending",
+    });
+    const unknown = JSON.stringify({
+      event: "conversation_updated",
+      id: 579,
+      status: "pending",
+    });
+    for (const [body, id] of [
+      [byInbox, "durable-gen-inbox"],
+      [byConversation, "durable-gen-conv"],
+      [unknown, "durable-gen-none"],
+    ] as const) {
+      const r = await receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, id),
+        nowSeconds: NOW,
+        base: appDb,
+      });
+      expect(r.outcome).toBe("queued");
+    }
+    expect((await rowOf("durable-gen-inbox"))[0]?.bindingGeneration).toBe(3);
+    expect((await rowOf("durable-gen-conv"))[0]?.bindingGeneration).toBe(3);
+    expect((await rowOf("durable-gen-none"))[0]?.bindingGeneration).toBeNull();
+    const conv = await rowOf("durable-gen-conv");
+    expect(conv[0]?.conversationId).toBe(577);
+  });
+
   // Part 3 of the issue. Rule three of the cache ("a failed lookup closes the stale window") existed
   // because a 200 was a promise nothing durable backed; now the ack's own write is that backing, so a
   // refresh that cannot reach the shared pool no longer turns every ack into a 500.

@@ -11,6 +11,11 @@ const ackPrisma = new PrismaClient({
   adapter: new PrismaPg({
     connectionString: config.databaseUrl,
     max: config.chatwoot.ackPoolMax,
+    // Bounded, both: the ack's write is a batch transaction, which has no `maxWait` of its own, and a
+    // wait past Chatwoot's ~5s budget is an escalated conversation whatever it ends in. Past these the
+    // write fails and the ack answers 503, which Chatwoot retries.
+    connectionTimeoutMillis: 2_000,
+    statement_timeout: 2_000,
   }),
 });
 

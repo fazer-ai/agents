@@ -989,9 +989,9 @@ export async function receiveChatwootWebhook(
   // main one cannot stretch the ack past Chatwoot's budget. A write that fails is a 503, never a 2xx:
   // Chatwoot's retry ladder carries the event, and the unique key makes the retry the same row.
   const ackBase = params.ackBase ?? params.base ?? ackPrisma;
-  let recorded: Awaited<ReturnType<typeof recordDelivery>>;
+  let recorded: Awaited<ReturnType<typeof recordDeliveryOnAck>>;
   try {
-    recorded = await recordDelivery(
+    recorded = await recordDeliveryOnAck(
       ackBase,
       { tenantId: bot.tenantId, instanceId: bot.instanceId },
       deliveryId,
@@ -1365,6 +1365,62 @@ async function claimDelivery(
   throw lastErr;
 }
 
+// The ack's write: the same row `recordDelivery` writes, as ONE statement in a batch transaction
+// rather than an interactive one, because this runs before the 200 on a process whose first limit
+// under load is CPU, and the interactive form costs about twice the CPU per delivery. The binding
+// generation is read by a subquery of the same INSERT, which keeps it in the transaction that writes
+// the row (see `recordDelivery`); the GUC is what RLS scopes the statement by. A redelivery (the
+// conflict, which writes nothing) takes `recordDelivery`'s own path, which fills a legacy row's facts.
+async function recordDeliveryOnAck(
+  base: PrismaClient,
+  scope: { tenantId: bigint; instanceId: bigint },
+  deliveryId: string,
+  facts: Omit<LedgerFacts, "bindingGeneration">,
+  at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
+  payload: string,
+): ReturnType<typeof recordDelivery> {
+  // The payload's inbox when it names one, else the conversation's mirrored inbox, as
+  // `inboxBindingGenerationIn` resolves it.
+  const generation =
+    at.chatwootInboxId != null
+      ? Prisma.sql`(SELECT binding_generation FROM inboxes
+           WHERE tenant_id = ${scope.tenantId}
+             AND chatwoot_instance_id = ${scope.instanceId}
+             AND chatwoot_inbox_id = ${at.chatwootInboxId}
+           LIMIT 1)`
+      : at.chatwootConversationId != null
+        ? Prisma.sql`(SELECT i.binding_generation FROM conversations c
+             JOIN inboxes i ON i.id = c.inbox_id
+             WHERE c.tenant_id = ${scope.tenantId}
+               AND c.chatwoot_instance_id = ${scope.instanceId}
+               AND c.chatwoot_conversation_id = ${at.chatwootConversationId}
+             LIMIT 1)`
+        : Prisma.sql`NULL`;
+  const [, inserted] = await base.$transaction([
+    base.$executeRaw`SELECT set_config('app.tenant_id', ${String(scope.tenantId)}, true)`,
+    base.$queryRaw<{ id: bigint; binding_generation: number | null }[]>`
+      INSERT INTO chatwoot_webhook_deliveries
+        (tenant_id, chatwoot_instance_id, delivery_id, event, conversation_id, inbound_message_id,
+         human_reply_shape, route_agent_bot_id, human_reply_message_id, binding_generation, payload)
+      VALUES
+        (${scope.tenantId}, ${scope.instanceId}, ${deliveryId}, ${facts.event}, ${facts.conversationId},
+         ${facts.inboundMessageId}, ${facts.humanReplyShape}, ${facts.routeAgentBotId},
+         ${facts.humanReplyMessageId}, ${generation}, ${payload})
+      ON CONFLICT (chatwoot_instance_id, delivery_id) DO NOTHING
+      RETURNING id, binding_generation`,
+  ]);
+  const row = inserted[0];
+  if (row !== undefined) {
+    return {
+      rowId: row.id,
+      duplicate: false,
+      status: "PENDING",
+      bindingGeneration: row.binding_generation,
+    };
+  }
+  return recordDelivery(base, scope, deliveryId, facts, at);
+}
+
 // Idempotency ledger insert: create-then-catch across two transactions (a unique violation
 // aborts its own transaction). Unique on (chatwoot_instance_id, delivery_id).
 async function recordDelivery(
@@ -1373,9 +1429,6 @@ async function recordDelivery(
   deliveryId: string,
   facts: Omit<LedgerFacts, "bindingGeneration">,
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
-  // The raw body, from the ack only (see the `payload` column). Never filled onto an existing row: a
-  // redelivery carries the body in memory, and the row it finds already owes or already ran.
-  payload: string | null = null,
 ): Promise<{
   rowId: bigint;
   duplicate: boolean;
@@ -1403,11 +1456,10 @@ async function recordDelivery(
           deliveryId,
           status: "PENDING",
           // NOTE: What a recovery sweep needs if this delivery strands: which conversation to flush, which
-          // message the flush should answer, and what side effect was owed. Ids and shapes, plus the body
-          // while the row owes its first attempt (`payload`, cleared by the claim).
+          // message the flush should answer, and what side effect was owed. Ids and shapes only; the body
+          // is the ack's to store (`recordDeliveryOnAck`).
           ...facts,
           bindingGeneration,
-          payload,
         },
         select: { id: true, bindingGeneration: true },
       });

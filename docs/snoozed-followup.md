@@ -50,6 +50,9 @@ The nudge was built around "the bot owns the conversation". Under `holder: "snoo
 - the live ownership probe asks `isSnoozedForAPerson` instead of `shouldBotHandle`, before the model and again before the send, and the mirror check asks status and holder the same way. Without `requireLiveBotOwnership` the holder is refused as a caller error, because the mirror cannot see the end date.
 - **no tools are bound.** The reminder is one message on a person's behalf; every tool would act over that person (transfer, close, labels, a case in another inbox). Silence stays possible through the follow-up's own token.
 - every `stillWanted` ask, strict or not, reads the messages after the newest one the handler saw: a person or the customer writing while the model ran stops the reminder and the post-actions. An unreadable answer is a no.
+- the person's message (up to 1,500 characters) goes into the reminder's directive: the agent's thread may not hold it (a test-mode agent ingests only its own turns).
+- a reminder the WhatsApp service window kept from the customer (`noted-window`) ends the ladder without spending the step, as in `followUp`: a later closing step must not resolve a conversation nobody was reminded on.
+- a message read that fails, or answers something that is not a message list, is a failed read and not silence: the step is tried again (`reschedule`), never dropped and never taken as "nobody spoke".
 - no hand-back note is written to the thread: a reminder over a person's snooze is not the conversation coming back to the bot.
 - an output guardrail that would **hand over** drops the reminder instead (no transfer, no hand-over line: the conversation is the person's) and the step ends as a silent one.
 - the conversation is left as it was: still snoozed, still the person's. Only the last step's `resolve` and labels change it.

@@ -1,5 +1,9 @@
 import logger from "@/api/lib/logger";
-import { withKeyedQueue } from "@/lib/locks";
+import {
+  closeKeyedQueueTail,
+  keyedQueueTail,
+  withKeyedQueue,
+} from "@/lib/locks";
 import { withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
@@ -400,6 +404,27 @@ function parseWebWidgetInbox(res: unknown): WebWidgetInbox | null {
     hmacToken: s(o.hmac_token),
     websiteUrl: s(o.website_url),
   };
+}
+
+// One caller's share of a conversation-attribute write that has not gone out yet (see
+// `setConversationCustomAttributes`).
+interface PendingAttributeWrite {
+  attributes: Record<string, unknown>;
+  stillWanted?: () => Promise<boolean>;
+  alone?: () => boolean;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+}
+
+// The calls one entry of the conversation's queue will write together. While it is the queue's
+// tail, which it stops being when its read comes back, a call from the same client under the same
+// token joins it instead of queueing behind it.
+class AttributeBatch {
+  readonly writes: PendingAttributeWrite[] = [];
+  constructor(
+    readonly owner: ChatwootClient,
+    readonly asAdmin: boolean,
+  ) {}
 }
 
 export class ChatwootClient {
@@ -818,38 +843,121 @@ export class ChatwootClient {
     // The caller's fence, asked INSIDE the queue right before the write. See the note at the call.
     // `asAdmin` writes with the admin token: a conversation in an inbox the bot does not serve (a
     // case opened in another inbox) refuses the bot.
-    opts: { stillWanted?: () => Promise<boolean>; asAdmin?: boolean } = {},
+    // `alone` keeps this call out of the shared write below: an entry of its own, joined by nobody.
+    // Asked when the call arrives and again after the fences, which may be what changes the answer.
+    opts: {
+      stillWanted?: () => Promise<boolean>;
+      asAdmin?: boolean;
+      alone?: () => boolean;
+    } = {},
   ): Promise<unknown> {
-    return withKeyedQueue(
-      this.targetKey("conversation", conversationId),
-      async () => {
-        // The read uses the admin token although the write is a bot-token call:
-        // `conversations#show` is in BOT_ACCESSIBLE_ENDPOINTS only on Chatwoot from 2026-06-05 on, so
-        // an older instance answers a bot-token GET with 401 and every attribute write would fail.
-        // The admin token is also the one guaranteed to exist (the bot token is empty outside a persona).
-        const existing = (await this.request(
-          this.config.adminToken,
-          "GET",
-          `/conversations/${conversationId}`,
-        )) as { custom_attributes?: unknown } | null;
-        // NOTE: The last moment before the write, inside the critical section on purpose: between the
-        // caller's own fence check and this line sit the queue's wait and the GET above, and `/reset`
-        // clears the attributes in that window, so a call admitted before it would put the old
-        // episode's values back. Only an explicit `false` stops the write.
-        await this.assertStillWanted(opts.stillWanted, "custom_attributes");
-        return this.request(
-          opts.asAdmin ? this.config.adminToken : this.config.botToken,
-          "POST",
-          `/conversations/${conversationId}/custom_attributes`,
-          {
-            custom_attributes: {
-              ...attributeBag(existing?.custom_attributes),
-              ...attributes,
-            },
-          },
-        );
-      },
-    );
+    // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: a call that finds this client's own entry at
+    // the TAIL of the queue, its read still out, joins that entry, and the entry writes every call
+    // it holds in one POST, in the order they were made. Only the tail can be joined, so a call is
+    // never merged ahead of something queued in between (the `/reset` clear, another client's
+    // write). Each call keeps its own answer: its fence is asked, and one that was called off is
+    // left out of the write and rejected alone.
+    const key = this.targetKey("conversation", conversationId);
+    const asAdmin = opts.asAdmin === true;
+    return new Promise<unknown>((resolve, reject) => {
+      const mine: PendingAttributeWrite = {
+        attributes,
+        resolve,
+        reject,
+        ...(opts.stillWanted ? { stillWanted: opts.stillWanted } : {}),
+        ...(opts.alone ? { alone: opts.alone } : {}),
+      };
+      const alone = opts.alone?.() === true;
+      const tail = alone ? undefined : keyedQueueTail(key);
+      if (
+        tail instanceof AttributeBatch &&
+        tail.owner === this &&
+        tail.asAdmin === asAdmin
+      ) {
+        tail.writes.push(mine);
+        return;
+      }
+      const batch = new AttributeBatch(this, asAdmin);
+      batch.writes.push(mine);
+      void withKeyedQueue(
+        key,
+        () => this.writeAttributeBatch(conversationId, key, batch),
+        alone ? undefined : batch,
+      );
+    });
+  }
+
+  // One entry of the conversation's queue: read the bag, then write every call the entry holds.
+  // Never rejects: each call is answered through its own promise.
+  private async writeAttributeBatch(
+    conversationId: number,
+    key: string,
+    batch: AttributeBatch,
+  ): Promise<void> {
+    const later: PendingAttributeWrite[] = [];
+    try {
+      // The read uses the admin token although the write is a bot-token call:
+      // `conversations#show` is in BOT_ACCESSIBLE_ENDPOINTS only on Chatwoot from 2026-06-05 on, so
+      // an older instance answers a bot-token GET with 401 and every attribute write would fail.
+      // The admin token is also the one guaranteed to exist (the bot token is empty outside a persona).
+      const existing = (await this.request(
+        this.config.adminToken,
+        "GET",
+        `/conversations/${conversationId}`,
+      )) as { custom_attributes?: unknown } | null;
+      // Closed AFTER the read, so the bag every call merges into is one read fresher than its own
+      // would have been, and before the fences, so nobody joins a write already being decided.
+      closeKeyedQueueTail(key, batch);
+      // The last moment before the write, inside the critical section on purpose: between the
+      // caller's own fence check and this line sit the queue's wait and the GET above, and `/reset`
+      // clears the attributes in that window, so a call admitted before it would put the old
+      // episode's values back. Only an explicit `false` stops a call's write, and a fence that
+      // throws does not. Each distinct fence is asked once.
+      const verdicts = new Map<() => Promise<boolean>, boolean>();
+      const wanted: PendingAttributeWrite[] = [];
+      for (const w of batch.writes) {
+        if (w.stillWanted && !verdicts.has(w.stillWanted)) {
+          verdicts.set(w.stillWanted, await w.stillWanted().catch(() => true));
+        }
+        if (!w.stillWanted || verdicts.get(w.stillWanted)) {
+          wanted.push(w);
+          continue;
+        }
+        w.reject(new ChatwootCalledOffError("custom_attributes"));
+      }
+      if (wanted.length === 0) return;
+      // A call that must go alone, found here with company it joined before the fences ran: the
+      // first is written now and the others after it, one read and one write each (below).
+      if (wanted.length > 1 && wanted.some((w) => w.alone?.())) {
+        later.push(...wanted.splice(1));
+        batch.writes.splice(0, batch.writes.length, ...wanted);
+      }
+      const written = await this.request(
+        batch.asAdmin ? this.config.adminToken : this.config.botToken,
+        "POST",
+        `/conversations/${conversationId}/custom_attributes`,
+        {
+          // From entries, never `Object.assign` into `{}`: a key named `__proto__` has to stay an
+          // own property, or the write drops it and the endpoint, which replaces the bag, erases it.
+          custom_attributes: Object.fromEntries([
+            ...Object.entries(attributeBag(existing?.custom_attributes)),
+            ...wanted.flatMap((w) => Object.entries(w.attributes)),
+          ]),
+        },
+      );
+      for (const w of wanted) w.resolve(written);
+    } catch (err) {
+      closeKeyedQueueTail(key, batch);
+      // A failed read fails whoever had joined by then; a failed write, whoever rode on it.
+      // Settling twice is a no-op, so the calls already answered are not disturbed.
+      for (const w of batch.writes) w.reject(err);
+    }
+    // Inside this same entry of the queue, so a writer queued meanwhile stays behind all of them.
+    for (const w of later) {
+      const one = new AttributeBatch(this, batch.asAdmin);
+      one.writes.push(w);
+      await this.writeAttributeBatch(conversationId, key, one);
+    }
   }
 
   // The `/reset` command wipes the conversation's attributes, and it is the one caller that wants

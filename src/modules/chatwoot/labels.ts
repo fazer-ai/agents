@@ -1,4 +1,8 @@
-import { withKeyedQueue } from "@/lib/locks";
+import {
+  closeKeyedQueueTail,
+  keyedQueueTail,
+  withKeyedQueue,
+} from "@/lib/locks";
 
 // The one critical section for a conversation's labels. `POST /conversations/:id/labels` replaces
 // the whole set and Chatwoot has no compare-and-set, so every read-modify-write (`set_labels`, the
@@ -12,7 +16,33 @@ export function withConversationLabels<T>(
   tenantId: bigint | null | undefined,
   conversationId: number,
   fn: () => Promise<T>,
+  // Offered to later callers as the entry they may join (`conversationLabelsTail`).
+  tail?: object,
 ): Promise<T> {
+  return withKeyedQueue(labelsKey(tenantId, conversationId), fn, tail);
+}
+
+function labelsKey(
+  tenantId: bigint | null | undefined,
+  conversationId: number,
+): string {
   const scope = tenantId == null ? "?" : String(tenantId);
-  return withKeyedQueue(`labels:${scope}:${conversationId}`, fn);
+  return `labels:${scope}:${conversationId}`;
+}
+
+// The joinable entry at the tail of the conversation's label queue, if the last writer queued there
+// offered one. Whatever was queued after it (another writer, the reset's clear) took it away.
+export function conversationLabelsTail(
+  tenantId: bigint | null | undefined,
+  conversationId: number,
+): object | undefined {
+  return keyedQueueTail(labelsKey(tenantId, conversationId));
+}
+
+export function closeConversationLabelsTail(
+  tenantId: bigint | null | undefined,
+  conversationId: number,
+  tail: object,
+): void {
+  closeKeyedQueueTail(labelsKey(tenantId, conversationId), tail);
 }

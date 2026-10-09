@@ -1326,9 +1326,13 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
     let seen = "";
-    // Page 1 is the newest two; the quoted target only appears on page 2.
+    // Page 1 is a full page, the way Chatwoot answers when there is more behind it, and only its
+    // newest two rows are usable; the quoted target only appears on page 2.
     const pages: Record<string, unknown[]> = {
       first: [
+        ...Array.from({ length: 18 }, (_, i) =>
+          message(900 + i, "nota da equipe", "outgoing", { private: true }),
+        ),
         message(802, "quer cancelar o ingresso?", "outgoing"),
         message(803, "sim", "incoming", {
           content_attributes: { in_reply_to: 801 },

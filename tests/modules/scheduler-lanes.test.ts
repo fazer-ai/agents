@@ -92,8 +92,8 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // read and one enqueue.
   HUMAN_REPLY_RECOVERY: "shared",
   SPEND_CEILING_POLL: "shared",
-  // A cap of its own, drained by the shared tick: on the traffic share it would wait behind every
-  // ingestion row armed before it, five rows a tick for the whole install.
+  // A lane of its own, drained by the scheduler's fast tick: on the traffic share it would wait
+  // behind every ingestion row armed before it, five rows a tick for the whole install.
   OBSERVE: "observe",
   MEDIA_TEXT_FALLBACK: "shared",
   KNOWLEDGE_SOURCE_SYNC: "shared",

@@ -22,6 +22,7 @@ import {
 } from "@/graph/silence";
 import { SKIP_NOTE_DETAIL_MAX as SKIP_DETAIL_MAX } from "@/graph/skip-handover";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
@@ -38,7 +39,11 @@ import {
   isAdditionalContactField,
 } from "@/modules/chatwoot/contact-fields";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
-import { withConversationLabels } from "@/modules/chatwoot/labels";
+import {
+  closeConversationLabelsTail,
+  conversationLabelsTail,
+  withConversationLabels,
+} from "@/modules/chatwoot/labels";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   attributesForModel,
@@ -400,6 +405,17 @@ export interface ToolCtx {
     contact?: string[];
     task?: string[];
   };
+  // THE CONVERSATION'S LABELS AS THE CALLER JUST READ THEM, with when. Handed over by a caller that
+  // read them moments before its writes (the `decisions` tick, whose read and write are one provider
+  // call apart): while it is fresh, `set_labels` applies its delta to this set instead of reading
+  // again, and leaves here the set it wrote. Absent, or older than `LABELS_READ_FRESH_MS`, the tool
+  // reads. The cost is the window: a label another writer puts on in between is not in the set that
+  // goes back, so a caller whose model thinks for seconds does not hand this over.
+  conversationLabelsRead?: { labels: string[]; at: number };
+  // WHETHER EACH CONVERSATION WRITE GOES OUT ALONE, asked at every call. True for a caller whose
+  // fence reads what these tools write (a watcher under a contact gate with conditions): calls
+  // sharing one write would share one verdict, reached before any of them had written.
+  writesAlone?: () => boolean;
   // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE. Operator control labels live on the same
   // conversation as the classifier's, and this list keeps the agent from moving one on purpose (the
   // delta already keeps an unnamed label standing). The model still sees them: see applyLabelDelta
@@ -789,18 +805,31 @@ async function mirrorAttributeWrite(
   const base = ctx.base;
   const tenantId = ctx.tenantId;
   const patch = JSON.stringify({ [key]: value });
+  const target =
+    scope === "contact" ? ctx.contactDbId : (ctx.conversationDbId ?? null);
+  // In the order the writes reached Chatwoot: calls that shared one write return together, and two
+  // of them naming the same key would otherwise race here, leaving the mirror on the value Chatwoot
+  // did not keep.
+  const inOrder = <T>(fn: () => Promise<T>) =>
+    target == null
+      ? fn()
+      : withKeyedQueue(
+          `attribute-mirror:${String(tenantId)}:${scope}:${String(target)}`,
+          fn,
+        );
   try {
-    await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      if (scope === "contact") {
-        if (ctx.contactDbId == null) return;
-        // NOTE: The write-through also ADVANCES the contact's source watermark: an event generated
-        // before now carries a pre-write snapshot, and one delivered late but stamped after the last
-        // mirrored event would pass upsertContact's compare-and-set and erase this key, which nothing
-        // puts back (bots never get contact_updated). GREATEST (NULL-ignoring) never moves it back.
-        // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
-        // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
-        // non-UTC session the stored value reads as hours ahead and the barrier never advances.
-        await db.$executeRaw`
+    await inOrder(() =>
+      runScopedOn(base, sysCtx(tenantId), async (db) => {
+        if (scope === "contact") {
+          if (ctx.contactDbId == null) return;
+          // NOTE: The write-through also ADVANCES the contact's source watermark: an event generated
+          // before now carries a pre-write snapshot, and one delivered late but stamped after the last
+          // mirrored event would pass upsertContact's compare-and-set and erase this key, which nothing
+          // puts back (bots never get contact_updated). GREATEST (NULL-ignoring) never moves it back.
+          // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
+          // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
+          // non-UTC session the stored value reads as hours ahead and the barrier never advances.
+          await db.$executeRaw`
           UPDATE contacts
           SET custom_attributes = custom_attributes || ${patch}::jsonb,
               custom_attributes_at = GREATEST(
@@ -809,23 +838,24 @@ async function mirrorAttributeWrite(
               )
           WHERE id = ${ctx.contactDbId} AND tenant_id = ${tenantId}
         `;
-        return;
-      }
-      if (ctx.conversationDbId == null) return;
-      if (scope === "task") {
-        await db.$executeRaw`
+          return;
+        }
+        if (ctx.conversationDbId == null) return;
+        if (scope === "task") {
+          await db.$executeRaw`
           UPDATE conversations
           SET kanban_attributes = kanban_attributes || ${patch}::jsonb
           WHERE id = ${ctx.conversationDbId} AND tenant_id = ${tenantId}
         `;
-        return;
-      }
-      await db.$executeRaw`
+          return;
+        }
+        await db.$executeRaw`
         UPDATE conversations
         SET custom_attributes = custom_attributes || ${patch}::jsonb
         WHERE id = ${ctx.conversationDbId} AND tenant_id = ${tenantId}
       `;
-    });
+      }),
+    );
   } catch (e) {
     logger.warn(
       "attribute mirror write-through failed (scope=%s): %s",
@@ -937,7 +967,10 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           // NOTE: The conversation branch has no wait of its own before the call, so this is the ONLY
           // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
           // inside exactly the window the queue and the re-read open.
-          { stillWanted: ctx.stillWanted },
+          {
+            stillWanted: ctx.stillWanted,
+            ...(ctx.writesAlone ? { alone: ctx.writesAlone } : {}),
+          },
         );
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
@@ -1158,6 +1191,41 @@ function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
   return parts.length ? ` Currently set — ${parts.join("; ")}.` : "";
 }
 
+// WHICH CALLS ONE TURN MAY DISPATCH TOGETHER, because their tool commits calls that arrive together
+// as one write: the conversation's labels (the handler below) and the conversation's attributes
+// (`ChatwootClient.setConversationCustomAttributes`). Calls sharing a key reach Chatwoot as one read
+// and one write; `null` is a call that stays on its own. A caller that dispatches one call at a time
+// (the `decisions` engine) asks this to know which ones to send out side by side.
+export function sharedWriteKey(
+  tool: string,
+  args: Record<string, unknown>,
+): string | null {
+  const scope = args.scope ?? "conversation";
+  if (scope !== "conversation") return null;
+  if (tool === "set_labels") return "conversation-labels";
+  if (tool === "set_custom_attribute") return "conversation-attributes";
+  return null;
+}
+
+// One `set_labels` call on the conversation scope that has not been written yet.
+interface PendingLabelDelta {
+  add: string[];
+  remove: string[];
+  resolve: (report: string) => void;
+  reject: (reason: unknown) => void;
+}
+
+// How long a caller's own read of the conversation's labels stands in for the tool's.
+const LABELS_READ_FRESH_MS = 10_000;
+
+// The `set_labels` calls one entry of the conversation's label queue will write together. While it
+// is the queue's tail, which it stops being when its read comes back, a call of the same turn (the
+// tool context is one turn's) joins it instead of queueing behind it.
+class LabelBatch {
+  readonly deltas: PendingLabelDelta[] = [];
+  constructor(readonly ctx: ToolCtx) {}
+}
+
 // Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card (scope,
 // default 'conversation'). Endpoints, per the chatwoot-pro fork: conversation and contact labels GET
 // → { payload: [] }, POST /{conversations|contacts}/{id}/labels { labels } replaces; task labels via
@@ -1216,6 +1284,128 @@ function setLabelsTool(ctx: ToolCtx) {
   ]
     .filter(Boolean)
     .join(" ");
+  // One entry of the conversation's label queue, shared with the observer's verdict and the nudge's
+  // own merge: the endpoint replaces the whole set, so an unqueued read-then-POST erases what
+  // another writer added between the two. Every call the entry holds is applied to ONE read, one
+  // delta after the other in the order the calls were made, and the set they add up to goes out in
+  // one POST; each call still answers for its own delta, with the set as it stood after it. Never
+  // rejects: each call is answered through its own promise.
+  const writeLabelBatch = async (
+    batch: LabelBatch,
+    later: PendingLabelDelta[],
+  ): Promise<void> => {
+    // From here on nobody joins: a call that arrives now queues an entry of its own.
+    const close = () =>
+      closeConversationLabelsTail(ctx.tenantId, ctx.conversationId, batch);
+    try {
+      const known = ctx.conversationLabelsRead;
+      let current: string[];
+      if (known && Date.now() - known.at <= LABELS_READ_FRESH_MS) {
+        // No request to wait on, so one turn of the event loop instead: the calls dispatched beside
+        // this one are still on their way to the queue.
+        await new Promise((r) => setImmediate(r));
+        current = known.labels;
+      } else {
+        current = await ctx.client.getConversationLabels(ctx.conversationId);
+      }
+      close();
+      let state = current;
+      const outcomes = batch.deltas.map((d) => {
+        const outcome = applyLabelDelta(
+          d.add,
+          d.remove,
+          state,
+          guarded,
+          allowed,
+        );
+        state = outcome.next;
+        return { delta: d, ...outcome };
+      });
+      const report = (o: (typeof outcomes)[number]) =>
+        labelWriteReport(
+          "conversation",
+          o.added,
+          o.removed,
+          o.next,
+          o.refusedAdd,
+          o.refusedRemove,
+          o.heldRemove,
+          o.refusedOutside,
+        );
+      const moved = (o: (typeof outcomes)[number]) =>
+        o.added.length > 0 || o.removed.length > 0;
+      if (!outcomes.some(moved)) {
+        // NOTE: Nothing moved: see the sibling scopes.
+        recordShown(ctx, "conversation", state);
+        for (const o of outcomes) {
+          ctx.onNoEffect?.("set_labels");
+          o.delta.resolve(report(o));
+        }
+        return;
+      }
+      // NOTE: ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
+      // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
+      // peels the episode's labels off in this very queue (webhook.ts), so a call that was
+      // wanted when it entered can land on a conversation the operator has just been told was
+      // cleared. Only an explicit `false` stops the write: a fence that could not answer is not
+      // a withdrawal.
+      if (ctx.stillWanted && !(await ctx.stillWanted())) {
+        for (const o of outcomes) {
+          ctx.onNoEffect?.("set_labels");
+          o.delta.resolve(
+            "Could not set the labels (the run was called off while this write waited its turn).",
+          );
+        }
+        return;
+      }
+      // Calls that must go alone, found here together because they joined before the fence ran:
+      // the first is written now and the others after it, one write each (`writeConversationLabels`).
+      if (outcomes.length > 1 && ctx.writesAlone?.()) {
+        later.push(...batch.deltas.splice(1));
+        outcomes.length = 1;
+        const first = outcomes[0];
+        if (first) state = first.next;
+        if (!first || !moved(first)) {
+          ctx.onNoEffect?.("set_labels");
+          if (first) first.delta.resolve(report(first));
+          return;
+        }
+      }
+      // Forgotten before the write: a write that fails leaves nothing known about the set.
+      ctx.conversationLabelsRead = undefined;
+      const writtenAt = Date.now();
+      await ctx.client.setConversationLabels(ctx.conversationId, state);
+      if (known) ctx.conversationLabelsRead = { labels: state, at: writtenAt };
+      recordShown(ctx, "conversation", state);
+      for (const o of outcomes) {
+        if (moved(o)) {
+          ctx.onLabelsWritten?.(
+            describeLabelWrite("conversation", o.added, o.removed, o.next, {
+              allowed: allowedList,
+              acceptedOutside: o.acceptedOutside,
+            }),
+          );
+        } else {
+          ctx.onNoEffect?.("set_labels");
+        }
+        o.delta.resolve(report(o));
+      }
+    } catch (err) {
+      close();
+      // Settling twice is a no-op, so the calls already answered are not disturbed.
+      for (const d of batch.deltas) d.reject(err);
+    }
+  };
+  const writeConversationLabels = async (batch: LabelBatch): Promise<void> => {
+    const later: PendingLabelDelta[] = [];
+    await writeLabelBatch(batch, later);
+    // Inside this same entry of the queue, so a writer queued meanwhile stays behind all of them.
+    for (const d of later) {
+      const one = new LabelBatch(ctx);
+      one.deltas.push(d);
+      await writeConversationLabels(one);
+    }
+  };
   return tool(
     async (
       args: {
@@ -1387,72 +1577,28 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
         );
       }
-      // NOTE: Inside the conversation's label queue, shared with the observer's verdict and the
-      // nudge's own merge: the endpoint replaces the whole set, so an unqueued read-then-POST here
-      // erases what another writer added between the two. The queue serialises OUR writers; the
-      // delta is what survives the ones it does not reach.
-      return withConversationLabels(
-        ctx.tenantId,
-        ctx.conversationId,
-        async () => {
-          const current = await ctx.client.getConversationLabels(
-            ctx.conversationId,
-          );
-          const {
-            next,
-            added,
-            removed,
-            refusedAdd,
-            refusedRemove,
-            heldRemove,
-            refusedOutside,
-            acceptedOutside,
-          } = applyLabelDelta(add, remove, current, guarded, allowed);
-          if (added.length === 0 && removed.length === 0) {
-            // NOTE: Nothing moved: see the sibling scopes above.
-            ctx.onNoEffect?.("set_labels");
-            recordShown(ctx, "conversation", next);
-            return labelWriteReport(
-              "conversation",
-              added,
-              removed,
-              next,
-              refusedAdd,
-              refusedRemove,
-              heldRemove,
-              refusedOutside,
-            );
-          }
-          // NOTE: ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
-          // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
-          // peels the episode's labels off in this very queue (webhook.ts), so a call that was
-          // wanted when it entered can land on a conversation the operator has just been told was
-          // cleared. Only an explicit `false` stops the write: a fence that could not answer is not
-          // a withdrawal.
-          if (ctx.stillWanted && !(await ctx.stillWanted())) {
-            ctx.onNoEffect?.("set_labels");
-            return "Could not set the labels (the run was called off while this write waited its turn).";
-          }
-          await ctx.client.setConversationLabels(ctx.conversationId, next);
-          ctx.onLabelsWritten?.(
-            describeLabelWrite("conversation", added, removed, next, {
-              allowed: allowedList,
-              acceptedOutside,
-            }),
-          );
-          recordShown(ctx, "conversation", next);
-          return labelWriteReport(
-            "conversation",
-            added,
-            removed,
-            next,
-            refusedAdd,
-            refusedRemove,
-            heldRemove,
-            refusedOutside,
-          );
-        },
-      );
+      // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: a call that finds this turn's own entry at
+      // the TAIL of the label queue, its read still out, joins that entry. Only the tail can be
+      // joined, so a call is never merged ahead of a writer queued in between.
+      return new Promise<string>((resolve, reject) => {
+        const mine: PendingLabelDelta = { add, remove, resolve, reject };
+        const alone = ctx.writesAlone?.() === true;
+        const tail = alone
+          ? undefined
+          : conversationLabelsTail(ctx.tenantId, ctx.conversationId);
+        if (tail instanceof LabelBatch && tail.ctx === ctx) {
+          tail.deltas.push(mine);
+          return;
+        }
+        const batch = new LabelBatch(ctx);
+        batch.deltas.push(mine);
+        void withConversationLabels(
+          ctx.tenantId,
+          ctx.conversationId,
+          () => writeConversationLabels(batch),
+          alone ? undefined : batch,
+        );
+      });
     },
     {
       name: "set_labels",

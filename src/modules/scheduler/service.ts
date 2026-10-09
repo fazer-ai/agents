@@ -1129,8 +1129,9 @@ export function claimDueTrafficJobs(
   return claimWhere(limit, base, now, laneFilter("shared", true), tenantId);
 }
 
-// The observe lane: OBSERVE only, claimed by the shared tick with its own limit (./lanes.ts,
-// observeClaimLimit).
+// The observe lane: OBSERVE only, claimed by the scheduler's fast drain for the permits it holds
+// (./worker.ts, runObserveTick), and by the shared tick with its own limit when no fast drain runs
+// (./lanes.ts, observeClaimLimit).
 export function claimDueObserveJobs(
   limit: number,
   base: PrismaClient = basePrisma,

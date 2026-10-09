@@ -11,6 +11,7 @@ import {
 } from "@/graph/tools/native";
 import { applyToolPreconditions } from "@/graph/tools/precondition";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 
 function recordingClient() {
@@ -1423,9 +1424,9 @@ describe("native tools", () => {
 
   test("two calls in ONE batch do not read each other's writes", async () => {
     // LangGraph dispatches a tool-call batch concurrently, and the write is still a full PUT of the
-    // resulting list, so the queue is what makes the second call read the first one's result. Drop
-    // the serialisation and both read the empty scope, both PUT a one-item list, and `["a"]` beside
-    // `["b"]` ends as whichever landed last.
+    // resulting list. The calls that arrive together are applied to ONE read, one delta after the
+    // other, and go out as one PUT of the set they add up to. Drop that and both read the empty
+    // scope, both PUT a one-item list, and `["a"]` beside `["b"]` ends as whichever landed last.
     let current: string[] = [];
     const setCalls: unknown[][] = [];
     const client = {
@@ -1442,12 +1443,300 @@ describe("native tools", () => {
       shownLabels: { conversation: [] },
     });
     const tool = byName(tools, "set_labels");
+    const reports = await Promise.all([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
+    ]);
+    expect(setCalls).toEqual([[9, ["a", "b"]]]);
+    expect([...current].sort()).toEqual(["a", "b"]);
+    // Each call still answers for its own delta, with the set as it stood after it.
+    expect(String(reports[0])).toContain('Now set: "a"');
+    expect(String(reports[0])).not.toContain('"b"');
+    expect(String(reports[1])).toContain('Now set: "a", "b"');
+  });
+
+  test("calls of a caller whose writes go out alone are one write each, in order", async () => {
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+      writesAlone: () => true,
+    });
+    const tool = byName(tools, "set_labels");
     await Promise.all([
       tool.invoke({ add: ["a"] }),
       tool.invoke({ add: ["b"] }),
     ]);
-    expect(setCalls).toHaveLength(2);
-    expect([...current].sort()).toEqual(["a", "b"]);
+    expect(setCalls).toEqual([
+      [9, ["a"]],
+      [9, ["a", "b"]],
+    ]);
+  });
+
+  test("calls that joined before the fence asked them to go alone are split, in order", async () => {
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    let alone = false;
+    let fences = 0;
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+      writesAlone: () => alone,
+      stillWanted: async () => {
+        fences++;
+        alone = true;
+        return true;
+      },
+    });
+    const tool = byName(tools, "set_labels");
+    const reports = await Promise.all([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
+    ]);
+    expect(setCalls).toEqual([
+      [9, ["a"]],
+      [9, ["a", "b"]],
+    ]);
+    expect(fences).toBe(2);
+    expect(String(reports[1])).toContain('Now set: "a", "b"');
+  });
+
+  test("a call that arrives after the write has gone out reads what it left", async () => {
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    let release!: () => void;
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        // Held, so the second call joins the queue while this write is out.
+        if (setCalls.length === 1)
+          await new Promise<void>((r) => (release = r));
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    const first = tool.invoke({ add: ["a"] });
+    while (setCalls.length === 0) await new Promise((r) => setTimeout(r, 1));
+    const second = tool.invoke({ add: ["b"] });
+    await new Promise((r) => setTimeout(r, 5));
+    release();
+    await Promise.all([first, second]);
+    expect(setCalls).toEqual([
+      [9, ["a"]],
+      [9, ["a", "b"]],
+    ]);
+  });
+
+  test("a call asked after another writer joined the queue is not merged ahead of it", async () => {
+    // The reset's clear, the nudge's merge and the close's labels all write in this queue. A call
+    // merged with an earlier one across such a writer would land before it.
+    let current: string[] = [];
+    const setCalls: string[][] = [];
+    let reads = 0;
+    let releaseRead!: () => void;
+    const client = {
+      getConversationLabels: async () => {
+        reads += 1;
+        // The first read is held, so what follows is queued while the first entry is still joinable.
+        if (reads === 1) await new Promise<void>((r) => (releaseRead = r));
+        return [...current];
+      },
+      setConversationLabels: async (_id: number, next: string[]) => {
+        setCalls.push(next);
+        current = [...next];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      tenantId: 77n,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    const first = tool.invoke({ add: ["a"] });
+    while (reads === 0) await new Promise((r) => setTimeout(r, 1));
+    const cleared = withConversationLabels(77n, 9, async () => {
+      setCalls.push([]);
+      current = [];
+    });
+    const second = tool.invoke({ add: ["b"] });
+    await new Promise((r) => setTimeout(r, 5));
+    releaseRead();
+    await Promise.all([first, cleared, second]);
+    expect(setCalls).toEqual([["a"], [], ["b"]]);
+    expect(current).toEqual(["b"]);
+  });
+
+  test("two turns writing one conversation's labels do not ride together", async () => {
+    let current: string[] = [];
+    const setCalls: string[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (_id: number, next: string[]) => {
+        setCalls.push(next);
+        current = [...next];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const turn = () =>
+      byName(
+        buildNativeTools({
+          client,
+          conversationId: 9,
+          tenantId: 77n,
+          shownLabels: { conversation: [] },
+        }),
+        "set_labels",
+      );
+    await Promise.all([
+      turn().invoke({ add: ["a"] }),
+      turn().invoke({ add: ["b"] }),
+    ]);
+    expect(setCalls).toEqual([["a"], ["a", "b"]]);
+  });
+
+  // A caller that read the labels moments before its writes hands the read over, and the tool
+  // applies its delta to it instead of asking Chatwoot again.
+  function countingLabels(initial: string[]) {
+    let current = [...initial];
+    const calls = { reads: 0, writes: [] as string[][], fail: false };
+    const client = {
+      getConversationLabels: async () => {
+        calls.reads += 1;
+        return [...current];
+      },
+      setConversationLabels: async (_id: number, next: string[]) => {
+        if (calls.fail) throw new Error("chatwoot down");
+        calls.writes.push(next);
+        current = [...next];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    return { client, calls };
+  }
+
+  test("a read the caller just made is the one the write applies to, for every call of the batch", async () => {
+    const { client, calls } = countingLabels(["vip"]);
+    const tool = byName(
+      buildNativeTools({
+        client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+        conversationLabelsRead: { labels: ["vip"], at: Date.now() },
+      }),
+      "set_labels",
+    );
+    await Promise.all([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"], remove: ["vip"] }),
+    ]);
+    expect(calls.reads).toBe(0);
+    expect(calls.writes).toEqual([["a", "b"]]);
+    // The next write of the same turn applies to the set this one left, still without a read.
+    await tool.invoke({ add: ["c"] });
+    expect(calls.reads).toBe(0);
+    expect(calls.writes[1]).toEqual(["a", "b", "c"]);
+  });
+
+  test("a read that is no longer fresh is not trusted, and neither is one a failed write left", async () => {
+    const stale = countingLabels(["vip", "novo"]);
+    await byName(
+      buildNativeTools({
+        client: stale.client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+        conversationLabelsRead: { labels: ["vip"], at: Date.now() - 60_000 },
+      }),
+      "set_labels",
+    ).invoke({ add: ["a"] });
+    expect(stale.calls.reads).toBe(1);
+    expect(stale.calls.writes).toEqual([["vip", "novo", "a"]]);
+
+    const failed = countingLabels(["vip"]);
+    const tool = byName(
+      buildNativeTools({
+        client: failed.client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+        conversationLabelsRead: { labels: ["vip"], at: Date.now() },
+      }),
+      "set_labels",
+    );
+    failed.calls.fail = true;
+    await expect(tool.invoke({ add: ["a"] })).rejects.toThrow();
+    failed.calls.fail = false;
+    await tool.invoke({ add: ["b"] });
+    expect(failed.calls.reads).toBe(1);
+    expect(failed.calls.writes).toEqual([["vip", "b"]]);
+  });
+
+  test("without a read handed over the tool reads, as a model's turn needs", async () => {
+    const { client, calls } = countingLabels(["vip"]);
+    const tool = byName(
+      buildNativeTools({
+        client,
+        conversationId: 9,
+        shownLabels: { conversation: ["vip"] },
+      }),
+      "set_labels",
+    );
+    await tool.invoke({ add: ["a"] });
+    await tool.invoke({ add: ["b"] });
+    expect(calls.reads).toBe(2);
+  });
+
+  test("a failed write fails every call that rode on it, and the next call starts clean", async () => {
+    let current: string[] = [];
+    let fail = true;
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        if (fail) throw new Error("chatwoot down");
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    const settled = await Promise.allSettled([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    fail = false;
+    await tool.invoke({ add: ["c"] });
+    expect(current).toEqual(["c"]);
   });
 
   test("a guarded batch shares its baseline, whatever the state reads do", async () => {

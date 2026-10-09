@@ -63,10 +63,10 @@ export interface DecisionTickReport {
 
 // Runs what the rules fired through the SAME tool objects the LLM observer calls, with the tick's
 // tool logger as callback, so a decision's write gets the tool's protections, flow line and label
-// accounting. Shadow invokes nothing. Sequential, in rule order, so the log's order is the real one.
-//
-// The observation's fence is asked before every action, as the graph asks it before every hop: not
-// every tool asks on its own (`private_note` does not), and the provider call leaves time to withdraw.
+// accounting. Shadow invokes nothing. In rule order, one action at a time, except for the actions
+// `together` groups (docs/decisions.md, How the actions reach Chatwoot). The observation's fence is
+// asked before every action, as the graph asks it before every hop: not every tool asks on its own
+// (`private_note` does not), and the provider call leaves time to withdraw.
 export async function applyDecisions(
   config: { rules: DecisionsConfig["rules"]; apply: DecisionApply },
   answers: Record<string, DecisionAnswer>,
@@ -75,20 +75,23 @@ export async function applyDecisions(
   signal: AbortSignal,
   stillWanted: () => Promise<boolean>,
   maxCalls: number,
+  together: (action: FiredAction) => string | null = () => null,
 ): Promise<DecisionTickReport> {
   const { fired, missed } = evaluateRules(config.rules, answers);
-  const actions: ActionReport[] = [];
+  // One slot per fired action, filled in whatever order the actions settle and read in rule order.
+  const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
+  const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, shadow's included, so shadow reports what enforce would.
   let calls = 0;
-  for (const f of fired) {
+  for (const [at, f] of fired.entries()) {
     // The grant is checked first, so shadow shows the same missing grant enforce would hit.
     const tool = tools.find((t) => t.name === f.tool);
     if (!tool) {
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "not_granted" });
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
       continue;
     }
     if (calls >= maxCalls) {
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "over_budget" });
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "over_budget" };
       continue;
     }
     calls += 1;
@@ -98,43 +101,133 @@ export async function applyDecisions(
       const fits =
         !isInteropZodSchema(tool.schema) ||
         (await interopSafeParseAsync(tool.schema, f.args)).success;
-      actions.push(
-        fits
-          ? { rule: f.rule, tool: f.tool, outcome: "shadow" }
-          : {
-              rule: f.rule,
-              tool: f.tool,
-              outcome: "failed",
-              failure: "invalid_arguments",
-            },
-      );
+      slots[at] = fits
+        ? { rule: f.rule, tool: f.tool, outcome: "shadow" }
+        : {
+            rule: f.rule,
+            tool: f.tool,
+            outcome: "failed",
+            failure: "invalid_arguments",
+          };
       continue;
     }
-    signal.throwIfAborted();
-    if (!(await stillWanted())) {
-      return { fired, missed, actions, withdrawn: true };
-    }
-    // Again after the fence: its reads take time, and a deadline that fired during them has already
-    // ended the tick, so nothing may start behind it.
-    signal.throwIfAborted();
-    try {
-      await tool.invoke(f.args, { callbacks, signal });
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "ran" });
-    } catch (err) {
-      // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
-      if (signal.aborted) throw err;
-      actions.push({
-        rule: f.rule,
-        tool: f.tool,
-        outcome: "failed",
-        failure:
-          err instanceof ToolInputParsingException
-            ? "invalid_arguments"
-            : "tool_error",
-      });
+    toRun.push({ at, tool });
+  }
+  const reported = (upTo = fired.length): ActionReport[] =>
+    slots.filter((a, at): a is ActionReport => a !== undefined && at < upTo);
+  // A group is a RUN of consecutive actions whose tool commits calls that arrive together as one
+  // write: dispatched together, each after its own fence, and awaited as one. Only neighbours are
+  // grouped, so no action runs ahead of one the rules put before it.
+  const keyOf = (r: { at: number }): string | null => {
+    const action = fired[r.at];
+    return action ? together(action) : null;
+  };
+  // An action whose arguments its tool's schema refuses is dispatched like any other and fails
+  // before its handler runs, so it writes nothing: it rides inside the run it sits in instead of
+  // parting the valid actions around it.
+  const inert = new Set<number>();
+  for (const r of toRun) {
+    const action = fired[r.at];
+    if (
+      action &&
+      isInteropZodSchema(r.tool.schema) &&
+      !(await interopSafeParseAsync(r.tool.schema, action.args)).success
+    ) {
+      inert.add(r.at);
     }
   }
-  return { fired, missed, actions, withdrawn: false };
+  for (let i = 0; i < toRun.length; ) {
+    const head = toRun[i];
+    if (!head) break;
+    const key = inert.has(head.at) ? null : keyOf(head);
+    let end = i + 1;
+    // The run ends on its last member that shares the write, never on an inert one.
+    for (let j = end; key !== null && j < toRun.length; j++) {
+      const next = toRun[j];
+      if (!next) break;
+      if (inert.has(next.at)) continue;
+      if (keyOf(next) !== key) break;
+      end = j + 1;
+    }
+    const group = toRun.slice(i, end);
+    const start = i;
+    i = end;
+    const running: Promise<void>[] = [];
+    let withdrawnAt: number | null = null;
+    let cancelled: { err: unknown } | null = null;
+    let fenceError: { err: unknown } | null = null;
+    // Every member's fence first, then the dispatch in one go: a fence is database reads, and a
+    // member dispatched while the next one's fence is still being asked would have its write out
+    // before the others could join it.
+    const admitted: typeof group = [];
+    for (const member of group) {
+      try {
+        signal.throwIfAborted();
+        if (!(await stillWanted())) {
+          withdrawnAt = member.at;
+          break;
+        }
+        // Again after the fence: its reads take time, and a deadline that fired during them has
+        // already ended the tick, so nothing may start behind it.
+        signal.throwIfAborted();
+      } catch (err) {
+        fenceError = { err };
+        break;
+      }
+      admitted.push(member);
+    }
+    // Asked again now that the fences ran: they read the live settings, and a grouping those no
+    // longer allow falls back to the head alone, with the rest admitted after it has written.
+    if (admitted.length > 1 && keyOf(head) !== key) {
+      admitted.length = 1;
+      i = start + 1;
+    }
+    // A refusal or a deadline met while asking stops the whole group, the members already admitted
+    // included: none of them has started, and the answer that stopped the last one is the newest.
+    if (fenceError === null && withdrawnAt === null) {
+      for (const member of admitted) {
+        const f = fired[member.at];
+        if (!f) continue;
+        running.push(
+          member.tool.invoke(f.args, { callbacks, signal }).then(
+            () => {
+              slots[member.at] = { rule: f.rule, tool: f.tool, outcome: "ran" };
+            },
+            (err: unknown) => {
+              // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
+              if (signal.aborted) {
+                cancelled ??= { err };
+                return;
+              }
+              slots[member.at] = {
+                rule: f.rule,
+                tool: f.tool,
+                outcome: "failed",
+                failure:
+                  err instanceof ToolInputParsingException
+                    ? "invalid_arguments"
+                    : "tool_error",
+              };
+            },
+          ),
+        );
+      }
+    }
+    // What was dispatched is awaited whatever stopped the group, so nothing is left writing behind
+    // the tick's own ending.
+    await Promise.all(running);
+    if (fenceError !== null) throw fenceError.err;
+    if (cancelled !== null) throw (cancelled as { err: unknown }).err;
+    if (withdrawnAt !== null) {
+      return {
+        fired,
+        missed,
+        actions: reported(head.at),
+        withdrawn: true,
+      };
+    }
+  }
+  return { fired, missed, actions: reported(), withdrawn: false };
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

@@ -5,8 +5,8 @@ import type { SchedulerJobKind } from "@/modules/scheduler/service";
 // duration: the shared tick drains concurrently, so a kind that is merely slow needs no lane.
 // CADENCE: its latency is felt at a different timescale than the shared tick's (DEBOUNCE).
 // BUDGET: it must be capped against a resource the shared lane does not cap (MEMORY_COMPACT takes
-// permits from the model semaphore a customer's turn queues on). A CAP OF ITS OWN at the shared tick
-// rate is the same question from the other side (OBSERVE, whose rows follow traffic).
+// permits from the model semaphore a customer's turn queues on). OBSERVE is both: a cadence of its
+// own, and a cap of its own because its rows follow traffic.
 // The map is exhaustive over SchedulerJobKind, so a new kind does not compile until it is placed.
 
 export type SchedulerLane = "shared" | "debounce" | "compaction" | "observe";
@@ -54,11 +54,13 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // staleness window, and it spends no model (one Chatwoot read and one enqueue). Retrying against
   // a Chatwoot that is down is `JOB_RETRY_BASE_MS`'s question, not the lane's.
   HUMAN_REPLY_RECOVERY: "shared",
-  // A cap of its own, drained by the shared tick (a worker of its own would add a flag an install
-  // can leave off). A label one shared tick late is not felt; on the
+  // Cadence AND a cap of its own. Cadence: an observer's verdict is read while the conversation is
+  // happening, so a row that waits a whole shared interval lands on a conversation that has moved
+  // on; the scheduler drains this lane on a fast tick of its own (./worker.ts, runObserveTick),
+  // started with the scheduler itself, so there is no flag an install can leave off. Cap: on the
   // traffic share it waited behind every ingestion row armed before it and could not keep up with a
-  // busy inbox. It still runs under the shared lane's provider concurrency, so a busy inbox's
-  // observers cannot starve the replies on it.
+  // busy inbox. It still runs under the shared lane's provider concurrency, the same semaphore, so a
+  // busy inbox's observers cannot starve the replies on it.
   OBSERVE: "observe",
   // Shared: one Chatwoot send per rejected attachment, rare, and the customer already waited out
   // the channel's own failure report, so a tick's wait adds nothing felt.
@@ -132,7 +134,9 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: true,
 };
 
-// How many OBSERVE rows one shared tick claims: enough to keep the provider bound busy for about one
+// How many OBSERVE rows one SHARED tick claims, when it is the one draining the lane (a caller of
+// `runSchedulerTick` with no fast drain beside it; `startScheduler` runs the drain and the shared
+// tick then leaves the lane alone): enough to keep the provider bound busy for about one
 // tick. An observation is two short model calls (a few seconds), so about four rounds of `concurrency`
 // fit in the 15s default interval; a tick that overruns SKIPS the next one (the worker's non-overlap
 // guard), so claiming more halves the rate. The rounds are the WHOLE tick's: provider-spending rows

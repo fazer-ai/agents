@@ -21,7 +21,11 @@ import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWrite } from "@/graph/tools/label-writes";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
-import { buildNativeTools, type HandoffTurnState } from "@/graph/tools/native";
+import {
+  buildNativeTools,
+  type HandoffTurnState,
+  sharedWriteKey,
+} from "@/graph/tools/native";
 import { recordDirectUsage } from "@/graph/usage";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
@@ -55,6 +59,10 @@ import { loadChatwootLabels } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
 import { observerRuleVerdict } from "@/modules/contact-auth/observer";
 import {
+  contactAuthHasRuleStage,
+  readContactAuthConfig,
+} from "@/modules/contact-auth/settings";
+import {
   type DecisionsConfig,
   readDecisionsConfig,
 } from "@/modules/decisions/config";
@@ -72,7 +80,11 @@ import {
   retireUnlessAllowedLaterOn,
   upsertJobRow,
 } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobResult,
+  registerJobHandler,
+  wakeObserveDrainAt,
+} from "@/modules/scheduler/worker";
 import {
   announceSpendCeiling,
   spendCeilingVerdict,
@@ -90,9 +102,9 @@ import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 
 export type ObserveReason = "burst" | "resolved";
 
-// THE WHOLE TICK'S BUDGET, discovery included: `runSchedulerTick` awaits every handler and
-// `startScheduler` skips the next tick while one runs, so an MCP server that never answers would
-// stop every tenant's scheduled work. Long enough for a multi-call turn, and well under the
+// THE WHOLE TICK'S BUDGET, discovery included: a tick holds one of the observe drain's slots and a
+// provider permit the shared tick's follow-ups also wait for, so an MCP server that never answers
+// would hold both for as long as it was let. Long enough for a multi-call turn, and well under the
 // scheduler's 5-minute stale window, so the reaper never treats a live claim as abandoned.
 export const OBSERVE_TIMEOUT_MS = 120_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
@@ -271,6 +283,7 @@ export async function armObserve(
   const dedupeKey = observeDedupeKey(threadId, p.agentId);
   const nowMs = (p.now ?? new Date()).getTime();
   let armed = true;
+  let dueAt: Date | null = null;
   try {
     await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
       withEntityLock(db, `observe-arm:${threadId}`, async () => {
@@ -380,8 +393,11 @@ export async function armObserve(
           },
           rearm,
         });
+        dueAt = new Date(runAtMs);
       }),
     );
+    // After the arm committed: the drain is asked for the instant the row becomes due.
+    if (dueAt !== null) wakeObserveDrainAt(dueAt);
     return armed ? "armed" : "off";
   } catch (err) {
     logger.warn(
@@ -493,6 +509,11 @@ function usableRow(m: ChatwootMessageRow): boolean {
 // MessageFinder honours it). BOUNDED: five pages cover the window's own ceiling, and a page adding
 // no older row is the start of the conversation.
 const OBSERVE_MAX_PAGES = 5;
+// Chatwoot's message page: twenty rows, reactions aside (the fork's MessageFinder adds a window's
+// reactions on top of its twenty, upstream has none). A page that brings FEWER holds the first
+// message of the conversation, so there is nothing older to ask for, and asking costs a request on
+// every tick of every conversation still shorter than a page.
+const CHATWOOT_MESSAGES_PAGE = 20;
 
 async function readWindowRows(
   client: ChatwootClient,
@@ -517,6 +538,10 @@ async function readWindowRows(
     }
     // Nothing older came back: this is the start of the conversation, whatever the window asked for.
     if (added === 0 || oldest === null) break;
+    // ...and so is a page Chatwoot did not fill.
+    if (rows.filter((r) => !r.isReaction).length < CHATWOOT_MESSAGES_PAGE) {
+      break;
+    }
     let usable = 0;
     for (const r of seen.values()) if (usableRow(r)) usable += 1;
     // NOTE: ...AND THE MESSAGES THE WINDOW QUOTES: a reply can quote something on an older page,
@@ -998,6 +1023,13 @@ async function agentStillOnInbox(
   }
 }
 
+// Whether these settings carry a contact gate with conditions, the ones the fence asks of the
+// conversation's labels and attributes.
+function hasGateRule(settings: unknown): boolean {
+  const gate = readContactAuthConfig(settings);
+  return gate.enabled && contactAuthHasRuleStage(gate);
+}
+
 export async function runObserve(
   tenantId: bigint,
   p: ObservePayload,
@@ -1305,6 +1337,23 @@ export async function runObserve(
       expiresOn: deadline,
     },
   );
+  // The labels standing now are asked for WITH the window, not after it: the two reads do not
+  // depend on each other, and one after the other is a round trip the verdict waits through.
+  // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
+  // all. `null`, not `[]`: "no labels" would let the model clear everything.
+  // Timed from when it was ASKED: the answer may sit resolved while the window is still paging.
+  const labelsAskedAt = Date.now();
+  const labelsRead: Promise<string[] | null> = client
+    .getConversationLabels(conversationId)
+    .catch((e: unknown) => {
+      logger.warn(
+        "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
+        String(tenantId),
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+      return null;
+    });
   const fetched = await readWindowRows(
     client,
     conversationId,
@@ -1349,19 +1398,7 @@ export async function runObserve(
   }
   // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
   // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
-  // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
-  // all. `null`, not `[]`: "no labels" would let the model clear everything.
-  let current: string[] | null = null;
-  try {
-    current = await client.getConversationLabels(conversationId);
-  } catch (e) {
-    logger.warn(
-      "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
-      String(tenantId),
-      String(conversationId),
-      e instanceof Error ? e.message : String(e),
-    );
-  }
+  const current = await labelsRead;
   // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
   // move them): the same projection the tool renders (label-view.ts).
   const currentForPrompt =
@@ -1403,6 +1440,8 @@ export async function runObserve(
   // (nothing else re-arms the row, and a resolve happens once), paying the model call again under
   // the spend ceiling.
   let refusal: Refusal | null = null;
+  // Whether the contact gate has conditions, as of the settings the last fence read.
+  let gatedByRule = hasGateRule(loaded.settings);
   const fence = async (): Promise<boolean> => {
     if (refusal !== null) return false;
     const observesNow = await agentObservesNow(tenantId, agentId, base);
@@ -1437,6 +1476,7 @@ export async function runObserve(
       refusal = "agent_no_longer_observes";
       return false;
     }
+    gatedByRule = hasGateRule(settingsNow);
     // The arm's own second question, asked again: an operator switching to `on_resolve` while the
     // call is in flight is refusing exactly this turn, and a fence that did not ask let it act.
     if (
@@ -1587,6 +1627,7 @@ export async function runObserve(
           ...(p.atMessageId != null ? { messageId: p.atMessageId } : {}),
           ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
           stillWanted: () => fence(),
+          writesAlone: () => gatedByRule,
           onLabelsWritten: (write) => labelWrites.push(write),
           onNoEffect: (toolName: string) => {
             if (counted.has(toolName)) noEffect++;
@@ -1596,6 +1637,11 @@ export async function runObserve(
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
           // degradation if that fails too — one extra request on the failing path only.
           ...(current === null ? {} : { conversationLabels: current }),
+          // The `decisions` tick writes one provider call after this read, so its label rules
+          // apply to it. A model's turn takes seconds and reads again.
+          ...(current !== null && decisions?.ok === true
+            ? { conversationLabelsRead: { labels: current, at: labelsAskedAt } }
+            : {}),
         },
         { buildNativeTools, mcp: deps.mcp, flow },
       ),
@@ -1817,6 +1863,18 @@ export async function runObserve(
           deadline,
           () => fence(),
           cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
+          // The label write and the attribute write touch different things on the conversation, so
+          // the two go out side by side as well, not one after the other. A tool with a precondition
+          // stays on its own: its condition reads what the rules before it wrote. Under a contact
+          // gate with conditions every action does, since the fence asks them of the same labels
+          // and attributes; the engine asks this again after the fences, which is when a gate
+          // saved during the provider call is first seen.
+          (action) =>
+            gatedByRule ||
+            Object.hasOwn(cfg.toolPreconditions, action.tool) ||
+            sharedWriteKey(action.tool, action.args) === null
+              ? null
+              : "conversation",
         ),
         deadline,
       );
@@ -1947,7 +2005,7 @@ export async function runObserve(
     tools,
     handedOff: () => handoffState.completed === true,
   });
-  // NOTE: A DEADLINE, because this tick runs on the SHARED scheduler (see `OBSERVE_TIMEOUT_MS`).
+  // NOTE: A DEADLINE, because this tick holds a slot of the scheduler's drain (see `OBSERVE_TIMEOUT_MS`).
   // Both halves: the config's signal cancels the provider request, and `underSignal` guarantees
   // this function stops waiting whatever a link in the chain does with the signal.
   try {

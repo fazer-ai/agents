@@ -226,3 +226,47 @@ describe("Semaphore", () => {
     expect(ok).toBe("ran");
   });
 });
+
+describe("Semaphore.tryAcquire", () => {
+  test("takes a free permit without queueing, and gives none when all are held", async () => {
+    const sem = new Semaphore(2);
+    const a = sem.tryAcquire();
+    const b = sem.tryAcquire();
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(sem.tryAcquire()).toBeNull();
+    a?.();
+    const c = sem.tryAcquire();
+    expect(c).not.toBeNull();
+    b?.();
+    c?.();
+  });
+
+  test("a release called twice returns one permit", () => {
+    const sem = new Semaphore(1);
+    const a = sem.tryAcquire();
+    a?.();
+    a?.();
+    const b = sem.tryAcquire();
+    expect(b).not.toBeNull();
+    expect(sem.tryAcquire()).toBeNull();
+    b?.();
+  });
+
+  test("a released permit goes to a waiter of run() first", async () => {
+    const sem = new Semaphore(1);
+    const held = sem.tryAcquire();
+    let ran = false;
+    const waiting = sem.run(async () => {
+      ran = true;
+      // Still held by this run: nothing is free for a caller that does not queue.
+      expect(sem.tryAcquire()).toBeNull();
+    });
+    held?.();
+    await waiting;
+    expect(ran).toBe(true);
+    const after = sem.tryAcquire();
+    expect(after).not.toBeNull();
+    after?.();
+  });
+});

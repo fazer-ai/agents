@@ -11,7 +11,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { ChatwootClient } from "@/modules/chatwoot/client";
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
 import { runObserve } from "@/modules/observe/job";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -1247,5 +1247,656 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     } finally {
       await suDb.agentToolSelection.delete({ where: { id: grant.id } });
     }
+  });
+  // What one decision costs Chatwoot, counted at the transport on a real client: the calls a tick
+  // makes are sequential round trips the conversation waits through, so their number is latency
+  // whatever the machine. The fake answers a turn of the event loop later, as a network does.
+  describe("the requests one decision makes", () => {
+    function fakeChatwoot(seed: {
+      labels: string[];
+      attributes: Record<string, unknown>;
+      // Runs as the window's page is answered, after the labels were asked for.
+      onWindowRead?: (state: { labels: string[] }) => void;
+      // Awaited before the attribute bag is answered.
+      onAttributesRead?: () => Promise<unknown>;
+    }) {
+      const state = {
+        labels: [...seed.labels],
+        attributes: { ...seed.attributes },
+        notes: [] as string[],
+      };
+      const requests: string[] = [];
+      let inFlight = 0;
+      // For each request, how many others were still out when it started.
+      const startedBeside: number[] = [];
+      const fetchImpl = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        const path = new URL(String(input)).pathname.replace(
+          /^.*\/api\/v1\/accounts\/\d+/,
+          "",
+        );
+        const method = init?.method ?? "GET";
+        requests.push(`${method} ${path}`);
+        inFlight += 1;
+        startedBeside.push(inFlight - 1);
+        await new Promise((r) => setTimeout(r, 2));
+        inFlight -= 1;
+        const body = init?.body
+          ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+          : {};
+        const conv = `/conversations/${CONV}`;
+        if (method === "GET" && path === `${conv}/messages`) {
+          seed.onWindowRead?.(state);
+          return json({
+            payload: [
+              {
+                id: 11,
+                content: CUSTOMER_TEXT,
+                message_type: 0,
+                private: false,
+                attachments: [],
+              },
+            ],
+          });
+        }
+        if (method === "GET" && path === `${conv}/labels`) {
+          return json({ payload: state.labels });
+        }
+        if (method === "POST" && path === `${conv}/labels`) {
+          state.labels = body.labels as string[];
+          return json({ payload: state.labels });
+        }
+        if (method === "GET" && path === conv) {
+          await seed.onAttributesRead?.();
+          return json({ id: CONV, custom_attributes: state.attributes });
+        }
+        if (method === "POST" && path === `${conv}/custom_attributes`) {
+          state.attributes = body.custom_attributes as Record<string, unknown>;
+          return json({ custom_attributes: state.attributes });
+        }
+        if (method === "POST" && path === `${conv}/messages`) {
+          state.notes.push(String(body.content));
+          return json({ id: 99 });
+        }
+        if (method === "GET" && path === "/labels") {
+          return json({ payload: [] });
+        }
+        if (method === "GET" && path === "/custom_attribute_definitions") {
+          return json([]);
+        }
+        return json({}, 404);
+      }) as typeof fetch;
+      return { state, requests, fetchImpl, startedBeside };
+    }
+
+    const onConversation = (requests: string[]) =>
+      requests.filter((r) => r.includes(`/conversations/${CONV}`));
+
+    async function decide(
+      chatwoot: ReturnType<typeof fakeChatwoot>,
+      rules: unknown[],
+    ) {
+      await setMonitoring(decisionsBlock({ rules }));
+      const p = providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.95 },
+          assunto: {
+            type: "choice",
+            choice: "reembolso",
+            confidence: 0.95,
+            probabilities: {},
+          },
+        }),
+      );
+      return runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async (cfg) =>
+            new ChatwootClient(cfg, chatwoot.fetchImpl),
+          makeModel: () => new CountingModel() as never,
+          decisionFetch: p.fetchImpl,
+        },
+      );
+    }
+
+    const yes = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    const GATE = {
+      enabled: true,
+      rule: {
+        kind: "attribute",
+        scope: "conversation",
+        key: "active",
+        equals: "yes",
+      },
+    };
+    const attribute = (key: string, value: string) => ({
+      when: yes,
+      action: { tool: "set_custom_attribute", args: { key, value } },
+    });
+
+    // The grants a watcher of this shape has. Without them the toolset also offers the funnel tools
+    // and asks Chatwoot for the conversation's card on every tick, a read of its own.
+    let grantId = 0n;
+    beforeAll(async () => {
+      const grant = await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId,
+          source: "NATIVE",
+          enabledTools: ["set_labels", "set_custom_attribute", "private_note"],
+          knowledgeBaseIds: [],
+        },
+      });
+      grantId = grant.id;
+    });
+    afterAll(async () => {
+      await suDb.agentToolSelection.delete({ where: { id: grantId } });
+    });
+
+    test("six actions on a short conversation reach Chatwoot in six requests", async () => {
+      const chatwoot = fakeChatwoot({
+        labels: ["sentimento-neutro", "vip"],
+        attributes: { origem: "site" },
+      });
+      const res = await decide(chatwoot, [
+        {
+          when: yes,
+          action: {
+            tool: "set_labels",
+            args: {
+              add: ["sentimento-negativo"],
+              remove: ["sentimento-neutro"],
+            },
+          },
+        },
+        attribute("sentimento", "negativo"),
+        attribute("assunto", "reembolso"),
+        attribute("urgencia", "alta"),
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["urgente"] } },
+        },
+        {
+          when: yes,
+          action: { tool: "private_note", args: { content: "Olhar agora" } },
+        },
+      ]);
+      expect(res).toEqual({ outcome: "done" });
+      const conv = `/conversations/${CONV}`;
+      const seen = onConversation(chatwoot.requests);
+      expect([...seen].sort()).toEqual(
+        [
+          // The window: one page, and a page Chatwoot did not fill has nothing older behind it.
+          `GET ${conv}/messages`,
+          // The labels, read ONCE: the evidence shows them and both label rules are applied to them.
+          `GET ${conv}/labels`,
+          `POST ${conv}/labels`,
+          // The three attribute rules: one read of the bag, one write.
+          `GET ${conv}`,
+          `POST ${conv}/custom_attributes`,
+          `POST ${conv}/messages`,
+        ].sort(),
+      );
+      // The evidence is read before anything is written, the attribute write follows its own read,
+      // and the note, which shares a write with nothing, goes out after the run ahead of it.
+      const at = (r: string) => seen.indexOf(r);
+      expect(at(`GET ${conv}/messages`)).toBeLessThan(2);
+      expect(at(`GET ${conv}/labels`)).toBeLessThan(2);
+      expect(at(`POST ${conv}/custom_attributes`)).toBeGreaterThan(
+        at(`GET ${conv}`),
+      );
+      expect(at(`POST ${conv}/messages`)).toBe(5);
+      // Reads that do not depend on each other are out at the same time: the second of the two
+      // evidence reads starts while the first is still out, and the attribute bag is being read
+      // before the label write has gone.
+      expect(chatwoot.startedBeside.slice(0, 2)).toEqual([0, 1]);
+      expect(at(`GET ${conv}`)).toBeLessThan(at(`POST ${conv}/labels`));
+      // What the conversation holds is what six separate writes would have left.
+      expect([...chatwoot.state.labels].sort()).toEqual([
+        "sentimento-negativo",
+        "urgente",
+        "vip",
+      ]);
+      expect(chatwoot.state.attributes).toEqual({
+        origem: "site",
+        sentimento: "negativo",
+        assunto: "reembolso",
+        urgencia: "alta",
+      });
+      expect(chatwoot.state.notes).toEqual(["Olhar agora"]);
+      // And the line records each action on its own, in rule order, with each label write.
+      const d = await detail();
+      expect(d.actions).toEqual([
+        { rule: 0, tool: "set_labels", outcome: "ran" },
+        { rule: 1, tool: "set_custom_attribute", outcome: "ran" },
+        { rule: 2, tool: "set_custom_attribute", outcome: "ran" },
+        { rule: 3, tool: "set_custom_attribute", outcome: "ran" },
+        { rule: 4, tool: "set_labels", outcome: "ran" },
+        { rule: 5, tool: "private_note", outcome: "ran" },
+      ]);
+      expect(d.labels).toEqual([
+        { scope: "conversation", added: 1, removed: 1, after: 2 },
+        { scope: "conversation", added: 1, removed: 0, after: 3 },
+      ]);
+    });
+
+    // The read is as old as the moment it was asked for, however late the tick got to use it: a
+    // window that took long to read leaves the labels stale, and the write reads them again.
+    test("labels asked for long before the write are read again", async () => {
+      const realNow = Date.now;
+      const chatwoot = fakeChatwoot({
+        labels: ["vip"],
+        attributes: {},
+        onWindowRead: (state) => {
+          state.labels.push("de-outro");
+          Date.now = () => realNow() + 11_000;
+        },
+      });
+      try {
+        const res = await decide(chatwoot, [
+          {
+            when: yes,
+            action: { tool: "set_labels", args: { add: ["urgente"] } },
+          },
+        ]);
+        expect(res).toEqual({ outcome: "done" });
+      } finally {
+        Date.now = realNow;
+      }
+      const conv = `/conversations/${CONV}`;
+      expect(
+        onConversation(chatwoot.requests).filter(
+          (r) => r === `GET ${conv}/labels`,
+        ),
+      ).toHaveLength(2);
+      expect([...chatwoot.state.labels].sort()).toEqual([
+        "de-outro",
+        "urgente",
+        "vip",
+      ]);
+    });
+
+    // A precondition reads what the rules before it wrote, so a tool carrying one is never sent out
+    // beside its neighbours: the attribute lands, and only then is the condition asked.
+    test("a rule whose tool has a precondition waits for the attribute rule ahead of it", async () => {
+      const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { customAttributes: {} },
+      });
+      const rules = [
+        attribute("consent", "yes"),
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["autorizado"] } },
+        },
+      ];
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            monitoring: decisionsBlock({ rules }),
+            toolPreconditions: {
+              set_labels: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "consent",
+                equals: "yes",
+              },
+            },
+          } as never,
+        },
+      });
+      const p = providerDouble(() =>
+        typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.95 } }),
+      );
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async (cfg) =>
+            new ChatwootClient(cfg, chatwoot.fetchImpl),
+          makeModel: () => new CountingModel() as never,
+          decisionFetch: p.fetchImpl,
+        },
+      );
+      expect(chatwoot.state.attributes).toEqual({ consent: "yes" });
+      expect(chatwoot.state.labels).toEqual(["autorizado"]);
+      const conv = `/conversations/${CONV}`;
+      const seen = onConversation(chatwoot.requests);
+      expect(seen.indexOf(`POST ${conv}/custom_attributes`)).toBeLessThan(
+        seen.indexOf(`POST ${conv}/labels`),
+      );
+    });
+
+    test("two neighbouring rules writing one attribute leave the mirror on the value Chatwoot kept", async () => {
+      for (let round = 0; round < 4; round++) {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const last = `valor-${round}`;
+        await decide(chatwoot, [
+          attribute("etapa", "primeira"),
+          attribute("etapa", "segunda"),
+          attribute("etapa", last),
+        ]);
+        expect(chatwoot.state.attributes).toEqual({ etapa: last });
+        const row = await suDb.conversation.findUniqueOrThrow({
+          where: { id: convRowId },
+          select: { customAttributes: true },
+        });
+        expect((row.customAttributes as Record<string, unknown>).etapa).toBe(
+          last,
+        );
+      }
+    });
+
+    // The contact gate's conditions read the labels and attributes the actions write, so under a
+    // gate with conditions each action is asked for after the one before it has landed.
+    for (const [name, sinceTheCall] of [
+      [
+        "an action that takes the conversation out of the contact gate's rule stops the ones after it",
+        false,
+      ],
+      [
+        "a contact gate's rule saved while the provider answers still stops the actions after the one that leaves it",
+        true,
+      ],
+    ] as const) {
+      test(name, async () => {
+        const chatwoot = fakeChatwoot({
+          labels: [],
+          attributes: { active: "yes" },
+        });
+        // The gate refuses a conversation with no contact before it reaches the conditions.
+        const contact = await suDb.contact.create({
+          data: { tenantId, chatwootInstanceId: instanceId, name: "Ana" },
+        });
+        await suDb.conversation.update({
+          where: { id: convRowId },
+          data: { customAttributes: { active: "yes" }, contactId: contact.id },
+        });
+        const rules = [
+          attribute("active", "no"),
+          attribute("etapa", "segunda"),
+        ];
+        const save = (gated: boolean) =>
+          suDb.agent.update({
+            where: { id: agentId },
+            data: {
+              settings: {
+                monitoring: decisionsBlock({ rules }),
+                ...(gated
+                  ? {
+                      contactAuth: {
+                        enabled: true,
+                        rule: {
+                          kind: "attribute",
+                          scope: "conversation",
+                          key: "active",
+                          equals: "yes",
+                        },
+                      },
+                    }
+                  : {}),
+              } as never,
+            },
+          });
+        await save(!sinceTheCall);
+        const decisionFetch = (async () => {
+          if (sinceTheCall) await save(true);
+          return typesafeAnswer({
+            pede_reembolso: { type: "noul", noul: 0.95 },
+          });
+        }) as unknown as typeof fetch;
+        try {
+          await runObserve(
+            tenantId,
+            {
+              instanceId,
+              conversationId: CONV,
+              agentId,
+              reason: "burst",
+              atMessageId: null,
+            },
+            appDb,
+            {
+              makeClient: async (cfg) =>
+                new ChatwootClient(cfg, chatwoot.fetchImpl),
+              makeModel: () => new CountingModel() as never,
+              decisionFetch,
+            },
+          );
+        } finally {
+          await suDb.conversation.update({
+            where: { id: convRowId },
+            data: { customAttributes: {}, contactId: null },
+          });
+          await suDb.contact.delete({ where: { id: contact.id } });
+        }
+        expect(chatwoot.state.attributes).toEqual({ active: "no" });
+      });
+    }
+
+    // The same under the `llm` engine, whose model calls its tools in parallel: calls that arrive
+    // together would share one fence verdict and one write, so under such a gate each writes alone.
+    for (const [name, sinceTheRead] of [
+      [
+        "parallel tool calls of a model do not share a write under a contact gate with conditions",
+        false,
+      ],
+      [
+        "nor under one saved while the write they had joined was reading the bag",
+        true,
+      ],
+    ] as const) {
+      test(name, async () => {
+        const save = (gated: boolean) =>
+          suDb.agent.update({
+            where: { id: agentId },
+            data: {
+              settings: {
+                monitoring: {},
+                ...(gated ? { contactAuth: GATE } : {}),
+              } as never,
+            },
+          });
+        const chatwoot = fakeChatwoot({
+          labels: [],
+          attributes: { active: "yes" },
+          onAttributesRead: () => save(true),
+        });
+        const contact = await suDb.contact.create({
+          data: { tenantId, chatwootInstanceId: instanceId, name: "Ana" },
+        });
+        await suDb.conversation.update({
+          where: { id: convRowId },
+          data: { customAttributes: { active: "yes" }, contactId: contact.id },
+        });
+        await save(!sinceTheRead);
+        let turns = 0;
+        const model = {
+          invoke: async () => new AIMessage("pronto"),
+          bindTools: () => ({
+            invoke: async () => {
+              turns++;
+              return turns === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "set_custom_attribute",
+                        args: { key: "active", value: "no" },
+                        id: "c1",
+                      },
+                      {
+                        name: "set_custom_attribute",
+                        args: { key: "etapa", value: "segunda" },
+                        id: "c2",
+                      },
+                    ],
+                  })
+                : new AIMessage("feito.");
+            },
+          }),
+        };
+        try {
+          await runObserve(
+            tenantId,
+            {
+              instanceId,
+              conversationId: CONV,
+              agentId,
+              reason: "burst",
+              atMessageId: null,
+            },
+            appDb,
+            {
+              makeClient: async (cfg) =>
+                new ChatwootClient(cfg, chatwoot.fetchImpl),
+              makeModel: () => model as never,
+            },
+          );
+        } finally {
+          await suDb.conversation.update({
+            where: { id: convRowId },
+            data: { customAttributes: {}, contactId: null },
+          });
+          await suDb.contact.delete({ where: { id: contact.id } });
+        }
+        expect(turns).toBeGreaterThan(0);
+        expect(chatwoot.state.attributes).toEqual({ active: "no" });
+      });
+    }
+
+    // An invalid rule in the middle is that rule's failure. It does not part the valid rules around
+    // it into two writes.
+    for (const [name, bad] of [
+      ["a value of the wrong type", { key: "obs_meio", value: 5 }],
+      ["no value at all", { key: "obs_meio" }],
+      [
+        "a scope that does not exist",
+        { key: "obs_meio", value: "x", scope: "galaxy" },
+      ],
+    ] as const) {
+      test(`an attribute rule with ${name} between two valid ones leaves one write`, async () => {
+        const chatwoot = fakeChatwoot({
+          labels: [],
+          attributes: { origem: "site" },
+        });
+        await decide(chatwoot, [
+          attribute("obs_reembolso", "sim"),
+          { when: yes, action: { tool: "set_custom_attribute", args: bad } },
+          attribute("obs_irritacao", "alta"),
+        ]);
+        const conv = `/conversations/${CONV}`;
+        expect(
+          onConversation(chatwoot.requests).filter((r) => r.startsWith("POST")),
+        ).toEqual([`POST ${conv}/custom_attributes`]);
+        expect(chatwoot.state.attributes).toEqual({
+          origem: "site",
+          obs_reembolso: "sim",
+          obs_irritacao: "alta",
+        });
+        expect((await detail()).actions).toEqual([
+          { rule: 0, tool: "set_custom_attribute", outcome: "ran" },
+          {
+            rule: 1,
+            tool: "set_custom_attribute",
+            outcome: "failed",
+            failure: "invalid_arguments",
+          },
+          { rule: 2, tool: "set_custom_attribute", outcome: "ran" },
+        ]);
+      });
+    }
+
+    test("a label rule that changes nothing writes nothing, and its neighbour still writes", async () => {
+      const chatwoot = fakeChatwoot({ labels: ["urgente"], attributes: {} });
+      await decide(chatwoot, [
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["urgente"] } },
+        },
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["reembolso"] } },
+        },
+      ]);
+      const conv = `/conversations/${CONV}`;
+      expect(
+        onConversation(chatwoot.requests).filter((r) => r.startsWith("POST")),
+      ).toEqual([`POST ${conv}/labels`]);
+      expect([...chatwoot.state.labels].sort()).toEqual([
+        "reembolso",
+        "urgente",
+      ]);
+      const d = await detail();
+      expect(d.actions).toEqual([
+        { rule: 0, tool: "set_labels", outcome: "ran" },
+        { rule: 1, tool: "set_labels", outcome: "ran" },
+      ]);
+      expect(d.labels).toEqual([
+        { scope: "conversation", added: 1, removed: 0, after: 2 },
+      ]);
+    });
+
+    test("an attribute write Chatwoot refuses fails every rule that rode on it, and nothing else", async () => {
+      const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+      const inner = chatwoot.fetchImpl;
+      chatwoot.fetchImpl = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        if (
+          init?.method === "POST" &&
+          String(input).endsWith("/custom_attributes")
+        ) {
+          chatwoot.requests.push("POST refused");
+          return json({ error: "no" }, 500);
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      await decide(chatwoot, [
+        attribute("sentimento", "negativo"),
+        attribute("assunto", "reembolso"),
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["reembolso"] } },
+        },
+      ]);
+      expect(chatwoot.state.attributes).toEqual({});
+      expect(chatwoot.state.labels).toEqual(["reembolso"]);
+      expect((await detail()).actions).toEqual([
+        {
+          rule: 0,
+          tool: "set_custom_attribute",
+          outcome: "failed",
+          failure: "tool_error",
+        },
+        {
+          rule: 1,
+          tool: "set_custom_attribute",
+          outcome: "failed",
+          failure: "tool_error",
+        },
+        { rule: 2, tool: "set_labels", outcome: "ran" },
+      ]);
+    });
   });
 });

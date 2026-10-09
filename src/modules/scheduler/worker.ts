@@ -521,6 +521,12 @@ export interface TickOptions {
   // NOTE: test-only. Production sizes this from the model budget (sharedProviderConcurrency), which
   // depends on the machine's AGENT_MODEL_CONCURRENCY. Unset in production.
   providerConcurrency?: number;
+  // The bound provider-spending jobs run under. `startScheduler` passes the one it also hands to the
+  // observe drain, so the two share a single budget; absent, the tick bounds itself.
+  gate?: Semaphore;
+  // False when a fast drain owns the observe lane (`startScheduler`), so the tick leaves OBSERVE
+  // rows to it. Absent, the tick claims them itself, with `observeClaimLimit`.
+  claimObserve?: boolean;
 }
 
 export async function runSchedulerTick(
@@ -561,17 +567,19 @@ export async function runSchedulerTick(
         opts.tenantId,
       )),
     );
-    jobs.push(
-      ...(await claimDueObserveJobs(
-        observeClaimLimit(
-          providerConcurrency,
-          jobs.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
-        ),
-        base,
-        new Date(),
-        opts.tenantId,
-      )),
-    );
+    if (opts.claimObserve !== false) {
+      jobs.push(
+        ...(await claimDueObserveJobs(
+          observeClaimLimit(
+            providerConcurrency,
+            jobs.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
+          ),
+          base,
+          new Date(),
+          opts.tenantId,
+        )),
+      );
+    }
   } catch (err) {
     abandonClaimed(jobs);
     throw err;
@@ -582,7 +590,7 @@ export async function runSchedulerTick(
   // the tick. Kinds that spend provider capacity go through a bound, the rest do not: bounding the whole
   // drain puts a heartbeat behind a nudge, and leaving them unbounded lets a batch hold every model
   // permit while a customer's reply waits (JOB_SPENDS_PROVIDER).
-  const gate = new Semaphore(providerConcurrency);
+  const gate = opts.gate ?? new Semaphore(providerConcurrency);
   // The deadline follows the stale window THIS tick reaps with, so neither can be passed in
   // without the other.
   const deadlineMs = jobDeadlineMs(opts.staleMs);
@@ -607,45 +615,207 @@ export async function runSchedulerTick(
   return { claimed: jobs.length, reaped: reaped.length };
 }
 
+// How many observations the drain is running RIGHT NOW. Per process, which is what this worker is by
+// construction.
+let observeRunning = 0;
+
+export interface ObserveTickOptions {
+  // How many observations may run at once. `startScheduler` passes the provider bound.
+  slots: number;
+  // The bound the shared tick's provider-spending jobs also run under.
+  gate: Semaphore;
+  staleMs: number;
+  // NOTE: test-only isolation, as on TickOptions. Unset in production.
+  tenantId?: bigint;
+  // Called each time a row finishes, so the caller can fill the freed slot at once.
+  onFreed?: () => void;
+}
+
+// The FAST drain of the observe lane: a verdict is read while the conversation is happening, so a
+// due OBSERVE row is claimed at this cadence and not the shared tick's. SLOTS, NOT BATCHES, as the
+// debounce lane: a tick fills the free slots and returns once its rows have STARTED. A PERMIT IS
+// TAKEN BEFORE THE ROW IS CLAIMED, from the gate the shared tick's provider work runs under, so
+// observers take no concurrency the scheduler did not already have and a claimed row never spends
+// its stale window waiting for capacity. The reaper stays on the shared tick. `settled` resolves
+// when every row this tick started has finished; the worker never waits on it, tests do.
+export async function runObserveTick(
+  base: PrismaClient,
+  opts: ObserveTickOptions,
+): Promise<{ claimed: number; settled: Promise<void> }> {
+  const permits: (() => void)[] = [];
+  while (permits.length < opts.slots - observeRunning) {
+    const permit = opts.gate.tryAcquire();
+    if (!permit) break;
+    permits.push(permit);
+  }
+  // NOTE: not a claim of zero. claimWhere clamps its limit to at least 1, so asking with no permit
+  // in hand would take one row the drain cannot start.
+  if (permits.length === 0) return { claimed: 0, settled: Promise.resolve() };
+  let jobs: ClaimedJob[];
+  try {
+    // A row re-armed while its own run is in flight is left out by the claim itself (./running.ts).
+    jobs = await claimDueObserveJobs(
+      permits.length,
+      base,
+      new Date(),
+      opts.tenantId,
+    );
+  } catch (err) {
+    for (const permit of permits) permit();
+    throw err;
+  }
+  // The permits nothing was claimed for go back at once.
+  for (const permit of permits.splice(jobs.length)) permit();
+  observeRunning += jobs.length;
+  const deadlineMs = jobDeadlineMs(opts.staleMs);
+  // allSettled: runClaimed never re-throws, but a stray throw must not strand a slot or a permit.
+  const settled = Promise.allSettled(
+    jobs.map((job, i) =>
+      (async () => runClaimed(job, base, { deadlineMs }))()
+        .catch((err) =>
+          logger.error(
+            { err, kind: job.kind, jobId: String(job.id) },
+            "scheduler: job left unfinished by a failed write",
+          ),
+        )
+        .finally(() => {
+          permits[i]?.();
+          observeRunning -= 1;
+          opts.onFreed?.();
+        }),
+    ),
+  ).then(() => {});
+  return { claimed: jobs.length, settled };
+}
+
 interface Holder {
   timer?: ReturnType<typeof setInterval>;
   running: boolean;
+  observeTimer?: ReturnType<typeof setInterval>;
+  // `observing` covers the CLAIM only, so two claims never overlap; `observeAgain` remembers a
+  // drain asked for meanwhile (a slot freed mid-claim), which runs as soon as the claim returns.
+  observing: boolean;
+  observeAgain: boolean;
+  // Set while the drain runs: asks for a drain at a given instant (`wakeObserveDrainAt`).
+  wakeObserve?: (atMs: number) => void;
+  // The wake-ups not fired yet, by the instant they are for, so stopping clears them.
+  observeWakes: Map<number, ReturnType<typeof setTimeout>>;
+}
+
+// How far apart two wake-ups have to be to get a timer each. A burst arms its row on every message,
+// and the instants it names land within milliseconds of each other.
+const OBSERVE_WAKE_GRAIN_MS = 100;
+
+// Asks the observe drain to run when a row just armed becomes due, so the row does not also wait
+// for the drain's next interval on top of its own window. A hint from the process that armed the
+// row: with no drain running here it does nothing, and the interval still finds the row either way.
+export function wakeObserveDrainAt(runAt: Date): void {
+  holder().wakeObserve?.(runAt.getTime());
 }
 
 const KEY = Symbol.for("fazerai.scheduler.worker");
 
 function holder(): Holder {
   const g = globalThis as unknown as Record<symbol, Holder>;
-  g[KEY] ??= { running: false };
+  g[KEY] ??= {
+    running: false,
+    observing: false,
+    observeAgain: false,
+    observeWakes: new Map(),
+  };
   return g[KEY];
 }
 
 export interface StartOptions {
   base?: PrismaClient;
   intervalMs?: number;
+  // The observe drain's own cadence (config.observeWorker.intervalMs).
+  observeIntervalMs?: number;
   staleMs?: number;
   batchSize?: number;
+  // NOTE: test-only, as on TickOptions: the fence and the bound a test needs to own.
+  tenantId?: bigint;
+  providerConcurrency?: number;
 }
 
 // Idempotent singleton (survives `bun --hot` reloads via globalThis, so no ghost timers). The tick
-// is non-overlapping (a `running` guard). Returns the stop function.
+// is non-overlapping (a `running` guard). It also starts the observe lane's fast drain, which has
+// no switch of its own: an install that runs the scheduler runs it. Returns the stop function.
 export function startScheduler(opts: StartOptions = {}): () => void {
   const h = holder();
   if (h.timer) return stopScheduler;
   const base = opts.base ?? basePrisma;
   const intervalMs = opts.intervalMs ?? config.schedulerWorker.intervalMs;
+  const observeIntervalMs =
+    opts.observeIntervalMs ?? config.observeWorker.intervalMs;
   const staleMs = opts.staleMs ?? SCHEDULER_STALE_MS;
   const batchSize = opts.batchSize ?? 20;
+  const providerConcurrency =
+    opts.providerConcurrency ??
+    sharedProviderConcurrency(config.agent.modelConcurrency);
+  // ONE bound for both drains: an observation takes a permit the shared tick's follow-ups would
+  // otherwise use, never one on top of them.
+  const gate = new Semaphore(providerConcurrency);
   h.timer = setInterval(() => {
     if (h.running) return;
     h.running = true;
-    void runSchedulerTick(base, { staleMs, batchSize })
+    void runSchedulerTick(base, {
+      staleMs,
+      batchSize,
+      gate,
+      providerConcurrency,
+      claimObserve: false,
+      ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
+    })
       .catch((err) => logger.error({ err }, "scheduler tick failed"))
       .finally(() => {
         h.running = false;
       });
   }, intervalMs);
-  logger.info("scheduler worker started (interval=%dms)", intervalMs);
+  const drainObserve = () => {
+    // A drain asked for after the worker stopped (a row finishing late) claims nothing.
+    if (!h.observeTimer) return;
+    if (h.observing) {
+      h.observeAgain = true;
+      return;
+    }
+    h.observing = true;
+    h.observeAgain = false;
+    void runObserveTick(base, {
+      slots: providerConcurrency,
+      gate,
+      staleMs,
+      onFreed: drainObserve,
+      ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
+    })
+      .catch((err) => logger.error({ err }, "observe tick failed"))
+      .finally(() => {
+        h.observing = false;
+        if (h.observeAgain) drainObserve();
+      });
+  };
+  h.observeTimer = setInterval(drainObserve, observeIntervalMs);
+  h.wakeObserve = (atMs) => {
+    const slot =
+      Math.ceil(atMs / OBSERVE_WAKE_GRAIN_MS) * OBSERVE_WAKE_GRAIN_MS;
+    const wait = slot - Date.now();
+    if (h.observeWakes.has(slot)) return;
+    h.observeWakes.set(
+      slot,
+      setTimeout(
+        () => {
+          h.observeWakes.delete(slot);
+          drainObserve();
+        },
+        Math.max(0, wait),
+      ),
+    );
+  };
+  logger.info(
+    "scheduler worker started (interval=%dms, observe=%dms)",
+    intervalMs,
+    observeIntervalMs,
+  );
   return stopScheduler;
 }
 
@@ -655,4 +825,11 @@ export function stopScheduler(): void {
     clearInterval(h.timer);
     h.timer = undefined;
   }
+  if (h.observeTimer) {
+    clearInterval(h.observeTimer);
+    h.observeTimer = undefined;
+  }
+  h.wakeObserve = undefined;
+  for (const timer of h.observeWakes.values()) clearTimeout(timer);
+  h.observeWakes.clear();
 }

@@ -23,6 +23,7 @@ import {
   providerReservesEchoIds,
   SESSION_SENDER_NAME,
 } from "@/modules/chatwoot/normalize";
+import { renderAttendantMessage } from "@/modules/chatwoot/render";
 import {
   type ClaimedJob,
   enqueueJobUnlessClaimed,
@@ -244,7 +245,16 @@ export function findSnoozedAnchor(
         at: m.createdAt,
         customerSpokeAfter: sorted.slice(i + 1).some(customerWrote),
         newestMessageId: newest.id,
-        text: clipText(m.content ?? "", ANCHOR_TEXT_MAX),
+        // Rendered as the agent's memory renders a person's reply: a voice note carries an empty
+        // `content` and its words on the transcription, and a file with no caption is still named.
+        text: clipText(
+          renderAttendantMessage({
+            text: m.content ?? "",
+            attachmentTypes: m.attachmentTypes,
+            transcribedText: m.transcribedText,
+          }),
+          ANCHOR_TEXT_MAX,
+        ),
       };
     }
   }

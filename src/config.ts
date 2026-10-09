@@ -329,17 +329,17 @@ const config = {
     MAX_COUNT,
   ),
   // NOTE: The Chatwoot receiver's two budgets (docs/chatwoot.md "Webhook receiver").
-  // `deliveryConcurrency` is how many acked deliveries are processed at once; the rest wait as ledger
-  // rows instead of competing for the pool, so a burst costs latency rather than `maxWait` failures.
-  // Half the default pool, leaving the other half to the turns, flushes and jobs those deliveries arm;
-  // raise the two together. `ackPoolMax` sizes the small pool the ack writes through, so a drained
-  // main pool cannot turn the ack into a 500 (which Chatwoot answers by opening the conversation).
+  // `deliveryConcurrency` is how many acked deliveries are processed at once in each of two lanes
+  // (customer messages, and every other event so a takeover never waits behind turns); the rest wait
+  // as ledger rows, so a burst costs latency rather than `maxWait` failures. Raise it with the pool.
+  // `ackPoolMax` sizes the small pool the ack writes through, so a drained main pool cannot turn the
+  // ack into a 500 (which Chatwoot answers by opening the conversation).
   chatwoot: {
     deliveryConcurrency: parseIntSetting(
       CHATWOOT_DELIVERY_CONCURRENCY,
       "CHATWOOT_DELIVERY_CONCURRENCY",
       15,
-      "It caps how many Chatwoot deliveries are processed at once; the rest wait in the ledger.",
+      "It caps how many Chatwoot deliveries are processed at once in each lane; the rest wait in the ledger.",
       MAX_COUNT,
     ),
     ackPoolMax: parseIntSetting(

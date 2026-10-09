@@ -1,6 +1,9 @@
 import { Elysia, t } from "elysia";
 import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
-import { admitChatwootDelivery } from "@/modules/chatwoot/delivery-queue";
+import {
+  admissionLaneOf,
+  admitChatwootDelivery,
+} from "@/modules/chatwoot/delivery-queue";
 import {
   processRecordedChatwootDelivery,
   receiveChatwootWebhook,
@@ -47,15 +50,18 @@ export const chatwootController = new Elysia({
         receiptBindingGeneration = null,
         normalized,
       } = result;
-      admitChatwootDelivery(deliveryRowId, () =>
-        processRecordedChatwootDelivery({
-          tenantId,
-          instanceId,
-          deliveryRowId,
-          agentBotId,
-          normalized,
-          receiptBindingGeneration,
-        }),
+      admitChatwootDelivery(
+        deliveryRowId,
+        () =>
+          processRecordedChatwootDelivery({
+            tenantId,
+            instanceId,
+            deliveryRowId,
+            agentBotId,
+            normalized,
+            receiptBindingGeneration,
+          }),
+        admissionLaneOf(normalized),
       );
     }
 

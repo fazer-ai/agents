@@ -6,6 +6,7 @@ import {
   inFlightWork,
   resetShutdownForTest,
 } from "@/lib/shutdown";
+import * as deliveryQueue from "@/modules/chatwoot/delivery-queue";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import * as chatwootWebhook from "@/modules/chatwoot/webhook";
 import * as inbound from "@/modules/webhooks/inbound/service";
@@ -113,6 +114,41 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
     await sleep(20);
     expect(ran).toBe(false);
     expect(inFlightWork().byKind).toEqual({});
+  });
+
+  // A status or assignment change is how a takeover reaches a running turn, so it is admitted in the
+  // lane that customer messages (and their turns) do not occupy.
+  test("Chatwoot: an event that is not a customer message goes in the other lane", async () => {
+    const lanes: unknown[] = [];
+    restore.push(
+      spyOn(chatwootWebhook, "receiveChatwootWebhook").mockResolvedValue({
+        ack: true,
+        outcome: "queued",
+        tenantId: 1n,
+        instanceId: 1n,
+        deliveryId: "drain-meta",
+        deliveryRowId: 3n,
+        dispatch: true,
+        agentBotId: null,
+        normalized: {
+          event: "conversation_status_changed",
+        } as NormalizedChatwootEvent,
+      }),
+      spyOn(deliveryQueue, "admitChatwootDelivery").mockImplementation(
+        (_id, _run, lane) => {
+          lanes.push(lane);
+          return true;
+        },
+      ),
+    );
+    const res = await chatwootController.handle(
+      new Request("http://localhost/v1/chatwoot/webhook/tok", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(lanes).toEqual(["meta"]);
   });
 
   test("generic inbound", async () => {

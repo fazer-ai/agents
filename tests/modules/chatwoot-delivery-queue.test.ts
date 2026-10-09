@@ -12,6 +12,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
+  admissionLaneOf,
   admitChatwootDelivery,
   chatwootAdmissionState,
   drainStoredChatwootDeliveries,
@@ -87,6 +88,47 @@ describe("admission", () => {
     expect(finished).toBe(6);
     expect(peak).toBe(2);
     expect(chatwootAdmissionState()).toMatchObject({ running: 0, waiting: 0 });
+  });
+
+  // A takeover reaches a running turn through these events, so they must not wait behind the turns.
+  test("an event that is not a customer message runs while every turn slot is busy", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(101n, () => g.gate, "turn");
+    let metaRan = false;
+    expect(
+      admitChatwootDelivery(
+        102n,
+        async () => {
+          metaRan = true;
+        },
+        "meta",
+      ),
+    ).toBe(true);
+    await sleep(5);
+    expect(metaRan).toBe(true);
+    g.release();
+  });
+
+  test("only a customer's incoming public message takes the turn lane", () => {
+    const msg = (messageType: string, priv = false) =>
+      ({
+        event: "message_created",
+        conversationId: 1,
+        contactInboxId: null,
+        inboxId: 7,
+        status: "pending",
+        message: { messageType, private: priv },
+      }) as unknown as Parameters<typeof admissionLaneOf>[0];
+    expect(admissionLaneOf(msg("incoming"))).toBe("turn");
+    expect(admissionLaneOf(msg("outgoing"))).toBe("meta");
+    expect(admissionLaneOf(msg("incoming", true))).toBe("meta");
+    expect(
+      admissionLaneOf({
+        ...msg("incoming"),
+        event: "conversation_status_changed",
+      }),
+    ).toBe("meta");
   });
 
   test("a row already held is not admitted twice", async () => {
@@ -318,7 +360,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     await pastWindow(id);
     resetChatwootAdmissionForTest(1);
     const g = held();
-    admitChatwootDelivery(-1n, () => g.gate);
+    admitChatwootDelivery(-1n, () => g.gate, "meta");
     registerDeliverySweepHandler();
     await getJobHandler("DELIVERY_SWEEP")?.(
       { tenantId } as unknown as ClaimedJob,
@@ -368,7 +410,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS - 300);
     resetChatwootAdmissionForTest(1);
     const g = held();
-    admitChatwootDelivery(-1n, () => g.gate);
+    admitChatwootDelivery(-1n, () => g.gate, "meta");
     const r = await drainStoredChatwootDeliveries({
       base: appDb,
       tenantId,
@@ -500,7 +542,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     resetChatwootAdmissionForTest(1);
     const g = held();
     // The only slot is busy, so the row waits in this process's queue.
-    admitChatwootDelivery(-1n, () => g.gate);
+    admitChatwootDelivery(-1n, () => g.gate, "meta");
     const id = await ackOnly("queue-held", 604);
     const first = await drainStoredChatwootDeliveries({
       base: appDb,
@@ -521,7 +563,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
   test("rows this process holds do not use up the batch that reaches a row nobody holds", async () => {
     resetChatwootAdmissionForTest(1);
     const g = held();
-    admitChatwootDelivery(-1n, () => g.gate);
+    admitChatwootDelivery(-1n, () => g.gate, "meta");
     const mine = await ackOnly("queue-held-batch-a", 605);
     const first = await drainStoredChatwootDeliveries({
       base: appDb,

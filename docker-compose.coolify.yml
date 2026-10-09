@@ -49,7 +49,7 @@ services:
       - RATE_LIMIT_MCP_PER_MIN=${RATE_LIMIT_MCP_PER_MIN:-1200}
       - RATE_LIMIT_CREDENTIAL_MAX=${RATE_LIMIT_CREDENTIAL_MAX:-20}
       - RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES=${RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES:-5}
-      # The Chatwoot receiver: deliveries processed at once (the rest wait as ledger rows) and the
+      # The Chatwoot receiver: deliveries processed at once per lane (the rest wait as ledger rows) and the
       # connections reserved for the webhook ack's own write. See .env.example and docs/deploy.md.
       - CHATWOOT_DELIVERY_CONCURRENCY=${CHATWOOT_DELIVERY_CONCURRENCY:-15}
       - CHATWOOT_ACK_POOL_MAX=${CHATWOOT_ACK_POOL_MAX:-4}

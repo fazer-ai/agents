@@ -6,6 +6,7 @@ import config from "@/config";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeChatwootEvent } from "./normalize";
+import type { NormalizedChatwootEvent } from "./types";
 import { processRecordedChatwootDelivery } from "./webhook";
 
 // Admission and drain for the Chatwoot deliveries the ack recorded (docs/chatwoot.md, "Webhook
@@ -37,16 +38,34 @@ const DRAIN_BATCH = 500;
 // this, never by the size of a burst.
 export const ADMISSION_MAX_WAITING = 5_000;
 
+// Two lanes with the same limit each. A delivery that can start a turn (a customer's incoming message)
+// may hold its slot for a whole model call; every other event (a status or assignment change, an
+// agent's or a colleague's reply) is what tells a running turn it lost the conversation, so it must
+// not wait behind those turns, or a takeover stays invisible to the turn it should stop.
+export type AdmissionLane = "turn" | "meta";
+
+export function admissionLaneOf(event: NormalizedChatwootEvent): AdmissionLane {
+  return event.event === "message_created" &&
+    event.message?.messageType === "incoming" &&
+    !event.message.private
+    ? "turn"
+    : "meta";
+}
+
 interface Pending {
   rowId: string;
   id: bigint;
   run: () => Promise<unknown>;
 }
 
-interface Admission {
-  limit: number;
+interface Lane {
   running: number;
   waiting: Pending[];
+}
+
+interface Admission {
+  limit: number;
+  lanes: Record<AdmissionLane, Lane>;
   // Row ids waiting or running here: a drain or a redelivery of a row this process already holds is
   // not admitted twice.
   held: Map<string, bigint>;
@@ -59,6 +78,18 @@ interface Admission {
 // On globalThis, like the shutdown registry, so `bun --hot` does not split the count.
 const KEY = Symbol.for("fazerai.chatwoot.admission");
 
+function fresh(limit: number): Admission {
+  return {
+    limit,
+    lanes: {
+      turn: { running: 0, waiting: [] },
+      meta: { running: 0, waiting: [] },
+    },
+    held: new Map(),
+    failed: new Map(),
+  };
+}
+
 function admission(): Admission {
   const g = globalThis as unknown as Record<symbol, Admission | undefined>;
   const held = g[KEY];
@@ -66,46 +97,44 @@ function admission(): Admission {
     !held ||
     !(held.held instanceof Map) ||
     !(held.failed instanceof Map) ||
-    !Array.isArray(held.waiting)
+    !Array.isArray(held.lanes?.turn?.waiting) ||
+    !Array.isArray(held.lanes?.meta?.waiting)
   ) {
-    g[KEY] = {
-      limit: config.chatwoot.deliveryConcurrency,
-      running: 0,
-      waiting: [],
-      held: new Map(),
-      failed: new Map(),
-    };
+    g[KEY] = fresh(config.chatwoot.deliveryConcurrency);
   }
   return g[KEY] as Admission;
 }
 
+const waitingCount = (a: Admission) =>
+  a.lanes.turn.waiting.length + a.lanes.meta.waiting.length;
+
+// Totals over both lanes; `limit` is each lane's.
 export function chatwootAdmissionState(): {
   running: number;
   waiting: number;
   limit: number;
 } {
   const a = admission();
-  return { running: a.running, waiting: a.waiting.length, limit: a.limit };
+  return {
+    running: a.lanes.turn.running + a.lanes.meta.running,
+    waiting: waitingCount(a),
+    limit: a.limit,
+  };
 }
 
 // Tests only: an empty queue, optionally with another limit.
 export function resetChatwootAdmissionForTest(limit?: number): void {
   const g = globalThis as unknown as Record<symbol, Admission | undefined>;
-  g[KEY] = {
-    limit: limit ?? config.chatwoot.deliveryConcurrency,
-    running: 0,
-    waiting: [],
-    held: new Map(),
-    failed: new Map(),
-  };
+  g[KEY] = fresh(limit ?? config.chatwoot.deliveryConcurrency);
 }
 
-function pump(a: Admission): void {
+function pump(a: Admission, laneName: AdmissionLane): void {
+  const lane = a.lanes[laneName];
   // NOTE: A draining process starts nothing new. What waits is a PENDING row with its body, which the
   // next boot or another replica drains; finishing it here would only race the shutdown bound.
-  while (a.running < a.limit && a.waiting.length > 0 && !isDraining()) {
-    const next = a.waiting.shift() as Pending;
-    a.running++;
+  while (lane.running < a.limit && lane.waiting.length > 0 && !isDraining()) {
+    const next = lane.waiting.shift() as Pending;
+    lane.running++;
     void trackWork("chatwoot_delivery", next.run)
       .then(
         () => {
@@ -127,33 +156,34 @@ function pump(a: Admission): void {
         },
       )
       .finally(() => {
-        a.running--;
+        lane.running--;
         a.held.delete(next.rowId);
-        pump(a);
+        pump(a, laneName);
       });
   }
 }
 
-// Queues one delivery's processing. False when this process already holds the row, or when the
-// waiting list is full (the row stays PENDING with its body for the drain).
+// Queues one delivery's processing in its lane. False when this process already holds the row, or
+// when the waiting list is full (the row stays PENDING with its body for the drain).
 export function admitChatwootDelivery(
   rowId: bigint,
   run: () => Promise<unknown>,
+  lane: AdmissionLane = "turn",
 ): boolean {
   const a = admission();
   const key = String(rowId);
   if (a.held.has(key)) return false;
-  if (a.waiting.length >= ADMISSION_MAX_WAITING) {
+  if (waitingCount(a) >= ADMISSION_MAX_WAITING) {
     logger.warn(
       "chatwoot: %d deliveries already waiting; row %s stays in the ledger for the drain",
-      a.waiting.length,
+      waitingCount(a),
       key,
     );
     return false;
   }
   a.held.set(key, rowId);
-  a.waiting.push({ rowId: key, id: rowId, run });
-  pump(a);
+  a.lanes[lane].waiting.push({ rowId: key, id: rowId, run });
+  pump(a, lane);
   return true;
 }
 
@@ -263,28 +293,35 @@ export async function drainStoredChatwootDeliveries(
       );
       continue;
     }
-    const ok = admitChatwootDelivery(row.id, async () => {
-      // NOTE: The ceiling is asked again when the slot opens, since a busy queue can hold a row past it;
-      // a row that crossed it is handed to the sweep exactly as the clearing pass above would.
-      if (Date.now() - row.receivedAt.getTime() > STORED_DELIVERY_MAX_AGE_MS) {
-        await run((db) =>
-          db.chatwootWebhookDelivery.updateMany({
-            where: { id: row.id, status: "PENDING" },
-            data: { payload: null },
-          }),
-        );
-        return "skipped";
-      }
-      return processRecordedChatwootDelivery({
-        tenantId: row.tenantId,
-        instanceId: row.chatwootInstanceId,
-        deliveryRowId: row.id,
-        agentBotId: row.routeAgentBotId,
-        normalized,
-        receiptBindingGeneration: row.bindingGeneration,
-        base,
-      });
-    });
+    const ok = admitChatwootDelivery(
+      row.id,
+      async () => {
+        // NOTE: The ceiling is asked again when the slot opens, since a busy queue can hold a row past it;
+        // a row that crossed it is handed to the sweep exactly as the clearing pass above would.
+        if (
+          Date.now() - row.receivedAt.getTime() >
+          STORED_DELIVERY_MAX_AGE_MS
+        ) {
+          await run((db) =>
+            db.chatwootWebhookDelivery.updateMany({
+              where: { id: row.id, status: "PENDING" },
+              data: { payload: null },
+            }),
+          );
+          return "skipped";
+        }
+        return processRecordedChatwootDelivery({
+          tenantId: row.tenantId,
+          instanceId: row.chatwootInstanceId,
+          deliveryRowId: row.id,
+          agentBotId: row.routeAgentBotId,
+          normalized,
+          receiptBindingGeneration: row.bindingGeneration,
+          base,
+        });
+      },
+      admissionLaneOf(normalized),
+    );
     if (ok) admitted++;
   }
   if (admitted > 0 || cleared > 0) {

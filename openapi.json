@@ -42426,6 +42426,135 @@
         "operationId": "getV1Document-approvals"
       }
     },
+    "/v1/document-approvals/pending": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List pending document approvals",
+        "description": "The requests waiting on the team now: pending and not past their validity, oldest first, with the conversation and the customer's name. The console's approvals queue and its badge read this.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Document-approvalsPending",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
     "/v1/document-approvals/{id}": {
       "get": {
         "tags": [

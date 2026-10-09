@@ -9,6 +9,7 @@ import {
   approveDocumentRequest,
   getApprovalRequest,
   listApprovalRequests,
+  listPendingApprovals,
   rejectDocumentRequest,
   renderApprovalPreview,
   requestApprovalAgain,
@@ -70,6 +71,20 @@ export const documentApprovalsController = new Elysia({
       detail: doc(
         "List document approval requests",
         "Lists the tenant's document approval requests, newest first.",
+      ),
+      response: errors(401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/pending",
+    async ({ tenantContext }) => ({
+      requests: await listPendingApprovals(ctxOrThrow(tenantContext)),
+    }),
+    {
+      requireRole: "AGENT",
+      detail: doc(
+        "List pending document approvals",
+        "The requests waiting on the team now: pending and not past their validity, oldest first, with the conversation and the customer's name. The console's approvals queue and its badge read this.",
       ),
       response: errors(401, 403, 404, 422),
     },

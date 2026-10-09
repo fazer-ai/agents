@@ -48,10 +48,18 @@ describe("navigation", () => {
     expect(groups[0]?.items.map((i) => i.to)).toEqual([
       "/",
       "/conversations",
+      "/approvals",
       "/agents",
       "/resources",
       "/channels",
     ]);
+  });
+
+  test("every role finds the approvals queue, and it carries the badge", () => {
+    const approvals = NAV_ITEMS.find((i) => i.to === "/approvals");
+    expect(approvals?.badge).toBe("approvals");
+    expect(approvals?.requireAdmin).toBeUndefined();
+    expect(NAV_ITEMS.filter((i) => i.badge === "approvals")).toHaveLength(1);
   });
 
   test("groupNavItems splits consecutive items by section", () => {

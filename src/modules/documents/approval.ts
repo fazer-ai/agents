@@ -353,6 +353,83 @@ export async function listApprovalRequests(
   return rows.map(toDto);
 }
 
+export interface PendingApprovalItem {
+  id: string;
+  title: string;
+  createdAt: Date;
+  expiresAt: Date;
+  conversationId: string | null;
+  chatwootConversationId: number | null;
+  contactName: string | null;
+}
+
+// What waits on the team now, for the console's approvals queue and its badge: PENDING and not past
+// its validity, which the expiry sweep may not have reached yet. Oldest first, the order a queue is
+// worked in.
+export async function listPendingApprovals(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+): Promise<PendingApprovalItem[]> {
+  return runScopedOn(base, ctx, async (db) => {
+    const rows = await db.documentApprovalRequest.findMany({
+      where: { status: "PENDING", expiresAt: { gt: now } },
+      orderBy: { id: "asc" },
+      take: 200,
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        expiresAt: true,
+        conversationId: true,
+      },
+    });
+    const convIds = rows
+      .map((r) => r.conversationId)
+      .filter((id): id is bigint => id !== null);
+    const convs =
+      convIds.length === 0
+        ? []
+        : await db.conversation.findMany({
+            where: { id: { in: convIds } },
+            select: {
+              id: true,
+              chatwootConversationId: true,
+              contactId: true,
+            },
+          });
+    const contactIds = convs
+      .map((c) => c.contactId)
+      .filter((id): id is bigint => id !== null);
+    const contacts =
+      contactIds.length === 0
+        ? []
+        : await db.contact.findMany({
+            where: { id: { in: contactIds } },
+            select: { id: true, name: true },
+          });
+    const convById = new Map(convs.map((c) => [c.id, c]));
+    const nameById = new Map(contacts.map((c) => [c.id, c.name]));
+    return rows.map((r) => {
+      const conv =
+        r.conversationId === null ? undefined : convById.get(r.conversationId);
+      return {
+        id: String(r.id),
+        title: r.title,
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+        conversationId:
+          r.conversationId === null ? null : String(r.conversationId),
+        chatwootConversationId: conv?.chatwootConversationId ?? null,
+        contactName:
+          conv?.contactId == null
+            ? null
+            : (nameById.get(conv.contactId) ?? null),
+      };
+    });
+  });
+}
+
 async function loadRequest(
   ctx: TenantContext,
   id: bigint,

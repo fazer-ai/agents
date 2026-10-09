@@ -12,54 +12,82 @@ import { api } from "@/client/lib/api";
 import { isAdminRole } from "@/client/lib/roles";
 
 interface ApprovalsContextValue {
-  // Pending knowledge-base suggestions awaiting review (0 when none, or not an admin).
+  // Everything waiting on this person: the document approvals (any role) plus, for an admin, the
+  // pending knowledge-base suggestions. What the sidebar badge shows.
   count: number;
-  // Lets a consumer that already knows the fresh count (e.g. the approval queue after an
-  // approve/reject) update the shared badge without a refetch.
-  setCount: (count: number) => void;
-  // Re-fetch the count on demand.
+  // Pending knowledge-base suggestions (0 when none, or not an admin). The Knowledge tab's badge.
+  knowledgeCount: number;
+  // Document approval requests waiting on the team (pending and not past their validity).
+  documentCount: number;
+  // Lets the knowledge queue, which already knows its fresh count after an approve or a reject,
+  // update the shared badge without a refetch.
+  setKnowledgeCount: (count: number) => void;
+  // Re-fetch both counts on demand.
   refresh: () => void;
 }
 
 const ApprovalsContext = createContext<ApprovalsContextValue>({
   count: 0,
-  setCount: () => {},
+  knowledgeCount: 0,
+  documentCount: 0,
+  setKnowledgeCount: () => {},
   refresh: () => {},
 });
 
-// Shared source for the "pending KB suggestions" count, mounted high enough to survive route changes
-// so the sidebar badge persists across navigation (each route element wraps in its own ProtectedRoute,
-// so a provider nested there would remount and flicker on every navigation). Fetches only for admins
-// (the only role that can reach the Components → Knowledge queue) and refreshes on each navigation,
-// since suggestions are created server-side by agent turns (no realtime event) and would otherwise go
-// unnoticed until a manual reload.
+// Shared source for the approvals badge, mounted high enough to survive route changes so the sidebar
+// badge persists across navigation (each route element wraps in its own ProtectedRoute, so a provider
+// nested there would remount and flicker on every navigation). Knowledge suggestions are fetched only
+// for admins (the only role that can review them); document approvals for every role, since any user
+// of the tenant decides one. Refreshed on each navigation, since both arrive server-side from agent
+// turns with no realtime event.
 export function ApprovalsProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role);
-  const [count, setCount] = useState(0);
+  const signedIn = !!user;
+  const [knowledgeCount, setKnowledgeCount] = useState(0);
+  const [documentCount, setDocumentCount] = useState(0);
   const location = useLocation();
 
   const refresh = useCallback(() => {
+    if (!signedIn) {
+      setKnowledgeCount(0);
+      setDocumentCount(0);
+      return;
+    }
+    api.api.v1["document-approvals"].pending
+      .get()
+      .then(({ data }) => {
+        if (data) setDocumentCount(data.requests.length);
+      })
+      .catch(() => {});
     if (!isAdmin) {
-      setCount(0);
+      setKnowledgeCount(0);
       return;
     }
     api.api.v1.knowledge.approvals
       .get()
       .then(({ data }) => {
-        if (data) setCount(data.approvals.length);
+        if (data) setKnowledgeCount(data.approvals.length);
       })
       .catch(() => {});
-  }, [isAdmin]);
+  }, [isAdmin, signedIn]);
 
-  // Refetch on mount, when the principal's admin status changes, and on each navigation.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: location.pathname is an intentional trigger — re-fetch the count whenever the user navigates (suggestions arrive server-side with no realtime event).
+  // Refetch on mount, when the principal changes, and on each navigation.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: location.pathname is an intentional trigger — re-fetch the counts whenever the user navigates (approvals arrive server-side with no realtime event).
   useEffect(() => {
     refresh();
   }, [refresh, location.pathname]);
 
   return (
-    <ApprovalsContext.Provider value={{ count, setCount, refresh }}>
+    <ApprovalsContext.Provider
+      value={{
+        count: knowledgeCount + documentCount,
+        knowledgeCount,
+        documentCount,
+        setKnowledgeCount,
+        refresh,
+      }}
+    >
       {children}
     </ApprovalsContext.Provider>
   );

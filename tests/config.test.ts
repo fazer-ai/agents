@@ -171,6 +171,38 @@ describe("the timer bound is the runtime's, not a policy", () => {
   });
 });
 
+// An agent's burst window may be shorter than the observe drain's interval, so the
+// interval is a safety net with a floor of its own, and the operator reads both numbers where the
+// variable is set.
+describe("the observe drain's interval", () => {
+  const call = CALLS.find((c) => c.variable === "OBSERVE_WORKER_INTERVAL_MS");
+
+  test("has a default and a minimum of its own", () => {
+    expect(call?.fallback).toBe("2500");
+    expect(call?.minimum).toBe("100");
+  });
+
+  test(".env.example states the default and the minimum next to the variable", () => {
+    const at = ENV_EXAMPLE.indexOf("OBSERVE_WORKER_INTERVAL_MS=");
+    expect(at).toBeGreaterThan(-1);
+    const note = ENV_EXAMPLE.slice(Math.max(0, at - 700), at);
+    expect(note).toContain("default 2500, minimum 100");
+  });
+
+  test("a value below the minimum is refused by name at boot", () => {
+    expect(() =>
+      parseIntSetting(
+        "99",
+        "OBSERVE_WORKER_INTERVAL_MS",
+        2_500,
+        "why.",
+        2_147_483_647,
+        Number(call?.minimum),
+      ),
+    ).toThrow(/OBSERVE_WORKER_INTERVAL_MS must be a whole number between 100/);
+  });
+});
+
 // The parser's own handling of the minimum, driven directly. Everything else about it (blanks,
 // `Infinity`, `1e309`, fractions, negatives, garbage, the upper bound) is covered in
 // tests/api/middlewares/credentialRateLimit.test.ts.

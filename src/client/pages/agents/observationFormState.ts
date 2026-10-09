@@ -61,7 +61,15 @@ function intOr(v: string, fallback: number): number {
 // a field here only if the write boundary lets it through: anything the server REFUSES must travel
 // as typed, or the save succeeds with the value quietly deleted.
 export function observationToStored(form: ObservationState): MonitoringConfig {
-  return readMonitoringConfig({ monitoring: draftFromForm(form) });
+  const draft = draftFromForm(form);
+  const stored = readMonitoringConfig({ monitoring: draft });
+  // A negative window is REFUSED by the write boundary, so it travels as typed: read through the
+  // reader it would become 0, the one value that changes what the agent costs, saved by a typo.
+  // Asked of what was TYPED, before the draft rounds it: -0.5 rounds to a zero.
+  const typed = Number(form.windowSeconds);
+  if (form.windowSeconds.trim() !== "" && typed < 0)
+    stored.debounce.windowSeconds = typed;
+  return stored;
 }
 
 function draftFromForm(form: ObservationState): MonitoringConfig {

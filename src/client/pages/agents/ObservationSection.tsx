@@ -90,7 +90,7 @@ export function ObservationSection({
           label={t("editor.observationBurst", "Burst window (seconds)")}
           description={t(
             "editor.observationBurstHint",
-            "Customer messages closer than this are judged together. {{min}}-{{max}}.",
+            "Customer messages closer than this are judged together. {{min}}-{{max}}. With 0 every message is judged as it arrives, one model call per message.",
             { min: lim.secondsMin, max: lim.secondsMax },
           )}
         >

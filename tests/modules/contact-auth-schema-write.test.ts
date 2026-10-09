@@ -268,7 +268,7 @@ const CASES: [string, unknown, string, string][] = [
     "a team id that is not positive",
     { handoffTeamId: 0 },
     "too_small handoffTeamId: Too small: expected number to be >0",
-    "InvalidSettingsValueError: settings.contactAuth.handoffTeamId expects a valid value, got number",
+    "InvalidSettingsValueError: settings.contactAuth.handoffTeamId expects a number greater than 0, got 0",
   ],
 ];
 

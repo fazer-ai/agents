@@ -1713,7 +1713,7 @@
     "observationAnalysisIncremental": "After each burst of customer messages",
     "observationAnalysisOnResolve": "Only when the conversation is resolved",
     "observationBurst": "Burst window (seconds)",
-    "observationBurstHint": "Customer messages closer than this are judged together. {{min}}-{{max}}.",
+    "observationBurstHint": "Customer messages closer than this are judged together. {{min}}-{{max}}. With 0 every message is judged as it arrives, one model call per message.",
     "observationBurstMax": "Burst ceiling (seconds)",
     "observationBurstMaxHint": "A customer who keeps writing is judged at the latest this long after the first message.",
     "observationHelp": "A monitoring agent reads every message of the inboxes it observes and answers none of them. It is the ordinary agent, with its prompt, its tools, its knowledge and its MCP servers, minus the one thing it cannot do: post something the customer sees.\n\nSo what it DOES is configured where every agent's behaviour is: the prompt says what to watch for, and the Tools tab says what it may act with. Labelling the conversation, leaving a private note, setting an attribute and moving a card are all tools it can be given.\n\nThis block is only about when it looks. It runs after each burst of customer messages, or only when the conversation is resolved. To switch it off, disable the agent or take it off the inbox.",

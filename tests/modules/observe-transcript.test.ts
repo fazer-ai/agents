@@ -83,10 +83,10 @@ describe("the monitoring settings block", () => {
 
   test("a window below the floor is raised, not taken literally", () => {
     const cfg = readMonitoringConfig({
-      monitoring: { window: { messages: 1 }, debounce: { windowSeconds: 0 } },
+      monitoring: { window: { messages: 1 }, debounce: { windowSeconds: -5 } },
     });
     expect(cfg.window.messages).toBe(4);
-    expect(cfg.debounce.windowSeconds).toBe(3);
+    expect(cfg.debounce.windowSeconds).toBe(0);
   });
 });
 

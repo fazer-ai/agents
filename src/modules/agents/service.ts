@@ -711,6 +711,8 @@ function describeExpected(issue: z.core.$ZodIssue): string {
   if (issue.code === "invalid_value")
     return `one of ${issue.values.map((v) => JSON.stringify(v)).join(", ")}`;
   if (issue.code === "invalid_type") return issue.expected;
+  if (issue.code === "too_small" && issue.origin === "number")
+    return `a number ${issue.inclusive ? "of at least" : "greater than"} ${String(issue.minimum)}`;
   if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern)
     return `a value matching ${issue.pattern}`;
   return "a valid value";
@@ -722,6 +724,9 @@ interface ClosedValueIssue {
   path: PropertyKey[];
   next: unknown;
   expected: string;
+  // What was sent, when its type alone would not say why it was refused: a number below a minimum
+  // is "a number" either way, so the refusal quotes the value.
+  got?: string;
   // Where the write boundary asks "did this write change it?" when that is not `path` itself: a
   // refinement over a whole object (`params.wholeBlock`) is changed by any edit to that object.
   changedAt?: PropertyKey[];
@@ -766,6 +771,9 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
         path: issue.path,
         next,
         expected: expected ?? describeExpected(issue),
+        ...(issue.code === "too_small" && typeof next === "number"
+          ? { got: String(next) }
+          : {}),
         changedAt:
           typeof whole === "number"
             ? // `filter`, not a cut: a path is not text (tests/lib/astral-cap-sweep.test.ts).
@@ -784,9 +792,14 @@ export function assertSettingsClosedValues(
   const bag = plainObject(settings);
   if (!bag) return;
   const storedBag = plainObject(stored);
-  for (const { block, path, next, expected, changedAt } of closedValueIssues(
-    bag,
-  )) {
+  for (const {
+    block,
+    path,
+    next,
+    expected,
+    got,
+    changedAt,
+  } of closedValueIssues(bag)) {
     if (
       changedAt &&
       isDeepStrictEqual(
@@ -806,7 +819,7 @@ export function assertSettingsClosedValues(
     throw new InvalidSettingsValueError(
       [block, ...path.map(String)].join("."),
       expected,
-      describeGot(next),
+      got ?? describeGot(next),
     );
   }
 }

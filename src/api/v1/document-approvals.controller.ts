@@ -129,8 +129,8 @@ export const documentApprovalsController = new Elysia({
         ctxOrThrow(tenantContext),
         undefined,
         {
-          before:
-            query.before === undefined ? undefined : requireDbId(query.before),
+          cursor:
+            query.cursor === undefined ? undefined : requireDbId(query.cursor),
           limit: PENDING_PAGE_SIZE + 1,
         },
       );
@@ -138,17 +138,22 @@ export const documentApprovalsController = new Elysia({
       const shown = more ? requests.slice(0, PENDING_PAGE_SIZE) : requests;
       return {
         requests: shown,
-        nextBefore: more ? (shown[shown.length - 1]?.id ?? null) : null,
+        nextCursor: more ? (shown[shown.length - 1]?.id ?? null) : null,
       };
     },
     {
       requireRole: "AGENT",
       query: t.Object({
-        before: t.Optional(t.String({ pattern: "^[0-9]+$" })),
+        cursor: t.Optional(
+          t.String({
+            pattern: "^[0-9]+$",
+            description: "The last id of the previous page (`nextCursor`).",
+          }),
+        ),
       }),
       detail: doc(
         "List decided document approvals",
-        "The approvals history: every request no longer waiting on the team (approved, rejected, expired, cancelled), newest first, with who decided, what it came to in the conversation, and the customer's name.",
+        "The approvals history: every request no longer waiting on the team (approved, rejected, expired, cancelled), the latest decision first, with who decided, what it came to in the conversation, and the customer's name.",
       ),
       response: errors(401, 403, 404, 422),
     },

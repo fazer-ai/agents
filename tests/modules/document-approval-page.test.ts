@@ -713,7 +713,7 @@ describe.skipIf(!dbUp)(
       expect(await countPendingApprovals(ctx(), appDb)).toBe(countBefore + 2);
     });
 
-    test("the history lists what is no longer waiting, newest first, with who decided and what it came to", async () => {
+    test("the history lists what is no longer waiting, the latest decision first, with who decided and what it came to", async () => {
       const reviewer = await suDb.user.create({
         data: {
           email: `hist-${Date.now()}@local.test`,
@@ -728,7 +728,8 @@ describe.skipIf(!dbUp)(
         data: {
           status: "APPROVED",
           reviewerUserId: reviewer.id,
-          decidedAt: new Date(),
+          // Asked before the expired one and decided after it: the history runs by decision.
+          decidedAt: new Date(Date.now() + 86_400_000),
           outcome: "DELIVERED",
           outcomeAt: new Date(),
         },
@@ -736,26 +737,29 @@ describe.skipIf(!dbUp)(
       const expired = await newRequest();
       await suDb.documentApprovalRequest.update({
         where: { id: expired.requestId },
-        data: { status: "EXPIRED" },
+        data: {
+          status: "EXPIRED",
+          decidedAt: new Date(Date.now() + 86_400_000 - 3_600_000),
+        },
       });
       const history = await listDecidedApprovals(ctx(), appDb);
       const ids = history.map((r) => r.id);
       expect(ids).not.toContain(String(waiting.requestId));
-      expect(ids.indexOf(String(expired.requestId))).toBeLessThan(
-        ids.indexOf(String(approved.requestId)),
-      );
+      expect(ids.slice(0, 2)).toEqual([
+        String(approved.requestId),
+        String(expired.requestId),
+      ]);
       const row = history.find((r) => r.id === String(approved.requestId));
       expect(row?.status).toBe("APPROVED");
       expect(row?.reviewerName).toBe("Bruno Revisor");
       expect(row?.outcome).toBe("DELIVERED");
       expect(row?.contactName).toBe("Ana Ribeiro");
-      // A page starts before the last id of the one before.
+      // A page starts after the last row of the one before, in the same order.
       const next = await listDecidedApprovals(ctx(), appDb, {
-        before: BigInt(String(expired.requestId)),
-        limit: 50,
+        cursor: BigInt(String(approved.requestId)),
+        limit: 1,
       });
-      expect(next.map((r) => r.id)).toContain(String(approved.requestId));
-      expect(next.map((r) => r.id)).not.toContain(String(expired.requestId));
+      expect(next.map((r) => r.id)).toEqual([String(expired.requestId)]);
       const foreign: TenantContext = {
         tenantId: otherTenantId,
         userId: null,

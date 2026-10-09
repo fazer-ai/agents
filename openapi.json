@@ -42580,14 +42580,15 @@
           "Resources"
         ],
         "summary": "List decided document approvals",
-        "description": "The approvals history: every request no longer waiting on the team (approved, rejected, expired, cancelled), newest first, with who decided, what it came to in the conversation, and the customer's name.",
+        "description": "The approvals history: every request no longer waiting on the team (approved, rejected, expired, cancelled), the latest decision first, with who decided, what it came to in the conversation, and the customer's name.",
         "parameters": [
           {
-            "name": "before",
+            "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
               "pattern": "^[0-9]+$",
+              "description": "The last id of the previous page (`nextCursor`).",
               "type": "string"
             }
           },

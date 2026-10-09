@@ -35,7 +35,7 @@ export function ApprovalHistory() {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
   const [requests, setRequests] = useState<DecidedRequest[] | null>(null);
-  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
@@ -51,7 +51,7 @@ export function ApprovalHistory() {
         return;
       }
       setRequests(data.requests);
-      setNextBefore(data.nextBefore);
+      setNextCursor(data.nextCursor);
     } catch {
       setError(true);
     } finally {
@@ -64,12 +64,12 @@ export function ApprovalHistory() {
   }, [load]);
 
   const loadMore = async () => {
-    if (!nextBefore) return;
+    if (!nextCursor) return;
     setLoadingMore(true);
     try {
       const { data, error: err } = await api.api.v1[
         "document-approvals"
-      ].decided.get({ query: { before: nextBefore } });
+      ].decided.get({ query: { cursor: nextCursor } });
       if (err || !data) {
         // The rows and the cursor stay, so the button retries the same page.
         showToast(
@@ -80,7 +80,7 @@ export function ApprovalHistory() {
         return;
       }
       setRequests((prev) => [...(prev ?? []), ...data.requests]);
-      setNextBefore(data.nextBefore);
+      setNextCursor(data.nextCursor);
     } catch {
       showToast(
         t("approvalQueue.moreFailed", "Could not load more documents."),
@@ -93,9 +93,9 @@ export function ApprovalHistory() {
 
   useSendingClock(requests ?? []);
 
-  // A decision whose outcome has not landed yet is read again until it does: the first page is asked
-  // again and merged by id, so the pages already loaded stay, and a decision taken meanwhile joins the
-  // top.
+  // A decision whose outcome has not landed yet is read again until it does. It was decided in the
+  // last minutes, so it is on the first page (the history runs by decision), which is what is asked
+  // again; the later pages already loaded stay.
   const unresolved = (requests ?? []).some(
     (r) =>
       (r.status === "APPROVED" || r.status === "REJECTED") &&
@@ -113,14 +113,14 @@ export function ApprovalHistory() {
       try {
         const { data } = await api.api.v1["document-approvals"].decided.get();
         if (cancelled || !data) return;
+        // The first page as it is now, then every row already shown that it does not carry, in its
+        // order (those a newer decision pushed off the first page, and the later pages): the latest
+        // decisions sit on the first page, so a decision taken meanwhile and an outcome still
+        // landing are both in what was just read.
         setRequests((prev) => {
           if (!prev) return data.requests;
-          const fresh = new Map(data.requests.map((r) => [r.id, r]));
-          const known = new Set(prev.map((r) => r.id));
-          const newer = data.requests.filter(
-            (r) => !known.has(r.id) && Number(r.id) > Number(prev[0]?.id ?? 0),
-          );
-          return [...newer, ...prev.map((r) => fresh.get(r.id) ?? r)];
+          const fresh = new Set(data.requests.map((r) => r.id));
+          return [...data.requests, ...prev.filter((r) => !fresh.has(r.id))];
         });
       } catch {
         // The rows already shown stay; the next refresh asks again.
@@ -210,7 +210,7 @@ export function ApprovalHistory() {
           })}
         </ul>
       )}
-      {nextBefore && (
+      {nextCursor && (
         <Button
           variant="secondary"
           onClick={loadMore}

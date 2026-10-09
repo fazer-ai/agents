@@ -555,21 +555,22 @@ export interface DecidedApprovalItem extends PendingApprovalItem {
   issuedDocumentId: string | null;
 }
 
-// The history beside the queue: every request no longer waiting on the team, newest first; `before`
-// is the last id of the previous page. A pending request past its validity is the queue's until the
-// expiry closes it, so it shows in neither for that moment.
+// The history beside the queue: every request no longer waiting on the team, the latest DECISION first
+// (a request asked long ago and decided now belongs at the top, and that is where the view looks for
+// an outcome still landing); `cursor` is the last id of the previous page. A pending request past its
+// validity is the queue's until the expiry closes it, so it shows in neither for that moment.
 export async function listDecidedApprovals(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
-  page: { before?: bigint; limit?: number } = {},
+  page: { cursor?: bigint; limit?: number } = {},
 ): Promise<DecidedApprovalItem[]> {
   return runScopedOn(base, ctx, async (db) => {
     const rows = await db.documentApprovalRequest.findMany({
-      where: {
-        status: { not: "PENDING" },
-        ...(page.before === undefined ? {} : { id: { lt: page.before } }),
-      },
-      orderBy: { id: "desc" },
+      where: { status: { not: "PENDING" } },
+      orderBy: [{ decidedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }],
+      ...(page.cursor === undefined
+        ? {}
+        : { cursor: { id: page.cursor }, skip: 1 }),
       take: page.limit ?? PENDING_PAGE_SIZE,
       select: {
         id: true,

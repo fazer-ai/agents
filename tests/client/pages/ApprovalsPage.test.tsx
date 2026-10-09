@@ -86,7 +86,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
           outcome: "DELIVERED",
         },
       ],
-      nextBefore: null,
+      nextCursor: null,
     });
   }
   if (url.includes("/document-approvals/pending")) {
@@ -433,4 +433,48 @@ test("the history reads again a decision whose outcome has not landed, until it 
       ).toContain("Sent to the customer"),
     { timeout: 8000 },
   );
+}, 12_000);
+
+test("a decision taken while the history waits joins it, whatever order its request was asked in", async () => {
+  role = "AGENT";
+  let reads = 0;
+  const landing = {
+    ...DOCUMENT,
+    id: "50",
+    contactName: "Rita Gomes",
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+    reviewerName: null,
+    outcome: null,
+    issuedDocumentId: "4",
+  };
+  extraDecided = () => {
+    reads += 1;
+    if (reads === 1) return [landing];
+    // An older request (a lower id) decided meanwhile, and the outcome landed.
+    return [
+      {
+        ...DOCUMENT,
+        id: "30",
+        contactName: "Caio Prado",
+        status: "REJECTED",
+        decidedAt: new Date().toISOString(),
+        reviewerName: null,
+        outcome: "HANDED",
+        issuedDocumentId: null,
+      },
+      { ...landing, outcome: "DELIVERED" },
+    ];
+  };
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  await screen.findByRole("link", { name: /for Rita Gomes/ });
+  await screen.findByRole(
+    "link",
+    { name: /for Caio Prado/ },
+    { timeout: 8000 },
+  );
+  expect(
+    screen.getByRole("link", { name: /for Rita Gomes/ }).textContent,
+  ).toContain("Sent to the customer");
 }, 12_000);

@@ -232,3 +232,57 @@ export function rasterToJpeg(
 ): ArrayBuffer {
   return encodeJpeg(fitRgba(flattenOntoWhite(raw), opts.maxEdge), opts.quality);
 }
+
+// The Exif Orientation transform (1-8), applied to pixels because re-encoding drops the tag. Run on
+// the FITTED raster, so the copy it makes is of a 1568 px image and not of the 36 MP original.
+// 5-8 swap the axes: the pixel at (x, y) of the output is read from the stored image.
+export function orientRgba(src: Rgba, orientation: number): Rgba {
+  if (orientation < 2 || orientation > 8) return src;
+  const { width: w, height: h } = src;
+  const swap = orientation >= 5;
+  const ow = swap ? h : w;
+  const oh = swap ? w : h;
+  const out = new Uint8ClampedArray(ow * oh * 4);
+  for (let y = 0; y < oh; y++) {
+    for (let x = 0; x < ow; x++) {
+      let sx: number;
+      let sy: number;
+      switch (orientation) {
+        case 2:
+          sx = w - 1 - x;
+          sy = y;
+          break;
+        case 3:
+          sx = w - 1 - x;
+          sy = h - 1 - y;
+          break;
+        case 4:
+          sx = x;
+          sy = h - 1 - y;
+          break;
+        case 5:
+          sx = y;
+          sy = x;
+          break;
+        case 6:
+          sx = y;
+          sy = h - 1 - x;
+          break;
+        case 7:
+          sx = w - 1 - y;
+          sy = h - 1 - x;
+          break;
+        default:
+          sx = w - 1 - y;
+          sy = x;
+      }
+      const s = (sy * w + sx) * 4;
+      const d = (y * ow + x) * 4;
+      out[d] = src.data[s] as number;
+      out[d + 1] = src.data[s + 1] as number;
+      out[d + 2] = src.data[s + 2] as number;
+      out[d + 3] = src.data[s + 3] as number;
+    }
+  }
+  return { data: out, width: ow, height: oh };
+}

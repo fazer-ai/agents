@@ -2,9 +2,17 @@
 // to be importable by the frontend (its sibling `document-support` already is); this file is where
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
+import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 import type { MediaConverterId } from "../media-conversion";
+import {
+  isJpeg,
+  isPng,
+  readImageDimensions,
+  readJpegOrientation,
+} from "./dimensions";
 import { decodeGridFitted, type HeicFrame, withHeicFrames } from "./heic";
-import { encodeJpeg, rasterToJpeg } from "./raster";
+import { encodeJpeg, fitRgba, orientRgba, rasterToJpeg } from "./raster";
 
 // Thrown for every refusal a conversion can make, so the caller has one thing to catch and one
 // message to put on the operator's line. A conversion that fails is NOT the same as an extraction
@@ -276,6 +284,63 @@ async function heicToJpeg(
   return encodeJpeg(grid.image, JPEG_QUALITY);
 }
 
+// THE FIT CONVERTERS: a type the provider reads, at a size it refuses (../media-conversion,
+// MAX_IMAGE_EDGE). Same tail as the HEIC path, fitted to MAX_OUTPUT_EDGE, and the same pixel cap,
+// applied to the size the HEADER declares before a byte is decoded: a JPEG that claims 60000x60000
+// is refused here instead of asking jpeg-js for 14 GB.
+function headerPixels(bytes: ArrayBuffer, mime: string, cap: number): void {
+  const d = readImageDimensions(bytes);
+  if (d === null)
+    throw new MediaConversionError(
+      `${mime} does not declare its size, so the pixel cap cannot be applied`,
+    );
+  if (d.width * d.height > cap)
+    throw new MediaTooLargeError(
+      `${mime.slice(6)} is ${d.width}x${d.height}, over the ${cap} px cap`,
+    );
+}
+
+async function jpegFit(
+  bytes: ArrayBuffer,
+  opts: ConvertOptions,
+): Promise<ArrayBuffer> {
+  if (!isJpeg(bytes))
+    throw new MediaSourceMismatchError("declared as jpeg but is not one");
+  const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+  headerPixels(bytes, "image/jpeg", cap);
+  // jpeg-js enforces its own ceilings too, set from the cap so they never refuse what it admits. The
+  // memory one counts its working buffers on top of the RGBA (~680 MB peak at 36 MP, measured).
+  const raw = jpeg.decode(new Uint8Array(bytes), {
+    useTArray: true,
+    formatAsRGBA: true,
+    maxResolutionInMP: Math.ceil(cap / 1_000_000),
+    maxMemoryUsageInMB: 2048,
+  });
+  // Opaque by construction, so there is nothing to flatten: fit, then turn upright, then encode.
+  // The turn runs on the fitted raster so its copy is of 1568 px and not of the original.
+  const fitted = fitRgba(raw, MAX_OUTPUT_EDGE);
+  return encodeJpeg(
+    orientRgba(fitted, readJpegOrientation(bytes)),
+    JPEG_QUALITY,
+  );
+}
+
+async function pngFit(
+  bytes: ArrayBuffer,
+  opts: ConvertOptions,
+): Promise<ArrayBuffer> {
+  if (!isPng(bytes))
+    throw new MediaSourceMismatchError("declared as png but is not one");
+  headerPixels(bytes, "image/png", opts.maxSourcePixels ?? MAX_SOURCE_PIXELS);
+  // pngjs hands back 8-bit RGBA whatever the source (palette, 16-bit, interlaced), and a PNG may be
+  // transparent, so this one takes the full tail: flatten, fit, encode.
+  const png = PNG.sync.read(Buffer.from(bytes));
+  return rasterToJpeg(
+    { data: png.data, width: png.width, height: png.height },
+    { maxEdge: MAX_OUTPUT_EDGE, quality: JPEG_QUALITY },
+  );
+}
+
 // A `Record` over the id union and not a lookup that can miss: adding an entry to MEDIA_CONVERTERS
 // without writing its implementation is a compile error here, which is the whole reason the registry
 // is split across two files.
@@ -284,6 +349,8 @@ const IMPLS: Record<
   (bytes: ArrayBuffer, opts: ConvertOptions) => Promise<ArrayBuffer>
 > = {
   "heic-to-jpeg": heicToJpeg,
+  "jpeg-fit": jpegFit,
+  "png-fit": pngFit,
 };
 
 // ONE ERROR TYPE OUT, whatever went wrong inside. libheif answers with its own classes, and so does

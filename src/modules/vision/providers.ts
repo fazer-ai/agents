@@ -2,6 +2,8 @@
 // turns a file (image or PDF) + an instruction into extracted text. Adding a provider = one function
 // + one registry entry. The key never lands in the URL or logs.
 
+import logger from "@/api/lib/logger";
+import { clipText } from "@/lib/text";
 import { reportedCostFromUsage } from "@/modules/pricing/reported";
 import { mediaSubtype, normalizeMediaType } from "./media-conversion";
 export type VisionKind = "image" | "document";
@@ -107,11 +109,84 @@ export class VisionError extends Error {
   constructor(
     readonly provider: string,
     readonly status: number,
+    // The provider's own `error.message` on a failed response (see readProviderMessage), kept for
+    // whoever holds the error object and NEVER put in `.message`: the server chose those words, so
+    // they may quote the customer's content, and `.message` reaches execution_logs, alerts and the
+    // conversation's private note (docs/logs.md, the provider boundary).
+    readonly providerMessage: string | null = null,
   ) {
-    // NOTE: never capture the response body — it carries the extracted content (potential PII).
-    super(`vision ${provider} failed with ${status}`);
+    const refusal = refusalOf(providerMessage);
+    super(
+      `vision ${provider} failed with ${status}${refusal ? ` (${refusal})` : ""}`,
+    );
     this.name = "VisionError";
   }
+}
+
+// The refusals a provider states about the file we sent, named in OUR words. A predicate over the
+// provider's text only chooses among these constants, so nothing it wrote crosses into `.message`;
+// an unrecognised refusal stays a bare status, and its words are in the process log.
+const REFUSALS: ReadonlyArray<readonly [RegExp, string]> = [
+  [
+    /dimensions? exceeds? max allowed size/i,
+    "image dimensions exceed max allowed size",
+  ],
+  [/image exceeds .*maximum/i, "image bytes exceed max allowed size"],
+];
+
+function refusalOf(providerMessage: string | null): string | null {
+  if (!providerMessage) return null;
+  for (const [pattern, refusal] of REFUSALS)
+    if (pattern.test(providerMessage)) return refusal;
+  return null;
+}
+
+// How much of a failed body is read (the rest is cancelled, so an enormous one costs nothing) and
+// how much of the message is kept on the line.
+const MAX_ERROR_BODY = 16_384;
+const MAX_PROVIDER_MESSAGE = 300;
+
+// The `error.message` every vendor here nests the same way (Anthropic, OpenAI, Gemini). Read off the
+// prefix and not only through JSON.parse, because a body cut at the read cap is no longer JSON and
+// its message is still the first thing in it. Anything that is not that field is dropped: an HTML
+// error page or a proxy's prose says nothing the status does not.
+async function readProviderMessage(res: Response): Promise<string | null> {
+  try {
+    if (!res.body) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    while (text.length < MAX_ERROR_BODY) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    await reader.cancel().catch(() => {});
+    const raw = /"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(text)?.[1];
+    if (!raw) return null;
+    let message: string;
+    try {
+      message = JSON.parse(`"${raw}"`) as string;
+    } catch {
+      message = raw;
+    }
+    message = message.replace(/\s+/g, " ").trim();
+    return message ? clipText(message, MAX_PROVIDER_MESSAGE) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The provider's words go to the process log, which makes no PII promise and is the only place a
+// refusal outside REFUSALS is explained.
+async function failure(provider: string, res: Response): Promise<VisionError> {
+  const providerMessage = await readProviderMessage(res);
+  if (providerMessage)
+    logger.warn(
+      { provider, status: res.status, providerMessage },
+      "vision provider refused the request",
+    );
+  return new VisionError(provider, res.status, providerMessage);
 }
 
 function base64(bytes: ArrayBuffer): string {
@@ -183,7 +258,7 @@ async function chatCompletionsExtract(
     redirect: "error",
     signal: AbortSignal.timeout(req.timeoutMs),
   });
-  if (!res.ok) throw new VisionError(providerName, res.status);
+  if (!res.ok) throw await failure(providerName, res);
   const json = (await res.json()) as {
     choices?: Array<{
       message?: { content?: string };
@@ -270,7 +345,7 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
       signal: AbortSignal.timeout(req.timeoutMs),
     },
   );
-  if (!res.ok) throw new VisionError("gemini", res.status);
+  if (!res.ok) throw await failure("gemini", res);
   const json = (await res.json()) as {
     candidates?: Array<{
       content?: { parts?: Array<{ text?: string }> };
@@ -362,7 +437,7 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
     redirect: "error",
     signal: AbortSignal.timeout(req.timeoutMs),
   });
-  if (!res.ok) throw new VisionError("anthropic", res.status);
+  if (!res.ok) throw await failure("anthropic", res);
   const json = (await res.json()) as {
     content?: Array<{ type?: string; text?: string }>;
     stop_reason?: string | null;

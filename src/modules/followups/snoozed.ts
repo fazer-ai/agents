@@ -84,7 +84,8 @@ const ANCHOR_TEXT_MAX = 1500;
 // Called by the per-tenant FOLLOWUP_SWEEP pass with the agents whose snoozed ladder is ON. Nominates
 // every conversation the mirror says is snoozed and held by a person, on an inbox one of those agents
 // serves, that has no job in flight, or whose job is older than the conversation's last event (the
-// person wrote again, the customer answered, the labels changed: the handler re-decides from scratch).
+// person wrote again, the customer answered, the labels changed, the snooze or the holder moved: the
+// handler re-decides from scratch).
 // The handler is what judges the end date, the anchor and the cadence, live.
 export async function sweepSnoozedFollowUps(
   base: PrismaClient,
@@ -97,8 +98,18 @@ export async function sweepSnoozedFollowUps(
     base,
     sysCtx(tenantId),
     (db) =>
-      db.$queryRaw<Array<{ thread_id: string }>>`
-      SELECT c.thread_id
+      db.$queryRaw<Array<{ thread_id: string; finished: boolean }>>`
+      SELECT c.thread_id,
+             -- A row whose run finished (DONE or DEAD) spent its budget on what that run saw; what
+             -- re-arms it now is an event after it, so the arm is new work with a fresh budget.
+             EXISTS (
+               SELECT 1
+                 FROM scheduler_jobs jf
+                WHERE jf.tenant_id = c.tenant_id
+                  AND jf.kind = 'SNOOZED_FOLLOWUP'
+                  AND jf.dedupe_key = ${SNOOZED_DEDUPE_PREFIX} || c.thread_id
+                  AND jf.status IN ('DONE', 'DEAD')
+             ) AS finished
         FROM conversations c
         JOIN inboxes i ON i.id = c.inbox_id
         JOIN agents a ON a.id = i.agent_id
@@ -122,10 +133,15 @@ export async function sweepSnoozedFollowUps(
               AND (
                 -- A run in flight is left alone. Otherwise the watermark is the last run's START
                 -- (its live read comes after the claim), or the arming for a row never run: an event
-                -- after it is one no run has seen, even when that run completed later.
+                -- after it is one no run has seen, even when that run completed later. The event is
+                -- the later of the last message and the last status or holder change, which
+                -- last_event_at (Chatwoot last_activity_at) does not move with.
                 j.status = 'CLAIMED'
-                OR c.last_event_at IS NULL
-                OR COALESCE(j.claimed_at, j.updated_at) >= c.last_event_at
+                OR COALESCE(j.claimed_at, j.updated_at) >= GREATEST(
+                  c.last_event_at,
+                  to_timestamp(c.chatwoot_status_at)
+                )
+                OR (c.last_event_at IS NULL AND c.chatwoot_status_at IS NULL)
               )
          )
        LIMIT 500`,
@@ -138,7 +154,7 @@ export async function sweepSnoozedFollowUps(
       kind: "SNOOZED_FOLLOWUP",
       dedupeKey: snoozedDedupeKey(t.thread_id),
       runAt: new Date(),
-      rearm: "same-work",
+      rearm: t.finished ? "new-work" : "same-work",
       payload: { threadId: t.thread_id },
       base,
     });
@@ -399,15 +415,15 @@ export async function snoozedFollowUpHandler(
   const isLast = stepIndex === cadence.steps.length - 1;
 
   // Records the step as spent on THIS anchor. Under the same retirement fence the bot's ladder uses:
-  // a job retired while it ran does not move the ladder.
-  const stampStep = async (): Promise<boolean> => {
+  // a job retired while it ran does not move the ladder. `ended` spends the whole ladder instead.
+  const stampStep = async (ended = false): Promise<boolean> => {
     if (await jobRetired(job, base)) return false;
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.conversation.update({
         where: { id: ctx.conv.id },
         data: {
           snoozedFollowUpAnchorId: anchor.messageId,
-          snoozedFollowUpStep: stepIndex + 1,
+          snoozedFollowUpStep: ended ? cadence.steps.length : stepIndex + 1,
           snoozedFollowUpAt: new Date(),
         },
       }),
@@ -470,8 +486,13 @@ export async function snoozedFollowUpHandler(
     };
   }
   // No reminder reached the customer (the WhatsApp window closed and no template is configured): the
-  // ladder stops here, as the bot's does, and leaves the conversation to the person, unresolved.
-  if (outcome === "noted-window") return { outcome: "done" };
+  // ladder ENDS on this message of the person, as the bot's does, and leaves the conversation to them,
+  // unresolved. Recorded, because the note just written is itself an event the sweep would re-arm on,
+  // and a re-armed run would write it again; spent whole, so no later closing step runs.
+  if (outcome === "noted-window") {
+    await stampStep(true);
+    return { outcome: "done" };
+  }
   if (outcome === "live-unavailable") {
     return {
       outcome: "reschedule",

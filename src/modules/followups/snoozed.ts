@@ -31,7 +31,11 @@ import { closesWithoutModel, stepDelayMinutes } from "./settings";
 import {
   pickSnoozedCadence,
   readSnoozedFollowUpConfig,
+  SNOOZED_DEDUPE_PREFIX,
+  snoozedDedupeKey,
 } from "./snoozed-settings";
+
+export { snoozedDedupeKey } from "./snoozed-settings";
 
 // THE SNOOZED LADDER. A person asked the customer for something and snoozed the
 // conversation in Chatwoot "until next reply"; if the customer never answers, nothing happens and the
@@ -48,7 +52,6 @@ import {
 // newest messages (which message of the person the ladder chases, and whether the customer spoke
 // after it). The conversation row keeps only where the ladder stands on that message.
 
-const SNOOZED_DEDUPE_PREFIX = "snoozed-followup:";
 // How many message pages the handler walks back looking for the person's message. The newest page is
 // twenty messages; the ladder adds at most ten of its own, so three pages cover any ladder with room
 // for the activity lines automations write. Past that, the anchor is too old to chase anyway.
@@ -59,10 +62,6 @@ const LIVE_UNAVAILABLE_BACKOFF_MS = 60_000;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
-export function snoozedDedupeKey(threadId: string): string {
-  return `${SNOOZED_DEDUPE_PREFIX}${threadId}`;
 }
 
 // A message page read for a decision. `parseChatwootMessages` folds an empty page, a non-list body and

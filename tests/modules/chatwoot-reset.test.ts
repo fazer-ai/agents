@@ -2373,6 +2373,39 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // The snoozed ladder's step is the same shape: claimed, past its first probe, and able to label,
+    // resolve and stamp the conversation the command just took back.
+    test("a snoozed follow-up already claimed is tombstoned too", async () => {
+      const dedupeKey = `snoozed-followup:${tenantId}:${instanceId}:${CONV_ID}`;
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "SNOOZED_FOLLOWUP",
+          dedupeKey,
+          runAt: new Date(),
+          status: "CLAIMED",
+          payload: { threadId: `${tenantId}:${instanceId}:${CONV_ID}` },
+        },
+      });
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl as typeof fetch;
+      try {
+        await sendReset();
+
+        const row = await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, kind: "SNOOZED_FOLLOWUP", dedupeKey },
+          select: { payload: true, claimSeq: true },
+        });
+        expect(
+          (row.payload as { cancelledAt?: string })?.cancelledAt,
+        ).toBeString();
+        expect(row.claimSeq).toBe(1);
+      } finally {
+        globalThis.fetch = originalFetch;
+        await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+      }
+    });
+
     // The one writer this step's lock does not hold back: a turn already inside `graph.invoke`. It
     // saves what it LOADED plus its own messages, so a clear landing mid-invoke is undone the moment
     // it finishes — and the half that is NOT undone is the summary rows and the marker, which nothing

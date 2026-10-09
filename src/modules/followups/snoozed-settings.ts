@@ -17,6 +17,14 @@ import { type FollowUpStep, parseFollowUpStep } from "./settings";
 
 export { SNOOZED_FOLLOW_UP_MAX_CADENCES } from "@/modules/agents/text-caps";
 
+// One SNOOZED_FOLLOWUP row per conversation. Here, beside the config, so the /reset path can name it
+// without importing the handler and the graph behind it.
+export const SNOOZED_DEDUPE_PREFIX = "snoozed-followup:";
+
+export function snoozedDedupeKey(threadId: string): string {
+  return `${SNOOZED_DEDUPE_PREFIX}${threadId}`;
+}
+
 export interface SnoozedFollowUpCadence {
   // The Chatwoot label that selects this cadence. null = the default cadence.
   label: string | null;

@@ -72,10 +72,13 @@ export function ApprovalsPage() {
     }
   }, []);
 
+  // Read on arrival and again on every return to the waiting tab: requests arrive and are decided while
+  // the history is open, and the queue must not show the snapshot from before.
   useEffect(() => {
+    if (tab !== "pending") return;
     void load();
     refresh();
-  }, [load, refresh]);
+  }, [tab, load, refresh]);
 
   const loadMore = async () => {
     if (!nextAfter) return;

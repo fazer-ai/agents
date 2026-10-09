@@ -26,6 +26,7 @@ import {
 } from "@/client/components";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
+import { serverNow } from "@/client/lib/serverClock";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
 type ConversationsData = Awaited<
@@ -319,11 +320,38 @@ export function ConversationsPage() {
     };
   }, [fetchConversations]);
 
+  // A conversation event can come with an approval decided, opened or expired, and the row's flag is
+  // not in the event: it is asked again, for that conversation alone.
+  const refreshAwaitingApproval = useCallback(
+    async (conversationId: string) => {
+      try {
+        const { data } = await api.api.v1["document-approvals"].get({
+          query: { conversationId, status: "PENDING", limit: "50" },
+        });
+        if (!data) return;
+        const awaiting = data.requests.some(
+          (r) => new Date(r.expiresAt).getTime() > serverNow(),
+        );
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === conversationId && c.awaitingApproval !== awaiting
+              ? { ...c, awaitingApproval: awaiting }
+              : c,
+          ),
+        );
+      } catch {
+        // The flag stays as the list last read it; the next event or load asks again.
+      }
+    },
+    [],
+  );
+
   // Live updates on the active tenant's channel. Known rows merge in place (and
   // re-sort by recency); an unknown id (a brand-new conversation) triggers a
   // lightweight refetch so it appears without a full reload.
   useTenantEvents({
     onConversation: (event) => {
+      void refreshAwaitingApproval(event.conversationId);
       setConversations((prev) => {
         const current = prev.find((c) => c.id === event.conversationId);
         if (!current) {

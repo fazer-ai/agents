@@ -49,6 +49,10 @@ let knowledgeFails = false;
 let knowledgeNone = false;
 // Decided rows the history answers before the default one, set per test.
 let extraDecided: unknown[] | (() => unknown[]) = [];
+// The history answers only the rows a test sets, without the default one, when true.
+let decidedOnlyExtra = false;
+// The history's next cursor, set per test.
+let decidedCursor: string | null = null;
 // One request read by id, set per test.
 let requestById: Record<string, unknown> = {};
 
@@ -80,9 +84,14 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ request: requestById[single[1]] });
   }
   if (url.includes("/document-approvals/decided")) {
+    const extra =
+      typeof extraDecided === "function" ? extraDecided() : extraDecided;
+    if (decidedOnlyExtra) {
+      return json({ requests: extra, nextCursor: decidedCursor });
+    }
     return json({
       requests: [
-        ...(typeof extraDecided === "function" ? extraDecided() : extraDecided),
+        ...extra,
         {
           ...DOCUMENT,
           id: "40",
@@ -92,7 +101,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
           outcome: "DELIVERED",
         },
       ],
-      nextCursor: null,
+      nextCursor: decidedCursor,
     });
   }
   if (url.includes("/document-approvals/pending")) {
@@ -155,6 +164,8 @@ afterEach(() => {
   decided = false;
   extraDecided = [];
   requestById = {};
+  decidedCursor = null;
+  decidedOnlyExtra = false;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -515,4 +526,61 @@ test("an outcome still landing on a row the first page no longer carries is read
       ).toContain("Sent to the customer"),
     { timeout: 8000 },
   );
+}, 12_000);
+
+test("returning to the waiting tab reads the queue again", async () => {
+  role = "AGENT";
+  mount(<ApprovalsPage />);
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  fireEvent.click(screen.getByRole("tab", { name: "History" }));
+  pending = () => ({ requests: [], total: 0, nextAfter: null });
+  fireEvent.click(screen.getByRole("tab", { name: /Waiting/ }));
+  await screen.findByText("No document is waiting for approval.");
+});
+
+test("a history refresh with nothing in common with what is shown starts over with its own cursor", async () => {
+  role = "AGENT";
+  decidedOnlyExtra = true;
+  let reads = 0;
+  extraDecided = () => {
+    reads += 1;
+    if (reads === 1) {
+      return [
+        {
+          ...DOCUMENT,
+          id: "60",
+          contactName: "Rita Gomes",
+          status: "APPROVED",
+          decidedAt: new Date().toISOString(),
+          reviewerName: null,
+          outcome: null,
+          issuedDocumentId: "4",
+        },
+      ];
+    }
+    decidedCursor = "70";
+    return [
+      {
+        ...DOCUMENT,
+        id: "71",
+        contactName: "Caio Prado",
+        status: "REJECTED",
+        decidedAt: new Date().toISOString(),
+        reviewerName: null,
+        outcome: "HANDED",
+        issuedDocumentId: null,
+      },
+    ];
+  };
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  await screen.findByRole("link", { name: /for Rita Gomes/ });
+  await screen.findByRole(
+    "link",
+    { name: /for Caio Prado/ },
+    { timeout: 8000 },
+  );
+  // The rows from before the gap are gone, and the next page continues from the fresh cursor.
+  expect(screen.queryByRole("link", { name: /for Rita Gomes/ })).toBeNull();
+  await screen.findByRole("button", { name: "Show more" });
 }, 12_000);

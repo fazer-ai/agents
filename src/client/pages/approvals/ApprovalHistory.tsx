@@ -143,6 +143,15 @@ export function ApprovalHistory() {
         // order (those a newer decision pushed off the first page, and the later pages): the latest
         // decisions sit on the first page, so a decision taken meanwhile and an outcome still
         // landing are both in what was just read.
+        // More decisions than a page since the last read leave nothing in common with what is shown:
+        // keeping both would leave a gap the old cursor skips, so the history starts over from the
+        // page just read, with its own cursor.
+        const shownIds = new Set((shownRef.current ?? []).map((r) => r.id));
+        if (!data.requests.some((r) => shownIds.has(r.id))) {
+          setRequests(data.requests);
+          setNextCursor(data.nextCursor);
+          return;
+        }
         setRequests((prev) => {
           if (!prev) return data.requests;
           return [

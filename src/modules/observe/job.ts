@@ -1627,6 +1627,7 @@ export async function runObserve(
           ...(p.atMessageId != null ? { messageId: p.atMessageId } : {}),
           ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
           stillWanted: () => fence(),
+          writesAlone: () => gatedByRule,
           onLabelsWritten: (write) => labelWrites.push(write),
           onNoEffect: (toolName: string) => {
             if (counted.has(toolName)) noEffect++;

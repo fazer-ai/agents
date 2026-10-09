@@ -412,6 +412,10 @@ export interface ToolCtx {
   // reads. The cost is the window: a label another writer puts on in between is not in the set that
   // goes back, so a caller whose model thinks for seconds does not hand this over.
   conversationLabelsRead?: { labels: string[]; at: number };
+  // WHETHER EACH CONVERSATION WRITE GOES OUT ALONE, asked at every call. True for a caller whose
+  // fence reads what these tools write (a watcher under a contact gate with conditions): calls
+  // sharing one write would share one verdict, reached before any of them had written.
+  writesAlone?: () => boolean;
   // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE. Operator control labels live on the same
   // conversation as the classifier's, and this list keeps the agent from moving one on purpose (the
   // delta already keeps an unnamed label standing). The model still sees them: see applyLabelDelta
@@ -963,7 +967,10 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           // NOTE: The conversation branch has no wait of its own before the call, so this is the ONLY
           // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
           // inside exactly the window the queue and the re-read open.
-          { stillWanted: ctx.stillWanted },
+          {
+            stillWanted: ctx.stillWanted,
+            ...(ctx.writesAlone?.() ? { alone: true } : {}),
+          },
         );
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
@@ -1549,7 +1556,10 @@ function setLabelsTool(ctx: ToolCtx) {
       // joined, so a call is never merged ahead of a writer queued in between.
       return new Promise<string>((resolve, reject) => {
         const mine: PendingLabelDelta = { add, remove, resolve, reject };
-        const tail = conversationLabelsTail(ctx.tenantId, ctx.conversationId);
+        const alone = ctx.writesAlone?.() === true;
+        const tail = alone
+          ? undefined
+          : conversationLabelsTail(ctx.tenantId, ctx.conversationId);
         if (tail instanceof LabelBatch && tail.ctx === ctx) {
           tail.deltas.push(mine);
           return;
@@ -1560,7 +1570,7 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.tenantId,
           ctx.conversationId,
           () => writeConversationLabels(batch),
-          batch,
+          alone ? undefined : batch,
         );
       });
     },

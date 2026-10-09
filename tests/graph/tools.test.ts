@@ -1455,6 +1455,34 @@ describe("native tools", () => {
     expect(String(reports[1])).toContain('Now set: "a", "b"');
   });
 
+  test("calls of a caller whose writes go out alone are one write each, in order", async () => {
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+      writesAlone: () => true,
+    });
+    const tool = byName(tools, "set_labels");
+    await Promise.all([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
+    ]);
+    expect(setCalls).toEqual([
+      [9, ["a"]],
+      [9, ["a", "b"]],
+    ]);
+  });
+
   test("a call that arrives after the write has gone out reads what it left", async () => {
     let current: string[] = [];
     const setCalls: unknown[][] = [];

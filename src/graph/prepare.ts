@@ -1105,6 +1105,8 @@ export interface ToolsetCtx {
   // The same read, dated, for a caller whose writes follow it at once: `set_labels` then applies
   // its delta to it instead of reading again (`ToolCtx.conversationLabelsRead`).
   conversationLabelsRead?: { labels: string[]; at: number };
+  // Whether each conversation write goes out alone (`ToolCtx.writesAlone`).
+  writesAlone?: () => boolean;
   // Chatwoot id of the message that triggered this turn, exposed to HTTP tools as {{message_id}}.
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
   // (the watermark), since the coalesced turn answers up to that message. 0/absent ⇒ not exposed.
@@ -1584,6 +1586,7 @@ export async function buildToolset(
       ...(ctx.conversationLabelsRead
         ? { conversationLabelsRead: ctx.conversationLabelsRead }
         : {}),
+      ...(ctx.writesAlone ? { writesAlone: ctx.writesAlone } : {}),
       protectedLabels: cfg.protectedLabels,
       resolveLabels: cfg.resolveLabels,
       resolveCaseHold: caseHoldOn(

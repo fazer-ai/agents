@@ -72,6 +72,32 @@ describe("custom attribute writes against endpoints that replace", () => {
     });
   });
 
+  test("calls asked to go alone are one read and one write each, and nobody joins them", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { produto: "cadeira" }),
+      c.setConversationCustomAttributes(
+        61,
+        { medida: "90cm" },
+        { alone: true },
+      ),
+      c.setConversationCustomAttributes(61, { produto: "mesa" }),
+    ]);
+    expect(cw.requests.map((r) => r.method)).toEqual([
+      "GET",
+      "POST",
+      "GET",
+      "POST",
+      "GET",
+      "POST",
+    ]);
+    expect(cw.conversations.get(61)).toEqual({
+      produto: "mesa",
+      medida: "90cm",
+    });
+  });
+
   test("a call that was called off is left out of the shared write and rejected alone", async () => {
     const cw = fakeChatwootAttributeStore(5);
     const c = await client(cw.fetchImpl);

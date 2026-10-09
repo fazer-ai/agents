@@ -842,7 +842,12 @@ export class ChatwootClient {
     // The caller's fence, asked INSIDE the queue right before the write. See the note at the call.
     // `asAdmin` writes with the admin token: a conversation in an inbox the bot does not serve (a
     // case opened in another inbox) refuses the bot.
-    opts: { stillWanted?: () => Promise<boolean>; asAdmin?: boolean } = {},
+    // `alone` keeps this call out of the shared write below: an entry of its own, joined by nobody.
+    opts: {
+      stillWanted?: () => Promise<boolean>;
+      asAdmin?: boolean;
+      alone?: boolean;
+    } = {},
   ): Promise<unknown> {
     // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: a call that finds this client's own entry at
     // the TAIL of the queue, its read still out, joins that entry, and the entry writes every call
@@ -859,7 +864,8 @@ export class ChatwootClient {
         reject,
         ...(opts.stillWanted ? { stillWanted: opts.stillWanted } : {}),
       };
-      const tail = keyedQueueTail(key);
+      const alone = opts.alone === true;
+      const tail = alone ? undefined : keyedQueueTail(key);
       if (
         tail instanceof AttributeBatch &&
         tail.owner === this &&
@@ -873,7 +879,7 @@ export class ChatwootClient {
       void withKeyedQueue(
         key,
         () => this.writeAttributeBatch(conversationId, key, batch),
-        batch,
+        alone ? undefined : batch,
       );
     });
   }

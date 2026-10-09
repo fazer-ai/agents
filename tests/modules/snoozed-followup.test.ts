@@ -135,6 +135,19 @@ describe("snoozed ladder: what the live read decides", () => {
     expect(spoke([row({ id: 19 })], 20)).toBe(false);
   });
 
+  test("a voice note's request reaches the reminder through its transcription", () => {
+    const a = anchorOf([
+      row({
+        id: 11,
+        content: "",
+        attachmentTypes: ["audio"],
+        transcribedText: "me manda o número do pedido",
+      }),
+    ]);
+    expect(a?.text).toContain("me manda o número do pedido");
+    expect(a?.text).toContain("<atendente enviou um arquivo do tipo 'audio'>");
+  });
+
   test("an operator's emoji reaction is neither a request nor an answer", () => {
     const a = anchorOf([
       row({ id: 11 }),

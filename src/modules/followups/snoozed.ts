@@ -20,6 +20,8 @@ import {
 import {
   isSnoozedForAPerson,
   parseLiveConversation,
+  providerReservesEchoIds,
+  SESSION_SENDER_NAME,
 } from "@/modules/chatwoot/normalize";
 import {
   type ClaimedJob,
@@ -201,31 +203,46 @@ export interface SnoozedAnchor {
   text: string;
 }
 
+// A message a PERSON on the team wrote to the customer, by either route `foreignReplyBoundary` trusts:
+// the Chatwoot composer (a `user` row the platform did not post under an admin token), or the phone
+// paired to the inbox's number (a sender-less row marked as the session's, trusted only where the
+// provider reserves echo ids). A reaction is a nod, not a request, and an imported row is old history
+// sorted under a new id.
+function personWrote(
+  r: ChatwootMessageRow,
+  opts: { whatsappProvider: string | null },
+): boolean {
+  if (r.messageType !== "outgoing" || r.private || r.isReaction || r.imported)
+    return false;
+  if (r.senderType === "user") return !r.platformSent;
+  return (
+    r.senderType === null &&
+    r.externalSenderName === SESSION_SENDER_NAME &&
+    providerReservesEchoIds(opts.whatsappProvider)
+  );
+}
+
+function customerWrote(r: ChatwootMessageRow): boolean {
+  return (
+    r.messageType === "incoming" && !r.private && !r.isReaction && !r.imported
+  );
+}
+
 export function findSnoozedAnchor(
   rows: readonly ChatwootMessageRow[],
+  // The inbox's WhatsApp provider, REQUIRED for the reason `isDeviceAttendantMessage` gives.
+  opts: { whatsappProvider: string | null },
 ): SnoozedAnchor | undefined {
   const sorted = [...rows].sort((a, b) => a.id - b.id);
   const newest = sorted.at(-1);
   if (!newest) return undefined;
   for (let i = sorted.length - 1; i >= 0; i--) {
     const m = sorted[i];
-    if (
-      m &&
-      m.messageType === "outgoing" &&
-      !m.private &&
-      m.senderType === "user" &&
-      // Sent by the platform under an admin token (a cross-inbox case opening): a user row that no
-      // person wrote.
-      !m.platformSent &&
-      m.createdAt
-    ) {
-      const after = sorted.slice(i + 1);
+    if (m && personWrote(m, opts) && m.createdAt) {
       return {
         messageId: m.id,
         at: m.createdAt,
-        customerSpokeAfter: after.some(
-          (r) => r.messageType === "incoming" && !r.private && !r.isReaction,
-        ),
+        customerSpokeAfter: sorted.slice(i + 1).some(customerWrote),
         newestMessageId: newest.id,
         text: clipText(m.content ?? "", ANCHOR_TEXT_MAX),
       };
@@ -240,15 +257,10 @@ export function findSnoozedAnchor(
 export function someoneSpokeAfter(
   rows: readonly ChatwootMessageRow[],
   baselineId: number,
+  opts: { whatsappProvider: string | null },
 ): boolean {
   return rows.some(
-    (r) =>
-      r.id > baselineId &&
-      !r.private &&
-      ((r.messageType === "incoming" && !r.isReaction) ||
-        (r.messageType === "outgoing" &&
-          r.senderType === "user" &&
-          !r.platformSent)),
+    (r) => r.id > baselineId && (customerWrote(r) || personWrote(r, opts)),
   );
 }
 
@@ -336,7 +348,7 @@ export async function snoozedFollowUpHandler(
     if (!conv?.inboxId) return null;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true },
+      select: { agentId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
     const agent = await db.agent.findUnique({
@@ -362,7 +374,13 @@ export async function snoozedFollowUpHandler(
           select: { windows: true, exceptions: true, timezone: true },
         })
       : null;
-    return { conv, cfg, armedAt: agent.snoozedFollowUpArmedAt, hours };
+    return {
+      conv,
+      cfg,
+      armedAt: agent.snoozedFollowUpArmedAt,
+      hours,
+      reply: { whatsappProvider: inbox.provider },
+    };
   });
   if (!ctx) return { outcome: "done" };
 
@@ -387,7 +405,7 @@ export async function snoozedFollowUpHandler(
         );
         if (got.length === 0) break;
         rows = rows.concat(got);
-        if (findSnoozedAnchor(rows)) break;
+        if (findSnoozedAnchor(rows, ctx.reply)) break;
         before = Math.min(...got.map((r) => r.id));
       }
     }
@@ -415,7 +433,7 @@ export async function snoozedFollowUpHandler(
   }
   // Unsnoozed, given to the bot, unassigned, resolved, or snoozed with an end date: not this ladder's.
   if (!isSnoozedForAPerson(live)) return { outcome: "done" };
-  const anchor = findSnoozedAnchor(rows);
+  const anchor = findSnoozedAnchor(rows, ctx.reply);
   if (!anchor || anchor.customerSpokeAfter) return { outcome: "done" };
   // The backlog fence: a person's message older than the switch-on is not chased.
   if (anchor.at < ctx.armedAt) return { outcome: "done" };
@@ -514,7 +532,7 @@ export async function snoozedFollowUpHandler(
             after: anchor.newestMessageId,
           }),
         );
-        return !someoneSpokeAfter(since, anchor.newestMessageId);
+        return !someoneSpokeAfter(since, anchor.newestMessageId, ctx.reply);
       } catch {
         messageReadFailed = true;
         return false;

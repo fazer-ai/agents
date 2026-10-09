@@ -71,9 +71,15 @@ function row(
   } as ChatwootMessageRow;
 }
 
+// An official-API inbox: the paired-phone marker is not trusted there.
+const CLOUD = { whatsappProvider: "whatsapp_cloud" };
+const anchorOf = (rows: ChatwootMessageRow[]) => findSnoozedAnchor(rows, CLOUD);
+const spoke = (rows: ChatwootMessageRow[], baselineId: number) =>
+  someoneSpokeAfter(rows, baselineId, CLOUD);
+
 describe("snoozed ladder: what the live read decides", () => {
   test("a person's public message is the anchor; a note and the bot's own message are not", () => {
-    const a = findSnoozedAnchor([
+    const a = anchorOf([
       row({ id: 10, messageType: "incoming", senderType: "contact" }),
       row({ id: 11 }),
       row({ id: 12, private: true }),
@@ -86,7 +92,7 @@ describe("snoozed ladder: what the live read decides", () => {
   });
 
   test("the customer writing after the person's message is seen", () => {
-    const a = findSnoozedAnchor([
+    const a = anchorOf([
       row({ id: 11 }),
       row({ id: 12, messageType: "incoming", senderType: "contact" }),
     ]);
@@ -94,19 +100,14 @@ describe("snoozed ladder: what the live read decides", () => {
   });
 
   test("a user row the platform sent is not a person asking, nor a person answering", () => {
-    const a = findSnoozedAnchor([
-      row({ id: 11 }),
-      row({ id: 12, platformSent: true }),
-    ]);
+    const a = anchorOf([row({ id: 11 }), row({ id: 12, platformSent: true })]);
     expect(a?.messageId).toBe(11);
-    expect(someoneSpokeAfter([row({ id: 21, platformSent: true })], 20)).toBe(
-      false,
-    );
+    expect(spoke([row({ id: 21, platformSent: true })], 20)).toBe(false);
   });
 
   test("no person's message on the page: no anchor", () => {
     expect(
-      findSnoozedAnchor([
+      anchorOf([
         row({ id: 1, messageType: "incoming", senderType: "contact" }),
         row({ id: 2, senderType: "agent_bot" }),
       ]),
@@ -115,7 +116,7 @@ describe("snoozed ladder: what the live read decides", () => {
 
   test("only a person or the customer speaking after the baseline counts", () => {
     expect(
-      someoneSpokeAfter(
+      spoke(
         [
           row({ id: 21, senderType: "agent_bot" }),
           row({ id: 22, messageType: "activity", senderType: null }),
@@ -124,14 +125,50 @@ describe("snoozed ladder: what the live read decides", () => {
         20,
       ),
     ).toBe(false);
-    expect(someoneSpokeAfter([row({ id: 21 })], 20)).toBe(true);
+    expect(spoke([row({ id: 21 })], 20)).toBe(true);
     expect(
-      someoneSpokeAfter(
+      spoke(
         [row({ id: 21, messageType: "incoming", senderType: "contact" })],
         20,
       ),
     ).toBe(true);
-    expect(someoneSpokeAfter([row({ id: 19 })], 20)).toBe(false);
+    expect(spoke([row({ id: 19 })], 20)).toBe(false);
+  });
+
+  test("an operator's emoji reaction is neither a request nor an answer", () => {
+    const a = anchorOf([
+      row({ id: 11 }),
+      row({ id: 12, messageType: "incoming", senderType: "contact" }),
+      row({ id: 13, isReaction: true, content: "👍" }),
+    ]);
+    expect(a?.messageId).toBe(11);
+    expect(a?.customerSpokeAfter).toBe(true);
+    expect(spoke([row({ id: 21, isReaction: true })], 20)).toBe(false);
+  });
+
+  test("a reply typed on the paired phone counts where the provider reserves echo ids, only there", () => {
+    const phone = (id: number) =>
+      row({
+        id,
+        senderType: null,
+        senderId: null,
+        externalSenderName: "WhatsApp",
+      });
+    const baileys = { whatsappProvider: "baileys" };
+    const a = findSnoozedAnchor([row({ id: 11 }), phone(12)], baileys);
+    expect(a?.messageId).toBe(12);
+    expect(someoneSpokeAfter([phone(21)], 20, baileys)).toBe(true);
+    // An unreserved provider's echo of our own reply wears the same marker.
+    expect(
+      findSnoozedAnchor([row({ id: 11 }), phone(12)], {
+        whatsappProvider: "zapi",
+      })?.messageId,
+    ).toBe(11);
+    expect(spoke([phone(21)], 20)).toBe(false);
+    // Old history the importer wrote with a new id is not a reply to anything live.
+    expect(
+      someoneSpokeAfter([{ ...phone(21), imported: true }], 20, baileys),
+    ).toBe(false);
   });
 
   test("step 0 counts from the person's message, later steps from the previous step", () => {

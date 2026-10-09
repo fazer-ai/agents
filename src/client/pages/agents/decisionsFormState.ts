@@ -118,7 +118,9 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
       return {
         key: `q${i}`,
         name: text(o.name),
-        type: text(o.type) || "yes_no",
+        // "" when the stored question has none: shown as a choice still to make, never as a type
+        // the block does not hold.
+        type: text(o.type),
         instructions: text(o.instructions),
         options: optionsToForm(o.options),
         levels: optionsToForm(o.levels),
@@ -193,7 +195,7 @@ export function decisionsToStored(
   out.questions = form.questions.map((q) => {
     const o: Record<string, unknown> = {};
     put(o, "name", q.name);
-    o.type = q.type;
+    put(o, "type", q.type);
     put(o, "instructions", q.instructions);
     if (q.type === "choice") o.options = optionsToStored(q.options);
     if (q.type === "score") o.levels = optionsToStored(q.levels);
@@ -269,9 +271,21 @@ export function issueFieldPath(issue: DecisionsIssue): string {
 export type DecisionsIssueMap = ReadonlyMap<string, DecisionsIssue>;
 
 // The first problem at each field, by the dotted path the field is drawn at.
-export function decisionsFormIssues(form: DecisionsForm): DecisionsIssueMap {
+//
+// Asked of THE BLOCK A SAVE WOULD WRITE. With `stored` given and the form untouched that is the
+// stored block itself, not the form's reading of it: the form fills in what a stored block lacks
+// (an option's empty description), and judging that reading would call a block the engine refuses
+// sound, on a screen whose save then writes it back unchanged.
+export function decisionsFormIssues(
+  form: DecisionsForm,
+  stored?: Record<string, unknown> | null,
+): DecisionsIssueMap {
   const out = new Map<string, DecisionsIssue>();
-  for (const issue of decisionsIssues(decisionsToStored(form))) {
+  const block =
+    stored && decisionsUntouched(form, stored)
+      ? stored
+      : decisionsToStored(form);
+  for (const issue of decisionsIssues(block)) {
     const at = issueFieldPath(issue);
     if (!out.has(at)) out.set(at, issue);
   }

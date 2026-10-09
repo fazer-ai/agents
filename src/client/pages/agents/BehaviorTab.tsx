@@ -1562,7 +1562,8 @@ export function BehaviorTab({
     mode === "monitoring" &&
     observation.engine === "decisions" &&
     observation.decisions !== null &&
-    decisionsFormIssues(observation.decisions).size > 0;
+    decisionsFormIssues(observation.decisions, observation.storedDecisions)
+      .size > 0;
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,

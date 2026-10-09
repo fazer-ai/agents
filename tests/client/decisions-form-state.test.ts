@@ -392,6 +392,51 @@ describe("the form marks what the server refuses, at the field", () => {
   });
 });
 
+// The form fills in what a stored block lacks so it can be drawn. Judging that reading instead of
+// the block would call sound a block the engine refuses, on a screen whose save writes it back.
+describe("a stored block the engine refuses is not shown as sound", () => {
+  // The fixture as plain JSON, so a key can be taken out of it.
+  const raw = () =>
+    JSON.parse(JSON.stringify(BLOCK)) as {
+      questions: Record<string, unknown>[];
+    } & Record<string, unknown>;
+
+  test("a question stored without a type shows the type as still to pick, and says so", () => {
+    const block = raw();
+    delete got(block.questions[0]).type;
+    expect(decisionsSchema.safeParse(block).success).toBe(false);
+    const form = formOf(block);
+    expect(form.questions[0]?.type).toBe("");
+    expect([...decisionsFormIssues(form, block).keys()]).toContain(
+      "questions.0.type",
+    );
+    // Picking the type is an edit, and it is written.
+    got(form.questions[0]).type = "yes_no";
+    expect(decisionsUntouched(form, block)).toBe(false);
+    expect(decisionsFormIssues(form, block).size).toBe(0);
+    expect(decisionsToStored(form)).toEqual(BLOCK);
+  });
+
+  test("an untouched form is judged by the block a save writes back, not by its own reading", () => {
+    // An option with no `description`: the form reads it as empty, the boundary asks for the key.
+    const block = raw();
+    const options = got(block.questions[1]).options as Record<
+      string,
+      unknown
+    >[];
+    delete got(options[1]).description;
+    expect(decisionsSchema.safeParse(block).success).toBe(false);
+    const form = formOf(block);
+    expect(decisionsFormIssues(form).size).toBe(0);
+    expect([...decisionsFormIssues(form, block).keys()]).toEqual([
+      "questions.1.options.1.description",
+    ]);
+    // Any edit writes the form's block, which carries the key, and the problem is gone.
+    form.apply = "enforce";
+    expect(decisionsFormIssues(form, block).size).toBe(0);
+  });
+});
+
 describe("a rule that names something that no longer exists is broken", () => {
   test("a valid block has no broken rule", () => {
     const issues = decisionsFormIssues(formOf(BLOCK));

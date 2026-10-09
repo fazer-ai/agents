@@ -263,6 +263,7 @@ export function DecisionsFields({
   savedAt,
   storedBlock,
   storedRuleCount,
+  storedDecisions,
   decisions,
   setDecisions,
   credentialError,
@@ -276,13 +277,18 @@ export function DecisionsFields({
   storedBlock: string | null;
   // How many rules that stored block has (a line is read against the list it indexes).
   storedRuleCount: number;
+  // The block as stored: an untouched form is judged by it, since it is what a save writes back.
+  storedDecisions: Record<string, unknown> | null;
   decisions: DecisionsForm;
   setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
   credentialError: string | null;
   serverRefusal: DecisionsServerRefusal | null;
 }) {
   const { t } = useTranslation();
-  const issues = useMemo(() => decisionsFormIssues(decisions), [decisions]);
+  const issues = useMemo(
+    () => decisionsFormIssues(decisions, storedDecisions),
+    [decisions, storedDecisions],
+  );
 
   const [labels, setLabels] = useState<InboxLabelOption[]>([]);
   const [attributes, setAttributes] = useState<CustomAttribute[]>([]);
@@ -980,11 +986,17 @@ export function DecisionsFields({
           error={field("provider")}
         >
           <Select
-            value={provider}
+            value={decisions.provider}
             onChange={(e) => patch({ provider: e.target.value, model: "" })}
           >
-            {!DECISION_PROVIDERS.includes(provider) && (
-              <option value={provider}>{provider}</option>
+            {!DECISION_PROVIDERS.includes(
+              decisions.provider as DecisionProvider,
+            ) && (
+              <option value={decisions.provider}>
+                {decisions.provider === ""
+                  ? t("editor.decisionsPick", "Pick…")
+                  : decisions.provider}
+              </option>
             )}
             <option value="openai">{PROVIDER_NAMES.openai}</option>
             <option value="typesafe">{PROVIDER_NAMES.typesafe}</option>
@@ -1193,7 +1205,13 @@ export function DecisionsFields({
                       >
                         {!DECISION_QUESTION_TYPES.includes(
                           q.type as "yes_no",
-                        ) && <option value={q.type}>{q.type}</option>}
+                        ) && (
+                          <option value={q.type}>
+                            {q.type === ""
+                              ? t("editor.decisionsPick", "Pick…")
+                              : q.type}
+                          </option>
+                        )}
                         {DECISION_QUESTION_TYPES.map((type) => (
                           <option key={type} value={type}>
                             {typeLabel(type)}

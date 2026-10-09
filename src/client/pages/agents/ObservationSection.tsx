@@ -184,6 +184,7 @@ export function ObservationSection({
           agentId={agentId}
           savedAt={savedAt}
           storedBlock={decisionsBlockFingerprint(observation.storedDecisions)}
+          storedDecisions={observation.storedDecisions}
           storedRuleCount={
             Array.isArray(observation.storedDecisions?.rules)
               ? observation.storedDecisions.rules.length

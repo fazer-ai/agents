@@ -824,6 +824,7 @@ async function runRecovery(params: {
         // because the pairing DOES move.
         contactInboxId,
         ...(sender !== undefined ? { sender } : {}),
+        ...(mirrorNow ? {} : conversationFactsOf(liveRaw)),
         redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
         // NOTE: a resolve that lands after this read is not ordered away here, by the delivery path's
@@ -1358,6 +1359,26 @@ async function contactToStateFor(p: {
     }),
   );
   return known ? { id } : live;
+}
+
+// The attributes and labels a REST conversation states, for the body of one the mirror never learned.
+function conversationFactsOf(raw: unknown): {
+  customAttributes?: Record<string, unknown>;
+  labels?: string[];
+} {
+  if (!isRecord(raw)) return {};
+  return {
+    ...(isRecord(raw.custom_attributes)
+      ? { customAttributes: raw.custom_attributes }
+      : {}),
+    ...(Array.isArray(raw.labels)
+      ? {
+          labels: raw.labels.filter(
+            (l): l is string => typeof l === "string" && l.length > 0,
+          ),
+        }
+      : {}),
+  };
 }
 
 // The contact a REST conversation names, `meta.sender.id`.

@@ -30,6 +30,11 @@ export interface RecoveryConversation {
   // recovery chose to state it (see `contactToStateFor` in ./recover-delivery.ts). Absent everywhere
   // else, for the reason in the header.
   sender?: Record<string, unknown>;
+  // ...and the conversation's own attributes and labels, from the live read, for the same
+  // conversation only: with no row there is nothing a stale read could undo, and a row created
+  // without them answers the contact gate's label and attribute rules with empty values.
+  customAttributes?: Record<string, unknown>;
+  labels?: string[];
 }
 
 // A message as the REST read gives it. REST and the wire spell two fields differently: `message_type`
@@ -132,6 +137,10 @@ export function buildRecoveryPayload(params: {
       : {}),
     conversation: {
       id: c.chatwootConversationId,
+      ...(c.customAttributes !== undefined
+        ? { custom_attributes: c.customAttributes }
+        : {}),
+      ...(c.labels !== undefined ? { labels: c.labels } : {}),
       ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
       status: c.status,
       // ALWAYS emitted, nil included, because PRESENCE of this key is the statement the normalizer

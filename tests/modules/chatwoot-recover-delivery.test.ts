@@ -157,6 +157,8 @@ function stubChatwoot(opts: {
   conv?: {
     // A snapshot with no `meta` at all: Chatwoot saying nothing about who holds it.
     noMeta?: boolean;
+    customAttributes?: Record<string, unknown>;
+    labels?: string[];
     status?: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
@@ -178,6 +180,10 @@ function stubChatwoot(opts: {
         inbox_id: CHATWOOT_INBOX_ID,
         last_activity_at: c.lastActivityAt ?? SENT_AT,
         timestamp: c.lastActivityAt ?? SENT_AT,
+        ...(c.customAttributes
+          ? { custom_attributes: c.customAttributes }
+          : {}),
+        ...(c.labels ? { labels: c.labels } : {}),
         meta: c.noMeta
           ? undefined
           : {
@@ -833,6 +839,32 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         where: { tenantId, chatwootConversationId: convId },
       });
       await dropContact(77);
+    });
+
+    test("carries the conversation's attributes and labels into the row it creates", async () => {
+      const convId = 7313;
+      const messageId = 7813;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { customAttributes: { plano: "ouro" }, labels: ["vip"] },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      // What a contact gate's label and attribute rules read, from Chatwoot rather than empty.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { customAttributes: true, labels: true },
+      });
+      expect(row.customAttributes).toEqual({ plano: "ouro" });
+      expect(row.labels).toEqual(["vip"]);
     });
 
     test("is not answered when Chatwoot does not say who holds it", async () => {

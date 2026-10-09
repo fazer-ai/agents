@@ -364,15 +364,21 @@ const ADAM7 = [
   [0, 1, 1, 2],
 ] as const;
 
+// pngjs keeps one Buffer per scanline until the end of the decode, so the row count costs memory of
+// its own that the pixel cap does not see (a 1x50,000,000 image is under the cap). A side this long
+// is no photo or screenshot anyone sends.
+const PNG_MAX_ROWS = 100_000;
+
 // The pixel cap holds only if pngjs decodes the size headerPixels read, and pngjs trusts neither
 // side of that: it takes the LAST IHDR it meets, and inflates an interlaced image with no output
 // limit, so a few KB of IDAT can expand to gigabytes before it notices the excess. So the chunk
 // list is walked first (one IHDR: only the first chunk may be one), and the IDAT stream is inflated
 // against the exact length that IHDR implies; only a file that fits is handed to pngjs.
-function boundPngInflate(bytes: ArrayBuffer): void {
+function checkPngStructure(bytes: ArrayBuffer): void {
   const v = new DataView(bytes);
   const idat: Uint8Array[] = [];
   let ihdr: number | null = null;
+  let palettes = 0;
   let i = 8;
   while (i + 12 <= bytes.byteLength) {
     const length = v.getUint32(i);
@@ -383,6 +389,10 @@ function boundPngInflate(bytes: ArrayBuffer): void {
       if (i !== 8 || length !== 13)
         throw new MediaConversionError("png has a misplaced or repeated IHDR");
       ihdr = data;
+    } else if (type === "PLTE") {
+      // pngjs appends every entry of every PLTE to one array, with no 256-entry limit.
+      if (palettes++ > 0 || length > 768 || length % 3 !== 0)
+        throw new MediaConversionError("png has a repeated or oversized PLTE");
     } else if (type === "IDAT") {
       idat.push(new Uint8Array(bytes, data, length));
     } else if (type === "IEND") {
@@ -399,6 +409,10 @@ function boundPngInflate(bytes: ArrayBuffer): void {
   const interlaced = v.getUint8(ihdr + 12) === 1;
   if (channels === undefined)
     throw new MediaConversionError("png declares an unknown color type");
+  if (height > PNG_MAX_ROWS)
+    throw new MediaConversionError(
+      `png is ${height} rows tall, over the ${PNG_MAX_ROWS} the decoder is held to`,
+    );
   if (!PNG_DEPTHS[colorType]?.includes(depth))
     throw new MediaConversionError(
       "png declares a bit depth its color type does not allow",
@@ -430,7 +444,7 @@ async function pngFit(
   if (!isPng(bytes))
     throw new MediaSourceMismatchError("declared as png but is not one");
   headerPixels(bytes, "image/png", opts.maxSourcePixels ?? MAX_SOURCE_PIXELS);
-  boundPngInflate(bytes);
+  checkPngStructure(bytes);
   // pngjs hands back 8-bit RGBA whatever the source (palette, 16-bit, interlaced), and a PNG may be
   // transparent, so this one takes the full tail: flatten, fit, encode.
   const png = PNG.sync.read(Buffer.from(bytes));

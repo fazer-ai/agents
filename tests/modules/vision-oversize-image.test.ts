@@ -394,6 +394,30 @@ describe("the fit converters", () => {
     expect(String(err.message)).toContain("bit depth");
   });
 
+  test("a repeated or oversized palette is refused before pngjs appends it", async () => {
+    const plte = chunk("PLTE", Buffer.alloc(768));
+    for (const palettes of [[plte, plte], [chunk("PLTE", Buffer.alloc(771))]]) {
+      const png = rawPng([
+        ihdr(10, 10, 0),
+        ...palettes,
+        chunk("IDAT", deflateSync(Buffer.alloc(10 * 41))),
+      ]);
+      await expect(runMediaConverter("png-fit", ab(png))).rejects.toThrow(
+        "PLTE",
+      );
+    }
+  });
+
+  test("a PNG taller than the decoder's row limit is refused, though under the pixel cap", async () => {
+    const png = rawPng([
+      ihdr(1, 200_000, 0),
+      chunk("IDAT", deflateSync(Buffer.alloc(200_000 * 5))),
+    ]);
+    await expect(runMediaConverter("png-fit", ab(png))).rejects.toThrow(
+      "rows tall",
+    );
+  });
+
   test("an honest interlaced PNG still converts", async () => {
     const png = rawPng([
       ihdr(37, 23, 1),
@@ -467,6 +491,31 @@ describe("a provider 4xx keeps the provider's own words", () => {
     expect(err.providerMessage).toContain(
       "exceed max allowed size: 8000 pixels",
     );
+  });
+
+  test("a failed body that stalls is read up to a deadline, not until the request times out", async () => {
+    const encoder = new TextEncoder();
+    const stalled = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                JSON.stringify({
+                  error: { message: "Overloaded" },
+                }).slice(0, -1),
+              ),
+            );
+            // Never closed: the rest of the body never comes.
+          },
+        }),
+        { status: 503 },
+      )) as unknown as typeof fetch;
+    const started = Date.now();
+    const err = await failureOf(stalled);
+    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(err.status).toBe(503);
+    expect(err.providerMessage).toBe("Overloaded");
   });
 
   test("an enormous message is cut, and a body that is not an error object adds nothing", async () => {

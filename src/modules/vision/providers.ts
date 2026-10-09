@@ -145,6 +145,9 @@ function refusalOf(providerMessage: string | null): string | null {
 // how much of the message is kept on the line.
 const MAX_ERROR_BODY = 16_384;
 const MAX_PROVIDER_MESSAGE = 300;
+// How long the failed body may take to arrive. It is diagnosis only, and a body that stalls must not
+// spend the time a retry of a 503 needs: past this, what arrived is read and the rest cancelled.
+const ERROR_BODY_DEADLINE_MS = 2_000;
 
 // The `error.message` every vendor here nests the same way (Anthropic, OpenAI, Gemini). Read off the
 // prefix and not only through JSON.parse, because a body cut at the read cap is no longer JSON and
@@ -155,11 +158,19 @@ async function readProviderMessage(res: Response): Promise<string | null> {
     if (!res.body) return null;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
+    const deadline = setTimeout(
+      () => reader.cancel().catch(() => {}),
+      ERROR_BODY_DEADLINE_MS,
+    );
     let text = "";
-    while (text.length < MAX_ERROR_BODY) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      text += decoder.decode(value, { stream: true });
+    try {
+      while (text.length < MAX_ERROR_BODY) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+    } finally {
+      clearTimeout(deadline);
     }
     await reader.cancel().catch(() => {});
     const raw = /"message"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(text)?.[1];

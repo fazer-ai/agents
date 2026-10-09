@@ -1011,6 +1011,7 @@ describe("runSandboxedCode", () => {
   // request and an unknown one cannot reach the shim through it.
   test("the interpreter failing to set up after the thread is ready is the sandbox's failure, not the snippet's", async () => {
     const worker = new Worker(
+      // biome-ignore lint/plugin/no-test-reads-source: the worker module is run, not read
       new URL("../../src/graph/tools/code-sandbox.worker.ts", import.meta.url)
         .href,
     );

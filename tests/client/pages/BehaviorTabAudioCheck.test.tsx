@@ -86,6 +86,7 @@ describe("the audio check in the agent editor", () => {
     expect(select.value).toBe("");
     expect(screen.getByText(/runs no audio detector/)).toBeTruthy();
     const link = screen.getByRole("link", { name: "How to set it up" });
+    // biome-ignore lint/plugin/no-test-reads-source: the link's target is the rendered effect under test
     expect(link.getAttribute("href")).toContain("docs/tts.md");
   });
 

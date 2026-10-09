@@ -1,0 +1,294 @@
+// What a decided or expired approval request says in its conversation (docs/documents.md, Approval).
+// Approved: a proactive turn sends the issued PDF with the agent's message, through every gate a
+// proactive turn has (ownership, the 24h window, the spend ceiling). Rejected: nothing to the
+// customer, a private note carrying the reviewer's note, and the conversation handed to a person.
+// Expired: nothing to the customer, a private note and an alert.
+
+import type { PrismaClient } from "@/../generated/prisma/client";
+import { decryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
+import basePrisma from "@/api/lib/prisma";
+import { type RunAgentNudgeOutcome, runAgentNudge } from "@/graph/nudge";
+import type { RuntimeDeps } from "@/graph/runtime";
+import { parseDbId } from "@/lib/db-id";
+import { NotFoundError } from "@/lib/errors";
+import { runScopedOn } from "@/lib/tenancy";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
+import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import { emitFlowEvent } from "@/modules/flowlog/service";
+import { assignPinnedTarget } from "@/modules/handoff/assign-pinned";
+import { readHandoffConfig } from "@/modules/handoff/settings";
+import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { formatDocumentNumber } from "./format";
+import { getIssuedDocumentPdf, sysCtx } from "./issue";
+
+export interface ApprovalOutcomeDeps {
+  makeClient?: RuntimeDeps["makeClient"];
+  nudgeDeps?: RuntimeDeps;
+  storageDir?: string;
+  signal?: AbortSignal;
+}
+
+type Outcome =
+  | "delivered"
+  | "noted"
+  | "handed"
+  | "no-conversation"
+  | "no-agent"
+  | "retry";
+
+function titleOf(title: string): string {
+  return literalForChatwoot(title.replace(/\s+/g, " ").trim());
+}
+
+// The conversation a request belongs to, with what a note and a hand-over need: the persona's bot
+// token (a note is written as the bot), whether the bot still owns the conversation, and the
+// agent's hand-over target.
+async function conversationOf(
+  tenantId: bigint,
+  conversationId: bigint,
+  base: PrismaClient,
+) {
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: { id: conversationId },
+      select: {
+        chatwootInstanceId: true,
+        chatwootConversationId: true,
+        threadId: true,
+        inboxId: true,
+        status: true,
+        assigneeType: true,
+        assigneeId: true,
+        resolvedBy: true,
+      },
+    });
+    if (!conv?.inboxId) return null;
+    const inbox = await db.inbox.findUnique({
+      where: { id: conv.inboxId },
+      select: { agentId: true },
+    });
+    if (!inbox?.agentId) return null;
+    const [agent, bot] = await Promise.all([
+      db.agent.findUnique({
+        where: { id: inbox.agentId },
+        select: { id: true, settings: true },
+      }),
+      db.chatwootAgentBot.findFirst({
+        where: {
+          agentId: inbox.agentId,
+          chatwootInstanceId: conv.chatwootInstanceId,
+        },
+        select: { chatwootAgentBotId: true, accessToken: true },
+      }),
+    ]);
+    if (!agent || !bot) return null;
+    return {
+      conv,
+      agentId: agent.id,
+      fullDetail: readDebugModes(agent.settings, null).fullDetail,
+      handoff: readHandoffConfig(agent.settings),
+      botId: bot.chatwootAgentBotId,
+      botToken: decryptJson<string>(bot.accessToken),
+    };
+  });
+}
+
+type Target = NonNullable<Awaited<ReturnType<typeof conversationOf>>>;
+
+async function clientFor(
+  tenantId: bigint,
+  target: Target,
+  base: PrismaClient,
+  deps: ApprovalOutcomeDeps,
+): Promise<ChatwootClient> {
+  return loadChatwootClient(tenantId, target.conv.chatwootInstanceId, {
+    base,
+    makeClient: deps.makeClient,
+    botToken: target.botToken,
+  });
+}
+
+function botOwns(target: Target): boolean {
+  return shouldBotHandle(
+    {
+      assigneeType: target.conv.assigneeType,
+      status: target.conv.status,
+      assigneeId: target.conv.assigneeId,
+      resolvedBy: target.conv.resolvedBy,
+    },
+    { ourAgentBotId: target.botId },
+  );
+}
+
+export async function runApprovalOutcome(
+  tenantId: bigint,
+  requestId: bigint,
+  base: PrismaClient = basePrisma,
+  deps: ApprovalOutcomeDeps = {},
+): Promise<Outcome> {
+  const request = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.documentApprovalRequest.findUnique({
+      where: { id: requestId },
+      select: {
+        status: true,
+        title: true,
+        note: true,
+        conversationId: true,
+        issuedDocumentId: true,
+      },
+    }),
+  );
+  if (!request?.conversationId) return "no-conversation";
+  const target = await conversationOf(tenantId, request.conversationId, base);
+  if (!target) {
+    logger.warn(
+      { tenantId: String(tenantId), requestId: String(requestId) },
+      "document approval: the request's conversation has no agent bot to answer it",
+    );
+    return "no-agent";
+  }
+  const title = titleOf(request.title);
+
+  if (request.status === "REJECTED") {
+    const client = await clientFor(tenantId, target, base, deps);
+    const owned = botOwns(target);
+    const reviewerNote = request.note
+      ? ` Nota de quem revisou: ${literalForChatwoot(request.note)}`
+      : "";
+    await client.sendPrivateNote(
+      target.conv.chatwootConversationId,
+      `Documento não aprovado pela equipe: ${title}. Nada foi enviado ao cliente.${owned ? " A conversa foi passada para um atendente." : ""}${reviewerNote}`,
+    );
+    if (!owned) return "noted";
+    await client.toggleStatus(target.conv.chatwootConversationId, "open");
+    await assignPinnedTarget({
+      client,
+      conversationId: target.conv.chatwootConversationId,
+      instanceId: target.conv.chatwootInstanceId,
+      handoff: target.handoff,
+      logLabel: "document approval rejected",
+    });
+    return "handed";
+  }
+
+  if (request.status === "EXPIRED") {
+    const client = await clientFor(tenantId, target, base, deps);
+    await client.sendPrivateNote(
+      target.conv.chatwootConversationId,
+      `O pedido de aprovação do documento ${title} venceu sem resposta da equipe. Nada foi enviado ao cliente.`,
+    );
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: request.conversationId,
+        agentId: target.agentId,
+        threadId: target.conv.threadId,
+        base,
+        fullDetail: target.fullDetail,
+      },
+      {
+        stage: "tool",
+        level: "warn",
+        status: "skipped",
+        detail: {
+          outcome: "document_approval_expired",
+          requestId: String(requestId),
+        },
+      },
+    );
+    return "noted";
+  }
+
+  if (request.status !== "APPROVED" || request.issuedDocumentId === null) {
+    return "no-conversation";
+  }
+  const issued = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.issuedDocument.findUnique({
+      where: { id: request.issuedDocumentId as bigint },
+      select: { number: true, numberPrefix: true },
+    }),
+  );
+  const named = issued
+    ? `${title} (${formatDocumentNumber(issued.number, issued.numberPrefix)})`
+    : title;
+  const pdf = await getIssuedDocumentPdf(
+    sysCtx(tenantId),
+    request.issuedDocumentId,
+    base,
+    deps.storageDir,
+  ).catch((err: unknown) => {
+    if (err instanceof NotFoundError) return null;
+    throw err;
+  });
+  if (!pdf) {
+    const client = await clientFor(tenantId, target, base, deps);
+    await client.sendPrivateNote(
+      target.conv.chatwootConversationId,
+      `Documento aprovado: ${named}, mas o PDF não está disponível para envio (revogado ou ausente). Nada foi enviado ao cliente.`,
+    );
+    return "noted";
+  }
+  const outcome: RunAgentNudgeOutcome = await runAgentNudge({
+    tenantId,
+    threadId: target.conv.threadId,
+    signal: deps.signal,
+    nudge: {
+      source: "document_approval",
+      kind: "approved",
+      instructions: `A equipe aprovou o documento "${request.title}" que o cliente pediu nesta conversa, e o PDF vai anexado a esta mensagem. Escreva uma frase curta avisando que ele segue anexo. Não repita valores nem o conteúdo do documento.`,
+    },
+    approvedDocument: {
+      bytes: pdf.bytes,
+      fileName: pdf.fileName,
+      caption: `Segue o documento ${title}, aprovado pela equipe.`,
+      heldNote: `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
+      windowNote: `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
+    },
+    base,
+    deps: { ...deps.nudgeDeps, makeClient: deps.makeClient },
+  });
+  if (outcome === "messaged") return "delivered";
+  if (outcome === "noted" || outcome === "noted-window") return "noted";
+  if (outcome === "live-unavailable") return "retry";
+  // Every other end sent nothing (the spend ceiling, an agent switched off, a contact the gate
+  // refused): the document is still approved and a person has to send it.
+  const client = await clientFor(tenantId, target, base, deps);
+  await client.sendPrivateNote(
+    target.conv.chatwootConversationId,
+    `Documento aprovado: ${named}, mas o agente não pôde enviá-lo agora. Ele precisa ser enviado por uma pessoa.`,
+  );
+  return "noted";
+}
+
+async function runOutcomeJob(
+  tenantId: bigint,
+  payload: unknown,
+  base: PrismaClient,
+  signal?: AbortSignal,
+): Promise<JobResult> {
+  const raw = (payload as { requestId?: unknown } | null)?.requestId;
+  const requestId = parseDbId(typeof raw === "string" ? raw : null);
+  if (requestId === null) return { outcome: "done" };
+  const outcome = await runApprovalOutcome(tenantId, requestId, base, {
+    signal,
+  });
+  if (outcome === "retry") {
+    return { outcome: "fail", error: "conversation ownership unavailable" };
+  }
+  return { outcome: "done" };
+}
+
+let registered = false;
+export function registerDocumentApprovalOutcomeHandler(): void {
+  if (registered) return;
+  registerJobHandler("DOCUMENT_APPROVAL_OUTCOME", (job, base, ctx) =>
+    runOutcomeJob(job.tenantId, job.payload, base, ctx?.signal),
+  );
+  registered = true;
+}

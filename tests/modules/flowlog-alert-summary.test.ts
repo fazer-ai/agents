@@ -311,6 +311,8 @@ const NOT_A_CAUSE: Record<string, string> = {
   engine:
     "observe: which brain the watcher runs (llm or decisions); `skipped` is the printed cause",
   fallbackFrom: "the model given up on; `fallbackReason` says why",
+  requestId:
+    "document_approval_expired: which approval request expired; `outcome` says what happened",
   primaryFailure:
     "the class of the failure `fallbackReason` already prints, kept for the primary's rate",
   messageId: "an id to find the message by, never a cause",

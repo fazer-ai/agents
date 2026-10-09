@@ -288,9 +288,27 @@ the team may take, not when the customer will receive anything. It is what keeps
 offering the document again once the tool's answer has left the history window, and it tells the
 agent to bring it up only when the customer asks. A failed read costs the line, never the turn.
 
+**What a decision says in the conversation** is one `DOCUMENT_APPROVAL_OUTCOME` job per request
+(`approval-outcome.ts`), armed in the same transaction as the transition that decided it: the claim
+of a rejection, the expiry's UPDATE, and for an approval the write that LINKS the issued document,
+so approving again, in parallel or later, finds it linked and arms nothing. The job answers:
+
+- **Approved:** a proactive turn (`runAgentNudge` with `approvedDocument`) sends the issued PDF as the
+  attachment of the agent's message, with every gate a proactive turn has. Over a person, or outside
+  the 24h window, it leaves a fixed private note before any model call, and no approved template is
+  sent in the document's place; the same note covers a person taking over, or the window closing,
+  while the agent writes. An agent that writes nothing still sends the PDF, with a default caption.
+  A revoked or missing PDF, or a turn that could not speak (the spend ceiling, an agent switched
+  off), leaves a note saying a person has to send it.
+- **Rejected:** nothing to the customer, a private note carrying the reviewer's note, and, while the
+  bot owns the conversation, the hand-over the guardrail uses (status `open` plus the agent's pinned
+  target).
+- **Expired:** nothing to the customer, a private note, and a `warn` line (`tool`,
+  `document_approval_expired`), which the alert channels pick up.
+
 Any user of the tenant decides a request (`requireRole: "AGENT"`): approving is reading a document and
-saying yes, not configuring anything. Delivery on approval, the alert and the console page are the
-sibling issues of #1077.
+saying yes, not configuring anything. The alert on a new request and the console page are the sibling
+issues of #1077.
 
 ## Granting
 

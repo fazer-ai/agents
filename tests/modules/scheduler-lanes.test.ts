@@ -102,6 +102,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   NOTHING_TO_ANSWER: "shared",
   SUGGESTION_REVIEW: "shared",
   DOCUMENT_APPROVAL_EXPIRY: "shared",
+  DOCUMENT_APPROVAL_OUTCOME: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -144,6 +145,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: false,
   SUGGESTION_REVIEW: true,
   DOCUMENT_APPROVAL_EXPIRY: false,
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 // Same discipline again, for these two maps. A behaviour test exercises only INGEST_MESSAGE end to
@@ -187,6 +189,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: true,
   SUGGESTION_REVIEW: true,
   DOCUMENT_APPROVAL_EXPIRY: true,
+  DOCUMENT_APPROVAL_OUTCOME: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -222,6 +225,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: true,
   SUGGESTION_REVIEW: false,
   DOCUMENT_APPROVAL_EXPIRY: true,
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -264,6 +268,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   NOTHING_TO_ANSWER: "warn",
   SUGGESTION_REVIEW: "warn",
   DOCUMENT_APPROVAL_EXPIRY: "warn",
+  DOCUMENT_APPROVAL_OUTCOME: "error",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

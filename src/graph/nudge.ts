@@ -286,8 +286,22 @@ export interface RunAgentNudgeParams {
   // ask opens its own short scope. `strict` selects which question is asked; see
   // RunAgentTurnParams.stillWanted.
   stillWanted?: (opts: { strict: boolean }) => Promise<boolean>;
+  // A document the team approved: its PDF rides on the agent's message as the attachment. Where the
+  // customer cannot be messaged, the operator's note is left instead of the agent's text, and no
+  // approved template is sent in its place (docs/documents.md, Approval).
+  approvedDocument?: ApprovedDocumentDelivery;
   base?: PrismaClient;
   deps?: RuntimeDeps;
+}
+
+export interface ApprovedDocumentDelivery {
+  bytes: ArrayBuffer;
+  fileName: string;
+  // Left when a person holds the conversation, and when the 24h window is closed.
+  heldNote: string;
+  windowNote: string;
+  // Sent as the caption when the agent wrote nothing for it.
+  caption: string;
 }
 
 export function parseThreadId(
@@ -953,6 +967,34 @@ async function runAgentNudgeBody(
           alsoResolved: params.deliverToResolved,
         },
       );
+
+  // An approved document over a person or outside the window is the operator's to send, and saying
+  // so takes no model: decided here, before the spend ceiling, the way an operator's event is.
+  const approved = params.approvedDocument;
+  const noteApproved = async (
+    text: string,
+    outcome: "noted" | "noted-window",
+  ): Promise<RunAgentNudgeOutcome> => {
+    if (!(await stillWanted())) return standDown();
+    delivered = true;
+    await client.sendPrivateNote(conversationId, text);
+    markFollowUp(outcome);
+    return outcome;
+  };
+  if (approved && !canMessagePre) {
+    return noteApproved(approved.heldNote, "noted");
+  }
+  if (
+    approved &&
+    proactiveSendMode(
+      cfg.serviceWindowConfig,
+      loaded.lastInboundAt,
+      params.deps?.now?.() ?? new Date(),
+      { channelType: loaded.channelType, provider: loaded.provider },
+    ) !== "freeform"
+  ) {
+    return noteApproved(approved.windowNote, "noted-window");
+  }
 
   // The contact-authorization gate in two stages (docs/contact-auth.md): the RULE first, before the
   // spend ceiling, since it costs nothing and a follow-up to a conversation this agent does not serve
@@ -2257,8 +2299,10 @@ async function runAgentNudgeBody(
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const drafted = proactiveReply(lastAssistantText(result.messages));
-  const silent = drafted.silent;
-  const reply = drafted.text;
+  // An approved document is owed to the customer whatever the agent wrote: a silence there would
+  // keep the PDF the team just released.
+  const silent = drafted.silent && !approved;
+  const reply = drafted.text || (approved ? approved.caption : "");
 
   // 5. Re-check ownership at post time (a human may have taken over during the model call), for
   // BOTH the customer message and the post-actions. The live-gated path re-probes Chatwoot (the
@@ -2519,7 +2563,17 @@ async function runAgentNudgeBody(
     if (canMessagePost && sendModeNow() === "freeform") {
       const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;
-      keepSentId(await client.sendMessage(conversationId, signedReply));
+      keepSentId(
+        await (approved
+          ? client.sendFileAttachment(
+              conversationId,
+              approved.bytes,
+              approved.fileName,
+              "application/pdf",
+              { caption: signedReply },
+            )
+          : client.sendMessage(conversationId, signedReply)),
+      );
       await recordProactiveSpeech();
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
@@ -2535,6 +2589,12 @@ async function runAgentNudgeBody(
     // second is answered by asking again.
   }
 
+  if (approved) {
+    return noteApproved(
+      canMessagePre && canMessagePost ? approved.windowNote : approved.heldNote,
+      canMessagePre && canMessagePost ? "noted-window" : "noted",
+    );
+  }
   if (canMessagePre && canMessagePost) {
     if (sendModeNow() === "template") {
       const payload = buildTemplatePayload(

@@ -804,17 +804,14 @@ async function record(
     return;
   }
 
-  // NOTE: the CAS goes first and the line only if it wins: `writeFlowEvent` dispatches the alert as
-  // it writes and nothing retracts it, and a redelivery claiming the row in between is a designed
-  // path. A write failing after a won CAS leaves a DEAD row with no line, which is still the record
-  // (and an outage, not a race). A rescue landing after the CAS writes its own correction, so both
-  // lines end up on the conversation; the loss is never unreported.
-  // NOTE: the recovery is armed with the CAS, the only moment anything knows the row became
-  // recoverable (the query reads PENDING and PROCESSING). Rows already DEAD before recovery existed
-  // are never recovered, deliberately: a backfill would arm a whole backlog of model calls and real
-  // replies at once, and those rows are already on the DEAD worklist. Armed before the line, so the
-  // alert is never newer than the attempt.
+  // Armed with the CAS, the only moment anything knows the row became recoverable (the query reads
+  // PENDING and PROCESSING). Rows DEAD before recovery existed are never backfilled: that would arm
+  // a whole backlog of model calls and replies at once, and they are already on the worklist.
   const recoveryArmed = isRecoverableStrand(row);
+  // The CAS goes first and the line only if it wins: `writeFlowEvent` dispatches the alert as
+  // it writes and nothing retracts it, and a redelivery claiming the row in between is a designed
+  // path. A write failing after a won CAS leaves a DEAD row with no line, which is still the record.
+  // Armed before the line, so the alert is never newer than the attempt.
   const dead = await finishDead(row, tenantId, base, recoveryArmed, label);
   if (dead === "failed") return;
   if (dead === "lost") {

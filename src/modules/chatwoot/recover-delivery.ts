@@ -473,13 +473,6 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
-  // The row AFTER the reconcile, which is the truth in both directions: the live snapshot where it
-  // won, and whatever outranked it where it lost. Null only if the mirror row vanished between the
-  // two reads, and the row read above is then the best thing left.
-  //
-  // Read from the reconcile above rather than re-read here, so what the body states is the row that
-  // call decided; a second read would answer about a different moment, and the two message reads
-  // sit between them.
   // NOTE: with no mirror row, the live read is the only statement of who holds the conversation, and a
   // snapshot with no `meta` says nothing about it: its null assignee would be stated below as
   // unassigned, and a `pending` conversation would pass the ownership gate with its holder unknown.
@@ -491,6 +484,13 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
+  // The row AFTER the reconcile, which is the truth in both directions: the live snapshot where it
+  // won, and whatever outranked it where it lost. Null only if the mirror row vanished between the
+  // two reads, and the row read above is then the best thing left.
+  //
+  // Read from the reconcile above rather than re-read here, so what the body states is the row that
+  // call decided; a second read would answer about a different moment, and the two message reads
+  // sit between them.
   const state = reconciled?.state ??
     conv ?? {
       status: live.status,
@@ -762,14 +762,7 @@ async function runRecovery(params: {
     );
   }
 
-  // Re-read rather than carried from the load at the top: a webhook during the REST reads can
-  // move `contactInboxId` (./mirror.ts writes it on an unversioned event), and the body and the
-  // fence's graph key must come from the SAME reading, or the recovery fences one thread and runs on
-  // another, and the old pairing in the body can be written back. Nothing between here and the fence
-  // awaits, which is why the route's bot query sits above. The redirect pairing comes back too: the
-  // mirror orders it by version, but `armRedirectChatFollowUp` UPSERTS a scheduler payload from the
-  // event, so an old pairing would re-arm a follow-up for an episode the customer already left.
-  // NOTE: the pairing a never-mirrored conversation inherits, asked here, ABOVE the re-read, since
+  // The pairing a never-mirrored conversation inherits, asked here, ABOVE the re-read, since
   // nothing may await between that read and the fence. Used only when the re-read still finds no
   // row: a webhook that mirrored it during the REST reads carries the real pairing.
   const contactToState =
@@ -791,6 +784,13 @@ async function runRecovery(params: {
           base,
         })
       : null;
+  // Re-read rather than carried from the load at the top: a webhook during the REST reads can
+  // move `contactInboxId` (./mirror.ts writes it on an unversioned event), and the body and the
+  // fence's graph key must come from the SAME reading, or the recovery fences one thread and runs on
+  // another, and the old pairing in the body can be written back. Nothing between here and the fence
+  // awaits, which is why the route's bot query sits above. The redirect pairing comes back too: the
+  // mirror orders it by version, but `armRedirectChatFollowUp` UPSERTS a scheduler payload from the
+  // event, so an old pairing would re-arm a follow-up for an episode the customer already left.
   const mirrorNow = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
       // By the source's key, not the row loaded at the top: that row may not exist, and a webhook
@@ -1299,14 +1299,6 @@ export function isRecoverableStrand<
   return row.conversationId !== null && row.inboundMessageId !== null;
 }
 
-// Arms the recovery of ONE stranded row. Called by the sweep at the moment it declares the row DEAD,
-// which is the only moment anything knows the row just became recoverable: the sweep's own query
-// reads PENDING and PROCESSING, so a DEAD row is invisible to every later pass.
-//
-// `rearm: "new-work"` because that is what a second arming would be. A row can only be declared DEAD
-// once (`finish` is a CAS), so in practice this is armed once per row and the question is
-// hypothetical; answered anyway, because the row it upserts carries the failure budget, and a row
-// re-armed as the same work would hand a recovery that keeps failing a fresh five every time.
 // The contact's pairing on this inbox, for a conversation the mirror never learned: the REST
 // conversation renders no `contact_inbox`, and the memory a contact's conversations share is keyed
 // on it. Read off the contact's other mirrored conversations on the same inbox, and only when they
@@ -1400,6 +1392,14 @@ function senderIdOf(raw: unknown): number | null {
   return isRecord(sender) && typeof sender.id === "number" ? sender.id : null;
 }
 
+// Arms the recovery of ONE stranded row. Called by the sweep at the moment it declares the row DEAD,
+// which is the only moment anything knows the row just became recoverable: the sweep's own query
+// reads PENDING and PROCESSING, so a DEAD row is invisible to every later pass.
+//
+// `rearm: "new-work"` because that is what a second arming would be. A row can only be declared DEAD
+// once (`finish` is a CAS), so in practice this is armed once per row and the question is
+// hypothetical; answered anyway, because the row it upserts carries the failure budget, and a row
+// re-armed as the same work would hand a recovery that keeps failing a fresh five every time.
 export async function armDeliveryRecovery(
   tenantId: bigint,
   deliveryRowId: bigint,

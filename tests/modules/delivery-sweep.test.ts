@@ -648,7 +648,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       arm.mockRestore();
     }
     expect((await statusOf(rowId)).status).not.toBe("DEAD");
-    expect(await deliveryLines(conv.id)).toHaveLength(0);
+    // Absence: settled rather than polled, which would wait out the whole deadline.
+    expect(await deliveryLines(conv.id, 0)).toHaveLength(0);
 
     const again = await sweepStrandedDeliveries({ tenantId, base: appDb });
     expect(again.lost).toBe(1);

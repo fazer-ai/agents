@@ -1483,6 +1483,43 @@ describe("native tools", () => {
     ]);
   });
 
+  test("calls that joined before the fence asked them to go alone are split, in order", async () => {
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    let alone = false;
+    let fences = 0;
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+      writesAlone: () => alone,
+      stillWanted: async () => {
+        fences++;
+        alone = true;
+        return true;
+      },
+    });
+    const tool = byName(tools, "set_labels");
+    const reports = await Promise.all([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
+    ]);
+    expect(setCalls).toEqual([
+      [9, ["a"]],
+      [9, ["a", "b"]],
+    ]);
+    expect(fences).toBe(2);
+    expect(String(reports[1])).toContain('Now set: "a", "b"');
+  });
+
   test("a call that arrives after the write has gone out reads what it left", async () => {
     let current: string[] = [];
     const setCalls: unknown[][] = [];

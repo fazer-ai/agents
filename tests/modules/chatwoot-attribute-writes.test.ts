@@ -80,7 +80,7 @@ describe("custom attribute writes against endpoints that replace", () => {
       c.setConversationCustomAttributes(
         61,
         { medida: "90cm" },
-        { alone: true },
+        { alone: () => true },
       ),
       c.setConversationCustomAttributes(61, { produto: "mesa" }),
     ]);
@@ -92,6 +92,40 @@ describe("custom attribute writes against endpoints that replace", () => {
       "GET",
       "POST",
     ]);
+    expect(cw.conversations.get(61)).toEqual({
+      produto: "mesa",
+      medida: "90cm",
+    });
+  });
+
+  test("calls that joined before their fence asked them to go alone are split, in order", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    let alone = false;
+    let fences = 0;
+    const opts = {
+      alone: () => alone,
+      stillWanted: async () => {
+        fences++;
+        alone = true;
+        return true;
+      },
+    };
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { produto: "cadeira" }, opts),
+      c.setConversationCustomAttributes(61, { medida: "90cm" }, opts),
+      c.setConversationCustomAttributes(61, { produto: "mesa" }, opts),
+    ]);
+    expect(cw.requests.map((r) => r.method)).toEqual([
+      "GET",
+      "POST",
+      "GET",
+      "POST",
+      "GET",
+      "POST",
+    ]);
+    // Each of the two that were held back is asked again, after the write ahead of it.
+    expect(fences).toBe(3);
     expect(cw.conversations.get(61)).toEqual({
       produto: "mesa",
       medida: "90cm",

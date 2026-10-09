@@ -411,6 +411,7 @@ function parseWebWidgetInbox(res: unknown): WebWidgetInbox | null {
 interface PendingAttributeWrite {
   attributes: Record<string, unknown>;
   stillWanted?: () => Promise<boolean>;
+  alone?: () => boolean;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
 }
@@ -843,10 +844,11 @@ export class ChatwootClient {
     // `asAdmin` writes with the admin token: a conversation in an inbox the bot does not serve (a
     // case opened in another inbox) refuses the bot.
     // `alone` keeps this call out of the shared write below: an entry of its own, joined by nobody.
+    // Asked when the call arrives and again after the fences, which may be what changes the answer.
     opts: {
       stillWanted?: () => Promise<boolean>;
       asAdmin?: boolean;
-      alone?: boolean;
+      alone?: () => boolean;
     } = {},
   ): Promise<unknown> {
     // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: a call that finds this client's own entry at
@@ -863,8 +865,9 @@ export class ChatwootClient {
         resolve,
         reject,
         ...(opts.stillWanted ? { stillWanted: opts.stillWanted } : {}),
+        ...(opts.alone ? { alone: opts.alone } : {}),
       };
-      const alone = opts.alone === true;
+      const alone = opts.alone?.() === true;
       const tail = alone ? undefined : keyedQueueTail(key);
       if (
         tail instanceof AttributeBatch &&
@@ -922,6 +925,19 @@ export class ChatwootClient {
         w.reject(new ChatwootCalledOffError("custom_attributes"));
       }
       if (wanted.length === 0) return;
+      // A call that must go alone, found here with company it joined before the fences ran: the
+      // first is written now and each of the others queues an entry of its own, in order.
+      if (wanted.length > 1 && wanted.some((w) => w.alone?.())) {
+        const later = wanted.splice(1);
+        batch.writes.splice(0, batch.writes.length, ...wanted);
+        for (const w of later) {
+          const one = new AttributeBatch(this, batch.asAdmin);
+          one.writes.push(w);
+          void withKeyedQueue(key, () =>
+            this.writeAttributeBatch(conversationId, key, one),
+          );
+        }
+      }
       const written = await this.request(
         batch.asAdmin ? this.config.adminToken : this.config.botToken,
         "POST",

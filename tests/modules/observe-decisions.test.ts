@@ -1257,6 +1257,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       attributes: Record<string, unknown>;
       // Runs as the window's page is answered, after the labels were asked for.
       onWindowRead?: (state: { labels: string[] }) => void;
+      // Awaited before the attribute bag is answered.
+      onAttributesRead?: () => Promise<unknown>;
     }) {
       const state = {
         labels: [...seed.labels],
@@ -1307,6 +1309,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           return json({ payload: state.labels });
         }
         if (method === "GET" && path === conv) {
+          await seed.onAttributesRead?.();
           return json({ id: CONV, custom_attributes: state.attributes });
         }
         if (method === "POST" && path === `${conv}/custom_attributes`) {
@@ -1367,6 +1370,15 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     }
 
     const yes = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    const GATE = {
+      enabled: true,
+      rule: {
+        kind: "attribute",
+        scope: "conversation",
+        key: "active",
+        equals: "yes",
+      },
+    };
     const attribute = (key: string, value: string) => ({
       when: yes,
       action: { tool: "set_custom_attribute", args: { key, value } },
@@ -1683,88 +1695,94 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
 
     // The same under the `llm` engine, whose model calls its tools in parallel: calls that arrive
     // together would share one fence verdict and one write, so under such a gate each writes alone.
-    test("parallel tool calls of a model do not share a write under a contact gate with conditions", async () => {
-      const chatwoot = fakeChatwoot({
-        labels: [],
-        attributes: { active: "yes" },
-      });
-      const contact = await suDb.contact.create({
-        data: { tenantId, chatwootInstanceId: instanceId, name: "Ana" },
-      });
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { customAttributes: { active: "yes" }, contactId: contact.id },
-      });
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: {
-          settings: {
-            monitoring: {},
-            contactAuth: {
-              enabled: true,
-              rule: {
-                kind: "attribute",
-                scope: "conversation",
-                key: "active",
-                equals: "yes",
-              },
+    for (const [name, sinceTheRead] of [
+      [
+        "parallel tool calls of a model do not share a write under a contact gate with conditions",
+        false,
+      ],
+      [
+        "nor under one saved while the write they had joined was reading the bag",
+        true,
+      ],
+    ] as const) {
+      test(name, async () => {
+        const save = (gated: boolean) =>
+          suDb.agent.update({
+            where: { id: agentId },
+            data: {
+              settings: {
+                monitoring: {},
+                ...(gated ? { contactAuth: GATE } : {}),
+              } as never,
             },
-          } as never,
-        },
-      });
-      let turns = 0;
-      const model = {
-        invoke: async () => new AIMessage("pronto"),
-        bindTools: () => ({
-          invoke: async () => {
-            turns++;
-            return turns === 1
-              ? new AIMessage({
-                  content: "",
-                  tool_calls: [
-                    {
-                      name: "set_custom_attribute",
-                      args: { key: "active", value: "no" },
-                      id: "c1",
-                    },
-                    {
-                      name: "set_custom_attribute",
-                      args: { key: "etapa", value: "segunda" },
-                      id: "c2",
-                    },
-                  ],
-                })
-              : new AIMessage("feito.");
-          },
-        }),
-      };
-      try {
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async (cfg) =>
-              new ChatwootClient(cfg, chatwoot.fetchImpl),
-            makeModel: () => model as never,
-          },
-        );
-      } finally {
+          });
+        const chatwoot = fakeChatwoot({
+          labels: [],
+          attributes: { active: "yes" },
+          onAttributesRead: () => save(true),
+        });
+        const contact = await suDb.contact.create({
+          data: { tenantId, chatwootInstanceId: instanceId, name: "Ana" },
+        });
         await suDb.conversation.update({
           where: { id: convRowId },
-          data: { customAttributes: {}, contactId: null },
+          data: { customAttributes: { active: "yes" }, contactId: contact.id },
         });
-        await suDb.contact.delete({ where: { id: contact.id } });
-      }
-      expect(turns).toBeGreaterThan(0);
-      expect(chatwoot.state.attributes).toEqual({ active: "no" });
-    });
+        await save(!sinceTheRead);
+        let turns = 0;
+        const model = {
+          invoke: async () => new AIMessage("pronto"),
+          bindTools: () => ({
+            invoke: async () => {
+              turns++;
+              return turns === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "set_custom_attribute",
+                        args: { key: "active", value: "no" },
+                        id: "c1",
+                      },
+                      {
+                        name: "set_custom_attribute",
+                        args: { key: "etapa", value: "segunda" },
+                        id: "c2",
+                      },
+                    ],
+                  })
+                : new AIMessage("feito.");
+            },
+          }),
+        };
+        try {
+          await runObserve(
+            tenantId,
+            {
+              instanceId,
+              conversationId: CONV,
+              agentId,
+              reason: "burst",
+              atMessageId: null,
+            },
+            appDb,
+            {
+              makeClient: async (cfg) =>
+                new ChatwootClient(cfg, chatwoot.fetchImpl),
+              makeModel: () => model as never,
+            },
+          );
+        } finally {
+          await suDb.conversation.update({
+            where: { id: convRowId },
+            data: { customAttributes: {}, contactId: null },
+          });
+          await suDb.contact.delete({ where: { id: contact.id } });
+        }
+        expect(turns).toBeGreaterThan(0);
+        expect(chatwoot.state.attributes).toEqual({ active: "no" });
+      });
+    }
 
     // An invalid rule in the middle is that rule's failure. It does not part the valid rules around
     // it into two writes.

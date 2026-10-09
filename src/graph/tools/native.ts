@@ -969,7 +969,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           // inside exactly the window the queue and the re-read open.
           {
             stillWanted: ctx.stillWanted,
-            ...(ctx.writesAlone?.() ? { alone: true } : {}),
+            ...(ctx.writesAlone ? { alone: ctx.writesAlone } : {}),
           },
         );
       } catch (e) {
@@ -1354,6 +1354,25 @@ function setLabelsTool(ctx: ToolCtx) {
           );
         }
         return;
+      }
+      // Calls that must go alone, found here together because they joined before the fence ran:
+      // the first is written now and each of the others queues an entry of its own, in order.
+      if (outcomes.length > 1 && ctx.writesAlone?.()) {
+        for (const d of batch.deltas.splice(1)) {
+          const one = new LabelBatch(ctx);
+          one.deltas.push(d);
+          void withConversationLabels(ctx.tenantId, ctx.conversationId, () =>
+            writeConversationLabels(one),
+          );
+        }
+        outcomes.length = 1;
+        const first = outcomes[0];
+        if (first) state = first.next;
+        if (!first || !moved(first)) {
+          ctx.onNoEffect?.("set_labels");
+          if (first) first.delta.resolve(report(first));
+          return;
+        }
       }
       // Forgotten before the write: a write that fails leaves nothing known about the set.
       ctx.conversationLabelsRead = undefined;

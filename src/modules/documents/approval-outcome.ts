@@ -261,6 +261,19 @@ export async function runApprovalOutcome(
     return true;
   };
 
+  // A request just opened tells the people of its conversation, with the page link: the customer
+  // heard from the agent that the team is preparing it, and a person watching Chatwoot heard
+  // nothing. A request decided before this ran reads its decision here instead, which says more.
+  if (request.status === "PENDING") {
+    const client = await clientFor(tenantId, target, base, deps);
+    return (await note(
+      client,
+      `Pedido de aprovação aberto: ${title}. Nada vai ao cliente até alguém da equipe aprovar.`,
+    ))
+      ? "noted"
+      : "retry";
+  }
+
   if (request.status === "REJECTED") {
     const client = await clientFor(tenantId, target, base, deps);
     const conversationId = target.conv.chatwootConversationId;
@@ -429,40 +442,6 @@ export async function runApprovalOutcome(
     : "retry";
 }
 
-// A request just opened tells the people of its conversation in a private note, with the page link:
-// the customer heard from the agent that the team is preparing it, and a person watching Chatwoot
-// heard nothing. A request already decided when this runs writes nothing: its decision's note says
-// more, and the outcome job writes it.
-export async function runApprovalOpened(
-  tenantId: bigint,
-  requestId: bigint,
-  base: PrismaClient = basePrisma,
-  deps: ApprovalOutcomeDeps = {},
-): Promise<"noted" | "decided" | "no-conversation" | "no-agent"> {
-  const request = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.documentApprovalRequest.findUnique({
-      where: { id: requestId },
-      select: { status: true, title: true, conversationId: true },
-    }),
-  );
-  if (!request?.conversationId) return "no-conversation";
-  if (request.status !== "PENDING") return "decided";
-  const target = await conversationOf(tenantId, request.conversationId, base);
-  if (!target) return "no-agent";
-  if (deps.signal?.aborted) return "decided";
-  const client = await clientFor(tenantId, target, base, deps);
-  await client.sendPrivateNote(
-    target.conv.chatwootConversationId,
-    withPageLink(
-      `Pedido de aprovação aberto: ${titleOf(request.title)}. Nada vai ao cliente até alguém da equipe aprovar.`,
-      tenantId,
-      requestId,
-    ),
-  );
-  deps.commit?.();
-  return "noted";
-}
-
 async function runOutcomeJob(
   tenantId: bigint,
   payload: unknown,
@@ -472,13 +451,6 @@ async function runOutcomeJob(
   const raw = (payload as { requestId?: unknown } | null)?.requestId;
   const requestId = parseDbId(typeof raw === "string" ? raw : null);
   if (requestId === null) return { outcome: "done" };
-  if ((payload as { phase?: unknown } | null)?.phase === "opened") {
-    await runApprovalOpened(tenantId, requestId, base, {
-      signal: run?.signal,
-      commit: run?.commit,
-    });
-    return { outcome: "done" };
-  }
   const outcome = await runApprovalOutcome(tenantId, requestId, base, {
     signal: run?.signal,
     commit: run?.commit,

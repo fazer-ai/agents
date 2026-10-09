@@ -14,14 +14,10 @@ import {
   approveDocumentRequest,
   expireDueApprovalRequests,
   issueOrRequestApproval,
-  openedJobKey,
   outcomeJobKey,
   rejectDocumentRequest,
 } from "@/modules/documents/approval";
-import {
-  runApprovalOpened,
-  runApprovalOutcome,
-} from "@/modules/documents/approval-outcome";
+import { runApprovalOutcome } from "@/modules/documents/approval-outcome";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -295,20 +291,11 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
 
   test("a request just opened tells the conversation's people in a private note, with the page", async () => {
     const { requestId } = await conversationWithRequest({});
-    const armed = await suDb.schedulerJob.findMany({
-      where: {
-        tenantId,
-        kind: "DOCUMENT_APPROVAL_OUTCOME",
-        dedupeKey: openedJobKey(requestId),
-      },
-      select: { payload: true },
-    });
-    expect(armed).toEqual([
-      { payload: { requestId: String(requestId), phase: "opened" } },
-    ]);
+    // Armed with the request, on the key its decision re-arms.
+    expect(await outcomeJobs(requestId)).toHaveLength(1);
     const rec = recordingClient();
     expect(
-      await runApprovalOpened(tenantId, requestId, appDb, {
+      await runApprovalOutcome(tenantId, requestId, appDb, {
         makeClient: rec.makeClient,
       }),
     ).toBe("noted");
@@ -320,16 +307,20 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
   });
 
-  test("a request decided before its opening note runs leaves that note to the decision", async () => {
+  test("a request decided before its opening ran gets the decision's note, not the opening", async () => {
     const { requestId } = await conversationWithRequest({});
     await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    // One row for both: the decision re-armed the opening's, it did not queue a second.
+    expect(await outcomeJobs(requestId)).toHaveLength(1);
     const rec = recordingClient();
-    expect(
-      await runApprovalOpened(tenantId, requestId, appDb, {
-        makeClient: rec.makeClient,
-      }),
-    ).toBe("decided");
-    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      nudgeDeps: { makeModel: noModel },
+    });
+    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("não aprovado");
+    expect(notes[0]).not.toContain("Pedido de aprovação aberto");
   });
 
   test("approval sends the numbered PDF on the agent's message, and approving again sends nothing", async () => {

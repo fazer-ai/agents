@@ -102,18 +102,18 @@ export const NAV_ITEMS: NavItem[] = [
     icon: MessagesSquare,
   },
   {
-    to: "/approvals",
-    labelKey: "nav.approvals",
-    defaultLabel: "Approvals",
-    icon: ClipboardCheck,
-    badge: "approvals",
-  },
-  {
     to: "/agents",
     labelKey: "nav.agents",
     defaultLabel: "Agents",
     icon: Bot,
     requireAdmin: true,
+  },
+  {
+    to: "/approvals",
+    labelKey: "nav.approvals",
+    defaultLabel: "Approvals",
+    icon: ClipboardCheck,
+    badge: "approvals",
   },
   {
     to: "/resources",

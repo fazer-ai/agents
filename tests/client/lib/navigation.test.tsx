@@ -48,8 +48,8 @@ describe("navigation", () => {
     expect(groups[0]?.items.map((i) => i.to)).toEqual([
       "/",
       "/conversations",
-      "/approvals",
       "/agents",
+      "/approvals",
       "/resources",
       "/channels",
     ]);

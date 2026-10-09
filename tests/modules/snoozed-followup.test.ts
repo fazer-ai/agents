@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { BaseMessage } from "@langchain/core/messages";
-import { ToolMessage } from "@langchain/core/messages";
+import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import {
+  AIMessage,
+  type BaseMessage,
+  ToolMessage,
+} from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -256,6 +262,29 @@ describe("snoozed ladder: configuration", () => {
   });
 });
 
+// Records every message the model is handed, whatever its role: where the nudge puts its directive is
+// not this file's business, only that the person's words are in it.
+class AllMessagesModel extends BaseChatModel {
+  constructor(
+    private readonly reply: string,
+    private readonly seen: string[],
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "fake-all-messages";
+  }
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+    this.seen.push(messages.map((m) => String(m.content)).join("\n"));
+    return {
+      generations: [{ text: this.reply, message: new AIMessage(this.reply) }],
+    };
+  }
+}
+
 // ── the handler, against the database and a stubbed Chatwoot ─────────────────────────────────────
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -285,6 +314,7 @@ let phantomJobId = 0n;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let whatsappInboxDbId = 0n;
 let agentId = 0n;
 const PERSON = 7;
 const REPLY = "Oi! Ainda precisamos do número do pedido para seguir.";
@@ -336,6 +366,10 @@ function stub(over: {
   // The status every read after the first one sees: the handler's read finds it snoozed, the
   // nudge's own probe finds what changed meanwhile.
   statusLater?: string;
+  // The send-time read answers a body that is not a message list.
+  degradedAfter?: boolean;
+  // The handler's own page read answers a body that is not a message list.
+  degradedPage?: boolean;
   model?: (cfg: {
     model: string;
   }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
@@ -370,6 +404,7 @@ function stub(over: {
       opts?: { before?: number; after?: number },
     ) => {
       if (opts?.after !== undefined) {
+        if (over.degradedAfter) return { error: "upstream" };
         const late = lateVisible && over.lateMessage ? [over.lateMessage] : [];
         return {
           payload: [...over.messages, ...late].filter(
@@ -377,6 +412,7 @@ function stub(over: {
           ),
         };
       }
+      if (over.degradedPage) return { error: "upstream" };
       if (opts?.before !== undefined) return { payload: [] };
       return { payload: over.messages };
     },
@@ -427,6 +463,8 @@ async function seed(
     at?: Date | null;
     lastEventAt?: Date;
     contactInboxId?: number;
+    whatsapp?: boolean;
+    lastInboundAt?: Date;
   } = {},
 ) {
   const data = {
@@ -438,6 +476,8 @@ async function seed(
     snoozedFollowUpStep: over.step ?? null,
     snoozedFollowUpAt: over.at ?? null,
     contactInboxId: over.contactInboxId ?? null,
+    inboxId: over.whatsapp ? whatsappInboxDbId : inboxDbId,
+    ...(over.lastInboundAt ? { lastInboundAt: over.lastInboundAt } : {}),
   };
   await suDb.conversation.upsert({
     where: {
@@ -450,7 +490,6 @@ async function seed(
     create: {
       tenantId,
       chatwootInstanceId: instanceId,
-      inboxId: inboxDbId,
       chatwootConversationId: convId,
       threadId: threadOf(convId),
       ...data,
@@ -543,6 +582,19 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       },
     });
     inboxDbId = inbox.id;
+    const wa = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 78,
+        name: "WhatsApp",
+        agentId,
+        // Official WhatsApp, so the 24h window applies.
+        channelType: "Channel::Whatsapp",
+        provider: "whatsapp_cloud",
+      },
+    });
+    whatsappInboxDbId = wa.id;
   });
 
   afterAll(async () => {
@@ -945,4 +997,49 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       ).toBe(false);
     });
   }
+  test("a reminder the closed WhatsApp window kept from the customer ends the ladder, unresolved", async () => {
+    await setSettings(LADDER);
+    await seed(2024, {
+      whatsapp: true,
+      lastInboundAt: new Date(Date.now() - 3 * 86_400_000),
+    });
+    const s = stub({ messages: [personAsked(250, 3)] });
+    const r = await snoozedFollowUpHandler(jobFor(2024), appDb, s.deps);
+    expect(s.sent).toEqual([]);
+    expect(r).toEqual({ outcome: "done" });
+    // The step is not spent: nothing reached the customer, and a later closing step must not run.
+    expect((await stateOf(2024)).snoozedFollowUpStep).toBeNull();
+  });
+
+  test("a degraded message page is a failed read, not silence", async () => {
+    await setSettings(LADDER);
+    await seed(2025);
+    const s = stub({ messages: [personAsked(260, 3)], degradedAfter: true });
+    const r = await snoozedFollowUpHandler(jobFor(2025), appDb, s.deps);
+    expect(s.sent).toEqual([]);
+    // Tried again, not dropped.
+    expect(r.outcome).toBe("reschedule");
+  });
+
+  test("a degraded page on the handler's own read is tried again, not taken as no anchor", async () => {
+    await setSettings(LADDER);
+    await seed(2027);
+    const s = stub({ messages: [personAsked(280, 3)], degradedPage: true });
+    const r = await snoozedFollowUpHandler(jobFor(2027), appDb, s.deps);
+    expect(s.sent).toEqual([]);
+    expect(r.outcome).toBe("reschedule");
+  });
+
+  test("the person's request reaches the model with the reminder", async () => {
+    await setSettings(LADDER);
+    await seed(2026);
+    const seen: string[] = [];
+    const s = stub({
+      messages: [personAsked(270, 3)],
+      model: () => new AllMessagesModel(REPLY, seen),
+    });
+    await snoozedFollowUpHandler(jobFor(2026), appDb, s.deps);
+    expect(s.sent).toEqual([REPLY]);
+    expect(seen.join("\n")).toContain("Pode me mandar o número do pedido?");
+  });
 });

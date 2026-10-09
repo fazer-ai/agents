@@ -4,6 +4,7 @@ import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import {
   isOpenAt,
   nextOpenAt,
@@ -12,6 +13,7 @@ import {
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   type ChatwootMessageRow,
+  chatwootMessageListLength,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
 import {
@@ -62,6 +64,20 @@ function sysCtx(tenantId: bigint): TenantContext {
 export function snoozedDedupeKey(threadId: string): string {
   return `${SNOOZED_DEDUPE_PREFIX}${threadId}`;
 }
+
+// A message page read for a decision. `parseChatwootMessages` folds an empty page, a non-list body and
+// unreadable rows into one empty array, and here empty means "nobody spoke": a degraded answer throws
+// instead, so the caller treats it as a failed read and not as silence.
+function readMessagePage(raw: unknown): ChatwootMessageRow[] {
+  const rows = parseChatwootMessages(raw);
+  if (chatwootMessageListLength(raw) !== rows.length) {
+    throw new Error("snoozedFollowUp: degraded message page");
+  }
+  return rows;
+}
+
+// How much of the person's message goes into the reminder's directive.
+const ANCHOR_TEXT_MAX = 1500;
 
 // ── the sweep's half ───────────────────────────────────────────────────────────────────────────────
 
@@ -143,6 +159,9 @@ export interface SnoozedAnchor {
   customerSpokeAfter: boolean;
   // The newest message id the pages named, the baseline the send-time check compares against.
   newestMessageId: number;
+  // What the person asked, from the live read: the agent's thread may not hold it (a test-mode agent
+  // ingests only its own turns), and a reminder about something else is worse than none.
+  text: string;
 }
 
 export function findSnoozedAnchor(
@@ -171,6 +190,7 @@ export function findSnoozedAnchor(
           (r) => r.messageType === "incoming" && !r.private && !r.isReaction,
         ),
         newestMessageId: newest.id,
+        text: clipText(m.content ?? "", ANCHOR_TEXT_MAX),
       };
     }
   }
@@ -222,11 +242,12 @@ export function snoozedNudge(params: {
   instructions: string;
   step: number;
   anchorMessageId: number;
+  anchorText: string;
 }): AgentNudge {
   return {
     source: "followup",
     kind: "snoozed",
-    summary: `A person on the team asked the customer for something about ${params.idleMin} minutes ago and is waiting for the answer; the customer has not replied. Write ONE short reminder on that person's behalf, about what they asked, without asking for anything new and without promising anything the conversation does not already say.`,
+    summary: `A person on the team asked the customer for something about ${params.idleMin} minutes ago and is waiting for the answer; the customer has not replied. Write ONE short reminder on that person's behalf, about what they asked, without asking for anything new and without promising anything the conversation does not already say.${params.anchorText.trim() ? ` What they wrote: «${params.anchorText.trim()}»` : ""}`,
     instructions: params.instructions || undefined,
     step: params.step,
     // One occasion per message of the person: a new message is a new ladder, and its refusals must
@@ -316,7 +337,7 @@ export async function snoozedFollowUpHandler(
     if (live && isSnoozedForAPerson(live)) {
       let before: number | undefined;
       for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
-        const got = parseChatwootMessages(
+        const got = readMessagePage(
           await client.getMessages(
             conversationId,
             before === undefined ? undefined : { before },
@@ -395,6 +416,8 @@ export async function snoozedFollowUpHandler(
     return true;
   };
 
+  // A send-time message read that failed is not a withdrawal: the step is tried again, not dropped.
+  let messageReadFailed = false;
   const outcome = await runAgentNudge({
     signal: run?.signal,
     tenantId,
@@ -404,6 +427,7 @@ export async function snoozedFollowUpHandler(
       instructions: step.instructions,
       step: stepIndex + 1,
       anchorMessageId: anchor.messageId,
+      anchorText: anchor.text,
     }),
     postActions: {
       assignLabels:
@@ -423,13 +447,14 @@ export async function snoozedFollowUpHandler(
       if (await (strict ? jobRetiredStrict(job, base) : jobRetired(job, base)))
         return false;
       try {
-        const since = parseChatwootMessages(
+        const since = readMessagePage(
           await client.getMessages(conversationId, {
             after: anchor.newestMessageId,
           }),
         );
         return !someoneSpokeAfter(since, anchor.newestMessageId);
       } catch {
+        messageReadFailed = true;
         return false;
       }
     },
@@ -437,7 +462,16 @@ export async function snoozedFollowUpHandler(
     deps,
   });
 
-  if (outcome === "stale") return { outcome: "done" };
+  if (outcome === "stale") {
+    if (!messageReadFailed) return { outcome: "done" };
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + LIVE_UNAVAILABLE_BACKOFF_MS),
+    };
+  }
+  // No reminder reached the customer (the WhatsApp window closed and no template is configured): the
+  // ladder stops here, as the bot's does, and leaves the conversation to the person, unresolved.
+  if (outcome === "noted-window") return { outcome: "done" };
   if (outcome === "live-unavailable") {
     return {
       outcome: "reschedule",

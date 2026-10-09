@@ -10,8 +10,8 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import * as chatwootWebhook from "@/modules/chatwoot/webhook";
 import * as inbound from "@/modules/webhooks/inbound/service";
 
-// The two webhook receivers ack first and process detached, and a direct turn runs inside that
-// detached half. Each detached delivery is registered with the shutdown drain, so SIGTERM waits for it
+// The two webhook receivers ack first and process detached (the Chatwoot one behind its admission
+// queue, ./delivery-queue.ts), and a direct turn runs inside that detached half. Each detached delivery is registered with the shutdown drain, so SIGTERM waits for it
 // like it waits for a claimed job. The receivers' own parsing and the delivery itself are stubbed:
 // what is under test is that the controller hands the drain the work it starts.
 
@@ -51,12 +51,14 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
         tenantId: 1n,
         instanceId: 1n,
         deliveryId: "drain-1",
+        deliveryRowId: 1n,
+        dispatch: true,
         agentBotId: null,
         normalized: {} as NormalizedChatwootEvent,
       }),
       spyOn(
         chatwootWebhook,
-        "recordAndProcessChatwootDelivery",
+        "processRecordedChatwootDelivery",
       ).mockImplementation(async () => {
         await held.run();
         return "processed";
@@ -75,6 +77,42 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
     held.release();
     expect((await drained).drained).toBe(true);
     expect(held.state.finished).toBe(true);
+  });
+
+  // A redelivery of a row already past PENDING is acked and starts nothing: processing it again would
+  // spend a slot on a CAS that cannot win.
+  test("Chatwoot: a delivery that no longer owes its attempt starts nothing", async () => {
+    let ran = false;
+    restore.push(
+      spyOn(chatwootWebhook, "receiveChatwootWebhook").mockResolvedValue({
+        ack: true,
+        outcome: "queued",
+        tenantId: 1n,
+        instanceId: 1n,
+        deliveryId: "drain-settled",
+        deliveryRowId: 2n,
+        dispatch: false,
+        agentBotId: null,
+        normalized: {} as NormalizedChatwootEvent,
+      }),
+      spyOn(
+        chatwootWebhook,
+        "processRecordedChatwootDelivery",
+      ).mockImplementation(async () => {
+        ran = true;
+        return "processed";
+      }),
+    );
+    const res = await chatwootController.handle(
+      new Request("http://localhost/v1/chatwoot/webhook/tok", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    expect(res.status).toBe(200);
+    await sleep(20);
+    expect(ran).toBe(false);
+    expect(inFlightWork().byKind).toEqual({});
   });
 
   test("generic inbound", async () => {

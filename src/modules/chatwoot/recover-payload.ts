@@ -1,4 +1,4 @@
-// The webhook BODY a stranded delivery no longer has (bodies are never stored), rebuilt for
+// The webhook BODY a stranded delivery no longer has (the claim clears the stored one), rebuilt for
 // `normalizeChatwootEvent`: the conversation from the mirror, since a recovery asks "may this be
 // answered NOW", and the message from a REST read. See docs/chatwoot.md, "Webhook receiver".
 

@@ -20,7 +20,7 @@ import { runApprovalOutcome } from "@/modules/documents/approval-outcome";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { flowLogRow } from "../utils/flowlog";
+import { flowLogRow, flowLogRows } from "../utils/flowlog";
 import {
   guardrailModel,
   HandoffThenReplyModel,
@@ -88,8 +88,25 @@ function recordingClient() {
           calls.push([name, ...args]);
           if (name === "getConversationLabels" || name.startsWith("list"))
             return [];
-          if (name === "getConversation")
-            return { id: args[0], status: "pending", meta: {} };
+          // NOTE: Chatwoot's live answer is the mirror's row, so a test that hands the conversation to
+          // a person in the row hands it over live too.
+          if (name === "getConversation") {
+            const row = await suDb.conversation.findFirst({
+              where: { tenantId, chatwootConversationId: args[0] as number },
+              select: { status: true, assigneeType: true, assigneeId: true },
+            });
+            return {
+              id: args[0],
+              status: row?.status ?? "pending",
+              meta:
+                row?.assigneeType && row.assigneeId != null
+                  ? {
+                      assignee_type: row.assigneeType,
+                      assignee: { id: row.assigneeId },
+                    }
+                  : {},
+            };
+          }
           return { id: 90_000 + calls.length };
         };
       },
@@ -634,6 +651,199 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(asRendered(caption ?? "")).toBe(
       "Segue o documento Orçamento {{ especial }}, aprovado pela equipe.",
     );
+  });
+
+  test("a person Chatwoot shows on the conversation, ahead of the mirror, gets the note and no PDF", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    const ahead = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "getConversation") {
+          return async (id: number) => ({
+            id,
+            status: "open",
+            meta: { assignee_type: "User", assignee: { id: 5 } },
+          });
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: async () => ahead as never,
+      storageDir: DIR,
+      nudgeDeps: { makeModel: noModel, checkpointer: new MemorySaver() },
+    });
+    expect(outcome).toBe("noted");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain("atendente");
+  });
+
+  test("a window that closes just before the send leaves the window note, never the PDF", async () => {
+    const { requestId } = await conversationWithRequest({
+      lastInboundAt: new Date(Date.now() - 23.9 * 3_600_000),
+    });
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    // The clock jumps past the window on the third read after the model answered: the first two are
+    // the gates in front of the send, the third the one repeated after the document's validity read.
+    let answered = false;
+    let readsAfter = 0;
+    const now = () => {
+      if (answered) readsAfter += 1;
+      return new Date(Date.now() + (readsAfter >= 3 ? 3_600_000 : 0));
+    };
+    const reply = async () => {
+      answered = true;
+      return new AIMessage("Seu orçamento segue em anexo.");
+    };
+    const rec = recordingClient();
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () =>
+          ({
+            invoke: reply,
+            bindTools: () => ({ invoke: reply }),
+          }) as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        now,
+      },
+    });
+    expect(outcome).toBe("noted");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    expect(named(rec.calls, "sendTemplate")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain("janela de 24h");
+  });
+
+  test("a silence the caption stands in for leaves the thread", async () => {
+    const { requestId, chatwootConversationId } = await conversationWithRequest(
+      {},
+    );
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const checkpointer = new MemorySaver();
+    const rec = recordingClient();
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () =>
+          new ScriptedCaptureModel([
+            { reply: "[[SKIP]]" },
+          ]) as unknown as BaseChatModel,
+        checkpointer,
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("delivered");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(1);
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: {
+        thread_id: `${tenantId}:${instanceId}:${chatwootConversationId}`,
+      },
+    });
+    expect(JSON.stringify(state.values ?? {})).not.toContain("[[SKIP]]");
+  });
+
+  test("two documents refused by the spend ceiling in one conversation are two refusals", async () => {
+    const first = await conversationWithRequest({});
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: {
+        tenantId,
+        chatwootConversationId: first.chatwootConversationId,
+      },
+      select: { id: true, threadId: true },
+    });
+    const second = await issueOrRequestApproval({
+      ctx: ctx(),
+      base: appDb,
+      storageDir: DIR,
+      templateId,
+      idempotencyKey: `outcome-second-${seq}`,
+      values: { ...ARGS, cliente: "Bruno Lima" },
+      threadId: conv.threadId,
+      chatwootInstanceId: instanceId,
+      conversationId: conv.id,
+      now: new Date(),
+    });
+    if (second.kind !== "approval") throw new Error("expected a request");
+    const ids = [first.requestId, BigInt(second.request.id)];
+    for (const requestId of ids) {
+      await approveDocumentRequest({
+        ctx: ctx(),
+        requestId,
+        base: appDb,
+        storageDir: DIR,
+      });
+    }
+    const tenantBefore = await suDb.tenant.findUniqueOrThrow({
+      where: { id: tenantId },
+      select: { settings: true },
+    });
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: {
+          ...(tenantBefore.settings as object),
+          spendCeiling: { enabled: true, monthlyInboxUsd: 10 },
+        },
+      },
+    });
+    await suDb.spendCostSnapshot.create({
+      data: {
+        tenantId,
+        source: "inbox",
+        monthStart: new Date(
+          Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+        ),
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+    });
+    try {
+      for (const requestId of ids) {
+        const rec = recordingClient();
+        expect(
+          await runApprovalOutcome(tenantId, requestId, appDb, {
+            makeClient: rec.makeClient,
+            storageDir: DIR,
+            nudgeDeps: { makeModel: noModel, checkpointer: new MemorySaver() },
+          }),
+        ).toBe("noted");
+        expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+      }
+      const refusals = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "spend_ceiling" },
+      });
+      expect(refusals).toHaveLength(2);
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: tenantBefore.settings as object },
+      });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+    }
   });
 
   test("an aborted run writes nothing, and a run that wrote commits its outcome", async () => {

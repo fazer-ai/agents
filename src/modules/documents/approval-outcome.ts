@@ -280,6 +280,33 @@ export async function runApprovalOutcome(
     return (await note(client, unavailable)) ? "noted" : "retry";
   }
   const issuedId = request.issuedDocumentId;
+  // Asked live before the turn: the mirror can lag a person who just took, closed or handed back the
+  // conversation, and the PDF must not go out over a person. The turn rechecks live too
+  // (requireLiveBotOwnership), so a takeover while the agent writes ends in a note as well.
+  const liveClient = await clientFor(tenantId, target, base, deps);
+  const live = parseLiveConversation(
+    await liveClient
+      .getConversation(target.conv.chatwootConversationId)
+      .catch(() => null),
+  );
+  if (!live) return "retry";
+  const ownedLive = shouldBotHandle(
+    {
+      assigneeType: live.assigneeType,
+      status: live.status,
+      assigneeId: live.assigneeId,
+      resolvedBy: target.conv.resolvedBy,
+    },
+    { ourAgentBotId: target.botId },
+  );
+  if (!ownedLive) {
+    return (await note(
+      liveClient,
+      `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
+    ))
+      ? "noted"
+      : "retry";
+  }
   const outcome: RunAgentNudgeOutcome = await runAgentNudge({
     tenantId,
     threadId: target.conv.threadId,
@@ -287,6 +314,7 @@ export async function runApprovalOutcome(
     nudge: {
       source: "document_approval",
       kind: "approved",
+      occasionId: String(requestId),
       instructions: `A equipe aprovou o documento "${request.title}" que o cliente pediu nesta conversa, e o PDF vai anexado a esta mensagem. Escreva uma frase curta avisando que ele segue anexo. Não repita valores nem o conteúdo do documento.`,
     },
     approvedDocument: {
@@ -307,6 +335,7 @@ export async function runApprovalOutcome(
         return row?.revoked === false;
       },
     },
+    requireLiveBotOwnership: true,
     base,
     deps: { ...deps.nudgeDeps, makeClient: deps.makeClient },
   });

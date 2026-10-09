@@ -2574,8 +2574,12 @@ async function runAgentNudgeBody(
       if (attach && !(await attach.stillValid())) {
         return refuse(await noteApproved(attach.revokedNote, "noted"));
       }
-      // NOTE: the validity read is I/O between the last ask and the send, so the ask is repeated.
+      // NOTE: the validity read is I/O between the last ask and the send, so the ask, and the
+      // window, are repeated.
       if (attach && !(await stillWanted())) return refuse(standDown());
+      if (attach && sendModeNow() !== "freeform") {
+        return refuse(await noteApproved(attach.windowNote, "noted-window"));
+      }
       const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;
       keepSentId(
@@ -2595,6 +2599,10 @@ async function runAgentNudgeBody(
         String(conversationId),
         params.nudge.source,
       );
+      // NOTE: a silence the caption stood in for is a sentence nobody read; it leaves the thread.
+      if (attach && drafted.silent) {
+        await takeBackUndeliveredSilence(drafted.wroteText);
+      }
       markFollowUp("messaged");
       await applyPostActions({ canMessage: canMessagePost });
       if (approved && !attach) return noteApproved(approved.heldNote, "noted");

@@ -363,9 +363,7 @@ export function DecisionsFields({
     setDecisions((prev) => ({ ...prev, ...p }));
   const provider = (decisions.provider || "openai") as DecisionProvider;
   const apply = decisions.apply || "shadow";
-  const questionNames = decisions.questions
-    .map((q) => q.name.trim())
-    .filter(Boolean);
+  const questionNames = decisions.questions.map((q) => q.name).filter(Boolean);
 
   // The message at a field: the form's own problem first, then what the server last said about it.
   const at = (path: string): string | null => {
@@ -599,8 +597,8 @@ export function DecisionsFields({
     cond: DecisionConditionForm,
   ) => {
     const base = `rules.${ri}.when.${ci}`;
-    const name = cond.question.trim();
-    const q = decisions.questions.find((x) => x.name.trim() === name);
+    const name = cond.question;
+    const q = decisions.questions.find((x) => x.name === name);
     const questionError = field(`${base}.question`);
     const errors = [
       questionError,
@@ -634,7 +632,7 @@ export function DecisionsFields({
         />
       </span>
     );
-    const options = q?.options.map((o) => o.value.trim()).filter(Boolean) ?? [];
+    const options = q?.options.map((o) => o.value).filter(Boolean) ?? [];
     const levels = q?.levels ?? [];
     const levelSelect = (key: "minLevel" | "maxLevel", label: string) => {
       const known = levels.some((_, n) => String(n) === cond[key]);
@@ -914,8 +912,8 @@ export function DecisionsFields({
         ? v.filter((x): x is string => typeof x === "string")
         : [];
     const when = rule.when.map((c) => {
-      const name = c.question.trim();
-      const q = decisions.questions.find((x) => x.name.trim() === name);
+      const name = c.question;
+      const q = decisions.questions.find((x) => x.name === name);
       if (q?.type === "yes_no") return `${name} ≥ ${c.minProbability}`;
       if (q?.type === "choice") return `${name} = ${c.equals}`;
       if (q?.type === "score") {
@@ -1086,7 +1084,7 @@ export function DecisionsFields({
           </p>
         </div>
         {decisions.questions.map((q, qi) => {
-          const samples = activity?.answers.get(q.name.trim()) ?? [];
+          const samples = activity?.answers.get(q.name) ?? [];
           const qOpen =
             open.has(q.key) ||
             issuesUnder(issues, `questions.${qi}`).length > 0;
@@ -1118,7 +1116,7 @@ export function DecisionsFields({
                   </h5>
                   {!qOpen && (
                     <span className="truncate font-mono text-text-secondary text-xs">
-                      {q.name.trim()}
+                      {q.name}
                     </span>
                   )}
                 </button>
@@ -1455,7 +1453,7 @@ export function DecisionsFields({
                                       conditionFor(
                                         prev,
                                         prev.questions
-                                          .map((x) => x.name.trim())
+                                          .map((x) => x.name)
                                           .find(Boolean) ?? "",
                                       ),
                                     ],
@@ -1566,12 +1564,11 @@ export function DecisionsFields({
                     key: freshDecisionKey(),
                     origin: null,
                     when: [
-                      prev.questions.some((x) => x.name.trim())
+                      prev.questions.some((x) => x.name)
                         ? conditionFor(
                             prev,
-                            prev.questions
-                              .map((x) => x.name.trim())
-                              .find(Boolean) ?? "",
+                            prev.questions.map((x) => x.name).find(Boolean) ??
+                              "",
                           )
                         : emptyCondition(),
                     ],

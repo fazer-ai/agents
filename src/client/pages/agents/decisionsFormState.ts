@@ -99,6 +99,12 @@ export function emptyDecisionsForm(): DecisionsForm {
   };
 }
 
+// Where an agent with no block starts: OpenAI Decisions in shadow, so nothing is written before
+// the operator has read what it would do.
+export function startingDecisionsForm(): DecisionsForm {
+  return { ...emptyDecisionsForm(), provider: "openai", apply: "shadow" };
+}
+
 export function decisionsToForm(raw: unknown): DecisionsForm | null {
   const b = bag(raw);
   if (!b) return null;
@@ -160,7 +166,7 @@ function optionsToStored(
 ): Record<string, unknown>[] {
   return options.map((o) => {
     const out: Record<string, unknown> = {};
-    put(out, "value", o.value.trim());
+    put(out, "value", o.value);
     // Written even when empty: the boundary asks for the key, and an option needs no description.
     out.description = o.description;
     return out;
@@ -171,21 +177,24 @@ export function questionTypeOf(
   form: DecisionsForm,
   name: string,
 ): string | null {
-  return form.questions.find((q) => q.name.trim() === name)?.type ?? null;
+  return form.questions.find((q) => q.name === name)?.type ?? null;
 }
 
+// Every text is written AS HELD, never trimmed: the engine compares a condition's `question` and
+// `equals` with the question's name and the option's value literally, so tidying one side of a pair
+// the stored block has spelled with a space would break a rule that works.
 export function decisionsToStored(
   form: DecisionsForm,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   put(out, "provider", form.provider);
-  put(out, "model", form.model.trim());
+  put(out, "model", form.model);
   put(out, "credentialRef", form.credentialRef);
   out.questions = form.questions.map((q) => {
     const o: Record<string, unknown> = {};
-    put(o, "name", q.name.trim());
+    put(o, "name", q.name);
     o.type = q.type;
-    put(o, "instructions", q.instructions.trim());
+    put(o, "instructions", q.instructions);
     if (q.type === "choice") o.options = optionsToStored(q.options);
     if (q.type === "score") o.levels = optionsToStored(q.levels);
     return o;
@@ -198,7 +207,7 @@ export function decisionsToStored(
       return {
         when: r.when.map((c) => {
           const o: Record<string, unknown> = {};
-          const name = c.question.trim();
+          const name = c.question;
           put(o, "question", name);
           // Only what the question's type reads, so a threshold left over from another type is not
           // stored as a test the engine never applies. A condition on a question that no longer
@@ -345,12 +354,12 @@ export function conditionFor(
   form: DecisionsForm,
   question: string,
 ): DecisionConditionForm {
-  const q = form.questions.find((x) => x.name.trim() === question);
+  const q = form.questions.find((x) => x.name === question);
   const base = emptyCondition(question);
   if (!q) return base;
   if (q.type === "yes_no") return { ...base, minProbability: "0.7" };
   if (q.type === "choice") {
-    return { ...base, equals: q.options[0]?.value.trim() ?? "" };
+    return { ...base, equals: q.options[0]?.value ?? "" };
   }
   return { ...base, minLevel: "0", maxLevel: "0" };
 }

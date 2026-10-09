@@ -192,6 +192,17 @@ describe("the decisions engine in the agent editor", () => {
     ).toBeGreaterThan(0);
   });
 
+  test("an agent stored on the decisions engine with no block shows the fields and what is missing", () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions" } });
+    expect(engineSelect().value).toBe("decisions");
+    expect(count("decisions-fields")).toBe(1);
+    expect(count("decisions-problems")).toBe(1);
+    expect(
+      screen.queryAllByText(/Add at least one question/).length,
+    ).toBeGreaterThan(0);
+  });
+
   test("an agent on the decisions engine shows its provider, questions and rules", () => {
     stubApi();
     renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });

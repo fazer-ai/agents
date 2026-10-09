@@ -15,6 +15,7 @@ import {
   decisionsToForm,
   decisionsToStored,
   decisionsUntouched,
+  startingDecisionsForm,
 } from "./decisionsFormState";
 
 // The agent editor's Observation block, as the same pair of pure functions the Memory and TTS blocks
@@ -55,7 +56,12 @@ export function observationToForm(settings: unknown): ObservationState {
   return {
     engine: c.engine,
     storedEngine: c.engine,
-    decisions: decisionsToForm(c.decisions),
+    // An agent stored on the decisions engine with NO block is one every tick skips. It opens on
+    // an empty draft, as a first switch to the engine does, so the fields and what is missing are
+    // on screen instead of an engine choice with nothing under it.
+    decisions:
+      decisionsToForm(c.decisions) ??
+      (c.engine === "decisions" ? startingDecisionsForm() : null),
     storedDecisions: c.decisions,
     analysis: c.analysis,
     windowMessages: String(c.window.messages),

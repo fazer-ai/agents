@@ -7,7 +7,7 @@ import {
   DecisionsFields,
   type DecisionsServerRefusal,
 } from "./DecisionsFields";
-import { emptyDecisionsForm } from "./decisionsFormState";
+import { startingDecisionsForm } from "./decisionsFormState";
 import {
   OBSERVATION_LIMITS,
   type ObservationState,
@@ -160,11 +160,7 @@ export function ObservationSection({
               // the operator has read what it would do.
               decisions:
                 e.target.value === "decisions" && prev.decisions === null
-                  ? {
-                      ...emptyDecisionsForm(),
-                      provider: "openai",
-                      apply: "shadow",
-                    }
+                  ? startingDecisionsForm()
                   : prev.decisions,
             }))
           }

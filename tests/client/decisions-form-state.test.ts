@@ -129,6 +129,22 @@ describe("the decisions block round trip", () => {
     }
   });
 
+  // The engine compares a condition's `equals` with the option's value literally, so a pair the
+  // stored block spells with a space works, and the form must not tidy one side of it.
+  test("a value stored with surrounding space is written as stored, and its rule stays whole", () => {
+    const block = clone();
+    got(got(block.questions[1]).options?.[0]).value = " reembolso ";
+    got(block.rules[1]).when = [{ question: "assunto", equals: " reembolso " }];
+    expect(decisionsSchema.safeParse(block).success).toBe(true);
+    const form = formOf(block);
+    // Edited elsewhere, so the block is written through the form.
+    form.apply = "enforce";
+    expect(decisionsToStored(form)).toEqual({ ...block, apply: "enforce" });
+    const issues = decisionsFormIssues(form);
+    expect(issues.size).toBe(0);
+    expect(ruleIsBroken(issues, 1)).toBe(false);
+  });
+
   test("an argument the form has no field for survives an edit of the rule", () => {
     const block = clone();
     (
@@ -493,6 +509,27 @@ describe("what a save of the Observation block writes", () => {
     expect(observationToStored({ ...fine, engine: "llm" }, false)).toEqual(
       readMonitoringConfig(stored),
     );
+  });
+
+  // Every tick of such an agent is skipped (`decisions_config_invalid`), so the editor must show
+  // what is missing instead of an engine choice with no fields under it.
+  test("an agent stored on the decisions engine with no block opens on an editable draft", () => {
+    for (const monitoring of [
+      { engine: "decisions" },
+      { engine: "decisions", decisions: null },
+    ]) {
+      const form = observationToForm({ monitoring });
+      expect(form.storedDecisions).toBeNull();
+      expect(form.decisions?.provider).toBe("openai");
+      expect(form.decisions?.apply).toBe("shadow");
+      expect(
+        [
+          ...decisionsFormIssues(got(form.decisions ?? undefined)).keys(),
+        ].sort(),
+      ).toEqual(["credentialRef", "questions"]);
+    }
+    // An agent on the model engine with no block still has none.
+    expect(observationToForm({}).decisions).toBeNull();
   });
 
   test("an agent that never had a block writes none", () => {

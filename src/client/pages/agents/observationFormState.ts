@@ -65,8 +65,10 @@ export function observationToStored(form: ObservationState): MonitoringConfig {
   const stored = readMonitoringConfig({ monitoring: draft });
   // A negative window is REFUSED by the write boundary, so it travels as typed: read through the
   // reader it would become 0, the one value that changes what the agent costs, saved by a typo.
-  if (draft.debounce.windowSeconds < 0)
-    stored.debounce.windowSeconds = draft.debounce.windowSeconds;
+  // Asked of what was TYPED, before the draft rounds it: -0.5 rounds to a zero.
+  const typed = Number(form.windowSeconds);
+  if (form.windowSeconds.trim() !== "" && typed < 0)
+    stored.debounce.windowSeconds = typed;
   return stored;
 }
 

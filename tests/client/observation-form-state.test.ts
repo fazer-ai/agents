@@ -100,4 +100,26 @@ describe("agent editor observation round-trip", () => {
     });
     expect(stored.debounce.windowSeconds).toBe(-1);
   });
+
+  // Rounded first, -0.5 is a zero and the refusal never happens.
+  test("a negative fraction travels unrounded", () => {
+    for (const typed of ["-0.5", "-0.1", " -2.4 "]) {
+      const stored = observationToStored({
+        ...observationToForm({}),
+        windowSeconds: typed,
+      });
+      expect(stored.debounce.windowSeconds).toBe(Number(typed));
+      expect(stored.debounce.windowSeconds).toBeLessThan(0);
+    }
+  });
+
+  test("an emptied or unreadable window is still the default, never a negative", () => {
+    for (const typed of ["", "  ", "abc", "-"]) {
+      const stored = observationToStored({
+        ...observationToForm({}),
+        windowSeconds: typed,
+      });
+      expect(stored.debounce.windowSeconds).toBe(20);
+    }
+  });
 });

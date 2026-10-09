@@ -20,6 +20,10 @@ import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
+import {
+  PROVIDERS_WITH_PROMPT_CACHE,
+  PROVIDERS_WITH_PROMPT_CACHE_1H,
+} from "@/graph/prompt-cache";
 import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import type { Schedule } from "@/modules/business-hours/hours";
 import { CapabilityMap } from "./CapabilityMap";
@@ -35,6 +39,11 @@ interface ModelState {
   temperature: string;
   // Empty = never chosen, which is not the same as "none": the provider's own default stays.
   reasoningEffort: string;
+  // Prompt caching (anthropic, openrouter). Empty = not set: `auto`, a 5m prefix, and a conversation
+  // that follows the prefix.
+  promptCache: string;
+  promptCacheTtl: string;
+  promptCacheConversationTtl: string;
 }
 
 interface GeneralTabProps {
@@ -288,6 +297,99 @@ export function GeneralTab({
               ))}
             </Select>
           </FormField>
+        )}
+        {(PROVIDERS_WITH_PROMPT_CACHE as readonly string[]).includes(
+          model.provider,
+        ) && (
+          <div className="grid gap-4 sm:grid-cols-3">
+            <FormField
+              label={t("editor.promptCache", "Prompt cache")}
+              help={t(
+                "editor.promptCacheHelp",
+                "Reuses the instructions and the conversation from one call to the next at a tenth of the input price. On OpenRouter it only applies to Claude models.",
+              )}
+            >
+              <Select
+                value={model.promptCache}
+                onChange={(e) =>
+                  setModel({ ...model, promptCache: e.target.value })
+                }
+              >
+                <option value="">
+                  {t("editor.promptCacheAuto", "Automatic")}
+                </option>
+                <option value="off">{t("editor.promptCacheOff", "Off")}</option>
+              </Select>
+            </FormField>
+            {model.promptCache !== "off" &&
+              (PROVIDERS_WITH_PROMPT_CACHE_1H as readonly string[]).includes(
+                model.provider,
+              ) && (
+                <>
+                  <FormField
+                    label={t("editor.promptCacheTtl", "Instructions cache")}
+                    help={t(
+                      "editor.promptCacheTtlHelp",
+                      "Shared by every conversation. 1 hour only pays off when the agent goes more than 5 minutes without a call.",
+                    )}
+                  >
+                    <Select
+                      value={model.promptCacheTtl}
+                      onChange={(e) =>
+                        setModel({ ...model, promptCacheTtl: e.target.value })
+                      }
+                    >
+                      <option value="">
+                        {t("editor.promptCache5m", "5 minutes")}
+                      </option>
+                      <option value="1h">
+                        {t("editor.promptCache1h", "1 hour")}
+                      </option>
+                    </Select>
+                  </FormField>
+                  <FormField
+                    label={t(
+                      "editor.promptCacheConversationTtl",
+                      "Conversation cache",
+                    )}
+                    help={t(
+                      "editor.promptCacheConversationTtlHelp",
+                      "How long one customer's history stays cached between their messages.",
+                    )}
+                    description={t(
+                      "editor.promptCacheConversationTtlRequires",
+                      "1 hour needs the instructions cache at 1 hour.",
+                    )}
+                  >
+                    <Select
+                      value={model.promptCacheConversationTtl}
+                      onChange={(e) =>
+                        setModel({
+                          ...model,
+                          promptCacheConversationTtl: e.target.value,
+                        })
+                      }
+                    >
+                      <option value="">
+                        {t(
+                          "editor.promptCacheConversationSame",
+                          "Same as instructions",
+                        )}
+                      </option>
+                      <option value="5m">
+                        {t("editor.promptCache5m", "5 minutes")}
+                      </option>
+                      <option
+                        value="1h"
+                        disabled={model.promptCacheTtl !== "1h"}
+                      >
+                        {t("editor.promptCache1h", "1 hour")}
+                      </option>
+                    </Select>
+                  </FormField>
+                </>
+              )}
+          </div>
         )}
         {model.provider === "openai-compatible" && (
           <FormField

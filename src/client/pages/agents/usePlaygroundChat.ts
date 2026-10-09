@@ -35,6 +35,8 @@ export function addUsage(
     promptTokens: a.promptTokens + b.promptTokens,
     cachedReadTokens: a.cachedReadTokens + b.cachedReadTokens,
     cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
+    cacheCreation1hTokens:
+      (a.cacheCreation1hTokens ?? 0) + (b.cacheCreation1hTokens ?? 0),
     completionTokens: a.completionTokens + b.completionTokens,
     costUsd: a.costUsd + b.costUsd,
     unpricedCalls: a.unpricedCalls + b.unpricedCalls,
@@ -54,6 +56,7 @@ export const NO_USAGE: PlaygroundUsage = {
   promptTokens: 0,
   cachedReadTokens: 0,
   cacheCreationTokens: 0,
+  cacheCreation1hTokens: 0,
   completionTokens: 0,
   byNode: {},
   costUsd: 0,

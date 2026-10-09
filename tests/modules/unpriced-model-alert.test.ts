@@ -65,6 +65,7 @@ const row = (
   completionTokens: 5,
   cachedReadTokens: 0,
   cacheCreationTokens: 0,
+  cacheCreation1hTokens: 0,
   durationMs: null,
   costUsd,
   priceTable: "litellm@test",

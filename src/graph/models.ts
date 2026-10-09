@@ -1,10 +1,10 @@
-import { ChatAnthropic } from "@langchain/anthropic";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { ChatDeepSeek } from "@langchain/deepseek";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import logger from "@/api/lib/logger";
 import { AppError } from "@/lib/errors";
+import { ChatAnthropicCacheSplit } from "./anthropic-cache-split";
 import { toGeminiTools } from "./gemini-tools";
 import type { ModelConfig } from "./model-config";
 import {
@@ -13,6 +13,7 @@ import {
   type ReasoningEffort,
   toolEffortFloorOf,
 } from "./openai-reasoning";
+import { promptCacheFetch, resolvePromptCache } from "./prompt-cache";
 
 // Per-agent/per-node model factory. The config SCHEMA lives in ./model-config (LangChain-free, so
 // the config/HTTP layer validates without importing the provider SDKs); this module turns a
@@ -226,17 +227,26 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         // still owns the tool-effort pin, which applies to a routed gpt-5.6 id just the same.
         planOpenAITransport(model, undefined),
       );
-    case "openrouter":
+    case "openrouter": {
+      const cache = resolvePromptCache(cfg);
       return makeOpenAIChat(
         {
           model,
           apiKey,
           temperature: openaiTemperature(model, temperature),
           ...limits(cfg),
-          configuration: { baseURL: cfg.baseURL || OPENROUTER_BASE_URL },
+          configuration: {
+            baseURL: cfg.baseURL || OPENROUTER_BASE_URL,
+            // NOTE: only a Claude model behind OpenRouter gets marks (./prompt-cache); the others
+            // cache on their own and the request goes out untouched.
+            ...(cache
+              ? { fetch: promptCacheFetch(cache, "chat-completions") }
+              : {}),
+          },
         },
         planOpenAITransport(model, undefined),
       );
+    }
     // NOTE: temperature is DROPPED for this provider, whoever set it. Anthropic's current generation
     // rejects any non-default `temperature`, `top_p` and `top_k` with a hard 400, and its migration
     // guide says to omit them. It is dropped by PROVIDER, not by model pattern, because no field
@@ -244,17 +254,23 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
     // is fail-open, so a 400 there approves everything. On the older models that still accept it,
     // omitting it leaves the guardrail results unchanged. The stored value is kept as the operator
     // set it, so if Anthropic takes the parameter back this line is all that has to go.
-    case "anthropic":
-      return new ChatAnthropic({
+    case "anthropic": {
+      const cache = resolvePromptCache(cfg);
+      // `clientOptions`, not the plain `timeout` the OpenAI-shaped clients take: the option
+      // type accepts `timeout` and the built instance leaves it undefined.
+      const clientOptions = {
+        ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
+        // Anthropic caches only what the request marks (./prompt-cache).
+        ...(cache ? { fetch: promptCacheFetch(cache, "anthropic") } : {}),
+      };
+      // The subclass keeps the 1-hour cache writes apart in the usage (./anthropic-cache-split).
+      return new ChatAnthropicCacheSplit({
         model,
         apiKey,
         ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
-        // NOTE: `clientOptions`, not the plain `timeout` the OpenAI-shaped clients take: the option
-        // type accepts `timeout` and the built instance leaves it undefined.
-        ...(cfg.timeoutMs !== undefined
-          ? { clientOptions: { timeout: cfg.timeoutMs } }
-          : {}),
+        ...(Object.keys(clientOptions).length > 0 ? { clientOptions } : {}),
       });
+    }
     case "google": {
       const gemini = new ChatGoogleGenerativeAI({
         model,

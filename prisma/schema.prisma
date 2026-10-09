@@ -2228,6 +2228,10 @@ model LlmUsage {
   // cacheCreationTokens = tokens written to the cache this call (Anthropic, billed at a premium).
   cachedReadTokens    Int      @default(0) @map("cached_read_tokens")
   cacheCreationTokens Int      @default(0) @map("cache_creation_tokens")
+  // Of cacheCreationTokens, the writes made under the 1-hour TTL (Anthropic bills them at 2x the input
+  // rate against 1.25x for the 5-minute ones). A SUBSET, like the two above: 0 for every row before the
+  // column and every call without a 1-hour mark.
+  cacheCreation1hTokens Int    @default(0) @map("cache_creation_1h_tokens")
   // The turn this call was billed to, the same id as its ExecutionLog rows and its Langfuse trace
   // (issue #839). Null for rows from before the column and for a call no turn owns. The playground
   // groups a reopened session's calls by it, so each message gets back the line it had live.

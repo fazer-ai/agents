@@ -67,6 +67,7 @@ function turn(
       promptTokens: 1600,
       cachedReadTokens: 600,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
       completionTokens: 75,
       byNode: { agent: 1, guardrail: 1 },
       costUsd: 0,

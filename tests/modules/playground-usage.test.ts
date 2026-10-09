@@ -61,6 +61,8 @@ interface Spend {
   output: number;
   cached?: number;
   written?: number;
+  // Of `written`, the 1-hour writes, split out the way `splitOneHourWrites` leaves an Anthropic call.
+  written1h?: number;
 }
 
 // A real BaseChatModel, so the turn's callbacks fire and `UsageCapture` writes the ledger row the
@@ -94,8 +96,9 @@ class SpendingModel extends BaseChatModel {
         total_tokens: s.input + s.output,
         input_token_details: {
           cache_read: s.cached ?? 0,
-          cache_creation: s.written ?? 0,
-        },
+          cache_creation: (s.written ?? 0) - (s.written1h ?? 0),
+          ...(s.written1h ? { cache_creation_1h: s.written1h } : {}),
+        } as never,
       },
     });
     return { generations: [{ text: this.reply, message }] };
@@ -114,7 +117,12 @@ class SpendingModel extends BaseChatModel {
 
 const MODEL_MS = 30;
 const AGENT_SPEND: Spend = { input: 1200, output: 80, cached: 1024 };
-const JUDGE_SPEND: Spend = { input: 300, output: 20, written: 256 };
+const JUDGE_SPEND: Spend = {
+  input: 300,
+  output: 20,
+  written: 256,
+  written1h: 96,
+};
 const VERDICT = JSON.stringify({
   violated: false,
   categories: [],
@@ -145,6 +153,7 @@ async function ledger(threadId: string) {
       promptTokens: true,
       cachedReadTokens: true,
       cacheCreationTokens: true,
+      cacheCreation1hTokens: true,
       completionTokens: true,
     },
   });
@@ -248,6 +257,10 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     const rows = await ledger(r.threadId);
     // (0) the fixture really billed two calls, on two nodes, on this thread
     expect(rows.map((x) => x.node).sort()).toEqual(["agent", "guardrail"]);
+    // The 1-hour writes reach the ledger apart, as a subset of the writes.
+    const judge = rows.find((x) => x.node === "guardrail");
+    expect(judge?.cacheCreationTokens).toBe(256);
+    expect(judge?.cacheCreation1hTokens).toBe(96);
     expect(rows.every((x) => x.source === "playground")).toBe(true);
 
     expect(r.usage).toEqual({
@@ -255,6 +268,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       promptTokens: AGENT_SPEND.input + JUDGE_SPEND.input,
       cachedReadTokens: 1024,
       cacheCreationTokens: 256,
+      cacheCreation1hTokens: 96,
       completionTokens: AGENT_SPEND.output + JUDGE_SPEND.output,
       // NOTE: which step made each call.
       byNode: { agent: 1, guardrail: 1 },
@@ -309,6 +323,8 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
         first.usage.cachedReadTokens + second.usage.cachedReadTokens,
       cacheCreationTokens:
         first.usage.cacheCreationTokens + second.usage.cacheCreationTokens,
+      cacheCreation1hTokens:
+        first.usage.cacheCreation1hTokens + second.usage.cacheCreation1hTokens,
       completionTokens:
         first.usage.completionTokens + second.usage.completionTokens,
       byNode: { agent: 2, guardrail: 1 },
@@ -356,6 +372,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       promptTokens: 400,
       cachedReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
       completionTokens: 30,
       byNode: { vision: 1 },
       // NOTE: the image read is written outside the model callbacks and is priced all the same.
@@ -551,6 +568,8 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
         read.usage.cachedReadTokens + turn.usage.cachedReadTokens,
       cacheCreationTokens:
         read.usage.cacheCreationTokens + turn.usage.cacheCreationTokens,
+      cacheCreation1hTokens:
+        read.usage.cacheCreation1hTokens + turn.usage.cacheCreation1hTokens,
       completionTokens:
         read.usage.completionTokens + turn.usage.completionTokens,
       byNode: { vision: 1, agent: 1 },

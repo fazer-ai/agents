@@ -17,6 +17,8 @@ type Rates = {
   input: number;
   cachedInput?: number;
   cacheWrite?: number;
+  // The 1-hour cache write. Absent on most rows, where it is derived (`cacheWrite1hRate`).
+  cacheWrite1h?: number;
   output: number;
 };
 type Entry = Rates & { tiers?: (Rates & { above: number })[] };
@@ -30,6 +32,8 @@ export interface PricedTokens {
   promptTokens: number;
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  // Of cacheCreationTokens, the 1-hour writes. Absent reads as none.
+  cacheCreation1hTokens?: number;
   completionTokens: number;
 }
 
@@ -121,6 +125,7 @@ export function priceCall(
           ...own,
           cachedInput: own.cachedInput ?? own.input,
           cacheWrite: own.cacheWrite ?? own.input,
+          cacheWrite1h: 2 * own.input,
         },
         tokens,
         false,
@@ -133,7 +138,17 @@ export function priceCall(
   };
 }
 
-function costAt(
+// Anthropic bills a 1-hour cache write at 2x the base input rate on every model
+// (Anthropic prompt-caching pricing: a 1-hour write is 2x base input), and the table carries the rate on
+// few rows, so a row without it is priced from its input. A row with no cache-write rate at all is a
+// model that does not write a cache, and a 1-hour write there has no price.
+function cacheWrite1hRate(tier: Rates): number | undefined {
+  if (tier.cacheWrite1h !== undefined) return tier.cacheWrite1h;
+  return tier.cacheWrite === undefined ? undefined : 2 * tier.input;
+}
+
+// Exported for the tests, which price rows the table does not carry yet (a stated 1-hour rate).
+export function costAt(
   entry: Entry,
   tokens: PricedTokens,
   halfPrice: boolean,
@@ -145,15 +160,21 @@ function costAt(
       .sort((a, b) => b.above - a.above)[0] ?? entry;
   const read = tokens.cachedReadTokens;
   const write = tokens.cacheCreationTokens;
+  // The 1-hour writes are a subset of the writes, priced at their own rate; the rest are 5-minute ones.
+  const write1h = Math.min(write, tokens.cacheCreation1hTokens ?? 0);
+  const write5m = write - write1h;
+  const rate1h = cacheWrite1hRate(tier);
   if (read > 0 && tier.cachedInput === undefined) return null;
-  if (write > 0 && tier.cacheWrite === undefined) return null;
+  if (write5m > 0 && tier.cacheWrite === undefined) return null;
+  if (write1h > 0 && rate1h === undefined) return null;
   // Both cache counts are SUBSETS of the input (see `extractTokenUsage`), so the full rate applies
   // only to what is left of it.
   const fresh = Math.max(0, tokens.promptTokens - read - write);
   const perMillion =
     fresh * tier.input +
     read * (tier.cachedInput ?? 0) +
-    write * (tier.cacheWrite ?? 0) +
+    write5m * (tier.cacheWrite ?? 0) +
+    write1h * (rate1h ?? 0) +
     tokens.completionTokens * tier.output;
   return (perMillion / 1e6) * (halfPrice ? 0.5 : 1);
 }

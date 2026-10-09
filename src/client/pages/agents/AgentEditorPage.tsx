@@ -164,6 +164,7 @@ import {
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
+import { promptCacheToStored } from "./promptCacheFormState";
 import {
   type ResolveConversationState,
   readResolveConversationState,
@@ -403,6 +404,9 @@ function readModelState(a: Agent) {
     baseURL: str(mc.baseURL),
     temperature: num(mc.temperature),
     reasoningEffort: str(mc.reasoningEffort),
+    promptCache: str(mc.promptCache),
+    promptCacheTtl: str(mc.promptCacheTtl),
+    promptCacheConversationTtl: str(mc.promptCacheConversationTtl),
   };
 }
 
@@ -1001,6 +1005,9 @@ function AgentEditor() {
     baseURL: "",
     temperature: "",
     reasoningEffort: "",
+    promptCache: "",
+    promptCacheTtl: "",
+    promptCacheConversationTtl: "",
   });
   // The endpoint each selected credential carries, which OUTRANKS the typed field wherever one is
   // shown. Resolved from the vault, not from the pickers: the page judges these on every tab, and
@@ -1625,6 +1632,8 @@ function AgentEditor() {
     // must not be serialized.
     if (model.reasoningEffort && model.provider === "openai")
       cfg.reasoningEffort = model.reasoningEffort;
+    // Same rule for the prompt-cache fields (./promptCacheFormState).
+    Object.assign(cfg, promptCacheToStored(model));
     return cfg;
   }
 

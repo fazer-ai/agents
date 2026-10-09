@@ -29,6 +29,7 @@ describe("extractTokenUsage", () => {
       completionTokens: 30,
       cachedReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
     });
   });
 
@@ -55,6 +56,7 @@ describe("extractTokenUsage", () => {
       completionTokens: 50,
       cachedReadTokens: 800,
       cacheCreationTokens: 120,
+      cacheCreation1hTokens: 0,
     });
   });
 
@@ -74,6 +76,7 @@ describe("extractTokenUsage", () => {
       completionTokens: 3,
       cachedReadTokens: 4,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
     });
   });
 
@@ -98,6 +101,7 @@ describe("extractTokenUsage", () => {
       completionTokens: 5,
       cachedReadTokens: 8,
       cacheCreationTokens: 2,
+      cacheCreation1hTokens: 0,
     });
   });
 
@@ -108,6 +112,7 @@ describe("extractTokenUsage", () => {
       completionTokens: 0,
       cachedReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
     });
   });
 });
@@ -146,6 +151,7 @@ describe("UsageCapture", () => {
       inboxId: null,
       cachedReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheCreation1hTokens: 0,
     });
   });
 
@@ -184,6 +190,7 @@ describe("UsageCapture", () => {
       inboxId: 7n,
       cachedReadTokens: 60,
       cacheCreationTokens: 10,
+      cacheCreation1hTokens: 0,
     });
   });
 

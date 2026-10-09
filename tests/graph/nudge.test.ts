@@ -504,18 +504,24 @@ async function seedConv(
 // What our side spoke, as the conversation row records it: the proactive stamp, and the two reply
 // marks a nudge must leave alone because it claims no customer message.
 async function speechOf(convId: number) {
-  return suDb.conversation.findFirstOrThrow({
+  const row = await suDb.conversation.findFirstOrThrow({
     where: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
     },
     select: {
+      id: true,
       lastProactiveAt: true,
       lastRepliedAt: true,
       lastRepliedMessageId: true,
     },
   });
+  // The turns the per-conversation turn limit counts: a proactive message is one of them.
+  const proactiveTurns = await suDb.agentTurnDelivery.count({
+    where: { conversationId: row.id, proactive: true },
+  });
+  return { ...row, proactiveTurns };
 }
 
 describe.skipIf(!dbUp)("runAgentNudge", () => {
@@ -749,6 +755,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // Our side spoke, and it answered no customer message: the reply marks stay put.
     const spoke = await speechOf(900);
     expect(spoke.lastProactiveAt).not.toBeNull();
+    expect(spoke.proactiveTurns).toBe(1);
     expect(spoke.lastRepliedAt).toBeNull();
     expect(spoke.lastRepliedMessageId).toBeNull();
   });
@@ -2968,6 +2975,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     ).toBe(false);
     // Nothing reached the customer from a conversation a person holds.
     expect((await speechOf(960)).lastProactiveAt).toBeNull();
+    expect((await speechOf(960)).proactiveTurns).toBe(0);
   });
 
   // NOTE: NOT WHILE A HUMAN STILL OWNS IT. A nudge on a human-held conversation runs in

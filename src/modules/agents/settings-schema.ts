@@ -358,6 +358,10 @@ const limits = z.looseObject({
     .boolean()
     .optional()
     .describe("retry a silent reply turn once; default TRUE"),
+  maxTurnsPerHour: z
+    .number()
+    .optional()
+    .describe("replies/conversation/hour, then handoff; 0 = off"),
 });
 
 const availability = z.looseObject({

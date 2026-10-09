@@ -82,6 +82,15 @@ import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
+import { applyTurnLimitHandoff } from "@/modules/turn-limit/handoff";
+import {
+  markTurnLimitTripped,
+  recordTurnDelivery,
+  turnLimitLogMessage,
+  turnLimitNoteText,
+  turnLimitSettingsUrl,
+  turnLimitVerdict,
+} from "@/modules/turn-limit/service";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -1270,6 +1279,78 @@ async function runTurnBody(
     return handed ? "handed" : "failed";
   };
 
+  // Counted only on a real inbox conversation with a mirror row; the playground (id 0) and a turn
+  // with no row have nothing to count against. `blocked` consumes the burst: the person who now owns
+  // the conversation answers it, and the next message never reaches the agent while they do.
+  const turnLimitGate = async (): Promise<RunAgentTurnOutcome | null> => {
+    const limit = loaded.maxTurnsPerHour;
+    const convDbId = loaded.conversationDbId;
+    if (limit === null || convDbId === null || flow.source !== "inbox")
+      return null;
+    const verdict = await turnLimitVerdict({
+      tenantId,
+      conversationDbId: convDbId,
+      limit,
+      base,
+    });
+    if (!verdict.over) return null;
+    const blocked = await postBlocked();
+    if (blocked) return blocked;
+    // NOTE: A failed read lets the transfer go ahead, as the guardrail's does.
+    if (!(await ownershipNow().catch(() => true))) return "taken-over";
+    if (await writeCalledOff()) return standDown();
+    const handed = await applyTurnLimitHandoff({
+      client,
+      conversationId,
+      instanceId,
+      handoff: loaded.handoffConfig,
+      flow,
+      stillWanted: async () => !(await writeCalledOff()),
+    });
+    handoffState.completed = handed;
+    if (handed)
+      await markTurnLimitTripped({
+        tenantId,
+        conversationDbId: convDbId,
+        base,
+      });
+    await client
+      .sendPrivateNote(
+        conversationId,
+        turnLimitNoteText({
+          count: verdict.count,
+          limit,
+          handedOff: handed,
+          settingsUrl: turnLimitSettingsUrl(tenantId, loaded.agentId),
+        }),
+      )
+      .catch((err) =>
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "turn limit: the private note was not posted",
+        ),
+      );
+    emitFlowEvent(flow, {
+      stage: "turn_limit",
+      level: "error",
+      status: "error",
+      detail: {
+        outcome: handed ? "handed_off" : "handoff_failed",
+        limit,
+        count: verdict.count,
+      },
+      errorMessage: turnLimitLogMessage(verdict.count, limit, handed),
+    });
+    logger.info(
+      "turn: turn limit reached (conv=%s count=%d limit=%d handed=%s)",
+      String(conversationId),
+      verdict.count,
+      limit,
+      String(handed),
+    );
+    return "blocked";
+  };
+
   // The `tts` line of a reply that leaves its planned modality. Written from `deliverText`,
   // which a turn reaches once (a transfer's closing line takes the reply's place).
   const noteSentAsText = (reason: "contact_preference" | "model_choice") =>
@@ -1859,6 +1940,12 @@ async function runTurnBody(
         );
       }
     }
+
+    // The per-conversation turn limit, before any model call: past it the other side is most likely
+    // automated, so the turn hands the conversation to a person instead of answering. See
+    // docs/graph.md, "Turn limit".
+    const turnLimit = await turnLimitGate();
+    if (turnLimit) return turnLimit;
 
     // Input guardrail, before the agent runs. A trip sends the template or a safe reply, or
     // stays silent; anything short of a trip proceeds, including a screening that could not run.
@@ -2648,6 +2735,21 @@ async function runTurnBody(
     // for the conversation screen. When the silence tool asked, it also carries what actually went
     // out: a lone `skip_reply` does not end the turn, so its own stamp can precede a delivered line.
     const sentMessageIds = recorded.sentIds();
+    if (
+      loaded.conversationDbId !== null &&
+      flow.source === "inbox" &&
+      turnReachedTheCustomer({
+        balloons: deliveredBalloons,
+        attachment: sentAttachment,
+        spokeOutsideTheReply: turnState.spokeOutsideTheReply,
+      })
+    )
+      await recordTurnDelivery({
+        tenantId,
+        conversationDbId: loaded.conversationDbId,
+        proactive: false,
+        base,
+      });
     if (reachedModel || sentMessageIds.length > 0)
       emitFlowEvent(flow, {
         stage: "generate",

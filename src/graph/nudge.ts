@@ -59,6 +59,7 @@ import {
   announceSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
+import { recordTurnDelivery } from "@/modules/turn-limit/service";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -663,18 +664,28 @@ async function runAgentNudgeBody(
   // stamp only costs the answer "nobody spoke".
   const recordProactiveSpeech = async (): Promise<void> => {
     try {
-      await runScopedOn(base, sysCtx(tenantId), (db) =>
+      const row = await runScopedOn(base, sysCtx(tenantId), async (db) => {
         // By the conversation's natural key rather than the id loaded with the config, which is
         // null when no mirror row existed yet and would then stamp nothing on the row a webhook
         // creates meanwhile.
-        db.conversation.updateMany({
-          where: {
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
+        const where = {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        };
+        await db.conversation.updateMany({
+          where,
           data: { lastProactiveAt: new Date() },
-        }),
-      );
+        });
+        return db.conversation.findFirst({ where, select: { id: true } });
+      });
+      // The proactive message counts toward the per-conversation turn limit like a reply does.
+      if (row)
+        await recordTurnDelivery({
+          tenantId,
+          conversationDbId: row.id,
+          proactive: true,
+          base,
+        });
     } catch (err) {
       logger.warn(
         { err, conversationId: String(conversationId) },

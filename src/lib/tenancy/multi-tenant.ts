@@ -26,6 +26,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ContactAuthGrant",
   "Conversation",
   "MessageReplyClaim",
+  "AgentTurnDelivery",
   "ReplyDispensal",
   "Agent",
   "BusinessHours",

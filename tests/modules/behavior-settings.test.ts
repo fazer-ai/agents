@@ -169,6 +169,7 @@ describe("behavior-settings — observability", () => {
       maxToolCalls: 7,
       maxHistoryTokens: null,
       retrySilence: true,
+      maxTurnsPerHour: 60,
     });
   });
 });

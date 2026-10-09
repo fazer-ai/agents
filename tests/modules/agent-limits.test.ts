@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_MAX_TOOL_CALLS,
+  DEFAULT_MAX_TURNS_PER_HOUR,
+  MAX_TURNS_PER_HOUR,
   readLimitsConfig,
 } from "@/modules/agents/limits";
 
@@ -47,12 +49,14 @@ describe("readLimitsConfig — maxHistoryTokens", () => {
       maxToolCalls: 3,
       maxHistoryTokens: 12_000,
       retrySilence: true,
+      maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
     });
     // A bag that only carries the new knob must not silently reset the old one, and vice versa.
     expect(read({ maxToolCalls: 99 })).toEqual({
       maxToolCalls: 50,
       maxHistoryTokens: null,
       retrySilence: true,
+      maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
     });
   });
 });
@@ -71,5 +75,33 @@ describe("limits.retrySilence", () => {
     expect(read({ retrySilence: true }).retrySilence).toBe(true);
     expect(read({ retrySilence: null }).retrySilence).toBe(true);
     expect(read({ retrySilence: "false" }).retrySilence).toBe(true);
+  });
+});
+
+// The turn limit is ON for an agent that never set it, and "no limit" is a stored 0, not a missing key.
+describe("readLimitsConfig — maxTurnsPerHour", () => {
+  const read = (limits: unknown) => readLimitsConfig({ limits });
+
+  test("absent, null or non-numeric reads as the default of 60", () => {
+    expect(DEFAULT_MAX_TURNS_PER_HOUR).toBe(60);
+    expect(readLimitsConfig(undefined).maxTurnsPerHour).toBe(60);
+    expect(readLimitsConfig({}).maxTurnsPerHour).toBe(60);
+    expect(read({ maxToolCalls: 4 }).maxTurnsPerHour).toBe(60);
+    expect(read({ maxTurnsPerHour: null }).maxTurnsPerHour).toBe(60);
+    expect(read({ maxTurnsPerHour: "sessenta" }).maxTurnsPerHour).toBe(60);
+  });
+
+  test("0 or below turns it off", () => {
+    expect(read({ maxTurnsPerHour: 0 }).maxTurnsPerHour).toBeNull();
+    expect(read({ maxTurnsPerHour: -5 }).maxTurnsPerHour).toBeNull();
+  });
+
+  test("a positive value is rounded and clamped to 1..1000", () => {
+    expect(read({ maxTurnsPerHour: 7 }).maxTurnsPerHour).toBe(7);
+    expect(read({ maxTurnsPerHour: 2.6 }).maxTurnsPerHour).toBe(3);
+    expect(read({ maxTurnsPerHour: 0.2 }).maxTurnsPerHour).toBe(1);
+    expect(read({ maxTurnsPerHour: 5000 }).maxTurnsPerHour).toBe(
+      MAX_TURNS_PER_HOUR,
+    );
   });
 });

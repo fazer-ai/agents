@@ -358,6 +358,9 @@ export interface AgentConfig {
   maxHistoryTokens: number | null;
   // Retry an unexplained silence once (agent.settings.limits.retrySilence).
   retrySilence: boolean;
+  // Delivered turns per conversation per rolling hour; null = no limit
+  // (agent.settings.limits.maxTurnsPerHour).
+  maxTurnsPerHour: number | null;
   // Whether a closed attendance gets folded into the contact's memory instead of staying raw on
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
@@ -1016,6 +1019,7 @@ export async function loadAgentConfig(
     maxToolCalls: limits.maxToolCalls,
     maxHistoryTokens: limits.maxHistoryTokens,
     retrySilence: limits.retrySilence,
+    maxTurnsPerHour: limits.maxTurnsPerHour,
     memoryCompaction: memoryCfg.enabled,
     historyDates: memoryRead.historyDates.enabled,
     memoryCompactionOverride: {

@@ -4,6 +4,8 @@
 // - maxHistoryTokens: null (no ceiling) by default, so an upgrade never silently starts forgetting.
 // - retrySilence: a reactive turn ending with no reply, handoff or `skip_reply` is asked once more;
 //   on unless `false`, since an unanswered customer is the worse failure.
+// - maxTurnsPerHour: delivered turns per conversation per rolling hour (src/modules/turn-limit); ON
+//   by default, and only an explicit 0 turns it off, so "no limit" is a stored choice.
 
 export interface LimitsConfig {
   maxToolCalls: number;
@@ -11,6 +13,8 @@ export interface LimitsConfig {
   // counted: they are not trimmable, and the operator's budget has to sit above them.
   maxHistoryTokens: number | null;
   retrySilence: boolean;
+  // null = no limit.
+  maxTurnsPerHour: number | null;
 }
 
 export const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -24,11 +28,15 @@ const MAX_TOOL_CALLS = 50;
 const MIN_HISTORY_TOKENS = 2_000;
 const MAX_HISTORY_TOKENS = 1_000_000;
 
+export const DEFAULT_MAX_TURNS_PER_HOUR = 60;
+export const MAX_TURNS_PER_HOUR = 1_000;
+
 export function readLimitsConfig(settings: unknown): LimitsConfig {
   const def: LimitsConfig = {
     maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
     maxHistoryTokens: null,
     retrySilence: true,
+    maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
   };
   if (!settings || typeof settings !== "object") return def;
   const l = (settings as Record<string, unknown>).limits;
@@ -55,5 +63,13 @@ export function readLimitsConfig(settings: unknown): LimitsConfig {
   // Only an explicit `false` turns it off: absent, null or anything else keeps the default.
   const retrySilence = bag.retrySilence !== false;
 
-  return { maxToolCalls, maxHistoryTokens, retrySilence };
+  const turns = bag.maxTurnsPerHour;
+  const maxTurnsPerHour =
+    typeof turns === "number" && Number.isFinite(turns)
+      ? turns <= 0
+        ? null
+        : Math.min(MAX_TURNS_PER_HOUR, Math.max(1, Math.round(turns)))
+      : DEFAULT_MAX_TURNS_PER_HOUR;
+
+  return { maxToolCalls, maxHistoryTokens, retrySilence, maxTurnsPerHour };
 }

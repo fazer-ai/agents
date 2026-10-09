@@ -2699,11 +2699,16 @@ function AgentEditor() {
     );
   }
 
-  const focusSection = (location.state as { focusSection?: string } | null)
-    ?.focusSection;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run per navigation (location.key) to consume a fresh focus marker.
+  const focusedKey = useRef<string | null>(null);
+  // `?focus=` is the same marker for a link from outside the console (a private note, an alert),
+  // which cannot carry router state.
+  const focusSection =
+    (location.state as { focusSection?: string } | null)?.focusSection ??
+    searchParams.get("focus") ??
+    undefined;
   useEffect(() => {
-    if (!focusSection) return;
+    // NOTE: Once per navigation: a later reload of the agent (a save) must not scroll back.
+    if (!focusSection || loading || focusedKey.current === location.key) return;
     // Wait a frame so the freshly-switched tab's section is mounted before scrolling/highlighting.
     const raf = requestAnimationFrame(() => {
       const el = document.getElementById(focusSection);
@@ -2719,9 +2724,10 @@ function AgentEditor() {
         () => el.classList.remove("section-highlight"),
         { once: true },
       );
+      focusedKey.current = location.key;
     });
     return () => cancelAnimationFrame(raf);
-  }, [focusSection, location.key]);
+  }, [focusSection, location.key, loading]);
 
   // Playground readiness: the playground tests the LIVE draft (prompt/model/settings sent as a
   // non-persisted override), so the hard requirements are read from the CURRENT model form, not the

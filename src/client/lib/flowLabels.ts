@@ -24,6 +24,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.contact_auth", "Contact authorization");
     case "spend_ceiling":
       return t("logs.stage.spend_ceiling", "Spend ceiling");
+    case "turn_limit":
+      return t("logs.stage.turn_limit", "Turn limit");
     case "generate":
       return t("logs.stage.generate", "Generation");
     case "guardrail":

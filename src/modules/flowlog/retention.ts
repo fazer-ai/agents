@@ -6,13 +6,15 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
-// Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries). One
+// Retention sweep for the high-write execution_logs table (+ terminal alert_deliveries and the turn
+// limit's delivered turns). One
 // FLOWLOG_SWEEP job per tenant, armed at boot and self-rearming every 24h (a reschedule does NOT
 // consume an attempt). Deletes run RLS-scoped to the job's tenant — no cross-tenant bypass needed —
 // in bounded batches so a large backlog never holds a long transaction.
 
 const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const BATCH = 5000;
+const TURN_DELIVERY_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -42,6 +44,11 @@ async function flowlogSweepHandler(
     await db.$executeRaw(Prisma.sql`
       DELETE FROM alert_deliveries
       WHERE status IN ('DELIVERED', 'DEAD') AND created_at < ${cutoff}`);
+    // NOTE: The turn limit only ever counts the last hour, so its rows go once a day has passed,
+    // whatever the log retention is.
+    await db.$executeRaw(Prisma.sql`
+      DELETE FROM agent_turn_deliveries
+      WHERE delivered_at < ${new Date(Date.now() - TURN_DELIVERY_RETENTION_MS)}`);
   });
   return {
     outcome: "reschedule",

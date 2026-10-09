@@ -23,6 +23,9 @@ export const FLOW_STAGES = [
   // like `contact_auth`, and for the same reason it is worth a line: past this gate nothing runs,
   // so without one the operator sees an agent that stopped answering and no cause.
   "spend_ceiling",
+  // The per-conversation turn limit handing a conversation to a person: the agent answered so often
+  // in the last hour that the other side is most likely automated. Before the turn, like the ceiling.
+  "turn_limit",
   "generate", // the LLM turn (graph.invoke)
   "guardrail", // input/output moderation trip (a guardrails check fired)
   "tool", // a tool call the agent made during the turn (name + status + duration)

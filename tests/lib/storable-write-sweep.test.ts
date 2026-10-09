@@ -301,7 +301,7 @@ type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/graph/nudge.ts": [2, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
-  "src/graph/runtime.ts": [6, "flow-event"],
+  "src/graph/runtime.ts": [7, "flow-event"],
   "src/graph/tool-flowlog.ts": [3, "flow-event"],
   // A playground turn that failed unhandled: a fixed sentence, never the error's text. And the two
   // fallback-failed lines, the redacted reason.
@@ -344,6 +344,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/stt/service.ts": [2, "flow-event"],
   // The audio check's "unavailable" line: a closed `audio check unavailable (<code>)`.
   "src/modules/tts/service.ts": [1, "flow-event"],
+  // The turn limit's failed hand-over, as a flow event.
+  "src/modules/turn-limit/handoff.ts": [1, "flow-event"],
   "src/modules/vision/service.ts": [3, "flow-event"],
   // Three reads of `lastError`, and none of them a write: the DTO field, the projection that feeds
   // it, and the type. The ledger surfaces the column an operator uses to decide whether to requeue

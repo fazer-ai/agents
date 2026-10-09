@@ -213,8 +213,8 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_950);
-    // Measured at 69_245, with the `decisions` block on agent_settings_set and the vision ceiling.
-    expect(schema).toBeLessThanOrEqual(69_350);
+    // Measured at 69_372, with `limits.maxTurnsPerHour` on agent_settings_set.
+    expect(schema).toBeLessThanOrEqual(69_450);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

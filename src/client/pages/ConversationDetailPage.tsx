@@ -208,7 +208,7 @@ function MessageBubble({
           {t("conversation.privateNote", "Private note")}
           {m.senderName ? ` · ${m.senderName}` : ""}
         </div>
-        {/* NOTE: Chatwoot renders a private note as Markdown, and the notes the platform writes link with it
+        {/* Chatwoot renders a private note as Markdown, and the notes the platform writes link with it
             (docs/documents.md, Approval), so the console renders it the same way. */}
         <Markdown className="text-sm">{m.content ?? ""}</Markdown>
         {(when || turnUsage) && (

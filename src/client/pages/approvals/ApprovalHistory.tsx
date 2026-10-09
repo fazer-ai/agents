@@ -1,5 +1,5 @@
 import { FileText } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
@@ -30,6 +30,16 @@ type DecidedResp = Awaited<
   ReturnType<(typeof api.api.v1)["document-approvals"]["decided"]["get"]>
 >;
 type DecidedRequest = NonNullable<DecidedResp["data"]>["requests"][number];
+
+function isUnresolved(r: DecidedRequest): boolean {
+  return (
+    (r.status === "APPROVED" || r.status === "REJECTED") &&
+    r.outcome === null &&
+    !(r.status === "APPROVED" && r.issuedDocumentId === null) &&
+    r.decidedAt !== null &&
+    serverNow() - new Date(r.decidedAt).getTime() < SENDING_FOR_MS
+  );
+}
 
 export function ApprovalHistory() {
   const { t, i18n } = useTranslation();
@@ -93,17 +103,15 @@ export function ApprovalHistory() {
 
   useSendingClock(requests ?? []);
 
-  // A decision whose outcome has not landed yet is read again until it does. It was decided in the
-  // last minutes, so it is on the first page (the history runs by decision), which is what is asked
-  // again; the later pages already loaded stay.
-  const unresolved = (requests ?? []).some(
-    (r) =>
-      (r.status === "APPROVED" || r.status === "REJECTED") &&
-      r.outcome === null &&
-      !(r.status === "APPROVED" && r.issuedDocumentId === null) &&
-      r.decidedAt !== null &&
-      serverNow() - new Date(r.decidedAt).getTime() < SENDING_FOR_MS,
-  );
+  // A decision whose outcome has not landed yet is read again until it does. The first page is asked
+  // again (the history runs by decision, so a decision taken meanwhile lands there), and a row still
+  // unresolved that the page did not carry (a later page, or pushed off by newer decisions) is read
+  // on its own, by id.
+  const unresolved = (requests ?? []).some(isUnresolved);
+  // The rows to ask by id are the ones shown when the timer fires, read through a ref so each read
+  // does not restart the clock.
+  const shownRef = useRef(requests);
+  shownRef.current = requests;
   const [refreshes, setRefreshes] = useState(0);
   useEffect(() => {
     void refreshes;
@@ -113,14 +121,46 @@ export function ApprovalHistory() {
       try {
         const { data } = await api.api.v1["document-approvals"].decided.get();
         if (cancelled || !data) return;
+        const onPage = new Set(data.requests.map((r) => r.id));
+        const elsewhere = (shownRef.current ?? []).filter(
+          (r) => isUnresolved(r) && !onPage.has(r.id),
+        );
+        const read = await Promise.all(
+          elsewhere.map((r) =>
+            api.api.v1["document-approvals"]({ id: r.id })
+              .get()
+              .then(({ data: one }) => one?.request ?? null)
+              .catch(() => null),
+          ),
+        );
+        if (cancelled) return;
+        const byId = new Map(
+          read
+            .filter((r): r is NonNullable<typeof r> => r !== null)
+            .map((r) => [r.id, r]),
+        );
         // The first page as it is now, then every row already shown that it does not carry, in its
         // order (those a newer decision pushed off the first page, and the later pages): the latest
         // decisions sit on the first page, so a decision taken meanwhile and an outcome still
         // landing are both in what was just read.
         setRequests((prev) => {
           if (!prev) return data.requests;
-          const fresh = new Set(data.requests.map((r) => r.id));
-          return [...data.requests, ...prev.filter((r) => !fresh.has(r.id))];
+          return [
+            ...data.requests,
+            ...prev
+              .filter((r) => !onPage.has(r.id))
+              .map((r) => {
+                const one = byId.get(r.id);
+                return one
+                  ? {
+                      ...r,
+                      outcome: one.outcome,
+                      reviewerName: one.reviewerName,
+                      issuedDocumentId: one.issuedDocumentId,
+                    }
+                  : r;
+              }),
+          ];
         });
       } catch {
         // The rows already shown stay; the next refresh asks again.

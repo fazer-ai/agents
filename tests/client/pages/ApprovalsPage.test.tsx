@@ -49,6 +49,8 @@ let knowledgeFails = false;
 let knowledgeNone = false;
 // Decided rows the history answers before the default one, set per test.
 let extraDecided: unknown[] | (() => unknown[]) = [];
+// One request read by id, set per test.
+let requestById: Record<string, unknown> = {};
 
 const SUGGESTION = {
   id: "a1",
@@ -73,6 +75,10 @@ URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
+  const single = url.match(/\/document-approvals\/(\d+)$/);
+  if (single?.[1] && requestById[single[1]]) {
+    return json({ request: requestById[single[1]] });
+  }
   if (url.includes("/document-approvals/decided")) {
     return json({
       requests: [
@@ -148,6 +154,7 @@ afterEach(() => {
   knowledgeNone = false;
   decided = false;
   extraDecided = [];
+  requestById = {};
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -477,4 +484,35 @@ test("a decision taken while the history waits joins it, whatever order its requ
   expect(
     screen.getByRole("link", { name: /for Rita Gomes/ }).textContent,
   ).toContain("Sent to the customer");
+}, 12_000);
+
+test("an outcome still landing on a row the first page no longer carries is read by id", async () => {
+  role = "AGENT";
+  let reads = 0;
+  const landing = {
+    ...DOCUMENT,
+    id: "52",
+    contactName: "Rita Gomes",
+    status: "APPROVED",
+    decidedAt: new Date().toISOString(),
+    reviewerName: null,
+    outcome: null,
+    issuedDocumentId: "4",
+  };
+  extraDecided = () => {
+    reads += 1;
+    // Pushed off the first page after the first read.
+    return reads === 1 ? [landing] : [];
+  };
+  requestById = { "52": { ...landing, outcome: "DELIVERED" } };
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  await screen.findByRole("link", { name: /for Rita Gomes/ });
+  await waitFor(
+    () =>
+      expect(
+        screen.getByRole("link", { name: /for Rita Gomes/ }).textContent,
+      ).toContain("Sent to the customer"),
+    { timeout: 8000 },
+  );
 }, 12_000);

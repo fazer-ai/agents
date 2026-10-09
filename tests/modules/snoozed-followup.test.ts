@@ -21,6 +21,7 @@ import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import { isSnoozedForAPerson } from "@/modules/chatwoot/normalize";
 import {
   findSnoozedAnchor,
+  SNOOZED_LADDER_ENDED,
   snoozedDedupeKey,
   snoozedFollowUpHandler,
   snoozedLadderPosition,
@@ -182,6 +183,25 @@ describe("snoozed ladder: what the live read decides", () => {
     expect(
       someoneSpokeAfter([{ ...phone(21), imported: true }], 20, baileys),
     ).toBe(false);
+  });
+
+  test("a ladder ended on its anchor stays ended when the cadence grows; a new anchor clears it", () => {
+    const at = new Date("2026-10-09T10:00:00Z");
+    const stored = { anchorId: 5, step: SNOOZED_LADDER_ENDED, at };
+    expect(
+      snoozedLadderPosition({
+        anchor: { messageId: 5, at },
+        stored,
+        delaysMin: [60, 60, 60, 60],
+      }),
+    ).toEqual({ done: true });
+    expect(
+      snoozedLadderPosition({
+        anchor: { messageId: 6, at },
+        stored,
+        delaysMin: [60],
+      }),
+    ).toEqual({ stepIndex: 0, dueAt: new Date(at.getTime() + 3_600_000) });
   });
 
   test("step 0 counts from the person's message, later steps from the previous step", () => {
@@ -430,6 +450,8 @@ function stub(over: {
   omitSnoozedUntilLater?: boolean;
   // Runs inside the send, after every ask that precedes it.
   onSend?: () => Promise<void>;
+  // The operator unsnoozes while the post-actions read the labels: every later read sees it open.
+  unsnoozeOnLabelRead?: boolean;
   model?: (cfg: {
     model: string;
   }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
@@ -443,13 +465,15 @@ function stub(over: {
   // check at the send boundary can see it.
   let lateVisible = false;
   let reads = 0;
+  let unsnoozed = false;
   const client = {
     getConversation: async (c: number) => {
       const later = reads++ > 0;
       return {
         id: c,
-        status:
-          later && over.statusLater
+        status: unsnoozed
+          ? "open"
+          : later && over.statusLater
             ? over.statusLater
             : (over.status ?? "snoozed"),
         ...(over.omitSnoozedUntil || (later && over.omitSnoozedUntilLater)
@@ -494,7 +518,10 @@ function stub(over: {
       notes.push(t);
       return {};
     },
-    getConversationLabels: async () => currentLabels,
+    getConversationLabels: async () => {
+      if (over.unsnoozeOnLabelRead) unsnoozed = true;
+      return currentLabels;
+    },
     setConversationLabels: async (_c: number, labels: string[]) => {
       currentLabels = labels;
       labelSets.push(labels);
@@ -771,6 +798,22 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(s.labelSets.at(-1)).toContain("sem-retorno");
     expect(s.toggles).toEqual(["resolved"]);
     expect(r).toEqual({ outcome: "done" });
+  });
+
+  test("an operator unsnoozing while the post-actions read the labels: nothing is labeled or closed", async () => {
+    await setSettings(LADDER);
+    await seed(2050, {
+      anchorId: 320,
+      step: 2,
+      at: new Date(Date.now() - 3 * 60_000),
+    });
+    const s = stub({
+      messages: [personAsked(320, 10)],
+      unsnoozeOnLabelRead: true,
+    });
+    await snoozedFollowUpHandler(jobFor(2050), appDb, s.deps);
+    expect(s.labelSets).toEqual([]);
+    expect(s.toggles).toEqual([]);
   });
 
   test("a snooze with an end date is not chased", async () => {
@@ -1110,7 +1153,9 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(r).toEqual({ outcome: "done" });
     // The step is not spent: nothing reached the customer, and a later closing step must not run.
     // The ladder is spent on this message of the person: no later closing step runs.
-    expect((await stateOf(2024)).snoozedFollowUpStep).toBe(STEPS.length);
+    expect((await stateOf(2024)).snoozedFollowUpStep).toBe(
+      SNOOZED_LADDER_ENDED,
+    );
     expect(s.notes).toHaveLength(1);
     // The note is an event the sweep re-arms on; the re-armed run writes nothing more.
     const again = stub({ messages: [personAsked(250, 3)] });

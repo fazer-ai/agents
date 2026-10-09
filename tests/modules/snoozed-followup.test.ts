@@ -335,12 +335,15 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
-function jobFor(convId: number): ClaimedJob {
+function jobFor(
+  convId: number,
+  extra: Record<string, unknown> = {},
+): ClaimedJob {
   return {
     id: phantomJobId,
     tenantId,
     kind: "SNOOZED_FOLLOWUP",
-    payload: { threadId: threadOf(convId) },
+    payload: { threadId: threadOf(convId), ...extra },
     attempts: 0,
     claimSeq: 0,
   };
@@ -1224,6 +1227,81 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       await suDb.agent.update({
         where: { id: agentId },
         data: { followUpHoursId: null },
+      });
+    }
+  });
+
+  test("a new message of the person starts the refusal budget over", async () => {
+    await setSettings(LADDER);
+    const agent = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { modelConfig: true },
+    });
+    // A credential that does not resolve: the nudge refuses with a repairable `agent-unavailable`.
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        modelConfig: {
+          ...(agent.modelConfig as Record<string, unknown>),
+          credentialRef: "vault:999999999",
+        },
+      },
+    });
+    try {
+      await seed(2036);
+      const s = stub({ messages: [personAsked(310, 3)] });
+      // Seven refusals spent on an EARLIER message of the person.
+      const r = await snoozedFollowUpHandler(
+        jobFor(2036, { nudgeRetries: 7, nudgeRetriesAnchorId: 305 }),
+        appDb,
+        s.deps,
+      );
+      expect(r.outcome).toBe("reschedule");
+      if (r.outcome === "reschedule") {
+        expect(r.payload).toMatchObject({
+          nudgeRetries: 1,
+          nudgeRetriesAnchorId: 310,
+        });
+      }
+      // The same seven on THIS message: the budget is spent.
+      const spent = await snoozedFollowUpHandler(
+        jobFor(2036, { nudgeRetries: 7, nudgeRetriesAnchorId: 310 }),
+        appDb,
+        s.deps,
+      );
+      expect(spent).toEqual({ outcome: "done" });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: agent.modelConfig as never },
+      });
+    }
+  });
+
+  test("a new responder bound to the inbox after the last run re-arms", async () => {
+    await setSettings(LADDER);
+    await seed(2037, { lastEventAt: new Date(Date.now() - 10 * 60_000) });
+    await finishedJob(2037, "DONE", new Date(Date.now() + 1_000));
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    const statusOf = async () =>
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(2037)) },
+          select: { status: true },
+        })
+      ).status;
+    expect(await statusOf()).toBe("DONE");
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { responderBoundAt: new Date(Date.now() + 5_000) },
+    });
+    try {
+      await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+      expect(await statusOf()).toBe("PENDING");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { responderBoundAt: null },
       });
     }
   });

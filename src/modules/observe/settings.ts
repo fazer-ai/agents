@@ -39,7 +39,11 @@ export const MONITORING_DEFAULTS: Readonly<MonitoringConfig> = Object.freeze({
 
 export const WINDOW_MESSAGES_MIN = 4;
 export const WINDOW_MESSAGES_MAX = 60;
-export const OBSERVE_WINDOW_MIN_SECONDS = 3;
+// ZERO IS A SETTING, not a floor to round up from: the observation is due the moment the message is
+// ingested, one model call per customer message, for an operator who wants the verdict while the
+// conversation is happening. The drain is woken at the row's own instant (`wakeObserveDrainAt`), so
+// a window below the drain's interval is honored and not rounded up to it.
+export const OBSERVE_WINDOW_MIN_SECONDS = 0;
 export const OBSERVE_WINDOW_MAX_SECONDS = 600;
 
 function clampInt(v: unknown, min: number, max: number, fallback: number) {

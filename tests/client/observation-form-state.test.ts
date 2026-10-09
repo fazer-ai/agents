@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   monitoringReaderKeys,
+  OBSERVATION_LIMITS,
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
@@ -61,13 +62,42 @@ describe("agent editor observation round-trip", () => {
   // the operator is never told "saved" while the runtime runs something else.
   test("an out-of-range window is normalized to what the reader keeps", () => {
     const form = observationToForm({
-      monitoring: { window: { messages: 999 }, debounce: { windowSeconds: 1 } },
+      monitoring: {
+        window: { messages: 999 },
+        debounce: { windowSeconds: 9_999 },
+      },
     });
     const stored = observationToStored(form);
     expect(stored.window.messages).toBe(60);
-    expect(stored.debounce.windowSeconds).toBe(3);
+    expect(stored.debounce.windowSeconds).toBe(600);
     expect(stored.debounce.maxWindowSeconds).toBeGreaterThanOrEqual(
       stored.debounce.windowSeconds,
     );
+  });
+
+  // Issue #1180: the window goes down to zero, which is a setting and not a floor.
+  test("a window of 0, 1 or 2 is offered and saved as typed", () => {
+    expect(OBSERVATION_LIMITS.secondsMin).toBe(0);
+    for (const seconds of ["0", "1", "2"]) {
+      const form = {
+        ...observationToForm({}),
+        windowSeconds: seconds,
+      };
+      const stored = observationToStored(form);
+      expect(stored.debounce.windowSeconds).toBe(Number(seconds));
+      expect(observationToForm({ monitoring: stored }).windowSeconds).toBe(
+        seconds,
+      );
+    }
+  });
+
+  // The server refuses a negative window. Narrowed here it would be saved as 0, a model call per
+  // message, by a typo.
+  test("a negative window travels as typed, so the server's refusal reaches the operator", () => {
+    const stored = observationToStored({
+      ...observationToForm({}),
+      windowSeconds: "-1",
+    });
+    expect(stored.debounce.windowSeconds).toBe(-1);
   });
 });

@@ -931,12 +931,14 @@ const monitoringShape = (decisions: z.ZodType<Record<string, unknown>>) => ({
     ),
   debounce: z
     .looseObject({
-      windowSeconds: z.number().optional(),
+      // A negative window is refused, not read as 0: 0 is the one value that changes what the agent
+      // costs (a model call per message), so it is never reached by a typo's clamp.
+      windowSeconds: z.number().min(0).optional(),
       maxWindowSeconds: z.number().optional(),
     })
     .optional()
     .describe(
-      "burst window; 3-600s, rounded and clamped, default 20s with a 60s ceiling from the START of the burst",
+      "burst window; 0-600s (0: every message, no coalescing), rounded and clamped, default 20s with a 60s ceiling from the START of the burst",
     ),
 });
 // The write boundary asks the whole block; the MCP argument is a patch, merged before it is whole.

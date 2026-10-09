@@ -1764,7 +1764,7 @@
     "observationAnalysisIncremental": "Depois de cada rajada de mensagens do cliente",
     "observationAnalysisOnResolve": "Só quando a conversa é resolvida",
     "observationBurst": "Janela da rajada (segundos)",
-    "observationBurstHint": "Mensagens do cliente mais próximas que isso são julgadas juntas. {{min}} a {{max}}.",
+    "observationBurstHint": "Mensagens do cliente mais próximas que isso são julgadas juntas. {{min}} a {{max}}. Com 0, cada mensagem é julgada assim que chega, com uma chamada ao modelo por mensagem.",
     "observationBurstMax": "Teto da rajada (segundos)",
     "observationBurstMaxHint": "Um cliente que não para de escrever é julgado no máximo este tempo depois da primeira mensagem.",
     "observationHelp": "Um agente em monitoramento lê todas as mensagens das caixas que observa e não responde nenhuma. Ele é o agente comum, com o prompt dele, as ferramentas dele, o conhecimento dele e os servidores MCP dele, menos a única coisa que não consegue fazer: publicar algo que o cliente veja.\n\nEntão o que ele FAZ se configura onde o comportamento de qualquer agente se configura: o prompt diz o que observar, e a aba Ferramentas diz com o que ele pode agir. Etiquetar a conversa, deixar nota privada, registrar atributo e mover o card são ferramentas que ele pode receber.\n\nEste bloco é só sobre quando ele olha: depois de cada rajada de mensagens do cliente, ou só quando a conversa é resolvida. Para desligar, desative o agente ou tire-o da caixa de entrada.",

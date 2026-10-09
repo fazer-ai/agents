@@ -711,6 +711,8 @@ function describeExpected(issue: z.core.$ZodIssue): string {
   if (issue.code === "invalid_value")
     return `one of ${issue.values.map((v) => JSON.stringify(v)).join(", ")}`;
   if (issue.code === "invalid_type") return issue.expected;
+  if (issue.code === "too_small" && issue.origin === "number")
+    return `a number of at least ${String(issue.minimum)}`;
   if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern)
     return `a value matching ${issue.pattern}`;
   return "a valid value";

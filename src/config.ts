@@ -173,6 +173,7 @@ const MAX_COUNT = 1_000_000;
 // other three are date and cache arithmetic, where the same values produce an Invalid Date rather
 // than a hot loop; 24 days is past any real span for them too.
 const MAX_DURATION_MS = 2_147_483_647;
+const OBSERVE_WORKER_INTERVAL_MIN_MS = 100;
 // The protocol's own limit.
 const MAX_PORT = 65_535;
 // A century. Any real retention policy is orders of magnitude under this, and every span whose
@@ -430,7 +431,9 @@ const config = {
   // that has already moved on, so due observations are claimed at this cadence instead. It has no
   // switch of its own: it starts and stops with the scheduler worker, under the same single-replica
   // discipline, and it runs inside the scheduler's provider concurrency. Operational, NOT a
-  // per-agent setting; the per-agent burst window lives on the agent.
+  // per-agent setting; the per-agent burst window lives on the agent, and may be shorter than this
+  // interval (down to 0): the row a message arms is started at its own instant by the arming
+  // process, and this interval is what finds a row armed by another process or left by a restart.
   observeWorker: {
     intervalMs: parseIntSetting(
       OBSERVE_WORKER_INTERVAL_MS,
@@ -438,6 +441,9 @@ const config = {
       2_500,
       "It is how often the scheduler claims due observations of monitoring agents.",
       MAX_DURATION_MS,
+      // A claim is a query. Below this the interval is no longer the safety net it is (the row a
+      // message arms is started by its own wake-up, `wakeObserveDrainAt`), only load.
+      OBSERVE_WORKER_INTERVAL_MIN_MS,
     ),
   },
   // NOTE: Dedicated FAST tick that drains only DEBOUNCE jobs (inbound message coalescing). It is

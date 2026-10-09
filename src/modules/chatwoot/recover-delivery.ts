@@ -1382,6 +1382,10 @@ function conversationFactsOf(raw: unknown): {
   for (const key of LIVE_FACT_KEYS) {
     if (key in raw) facts[key] = raw[key];
   }
+  // The REST view renders the channel under `meta`, where the webhook's body has it at the top.
+  if (!("channel" in facts) && isRecord(raw.meta) && "channel" in raw.meta) {
+    facts.channel = raw.meta.channel;
+  }
   return { liveFacts: facts };
 }
 

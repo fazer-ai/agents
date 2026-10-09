@@ -160,6 +160,8 @@ function stubChatwoot(opts: {
     customAttributes?: Record<string, unknown>;
     labels?: string[];
     groupType?: string;
+    // Under `meta`, where the REST view renders it.
+    channel?: string;
     // The snapshot's own version, `updated_at`.
     updatedAt?: number;
     status?: string;
@@ -199,6 +201,7 @@ function stubChatwoot(opts: {
                   }
                 : { assignee: null }),
               sender: { id: 77, name: "Cliente" },
+              ...(c.channel ? { channel: c.channel } : {}),
             },
       };
     },
@@ -879,6 +882,39 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(row.customAttributes).toEqual({ plano: "ouro" });
       expect(row.labels).toEqual(["vip"]);
       expect(row.conversationType).toBe("group");
+    });
+
+    test("teaches an inbox that never learned its channel the one Chatwoot renders", async () => {
+      const convId = 7310;
+      const messageId = 7810;
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true, metadataAt: true },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { channelType: null, metadataAt: null },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { channel: "Channel::Whatsapp" },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      const inbox = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true },
+      });
+      expect(inbox.channelType).toBe("Channel::Whatsapp");
+      await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
     });
 
     test("creates the row with the version its state was read at", async () => {

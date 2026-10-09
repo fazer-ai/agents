@@ -2606,18 +2606,19 @@ async function runAgentNudgeBody(
         approved && !handoffState.completed && !guardrailTripped(decision)
           ? approved
           : null;
-      if (attach && !(await attach.stillValid())) {
-        return refuse(await noteApproved(attach.revokedNote, "noted"));
-      }
-      // NOTE: the validity read is I/O between the last ask and the send, so the ownership, the ask
-      // and the window are all asked again after it, in that order, with nothing awaited between
-      // the last of them and the send.
+      // NOTE: the live ownership probe waits on Chatwoot, so the revocation is read after it, and the
+      // ask after both: a document revoked while the probe was pending is not sent, and nothing is
+      // awaited between the last of these and the send.
       if (attach) {
         const owned = await botStillOwnsIt();
+        const valid = await attach.stillValid();
         if (!(await stillWanted())) return refuse(standDown());
         if (owned === "unavailable") return refuse("live-unavailable");
         if (owned === "not-ours") {
           return refuse(await noteApproved(attach.heldNote, "noted"));
+        }
+        if (!valid) {
+          return refuse(await noteApproved(attach.revokedNote, "noted"));
         }
         if (sendModeNow() !== "freeform") {
           return refuse(await noteApproved(attach.windowNote, "noted-window"));

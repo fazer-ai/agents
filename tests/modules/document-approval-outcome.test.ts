@@ -1024,6 +1024,56 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(String(notes[0]?.[2])).toContain("atendente");
   });
 
+  test("a document revoked while the last ownership read waits on Chatwoot is a note, never the PDF", async () => {
+    const { requestId } = await conversationWithRequest({});
+    const { document } = await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    const rec = recordingClient();
+    const client = await rec.makeClient();
+    // The fourth read is the one right before the send: the team revokes while it is pending.
+    let reads = 0;
+    const revokedDuringProbe = new Proxy(client as object, {
+      get(t, name: string) {
+        if (name === "getConversation") {
+          return async (id: number) => {
+            reads += 1;
+            if (reads === 4) {
+              await suDb.issuedDocument.update({
+                where: { id: BigInt(document.id) },
+                data: { revoked: true },
+              });
+            }
+            return { id, status: "pending", meta: {} };
+          };
+        }
+        return Reflect.get(t, name);
+      },
+    });
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: async () => revokedDuringProbe as never,
+      storageDir: DIR,
+      nudgeDeps: {
+        makeModel: () =>
+          new ScriptedCaptureModel([
+            { reply: "O documento segue em anexo." },
+          ]) as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(reads).toBe(4);
+    expect(outcome).toBe("noted");
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+    expect(named(rec.calls, "sendMessage")).toHaveLength(0);
+    const notes = named(rec.calls, "sendPrivateNote").map((c) => String(c[2]));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("não está disponível");
+  });
+
   test("a person who takes the conversation while the PDF is checked gets the note, not the PDF", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({
@@ -1035,7 +1085,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const rec = recordingClient();
     const client = await rec.makeClient();
     // Chatwoot is asked four times on the way to the send: before the turn, at the turn's own
-    // gate, after the model, and after the PDF's validity read. Only the last one sees the person.
+    // gate, after the model, and right before the send. Only the last one sees the person.
     let reads = 0;
     const takenDuringCheck = new Proxy(client as object, {
       get(t, name: string) {

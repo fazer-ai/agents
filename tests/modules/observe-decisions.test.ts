@@ -1255,6 +1255,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     function fakeChatwoot(seed: {
       labels: string[];
       attributes: Record<string, unknown>;
+      // Runs as the window's page is answered, after the labels were asked for.
+      onWindowRead?: (state: { labels: string[] }) => void;
     }) {
       const state = {
         labels: [...seed.labels],
@@ -1284,6 +1286,7 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
           : {};
         const conv = `/conversations/${CONV}`;
         if (method === "GET" && path === `${conv}/messages`) {
+          seed.onWindowRead?.(state);
           return json({
             payload: [
               {
@@ -1472,6 +1475,42 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       expect(d.labels).toEqual([
         { scope: "conversation", added: 1, removed: 1, after: 2 },
         { scope: "conversation", added: 1, removed: 0, after: 3 },
+      ]);
+    });
+
+    // The read is as old as the moment it was asked for, however late the tick got to use it: a
+    // window that took long to read leaves the labels stale, and the write reads them again.
+    test("labels asked for long before the write are read again", async () => {
+      const realNow = Date.now;
+      const chatwoot = fakeChatwoot({
+        labels: ["vip"],
+        attributes: {},
+        onWindowRead: (state) => {
+          state.labels.push("de-outro");
+          Date.now = () => realNow() + 11_000;
+        },
+      });
+      try {
+        const res = await decide(chatwoot, [
+          {
+            when: yes,
+            action: { tool: "set_labels", args: { add: ["urgente"] } },
+          },
+        ]);
+        expect(res).toEqual({ outcome: "done" });
+      } finally {
+        Date.now = realNow;
+      }
+      const conv = `/conversations/${CONV}`;
+      expect(
+        onConversation(chatwoot.requests).filter(
+          (r) => r === `GET ${conv}/labels`,
+        ),
+      ).toHaveLength(2);
+      expect([...chatwoot.state.labels].sort()).toEqual([
+        "de-outro",
+        "urgente",
+        "vip",
       ]);
     });
 

@@ -1350,8 +1350,9 @@ function setLabelsTool(ctx: ToolCtx) {
       }
       // Forgotten before the write: a write that fails leaves nothing known about the set.
       ctx.conversationLabelsRead = undefined;
+      const writtenAt = Date.now();
       await ctx.client.setConversationLabels(ctx.conversationId, state);
-      if (known) ctx.conversationLabelsRead = { labels: state, at: Date.now() };
+      if (known) ctx.conversationLabelsRead = { labels: state, at: writtenAt };
       recordShown(ctx, "conversation", state);
       for (const o of outcomes) {
         if (moved(o)) {

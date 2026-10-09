@@ -1330,6 +1330,8 @@ export async function runObserve(
   // depend on each other, and one after the other is a round trip the verdict waits through.
   // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
   // all. `null`, not `[]`: "no labels" would let the model clear everything.
+  // Timed from when it was ASKED: the answer may sit resolved while the window is still paging.
+  const labelsAskedAt = Date.now();
   const labelsRead: Promise<string[] | null> = client
     .getConversationLabels(conversationId)
     .catch((e: unknown) => {
@@ -1386,7 +1388,6 @@ export async function runObserve(
   // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
   // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
   const current = await labelsRead;
-  const currentReadAt = Date.now();
   // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
   // move them): the same projection the tool renders (label-view.ts).
   const currentForPrompt =
@@ -1624,7 +1625,7 @@ export async function runObserve(
           // The `decisions` tick writes one provider call after this read, so its label rules
           // apply to it. A model's turn takes seconds and reads again.
           ...(current !== null && decisions?.ok === true
-            ? { conversationLabelsRead: { labels: current, at: currentReadAt } }
+            ? { conversationLabelsRead: { labels: current, at: labelsAskedAt } }
             : {}),
         },
         { buildNativeTools, mcp: deps.mcp, flow },

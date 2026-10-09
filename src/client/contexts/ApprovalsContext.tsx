@@ -57,7 +57,7 @@ export function ApprovalsProvider({ children }: { children: ReactNode }) {
     api.api.v1["document-approvals"].pending
       .get()
       .then(({ data }) => {
-        if (data) setDocumentCount(data.requests.length);
+        if (data) setDocumentCount(data.total);
       })
       .catch(() => {});
     if (!isAdmin) {

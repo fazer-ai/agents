@@ -5,6 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import {
+  countPendingApprovals,
   getApprovalRequest,
   issueOrRequestApproval,
   listPendingApprovals,
@@ -667,6 +668,7 @@ describe.skipIf(!dbUp)(
       const before = (await listPendingApprovals(ctx(), appDb)).map(
         (r) => r.id,
       );
+      const countBefore = await countPendingApprovals(ctx(), appDb);
       const a = await newRequest();
       const b = await newRequest();
       const lapsed = await newRequest();
@@ -695,6 +697,17 @@ describe.skipIf(!dbUp)(
         role: "TENANT_ADMIN",
       };
       expect(await listPendingApprovals(foreign, appDb)).toEqual([]);
+      // A page starts after the last id of the one before, and the count covers every page.
+      const firstPage = await listPendingApprovals(ctx(), appDb, new Date(), {
+        limit: 1,
+      });
+      const nextPage = await listPendingApprovals(ctx(), appDb, new Date(), {
+        after: BigInt(firstPage[0]?.id as string),
+        limit: 1,
+      });
+      expect(nextPage[0]?.id).not.toBe(firstPage[0]?.id);
+      expect(Number(nextPage[0]?.id)).toBeGreaterThan(Number(firstPage[0]?.id));
+      expect(await countPendingApprovals(ctx(), appDb)).toBe(countBefore + 2);
     });
 
     test("another tenant reads nothing of the request, its page or its context", async () => {

@@ -226,6 +226,7 @@
     "documents": "Documents",
     "knowledge": "Knowledge suggestions",
     "loadError": "Could not load the documents waiting for approval.",
+    "more": "Show more",
     "noDocuments": "No document is waiting for approval.",
     "noKnowledge": "No knowledge suggestion is waiting for review.",
     "review": "Review",

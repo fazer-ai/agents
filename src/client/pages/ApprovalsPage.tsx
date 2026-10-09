@@ -2,7 +2,7 @@ import { ClipboardCheck, FileText } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import { Card, DataBoundary, PageContainer } from "@/client/components";
+import { Button, Card, DataBoundary, PageContainer } from "@/client/components";
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
@@ -23,7 +23,19 @@ export function ApprovalsPage() {
   const { user } = useAuth();
   const isAdmin = isAdminRole(user?.role);
   const { setKnowledgeCount, knowledgeCount, refresh } = usePendingApprovals();
+  // Whether the knowledge queue has answered at all: its count is 0 both before it loads and when
+  // it failed, and neither of those is "nothing waiting".
+  const [knowledgeKnown, setKnowledgeKnown] = useState(false);
+  const onKnowledgeCount = useCallback(
+    (count: number) => {
+      setKnowledgeCount(count);
+      setKnowledgeKnown(true);
+    },
+    [setKnowledgeCount],
+  );
   const [requests, setRequests] = useState<PendingRequest[] | null>(null);
+  const [nextAfter, setNextAfter] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -38,6 +50,7 @@ export function ApprovalsPage() {
         return;
       }
       setRequests(data.requests);
+      setNextAfter(data.nextAfter);
     } catch {
       setError(true);
     } finally {
@@ -49,6 +62,21 @@ export function ApprovalsPage() {
     void load();
     refresh();
   }, [load, refresh]);
+
+  const loadMore = async () => {
+    if (!nextAfter) return;
+    setLoadingMore(true);
+    try {
+      const { data } = await api.api.v1["document-approvals"].pending.get({
+        query: { after: nextAfter },
+      });
+      if (!data) return;
+      setRequests((prev) => [...(prev ?? []), ...data.requests]);
+      setNextAfter(data.nextAfter);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const formatTime = (value: Date | string) =>
     new Date(value).toLocaleString(i18n.language);
@@ -143,6 +171,16 @@ export function ApprovalsPage() {
               ))}
             </ul>
           )}
+          {nextAfter && (
+            <Button
+              variant="secondary"
+              onClick={loadMore}
+              loading={loadingMore}
+              className="self-start"
+            >
+              {t("approvalQueue.more", "Show more")}
+            </Button>
+          )}
         </DataBoundary>
       </section>
 
@@ -151,8 +189,8 @@ export function ApprovalsPage() {
           <h2 className="font-medium text-sm text-text-primary">
             {t("approvalQueue.knowledge", "Knowledge suggestions")}
           </h2>
-          <KnowledgeApprovals onCountChange={setKnowledgeCount} />
-          {knowledgeCount === 0 && (
+          <KnowledgeApprovals onCountChange={onKnowledgeCount} />
+          {knowledgeKnown && knowledgeCount === 0 && (
             <p className="text-sm text-text-muted">
               {t(
                 "approvalQueue.noKnowledge",

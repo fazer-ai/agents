@@ -1,7 +1,13 @@
 /// <reference lib="dom" />
 
 import { afterAll, afterEach, expect, mock, test } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
@@ -33,6 +39,11 @@ const DOCUMENT = {
   chatwootConversationId: 12,
   contactName: "Ana Ribeiro",
 };
+// What the queue answers, set per test.
+const onePage = () => ({ requests: [DOCUMENT], total: 1, nextAfter: null });
+let pending: (url: string) => unknown = onePage;
+let knowledgeFails = false;
+
 const SUGGESTION = {
   id: "a1",
   status: "PENDING",
@@ -52,7 +63,10 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   const url = typeof input === "string" ? input : input.toString();
   asked.push(url);
   if (url.includes("/document-approvals/pending")) {
-    return json({ requests: [DOCUMENT] });
+    return json(pending(url));
+  }
+  if (knowledgeFails && url.includes("/knowledge/approvals")) {
+    return new Response("{}", { status: 500 });
   }
   if (url.includes("/knowledge/approvals/discarded")) {
     return json({ approvals: [] });
@@ -66,6 +80,8 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
 afterEach(() => {
   cleanup();
   asked.length = 0;
+  pending = onePage;
+  knowledgeFails = false;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -121,4 +137,38 @@ test("an admin's queue carries the knowledge suggestions beside the documents", 
   await waitFor(() =>
     expect(screen.queryByText("Refund window")).not.toBeNull(),
   );
+});
+
+test("the badge counts every request waiting, not only the page the queue shows", async () => {
+  role = "AGENT";
+  pending = () => ({ requests: [DOCUMENT], total: 230, nextAfter: "41" });
+  mount(<Badge />);
+  await waitFor(() =>
+    expect(screen.getByTestId("badge").textContent).toBe("230"),
+  );
+});
+
+test("the queue reaches the requests past its first page", async () => {
+  role = "AGENT";
+  const SECOND = { ...DOCUMENT, id: "42", contactName: "Bruno Lima" };
+  pending = (url) =>
+    url.includes("after=41")
+      ? { requests: [SECOND], total: 2, nextAfter: null }
+      : { requests: [DOCUMENT], total: 2, nextAfter: "41" };
+  mount(<ApprovalsPage />);
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+  await screen.findByRole("link", { name: /Orçamento for Bruno Lima/ });
+  expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+});
+
+test("a knowledge queue that failed to load is never called empty", async () => {
+  role = "TENANT_ADMIN";
+  knowledgeFails = true;
+  mount(<ApprovalsPage />);
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(
+    screen.queryByText("No knowledge suggestion is waiting for review."),
+  ).toBeNull();
 });

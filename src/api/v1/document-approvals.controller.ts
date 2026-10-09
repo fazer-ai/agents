@@ -7,9 +7,11 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   approveDocumentRequest,
+  countPendingApprovals,
   getApprovalRequest,
   listApprovalRequests,
   listPendingApprovals,
+  PENDING_PAGE_SIZE,
   rejectDocumentRequest,
   renderApprovalPreview,
   requestApprovalAgain,
@@ -77,11 +79,30 @@ export const documentApprovalsController = new Elysia({
   )
   .get(
     "/pending",
-    async ({ tenantContext }) => ({
-      requests: await listPendingApprovals(ctxOrThrow(tenantContext)),
-    }),
+    async ({ tenantContext, query }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const now = new Date();
+      const [requests, total] = await Promise.all([
+        listPendingApprovals(ctx, undefined, now, {
+          after:
+            query.after === undefined ? undefined : requireDbId(query.after),
+          limit: PENDING_PAGE_SIZE + 1,
+        }),
+        countPendingApprovals(ctx, undefined, now),
+      ]);
+      const more = requests.length > PENDING_PAGE_SIZE;
+      const shown = more ? requests.slice(0, PENDING_PAGE_SIZE) : requests;
+      return {
+        requests: shown,
+        total,
+        nextAfter: more ? (shown[shown.length - 1]?.id ?? null) : null,
+      };
+    },
     {
       requireRole: "AGENT",
+      query: t.Object({
+        after: t.Optional(t.String({ pattern: "^[0-9]+$" })),
+      }),
       detail: doc(
         "List pending document approvals",
         "The requests waiting on the team now: pending and not past their validity, oldest first, with the conversation and the customer's name. The console's approvals queue and its badge read this.",

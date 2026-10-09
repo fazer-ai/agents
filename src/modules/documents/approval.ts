@@ -366,16 +366,37 @@ export interface PendingApprovalItem {
 // What waits on the team now, for the console's approvals queue and its badge: PENDING and not past
 // its validity, which the expiry sweep may not have reached yet. Oldest first, the order a queue is
 // worked in.
+export const PENDING_PAGE_SIZE = 50;
+
+// How many requests wait on the team now: the badge's number, counted apart from the page it shows.
+export async function countPendingApprovals(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+): Promise<number> {
+  return runScopedOn(base, ctx, (db) =>
+    db.documentApprovalRequest.count({
+      where: { status: "PENDING", expiresAt: { gt: now } },
+    }),
+  );
+}
+
+// One page of the queue, oldest first; `after` is the last id of the previous page.
 export async function listPendingApprovals(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
+  page: { after?: bigint; limit?: number } = {},
 ): Promise<PendingApprovalItem[]> {
   return runScopedOn(base, ctx, async (db) => {
     const rows = await db.documentApprovalRequest.findMany({
-      where: { status: "PENDING", expiresAt: { gt: now } },
+      where: {
+        status: "PENDING",
+        expiresAt: { gt: now },
+        ...(page.after === undefined ? {} : { id: { gt: page.after } }),
+      },
       orderBy: { id: "asc" },
-      take: 200,
+      take: page.limit ?? PENDING_PAGE_SIZE,
       select: {
         id: true,
         title: true,

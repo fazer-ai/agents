@@ -310,6 +310,7 @@ export async function runApprovalOutcome(
       heldNote: `Documento aprovado: ${named}. A conversa está com um atendente, então nada foi enviado ao cliente.`,
       windowNote: `Documento aprovado: ${named}. A janela de 24h do WhatsApp está fechada, então ele não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
       revokedNote: unavailable,
+      blockedNote: `Documento aprovado: ${named}. A resposta do agente foi barrada pela política de saída, então o PDF não foi enviado ao cliente e precisa ser enviado por uma pessoa.`,
       stillValid: async () => {
         const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.issuedDocument.findUnique({

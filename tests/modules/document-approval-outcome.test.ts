@@ -645,6 +645,137 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     }
   });
 
+  const withOutputGuardrail = (output: Record<string, unknown>) =>
+    suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          serviceWindow: { templateName: "reengage" },
+          handoff: { mode: "route" },
+          guardrails: {
+            credentialRef: `vault:${vaultId}`,
+            enabled: true,
+            provider: "openai",
+            model: "guard-sentinel-doc",
+            input: { enabled: false },
+            output: {
+              enabled: true,
+              checks: {
+                toxicity: true,
+                unsafeContent: false,
+                competitorMentions: false,
+                promptAdherence: false,
+              },
+              ...output,
+            },
+          },
+        },
+      },
+    });
+  const withoutGuardrail = () =>
+    suDb.agent.update({
+      where: { id: agentId },
+      data: { settings: { serviceWindow: { templateName: "reengage" } } },
+    });
+  const tripping = (onJudge?: () => void) =>
+    ((cfg: { model: string }) =>
+      cfg.model === "guard-sentinel-doc"
+        ? guardrailModel(async () => {
+            onJudge?.();
+            return {
+              content: JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "fora da política",
+              }),
+            };
+          })
+        : new ScriptedCaptureModel([
+            { reply: "Segue o seu orçamento!" },
+          ])) as never;
+
+  test("a reply the output guardrail replaces goes without the PDF, and the document is left to a person", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await withOutputGuardrail({
+      action: "template",
+      templateMessage: "MENSAGEM-SEGURA-DOC",
+    });
+    try {
+      const rec = recordingClient();
+      const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: tripping(),
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("noted");
+      expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+      expect(named(rec.calls, "sendMessage").map((c) => String(c[2]))).toEqual([
+        "MENSAGEM-SEGURA-DOC",
+      ]);
+      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
+        String(c[2]),
+      );
+      expect(notes.some((n) => n.includes("barrada pela política"))).toBe(true);
+      expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
+    } finally {
+      await withoutGuardrail();
+    }
+  });
+
+  test("a guardrail transfer after the window closed leaves the line and the document's note", async () => {
+    const { requestId } = await conversationWithRequest({
+      lastInboundAt: new Date(Date.now() - 23.9 * 3_600_000),
+    });
+    await approveDocumentRequest({
+      ctx: ctx(),
+      requestId,
+      base: appDb,
+      storageDir: DIR,
+    });
+    await withOutputGuardrail({
+      action: "handoff",
+      handoffMessage: "ENCAMINHADO-DOC",
+    });
+    // The window shuts while the judge reads the reply.
+    let judged = false;
+    const now = () => new Date(Date.now() + (judged ? 3_600_000 : 0));
+    try {
+      const rec = recordingClient();
+      const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+        storageDir: DIR,
+        nudgeDeps: {
+          makeModel: tripping(() => {
+            judged = true;
+          }),
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+          now,
+        },
+      });
+      expect(outcome).toBe("noted");
+      expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+      expect(named(rec.calls, "sendMessage")).toHaveLength(0);
+      const notes = named(rec.calls, "sendPrivateNote").map((c) =>
+        String(c[2]),
+      );
+      expect(notes.some((n) => n.includes("ENCAMINHADO-DOC"))).toBe(true);
+      expect(notes.some((n) => n.includes("Documento aprovado"))).toBe(true);
+    } finally {
+      await withoutGuardrail();
+    }
+  });
+
   test("the default caption escapes a title with Liquid once", async () => {
     const { requestId } = await conversationWithRequest({});
     await approveDocumentRequest({

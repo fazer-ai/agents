@@ -299,7 +299,10 @@ so approving again, in parallel or later, finds it linked and arms nothing. The 
   sent in the document's place; the same note covers a person taking over, or the window closing,
   while the agent writes. An agent that writes nothing still sends the PDF, with a default caption.
   The turn binds no tool: its one job is the line the PDF rides on, and with the agent's tools bound
-  a real model tried to attach the file itself, wrote notes and handed the conversation over.
+  a real model tried to attach the file itself, wrote notes and handed the conversation over. An
+  output guardrail trip on that line drops the PDF, as a trip drops every attachment of a turn: a
+  transfer leaves the document to the person, a replaced reply goes alone and a note asks a person
+  to send it. The PDF's own values are not screened again: the team read them and approved them.
   A revoked or missing PDF, or a turn that could not speak (the spend ceiling, an agent switched
   off), leaves a note saying a person has to send it.
 - **Rejected:** nothing to the customer, a private note carrying the reviewer's note, and, while the

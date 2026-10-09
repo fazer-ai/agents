@@ -306,6 +306,9 @@ export interface ApprovedDocumentDelivery {
   // writes; `revokedNote` is left instead when it did.
   stillValid: () => Promise<boolean>;
   revokedNote: string;
+  // Left when the output guardrail replaced the agent's line: a trip drops every attachment of the
+  // turn (docs/documents.md), so the document is a person's to send.
+  blockedNote: string;
 }
 
 export function parseThreadId(
@@ -2553,6 +2556,12 @@ async function runAgentNudgeBody(
           conversationId,
           `${OUTSIDE_WINDOW_NOTE_PREFIX}${screenedIsOperator ? screened : literalForChatwoot(screened)}`,
         );
+        // The transfer carried no file, so the approved document is the person's to send, said
+        // beside the line as on the in-window transfer.
+        if (approved) {
+          delivered = true;
+          await client.sendPrivateNote(conversationId, approved.heldNote);
+        }
         markFollowUp("noted-window");
         await applyPostActions({
           canMessage: canMessagePost,
@@ -2574,8 +2583,12 @@ async function runAgentNudgeBody(
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
       // A transfer the judge made carries its line and no file: the conversation is a person's now,
-      // so the approved document is theirs to send, as after the agent's own transfer.
-      const attach = approved && !handoffState.completed ? approved : null;
+      // so the approved document is theirs to send, as after the agent's own transfer. Any other
+      // trip drops the file as well, as a trip drops every attachment of a turn.
+      const attach =
+        approved && !handoffState.completed && !guardrailTripped(decision)
+          ? approved
+          : null;
       if (attach && !(await attach.stillValid())) {
         return refuse(await noteApproved(attach.revokedNote, "noted"));
       }
@@ -2618,7 +2631,12 @@ async function runAgentNudgeBody(
       }
       markFollowUp("messaged");
       await applyPostActions({ canMessage: canMessagePost });
-      if (approved && !attach) return noteApproved(approved.heldNote, "noted");
+      if (approved && !attach) {
+        return noteApproved(
+          handoffState.completed ? approved.heldNote : approved.blockedNote,
+          "noted",
+        );
+      }
       return "messaged";
     }
     // A human arrived while the judge was reading, or the window closed while it did. Everything

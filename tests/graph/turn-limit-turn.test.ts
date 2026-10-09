@@ -68,7 +68,10 @@ interface Calls {
 
 // Every method the turn may call answers like Chatwoot would, and the three that matter here are
 // recorded. A create returns an id, as the real one does, so the turn's own send ledger fills.
-function chatwootDouble(calls: Calls): () => Promise<ChatwootClient> {
+function chatwootDouble(
+  calls: Calls,
+  onToggle?: () => Promise<void>,
+): () => Promise<ChatwootClient> {
   let nextId = 1;
   const client = new Proxy(
     {},
@@ -78,7 +81,10 @@ function chatwootDouble(calls: Calls): () => Promise<ChatwootClient> {
         return async (...args: unknown[]) => {
           if (prop === "sendMessage") calls.sent.push(String(args[1]));
           if (prop === "sendPrivateNote") calls.notes.push(String(args[1]));
-          if (prop === "toggleStatus") calls.status.push(String(args[1]));
+          if (prop === "toggleStatus") {
+            calls.status.push(String(args[1]));
+            await onToggle?.();
+          }
           // NOTE: Reads (labels, attributes) answer an empty list; creates answer an id.
           return String(prop).startsWith("send") ? { id: nextId++ } : [];
         };
@@ -91,6 +97,7 @@ function chatwootDouble(calls: Calls): () => Promise<ChatwootClient> {
 const incoming = (
   conversationId: number,
   inboxId: number,
+  contactInboxId: number | null = null,
 ): NormalizedChatwootEvent => ({
   event: "message_created",
   conversationId,
@@ -99,7 +106,7 @@ const incoming = (
   assigneeType: null,
   assigneeId: null,
   assigneeName: null,
-  contactInboxId: null,
+  contactInboxId,
   message: {
     id: ++messageId,
     content: "oi, tudo bem?",
@@ -108,10 +115,14 @@ const incoming = (
   },
 });
 
-async function seedConversation(convId: number): Promise<bigint> {
+async function seedConversation(
+  convId: number,
+  contactInboxId: number | null = null,
+): Promise<bigint> {
   const row = await suDb.conversation.create({
     data: {
       tenantId,
+      contactInboxId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
       status: "pending",
@@ -137,18 +148,28 @@ const deliveries = (convDbId: bigint) =>
 async function turn(
   convId: number,
   calls: Calls,
-  opts: { inbox?: number; reply?: string } = {},
+  opts: {
+    inbox?: number;
+    reply?: string;
+    base?: PrismaClient;
+    contactInboxId?: number;
+    onToggle?: () => Promise<void>;
+  } = {},
 ) {
   return runAgentTurn({
     tenantId,
     instanceId,
     agentBotId: 9,
-    event: incoming(convId, opts.inbox ?? LIMITED_INBOX),
-    base: appDb,
+    event: incoming(
+      convId,
+      opts.inbox ?? LIMITED_INBOX,
+      opts.contactInboxId ?? null,
+    ),
+    base: opts.base ?? appDb,
     deps: {
       makeModel: () =>
         new StubModel(opts.reply ?? REPLY) as unknown as BaseChatModel,
-      makeClient: chatwootDouble(calls),
+      makeClient: chatwootDouble(calls, opts.onToggle),
       checkpointer: new MemorySaver(),
     },
   });
@@ -290,6 +311,63 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       count: LIMIT,
     });
     expect(lines[0]?.errorMessage).toContain(`limit ${LIMIT}`);
+  });
+
+  // Two messages back to back: the second turn waits on the first's claim, and when that claim is
+  // released the first turn's delivery must already be counted. The insert is slowed so the window
+  // between the release and the write, if there is one, is wide enough to be seen.
+  test("a turn waiting on the previous one sees its delivery", async () => {
+    const convId = 8207;
+    // NOTE: A contact-inbox thread, the one whose turns take the durable claim and wait on it.
+    const convDbId = await seedConversation(convId, 7207);
+    await seedDeliveries(convDbId, [minutesAgo(10), minutesAgo(5)]);
+    const slow = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async create({ args, query }) {
+            await Bun.sleep(400);
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    const first = newCalls();
+    const second = newCalls();
+    const outcomes = await Promise.all([
+      turn(convId, first, { base: slow, contactInboxId: 7207 }),
+      Bun.sleep(50).then(() =>
+        turn(convId, second, { base: slow, contactInboxId: 7207 }),
+      ),
+    ]);
+    expect(outcomes).toEqual(["posted", "blocked"]);
+    expect(second.sent).toEqual([]);
+  });
+
+  // A /reset that lands while the conversation is being handed over gives it back to the agent, so
+  // the note announcing the hand-over would be false and is not posted.
+  test("a /reset during the hand-over leaves no note", async () => {
+    const convId = 8208;
+    const convDbId = await seedConversation(convId);
+    await seedDeliveries(convDbId, [
+      minutesAgo(30),
+      minutesAgo(20),
+      minutesAgo(10),
+    ]);
+
+    const calls = newCalls();
+    const outcome = await turn(convId, calls, {
+      onToggle: async () => {
+        await suDb.conversation.update({
+          where: { id: convDbId },
+          data: { resetAtMessageId: messageId + 1 },
+        });
+      },
+    });
+    expect(outcome).toBe("stale");
+    expect(calls.sent).toEqual([]);
+    expect(calls.status).toEqual(["open"]);
+    expect(calls.notes).toEqual([]);
   });
 
   test("a delivery older than an hour has left the window", async () => {

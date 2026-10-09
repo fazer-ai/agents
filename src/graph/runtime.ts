@@ -1314,6 +1314,9 @@ async function runTurnBody(
         conversationDbId: convDbId,
         base,
       });
+    // NOTE: Asked again at the note: a /reset during the transfer gave the conversation back to the
+    // agent, and a note announcing the hand-over would then be false.
+    if (await writeCalledOff()) return standDown();
     await client
       .sendPrivateNote(
         conversationId,
@@ -2668,6 +2671,23 @@ async function runTurnBody(
     });
     return "posted";
   } finally {
+    // NOTE: Before either claim is released: the next turn on this thread waits on them, and its
+    // turn-limit gate must already see this delivery.
+    if (
+      loaded.conversationDbId !== null &&
+      flow.source === "inbox" &&
+      turnReachedTheCustomer({
+        balloons: deliveredBalloons,
+        attachment: sentAttachment,
+        spokeOutsideTheReply: turnState.spokeOutsideTheReply,
+      })
+    )
+      await recordTurnDelivery({
+        tenantId,
+        conversationDbId: loaded.conversationDbId,
+        proactive: false,
+        base,
+      });
     clearTurnInFlight(threadId);
     if (graphOwner) {
       const heldOwner: ThreadOwner = graphOwner;
@@ -2735,21 +2755,6 @@ async function runTurnBody(
     // for the conversation screen. When the silence tool asked, it also carries what actually went
     // out: a lone `skip_reply` does not end the turn, so its own stamp can precede a delivered line.
     const sentMessageIds = recorded.sentIds();
-    if (
-      loaded.conversationDbId !== null &&
-      flow.source === "inbox" &&
-      turnReachedTheCustomer({
-        balloons: deliveredBalloons,
-        attachment: sentAttachment,
-        spokeOutsideTheReply: turnState.spokeOutsideTheReply,
-      })
-    )
-      await recordTurnDelivery({
-        tenantId,
-        conversationDbId: loaded.conversationDbId,
-        proactive: false,
-        base,
-      });
     if (reachedModel || sentMessageIds.length > 0)
       emitFlowEvent(flow, {
         stage: "generate",

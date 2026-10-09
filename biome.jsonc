@@ -282,7 +282,6 @@
         "!tests/modules/chatwoot-mirror-once.test.ts",
         "!tests/modules/chatwoot-monitoring-seam.test.ts",
         "!tests/modules/chatwoot-out-of-office.test.ts",
-        "!tests/modules/chatwoot-receiver.test.ts",
         "!tests/modules/chatwoot-replay-owes-memory.test.ts",
         "!tests/modules/chatwoot-reset-stale-turn.test.ts",
         "!tests/modules/chatwoot-reset.test.ts",

@@ -28,11 +28,16 @@ const PROBES: Record<string, string> = {
   [`${PROBE}/timeout-2500.ts`]:
     "export const a = new Promise((r) => setTimeout(r, 2500));\n",
   [`${PROBE}/sleep-50.ts`]: "export const a = Bun.sleep(50);\n",
+  [`${PROBE}/sleep-5_0.ts`]: "export const a = Bun.sleep(5_0);\n",
+  [`${PROBE}/sleep-50.5.ts`]: "export const a = Bun.sleep(50.5);\n",
+  [`${PROBE}/sleep-150.5.ts`]: "export const a = Bun.sleep(150.5);\n",
   [`${PROBE}/sleep-49.ts`]: "export const a = Bun.sleep(49);\n",
+  [`${PROBE}/sleep-49.9.ts`]: "export const a = Bun.sleep(49.9);\n",
+  [`${PROBE}/sleep-0.500.ts`]: "export const a = Bun.sleep(0.500);\n",
+  [`${PROBE}/sleep-digits-in-name.ts`]:
+    "const ms500 = 1;\nexport const a = Bun.sleep(ms500);\n",
   [`${PROBE}/timeout-10.ts`]:
     "export const a = (fn: () => void) => setTimeout(fn, 10);\n",
-  [`${PROBE}/sleep-variable.ts`]:
-    "export const a = (ms: number) => Bun.sleep(ms);\n",
   [`${PROBE}/listed-copy.ts`]: readFileSync(join(ROOT, LISTED), "utf8"),
 };
 
@@ -105,16 +110,22 @@ describe("no-test-real-wait", () => {
     ["sleep-3000-separated.ts"],
     ["timeout-2500.ts"],
     ["sleep-50.ts"],
+    ["sleep-5_0.ts"],
+    ["sleep-50.5.ts"],
+    ["sleep-150.5.ts"],
   ])("a literal wait of 50ms or more is refused (%s)", (name) => {
     expect(of(`${PROBE}/${name}`).wait).toBe(1);
   });
 
-  test.each([["sleep-49.ts"], ["timeout-10.ts"], ["sleep-variable.ts"]])(
-    "under 50ms, or not a literal, is allowed (%s)",
-    (name) => {
-      expect(of(`${PROBE}/${name}`).wait).toBe(0);
-    },
-  );
+  test.each([
+    ["sleep-49.ts"],
+    ["sleep-49.9.ts"],
+    ["sleep-0.500.ts"],
+    ["timeout-10.ts"],
+    ["sleep-digits-in-name.ts"],
+  ])("under 50ms, or not a literal, is allowed (%s)", (name) => {
+    expect(of(`${PROBE}/${name}`).wait).toBe(0);
+  });
 });
 
 test("a file on the list is exempt, and the same content anywhere else is not", () => {

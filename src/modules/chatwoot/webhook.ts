@@ -7,6 +7,7 @@ import {
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import ackPrisma from "@/api/lib/prisma-ack";
 import {
   chatwootThreadId,
   contactInboxThreadId,
@@ -19,7 +20,11 @@ import { armIngest, ingestKeyPrefix } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
-import { AppError, UnauthorizedError } from "@/lib/errors";
+import {
+  AppError,
+  ServiceUnavailableError,
+  UnauthorizedError,
+} from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
 import {
   isTransactionNeverStarted,
@@ -220,10 +225,9 @@ import { renderAttendantMessage, renderInboundMessage } from "./render";
 import { responderCoversMessage } from "./responder-coverage";
 import {
   awaitRouteTokenRefresh,
-  noteRouteTokenLookup,
-  type RouteTokenCacheHit,
   readRouteTokenCache,
   routeTokenCacheGeneration,
+  routeTokenRefreshDue,
   trackRouteTokenRefresh,
   writeRouteTokenCache,
 } from "./route-token-cache";
@@ -833,41 +837,27 @@ async function resolveBotByRouteToken(
 ): Promise<ResolvedChatwootBot | null> {
   // Cached in process: see route-token-cache.ts for why the ack path cannot afford this query.
   const webhookRouteTokenHash = hashRouteToken(token);
-  // A refresh in flight means this entry is being questioned: waiting on it keeps an outage from
-  // being acked (Chatwoot does not redeliver a 2xx); only the request that STARTED the refresh is served
-  // stale, a residual that needs a durable payload store to close. Bounded, because a hung lookup would
-  // stall every later delivery for this token. Waited TWICE: a burst clears the first wait together,
-  // and the cache withholds stale answers while a refresh decides, so without a second look each would
-  // open its own transaction exactly when the pool is tightest.
-  let cached = await servedFromCache(webhookRouteTokenHash, base);
-  // NOTE: A miss may mean a refresh was registered between our wait and our read; the second wait
-  // returns immediately when there is none.
-  if (cached === undefined) {
-    cached = await servedFromCache(webhookRouteTokenHash, base);
+  let hit = readRouteTokenCache(webhookRouteTokenHash);
+  // NOTE: A miss may be a refresh deciding this very token; waiting on it (bounded) costs one lookup
+  // between the burst instead of one each, and inherits its failure rather than retrying a pool that
+  // just refused.
+  if (hit === undefined) {
+    await awaitRouteTokenRefresh(webhookRouteTokenHash);
+    hit = readRouteTokenCache(webhookRouteTokenHash);
   }
-  if (cached !== undefined) return cached.bot;
-
+  if (hit !== undefined) {
+    // NOTE: A stale entry is answered from memory, also while its refresh fails: the 200 is backed by
+    // the ledger row the ack writes next, on a pool of its own, so a lookup that cannot reach the
+    // shared pool must not turn every ack into a 500. The refresh runs behind the ack, one at a time
+    // and backing off after a failure.
+    if (hit.stale && routeTokenRefreshDue(webhookRouteTokenHash)) {
+      void refreshRouteToken(webhookRouteTokenHash, base).catch((err) => {
+        logger.warn("chatwoot: route token refresh failed: %s", errMsg(err));
+      });
+    }
+    return hit.bot;
+  }
   return queryRouteToken(webhookRouteTokenHash, base);
-}
-
-// One pass of "wait for whoever is deciding, then read". Returns undefined on a miss, which is the
-// caller's cue to look again or to go to Postgres itself.
-async function servedFromCache(
-  webhookRouteTokenHash: string,
-  base: PrismaClient,
-): Promise<RouteTokenCacheHit | undefined> {
-  await awaitRouteTokenRefresh(webhookRouteTokenHash);
-  const hit = readRouteTokenCache(webhookRouteTokenHash);
-  // NOTE: A stale entry is answered from memory and refreshed behind the ack: a blocking query would
-  // put the lookup inside the 5s budget on every first message of a quiet instance. The cache reports
-  // `stale` only while the last lookup reached Postgres, so this never acks a row the detached half
-  // cannot act on.
-  if (hit?.stale) {
-    void refreshRouteToken(webhookRouteTokenHash, base).catch((err) => {
-      logger.warn("chatwoot: route token refresh failed: %s", errMsg(err));
-    });
-  }
-  return hit;
 }
 
 function readRouteTokenRow(webhookRouteTokenHash: string, base: PrismaClient) {
@@ -897,16 +887,7 @@ async function queryRouteToken(
   // Snapshotted BEFORE the read: an invalidation landing while this query is in flight has to win,
   // because the writer that invalidated already committed and this row predates that commit.
   const generation = routeTokenCacheGeneration();
-  let row: Awaited<ReturnType<typeof readRouteTokenRow>>;
-  try {
-    row = await readRouteTokenRow(webhookRouteTokenHash, base);
-    noteRouteTokenLookup(true);
-  } catch (err) {
-    // NOTE: A lookup that could not reach Postgres closes the stale window for EVERY token, so the next
-    // ack blocks and fails instead of promising a 200 nothing can honour.
-    noteRouteTokenLookup(false);
-    throw err;
-  }
+  const row = await readRouteTokenRow(webhookRouteTokenHash, base);
   const bot: ResolvedChatwootBot | null =
     !row?.instance || row.instance.disconnectedAt !== null
       ? null
@@ -920,9 +901,10 @@ async function queryRouteToken(
   return bot;
 }
 
-// One refresh per token; later arrivals wait on it. The failure travels with the promise: swallowed,
-// each waiter would take the blocking path and open its own transaction against a pool that is the
-// broken thing. The log belongs to the detached starter, the one caller with nowhere to return it.
+// One refresh per token; a miss arriving meanwhile waits on it. The failure travels with the promise:
+// swallowed, each waiter would take the blocking path and open its own transaction against a pool
+// that is the broken thing. The log belongs to the detached starter, the one caller with nowhere to
+// return it.
 function refreshRouteToken(
   webhookRouteTokenHash: string,
   base: PrismaClient,
@@ -934,14 +916,20 @@ function refreshRouteToken(
 
 export interface ReceiveChatwootResult {
   ack: true;
-  // NOTE: No "duplicate": deduping is a property of processing, done in
-  // recordAndProcessChatwootDelivery; Chatwoot only needs "received".
+  // NOTE: No "duplicate": a redelivery is "received" like the first one (Chatwoot only needs that),
+  // and `dispatch` says whether it still owes processing.
   outcome: "queued" | "ignored";
   tenantId?: bigint;
   instanceId?: bigint;
-  // The idempotency KEY (the X-Chatwoot-Delivery header, or a body digest when absent), not a row id:
-  // the ledger row is written on the detached path.
+  // The idempotency KEY (the X-Chatwoot-Delivery header, or a body digest when absent).
   deliveryId?: string;
+  // The ledger row the ack wrote (or found, on a redelivery) before answering.
+  deliveryRowId?: bigint;
+  // The row's own binding generation, what processing compares against (see `recordDelivery`).
+  receiptBindingGeneration?: number | null;
+  // Whether the row still owes its first attempt (PENDING). A redelivery of a settled row is acked
+  // and not processed again; one of a row still PENDING is, and the CAS decides.
+  dispatch?: boolean;
   agentBotId?: number | null;
   normalized?: NormalizedChatwootEvent;
 }
@@ -951,6 +939,9 @@ export interface ReceiveChatwootParams {
   rawBody: string;
   getHeader: (name: string) => string | null;
   base?: PrismaClient;
+  // The client the ack's ledger write goes through. Production leaves both unset and writes through
+  // the ack's own pool (`@/api/lib/prisma-ack`); a test that passes `base` alone writes through it.
+  ackBase?: PrismaClient;
   // NOTE: injectable wall clock (seconds) for tests; forwarded to the signature verifier.
   nowSeconds?: number;
 }
@@ -992,15 +983,44 @@ export async function receiveChatwootWebhook(
     headerDelivery ??
     `body:${createHash("sha256").update(params.rawBody).digest("hex")}`;
 
-  // NOTE: Nothing is written here. A ledger insert on this path would make the ack wait on a pool
-  // shared with every turn, and Chatwoot escalates the conversation on a slow ack; the insert lives on
-  // the detached path (`recordAndProcessChatwootDelivery`), where slowness costs latency, not the turn.
+  // The ledger row is written HERE, with the body, and the 200 waits for its commit. Chatwoot never
+  // resends a 2xx, so an ack with nothing durable behind it is a promise a restart or a full pool
+  // breaks in silence. It goes through a pool of its own, so turns and jobs draining the
+  // main one cannot stretch the ack past Chatwoot's budget. A write that fails is a 503, never a 2xx:
+  // Chatwoot's retry ladder carries the event, and the unique key makes the retry the same row.
+  const ackBase = params.ackBase ?? params.base ?? ackPrisma;
+  let recorded: Awaited<ReturnType<typeof recordDelivery>>;
+  try {
+    recorded = await recordDelivery(
+      ackBase,
+      { tenantId: bot.tenantId, instanceId: bot.instanceId },
+      deliveryId,
+      ledgerFactsOf(normalized, bot.agentBotId),
+      {
+        chatwootInboxId: normalized.inboxId ?? null,
+        chatwootConversationId: normalized.conversationId,
+      },
+      params.rawBody,
+    );
+  } catch (err) {
+    logger.warn(
+      "chatwoot: the ack could not record delivery %s, answered 503 for Chatwoot to retry: %s",
+      deliveryId,
+      errMsg(err),
+    );
+    throw new ServiceUnavailableError(
+      "the delivery could not be recorded; retry",
+    );
+  }
   return {
     ack: true,
     outcome: "queued",
     tenantId: bot.tenantId,
     instanceId: bot.instanceId,
     deliveryId,
+    deliveryRowId: recorded.rowId,
+    receiptBindingGeneration: recorded.bindingGeneration,
+    dispatch: recorded.status === "PENDING",
     agentBotId: bot.agentBotId,
     normalized,
   };
@@ -1113,10 +1133,10 @@ async function handToRecovery(
   );
 }
 
-// The detached half of a delivery: claim it in the ledger, then process it. A redelivery is not
-// dropped because the row exists: a process that dies after the insert strands it PENDING, and
-// Chatwoot, holding its 200, never resends. Both branches call `processChatwootDelivery`, whose CAS on
-// `status: "PENDING"` is the real gate.
+// Claim a delivery in the ledger, then process it: the composition the tests drive. The live path
+// splits it in two, the claim in the ack (`receiveChatwootWebhook`) and the processing behind the
+// admission queue (./delivery-queue.ts). A redelivery is not dropped because the row exists: a row
+// can be PENDING with nothing running it, and the CAS on `status: "PENDING"` is the real gate.
 export async function recordAndProcessChatwootDelivery(
   params: RecordAndProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
@@ -1132,6 +1152,38 @@ export async function recordAndProcessChatwootDelivery(
       chatwootConversationId: params.normalized.conversationId,
     },
   );
+  return processRecordedChatwootDelivery({
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    deliveryRowId: rowId,
+    agentBotId: params.agentBotId,
+    normalized: params.normalized,
+    receiptBindingGeneration: rowGeneration,
+    base,
+    deps: params.deps,
+  });
+}
+
+export interface ProcessRecordedChatwootParams {
+  tenantId: bigint;
+  instanceId: bigint;
+  deliveryRowId: bigint;
+  agentBotId: number | null;
+  normalized: NormalizedChatwootEvent;
+  // NOTE: The ROW's value, never a fresh reading: a redelivery finds a row written under the world
+  // its message arrived in, while a reading belongs to this attempt. The recovery passes it too.
+  receiptBindingGeneration: number | null;
+  base?: PrismaClient;
+  deps?: RuntimeDeps;
+}
+
+// The processing half of a delivery whose ledger row exists: what the admission queue runs for a live
+// delivery and for a stored one drained after a restart.
+export async function processRecordedChatwootDelivery(
+  params: ProcessRecordedChatwootParams,
+): Promise<"processed" | "skipped"> {
+  const base = params.base ?? basePrisma;
+  const rowId = params.deliveryRowId;
   try {
     return await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -1139,10 +1191,7 @@ export async function recordAndProcessChatwootDelivery(
       deliveryRowId: rowId,
       agentBotId: params.agentBotId,
       normalized: params.normalized,
-      // NOTE: The ROW's value, never the fresh reading: a redelivery finds a row written under the world
-      // its message arrived in, while the reading belongs to this attempt. The recovery passes the row's
-      // value too.
-      receiptBindingGeneration: rowGeneration,
+      receiptBindingGeneration: params.receiptBindingGeneration,
       base,
       deps: params.deps,
     });
@@ -1160,10 +1209,8 @@ export async function recordAndProcessChatwootDelivery(
   }
 }
 
-// The 200 is already out when this runs, so a throw here loses the message: the ledger claim has
-// nothing behind it, and its real failure is a pool momentarily full (`maxWait` 2s), so it retries.
-// A process dying between ack and claim still loses the in-memory payload; closing that needs the
-// payload stored before the 200, not a longer retry.
+// The claim's retries, for `recordAndProcessChatwootDelivery` and the transcription fill. The live ack
+// does not retry: it answers 503 and Chatwoot's own ladder retries (see `receiveChatwootWebhook`).
 const LEDGER_CLAIM_ATTEMPTS = 4;
 const LEDGER_CLAIM_BACKOFF_MS = 300;
 
@@ -1275,9 +1322,10 @@ function ledgerFactsOf(
     // recovery resolving the identity from the inbox asks a stricter question and leaves the bot on the
     // conversation the person answered.
     routeAgentBotId,
-    // NOTE: WHICH message it was about, what the recovery's fence orders by. The payload is never stored
-    // and `inboundMessageId` is null for a colleague's outgoing reply, so without this the recovery could
-    // walk back a hand-back an operator made while it waited. Same condition and answer as the shape.
+    // NOTE: WHICH message it was about, what the recovery's fence orders by. The payload is gone once
+    // the row is claimed and `inboundMessageId` is null for a colleague's outgoing reply, so without
+    // this the recovery could walk back a hand-back an operator made while it waited. Same condition
+    // and answer as the shape.
     humanReplyMessageId:
       humanReplyShape !== null ? (n.message?.id ?? null) : null,
   };
@@ -1325,9 +1373,14 @@ async function recordDelivery(
   deliveryId: string,
   facts: Omit<LedgerFacts, "bindingGeneration">,
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
+  // The raw body, from the ack only (see the `payload` column). Never filled onto an existing row: a
+  // redelivery carries the body in memory, and the row it finds already owes or already ran.
+  payload: string | null = null,
 ): Promise<{
   rowId: bigint;
   duplicate: boolean;
+  // The row's status as written or found, so the ack dispatches only a row that still owes its attempt.
+  status: string;
   // The ROW's own generation, not the caller's reading: a redelivery's row was written under the world
   // its message arrived in, and the fresh reading belongs to this attempt. Returned from either branch.
   bindingGeneration: number | null;
@@ -1350,10 +1403,11 @@ async function recordDelivery(
           deliveryId,
           status: "PENDING",
           // NOTE: What a recovery sweep needs if this delivery strands: which conversation to flush, which
-          // message the flush should answer, and what side effect was owed. Ids and shapes only; the flush
-          // re-reads messages from Chatwoot, so no column holds what the customer wrote.
+          // message the flush should answer, and what side effect was owed. Ids and shapes, plus the body
+          // while the row owes its first attempt (`payload`, cleared by the claim).
           ...facts,
           bindingGeneration,
+          payload,
         },
         select: { id: true, bindingGeneration: true },
       });
@@ -1361,6 +1415,7 @@ async function recordDelivery(
     return {
       rowId: row.id,
       duplicate: false,
+      status: "PENDING",
       bindingGeneration: row.bindingGeneration,
     };
   } catch (err) {
@@ -1370,7 +1425,7 @@ async function recordDelivery(
         where: { chatwootInstanceId: scope.instanceId, deliveryId },
         // NOTE: Read before the fills, which is equivalent: they never touch `bindingGeneration`
         // (see `LEDGER_FILLABLE`).
-        select: { id: true, bindingGeneration: true },
+        select: { id: true, bindingGeneration: true, status: true },
       }),
     );
     if (!existing) throw err;
@@ -1392,6 +1447,7 @@ async function recordDelivery(
     return {
       rowId: existing.id,
       duplicate: true,
+      status: existing.status,
       bindingGeneration: existing.bindingGeneration,
     };
   }
@@ -3975,6 +4031,9 @@ export async function processChatwootDelivery(
       data: {
         status: "PROCESSING",
         claimedAt: new Date(),
+        // NOTE: The body the ack stored leaves with the first attempt that claims the row: from here a
+        // death is the sweep's, which rebuilds from Chatwoot, so nothing reads it again.
+        payload: null,
         // NOTE: The route's role, stated by the claim itself (see the note above the resolution).
         routeObserved: observer !== null,
         // NOTE: ...and what it does with an unanswered message, in the same statement: the observer beside
@@ -6039,9 +6098,9 @@ export async function processChatwootDelivery(
 
   // tx2: mark processed. NOTE: a crash between tx1 and tx2 strands the row in PROCESSING; the stranded
   // delivery sweep (./delivery-sweep.ts) reports it and arms a recovery, which comes back through this
-  // function with `claimFrom: "DEAD"` (./recover-delivery.ts), so the payload is never stored. By ID
-  // with no CAS on purpose: a turn outliving the sweep's threshold finds its row DEAD, and winning here
-  // leaves it true. See docs/chatwoot.md, "Webhook receiver" (the two windows left open).
+  // function with `claimFrom: "DEAD"` (./recover-delivery.ts), so the payload is not kept past the
+  // claim. By ID with no CAS on purpose: a turn outliving the sweep's threshold finds its row DEAD,
+  // and winning here leaves it true. See docs/chatwoot.md, "Webhook receiver" (the two windows left open).
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.update({
       where: { id: params.deliveryRowId },

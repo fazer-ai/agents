@@ -1,10 +1,9 @@
 import { Elysia, t } from "elysia";
-import logger from "@/api/lib/logger";
 import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
-import { trackWork } from "@/lib/shutdown";
+import { admitChatwootDelivery } from "@/modules/chatwoot/delivery-queue";
 import {
+  processRecordedChatwootDelivery,
   receiveChatwootWebhook,
-  recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
 
 // Public, JWT-less Chatwoot Agent Bot webhook receiver. Not behind tenancyPlugin/requireAuth:
@@ -27,40 +26,37 @@ export const chatwootController = new Elysia({
       getHeader: (name) => request.headers.get(name),
     });
 
-    // NOTE: ack fast (<5s): a slow or non-2xx ack makes Chatwoot move the conversation pending→open
-    // (auto-escalate to a human), so the dispatch runs detached. A redelivery dispatches too and the
-    // CAS in processChatwootDelivery decides: the row existing does not mean the work was done, and
-    // dropping it would lose a message Chatwoot never resends (docs/chatwoot.md, Idempotency ledger).
+    // NOTE: The ledger row (with the body) is committed by the time `receiveChatwootWebhook` returns,
+    // so this 200 is backed: a death from here on leaves a PENDING row the drain processes
+    // (../../modules/chatwoot/delivery-queue.ts). Processing waits behind the admission bound rather
+    // than competing for the pool. A redelivery of a row still PENDING is dispatched too and the CAS
+    // decides; one of a settled row is not (docs/chatwoot.md, "Webhook receiver").
     if (
       result.outcome === "queued" &&
+      result.dispatch === true &&
       result.tenantId !== undefined &&
       result.instanceId !== undefined &&
-      result.deliveryId !== undefined &&
+      result.deliveryRowId !== undefined &&
       result.normalized !== undefined
     ) {
       const {
         tenantId,
         instanceId,
-        deliveryId,
+        deliveryRowId,
         agentBotId = null,
+        receiptBindingGeneration = null,
         normalized,
       } = result;
-      // NOTE: tracked, so a shutdown waits for the turn a direct delivery runs (src/lib/shutdown.ts).
-      void trackWork("chatwoot_delivery", () =>
-        recordAndProcessChatwootDelivery({
+      admitChatwootDelivery(deliveryRowId, () =>
+        processRecordedChatwootDelivery({
           tenantId,
           instanceId,
-          deliveryId,
+          deliveryRowId,
           agentBotId,
           normalized,
+          receiptBindingGeneration,
         }),
-      ).catch((err) => {
-        logger.error(
-          "chatwoot async dispatch failed (delivery %s): %s",
-          deliveryId,
-          err instanceof Error ? err.message : String(err),
-        );
-      });
+      );
     }
 
     return { ack: true, outcome: result.outcome };
@@ -69,12 +65,12 @@ export const chatwootController = new Elysia({
     detail: {
       ...doc(
         "Chatwoot bot webhook",
-        "Public Agent Bot webhook receiver; authenticated by the opaque per-instance route token plus the HMAC signature header (verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and processes asynchronously; an unknown token and a bad signature collapse into the same 401, so a probe cannot tell which routes are live.",
+        "Public Agent Bot webhook receiver; authenticated by the opaque per-instance route token plus the HMAC signature header (verified in-handler after tenant resolution), not by a session cookie or bearer. Records the delivery durably, then acks (<5s) and processes asynchronously; a delivery that could not be recorded is a 503, for the sender to retry. An unknown token and a bad signature collapse into the same 401, so a probe cannot tell which routes are live.",
       ),
       security: [],
       responses: {
         200: jsonResponse(
-          "Returned once the caller is authenticated; `outcome` says what happened to the event.",
+          "Returned once the caller is authenticated and the delivery is recorded; `outcome` says what happened to the event.",
           t.Object({
             ack: t.Literal(true),
             outcome: t.Union(
@@ -92,6 +88,7 @@ export const chatwootController = new Elysia({
         ),
         400: errorResponse(400),
         401: errorResponse(401),
+        503: errorResponse(503),
       },
     },
     params: t.Object({

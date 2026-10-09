@@ -144,9 +144,10 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
     expect(valid.rows.filter((r) => !r.v).map((r) => r.n)).toEqual([]);
   });
 
-  test("adds the three columns the sweep reads, and no column for the payload", async () => {
+  test("adds the three columns the sweep reads, and no second copy of the body", async () => {
     // The other half of the file. The sweep needs the delivery's identity and nothing about what the
-    // customer wrote: no ciphertext column, no retention window, no second copy at rest.
+    // customer wrote. The one body the ledger holds is `payload`: written by the ack so a 200 is backed, and cleared by the first claim, which tests/modules/chatwoot-durable-ack.test.ts
+    // and tests/modules/chatwoot-delivery-queue.test.ts pin. Nothing else may hold it.
     const cols = await suDb.query<{ column_name: string }>(
       "SELECT column_name FROM information_schema.columns WHERE table_name = 'chatwoot_webhook_deliveries'",
     );
@@ -154,7 +155,7 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
     expect(names).toContain("conversation_id");
     expect(names).toContain("inbound_message_id");
     expect(names).toContain("claimed_at");
-    for (const forbidden of ["payload", "body", "content", "message_text"]) {
+    for (const forbidden of ["body", "content", "message_text"]) {
       expect(names).not.toContain(forbidden);
     }
     await db.$disconnect();

@@ -10,6 +10,7 @@ import {
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
+import { drainStoredChatwootDeliveries } from "@/modules/chatwoot/delivery-queue";
 import {
   ensureAllDeliverySweeps,
   registerDeliverySweepHandler,
@@ -238,6 +239,14 @@ if (config.compactionWorker.enabled) {
   registerMemoryHandlers();
   startCompactionWorker();
 }
+
+// NOTE: The Chatwoot deliveries a previous process acked and never got to: the ack stored each one's
+// body in its ledger row, and a restart is exactly when some are left waiting. Every
+// replica serves the webhook, so this runs whatever the worker flags; a row another live replica
+// still holds is claimed by whichever CAS lands first, and the loser skips.
+void drainStoredChatwootDeliveries({ minAgeMs: 0 }).catch((error) =>
+  logger.warn({ error }, "Failed to drain stored Chatwoot deliveries"),
+);
 
 // SIGTERM/SIGINT stop the lanes, drain the work in flight up to SHUTDOWN_DRAIN_MS, then exit.
 installShutdownHandlers({

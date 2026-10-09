@@ -538,6 +538,19 @@ model ChatwootWebhookDelivery {
   // cannot say" and falls back to deriving it now, which is what every delivery did before the
   // column.
   settleScopedToThisDelivery Boolean?              @map("settle_scoped_to_this_delivery")
+  // THE BODY CHATWOOT SENT, held only while the delivery owes its first attempt (issue #1121). The ack
+  // writes it in the same INSERT as the row and answers only after that commits, so a process that
+  // dies after the 200 leaves a row a later pass can process from, with no Chatwoot read: before this
+  // column the payload lived only in memory, and a restart or a claim that ran out of retries lost
+  // the customer's message with no row at all.
+  //
+  // The exception to "nothing here holds what the customer wrote" (issue #228), and kept as narrow as
+  // that rule allows: the claim that moves the row off PENDING clears it in the same statement, the
+  // drain clears it on a row the sweep has taken over, and nothing reads it but the drain. The raw
+  // text, not `jsonb`: it is processed again exactly as it arrived, and `jsonb` refuses an escaped
+  // NUL that a valid JSON body may carry. Null on every row an older build wrote, and on every row
+  // whose first attempt has begun.
+  payload                    String?
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

@@ -4,7 +4,7 @@ import {
   broadcastAgentActivity,
   broadcastConversationEvent,
 } from "@/api/features/realtime/realtime.service";
-import { decryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import ackPrisma from "@/api/lib/prisma-ack";
@@ -1000,7 +1000,8 @@ export async function receiveChatwootWebhook(
         chatwootInboxId: normalized.inboxId ?? null,
         chatwootConversationId: normalized.conversationId,
       },
-      params.rawBody,
+      // Encrypted like every other sensitive value at rest: it holds what the customer wrote.
+      encryptJson(params.rawBody),
     );
   } catch (err) {
     logger.warn(

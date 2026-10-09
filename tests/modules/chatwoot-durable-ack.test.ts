@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import {
   invalidateRouteTokenCache,
   ROUTE_TOKEN_CACHE_TTL_MS,
@@ -184,7 +184,9 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     expect(row?.status).toBe("PENDING");
     expect(row?.event).toBe("message_created");
     // The bytes Chatwoot sent: what a drain after a restart processes from, with no Chatwoot read.
-    expect(row?.payload).toBe(body);
+    // Encrypted at rest, and the original bytes once decrypted.
+    expect(row?.payload).not.toContain("message_created");
+    expect(decryptJson<string>(row?.payload as string)).toBe(body);
     expect(row?.inboundMessageId).toBe(5001);
     expect(row?.routeAgentBotId).toBe(9);
     expect(r.deliveryRowId).toBe(row?.id);
@@ -317,7 +319,7 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     // The generation is a fact about the first receipt, never filled by a retry. The body is filled,
     // since the row still owes its first attempt: a redelivery the full queue turns away is then
     // still one the drain can process.
-    expect(row.payload).toBe(body);
+    expect(decryptJson<string>(row.payload as string)).toBe(body);
     expect(row.bindingGeneration).toBeNull();
     invalidateRouteTokenCache();
   });

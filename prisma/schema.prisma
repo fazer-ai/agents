@@ -547,9 +547,9 @@ model ChatwootWebhookDelivery {
   // The exception to "nothing here holds what the customer wrote" (issue #228), and kept as narrow as
   // that rule allows: the claim that moves the row off PENDING clears it in the same statement, the
   // drain clears it on every row it gives up on (6 hours at most), and nothing reads it but the drain.
-  // The raw text, not `jsonb`: it is processed again exactly as it arrived, and `jsonb` refuses an escaped
-  // NUL that a valid JSON body may carry. Null on every row an older build wrote, and on every row
-  // whose first attempt has begun.
+  // Encrypted with `encryptJson` (the raw text inside, so it is processed again exactly as it arrived),
+  // which also keeps it out of WAL and backups in the clear. Null on every row an older build wrote,
+  // and on every row whose first attempt has begun.
   payload                    String?
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)

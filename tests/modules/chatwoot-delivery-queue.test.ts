@@ -334,6 +334,34 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(row.attempts).toBe(0);
   });
 
+  // A row whose processing throws before its claim stays PENDING with its body. Left in the query, the
+  // same oldest rows would fill every pass and the rows behind them would age out unprocessed.
+  test("a row that just failed here does not take the batch from the rows behind it", async () => {
+    resetChatwootAdmissionForTest();
+    const failing = await ackOnly("queue-fails", 611);
+    const behind = await ackOnly("queue-behind", 612);
+    admitChatwootDelivery(failing, async () => {
+      throw new Error("fails before its claim");
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    expect((await rowById(failing)).status).toBe("PENDING");
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(r.admitted).toBe(1);
+    expect((await settled(behind)).status).toBe("PROCESSED");
+    expect((await rowById(failing)).status).toBe("PENDING");
+    // The queue is reset between tests and this row would be drained by the next one.
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: failing },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   // A row an older build wrote has no body. Its redelivery stores one while the row still owes its
   // first attempt, so a redelivery the full queue turned away (here: one nobody admitted) is drained.
   test("a bodyless legacy row gets its body from a redelivery and is drained from it", async () => {

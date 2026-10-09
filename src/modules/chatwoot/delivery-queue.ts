@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
@@ -22,6 +23,10 @@ import { processRecordedChatwootDelivery } from "./webhook";
 // a module cycle); tests/modules/chatwoot-delivery-queue.test.ts pins both.
 export const STORED_DELIVERY_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
+// How long a row whose processing threw here is left out of this process's drain. Several passes apart,
+// so a row that keeps failing is retried a few times an hour until the age ceiling, never every pass.
+export const STORED_DELIVERY_RETRY_BACKOFF_MS = 15 * 60 * 1000;
+
 // How old a stored row must be before the periodic pass treats it as nobody's: a younger one is most
 // likely waiting in the queue of the process that acked it (this one or another replica). The boot
 // pass uses zero, since nothing in a process that just started holds anything.
@@ -38,6 +43,7 @@ export const ADMISSION_MAX_WAITING = 5_000;
 
 interface Pending {
   rowId: string;
+  id: bigint;
   run: () => Promise<unknown>;
 }
 
@@ -48,6 +54,10 @@ interface Admission {
   // Row ids waiting or running here: a drain or a redelivery of a row this process already holds is
   // not admitted twice.
   held: Map<string, bigint>;
+  // Row ids whose processing threw here, until when the drain leaves them out: a row that keeps failing
+  // before its claim stays PENDING with its body, and without this the same oldest rows would fill
+  // every pass and starve the ones behind them.
+  failed: Map<string, { id: bigint; until: number }>;
 }
 
 // On globalThis, like the shutdown registry, so `bun --hot` does not split the count.
@@ -56,12 +66,18 @@ const KEY = Symbol.for("fazerai.chatwoot.admission");
 function admission(): Admission {
   const g = globalThis as unknown as Record<symbol, Admission | undefined>;
   const held = g[KEY];
-  if (!held || !(held.held instanceof Map) || !Array.isArray(held.waiting)) {
+  if (
+    !held ||
+    !(held.held instanceof Map) ||
+    !(held.failed instanceof Map) ||
+    !Array.isArray(held.waiting)
+  ) {
     g[KEY] = {
       limit: config.chatwoot.deliveryConcurrency,
       running: 0,
       waiting: [],
       held: new Map(),
+      failed: new Map(),
     };
   }
   return g[KEY] as Admission;
@@ -84,6 +100,7 @@ export function resetChatwootAdmissionForTest(limit?: number): void {
     running: 0,
     waiting: [],
     held: new Map(),
+    failed: new Map(),
   };
 }
 
@@ -100,6 +117,16 @@ function pump(a: Admission): void {
           next.rowId,
           err instanceof Error ? err.message : String(err),
         );
+        a.failed.delete(next.rowId);
+        a.failed.set(next.rowId, {
+          id: next.id,
+          until: Date.now() + STORED_DELIVERY_RETRY_BACKOFF_MS,
+        });
+        // Bounded like the waiting list; the oldest entry is the first to expire anyway.
+        if (a.failed.size > ADMISSION_MAX_WAITING) {
+          const oldest = a.failed.keys().next().value;
+          if (oldest !== undefined) a.failed.delete(oldest);
+        }
       })
       .finally(() => {
         a.running--;
@@ -127,7 +154,7 @@ export function admitChatwootDelivery(
     return false;
   }
   a.held.set(key, rowId);
-  a.waiting.push({ rowId: key, run });
+  a.waiting.push({ rowId: key, id: rowId, run });
   pump(a);
   return true;
 }
@@ -183,9 +210,12 @@ export async function drainStoredChatwootDeliveries(
       data: { payload: null },
     }),
   );
-  // Rows this process already holds are skipped in the query, not after it: otherwise a full batch of
-  // them would hide every row a dead process left behind.
-  const held = [...admission().held.values()];
+  // Rows this process already holds, or saw fail a moment ago, are skipped in the query, not after it:
+  // otherwise a full batch of them would hide every row behind them.
+  const a = admission();
+  const clock = Date.now();
+  for (const [key, f] of a.failed) if (f.until <= clock) a.failed.delete(key);
+  const held = [...a.held.values(), ...[...a.failed.values()].map((f) => f.id)];
   const rows = (await run((db) =>
     db.chatwootWebhookDelivery.findMany({
       where: {
@@ -210,11 +240,11 @@ export async function drainStoredChatwootDeliveries(
   let admitted = 0;
   for (const row of rows) {
     const normalized = parseStored(row.payload);
-    // NOTE: Unreachable for a row the ack wrote (it normalized this same body before writing it); a
-    // body that does not parse is dropped, which hands the row to the sweep and its report.
+    // NOTE: A row the ack wrote decrypts and normalizes unless the encryption key changed since; a body
+    // that does neither is dropped, never read another way, which hands the row to the sweep's report.
     if (normalized === null) {
       logger.error(
-        "chatwoot: stored delivery row %s holds a body that no longer normalizes; left to the sweep",
+        "chatwoot: stored delivery row %s holds a body that no longer decrypts or normalizes; left to the sweep",
         String(row.id),
       );
       await run((db) =>
@@ -252,7 +282,7 @@ export async function drainStoredChatwootDeliveries(
 function parseStored(payload: string | null) {
   if (payload === null) return null;
   try {
-    return normalizeChatwootEvent(JSON.parse(payload));
+    return normalizeChatwootEvent(JSON.parse(decryptJson<string>(payload)));
   } catch {
     return null;
   }

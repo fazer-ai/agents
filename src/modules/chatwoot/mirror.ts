@@ -150,6 +150,8 @@ export async function mirrorChatwootEvent(
     isNewIncomingMessage(n) && !opts.suppressInboundWatermark
       ? (newLastEventAt ?? now)
       : null;
+  // The same message by identity (schema: `lastInboundMessageId`), forward only.
+  const inboundId = inboundAt != null ? (n.message?.id ?? null) : null;
 
   // Chatwoot's first-response SLA, taken from the payload as it stands. Not ordered against what is
   // stored and not guarded by the staleness decision below: both values are computed at the source
@@ -226,6 +228,7 @@ export async function mirrorChatwootEvent(
             // Read for the stale branch, which advances this watermark only when the payload really is
             // ahead of it. See the write there.
             lastInboundAt: true,
+            lastInboundMessageId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
             statusClaimUntil: true,
@@ -385,6 +388,7 @@ export async function mirrorChatwootEvent(
               inboundAt.getTime() > existing.lastInboundAt.getTime())
               ? { lastInboundAt: inboundAt }
               : {}),
+            ...forwardInboundId(existing.lastInboundMessageId, inboundId),
           };
           if (Object.keys(staleWrites).length > 0) {
             await db.conversation.update({
@@ -429,6 +433,7 @@ export async function mirrorChatwootEvent(
               chatwootAssigneeAt: decision.assigneeAt,
               chatwootRedirectOriginAt: decision.redirectOriginAt,
               lastInboundAt: inboundAt,
+              lastInboundMessageId: inboundId,
               // A row created mid-dialogue needs no special case here: what it stores is what
               // Chatwoot measured over the whole conversation, not what we happened to witness.
               ...slaWrites,
@@ -525,6 +530,7 @@ export async function mirrorChatwootEvent(
               ? { chatwootAssigneeAt: decision.assigneeAt }
               : {}),
             ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
+            ...forwardInboundId(existing.lastInboundMessageId, inboundId),
             ...slaWrites,
             // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
             // event carried one: a payload without them must not wipe the stored snapshot.
@@ -906,4 +912,15 @@ function changedAttributesNameOwnership(changed: unknown): boolean {
       typeof entry === "object" &&
       OWNERSHIP_ATTRIBUTES.some((key) => Object.hasOwn(entry as object, key)),
   );
+}
+
+// Message ids are the source's sequence per account, so a smaller one is an older message arriving
+// late (a retry, a recovery) and never moves the mark back.
+function forwardInboundId(
+  stored: number | null,
+  inbound: number | null,
+): { lastInboundMessageId?: number } {
+  return inbound != null && (stored === null || inbound > stored)
+    ? { lastInboundMessageId: inbound }
+    : {};
 }

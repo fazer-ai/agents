@@ -2474,6 +2474,9 @@ export async function announceDeadDebounceFlush(
       );
       return { path: "job", deadLettered: row?.status === "DEAD" };
     },
+    // The burst's newest message: one mirrored past it is a newer delivery still on its way to
+    // re-arming this row, with no turn claim yet for the fence to see.
+    aboutMessageId: readLastMessageId(job.payload),
     error,
     base,
   });

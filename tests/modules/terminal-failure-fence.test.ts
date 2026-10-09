@@ -90,6 +90,8 @@ const CENSUS: Record<string, string> = {
     "a document that will never be indexed; the second line is the same fact broadcast live (#356)",
   "src/modules/chatwoot/delivery-sweep.ts:record":
     "a delivery stranded by a process death (#282)",
+  "src/modules/chatwoot/webhook.ts:handToRecovery":
+    "a live turn the database pool never served, handed to its recovery at once (#1122)",
   // The one entry here that is not a death. It RESTORES the verdict `record` already reached and
   // already announced: a recovery that claimed the row out of `DEAD` and then could not answer —
   // the delivery path threw, the turn threw, or the turn withheld its reply — puts it back, so the

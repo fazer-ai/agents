@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { retryWhileTransactionNeverStarted } from "@/lib/pool-retry";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { upsertJobRow } from "@/modules/scheduler/service";
@@ -50,29 +51,34 @@ export async function searchKnowledge(
   const { ctx } = params;
 
   // Phase 1 (scoped read): resolve the target KBs (RLS filters to tenant-owned) + embedding cfg.
-  // All targeted KBs must share an embedding model (one vector space per search).
-  const prep = await runScopedOn(base, ctx, async (db) => {
-    const kbs = await db.knowledgeBase.findMany({
-      where: params.knowledgeBaseIds
-        ? { id: { in: params.knowledgeBaseIds } }
-        : {},
-      select: { id: true, embeddingModel: true },
-    });
-    if (kbs.length === 0) return null;
-    const models = new Set(kbs.map((k) => k.embeddingModel));
-    if (models.size > 1) {
-      throw new AppError(
-        "cannot search across knowledge bases with different embedding models",
-        400,
-      );
-    }
-    const cfg = await resolveEmbeddingConfig(
-      db,
-      ctx.tenantId as bigint,
-      kbs[0]?.embeddingModel as string,
-    );
-    return { ids: kbs.map((k) => k.id), cfg };
-  });
+  // All targeted KBs must share an embedding model (one vector space per search). Both scoped phases
+  // are reads, so a pool momentarily full runs them again rather than failing the search.
+  const prep = await retryWhileTransactionNeverStarted(
+    () =>
+      runScopedOn(base, ctx, async (db) => {
+        const kbs = await db.knowledgeBase.findMany({
+          where: params.knowledgeBaseIds
+            ? { id: { in: params.knowledgeBaseIds } }
+            : {},
+          select: { id: true, embeddingModel: true },
+        });
+        if (kbs.length === 0) return null;
+        const models = new Set(kbs.map((k) => k.embeddingModel));
+        if (models.size > 1) {
+          throw new AppError(
+            "cannot search across knowledge bases with different embedding models",
+            400,
+          );
+        }
+        const cfg = await resolveEmbeddingConfig(
+          db,
+          ctx.tenantId as bigint,
+          kbs[0]?.embeddingModel as string,
+        );
+        return { ids: kbs.map((k) => k.id), cfg };
+      }),
+    { label: "knowledge search" },
+  );
   if (!prep) return [];
 
   // Phase 2 (NO tx): embed the query (network).
@@ -84,13 +90,17 @@ export async function searchKnowledge(
   );
 
   // Phase 3 (scoped tx): KNN search (raw SQL, RLS-fenced).
-  const rows = await runScopedOn(base, ctx, (db) =>
-    searchChunks(db, {
-      knowledgeBaseIds: prep.ids,
-      queryEmbedding,
-      limit: params.limit ?? 5,
-      efSearch: params.efSearch,
-    }),
+  const rows = await retryWhileTransactionNeverStarted(
+    () =>
+      runScopedOn(base, ctx, (db) =>
+        searchChunks(db, {
+          knowledgeBaseIds: prep.ids,
+          queryEmbedding,
+          limit: params.limit ?? 5,
+          efSearch: params.efSearch,
+        }),
+      ),
+    { label: "knowledge search" },
   );
   // Here and not in one consumer, so the agent's tool, the console's test search and the MCP search
   // all return the passage the agent is actually given.

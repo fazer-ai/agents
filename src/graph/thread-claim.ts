@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { retryWhileTransactionNeverStarted } from "@/lib/pool-retry";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   clearTurnInFlight,
@@ -342,10 +343,14 @@ export async function clearTurnOwning(
   // that turn still reaches here: without the epoch it decrements a count that now belongs to a
   // DIFFERENT turn, zeroes it, and hands the thread to an append the newer invoke goes on to erase. A
   // stale release matching nothing is correct: its occupancy was already ended by expiry.
-  await runScopedOn(
-    base,
-    sysCtx(owner.tenantId),
-    (db) => db.$executeRaw`
+  // A pool momentarily full is retried: an UPDATE that never started decremented nothing, and a
+  // lease left behind reads as a turn still running to every fence, for as long as it lasts.
+  await retryWhileTransactionNeverStarted(
+    () =>
+      runScopedOn(
+        base,
+        sysCtx(owner.tenantId),
+        (db) => db.$executeRaw`
       UPDATE agent_threads
          SET turn_holders = GREATEST(turn_holders - 1, 0),
              turn_held_until = CASE WHEN turn_holders - 1 <= 0 THEN NULL ELSE turn_held_until END,
@@ -354,6 +359,8 @@ export async function clearTurnOwning(
          AND chatwoot_instance_id = ${owner.instanceId}
          AND contact_inbox_id = ${owner.contactInboxId}
          AND turn_epoch = ${hold.epoch}`,
+      ),
+    { label: `turn claim release (${owner.graphThreadId})` },
   );
 }
 

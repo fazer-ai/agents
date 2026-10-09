@@ -19,13 +19,22 @@ import {
 import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import {
+  announceFailedTurn,
+  readDirectFence,
+} from "@/modules/conversations/failure-note";
 import {
   foreignReplyBoundary,
   type ReplyIdentity,
 } from "@/modules/debounce/watermark";
 import { writeFlowEvent } from "@/modules/flowlog/service";
-import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  enqueueJob,
+  type JobRowParams,
+  upsertJobRow,
+} from "@/modules/scheduler/service";
 import {
   announceJobDeath,
   type JobResult,
@@ -1209,7 +1218,24 @@ export async function armDeliveryRecovery(
   deliveryRowId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await enqueueJob({
+  await enqueueJob({ ...deliveryRecoveryJob(tenantId, deliveryRowId), base });
+}
+
+// The same arming inside a caller's transaction, for one that must commit the row's DEAD and its
+// recovery together: a DEAD row with no job is invisible to the sweep and to every later pass.
+export async function armDeliveryRecoveryOn(
+  db: ScopedDb,
+  tenantId: bigint,
+  deliveryRowId: bigint,
+): Promise<void> {
+  await upsertJobRow(db, deliveryRecoveryJob(tenantId, deliveryRowId));
+}
+
+function deliveryRecoveryJob(
+  tenantId: bigint,
+  deliveryRowId: bigint,
+): JobRowParams {
+  return {
     tenantId,
     kind: "DELIVERY_RECOVERY",
     dedupeKey: deliveryRecoveryDedupeKey(deliveryRowId),
@@ -1219,8 +1245,7 @@ export async function armDeliveryRecovery(
     // A bigint does not survive JSON, and the payload column is one. Read back with parseDbId.
     payload: { deliveryRowId: String(deliveryRowId) },
     rearm: "new-work",
-    base,
-  });
+  };
 }
 
 function readDeliveryRowId(payload: unknown): bigint | null {
@@ -1459,6 +1484,10 @@ async function rowDecided(
   );
 }
 
+// The reason the hand-over note gives when the recovery is what gave up.
+export const RECOVERY_GAVE_UP =
+  "as novas tentativas de responder à mensagem do cliente se esgotaram";
+
 export async function announceUnanswered(
   tenantId: bigint,
   deliveryRowId: bigint,
@@ -1556,6 +1585,55 @@ export async function announceUnanswered(
             }),
       ]),
     );
+    // The customer is still waiting and nothing on our side will answer now: the conversation goes
+    // to the team the way any lost turn does, note and hand-over. BEFORE the line, which is what
+    // makes this row decided: a crash between the two then leaves the row undecided and the next
+    // announcer hands over again, where the other order would leave the line standing and the
+    // conversation with the bot for good. A second announcer cannot open it twice (the mirror claim
+    // swaps `pending` once) and its note coalesces. Not from the dead-letter hook, which reads no
+    // account by design and runs only when the account could not be read.
+    if (
+      opts.readConversation !== false &&
+      outcome === "unanswered" &&
+      row.conversationId !== null
+    ) {
+      const conversationId = row.conversationId;
+      await announceFailedTurn({
+        tenantId,
+        instanceId: row.chatwootInstanceId,
+        chatwootConversationId: conversationId,
+        // The conversation is lost only if this was its newest message: a newer one has its own
+        // delivery, live or still being recovered, and opening the conversation would stop it.
+        assess: async () => {
+          // Retired since (a turn answered the same message): nothing is lost any more.
+          const still = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.chatwootWebhookDelivery.findUnique({
+              where: { id: deliveryRowId },
+              select: { status: true },
+            }),
+          );
+          if (still?.status !== (opts.leftProcessed ? "PROCESSED" : "DEAD"))
+            return { path: "job", deadLettered: false };
+          return {
+            path: "direct",
+            fence: await readDirectFence({
+              tenantId,
+              instanceId: row.chatwootInstanceId,
+              chatwootConversationId: conversationId,
+              triggerId: row.inboundMessageId,
+              base,
+              deps: opts.makeClient
+                ? { makeClient: opts.makeClient }
+                : undefined,
+            }),
+          };
+        },
+        aboutMessageId: row.inboundMessageId,
+        error: new Error(RECOVERY_GAVE_UP),
+        base,
+        deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,
+      });
+    }
     await writeFlowEvent(
       {
         tenantId,

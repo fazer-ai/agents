@@ -154,6 +154,12 @@ export async function claimOpenForHumanQueue(p: {
     // back to `pending`). Without it the swap would win against a newer decision.
     consoleWriteAtMessageId: number | null;
   };
+  // Also pinned when given: no customer message newer than the one the caller decided on, by Chatwoot
+  // id. The failed-turn hand-over passes it, because a direct turn for a newer message does not wait
+  // on its reservation and the message is mirrored, under this same lock, before that turn starts.
+  // `atMost` is the failed turn's own message, when the caller names it; `exactly` is the mirror's
+  // newest as the fence read it, for a caller that cannot.
+  newestInbound?: { atMost: number } | { exactly: number | null };
   base: PrismaClient;
 }): Promise<Date | null> {
   return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
@@ -186,6 +192,18 @@ export async function claimOpenForHumanQueue(p: {
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
             consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
+            ...(p.newestInbound === undefined
+              ? {}
+              : "atMost" in p.newestInbound
+                ? {
+                    OR: [
+                      { lastInboundMessageId: null },
+                      {
+                        lastInboundMessageId: { lte: p.newestInbound.atMost },
+                      },
+                    ],
+                  }
+                : { lastInboundMessageId: p.newestInbound.exactly }),
           },
           data: {
             status: "open",
@@ -402,9 +420,13 @@ async function withdrawClaimStatusOnly(p: {
 
 // Puts the row of a takeover Chatwoot refused back on the source's state, through the claim it owns.
 // A versioned read reconciles; an unversioned one moves the status alone (above). An unreadable
-// Chatwoot leaves the claim to run out, as a failed open does.
-async function withdrawClaim(
-  p: HumanReplyTakeoverParams & {
+// Chatwoot leaves the claim to run out, as a failed open does. Exported for the failed-turn
+// hand-over (../conversations/failure-note.ts), which claims the same way.
+export async function withdrawClaim(
+  p: Pick<
+    HumanReplyTakeoverParams,
+    "tenantId" | "instanceId" | "conversationId" | "conversationRowId" | "base"
+  > & {
     claimUntil: Date;
     client: () => Promise<ChatwootClient>;
   },

@@ -10,9 +10,13 @@ import {
   NATIVE_TOOL_NAMES,
 } from "@/graph/tools/native";
 import { applyToolPreconditions } from "@/graph/tools/precondition";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ChatwootClient,
+  createChatwootClient,
+} from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
+import { fakeChatwootAttributeStore } from "../utils/chatwoot-attribute-store";
 
 function recordingClient() {
   const calls: Array<[string, unknown[]]> = [];
@@ -516,27 +520,64 @@ describe("native tools", () => {
     );
   });
 
-  test("set_custom_attribute task scope writes to the linked card", async () => {
-    const calls: Array<[string, unknown[]]> = [];
-    const client = {
-      setKanbanTaskCustomAttributes: async (...args: unknown[]) => {
-        calls.push(["setKanbanTaskCustomAttributes", args]);
-        return {};
+  test("set_custom_attribute task scope adds to the linked card's attributes", async () => {
+    // tasks#update assigns the whole jsonb, so a write that sent only its own key would leave the
+    // card with nothing but the last key written.
+    const cw = fakeChatwootAttributeStore(5, {
+      tasks: { 11: { faturamento_mensal: "15 mil" } },
+    });
+    const client = await createChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "ADMIN_TOK",
+        botToken: "BOT_TOK",
       },
-    } as unknown as ChatwootClient;
+      { fetchImpl: cw.fetchImpl, assertSafe: async (u: string) => new URL(u) },
+    );
     const tools = buildNativeTools({
       client,
       conversationId: 7,
       kanban: kanbanCtx,
     });
-    await byName(tools, "set_custom_attribute").invoke({
-      key: "ticket_size",
-      value: "5000",
+    const out = await byName(tools, "set_custom_attribute").invoke({
+      key: "servico_interesse",
+      value: "Abertura de empresa",
       scope: "task",
     });
-    expect(calls).toEqual([
-      ["setKanbanTaskCustomAttributes", [11, { ticket_size: "5000" }]],
-    ]);
+    expect(String(out)).toBe("Task attribute servico_interesse set.");
+    expect(cw.tasks.get(11)).toEqual({
+      faturamento_mensal: "15 mil",
+      servico_interesse: "Abertura de empresa",
+    });
+  });
+
+  test("a task attribute write called off while the card was read answers without writing", async () => {
+    const cw = fakeChatwootAttributeStore(5, { tasks: { 11: { a: "1" } } });
+    const client = await createChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "ADMIN_TOK",
+        botToken: "BOT_TOK",
+      },
+      { fetchImpl: cw.fetchImpl, assertSafe: async (u: string) => new URL(u) },
+    );
+    let asked = 0;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      kanban: kanbanCtx,
+      stillWanted: async () => ++asked === 0,
+    });
+    const out = await byName(tools, "set_custom_attribute").invoke({
+      key: "b",
+      value: "2",
+      scope: "task",
+    });
+    expect(String(out)).toContain("called off");
+    expect(cw.requests.map((r) => r.method)).toEqual(["GET"]);
+    expect(cw.tasks.get(11)).toEqual({ a: "1" });
   });
 
   test("private_note / set_custom_attribute / resolve call the right client methods", async () => {

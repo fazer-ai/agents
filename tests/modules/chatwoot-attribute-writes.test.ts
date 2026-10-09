@@ -490,3 +490,76 @@ describe("custom attribute writes against endpoints that replace", () => {
     expect(cw.conversations.get(63)).toEqual({ c: "3" });
   });
 });
+
+describe("kanban card attribute writes against the replacing tasks#update", () => {
+  test("a card write keeps the attributes already on the card", async () => {
+    const cw = fakeChatwootAttributeStore(5, {
+      tasks: { 4: { faturamento_mensal: "15 mil" } },
+    });
+    const c = await client(cw.fetchImpl);
+    await c.setKanbanTaskCustomAttributes(4, {
+      servico_interesse: "Abertura de empresa",
+    });
+    expect(cw.tasks.get(4)).toEqual({
+      faturamento_mensal: "15 mil",
+      servico_interesse: "Abertura de empresa",
+    });
+  });
+
+  test("concurrent card writes in one turn all survive", async () => {
+    const cw = fakeChatwootAttributeStore(5, { tasks: { 4: { origem: "x" } } });
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setKanbanTaskCustomAttributes(4, { a: "1" }),
+      c.setKanbanTaskCustomAttributes(4, { b: "2" }),
+      c.setKanbanTaskCustomAttributes(4, { a: "3" }),
+    ]);
+    expect(cw.tasks.get(4)).toEqual({ origem: "x", a: "3", b: "2" });
+  });
+
+  test("a card that cannot be read is not written", async () => {
+    const cw = fakeChatwootAttributeStore(5, {
+      tasks: { 4: { faturamento_mensal: "15 mil" } },
+    });
+    const failingRead = (async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return { ok: false, status: 500, text: async () => "" } as Response;
+      }
+      return (
+        cw.fetchImpl as (u: string, i?: RequestInit) => Promise<Response>
+      )(url, init);
+    }) as unknown as typeof fetch;
+    const c = await client(failingRead);
+    await expect(
+      c.setKanbanTaskCustomAttributes(4, { servico_interesse: "x" }),
+    ).rejects.toThrow();
+    expect(cw.requests.filter((r) => r.method === "PATCH")).toEqual([]);
+    expect(cw.tasks.get(4)).toEqual({ faturamento_mensal: "15 mil" });
+  });
+
+  test("a card write called off while it read the card is not sent", async () => {
+    const cw = fakeChatwootAttributeStore(5, { tasks: { 4: { a: "1" } } });
+    const c = await client(cw.fetchImpl);
+    await expect(
+      c.setKanbanTaskCustomAttributes(
+        4,
+        { b: "2" },
+        { stillWanted: async () => false },
+      ),
+    ).rejects.toBeInstanceOf(ChatwootCalledOffError);
+    expect(cw.requests.map((r) => r.method)).toEqual(["GET"]);
+    expect(cw.tasks.get(4)).toEqual({ a: "1" });
+  });
+
+  test("the reset still empties the card, behind a write already queued", async () => {
+    const cw = fakeChatwootAttributeStore(5, {
+      tasks: { 4: { faturamento_mensal: "15 mil" } },
+    });
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setKanbanTaskCustomAttributes(4, { a: "1" }),
+      c.clearKanbanTaskCustomAttributes(4),
+    ]);
+    expect(cw.tasks.get(4)).toEqual({});
+  });
+});

@@ -1,10 +1,9 @@
-// A Chatwoot that answers the two custom-attribute endpoints the way the DEPLOYED fork does. The
-// action is `@conversation.custom_attributes = params.permit(custom_attributes: {})[...]` plus
-// `save!`, a plain assignment (byte-identical upstream), and `PUT /contacts/{id}` assigns the same
-// way, so BOTH endpoints REPLACE the whole hash: `{medida:"B"}` posted after `{produto:"A"}` leaves
-// `produto` GONE, and `{}` is the /reset clear. Shapes, from the deployed jbuilders:
-// `GET /conversations/{id}` has `custom_attributes` TOP-LEVEL; the contact payload nests it under
-// `payload`.
+// A Chatwoot that answers the custom-attribute endpoints the way the DEPLOYED fork does. Conversation
+// (`custom_attributes = ...` plus `save!`), contact (`PUT /contacts/{id}`) and kanban card
+// (`PATCH /kanban/tasks/{id}`, `@task.update!(task_params)`) all REPLACE the whole hash:
+// `{medida:"B"}` after `{produto:"A"}` leaves `produto` GONE, and `{}` is the /reset clear. Shapes,
+// from the deployed jbuilders: the conversation GET and the card GET (the bare `_task` partial) have
+// `custom_attributes` TOP-LEVEL; the contact payload nests it under `payload`.
 export interface FakeChatwootRequest {
   method: string;
   path: string;
@@ -15,6 +14,7 @@ export interface FakeChatwootAttributeStore {
   fetchImpl: typeof fetch;
   conversations: Map<number, Record<string, unknown>>;
   contacts: Map<number, Record<string, unknown>>;
+  tasks: Map<number, Record<string, unknown>>;
   requests: FakeChatwootRequest[];
 }
 
@@ -23,6 +23,7 @@ export function fakeChatwootAttributeStore(
   initial?: {
     conversations?: Record<number, Record<string, unknown>>;
     contacts?: Record<number, Record<string, unknown>>;
+    tasks?: Record<number, Record<string, unknown>>;
   },
 ): FakeChatwootAttributeStore {
   const entries = (r?: Record<number, Record<string, unknown>>) =>
@@ -31,6 +32,7 @@ export function fakeChatwootAttributeStore(
     );
   const conversations = new Map(entries(initial?.conversations));
   const contacts = new Map(entries(initial?.contacts));
+  const tasks = new Map(entries(initial?.tasks));
   const requests: FakeChatwootRequest[] = [];
   const bag = (m: Map<number, Record<string, unknown>>, id: number) =>
     m.get(id) ?? {};
@@ -44,6 +46,7 @@ export function fakeChatwootAttributeStore(
     const body = init?.body
       ? (JSON.parse(init.body as string) as {
           custom_attributes?: Record<string, unknown>;
+          task?: { custom_attributes?: Record<string, unknown> };
         })
       : undefined;
     requests.push({
@@ -79,8 +82,16 @@ export function fakeChatwootAttributeStore(
       }
       return ok({ payload: { custom_attributes: bag(contacts, id) } });
     }
+    m = path.match(/^\/kanban\/tasks\/(\d+)$/);
+    if (m) {
+      const id = Number(m[1]);
+      if (method === "PATCH" && body?.task?.custom_attributes !== undefined) {
+        tasks.set(id, { ...body.task.custom_attributes }); // REPLACE
+      }
+      return ok({ id, custom_attributes: bag(tasks, id) });
+    }
     throw new Error(`fake Chatwoot: unrouted ${method} ${path}`);
   }) as unknown as typeof fetch;
 
-  return { fetchImpl, conversations, contacts, requests };
+  return { fetchImpl, conversations, contacts, tasks, requests };
 }

@@ -1955,17 +1955,44 @@ export class ChatwootClient {
     );
   }
 
-  // Merge custom attributes onto a kanban task (PATCH wraps the Rails `task` root key; the task's
-  // custom_attributes is a jsonb that the update assigns, so we merge in the caller).
+  // Kanban card custom attributes (admin token). Same read-merge-write and queue as the contact
+  // scope: the fork's tasks#update is `@task.update!(task_params)`, which assigns the whole jsonb,
+  // and the GET renders the bare task with `custom_attributes` top-level.
   setKanbanTaskCustomAttributes(
     taskId: number,
-    customAttributes: Record<string, unknown>,
+    attributes: Record<string, unknown>,
+    opts: { stillWanted?: () => Promise<boolean> } = {},
   ): Promise<unknown> {
-    return this.request(
-      this.config.adminToken,
-      "PATCH",
-      `/kanban/tasks/${taskId}`,
-      { task: { custom_attributes: customAttributes } },
+    return withKeyedQueue(this.targetKey("task", taskId), async () => {
+      const existing = (await this.request(
+        this.config.adminToken,
+        "GET",
+        `/kanban/tasks/${taskId}`,
+      )) as { custom_attributes?: unknown } | null;
+      await this.assertStillWanted(opts.stillWanted, `kanban/tasks/${taskId}`);
+      return this.request(
+        this.config.adminToken,
+        "PATCH",
+        `/kanban/tasks/${taskId}`,
+        {
+          task: {
+            custom_attributes: {
+              ...attributeBag(existing?.custom_attributes),
+              ...attributes,
+            },
+          },
+        },
+      );
+    });
+  }
+
+  // The `/reset` wipe of the card's attributes, kept apart from the merging setter for the same
+  // reason as `clearConversationCustomAttributes`.
+  clearKanbanTaskCustomAttributes(taskId: number): Promise<unknown> {
+    return withKeyedQueue(this.targetKey("task", taskId), () =>
+      this.request(this.config.adminToken, "PATCH", `/kanban/tasks/${taskId}`, {
+        task: { custom_attributes: {} },
+      }),
     );
   }
 

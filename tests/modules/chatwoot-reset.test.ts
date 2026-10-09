@@ -200,6 +200,17 @@ function fakeChatwoot(
         },
       });
     }
+    // NOTE: a card that already carries attributes, so a clear that merged into what it read would
+    // write them back instead of emptying the card.
+    if (
+      method === "GET" &&
+      url.pathname.endsWith(`/kanban/tasks/${KANBAN_TASK_ID}`)
+    ) {
+      return jsonResponse({
+        id: KANBAN_TASK_ID,
+        custom_attributes: { faturamento_mensal: "15 mil" },
+      });
+    }
     return jsonResponse({ id: 1 });
   }) as typeof fetch;
   return { calls, impl };

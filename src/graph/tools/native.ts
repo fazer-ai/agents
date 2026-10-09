@@ -879,7 +879,7 @@ const CALLED_OFF_ATTRIBUTE =
 // Set a custom attribute on the conversation OR the contact. The valid keys (and list values) of
 // each scope are enumerated in the description from the account's definitions (ctx.vocab), so the
 // model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
-// from our mirror and merges (the client read-merge-writes so other contact attributes are kept).
+// from our mirror. Every scope merges: the client read-merge-writes, so the other keys are kept.
 function setCustomAttributeTool(ctx: ToolCtx) {
   const convDefs = attributesForModel(ctx.vocab, "conversation_attribute");
   const contactDefs = attributesForModel(ctx.vocab, "contact_attribute");
@@ -910,9 +910,19 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the task attribute (this conversation has no linked card).";
         }
-        await ctx.client.setKanbanTaskCustomAttributes(ctx.kanban.taskId, {
-          [key]: value,
-        });
+        try {
+          await ctx.client.setKanbanTaskCustomAttributes(
+            ctx.kanban.taskId,
+            { [key]: value },
+            { stillWanted: ctx.stillWanted },
+          );
+        } catch (e) {
+          if (e instanceof ChatwootCalledOffError) {
+            ctx.onNoEffect?.("set_custom_attribute");
+            return CALLED_OFF_ATTRIBUTE;
+          }
+          throw e;
+        }
         await mirrorAttributeWrite(ctx, "task", key, value);
         return `Task attribute ${key} set.`;
       }

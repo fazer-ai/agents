@@ -3139,7 +3139,7 @@ async function maybeConsumeCommandOrGate(params: {
           client.updateKanbanTask(taskId, { startDate: null, dueDate: null }),
         );
         await step("clear kanban card attributes", "card do kanban", () =>
-          client.setKanbanTaskCustomAttributes(taskId, {}),
+          client.clearKanbanTaskCustomAttributes(taskId),
         );
       }
     }

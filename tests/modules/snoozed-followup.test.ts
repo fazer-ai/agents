@@ -1358,6 +1358,31 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect((await stateOf(2040)).snoozedFollowUpStep).toBeNull();
   });
 
+  test("the step's time is stored in UTC whatever the session's zone", async () => {
+    const url = new URL(process.env.TEST_APP_DATABASE_URL as string);
+    url.searchParams.set("options", "-c TimeZone=Asia/Tokyo");
+    const tzApp = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: url.toString() }),
+    });
+    try {
+      await setSettings(LADDER);
+      await seed(2042);
+      const s = stub({ messages: [personAsked(350, 3)] });
+      await snoozedFollowUpHandler(jobFor(2042), tzApp, s.deps);
+      expect(s.sent).toEqual([REPLY]);
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 2042 },
+        select: { snoozedFollowUpAt: true },
+      });
+      // Within a minute of now, not nine hours off.
+      expect(
+        Math.abs((row.snoozedFollowUpAt as Date).getTime() - Date.now()),
+      ).toBeLessThan(60_000);
+    } finally {
+      await tzApp.$disconnect();
+    }
+  });
+
   test("a waiting row re-armed by an unrelated event keeps its refusal budget", async () => {
     await setSettings(LADDER);
     await seed(2041, { lastEventAt: new Date(Date.now() + 5_000) });

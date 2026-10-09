@@ -16,6 +16,7 @@ import {
 } from "@/modules/chatwoot/delivery-sweep";
 import { setConnectedAccounts } from "@/modules/chatwoot/management";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import * as recoverDelivery from "@/modules/chatwoot/recover-delivery";
 import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
 import { humanReplyRecoveryDedupeKey } from "@/modules/chatwoot/recover-human-reply";
 import { takeoverRecoveryDedupeKey } from "@/modules/chatwoot/recover-takeover";
@@ -625,6 +626,44 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).toBe(String(rowId));
   });
 
+  test("declares a loss DEAD only together with its recovery", async () => {
+    // A DEAD row with no job is invisible to every later sweep: the arm failing has to leave the row
+    // where the next sweep finds it, not on the worklist with nothing retrying it.
+    const convId = 8731;
+    const messageId = 9731;
+    const conv = await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: messageId,
+    });
+    const arm = spyOn(
+      recoverDelivery,
+      "armDeliveryRecoveryOn",
+    ).mockRejectedValueOnce(new Error("pool exhausted"));
+    try {
+      const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect(counts.lost).toBe(0);
+    } finally {
+      arm.mockRestore();
+    }
+    expect((await statusOf(rowId)).status).not.toBe("DEAD");
+    expect(await deliveryLines(conv.id)).toHaveLength(0);
+
+    const again = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(again.lost).toBe(1);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    const job = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "DELIVERY_RECOVERY",
+        dedupeKey: deliveryRecoveryDedupeKey(rowId),
+      },
+      select: { status: true },
+    });
+    expect(job?.status).toBe("PENDING");
+  });
+
   test("arms no recovery for a strand it closes rather than loses", async () => {
     // Only a LOSS is recoverable. A row the sweep closes has nothing outstanding — the message was
     // answered, or the event could never carry one — and a recovery armed there would run a second
@@ -986,7 +1025,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).text();
     const body = src.slice(src.indexOf("async function record("));
     const write = body.indexOf("await writeFlowEvent(");
-    const retire = body.indexOf('finish(row, tenantId, "DEAD", base)');
+    const retire = body.indexOf("finishDead(row, tenantId, base");
     expect(write).toBeGreaterThan(-1);
     expect(retire).toBeGreaterThan(-1);
     expect(retire).toBeLessThan(write);

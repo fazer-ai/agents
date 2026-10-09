@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -17,9 +17,11 @@ import {
   markTurnOwning,
   threadBusyForResetOn,
 } from "@/graph/thread-claim";
+import * as tenancy from "@/lib/tenancy";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import * as reconcileModule from "@/modules/chatwoot/reconcile";
 import {
   announceUnanswered,
   deliveryRecoveryDedupeKey,
@@ -615,6 +617,155 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // answer.
     expect(stub.sent).toEqual([[convId, REPLY]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+  });
+
+  describe("a conversation the mirror never learned", () => {
+    // The mirror failing is how a first message strands, so the conversation it belonged to has no
+    // row: the recovery reads it from Chatwoot instead of giving up on exactly those customers.
+    const contactOf = async (chatwootContactId: number) =>
+      suDb.contact.create({
+        data: { tenantId, chatwootInstanceId: instanceId, chatwootContactId },
+        select: { id: true },
+      });
+
+    test("is answered from Chatwoot's own reading, and the mirror learns it", async () => {
+      const convId = 7310;
+      const messageId = 7810;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi, alguém aí?" }]),
+      });
+      const outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      expect(outcome).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      expect(await ledger(rowId)).toEqual({
+        status: "PROCESSED",
+        attempts: 1,
+      });
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true, contactInboxId: true },
+      });
+      // A first contact: no other conversation names its pairing, so the turn is the conversation's.
+      expect(mirrored.contactInboxId).toBeNull();
+      const lines = await deliveryLines(mirrored.id);
+      expect(
+        lines.map((l) => (l.detail as { outcome?: string }).outcome),
+      ).toContain("recovered");
+    });
+
+    test("takes the contact's pairing from its other conversation on the same inbox", async () => {
+      const convId = 7311;
+      const messageId = 7811;
+      const contact = await contactOf(77);
+      const earlier = await seedConversation(7312);
+      await suDb.conversation.update({
+        where: { id: earlier.id },
+        data: { contactId: contact.id, contactInboxId: 71_555 },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "voltei" }]),
+      });
+      const saver = new MemorySaver();
+      const outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: { ...depsWith(stub), checkpointer: saver },
+      });
+      expect(outcome).toBe("recovered");
+      // The memory the contact's next conversations read, not one only this conversation has.
+      const tuple = await saver.getTuple({
+        configurable: {
+          thread_id: contactInboxThreadId(tenantId, instanceId, 71_555),
+        },
+      });
+      expect(tuple).toBeDefined();
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBe(71_555);
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: { in: [convId, 7312] } },
+      });
+      await suDb.contact.delete({ where: { id: contact.id } });
+    });
+
+    test("takes no pairing when the contact's conversations name two", async () => {
+      const convId = 7313;
+      const messageId = 7813;
+      const contact = await contactOf(77);
+      for (const [other, pairing] of [
+        [7314, 71_601],
+        [7315, 71_602],
+      ] as const) {
+        const row = await seedConversation(other);
+        await suDb.conversation.update({
+          where: { id: row.id },
+          data: { contactId: contact.id, contactInboxId: pairing },
+        });
+      }
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBeNull();
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId,
+          chatwootConversationId: { in: [convId, 7314, 7315] },
+        },
+      });
+      await suDb.contact.delete({ where: { id: contact.id } });
+    });
+
+    test("is not answered when Chatwoot says a person holds it", async () => {
+      const convId = 7316;
+      const messageId = 7816;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      expect(stub.sent).toEqual([]);
+    });
   });
 
   // A STRANDED REACTION NO PAGED READ CARRIES. The fork keeps a reaction on a
@@ -3768,9 +3919,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         import.meta.url,
       ),
     ).text();
-    const read = src.indexOf(
-      "const contactInboxId = mirrorNow?.contactInboxId ?? null;",
-    );
+    const read = src.indexOf("const contactInboxId = mirrorNow");
     expect(read).toBeGreaterThan(-1);
     // The FIRST of the fence's three steps: the middle one awaits `turnOwnsThread` by design, so an
     // anchor past it would measure a stretch that is allowed to suspend.
@@ -4277,28 +4426,6 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
-  test("a conversation the mirror never knew is unrecoverable", async () => {
-    // No mirror row means nothing here can say who should answer or whether they still may, and a
-    // row this old is not going to grow one.
-    const rowId = await seedDeadDelivery({
-      conversationId: 8908,
-      inboundMessageId: 9408,
-    });
-    const stub = stubChatwoot({
-      page: pageWith([{ id: 9408, content: "oi" }]),
-    });
-
-    const outcome = await recoverStrandedDelivery({
-      tenantId,
-      deliveryRowId: rowId,
-      base: appDb,
-      deps: depsWith(stub),
-    });
-
-    expect(outcome).toBe("unrecoverable");
-    expect(stub.asked).toEqual([]);
-  });
-
   test("a row naming no message cannot be rebuilt", async () => {
     // What an older build's ledger rows look like: the sweep reports them, and there is no second
     // source to rebuild a body from.
@@ -4748,6 +4875,65 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         );
         expect(result.outcome).toBe("done");
       }
+    });
+
+    test("a database with no free connection is retried, not reported as an unreadable account", async () => {
+      const convId = 7317;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 7817,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: 7817, content: "oi" }]),
+      });
+      // The mirror's reconcile runs inside the account reads.
+      const reconcile = spyOn(
+        reconcileModule,
+        "reconcileMirrorFromLive",
+      ).mockRejectedValueOnce(
+        Object.assign(
+          new Error(
+            "Transaction API error: Unable to start a transaction in the given time.",
+          ),
+          { code: "P2028" },
+        ),
+      );
+      let result: Awaited<ReturnType<typeof runRecoveryJob>>;
+      try {
+        result = await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+      } finally {
+        reconcile.mockRestore();
+      }
+      expect(result.outcome).toBe("reschedule");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("a database that fails the recovery's own reads reschedules the job", async () => {
+      const rowId = await seedDeadDelivery({
+        conversationId: 7314,
+        inboundMessageId: 7814,
+      });
+      const scoped = spyOn(tenancy, "runScopedOn").mockRejectedValueOnce(
+        Object.assign(new Error("Can't reach database server"), {
+          code: "P1001",
+        }),
+      );
+      let result: Awaited<ReturnType<typeof runRecoveryJob>>;
+      try {
+        result = await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+        );
+      } finally {
+        scoped.mockRestore();
+      }
+      expect(result.outcome).toBe("reschedule");
     });
 
     test("a BUSY conversation reschedules, so the ladder is not spent waiting on a turn", async () => {

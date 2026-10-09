@@ -18,6 +18,17 @@ export function isTransactionNeverStarted(err: unknown, depth = 0): boolean {
   );
 }
 
+// The database could not be reached or had no connection to give: a transaction that never started,
+// or the connection codes (P1001 unreachable, P1002 timed out, P1017 closed by the server). Transient
+// by nature and repaired by nobody, so a caller retries it rather than reporting a fault elsewhere.
+export function isDatabaseUnavailable(err: unknown, depth = 0): boolean {
+  if (typeof err !== "object" || err === null || depth > 4) return false;
+  if (isTransactionNeverStarted(err)) return true;
+  const code = (err as { code?: unknown }).code;
+  if (code === "P1001" || code === "P1002" || code === "P1017") return true;
+  return isDatabaseUnavailable((err as { cause?: unknown }).cause, depth + 1);
+}
+
 export interface PoolRetryOptions {
   // Names the caller in the line each retry writes.
   label: string;

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
+  isDatabaseUnavailable,
   isTransactionNeverStarted,
   retryWhileTransactionNeverStarted,
 } from "@/lib/pool-retry";
@@ -72,6 +73,43 @@ async function realPoolRefusal(url: string): Promise<unknown> {
     await db.$disconnect();
   }
 }
+
+describe("isDatabaseUnavailable", () => {
+  const prismaError = (code: string, message = "boom") =>
+    Object.assign(new Error(message), { code });
+
+  test("the connection codes and a transaction that never started are the database's", () => {
+    for (const code of ["P1001", "P1002", "P1017", "P2024"]) {
+      expect(isDatabaseUnavailable(prismaError(code))).toBe(true);
+    }
+    expect(
+      isDatabaseUnavailable(
+        prismaError(
+          "P2028",
+          "Transaction API error: Unable to start a transaction in the given time.",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test("wrapped by another layer, it is still the database's", () => {
+    const wrapped = new Error("recovery failed", {
+      cause: prismaError("P1017"),
+    });
+    expect(isDatabaseUnavailable(wrapped)).toBe(true);
+  });
+
+  test("a query that failed on its own merits, or an HTTP error, is not", () => {
+    expect(isDatabaseUnavailable(prismaError("P2002"))).toBe(false);
+    expect(
+      isDatabaseUnavailable(
+        prismaError("P2028", "Transaction already closed: expired"),
+      ),
+    ).toBe(false);
+    expect(isDatabaseUnavailable(new Error("Chatwoot API 401"))).toBe(false);
+    expect(isDatabaseUnavailable(null)).toBe(false);
+  });
+});
 
 describe("isTransactionNeverStarted", () => {
   test.skipIf(!dbUp)(

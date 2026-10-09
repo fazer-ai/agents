@@ -327,6 +327,15 @@ async function jpegFit(
 }
 
 const PNG_CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+// The bit depths the spec allows per color type. The inflate bound is computed from the depth, so a
+// forged one (255) would raise it by 30x past what any real image of that size needs.
+const PNG_DEPTHS: Record<number, readonly number[]> = {
+  0: [1, 2, 4, 8, 16],
+  2: [8, 16],
+  3: [1, 2, 4, 8],
+  4: [8, 16],
+  6: [8, 16],
+};
 // Adam7: x start, y start, x step, y step of each of the seven passes.
 const ADAM7 = [
   [0, 0, 8, 8],
@@ -368,10 +377,15 @@ function boundPngInflate(bytes: ArrayBuffer): void {
   const width = v.getUint32(ihdr);
   const height = v.getUint32(ihdr + 4);
   const depth = v.getUint8(ihdr + 8);
-  const channels = PNG_CHANNELS[v.getUint8(ihdr + 9)];
+  const colorType = v.getUint8(ihdr + 9);
+  const channels = PNG_CHANNELS[colorType];
   const interlaced = v.getUint8(ihdr + 12) === 1;
   if (channels === undefined)
     throw new MediaConversionError("png declares an unknown color type");
+  if (!PNG_DEPTHS[colorType]?.includes(depth))
+    throw new MediaConversionError(
+      "png declares a bit depth its color type does not allow",
+    );
   const rowBytes = (w: number) => 1 + Math.ceil((w * channels * depth) / 8);
   let expected = 0;
   if (!interlaced) expected = height * rowBytes(width);

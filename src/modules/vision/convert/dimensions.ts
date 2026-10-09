@@ -42,6 +42,11 @@ export function readJpegOrientation(bytes: ArrayBuffer): number {
     while (i + 4 <= bytes.byteLength) {
       if (v.getUint8(i) !== 0xff) return 1;
       const marker = v.getUint8(i + 1);
+      // Any marker may be preceded by 0xFF fill bytes, which carry no length.
+      if (marker === 0xff) {
+        i++;
+        continue;
+      }
       if (marker === 0xda || marker === 0xd9) return 1;
       const length = v.getUint16(i + 2);
       if (marker === 0xe1 && length >= 16) {

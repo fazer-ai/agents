@@ -154,6 +154,19 @@ describe("image dimensions read off the header, without decoding", () => {
 
   test("the Exif orientation is read, and a JPEG without one is upright", () => {
     expect(readJpegOrientation(ab(withOrientation(jpegOf(8, 4), 6)))).toBe(6);
+    // Fill bytes before the APP1 marker are legal and carry no length.
+    const padded = withOrientation(jpegOf(8, 4), 6);
+    expect(
+      readJpegOrientation(
+        ab(
+          Buffer.concat([
+            padded.subarray(0, 2),
+            Buffer.from([0xff, 0xff]),
+            padded.subarray(2),
+          ]),
+        ),
+      ),
+    ).toBe(6);
     expect(readJpegOrientation(ab(jpegOf(8, 4)))).toBe(1);
   });
 });
@@ -320,6 +333,17 @@ describe("the fit converters", () => {
     const err = await runMediaConverter("png-fit", ab(bomb)).catch((e) => e);
     expect(err).toBeInstanceOf(MediaConversionError);
     expect(String(err.message)).toContain("does not inflate within");
+  });
+
+  test("a bit depth the color type does not allow is refused before it sizes the inflate", async () => {
+    const forged = ihdr(100, 80, 0);
+    forged[8 + 8] = 255; // the depth byte, past the length and type
+    const err = await runMediaConverter(
+      "png-fit",
+      ab(rawPng([forged, chunk("IDAT", deflateSync(Buffer.alloc(16)))])),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(MediaConversionError);
+    expect(String(err.message)).toContain("bit depth");
   });
 
   test("an honest interlaced PNG still converts", async () => {

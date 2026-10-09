@@ -315,3 +315,27 @@ test("an overdue request read back still pending is read again until the expiry 
   );
   expect(reads).toBe(3);
 }, 12_000);
+
+test("an approval whose answer cannot be read says so and reads the request again", async () => {
+  let reads = 0;
+  handler = async (url, init) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.endsWith("/approve") && init?.method === "POST") {
+      return new Response("{", {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/document-approvals/15")) {
+      reads += 1;
+      return json({ request: request("15") });
+    }
+    return json({});
+  };
+  mount("/document-approvals/15");
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Approve and send" }),
+  );
+  await screen.findByText("Could not approve.");
+  await waitFor(() => expect(reads).toBe(2));
+});

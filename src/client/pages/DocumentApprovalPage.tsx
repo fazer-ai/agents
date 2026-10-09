@@ -215,6 +215,14 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         "success",
       );
       await load();
+    } catch {
+      // The body could not be read (a cut connection, a malformed answer): the server may have
+      // acted anyway, so the request is read again rather than guessed.
+      showToast(
+        t("documentApproval.approveFailed", "Could not approve."),
+        "error",
+      );
+      await load();
     } finally {
       setBusy(null);
     }
@@ -246,6 +254,14 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
       setRejecting(false);
       setNote("");
       await load();
+    } catch {
+      // The body could not be read (a cut connection, a malformed answer): the server may have
+      // acted anyway, so the request is read again rather than guessed.
+      showToast(
+        t("documentApproval.rejectFailed", "Could not reject."),
+        "error",
+      );
+      await load();
     } finally {
       setBusy(null);
     }
@@ -272,6 +288,14 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         "success",
       );
       navigate(`/document-approvals/${data.request.id}`);
+    } catch {
+      // The body could not be read (a cut connection, a malformed answer): the server may have
+      // acted anyway, so the request is read again rather than guessed.
+      showToast(
+        t("documentApproval.againFailed", "Could not request it again."),
+        "error",
+      );
+      await load();
     } finally {
       setBusy(null);
     }

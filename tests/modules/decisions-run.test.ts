@@ -121,3 +121,215 @@ describe("applyDecisions under the agent's tool-call budget", () => {
     }
   });
 });
+
+// Actions whose tool commits calls that arrive together as one write are dispatched side by side
+// (`together`). What is asserted is the dispatch itself: who is in flight with whom, in which order
+// they started, and that the report is still one entry per action in rule order.
+describe("applyDecisions dispatching the actions that share a write", () => {
+  const rule = (
+    tool: "private_note" | "set_labels" | "set_custom_attribute",
+  ) => ({
+    when,
+    action: { tool, args: {} },
+  });
+  const args = (n: number) => ({
+    when,
+    action: {
+      tool: "set_custom_attribute" as const,
+      args: { key: `k${n}`, value: "v" },
+    },
+  });
+
+  function recording() {
+    const startedOrder: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const make = (
+      name: string,
+      fail?: (input: Record<string, unknown>) => boolean,
+    ) =>
+      new DynamicStructuredTool({
+        name,
+        description: name,
+        schema: z.object({}).passthrough(),
+        func: async (input: Record<string, unknown>) => {
+          startedOrder.push(`${name}:${String(input.key ?? "")}`);
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 5));
+          inFlight -= 1;
+          if (fail?.(input)) throw new Error("boom");
+          return "ok";
+        },
+      });
+    return { startedOrder, peak: () => peak, make };
+  }
+
+  const key = (a: { tool: string }) =>
+    a.tool === "set_custom_attribute" ? "attributes" : null;
+
+  test("a group runs side by side at the place of its first action, the rest one at a time", async () => {
+    const r = recording();
+    const report = await applyDecisions(
+      {
+        apply: "enforce",
+        rules: [
+          rule("set_labels"),
+          args(1),
+          rule("private_note"),
+          args(2),
+          args(3),
+        ],
+      },
+      answers,
+      [
+        r.make("set_labels"),
+        r.make("set_custom_attribute"),
+        r.make("private_note"),
+      ],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      key,
+    );
+    expect(r.startedOrder).toEqual([
+      "set_labels:",
+      "set_custom_attribute:k1",
+      "set_custom_attribute:k2",
+      "set_custom_attribute:k3",
+      "private_note:",
+    ]);
+    expect(r.peak()).toBe(3);
+    expect(report.actions).toEqual([
+      { rule: 0, tool: "set_labels", outcome: "ran" },
+      { rule: 1, tool: "set_custom_attribute", outcome: "ran" },
+      { rule: 2, tool: "private_note", outcome: "ran" },
+      { rule: 3, tool: "set_custom_attribute", outcome: "ran" },
+      { rule: 4, tool: "set_custom_attribute", outcome: "ran" },
+    ]);
+  });
+
+  test("without a grouping every action runs alone, in rule order", async () => {
+    const r = recording();
+    await applyDecisions(
+      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      answers,
+      [r.make("set_custom_attribute")],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+    );
+    expect(r.peak()).toBe(1);
+    expect(r.startedOrder).toEqual([
+      "set_custom_attribute:k1",
+      "set_custom_attribute:k2",
+      "set_custom_attribute:k3",
+    ]);
+  });
+
+  test("each member of a group passes the fence, and a refusal starts none of them", async () => {
+    const r = recording();
+    let asked = 0;
+    const report = await applyDecisions(
+      {
+        apply: "enforce",
+        rules: [rule("private_note"), args(1), args(2), args(3)],
+      },
+      answers,
+      [r.make("set_custom_attribute"), r.make("private_note")],
+      [],
+      new AbortController().signal,
+      async () => {
+        asked += 1;
+        // The note's ask and the first two members' pass; the third member's refuses.
+        return asked < 4;
+      },
+      10,
+      key,
+    );
+    expect(asked).toBe(4);
+    expect(report.withdrawn).toBe(true);
+    expect(r.startedOrder).toEqual(["private_note:"]);
+    expect(report.actions).toEqual([
+      { rule: 0, tool: "private_note", outcome: "ran" },
+    ]);
+  });
+
+  test("the budget is spent in rule order, whatever the dispatch order", async () => {
+    const r = recording();
+    const report = await applyDecisions(
+      { apply: "enforce", rules: [args(1), rule("private_note"), args(2)] },
+      answers,
+      [r.make("set_custom_attribute"), r.make("private_note")],
+      [],
+      new AbortController().signal,
+      async () => true,
+      2,
+      key,
+    );
+    expect(report.actions).toEqual([
+      { rule: 0, tool: "set_custom_attribute", outcome: "ran" },
+      { rule: 1, tool: "private_note", outcome: "ran" },
+      { rule: 2, tool: "set_custom_attribute", outcome: "over_budget" },
+    ]);
+  });
+
+  test("one member failing is that action's failure, and the others still report", async () => {
+    const r = recording();
+    const report = await applyDecisions(
+      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      answers,
+      [r.make("set_custom_attribute", (input) => input.key === "k2")],
+      [],
+      new AbortController().signal,
+      async () => true,
+      10,
+      key,
+    );
+    expect(report.actions).toEqual([
+      { rule: 0, tool: "set_custom_attribute", outcome: "ran" },
+      {
+        rule: 1,
+        tool: "set_custom_attribute",
+        outcome: "failed",
+        failure: "tool_error",
+      },
+      { rule: 2, tool: "set_custom_attribute", outcome: "ran" },
+    ]);
+  });
+
+  test("a deadline that fires while a group runs ends the tick once every member has returned", async () => {
+    const r = recording();
+    const controller = new AbortController();
+    const slow = new DynamicStructuredTool({
+      name: "set_custom_attribute",
+      description: "x",
+      schema: z.object({}).passthrough(),
+      func: async (input: Record<string, unknown>) => {
+        r.startedOrder.push(String(input.key));
+        if (input.key === "k1") {
+          controller.abort(new Error("deadline"));
+          throw new Error("aborted");
+        }
+        await new Promise((res) => setTimeout(res, 10));
+        r.startedOrder.push(`${String(input.key)}:returned`);
+        return "ok";
+      },
+    });
+    await expect(
+      applyDecisions(
+        { apply: "enforce", rules: [args(1), args(2), rule("private_note")] },
+        answers,
+        [slow, r.make("private_note")],
+        [],
+        controller.signal,
+        async () => true,
+        10,
+        key,
+      ),
+    ).rejects.toThrow();
+    expect(r.startedOrder).toEqual(["k1", "k2", "k2:returned"]);
+  });
+});

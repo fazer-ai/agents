@@ -402,9 +402,27 @@ function parseWebWidgetInbox(res: unknown): WebWidgetInbox | null {
   };
 }
 
+// One caller's share of a conversation-attribute write that has not gone out yet (see
+// `setConversationCustomAttributes`).
+interface PendingAttributeWrite {
+  attributes: Record<string, unknown>;
+  stillWanted?: () => Promise<boolean>;
+  asAdmin: boolean;
+  done: boolean;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+}
+
 export class ChatwootClient {
   private readonly fetchImpl: typeof fetch;
   private readonly accountBase: string;
+  // Conversation-attribute writes asked of THIS client and not sent yet, by conversation. Per
+  // client and not per process: a write goes out under this client's token, and another agent's
+  // values must not ride on it.
+  private readonly pendingAttributeWrites = new Map<
+    number,
+    PendingAttributeWrite[]
+  >();
 
   constructor(
     private readonly config: ChatwootClientConfig,
@@ -820,36 +838,125 @@ export class ChatwootClient {
     // case opened in another inbox) refuses the bot.
     opts: { stillWanted?: () => Promise<boolean>; asAdmin?: boolean } = {},
   ): Promise<unknown> {
+    // ONE WRITE FOR THE CALLS THAT ARRIVE TOGETHER: every call that joined the queue while the read
+    // was in flight is merged into the same POST, in the order the calls were made, so a turn that
+    // sets three attributes costs one read and one write instead of three of each. Each call keeps
+    // its own answer: its own fence is asked, and a call that was called off is left out of the
+    // write and rejected alone.
+    let resolve!: (value: unknown) => void;
+    let reject!: (reason: unknown) => void;
+    const settled = new Promise<unknown>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    // The queue's own promise is what the caller awaits; this one may reject before its turn does.
+    settled.catch(() => {});
+    const mine: PendingAttributeWrite = {
+      attributes,
+      asAdmin: opts.asAdmin === true,
+      done: false,
+      resolve,
+      reject,
+      ...(opts.stillWanted ? { stillWanted: opts.stillWanted } : {}),
+    };
+    const waiting = this.pendingAttributeWrites.get(conversationId) ?? [];
+    waiting.push(mine);
+    this.pendingAttributeWrites.set(conversationId, waiting);
+    const settle = (w: PendingAttributeWrite, end: () => void) => {
+      if (w.done) return;
+      w.done = true;
+      end();
+    };
     return withKeyedQueue(
       this.targetKey("conversation", conversationId),
       async () => {
-        // The read uses the admin token although the write is a bot-token call:
-        // `conversations#show` is in BOT_ACCESSIBLE_ENDPOINTS only on Chatwoot from 2026-06-05 on, so
-        // an older instance answers a bot-token GET with 401 and every attribute write would fail.
-        // The admin token is also the one guaranteed to exist (the bot token is empty outside a persona).
-        const existing = (await this.request(
-          this.config.adminToken,
-          "GET",
-          `/conversations/${conversationId}`,
-        )) as { custom_attributes?: unknown } | null;
-        // NOTE: The last moment before the write, inside the critical section on purpose: between the
-        // caller's own fence check and this line sit the queue's wait and the GET above, and `/reset`
-        // clears the attributes in that window, so a call admitted before it would put the old
-        // episode's values back. Only an explicit `false` stops the write.
-        await this.assertStillWanted(opts.stillWanted, "custom_attributes");
-        return this.request(
-          opts.asAdmin ? this.config.adminToken : this.config.botToken,
-          "POST",
-          `/conversations/${conversationId}/custom_attributes`,
-          {
-            custom_attributes: {
-              ...attributeBag(existing?.custom_attributes),
-              ...attributes,
-            },
-          },
-        );
+        // An earlier turn of the queue already carried this call.
+        if (mine.done) return settled;
+        let batch = [mine];
+        try {
+          // The read uses the admin token although the write is a bot-token call:
+          // `conversations#show` is in BOT_ACCESSIBLE_ENDPOINTS only on Chatwoot from 2026-06-05 on, so
+          // an older instance answers a bot-token GET with 401 and every attribute write would fail.
+          // The admin token is also the one guaranteed to exist (the bot token is empty outside a persona).
+          const existing = (await this.request(
+            this.config.adminToken,
+            "GET",
+            `/conversations/${conversationId}`,
+          )) as { custom_attributes?: unknown } | null;
+          // Whoever asked while the read was out, under the same token. Taken AFTER the read, so the
+          // bag every one of them merges into is one read fresher than their own would have been.
+          batch = this.takePendingAttributeWrites(conversationId, mine.asAdmin);
+          // The last moment before the write, inside the critical section on purpose: between the
+          // caller's own fence check and this line sit the queue's wait and the GET above, and `/reset`
+          // clears the attributes in that window, so a call admitted before it would put the old
+          // episode's values back. Only an explicit `false` stops a call's write, and a fence that
+          // throws does not. Each distinct fence is asked once.
+          const verdicts = new Map<() => Promise<boolean>, boolean>();
+          const wanted: PendingAttributeWrite[] = [];
+          for (const w of batch) {
+            if (!w.stillWanted) {
+              wanted.push(w);
+              continue;
+            }
+            if (!verdicts.has(w.stillWanted)) {
+              verdicts.set(
+                w.stillWanted,
+                await w.stillWanted().catch(() => true),
+              );
+            }
+            if (verdicts.get(w.stillWanted)) wanted.push(w);
+            else {
+              settle(w, () =>
+                w.reject(new ChatwootCalledOffError("custom_attributes")),
+              );
+            }
+          }
+          if (wanted.length > 0) {
+            const written = await this.request(
+              mine.asAdmin ? this.config.adminToken : this.config.botToken,
+              "POST",
+              `/conversations/${conversationId}/custom_attributes`,
+              {
+                custom_attributes: Object.assign(
+                  {},
+                  attributeBag(existing?.custom_attributes),
+                  ...wanted.map((w) => w.attributes),
+                ),
+              },
+            );
+            for (const w of wanted) settle(w, () => w.resolve(written));
+          }
+        } catch (err) {
+          // A read that failed took nobody else along: only this call leaves the list.
+          this.dropPendingAttributeWrite(conversationId, mine);
+          for (const w of batch) settle(w, () => w.reject(err));
+        }
+        return settled;
       },
     );
+  }
+
+  private takePendingAttributeWrites(
+    conversationId: number,
+    asAdmin: boolean,
+  ): PendingAttributeWrite[] {
+    const waiting = this.pendingAttributeWrites.get(conversationId) ?? [];
+    const taken = waiting.filter((w) => w.asAdmin === asAdmin);
+    const left = waiting.filter((w) => w.asAdmin !== asAdmin);
+    if (left.length > 0) this.pendingAttributeWrites.set(conversationId, left);
+    else this.pendingAttributeWrites.delete(conversationId);
+    return taken;
+  }
+
+  private dropPendingAttributeWrite(
+    conversationId: number,
+    write: PendingAttributeWrite,
+  ): void {
+    const waiting = this.pendingAttributeWrites.get(conversationId);
+    if (!waiting) return;
+    const left = waiting.filter((w) => w !== write);
+    if (left.length > 0) this.pendingAttributeWrites.set(conversationId, left);
+    else this.pendingAttributeWrites.delete(conversationId);
   }
 
   // The `/reset` command wipes the conversation's attributes, and it is the one caller that wants

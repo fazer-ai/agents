@@ -21,7 +21,11 @@ import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWrite } from "@/graph/tools/label-writes";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
-import { buildNativeTools, type HandoffTurnState } from "@/graph/tools/native";
+import {
+  buildNativeTools,
+  type HandoffTurnState,
+  sharedWriteKey,
+} from "@/graph/tools/native";
 import { recordDirectUsage } from "@/graph/usage";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
@@ -90,9 +94,9 @@ import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 
 export type ObserveReason = "burst" | "resolved";
 
-// THE WHOLE TICK'S BUDGET, discovery included: `runSchedulerTick` awaits every handler and
-// `startScheduler` skips the next tick while one runs, so an MCP server that never answers would
-// stop every tenant's scheduled work. Long enough for a multi-call turn, and well under the
+// THE WHOLE TICK'S BUDGET, discovery included: a tick holds one of the observe drain's slots and a
+// provider permit the shared tick's follow-ups also wait for, so an MCP server that never answers
+// would hold both for as long as it was let. Long enough for a multi-call turn, and well under the
 // scheduler's 5-minute stale window, so the reaper never treats a live claim as abandoned.
 export const OBSERVE_TIMEOUT_MS = 120_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
@@ -493,6 +497,11 @@ function usableRow(m: ChatwootMessageRow): boolean {
 // MessageFinder honours it). BOUNDED: five pages cover the window's own ceiling, and a page adding
 // no older row is the start of the conversation.
 const OBSERVE_MAX_PAGES = 5;
+// Chatwoot's message page: twenty rows, reactions aside (the fork's MessageFinder adds a window's
+// reactions on top of its twenty, upstream has none). A page that brings FEWER holds the first
+// message of the conversation, so there is nothing older to ask for, and asking costs a request on
+// every tick of every conversation still shorter than a page.
+const CHATWOOT_MESSAGES_PAGE = 20;
 
 async function readWindowRows(
   client: ChatwootClient,
@@ -517,6 +526,10 @@ async function readWindowRows(
     }
     // Nothing older came back: this is the start of the conversation, whatever the window asked for.
     if (added === 0 || oldest === null) break;
+    // ...and so is a page Chatwoot did not fill.
+    if (rows.filter((r) => !r.isReaction).length < CHATWOOT_MESSAGES_PAGE) {
+      break;
+    }
     let usable = 0;
     for (const r of seen.values()) if (usableRow(r)) usable += 1;
     // NOTE: ...AND THE MESSAGES THE WINDOW QUOTES: a reply can quote something on an older page,
@@ -1817,6 +1830,7 @@ export async function runObserve(
           deadline,
           () => fence(),
           cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
+          (action) => sharedWriteKey(action.tool, action.args),
         ),
         deadline,
       );
@@ -1947,7 +1961,7 @@ export async function runObserve(
     tools,
     handedOff: () => handoffState.completed === true,
   });
-  // NOTE: A DEADLINE, because this tick runs on the SHARED scheduler (see `OBSERVE_TIMEOUT_MS`).
+  // NOTE: A DEADLINE, because this tick holds a slot of the scheduler's drain (see `OBSERVE_TIMEOUT_MS`).
   // Both halves: the config's signal cancels the provider request, and `underSignal` guarantees
   // this function stops waiting whatever a link in the chain does with the signal.
   try {

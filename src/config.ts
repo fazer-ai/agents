@@ -25,6 +25,7 @@ const {
   WEBHOOK_WORKER_INTERVAL_MS,
   SCHEDULER_WORKER_ENABLED,
   SCHEDULER_WORKER_INTERVAL_MS,
+  OBSERVE_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_ENABLED,
   COMPACTION_WORKER_ENABLED,
   COMPACTION_WORKER_INTERVAL_MS,
@@ -421,6 +422,21 @@ const config = {
       "SCHEDULER_WORKER_INTERVAL_MS",
       15_000,
       "It is how often the scheduler worker claims due jobs.",
+      MAX_DURATION_MS,
+    ),
+  },
+  // NOTE: The scheduler's FAST drain for OBSERVE jobs only (a monitoring agent's turn on a
+  // conversation it watches). A verdict that waits a whole scheduler interval reaches a conversation
+  // that has already moved on, so due observations are claimed at this cadence instead. It has no
+  // switch of its own: it starts and stops with the scheduler worker, under the same single-replica
+  // discipline, and it runs inside the scheduler's provider concurrency. Operational, NOT a
+  // per-agent setting; the per-agent burst window lives on the agent.
+  observeWorker: {
+    intervalMs: parseIntSetting(
+      OBSERVE_WORKER_INTERVAL_MS,
+      "OBSERVE_WORKER_INTERVAL_MS",
+      2_500,
+      "It is how often the scheduler claims due observations of monitoring agents.",
       MAX_DURATION_MS,
     ),
   },

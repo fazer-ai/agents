@@ -63,10 +63,10 @@ export interface DecisionTickReport {
 
 // Runs what the rules fired through the SAME tool objects the LLM observer calls, with the tick's
 // tool logger as callback, so a decision's write gets the tool's protections, flow line and label
-// accounting. Shadow invokes nothing. Sequential, in rule order, so the log's order is the real one.
-//
-// The observation's fence is asked before every action, as the graph asks it before every hop: not
-// every tool asks on its own (`private_note` does not), and the provider call leaves time to withdraw.
+// accounting. Shadow invokes nothing. In rule order, one action at a time, except for the actions
+// `together` groups (docs/decisions.md, How the actions reach Chatwoot). The observation's fence is
+// asked before every action, as the graph asks it before every hop: not every tool asks on its own
+// (`private_note` does not), and the provider call leaves time to withdraw.
 export async function applyDecisions(
   config: { rules: DecisionsConfig["rules"]; apply: DecisionApply },
   answers: Record<string, DecisionAnswer>,
@@ -75,20 +75,23 @@ export async function applyDecisions(
   signal: AbortSignal,
   stillWanted: () => Promise<boolean>,
   maxCalls: number,
+  together: (action: FiredAction) => string | null = () => null,
 ): Promise<DecisionTickReport> {
   const { fired, missed } = evaluateRules(config.rules, answers);
-  const actions: ActionReport[] = [];
+  // One slot per fired action, filled in whatever order the actions settle and read in rule order.
+  const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
+  const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, shadow's included, so shadow reports what enforce would.
   let calls = 0;
-  for (const f of fired) {
+  for (const [at, f] of fired.entries()) {
     // The grant is checked first, so shadow shows the same missing grant enforce would hit.
     const tool = tools.find((t) => t.name === f.tool);
     if (!tool) {
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "not_granted" });
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
       continue;
     }
     if (calls >= maxCalls) {
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "over_budget" });
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "over_budget" };
       continue;
     }
     calls += 1;
@@ -98,43 +101,110 @@ export async function applyDecisions(
       const fits =
         !isInteropZodSchema(tool.schema) ||
         (await interopSafeParseAsync(tool.schema, f.args)).success;
-      actions.push(
-        fits
-          ? { rule: f.rule, tool: f.tool, outcome: "shadow" }
-          : {
-              rule: f.rule,
-              tool: f.tool,
-              outcome: "failed",
-              failure: "invalid_arguments",
-            },
-      );
+      slots[at] = fits
+        ? { rule: f.rule, tool: f.tool, outcome: "shadow" }
+        : {
+            rule: f.rule,
+            tool: f.tool,
+            outcome: "failed",
+            failure: "invalid_arguments",
+          };
       continue;
     }
-    signal.throwIfAborted();
-    if (!(await stillWanted())) {
-      return { fired, missed, actions, withdrawn: true };
+    toRun.push({ at, tool });
+  }
+  const reported = (upTo = fired.length): ActionReport[] =>
+    slots.filter((a, at): a is ActionReport => a !== undefined && at < upTo);
+  // A group is the actions whose tool commits calls that arrive together as ONE write: dispatched at
+  // the place of its first one, each after its own fence, and awaited as one.
+  const started = new Set<number>();
+  for (const head of toRun) {
+    if (started.has(head.at)) continue;
+    const headAction = fired[head.at];
+    const key = headAction ? together(headAction) : null;
+    const group =
+      key === null
+        ? [head]
+        : toRun.filter((r) => {
+            const action = fired[r.at];
+            return (
+              !started.has(r.at) &&
+              action !== undefined &&
+              together(action) === key
+            );
+          });
+    const running: Promise<void>[] = [];
+    let withdrawnAt: number | null = null;
+    let cancelled: { err: unknown } | null = null;
+    let fenceError: { err: unknown } | null = null;
+    // Every member's fence first, then the dispatch in one go: a fence is database reads, and a
+    // member dispatched while the next one's fence is still being asked would have its write out
+    // before the others could join it.
+    const admitted: typeof group = [];
+    for (const member of group) {
+      try {
+        signal.throwIfAborted();
+        if (!(await stillWanted())) {
+          withdrawnAt = member.at;
+          break;
+        }
+        // Again after the fence: its reads take time, and a deadline that fired during them has
+        // already ended the tick, so nothing may start behind it.
+        signal.throwIfAborted();
+      } catch (err) {
+        fenceError = { err };
+        break;
+      }
+      admitted.push(member);
     }
-    // Again after the fence: its reads take time, and a deadline that fired during them has already
-    // ended the tick, so nothing may start behind it.
-    signal.throwIfAborted();
-    try {
-      await tool.invoke(f.args, { callbacks, signal });
-      actions.push({ rule: f.rule, tool: f.tool, outcome: "ran" });
-    } catch (err) {
-      // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
-      if (signal.aborted) throw err;
-      actions.push({
-        rule: f.rule,
-        tool: f.tool,
-        outcome: "failed",
-        failure:
-          err instanceof ToolInputParsingException
-            ? "invalid_arguments"
-            : "tool_error",
-      });
+    // A refusal or a deadline met while asking stops the whole group, the members already admitted
+    // included: none of them has started, and the answer that stopped the last one is the newest.
+    if (fenceError === null && withdrawnAt === null) {
+      for (const member of admitted) {
+        const f = fired[member.at];
+        if (!f) continue;
+        started.add(member.at);
+        running.push(
+          member.tool.invoke(f.args, { callbacks, signal }).then(
+            () => {
+              slots[member.at] = { rule: f.rule, tool: f.tool, outcome: "ran" };
+            },
+            (err: unknown) => {
+              // Cancellation ends the tick, it is not one tool's failure: the caller owns the deadline.
+              if (signal.aborted) {
+                cancelled ??= { err };
+                return;
+              }
+              slots[member.at] = {
+                rule: f.rule,
+                tool: f.tool,
+                outcome: "failed",
+                failure:
+                  err instanceof ToolInputParsingException
+                    ? "invalid_arguments"
+                    : "tool_error",
+              };
+            },
+          ),
+        );
+      }
+    }
+    // What was dispatched is awaited whatever stopped the group, so nothing is left writing behind
+    // the tick's own ending.
+    await Promise.all(running);
+    if (fenceError !== null) throw fenceError.err;
+    if (cancelled !== null) throw (cancelled as { err: unknown }).err;
+    if (withdrawnAt !== null) {
+      const head = group[0];
+      return {
+        fired,
+        missed,
+        actions: reported(head ? head.at : withdrawnAt),
+        withdrawn: true,
+      };
     }
   }
-  return { fired, missed, actions, withdrawn: false };
+  return { fired, missed, actions: reported(), withdrawn: false };
 }
 
 // The answers as the flow line carries them: numbers and the operator's own option names, never the

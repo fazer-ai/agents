@@ -1423,9 +1423,9 @@ describe("native tools", () => {
 
   test("two calls in ONE batch do not read each other's writes", async () => {
     // LangGraph dispatches a tool-call batch concurrently, and the write is still a full PUT of the
-    // resulting list, so the queue is what makes the second call read the first one's result. Drop
-    // the serialisation and both read the empty scope, both PUT a one-item list, and `["a"]` beside
-    // `["b"]` ends as whichever landed last.
+    // resulting list. The calls that arrive together are applied to ONE read, one delta after the
+    // other, and go out as one PUT of the set they add up to. Drop that and both read the empty
+    // scope, both PUT a one-item list, and `["a"]` beside `["b"]` ends as whichever landed last.
     let current: string[] = [];
     const setCalls: unknown[][] = [];
     const client = {
@@ -1442,12 +1442,76 @@ describe("native tools", () => {
       shownLabels: { conversation: [] },
     });
     const tool = byName(tools, "set_labels");
-    await Promise.all([
+    const reports = await Promise.all([
       tool.invoke({ add: ["a"] }),
       tool.invoke({ add: ["b"] }),
     ]);
-    expect(setCalls).toHaveLength(2);
+    expect(setCalls).toEqual([[9, ["a", "b"]]]);
     expect([...current].sort()).toEqual(["a", "b"]);
+    // Each call still answers for its own delta, with the set as it stood after it.
+    expect(String(reports[0])).toContain('Now set: "a"');
+    expect(String(reports[0])).not.toContain('"b"');
+    expect(String(reports[1])).toContain('Now set: "a", "b"');
+  });
+
+  test("a call that arrives after the write has gone out reads what it left", async () => {
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    let release!: () => void;
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        // Held, so the second call joins the queue while this write is out.
+        if (setCalls.length === 1)
+          await new Promise<void>((r) => (release = r));
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    const first = tool.invoke({ add: ["a"] });
+    while (setCalls.length === 0) await new Promise((r) => setTimeout(r, 1));
+    const second = tool.invoke({ add: ["b"] });
+    await new Promise((r) => setTimeout(r, 5));
+    release();
+    await Promise.all([first, second]);
+    expect(setCalls).toEqual([
+      [9, ["a"]],
+      [9, ["a", "b"]],
+    ]);
+  });
+
+  test("a failed write fails every call that rode on it, and the next call starts clean", async () => {
+    let current: string[] = [];
+    let fail = true;
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        if (fail) throw new Error("chatwoot down");
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    const settled = await Promise.allSettled([
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    fail = false;
+    await tool.invoke({ add: ["c"] });
+    expect(current).toEqual(["c"]);
   });
 
   test("a guarded batch shares its baseline, whatever the state reads do", async () => {

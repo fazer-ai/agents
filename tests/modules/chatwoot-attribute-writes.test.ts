@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootCalledOffError,
+  createChatwootClient,
+} from "@/modules/chatwoot/client";
 import { fakeChatwootAttributeStore } from "../utils/chatwoot-attribute-store";
 
 const client = (fetchImpl: typeof fetch) =>
@@ -43,6 +46,138 @@ describe("custom attribute writes against endpoints that replace", () => {
       medida: "90cm",
       quantidade: "4",
     });
+  });
+
+  test("conversation writes asked together go out as one read and one write", async () => {
+    // Three rules of one decision, or three tool calls of one model response: each round trip is
+    // time the conversation waits, and the endpoint takes the whole bag anyway.
+    const cw = fakeChatwootAttributeStore(5, {
+      conversations: { 61: { origem: "Instagram" } },
+    });
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { produto: "cadeira" }),
+      c.setConversationCustomAttributes(61, { medida: "90cm" }),
+      c.setConversationCustomAttributes(61, { produto: "mesa" }),
+    ]);
+    expect(cw.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /conversations/61",
+      "POST /conversations/61/custom_attributes",
+    ]);
+    // In the order the calls were made: the later value for one key is the one that stays.
+    expect(cw.conversations.get(61)).toEqual({
+      origem: "Instagram",
+      produto: "mesa",
+      medida: "90cm",
+    });
+  });
+
+  test("a call that was called off is left out of the shared write and rejected alone", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    const settled = await Promise.allSettled([
+      c.setConversationCustomAttributes(61, { produto: "cadeira" }),
+      c.setConversationCustomAttributes(
+        61,
+        { medida: "90cm" },
+        { stillWanted: async () => false },
+      ),
+      c.setConversationCustomAttributes(
+        61,
+        { quantidade: "4" },
+        { stillWanted: async () => true },
+      ),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual([
+      "fulfilled",
+      "rejected",
+      "fulfilled",
+    ]);
+    expect((settled[1] as PromiseRejectedResult).reason).toBeInstanceOf(
+      ChatwootCalledOffError,
+    );
+    expect(cw.conversations.get(61)).toEqual({
+      produto: "cadeira",
+      quantidade: "4",
+    });
+  });
+
+  test("when every call was called off nothing is written", async () => {
+    const cw = fakeChatwootAttributeStore(5, {
+      conversations: { 61: { origem: "Instagram" } },
+    });
+    const c = await client(cw.fetchImpl);
+    let asked = 0;
+    const off = async () => {
+      asked += 1;
+      return false;
+    };
+    const settled = await Promise.allSettled([
+      c.setConversationCustomAttributes(61, { a: "1" }, { stillWanted: off }),
+      c.setConversationCustomAttributes(61, { b: "2" }, { stillWanted: off }),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    // One fence, asked once for the calls that share it.
+    expect(asked).toBe(1);
+    expect(cw.requests.filter((r) => r.method === "POST")).toEqual([]);
+    expect(cw.conversations.get(61)).toEqual({ origem: "Instagram" });
+  });
+
+  test("a write Chatwoot refuses fails the calls that rode on it, and the next call is its own", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    let refuse = true;
+    const flaky = (async (url: string, init?: RequestInit) => {
+      if (refuse && init?.method === "POST") {
+        return { ok: false, status: 500, text: async () => "" } as Response;
+      }
+      return (
+        cw.fetchImpl as (u: string, i?: RequestInit) => Promise<Response>
+      )(url, init);
+    }) as unknown as typeof fetch;
+    const c = await client(flaky);
+    const settled = await Promise.allSettled([
+      c.setConversationCustomAttributes(61, { a: "1" }),
+      c.setConversationCustomAttributes(61, { b: "2" }),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    refuse = false;
+    await c.setConversationCustomAttributes(61, { c: "3" });
+    // Nothing of the failed calls is carried into a later write.
+    expect(cw.conversations.get(61)).toEqual({ c: "3" });
+  });
+
+  test("a read Chatwoot refuses fails only the call that made it", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    let refuse = true;
+    const flaky = (async (url: string, init?: RequestInit) => {
+      if (refuse && (init?.method ?? "GET") === "GET") {
+        refuse = false;
+        return { ok: false, status: 500, text: async () => "" } as Response;
+      }
+      return (
+        cw.fetchImpl as (u: string, i?: RequestInit) => Promise<Response>
+      )(url, init);
+    }) as unknown as typeof fetch;
+    const c = await client(flaky);
+    const settled = await Promise.allSettled([
+      c.setConversationCustomAttributes(61, { a: "1" }),
+      c.setConversationCustomAttributes(61, { b: "2" }),
+    ]);
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "fulfilled"]);
+    expect(cw.conversations.get(61)).toEqual({ b: "2" });
+  });
+
+  test("an admin write and a bot write to one conversation do not ride together", async () => {
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    await Promise.all([
+      c.setConversationCustomAttributes(61, { a: "1" }),
+      c.setConversationCustomAttributes(61, { b: "2" }, { asAdmin: true }),
+    ]);
+    expect(
+      cw.requests.filter((r) => r.method === "POST").map((r) => r.token),
+    ).toEqual(["BOT_TOK", "ADMIN_TOK"]);
+    expect(cw.conversations.get(61)).toEqual({ a: "1", b: "2" });
   });
 
   test("concurrent contact writes in one turn all survive", async () => {

@@ -11,7 +11,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { ChatwootClient } from "@/modules/chatwoot/client";
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
 import { runObserve } from "@/modules/observe/job";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -1247,5 +1247,284 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     } finally {
       await suDb.agentToolSelection.delete({ where: { id: grant.id } });
     }
+  });
+  // What one decision costs Chatwoot, counted at the transport on a real client: the calls a tick
+  // makes are sequential round trips the conversation waits through, so their number is latency
+  // whatever the machine. The fake answers a turn of the event loop later, as a network does.
+  describe("the requests one decision makes", () => {
+    function fakeChatwoot(seed: {
+      labels: string[];
+      attributes: Record<string, unknown>;
+    }) {
+      const state = {
+        labels: [...seed.labels],
+        attributes: { ...seed.attributes },
+        notes: [] as string[],
+      };
+      const requests: string[] = [];
+      const fetchImpl = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        const path = new URL(String(input)).pathname.replace(
+          /^.*\/api\/v1\/accounts\/\d+/,
+          "",
+        );
+        const method = init?.method ?? "GET";
+        requests.push(`${method} ${path}`);
+        await new Promise((r) => setTimeout(r, 2));
+        const body = init?.body
+          ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+          : {};
+        const conv = `/conversations/${CONV}`;
+        if (method === "GET" && path === `${conv}/messages`) {
+          return json({
+            payload: [
+              {
+                id: 11,
+                content: CUSTOMER_TEXT,
+                message_type: 0,
+                private: false,
+                attachments: [],
+              },
+            ],
+          });
+        }
+        if (method === "GET" && path === `${conv}/labels`) {
+          return json({ payload: state.labels });
+        }
+        if (method === "POST" && path === `${conv}/labels`) {
+          state.labels = body.labels as string[];
+          return json({ payload: state.labels });
+        }
+        if (method === "GET" && path === conv) {
+          return json({ id: CONV, custom_attributes: state.attributes });
+        }
+        if (method === "POST" && path === `${conv}/custom_attributes`) {
+          state.attributes = body.custom_attributes as Record<string, unknown>;
+          return json({ custom_attributes: state.attributes });
+        }
+        if (method === "POST" && path === `${conv}/messages`) {
+          state.notes.push(String(body.content));
+          return json({ id: 99 });
+        }
+        if (method === "GET" && path === "/labels") {
+          return json({ payload: [] });
+        }
+        if (method === "GET" && path === "/custom_attribute_definitions") {
+          return json([]);
+        }
+        return json({}, 404);
+      }) as typeof fetch;
+      return { state, requests, fetchImpl };
+    }
+
+    const onConversation = (requests: string[]) =>
+      requests.filter((r) => r.includes(`/conversations/${CONV}`));
+
+    async function decide(
+      chatwoot: ReturnType<typeof fakeChatwoot>,
+      rules: unknown[],
+    ) {
+      await setMonitoring(decisionsBlock({ rules }));
+      const p = providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.95 },
+          assunto: {
+            type: "choice",
+            choice: "reembolso",
+            confidence: 0.95,
+            probabilities: {},
+          },
+        }),
+      );
+      return runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async (cfg) =>
+            new ChatwootClient(cfg, chatwoot.fetchImpl),
+          makeModel: () => new CountingModel() as never,
+          decisionFetch: p.fetchImpl,
+        },
+      );
+    }
+
+    const yes = [{ question: "pede_reembolso", minProbability: 0.7 }];
+    const attribute = (key: string, value: string) => ({
+      when: yes,
+      action: { tool: "set_custom_attribute", args: { key, value } },
+    });
+
+    // The grants a watcher of this shape has. Without them the toolset also offers the funnel tools
+    // and asks Chatwoot for the conversation's card on every tick, a read of its own.
+    let grantId = 0n;
+    beforeAll(async () => {
+      const grant = await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId,
+          source: "NATIVE",
+          enabledTools: ["set_labels", "set_custom_attribute", "private_note"],
+          knowledgeBaseIds: [],
+        },
+      });
+      grantId = grant.id;
+    });
+    afterAll(async () => {
+      await suDb.agentToolSelection.delete({ where: { id: grantId } });
+    });
+
+    test("six actions on a short conversation reach Chatwoot in seven requests", async () => {
+      const chatwoot = fakeChatwoot({
+        labels: ["sentimento-neutro", "vip"],
+        attributes: { origem: "site" },
+      });
+      const res = await decide(chatwoot, [
+        {
+          when: yes,
+          action: {
+            tool: "set_labels",
+            args: {
+              add: ["sentimento-negativo"],
+              remove: ["sentimento-neutro"],
+            },
+          },
+        },
+        attribute("sentimento", "negativo"),
+        attribute("assunto", "reembolso"),
+        attribute("urgencia", "alta"),
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["urgente"] } },
+        },
+        {
+          when: yes,
+          action: { tool: "private_note", args: { content: "Olhar agora" } },
+        },
+      ]);
+      expect(res).toEqual({ outcome: "done" });
+      const conv = `/conversations/${CONV}`;
+      expect(onConversation(chatwoot.requests)).toEqual([
+        // The window: one page, and a page Chatwoot did not fill has nothing older behind it.
+        `GET ${conv}/messages`,
+        // The labels the evidence shows.
+        `GET ${conv}/labels`,
+        // Both label rules: one fresh read, one write of the set they add up to.
+        `GET ${conv}/labels`,
+        `POST ${conv}/labels`,
+        // The three attribute rules: one read of the bag, one write.
+        `GET ${conv}`,
+        `POST ${conv}/custom_attributes`,
+        `POST ${conv}/messages`,
+      ]);
+      // What the conversation holds is what six separate writes would have left.
+      expect([...chatwoot.state.labels].sort()).toEqual([
+        "sentimento-negativo",
+        "urgente",
+        "vip",
+      ]);
+      expect(chatwoot.state.attributes).toEqual({
+        origem: "site",
+        sentimento: "negativo",
+        assunto: "reembolso",
+        urgencia: "alta",
+      });
+      expect(chatwoot.state.notes).toEqual(["Olhar agora"]);
+      // And the line records each action on its own, in rule order, with each label write.
+      const d = await detail();
+      expect(d.actions).toEqual([
+        { rule: 0, tool: "set_labels", outcome: "ran" },
+        { rule: 1, tool: "set_custom_attribute", outcome: "ran" },
+        { rule: 2, tool: "set_custom_attribute", outcome: "ran" },
+        { rule: 3, tool: "set_custom_attribute", outcome: "ran" },
+        { rule: 4, tool: "set_labels", outcome: "ran" },
+        { rule: 5, tool: "private_note", outcome: "ran" },
+      ]);
+      expect(d.labels).toEqual([
+        { scope: "conversation", added: 1, removed: 1, after: 2 },
+        { scope: "conversation", added: 1, removed: 0, after: 3 },
+      ]);
+    });
+
+    test("a label rule that changes nothing writes nothing, and its neighbour still writes", async () => {
+      const chatwoot = fakeChatwoot({ labels: ["urgente"], attributes: {} });
+      await decide(chatwoot, [
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["urgente"] } },
+        },
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["reembolso"] } },
+        },
+      ]);
+      const conv = `/conversations/${CONV}`;
+      expect(
+        onConversation(chatwoot.requests).filter((r) => r.startsWith("POST")),
+      ).toEqual([`POST ${conv}/labels`]);
+      expect([...chatwoot.state.labels].sort()).toEqual([
+        "reembolso",
+        "urgente",
+      ]);
+      const d = await detail();
+      expect(d.actions).toEqual([
+        { rule: 0, tool: "set_labels", outcome: "ran" },
+        { rule: 1, tool: "set_labels", outcome: "ran" },
+      ]);
+      expect(d.labels).toEqual([
+        { scope: "conversation", added: 1, removed: 0, after: 2 },
+      ]);
+    });
+
+    test("an attribute write Chatwoot refuses fails every rule that rode on it, and nothing else", async () => {
+      const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+      const inner = chatwoot.fetchImpl;
+      chatwoot.fetchImpl = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        if (
+          init?.method === "POST" &&
+          String(input).endsWith("/custom_attributes")
+        ) {
+          chatwoot.requests.push("POST refused");
+          return json({ error: "no" }, 500);
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      await decide(chatwoot, [
+        attribute("sentimento", "negativo"),
+        attribute("assunto", "reembolso"),
+        {
+          when: yes,
+          action: { tool: "set_labels", args: { add: ["reembolso"] } },
+        },
+      ]);
+      expect(chatwoot.state.attributes).toEqual({});
+      expect(chatwoot.state.labels).toEqual(["reembolso"]);
+      expect((await detail()).actions).toEqual([
+        {
+          rule: 0,
+          tool: "set_custom_attribute",
+          outcome: "failed",
+          failure: "tool_error",
+        },
+        {
+          rule: 1,
+          tool: "set_custom_attribute",
+          outcome: "failed",
+          failure: "tool_error",
+        },
+        { rule: 2, tool: "set_labels", outcome: "ran" },
+      ]);
+    });
   });
 });

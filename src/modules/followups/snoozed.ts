@@ -137,15 +137,16 @@ export async function sweepSnoozedFollowUps(
                 -- (its live read comes after the claim), or the arming for a row never run: an event
                 -- after it is one no run has seen, even when that run completed later. What counts
                 -- as an event: the last message; the last status or holder change, which
-                -- last_event_at (Chatwoot last_activity_at) does not move with; and an edit of the
-                -- agent or of its schedule, which can change the cadence, the due time or whether
-                -- one applies at all. The epoch is read as UTC, the zone the stored columns are in.
+                -- last_event_at (Chatwoot last_activity_at) does not move with; an edit of the agent
+                -- or of its schedule, and a new responder bound to the inbox, any of which can change
+                -- the cadence, the due time or whether one applies at all. The epoch is read as UTC, the zone the stored columns are in.
                 j.status = 'CLAIMED'
                 OR COALESCE(j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at,
                   to_timestamp(c.chatwoot_status_at) AT TIME ZONE 'UTC',
                   a.updated_at,
-                  h.updated_at
+                  h.updated_at,
+                  i.responder_bound_at
                 )
               )
          )
@@ -525,7 +526,11 @@ export async function snoozedFollowUpHandler(
     };
   }
   if (isRepairableNudgeRefusal(outcome)) {
-    const retry = nextNudgeRetry(job.payload);
+    // The budget belongs to one message of the person: a new one is a new ladder, and starts it fresh.
+    const sameAnchor = job.payload.nudgeRetriesAnchorId === anchor.messageId;
+    const retry = nextNudgeRetry(
+      sameAnchor ? job.payload : { ...job.payload, nudgeRetries: 0 },
+    );
     if (!retry.retry) {
       logger.warn(
         "snoozedFollowUp: giving up on step %d after %d %s retries (thread=%s)",
@@ -540,7 +545,11 @@ export async function snoozedFollowUpHandler(
     return {
       outcome: "reschedule",
       runAt: retry.runAt,
-      payload: { ...job.payload, nudgeRetries: retry.attempt },
+      payload: {
+        ...job.payload,
+        nudgeRetries: retry.attempt,
+        nudgeRetriesAnchorId: anchor.messageId,
+      },
     };
   }
   if (outcome === "no-conversation" || outcome === "no-agent") {

@@ -1581,6 +1581,36 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(await outcomeJobs(requestId)).toHaveLength(0);
   });
 
+  test("an expiry with no bot left on the conversation still raises the warn line", async () => {
+    const { requestId, conversationId } = await conversationWithRequest({});
+    await suDb.documentApprovalRequest.update({
+      where: { id: requestId },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    await expireDueApprovalRequests(tenantId, new Date(), appDb);
+    // The inbox was unbound while the request waited: no agent, no bot to write the note.
+    await suDb.conversation.update({
+      where: { id: conversationId },
+      data: { inboxId: null },
+    });
+    const rec = recordingClient();
+    const outcome = await runApprovalOutcome(tenantId, requestId, appDb, {
+      makeClient: rec.makeClient,
+      nudgeDeps: { makeModel: noModel },
+    });
+    expect(outcome).toBe("no-agent");
+    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+    const line = await flowLogRow(suDb, {
+      where: {
+        tenantId,
+        conversationId,
+        level: "warn",
+        detail: { path: ["outcome"], equals: "document_approval_expired" },
+      },
+    });
+    expect(line).not.toBeNull();
+  });
+
   test("an approved document whose PDF was revoked is a note, never a send", async () => {
     const { requestId } = await conversationWithRequest({});
     const { document } = await approveDocumentRequest({

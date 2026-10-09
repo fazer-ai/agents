@@ -187,7 +187,44 @@ export async function runApprovalOutcome(
   );
   if (!request?.conversationId) return "no-conversation";
   const target = await conversationOf(tenantId, request.conversationId, base);
+  // The expiry's alert is the team's, not the bot's: it goes out even when no bot is left to write
+  // the note (an agent deleted, an inbox unbound while the request waited).
+  const expiredLine = (ctx: {
+    agentId: bigint | null;
+    threadId: string | null;
+    fullDetail?: boolean;
+  }) =>
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: request.conversationId,
+        agentId: ctx.agentId,
+        threadId: ctx.threadId,
+        base,
+        ...(ctx.agentId === null ? {} : { fullDetail: ctx.fullDetail }),
+      },
+      {
+        stage: "tool",
+        level: "warn",
+        status: "skipped",
+        detail: {
+          outcome: "document_approval_expired",
+          requestId: String(requestId),
+        },
+      },
+    );
   if (!target) {
+    if (request.status === "EXPIRED") {
+      const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.findUnique({
+          where: { id: request.conversationId as bigint },
+          select: { threadId: true },
+        }),
+      );
+      expiredLine({ agentId: null, threadId: conv?.threadId ?? null });
+    }
     logger.warn(
       { tenantId: String(tenantId), requestId: String(requestId) },
       "document approval: the request's conversation has no agent bot to answer it",
@@ -268,27 +305,11 @@ export async function runApprovalOutcome(
       `O pedido de aprovação do documento ${title} venceu sem resposta da equipe. Nada foi enviado ao cliente.`,
     );
     if (!noted) return "retry";
-    emitFlowEvent(
-      {
-        tenantId,
-        turnId: crypto.randomUUID(),
-        source: "inbox",
-        conversationId: request.conversationId,
-        agentId: target.agentId,
-        threadId: target.conv.threadId,
-        base,
-        fullDetail: target.fullDetail,
-      },
-      {
-        stage: "tool",
-        level: "warn",
-        status: "skipped",
-        detail: {
-          outcome: "document_approval_expired",
-          requestId: String(requestId),
-        },
-      },
-    );
+    expiredLine({
+      agentId: target.agentId,
+      threadId: target.conv.threadId,
+      fullDetail: target.fullDetail,
+    });
     return "noted";
   }
 

@@ -550,10 +550,11 @@ export interface ConversationDetail {
 // A compact, PII-free activity marker drawn inline in the conversation timeline. Derived from the
 // ExecutionLog: a tool call (kind "tool") or a proactive turn, by where it came from: an inactivity
 // follow-up ("followup"), an appointment reminder ("reminder"), a channel-redirect follow-up
-// ("redirect"), or an inbound integration's event ("event").
+// ("redirect"), an inbound integration's event ("event"), or the delivery of a document the team
+// approved ("approval").
 export interface ConversationTrailEntry {
   id: string;
-  kind: "tool" | "followup" | "reminder" | "redirect" | "event";
+  kind: "tool" | "followup" | "reminder" | "redirect" | "event" | "approval";
   // Proactive rows only: whether the origin above was RECORDED by the turn (true) or inferred from
   // the nudge source on a line that records none (false). The screen matches only a recorded row by
   // `messageId`; an inferred one keeps the time-window match. null on tools.

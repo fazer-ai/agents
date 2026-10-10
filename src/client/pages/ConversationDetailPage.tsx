@@ -10,6 +10,7 @@ import {
   Clock,
   ExternalLink,
   Eye,
+  FileCheck,
   Gauge,
   Lock,
   Megaphone,
@@ -158,7 +159,12 @@ function FollowUpBadge({
   outgoing: boolean;
 }) {
   const label = useFollowUpBadgeLabel(badge);
-  const Icon = badge.kind === "event" ? Webhook : Megaphone;
+  const Icon =
+    badge.kind === "event"
+      ? Webhook
+      : badge.kind === "approval"
+        ? FileCheck
+        : Megaphone;
   return (
     <span
       className={cn(
@@ -460,6 +466,9 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
   } else if (entry.kind === "redirect") {
     Icon = Megaphone;
     label = t("conversation.trail.redirectSent", "Redirect follow-up sent");
+  } else if (entry.kind === "approval") {
+    Icon = FileCheck;
+    label = t("conversation.trail.approvalSent", "Approved document sent");
   } else if (entry.kind === "event") {
     Icon = Webhook;
     label = entry.integrationName

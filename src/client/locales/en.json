@@ -639,6 +639,7 @@
     "error": "Could not load the conversation.",
     "followUp": {
       "badge": "Follow-up",
+      "badgeApproval": "Approved document",
       "badgeEvent": "Event: {{name}}",
       "badgeEventUnnamed": "External event",
       "badgeN": "Follow-up {{step}}/{{total}}",
@@ -719,6 +720,7 @@
     "returnToAi": "Return to AI",
     "reviewApproval": "Review",
     "trail": {
+      "approvalSent": "Approved document sent",
       "args": "Arguments",
       "error": "Error",
       "eventHandled": "Event: {{name}}",

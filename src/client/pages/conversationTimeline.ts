@@ -20,7 +20,7 @@ export type TurnUsageEntry =
 // channel-redirect follow-up, or an inbound integration's event, named when the integration still
 // exists.
 export type FollowUpBadgeInfo = {
-  kind: "followup" | "redirect" | "event";
+  kind: "followup" | "redirect" | "event" | "approval";
   step: number | null;
   total: number;
   integrationName: string | null;
@@ -35,6 +35,9 @@ export function followUpBadgeText(b: FollowUpBadgeInfo, t: TFunction): string {
           name: b.integrationName,
         })
       : t("conversation.followUp.badgeEventUnnamed", "External event");
+  }
+  if (b.kind === "approval") {
+    return t("conversation.followUp.badgeApproval", "Approved document");
   }
   if (b.kind === "redirect") {
     return t("conversation.followUp.badgeRedirect", "Redirect follow-up");
@@ -91,7 +94,10 @@ export function buildTimeline(
   // with no recorded id falls back to a guess: the first unclaimed outgoing message from five seconds
   // before the line to five minutes after.
   const badgeable = (e: TrailEntry) =>
-    e.kind === "followup" || e.kind === "redirect" || e.kind === "event";
+    e.kind === "followup" ||
+    e.kind === "redirect" ||
+    e.kind === "event" ||
+    e.kind === "approval";
   const followUpEntries = trail.filter(badgeable);
   const otherEntries = trail.filter((e) => !badgeable(e));
   const followUpBadges = new Map<string, FollowUpBadgeInfo>();

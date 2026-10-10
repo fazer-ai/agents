@@ -53,6 +53,7 @@ import {
 } from "@/modules/flowlog/settings";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
+import { readSnoozedFollowUpConfig } from "@/modules/followups/snoozed-settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
@@ -1531,6 +1532,24 @@ function effectiveFollowUpOn(a: {
   return a.enabled && readFollowUpConfig(a.settings).enabled;
 }
 
+// The same transition for the snoozed ladder, with its own watermark: switching it on
+// must not remind every conversation that was already snoozed, and it switches on and off apart from
+// the bot's ladder.
+function effectiveSnoozedFollowUpOn(a: {
+  enabled: boolean;
+  settings: unknown;
+}): boolean {
+  return a.enabled && readSnoozedFollowUpConfig(a.settings).enabled;
+}
+
+// Whether a saved settings bag needs the per-tenant sweep, which carries both ladders.
+function wantsFollowUpSweep(settings: unknown): boolean {
+  return (
+    readFollowUpConfig(settings).enabled ||
+    readSnoozedFollowUpConfig(settings).enabled
+  );
+}
+
 // Allowlist of editable fields. modelConfig/settings must be objects; the runtime's own parser
 // validates their inner shape at load time.
 export const agentUpdateSchema = z
@@ -1743,6 +1762,12 @@ export async function updateAgent(
       ) {
         updateData.followUpArmedAt = new Date();
       }
+      if (
+        effectiveSnoozedFollowUpOn(after) &&
+        (!effectiveSnoozedFollowUpOn(before) || promotedToProduction)
+      ) {
+        updateData.snoozedFollowUpArmedAt = new Date();
+      }
     }
     // updateMany so a cross-tenant id (invisible under RLS) yields count 0 → NotFound, rather
     // than a P2025 throw. The $extends does not auto-scope updates, but RLS does. With an
@@ -1793,8 +1818,8 @@ export async function updateAgent(
   });
   // Arm the sweep if settings were updated and follow-up is now enabled (idempotent).
   if (rest.settings !== undefined && ctx.tenantId !== null) {
-    const cfg = readFollowUpConfig(dto.settings);
-    if (cfg.enabled) await ensureTenantSweep(ctx.tenantId, base);
+    if (wantsFollowUpSweep(dto.settings))
+      await ensureTenantSweep(ctx.tenantId, base);
   }
   // Keep the persona's Chatwoot bot name(s) in sync on rename (best-effort; no-op if not bound).
   if (rest.name !== undefined && ctx.tenantId !== null) {
@@ -1998,6 +2023,9 @@ export async function createAgent(
         ...(effectiveFollowUpOn(createShape)
           ? { followUpArmedAt: new Date() }
           : {}),
+        ...(effectiveSnoozedFollowUpOn(createShape)
+          ? { snoozedFollowUpArmedAt: new Date() }
+          : {}),
       },
       select: AGENT_SELECT,
     });
@@ -2014,8 +2042,7 @@ export async function createAgent(
     return created;
   });
   // Arm the sweep if follow-up is enabled on the new agent (idempotent).
-  const followUpCfg = readFollowUpConfig(dto.settings);
-  if (followUpCfg.enabled) await ensureTenantSweep(tenantId, base);
+  if (wantsFollowUpSweep(dto.settings)) await ensureTenantSweep(tenantId, base);
   return dto;
 }
 

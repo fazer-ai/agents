@@ -148,6 +148,7 @@ import {
 import { emitCommandDropped } from "@/modules/flowlog/command";
 import { emitFlowEvent, writeFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
+import { snoozedDedupeKey } from "@/modules/followups/snoozed-settings";
 import { readTakeoverConfig } from "@/modules/handoff/settings";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
@@ -3036,6 +3037,18 @@ async function maybeConsumeCommandOrGate(params: {
         tenantId,
         "FOLLOWUP",
         `followup:${chatwootThreadId(tenantId, instanceId, conversationId)}`,
+        base,
+      ),
+    );
+    // The snoozed ladder's step: a claimed one past its probe could otherwise still label, resolve and
+    // stamp the conversation this command just took back.
+    await step("cancel snoozed follow-up", "follow-up de conversa adiada", () =>
+      retireJobsByDedupeKey(
+        tenantId,
+        "SNOOZED_FOLLOWUP",
+        snoozedDedupeKey(
+          chatwootThreadId(tenantId, instanceId, conversationId),
+        ),
         base,
       ),
     );

@@ -555,7 +555,14 @@ export interface ConversationDetail {
 // approved ("approval").
 export interface ConversationTrailEntry {
   id: string;
-  kind: "tool" | "followup" | "reminder" | "redirect" | "event" | "approval";
+  kind:
+    | "tool"
+    | "followup"
+    | "snoozed"
+    | "reminder"
+    | "redirect"
+    | "event"
+    | "approval";
   // Proactive rows only: whether the origin above was RECORDED by the turn (true) or inferred from
   // the nudge source on a line that records none (false). The screen matches only a recorded row by
   // `messageId`; an inferred one keeps the time-window match. null on tools.

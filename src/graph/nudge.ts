@@ -19,6 +19,7 @@ import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
+  isSnoozedForAPerson,
   parseLiveConversation,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
@@ -173,7 +174,9 @@ export interface AgentNudge {
   // message"), which fights an event whose text has to reach the customer as written.
   // `operator_event` is an event the operator's own system sent: the default is to pass its text on
   // faithfully, and the operator's guidance says what else to do.
-  framing?: "operator_event";
+  // `snoozed_reminder` is the snoozed ladder's step: a person is waiting on the customer, and a
+  // reminder that already went unanswered is the reason this one is due, not a duplicate of it.
+  framing?: "operator_event" | "snoozed_reminder";
   instructions?: string;
   // For a follow-up sequence: the 1-based step that fired. Surfaced on the conversation timeline
   // ("Follow-up N enviado") and in the flow log. Undefined for non-sequenced nudges (inbound events).
@@ -284,6 +287,18 @@ export interface RunAgentNudgeParams {
   // keep the mirror-only gate, since a private note on a human-owned or even resolved conversation
   // is still useful signal.
   requireLiveBotOwnership?: boolean;
+  // WHO HAS TO HOLD THE CONVERSATION for this nudge to speak. `bot` (the default) is every other
+  // caller: the bot owns it, or a person does and the nudge only notes. `snoozed-human` is
+  // the snoozed ladder: a PERSON owns it and snoozed it "until next reply", and the nudge reminds the
+  // customer on that person's behalf. In that mode every ownership read below asks the snoozed
+  // question instead of the bot one, the turn gets no tools (it writes one reminder and nothing else:
+  // no transfer, no close of its own, no labels), and a guardrail that would transfer drops the text
+  // instead, because a transfer would take the conversation from the person who holds it. Honored only
+  // with `requireLiveBotOwnership`, the mode whose probe reads the live state the question needs.
+  holder?: "bot" | "snoozed-human";
+  // Whether the agent's signature goes under the text. Absent = the agent's own signature config.
+  // The snoozed ladder passes its own switch: the reminder speaks for the person who asked.
+  signature?: boolean;
   // A conversation the bot itself RESOLVED still counts as the bot's: an event the operator's
   // system sends for a job the customer asked for reaches the customer even after the agent closed
   // the conversation, and is sent without reopening it. Held by anybody else, or handed off
@@ -433,13 +448,16 @@ export function renderNudge(
       ? "call the `skip_reply` tool (reason `acknowledged`, unless this conversation needs a person) and produce NO text (end your turn)"
       : `reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else`;
   const operatorEvent = n.framing === "operator_event";
+  const snoozedReminder = n.framing === "snoozed_reminder";
   // An operator's event is framed as a RELAY, not a follow-up: a model told to be "brief,
   // warm" summarizes, and a summarized report drops the numbers it exists to carry.
   const directive = !canMessageCustomer
     ? `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise ${silenceInstruction}.`
-    : operatorEvent
-      ? `A system the operator connected sent an event for this conversation. By default, pass its text on to the customer faithfully: keep every number, date, name and line as written (without the "| " quote marks), in the conversation's language, adding nothing the text does not say. Follow the operator guidance below when there is one. If the event calls for no message at all, ${silenceInstruction}.`
-      : `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`;
+    : snoozedReminder
+      ? `A person on the team asked the customer for something (their message is the text below) and is waiting for the answer; the customer has not replied. Send the customer one short reminder on that person's behalf, in the conversation's language: about what they asked, asking for nothing new, and promising nothing the conversation does not already say. This is reminder number ${n.step ?? 1}. An earlier reminder that went unanswered is the reason this one is due, never a reason to stay silent. Stay silent ONLY if the conversation shows the request was already fulfilled; in that case ${silenceInstruction}.`
+      : operatorEvent
+        ? `A system the operator connected sent an event for this conversation. By default, pass its text on to the customer faithfully: keep every number, date, name and line as written (without the "| " quote marks), in the conversation's language, adding nothing the text does not say. Follow the operator guidance below when there is one. If the event calls for no message at all, ${silenceInstruction}.`
+        : `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`;
   const text = n.text ? sanitizeFreeBlock(n.text, GENERIC_TEXT_MAX_CHARS) : "";
   const parts = [
     directive,
@@ -817,6 +835,16 @@ async function runAgentNudgeBody(
   // caller must not SEND (fail-closed). Used BOTH before any model spend AND again right before
   // delivery — an operator can resolve/take over during model execution, and a delayed or lost
   // webhook would leave the mirror bot-owned.
+  const snoozedHolder = params.holder === "snoozed-human";
+  // A snoozed-holder nudge without the live gate would decide on the mirror, which carries neither the
+  // snooze's end date nor a fresh status. A caller error, refused before anything is spent.
+  if (snoozedHolder && !params.requireLiveBotOwnership) {
+    logger.warn(
+      { conversationId: String(conversationId) },
+      "agentNudge: snoozed-human holder without the live gate; refusing",
+    );
+    return "stale";
+  }
   const probeLiveOwnership = async (): Promise<
     "owned" | "not-owned" | "unavailable"
   > => {
@@ -875,21 +903,39 @@ async function runAgentNudgeBody(
       );
       return "unavailable";
     }
-    const owned = shouldBotHandle(
-      {
-        assigneeType: decided.assigneeType,
-        status: decided.status,
-        assigneeId: decided.assigneeId,
-        // The live read carries no origin (Chatwoot never reports who closed it), and the stamp read
-        // before this probe may describe a close the reconcile just replaced. No stamp, so a
-        // `resolved` here is not the bot's: the live path fails closed on `alsoResolved`.
-        resolvedBy: null,
-      },
-      {
-        ourAgentBotId: cfg.agentBotId,
-        alsoResolved: params.deliverToResolved,
-      },
-    );
+    // A person's snooze whose end date the payload left out cannot be judged: a failed read, tried
+    // again, and not an answer that would end the ladder.
+    if (
+      snoozedHolder &&
+      decided.status === "snoozed" &&
+      decided.assigneeType === "User" &&
+      live.snoozedUntil === undefined
+    ) {
+      return "unavailable";
+    }
+    const owned = snoozedHolder
+      ? // NOTE: the end date from the live read and not from `decided`, which a refused reconcile may
+        // have taken from the row, and the row carries no end date.
+        isSnoozedForAPerson({
+          status: decided.status,
+          assigneeType: decided.assigneeType,
+          snoozedUntil: live.snoozedUntil,
+        })
+      : shouldBotHandle(
+          {
+            assigneeType: decided.assigneeType,
+            status: decided.status,
+            assigneeId: decided.assigneeId,
+            // The live read carries no origin (Chatwoot never reports who closed it), and the stamp read
+            // before this probe may describe a close the reconcile just replaced. No stamp, so a
+            // `resolved` here is not the bot's: the live path fails closed on `alsoResolved`.
+            resolvedBy: null,
+          },
+          {
+            ourAgentBotId: cfg.agentBotId,
+            alsoResolved: params.deliverToResolved,
+          },
+        );
     if (!owned) {
       logger.info(
         "agentNudge: live state not bot-owned (conv=%s status=%s assignee=%s) — skipping",
@@ -1259,18 +1305,24 @@ async function runAgentNudgeBody(
           resolvedBy: true,
         },
       });
-      return shouldBotHandle(
-        {
-          assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
-          status: conv?.status ?? null,
-          resolvedBy: conv?.resolvedBy ?? null,
-        },
-        {
-          ourAgentBotId: cfg.agentBotId,
-          alsoResolved: params.deliverToResolved,
-        },
-      )
+      // The snoozed holder asks its own question of the mirror too. The mirror has no end date,
+      // so this reads only status and holder; the live probe is what checks the date, before the
+      // model and again before the send.
+      const holds = snoozedHolder
+        ? conv?.status === "snoozed" && conv.assigneeType === "User"
+        : shouldBotHandle(
+            {
+              assigneeType: conv?.assigneeType ?? null,
+              assigneeId: conv?.assigneeId ?? null,
+              status: conv?.status ?? null,
+              resolvedBy: conv?.resolvedBy ?? null,
+            },
+            {
+              ourAgentBotId: cfg.agentBotId,
+              alsoResolved: params.deliverToResolved,
+            },
+          );
+      return holds
         ? { ours: true as const }
         : {
             ours: false as const,
@@ -1588,71 +1640,73 @@ async function runAgentNudgeBody(
   // this same list, so the directive and the binding cannot disagree.
   // A turn that delivers an approved document binds NO tool: its one job is the line the PDF rides
   // on, and with tools bound a real model tried to attach the file itself, wrote notes and handed
-  // the conversation over (docs/documents.md, Approval).
-  const tools = approved
-    ? []
-    : withoutLoneSilenceTool(
-        nudgeCfg,
-        await buildToolset(
+  // the conversation over (docs/documents.md, Approval). Nor does the snoozed holder's reminder: it
+  // is one message on a person's behalf, and every tool here would act over that person.
+  const tools =
+    approved || snoozedHolder
+      ? []
+      : withoutLoneSilenceTool(
           nudgeCfg,
-          {
-            tenantId,
-            instanceId,
-            base,
-            client,
-            conversationId,
-            threadId: params.threadId,
-            checkpointer: params.deps?.checkpointer,
-            // NOTE: the slow-tool ack's own ask, after its send.
-            stillWanted: toolFence,
-            onCustomerSend: () => {
-              toolSpoke = true;
+          await buildToolset(
+            nudgeCfg,
+            {
+              tenantId,
+              instanceId,
+              base,
+              client,
+              conversationId,
+              threadId: params.threadId,
+              checkpointer: params.deps?.checkpointer,
+              // NOTE: the slow-tool ack's own ask, after its send.
+              stillWanted: toolFence,
+              onCustomerSend: () => {
+                toolSpoke = true;
+              },
+              // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+              // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
+              // one that had already happened — but only as a FALLBACK: this snapshot is taken before
+              // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
+              // tool re-reads the live state itself and falls back here only when that read fails.
+              observed: { status: loaded.status, statusAt: loaded.statusAt },
+              handoffState,
+              // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
+              // verdict takes the transfer this path's own trip takes.
+              screenCustomerText: async (text) => {
+                const d = await screenOutput(text);
+                if (!guardrailTripped(d)) return "send";
+                if (d.kind !== "handed-off") return "drop";
+                // Asked after the screening and before the transfer: the screening was a wait, and inside
+                // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
+                if (!(await toolFence())) return "drop";
+                const handed = await ownTransfer(
+                  handoffState,
+                  () =>
+                    applyGuardrailHandoff({
+                      client,
+                      conversationId,
+                      instanceId,
+                      handoff: nudgeCfg.handoffConfig,
+                      direction: "output",
+                      flow,
+                      stillWanted: toolFence,
+                    }),
+                  (r) => r,
+                );
+                handoffState.completed = handed;
+                if (handed) {
+                  handoffState.customerMessage = d.reply;
+                  handoffState.lineByOperator = true;
+                  // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
+                  // the model's own next reply could still reach the customer before the mirror catches up.
+                  handoffState.declinedToSpeak = d.reply === null;
+                }
+                // Not landing is a failed transfer, not a dropped line (see the reactive binding).
+                return handed ? "handed" : "failed";
+              },
             },
-            // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
-            // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
-            // one that had already happened — but only as a FALLBACK: this snapshot is taken before
-            // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
-            // tool re-reads the live state itself and falls back here only when that read fails.
-            observed: { status: loaded.status, statusAt: loaded.statusAt },
-            handoffState,
-            // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
-            // verdict takes the transfer this path's own trip takes.
-            screenCustomerText: async (text) => {
-              const d = await screenOutput(text);
-              if (!guardrailTripped(d)) return "send";
-              if (d.kind !== "handed-off") return "drop";
-              // Asked after the screening and before the transfer: the screening was a wait, and inside
-              // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
-              if (!(await toolFence())) return "drop";
-              const handed = await ownTransfer(
-                handoffState,
-                () =>
-                  applyGuardrailHandoff({
-                    client,
-                    conversationId,
-                    instanceId,
-                    handoff: nudgeCfg.handoffConfig,
-                    direction: "output",
-                    flow,
-                    stillWanted: toolFence,
-                  }),
-                (r) => r,
-              );
-              handoffState.completed = handed;
-              if (handed) {
-                handoffState.customerMessage = d.reply;
-                handoffState.lineByOperator = true;
-                // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
-                // the model's own next reply could still reach the customer before the mirror catches up.
-                handoffState.declinedToSpeak = d.reply === null;
-              }
-              // Not landing is a failed transfer, not a dropped line (see the reactive binding).
-              return handed ? "handed" : "failed";
-            },
-          },
-          { buildNativeTools, mcp: params.deps?.mcp, flow },
-        ),
-      );
+            { buildNativeTools, mcp: params.deps?.mcp, flow },
+          ),
+        );
 
   // 3. Model + graph + callbacks (node="nudge").
   // The SAME checkpointer the graph is built on, so the divider written below and the invoke's own
@@ -1830,6 +1884,7 @@ async function runAgentNudgeBody(
     // The model's text is escaped for Chatwoot's Liquid. The operator's is not: the signature, and a
     // guardrail's template or hand-over message standing in for the model's (`modelText` false).
     const literal = modelText ? literalForChatwoot : (t: string) => t;
+    if (params.signature === false) return literal(text);
     const sig = signatureFor(
       cfg.signatureConfig,
       cfg.promptVars,
@@ -2058,6 +2113,8 @@ async function runAgentNudgeBody(
               if (
                 // Both answers, for the reason the keyed branch above states.
                 canMessagePre &&
+                // A reminder over a person's snooze is not the conversation coming back to the bot.
+                !snoozedHolder &&
                 owesHandbackNote(channelNow ?? []) &&
                 (await botOwnsItNow().catch((err) => {
                   logger.warn(
@@ -2219,6 +2276,7 @@ async function runAgentNudgeBody(
             // lands mid-preparation leaves the note owed, and the next turn — prepared in bot mode, with
             // a directive that agrees with it — writes it.
             canMessagePre &&
+            !snoozedHolder &&
             owesHandbackNote(channelNow ?? []) &&
             (await botOwnsItNow().catch((err) => {
               logger.warn(
@@ -2694,6 +2752,14 @@ async function runAgentNudgeBody(
     // sent, and the ladder's resolve falls with the transfer as it does for the tool's. Only while
     // the bot still owns the conversation, the answer every send here waits for: a person already on
     // it needs no transfer.
+    // NOTE: never a transfer under the snoozed holder: the conversation is a person's, and handing it to
+    // the team would take it from them. The judge refused the text, so the reminder is not sent, and
+    // the step ends as a silent one does.
+    if (decision.kind === "handed-off" && snoozedHolder) {
+      const applied = await applyPostActions({ canMessage: canMessagePost });
+      if (applied === "stale") return refuse(standDown());
+      return refuse("silent");
+    }
     if (decision.kind === "handed-off" && canMessagePost) {
       const handed = await applyGuardrailHandoff({
         client,

@@ -39,7 +39,12 @@ export const NEWER_THAN_THE_LAST_RENAME = [
 // no toolset (`src/modules/vision/service.ts`) to read an image, and it is not a rule about the
 // agent's behaviour either, so a tool name in it means nothing in either spelling. This is what
 // separates it from the two guardrail prompts above, which no `has tools` test can tell apart.
-export const NO_TOOL_MEANING = ["vision.extractionPrompt"];
+// The snoozed ladder's step instructions are the same kind: its turn is bound no tools at all
+// (`holder: "snoozed-human"` in `src/graph/nudge.ts`), so a tool name there names nothing it can call.
+export const NO_TOOL_MEANING = [
+  "snoozedFollowUp.cadences[*].steps[*].instructions",
+  "vision.extractionPrompt",
+];
 
 // Read by a PERSON. `set_labels` means no more to a customer than `assign_label` did, so a rename
 // here would edit a message a customer reads and fix nothing.

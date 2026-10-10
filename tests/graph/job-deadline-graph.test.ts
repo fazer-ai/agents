@@ -414,6 +414,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       "DOCUMENT_APPROVAL_OUTCOME",
       "FOLLOWUP",
       "REDIRECT_FOLLOWUP",
+      "SNOOZED_FOLLOWUP",
     ]);
   });
 });

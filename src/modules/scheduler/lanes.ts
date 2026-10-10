@@ -83,6 +83,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // One UPDATE over the tenant's overdue requests, at a cadence of hours by design.
   DOCUMENT_APPROVAL_EXPIRY: "shared",
   DOCUMENT_APPROVAL_OUTCOME: "shared",
+  // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
+  SNOOZED_FOLLOWUP: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -137,6 +139,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: true,
   DOCUMENT_APPROVAL_EXPIRY: false,
   DOCUMENT_APPROVAL_OUTCOME: true,
+  // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
+  SNOOZED_FOLLOWUP: true,
 };
 
 // How many OBSERVE rows one SHARED tick claims, when it is the one draining the lane (a caller of
@@ -221,6 +225,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // One row per request, and a finished expiry is never read again: the request row is the record.
   DOCUMENT_APPROVAL_EXPIRY: true,
   DOCUMENT_APPROVAL_OUTCOME: true,
+  // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
+  SNOOZED_FOLLOWUP: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the
@@ -287,6 +293,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   DOCUMENT_APPROVAL_EXPIRY: true,
   // One per decided or expired request, and an expiry arms a whole overdue backlog at once.
   DOCUMENT_APPROVAL_OUTCOME: true,
+  // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
+  SNOOZED_FOLLOWUP: false,
 };
 
 // The order the traffic drain claims in, lowest first and oldest by created_at within a rank. It only
@@ -310,6 +318,7 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   DOCUMENT_APPROVAL_OUTCOME: 0,
   FOLLOWUP: 1,
   FOLLOWUP_SWEEP: 1,
+  SNOOZED_FOLLOWUP: 1,
   WEBHOOK_RETRY: 1,
   DEBOUNCE: 1,
   RAG_INGEST: 1,
@@ -410,6 +419,8 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // died is the status label, not the rule.
   DOCUMENT_APPROVAL_EXPIRY: "warn",
   DOCUMENT_APPROVAL_OUTCOME: "error",
+  // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
+  SNOOZED_FOLLOWUP: "error",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -449,6 +460,8 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   SUGGESTION_REVIEW: 2_000,
   DOCUMENT_APPROVAL_EXPIRY: 2_000,
   DOCUMENT_APPROVAL_OUTCOME: 2_000,
+  // The snoozed ladder is the same kind of work as FOLLOWUP: one nudge per row.
+  SNOOZED_FOLLOWUP: 2_000,
 };
 
 export function kindsInLane(

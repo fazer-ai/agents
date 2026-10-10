@@ -5,6 +5,14 @@ import { isNudgeOrigin, nudgeOrigin } from "@/graph/nudge-origin";
 describe("nudgeOrigin", () => {
   test("each caller's source maps to its own origin", () => {
     expect(nudgeOrigin({ source: "followup" })).toBe("followup");
+    // The snoozed ladder's step: its own origin, so the console does not count it against the
+    // bot ladder's steps.
+    expect(nudgeOrigin({ source: "followup", kind: "snoozed" })).toBe(
+      "snoozed",
+    );
+    expect(nudgeOrigin({ source: "followup", kind: "inactivity" })).toBe(
+      "followup",
+    );
     expect(nudgeOrigin({ source: "appointment_reminder" })).toBe("reminder");
     expect(nudgeOrigin({ source: "channel-redirect" })).toBe("redirect");
     // The delivery of a document the team approved is the team speaking, not an external system.
@@ -18,7 +26,14 @@ describe("nudgeOrigin", () => {
   });
 
   test("the reader accepts exactly the five origins", () => {
-    for (const o of ["followup", "reminder", "redirect", "event", "approval"]) {
+    for (const o of [
+      "followup",
+      "snoozed",
+      "reminder",
+      "redirect",
+      "event",
+      "approval",
+    ]) {
       expect(isNudgeOrigin(o)).toBe(true);
     }
     for (const o of ["tool", "", null, undefined, 1, "Event"]) {

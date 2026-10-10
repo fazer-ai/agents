@@ -120,6 +120,8 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
   // lane that customer messages (and their turns) do not occupy.
   test("Chatwoot: an event that is not a customer message goes in the other lane", async () => {
     const lanes: unknown[] = [];
+    const received: unknown[] = [];
+    const before = Date.now();
     restore.push(
       spyOn(chatwootWebhook, "receiveChatwootWebhook").mockResolvedValue({
         ack: true,
@@ -135,8 +137,9 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
         } as NormalizedChatwootEvent,
       }),
       spyOn(deliveryQueue, "admitChatwootDelivery").mockImplementation(
-        (_id, _run, lane) => {
+        (_id, _run, lane, receivedAt) => {
           lanes.push(lane);
+          received.push(receivedAt);
           return true;
         },
       ),
@@ -149,6 +152,8 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
     );
     expect(res.status).toBe(200);
     expect(lanes).toEqual(["meta"]);
+    // ...with the time it was received, so a slot opening past the age ceiling skips it.
+    expect(received[0]).toBeGreaterThanOrEqual(before);
   });
 
   test("generic inbound", async () => {

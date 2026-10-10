@@ -62,6 +62,7 @@ export const chatwootController = new Elysia({
             receiptBindingGeneration,
           }),
         admissionLaneOf(normalized),
+        Date.now(),
       );
     }
 

@@ -344,7 +344,7 @@ type InboxRuntime = NonNullable<Awaited<ReturnType<typeof inboxAgentRuntime>>>;
 // The inbox's binding generation, on its own, on a client the caller already has open, so it can be
 // read inside the transaction that writes the ledger row. Used where no resolver answered: the ledger
 // INSERT, and a route resolution that found no runtime at all.
-async function inboxBindingGenerationIn(
+export async function inboxBindingGenerationIn(
   db: ScopedDb,
   instanceId: bigint,
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },

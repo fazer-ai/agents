@@ -111,6 +111,22 @@ describe("admission", () => {
     g.release();
   });
 
+  test("a delivery whose slot opens past the age ceiling is not run", async () => {
+    resetChatwootAdmissionForTest(1);
+    let ran = false;
+    admitChatwootDelivery(
+      40_000n,
+      async () => {
+        ran = true;
+      },
+      "turn",
+      Date.now() - STORED_DELIVERY_MAX_AGE_MS - 1,
+    );
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    expect(ran).toBe(false);
+  });
+
   test("a full turn backlog does not turn a takeover event away", async () => {
     resetChatwootAdmissionForTest(1);
     const g = held();
@@ -489,6 +505,114 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       where: { id: turnRow },
       data: { status: "PROCESSED", payload: null },
     });
+  });
+
+  // The binding a row was received under must still stand when it is replayed: an observer made the
+  // responder since asks what the role was at receipt, which the delivery recovery answers.
+  test("a stored row whose inbox binding moved since receipt is left to the sweep", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 77,
+        name: "Rebound",
+      },
+    });
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 620,
+      inbox_id: 77,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    const r0 = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: headers(body, "queue-rebound"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    const id = r0.deliveryRowId as bigint;
+    expect((await rowById(id)).bindingGeneration).toBe(inbox.bindingGeneration);
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { bindingGeneration: { increment: 1 } },
+    });
+    await drainStoredChatwootDeliveries({ base: appDb, tenantId, minAgeMs: 0 });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    expect(row.payload).toBeNull();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
+  });
+
+  // The mirror a replay creates carries the live read's version, so a status or assignment that is
+  // newer than the stored message but older than the live read cannot overwrite the takeover.
+  test("a mirror created by a replay is stamped with the live read's version", async () => {
+    const t0 = Math.floor(Date.now() / 1000) - 600;
+    const message = JSON.stringify({
+      event: "message_created",
+      id: 62_100,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: 621,
+        inbox_id: 7,
+        status: "pending",
+        updated_at: t0,
+        meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+      },
+    });
+    const r0 = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: message,
+      getHeader: headers(message, "queue-version-msg"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    const id = r0.deliveryRowId as bigint;
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            { ...heldByPerson(621), updated_at: t0 + 300 },
+            calls,
+          ) as never,
+      },
+    });
+    await settled(id);
+    // Late: newer than the message, older than the live read, and still saying the bot holds it.
+    const late = JSON.stringify({
+      event: "conversation_updated",
+      id: 621,
+      inbox_id: 7,
+      status: "pending",
+      updated_at: t0 + 100,
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    const r1 = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: late,
+      getHeader: headers(late, "queue-version-late"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    await drainStoredChatwootDeliveries({ base: appDb, tenantId, minAgeMs: 0 });
+    await settled(r1.deliveryRowId as bigint);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 621 },
+    });
+    expect(conv.assigneeType).toBe("User");
   });
 
   // A stored customer message can be replayed after a takeover whose own webhooks never reached the

@@ -10,7 +10,10 @@ import { loadChatwootClient } from "./instance";
 import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import type { NormalizedChatwootEvent } from "./types";
-import { processRecordedChatwootDelivery } from "./webhook";
+import {
+  inboxBindingGenerationIn,
+  processRecordedChatwootDelivery,
+} from "./webhook";
 
 // Admission and drain for the Chatwoot deliveries the ack recorded (docs/chatwoot.md, "Webhook
 // receiver"). The ack writes the ledger row with the body and answers; processing happens
@@ -61,6 +64,8 @@ interface Pending {
   rowId: string;
   id: bigint;
   run: () => Promise<unknown>;
+  // When the delivery was received (epoch ms), so a slot that opens past the age ceiling skips it.
+  receivedAt?: number;
 }
 
 interface Lane {
@@ -142,7 +147,19 @@ function pump(a: Admission, laneName: AdmissionLane): void {
   while (lane.running < a.limit && lane.waiting.length > 0 && !isDraining()) {
     const next = lane.waiting.shift() as Pending;
     lane.running++;
-    void trackWork("chatwoot_delivery", next.run)
+    const receivedAt = next.receivedAt;
+    const work =
+      receivedAt !== undefined &&
+      Date.now() - receivedAt > STORED_DELIVERY_MAX_AGE_MS
+        ? async () => {
+            logger.warn(
+              "chatwoot: delivery row %s waited past the age ceiling and is left to the sweep",
+              next.rowId,
+            );
+            return "skipped";
+          }
+        : next.run;
+    void trackWork("chatwoot_delivery", work)
       .then(
         () => {
           a.failed.delete(next.rowId);
@@ -181,6 +198,7 @@ export function admitChatwootDelivery(
   rowId: bigint,
   run: () => Promise<unknown>,
   lane: AdmissionLane = "turn",
+  receivedAt?: number,
 ): boolean {
   const a = admission();
   const key = String(rowId);
@@ -195,7 +213,7 @@ export function admitChatwootDelivery(
     return false;
   }
   a.held.set(key, rowId);
-  a.lanes[lane].waiting.push({ rowId: key, id: rowId, run });
+  a.lanes[lane].waiting.push({ rowId: key, id: rowId, run, receivedAt });
   pump(a, lane);
   return true;
 }
@@ -371,6 +389,32 @@ async function replayStored(
     );
     return "skipped";
   }
+  // NOTE: The binding the row was received under must still stand. One that moved since (an observer
+  // made the responder, a persona swapped) asks what the route's role was at receipt, which the
+  // delivery recovery answers with its own fences: the body is dropped and the row goes to the sweep.
+  if (row.bindingGeneration !== null) {
+    const current = await run((db) =>
+      inboxBindingGenerationIn(db, row.chatwootInstanceId, {
+        chatwootInboxId: normalized.inboxId ?? null,
+        chatwootConversationId: normalized.conversationId,
+      }),
+    );
+    if (current !== row.bindingGeneration) {
+      logger.warn(
+        "chatwoot: stored delivery row %s was received under binding generation %d and the inbox is at %s now; left to the sweep and the delivery recovery",
+        String(row.id),
+        row.bindingGeneration,
+        String(current),
+      );
+      await run((db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: { id: row.id, status: "PENDING" },
+          data: { payload: null },
+        }),
+      );
+      return "skipped";
+    }
+  }
   let event = normalized;
   const conversationId = normalized.conversationId;
   // NOTE: A stored customer message can be replayed long after it arrived, past a takeover whose own
@@ -403,6 +447,13 @@ async function replayStored(
     event = {
       ...normalized,
       status: live.status,
+      // The live read's own version, so a mirror this event creates is stamped with the state it holds,
+      // and an older status or assignment arriving late cannot overwrite it.
+      conversationUpdatedAt: live.updatedAt ?? normalized.conversationUpdatedAt,
+      lastActivityAt:
+        live.lastActivityAt !== null
+          ? Math.floor(live.lastActivityAt.getTime() / 1000)
+          : normalized.lastActivityAt,
       ...(live.assigneeStated
         ? {
             assigneeType: live.assigneeType,

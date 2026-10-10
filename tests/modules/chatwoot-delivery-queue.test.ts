@@ -672,6 +672,42 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     });
   });
 
+  test("rows a full turn lane turns away do not keep the meta lane's rows from being read", async () => {
+    resetChatwootAdmissionForTest(1);
+    const body = customerMessage(619, 61_900).replace(
+      '"content":"oi"',
+      '"content":"/teste"',
+    );
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: headers(body, "queue-command-first"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    const command = r.deliveryRowId as bigint;
+    const status = await ackOnly("queue-status-behind", 620);
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate, "turn");
+    for (let i = 0; i < ADMISSION_MAX_WAITING; i++)
+      admitChatwootDelivery(BigInt(-10 - i), () => g.gate, "turn");
+    const drained = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(drained.admitted).toBe(1);
+    expect((await settled(status)).status).toBe("PROCESSED");
+    expect((await rowById(command)).status).toBe("PENDING");
+    resetChatwootAdmissionForTest();
+    g.release();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: command },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   test("a row that failed here is retried on the next pass when the batch has room", async () => {
     resetChatwootAdmissionForTest();
     const failing = await ackOnly("queue-fails-once", 614);

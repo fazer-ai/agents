@@ -319,15 +319,26 @@ export async function drainStoredChatwootDeliveries(
   const failed = [...a.failed.entries()]
     .filter(([key]) => !a.held.has(key))
     .map(([, id]) => id);
-  const read = (id: Prisma.BigIntFilter, take: number) =>
+  // Each lane reads its own batch: rows a full lane turns away stay first in id order, and read
+  // together they would fill every pass and keep the other lane's rows from being read at all.
+  // A stored customer message (a control command) may run a turn, so it takes the turn lane.
+  const laneWhere = (
+    lane: AdmissionLane,
+  ): Prisma.ChatwootWebhookDeliveryWhereInput =>
+    lane === "turn"
+      ? { conversationId: { not: null }, inboundMessageId: { not: null } }
+      : { OR: [{ conversationId: null }, { inboundMessageId: null }] };
+  const pending = (lane: AdmissionLane, id: Prisma.BigIntFilter) => ({
+    status: "PENDING" as const,
+    payload: { not: null },
+    receivedAt: { lte: youngest },
+    id,
+    ...laneWhere(lane),
+  });
+  const read = (lane: AdmissionLane, id: Prisma.BigIntFilter, take: number) =>
     run((db) =>
       db.chatwootWebhookDelivery.findMany({
-        where: {
-          status: "PENDING",
-          payload: { not: null },
-          receivedAt: { lte: youngest },
-          id,
-        },
+        where: pending(lane, id),
         orderBy: { id: "asc" },
         take,
         select: {
@@ -338,58 +349,66 @@ export async function drainStoredChatwootDeliveries(
           bindingGeneration: true,
           payload: true,
           receivedAt: true,
-          conversationId: true,
-          inboundMessageId: true,
         },
       }),
     );
   let admitted = 0;
-  const rows = await read({ notIn: [...held, ...failed] }, batch);
-  const room = batch - rows.length;
-  // The ones that failed longest ago first (the map moves a row to its end on every failure), so a
-  // few that keep failing cannot hold the room against the others.
-  if (room > 0 && failed.length > 0)
-    rows.push(...(await read({ in: failed.slice(0, room) }, room)));
-  for (const row of rows) {
-    const normalized = parseStored(row.payload);
-    if (normalized === null) {
-      // NOTE: A body that neither decrypts nor normalizes (the encryption key changed since) is dropped,
-      // never read another way, which hands the row to the sweep's report.
-      logger.error(
-        "chatwoot: stored delivery row %s holds a body that no longer decrypts or normalizes; left to the sweep",
-        String(row.id),
+  for (const lane of ["meta", "turn"] as const) {
+    if (admissionLaneFull(lane)) continue;
+    const rows = await read(lane, { notIn: [...held, ...failed] }, batch);
+    const room = batch - rows.length;
+    // The ones that failed longest ago first (the map moves a row to its end on every failure), so a
+    // few that keep failing cannot hold the room against the others.
+    if (room > 0 && failed.length > 0) {
+      const inLane = new Set(
+        (
+          await run((db) =>
+            db.chatwootWebhookDelivery.findMany({
+              where: pending(lane, { in: failed }),
+              select: { id: true },
+            }),
+          )
+        ).map((r) => r.id),
       );
-      await run((db) =>
-        db.chatwootWebhookDelivery.updateMany({
-          where: { id: row.id, status: "PENDING" },
-          data: { payload: null },
-        }),
-      );
-      continue;
+      const next = failed.filter((id) => inLane.has(id)).slice(0, room);
+      if (next.length > 0) rows.push(...(await read(lane, { in: next }, room)));
     }
-    // A stored customer message (a control command) may run a turn, so it takes the turn lane.
-    const lane: AdmissionLane =
-      row.conversationId !== null && row.inboundMessageId !== null
-        ? "turn"
-        : "meta";
-    const ok = admitChatwootDelivery(
-      row.id,
-      () =>
-        processRecordedChatwootDelivery({
-          tenantId: row.tenantId,
-          instanceId: row.chatwootInstanceId,
-          deliveryRowId: row.id,
-          agentBotId: row.routeAgentBotId,
-          normalized,
-          receiptBindingGeneration: row.bindingGeneration,
-          base,
-          deps: params.deps,
-        }),
-      lane,
-      row.receivedAt.getTime(),
-    );
-    if (ok) admitted++;
-    else if (admissionLaneFull("meta") && admissionLaneFull("turn")) break;
+    for (const row of rows) {
+      const normalized = parseStored(row.payload);
+      if (normalized === null) {
+        // NOTE: A body that neither decrypts nor normalizes (the encryption key changed since) is
+        // dropped, never read another way, which hands the row to the sweep's report.
+        logger.error(
+          "chatwoot: stored delivery row %s holds a body that no longer decrypts or normalizes; left to the sweep",
+          String(row.id),
+        );
+        await run((db) =>
+          db.chatwootWebhookDelivery.updateMany({
+            where: { id: row.id, status: "PENDING" },
+            data: { payload: null },
+          }),
+        );
+        continue;
+      }
+      const ok = admitChatwootDelivery(
+        row.id,
+        () =>
+          processRecordedChatwootDelivery({
+            tenantId: row.tenantId,
+            instanceId: row.chatwootInstanceId,
+            deliveryRowId: row.id,
+            agentBotId: row.routeAgentBotId,
+            normalized,
+            receiptBindingGeneration: row.bindingGeneration,
+            base,
+            deps: params.deps,
+          }),
+        lane,
+        row.receivedAt.getTime(),
+      );
+      if (ok) admitted++;
+      else if (admissionLaneFull(lane)) break;
+    }
   }
 
   if (admitted > 0 || recovered > 0 || cleared > 0) {

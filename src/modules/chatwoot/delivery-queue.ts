@@ -423,6 +423,7 @@ async function replayStored(
     }
   }
   let event = normalized;
+  let superseded = false;
   const conversationId = normalized.conversationId;
   // NOTE: A stored customer message can be replayed long after it arrived, past a takeover whose own
   // webhooks never reached the mirror while this process was down. The live conversation is read
@@ -486,33 +487,7 @@ async function replayStored(
       }),
     );
     if (settledStatus) event = { ...normalized, status: settledStatus.status };
-    // A stored message the customer has already written past is not answered: the newer
-    // message's own delivery carries the reply, and a turn started for the older text would run its
-    // tools before any send-time check could stop it. Left to the sweep and the delivery recovery,
-    // which refuse it the same way and keep the operator's record. Only a new message: a late-media
-    // update of an older one still owes its transcription to memory.
-    const messageId = normalized.message?.id;
-    if (normalized.event === "message_created" && messageId != null) {
-      const newest = maxIncomingId(
-        parseChatwootMessages(await client.getMessages(conversationId)),
-        messageId,
-      );
-      if (newest > messageId) {
-        logger.info(
-          "chatwoot: stored delivery row %s is behind message %d on conversation %d; left to the sweep",
-          String(row.id),
-          newest,
-          conversationId,
-        );
-        await run((db) =>
-          db.chatwootWebhookDelivery.updateMany({
-            where: { id: row.id, status: "PENDING" },
-            data: { payload: null },
-          }),
-        );
-        return "skipped";
-      }
-    }
+    superseded = await writtenPast(client, conversationId, normalized);
   }
   return processRecordedChatwootDelivery({
     tenantId: row.tenantId,
@@ -523,6 +498,79 @@ async function replayStored(
     receiptBindingGeneration: row.bindingGeneration,
     base,
     deps,
+    owesMemoryOnly: superseded,
+  });
+}
+
+// Whether the customer has written past this new message: a newer incoming message on the newest page
+// of the conversation (`maxIncomingId`, the delivery path's own predicate). Such a message is ingested
+// into memory and not answered, since the newer message's delivery carries the reply and a turn for
+// the older text would run its tools before any send-time check. A page that cannot answer (empty, or
+// not reaching back to this message) throws, and the delivery waits for the next pass.
+async function writtenPast(
+  client: Awaited<ReturnType<typeof loadChatwootClient>>,
+  conversationId: number,
+  normalized: NormalizedChatwootEvent,
+): Promise<boolean> {
+  const messageId = normalized.message?.id;
+  if (normalized.event !== "message_created" || messageId == null) return false;
+  const page = parseChatwootMessages(await client.getMessages(conversationId));
+  const newest = maxIncomingId(page, messageId);
+  if (newest > messageId) return true;
+  const oldest = page.reduce<number | null>(
+    (min, m) => (min === null || m.id < min ? m.id : min),
+    null,
+  );
+  if (oldest === null || oldest > messageId) {
+    throw new Error(
+      `the newest page of conversation ${conversationId} does not reach message ${messageId}; replay deferred`,
+    );
+  }
+  return false;
+}
+
+// How long a live delivery may wait for its slot before its freshness is asked again when the slot
+// opens: under that, the wait is ordinary latency; past it, the customer may have written again.
+export const QUEUED_RECHECK_AFTER_MS = 15_000;
+
+export interface QueuedDelivery {
+  tenantId: bigint;
+  instanceId: bigint;
+  deliveryRowId: bigint;
+  agentBotId: number | null;
+  normalized: NormalizedChatwootEvent;
+  receiptBindingGeneration: number | null;
+  receivedAt: number;
+  base?: PrismaClient;
+  deps?: RuntimeDeps;
+}
+
+// What the queue runs for a live delivery once its slot opens. A customer's new message that waited
+// past `QUEUED_RECHECK_AFTER_MS` is checked against the conversation first (`writtenPast`).
+export async function runQueuedDelivery(d: QueuedDelivery): Promise<unknown> {
+  let superseded = false;
+  const conversationId = d.normalized.conversationId;
+  if (
+    Date.now() - d.receivedAt > QUEUED_RECHECK_AFTER_MS &&
+    admissionLaneOf(d.normalized) === "turn" &&
+    conversationId !== null
+  ) {
+    const client = await loadChatwootClient(d.tenantId, d.instanceId, {
+      ...(d.base ? { base: d.base } : {}),
+      ...(d.deps?.makeClient ? { makeClient: d.deps.makeClient } : {}),
+    });
+    superseded = await writtenPast(client, conversationId, d.normalized);
+  }
+  return processRecordedChatwootDelivery({
+    tenantId: d.tenantId,
+    instanceId: d.instanceId,
+    deliveryRowId: d.deliveryRowId,
+    agentBotId: d.agentBotId,
+    normalized: d.normalized,
+    receiptBindingGeneration: d.receiptBindingGeneration,
+    base: d.base,
+    deps: d.deps,
+    owesMemoryOnly: superseded,
   });
 }
 

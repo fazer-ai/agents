@@ -3,11 +3,9 @@ import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
 import {
   admissionLaneOf,
   admitChatwootDelivery,
+  runQueuedDelivery,
 } from "@/modules/chatwoot/delivery-queue";
-import {
-  processRecordedChatwootDelivery,
-  receiveChatwootWebhook,
-} from "@/modules/chatwoot/webhook";
+import { receiveChatwootWebhook } from "@/modules/chatwoot/webhook";
 
 // Public, JWT-less Chatwoot Agent Bot webhook receiver. Not behind tenancyPlugin/requireAuth:
 // the opaque routeToken resolves the tenant and the per-instance HMAC secret authenticates the
@@ -50,19 +48,21 @@ export const chatwootController = new Elysia({
         receiptBindingGeneration = null,
         normalized,
       } = result;
+      const receivedAt = Date.now();
       admitChatwootDelivery(
         deliveryRowId,
         () =>
-          processRecordedChatwootDelivery({
+          runQueuedDelivery({
             tenantId,
             instanceId,
             deliveryRowId,
             agentBotId,
             normalized,
             receiptBindingGeneration,
+            receivedAt,
           }),
         admissionLaneOf(normalized),
-        Date.now(),
+        receivedAt,
       );
     }
 

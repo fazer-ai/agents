@@ -9,7 +9,7 @@ import {
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
   ADMISSION_MAX_WAITING,
@@ -17,13 +17,16 @@ import {
   admitChatwootDelivery,
   chatwootAdmissionState,
   drainStoredChatwootDeliveries,
+  QUEUED_RECHECK_AFTER_MS,
   resetChatwootAdmissionForTest,
+  runQueuedDelivery,
   STORED_DELIVERY_MAX_AGE_MS,
 } from "@/modules/chatwoot/delivery-queue";
 import {
   registerDeliverySweepHandler,
   STALE_AFTER_MS,
 } from "@/modules/chatwoot/delivery-sweep";
+import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { MAX_RECOVERY_AGE_MS } from "@/modules/chatwoot/recover-delivery";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { receiveChatwootWebhook } from "@/modules/chatwoot/webhook";
@@ -410,7 +413,14 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     return r.deliveryRowId as bigint;
   };
   // A Chatwoot client whose conversation read answers `live` and whose every other call is recorded.
-  const fakeClient = (live: unknown, calls: string[], messages: unknown = []) =>
+  // The default newest page reaches back past every stored message and holds nothing newer.
+  const fakeClient = (
+    live: unknown,
+    calls: string[],
+    messages: unknown = [
+      { id: 1, content: "oi", message_type: "incoming", private: false },
+    ],
+  ) =>
     new Proxy({} as Record<string, unknown>, {
       get: (_t, prop) =>
         prop === "then"
@@ -569,10 +579,51 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       });
   });
 
-  // The customer wrote again before the replay: the newer message's delivery carries the reply.
-  test("a stored message the customer has already written past is left to the sweep", async () => {
+  // The customer wrote again before the replay: the newer message's delivery carries the reply, and
+  // the older one is ingested into memory without a turn.
+  test("a stored message the customer has already written past is ingested, not answered", async () => {
     await mirror(628);
     const id = await ackMessage("queue-replay-behind", 628);
+    const calls: string[] = [];
+    const botHolds = {
+      ...heldByPerson(628),
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    };
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(botHolds, calls, [
+            {
+              id: 62_800,
+              content: "oi",
+              message_type: "incoming",
+              private: false,
+            },
+            {
+              id: 62_805,
+              content: "outra coisa",
+              message_type: "incoming",
+              private: false,
+            },
+          ]) as never,
+      },
+    });
+    const row = await settled(id);
+    expect(row.status).toBe("PROCESSED");
+    // Settled as memory owed, not as a turn the bot ran.
+    expect(row.owesMemoryOnly).toBe(true);
+    expect(calls).not.toContain("sendMessage");
+  });
+
+  // A newest page that does not reach back to the stored message cannot say whether the customer
+  // wrote again: the replay waits.
+  test("a newest page that cannot answer defers the replay", async () => {
+    await mirror(629);
+    const id = await ackMessage("queue-replay-short-page", 629);
     const calls: string[] = [];
     await drainStoredChatwootDeliveries({
       base: appDb,
@@ -582,19 +633,12 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
         makeClient: async () =>
           fakeClient(
             {
-              ...heldByPerson(628),
+              ...heldByPerson(629),
               status: "pending",
               meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
             },
             calls,
-            [
-              {
-                id: 62_800 + 5,
-                content: "outra coisa",
-                message_type: "incoming",
-                private: false,
-              },
-            ],
+            [],
           ) as never,
       },
     });
@@ -602,13 +646,79 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       await sleep(5);
     const row = await rowById(id);
     expect(row.status).toBe("PENDING");
-    expect(row.attempts).toBe(0);
-    expect(row.payload).toBeNull();
-    expect(calls).not.toContain("sendMessage");
+    expect(row.payload).not.toBeNull();
     await suDb.chatwootWebhookDelivery.update({
       where: { id },
-      data: { status: "PROCESSED" },
+      data: { status: "PROCESSED", payload: null },
     });
+  });
+
+  // A live delivery that waited long for its slot asks the same question when the slot opens.
+  test("a queued customer message that waited past the recheck is ingested, not answered, once written past", async () => {
+    await mirror(630);
+    const id = await ackMessage("queue-live-written-past", 630);
+    const calls: string[] = [];
+    const message = (await rowById(id)).payload as string;
+    const normalized = normalizeChatwootEvent(
+      JSON.parse(decryptJson<string>(message)),
+    );
+    if (!normalized) throw new Error("the stored body did not normalize");
+    await runQueuedDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: id,
+      agentBotId: 9,
+      normalized,
+      receiptBindingGeneration: null,
+      receivedAt: Date.now() - QUEUED_RECHECK_AFTER_MS - 1,
+      base: appDb,
+      deps: {
+        makeClient: async () =>
+          fakeClient(heldByPerson(630), calls, [
+            {
+              id: 63_000,
+              content: "oi",
+              message_type: "incoming",
+              private: false,
+            },
+            {
+              id: 63_009,
+              content: "deixa",
+              message_type: "incoming",
+              private: false,
+            },
+          ]) as never,
+      },
+    });
+    expect(calls).toContain("getMessages");
+    const row = await rowById(id);
+    expect(row.status).toBe("PROCESSED");
+    expect(row.owesMemoryOnly).toBe(true);
+    expect(calls).not.toContain("sendMessage");
+  });
+
+  test("a queued delivery that did not wait is not checked again", async () => {
+    await mirror(631);
+    const id = await ackMessage("queue-live-no-wait", 631);
+    const calls: string[] = [];
+    const normalized = normalizeChatwootEvent(
+      JSON.parse(decryptJson<string>((await rowById(id)).payload as string)),
+    );
+    if (!normalized) throw new Error("the stored body did not normalize");
+    await runQueuedDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: id,
+      agentBotId: 9,
+      normalized,
+      receiptBindingGeneration: null,
+      receivedAt: Date.now(),
+      base: appDb,
+      deps: {
+        makeClient: async () => fakeClient(heldByPerson(631), calls) as never,
+      },
+    });
+    expect(calls).not.toContain("getMessages");
   });
 
   // A live read with no ownership in it is not a statement that nobody holds the conversation.
@@ -824,6 +934,9 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     const calls: string[] = [];
     const fake = new Proxy(
       {
+        getMessages: async () => [
+          { id: 1, content: "oi", message_type: "incoming", private: false },
+        ],
         getConversation: async () => {
           calls.push("getConversation");
           return {

@@ -1192,6 +1192,9 @@ export interface ProcessRecordedChatwootParams {
   receiptBindingGeneration: number | null;
   base?: PrismaClient;
   deps?: RuntimeDeps;
+  // A customer message the customer has already written past: ingested into memory, no turn (see
+  // `ProcessChatwootParams.owesMemoryOnly`).
+  owesMemoryOnly?: boolean;
 }
 
 // The processing half of a delivery whose ledger row exists: what the admission queue runs for a live
@@ -1211,6 +1214,7 @@ export async function processRecordedChatwootDelivery(
       receiptBindingGeneration: params.receiptBindingGeneration,
       base,
       deps: params.deps,
+      ...(params.owesMemoryOnly ? { owesMemoryOnly: true } : {}),
     });
   } catch (err) {
     if (!(err instanceof TurnOwedToRecovery)) throw err;

@@ -46,6 +46,7 @@
     "debugWindowTooLong": "The log debug mode can be armed for at most {{hours}}h at a time.",
     "demoteNeedsTenant": "Choose the tenant this role change applies to",
     "documentApprovalExpired": "This approval request expired, so the document can no longer be issued from it",
+    "documentApprovalNotExpired": "Only an expired approval request can be requested again ({{status}})",
     "documentApprovalNotFound": "Document approval request not found",
     "documentApprovalNotPending": "This approval request was already decided ({{status}})",
     "documentNameIsBuiltinTool": "\"{{name}}\" would produce the tool {{tool}}, which is already a built-in. Pick another name.",

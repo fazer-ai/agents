@@ -42590,6 +42590,170 @@
         "operationId": "getV1Document-approvalsById"
       }
     },
+    "/v1/document-approvals/{id}/context": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Get document approval context",
+        "description": "Who the customer is and the conversation's last messages, for the reviewer. Private notes are left out.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Document-approvalsByIdContext"
+      }
+    },
     "/v1/document-approvals/{id}/preview": {
       "get": {
         "tags": [
@@ -43173,6 +43337,196 @@
           }
         },
         "operationId": "postV1Document-approvalsByIdReject"
+      }
+    },
+    "/v1/document-approvals/{id}/request-again": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Request a document approval again",
+        "description": "On an expired request, freezes the same values again from the template, dated today, as a new pending request for the same conversation. The expired request stays expired; asking twice opens one request.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Document-approvalsByIdRequest-again"
       }
     },
     "/v1/mcp/oauth/register": {

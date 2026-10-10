@@ -148,6 +148,12 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/document-approvals/:id/reject": {
     gap: "reject a document approval request",
   },
+  "GET /v1/document-approvals/:id/context": {
+    gap: "read a document approval request's customer and messages",
+  },
+  "POST /v1/document-approvals/:id/request-again": {
+    gap: "request an expired document approval again",
+  },
   "GET /v1/documents/": { tool: "issued_document_list" },
   "POST /v1/documents/": { gap: "issue a document outside a conversation" },
   "POST /v1/documents/:id/revoke": { gap: "revoke an issued document" },

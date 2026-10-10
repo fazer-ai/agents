@@ -457,6 +457,8 @@ const BARE_SLICES: Record<
   // The operator's case labels capped as an ARRAY of labels, never a string.
   "src/modules/cross-inbox-case/settings.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
+  // The approval page's last messages: an array bound.
+  "src/modules/documents/approval-context.ts": [1, "array"],
   // The logo's one-shot download token is hex from randomUUID.
   "src/modules/documents/company.ts": [1, "ascii"],
   // The legacy date fallback reads a fixed ISO prefix; the file name was already reduced to

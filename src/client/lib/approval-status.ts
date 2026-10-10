@@ -103,6 +103,15 @@ export function approvalOutcomeLabel(
   return null;
 }
 
+// The document by the name it goes by: once issued, its own number joins the title ("Orçamento
+// ORC-0003"), the same heading the PDF prints and the note in Chatwoot cites.
+export function approvalDocumentTitle(r: {
+  title: string;
+  issuedNumber?: string | null;
+}): string {
+  return r.issuedNumber ? `${r.title} ${r.issuedNumber}` : r.title;
+}
+
 // "Approved by Ana", "Rejected by Ana", or the bare status when nobody is named (an expiry, a
 // decision made through the API with no person behind it).
 export function approvalDecisionLabel(

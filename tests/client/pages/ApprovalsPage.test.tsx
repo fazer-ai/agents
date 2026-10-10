@@ -99,6 +99,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
           decidedAt: new Date(0).toISOString(),
           reviewerName: "Bruno Lima",
           outcome: "DELIVERED",
+          issuedDocumentId: "5",
+          issuedNumber: "ORC-0005",
         },
       ],
       nextCursor: decidedCursor,
@@ -388,7 +390,7 @@ test("the history tab lists the decided documents with who decided and what they
   mount(<ApprovalsPage />);
   fireEvent.click(await screen.findByRole("tab", { name: "History" }));
   const link = await screen.findByRole("link", {
-    name: /Orçamento for Ana Ribeiro/,
+    name: /Orçamento ORC-0005 for Ana Ribeiro/,
   });
   expect(link.getAttribute("href")).toBe("/document-approvals/40");
   expect(link.textContent).toContain("by Bruno Lima");

@@ -13,6 +13,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import {
   APPROVAL_STATUS_VARIANT,
+  approvalDocumentTitle,
   approvalOutcomeLabel,
   approvalStatusLabel,
   SENDING_FOR_MS,
@@ -175,6 +176,7 @@ export function ApprovalHistory() {
                       outcome: one.outcome,
                       reviewerName: one.reviewerName,
                       issuedDocumentId: one.issuedDocumentId,
+                      issuedNumber: one.issuedNumber,
                     }
                   : r;
               }),
@@ -231,9 +233,12 @@ export function ApprovalHistory() {
                           ? t(
                               "approvalQueue.documentFor",
                               "{{title}} for {{customer}}",
-                              { title: r.title, customer: r.contactName },
+                              {
+                                title: approvalDocumentTitle(r),
+                                customer: r.contactName,
+                              },
                             )
-                          : r.title}
+                          : approvalDocumentTitle(r)}
                       </p>
                       <p className="text-text-muted text-xs">
                         {[

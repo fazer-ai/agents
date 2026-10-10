@@ -450,6 +450,7 @@ test("a decided request shows who decided, what it came to, and the issued docum
           reviewerName: "Ana Souza",
           decidedAt: new Date().toISOString(),
           issuedDocumentId: "5",
+          issuedNumber: "ORC-0005",
           outcome: "DELIVERED",
           outcomeAt: new Date().toISOString(),
         }),
@@ -459,6 +460,10 @@ test("a decided request shows who decided, what it came to, and the issued docum
   };
   mount("/document-approvals/18");
   await screen.findByText(/Decided by Ana Souza/);
+  // Issued, the document goes by its own number, as the PDF and the note in Chatwoot name it.
+  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+    "Orçamento 18 ORC-0005",
+  );
   await screen.findByText(/Sent to the customer/);
   await waitFor(() =>
     expect(document.querySelector("iframe")?.getAttribute("src")).toBe(

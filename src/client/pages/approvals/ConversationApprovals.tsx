@@ -7,6 +7,7 @@ import { api } from "@/client/lib/api";
 import {
   APPROVAL_STATUS_VARIANT,
   approvalDecisionLabel,
+  approvalDocumentTitle,
   approvalOutcomeLabel,
 } from "@/client/lib/approval-status";
 import { serverNow } from "@/client/lib/serverClock";
@@ -129,7 +130,7 @@ export function ConversationApprovals({
                 aria-hidden="true"
               />
               <span className="truncate font-medium text-text-primary">
-                {r.title}
+                {approvalDocumentTitle(r)}
               </span>
               <Badge variant={APPROVAL_STATUS_VARIANT[r.status] ?? "secondary"}>
                 {approvalDecisionLabel(r, t)}

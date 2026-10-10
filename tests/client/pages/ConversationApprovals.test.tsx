@@ -86,6 +86,7 @@ test("a decided request says who decided and what it came to, with the way to it
       reviewerName: "Ana Souza",
       decidedAt: new Date(0).toISOString(),
       outcome: "DELIVERED",
+      issuedNumber: "ORC-0009",
     }),
   ];
   render(
@@ -94,6 +95,7 @@ test("a decided request says who decided and what it came to, with the way to it
     </MemoryRouter>,
   );
   await screen.findByText("Approved by Ana Souza");
+  screen.getByText(/ ORC-0009$/);
   screen.getByText("Sent to the customer");
   expect(
     screen.getByRole("link", { name: "View approval" }).getAttribute("href"),

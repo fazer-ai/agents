@@ -18,6 +18,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import {
   APPROVAL_STATUS_VARIANT,
+  approvalDocumentTitle,
   approvalOutcomeLabel,
   approvalStatusLabel,
 } from "@/client/lib/approval-status";
@@ -440,7 +441,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
           </Link>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="font-semibold text-lg text-text-primary">
-              {request.title}
+              {approvalDocumentTitle(request)}
             </h1>
             <Badge
               variant={APPROVAL_STATUS_VARIANT[request.status] ?? "secondary"}

@@ -723,10 +723,20 @@ describe.skipIf(!dbUp)(
       });
       const waiting = await newRequest();
       const approved = await newRequest();
+      const issued = await suDb.issuedDocument.create({
+        data: {
+          tenantId,
+          title: "Orçamento",
+          number: 3,
+          numberPrefix: "ORC-",
+          idempotencyKey: `hist-issued-${approved.requestId}`,
+        },
+      });
       await suDb.documentApprovalRequest.update({
         where: { id: approved.requestId },
         data: {
           status: "APPROVED",
+          issuedDocumentId: issued.id,
           reviewerUserId: reviewer.id,
           // Asked before the expired one and decided after it: the history runs by decision.
           decidedAt: new Date(Date.now() + 86_400_000),
@@ -754,6 +764,11 @@ describe.skipIf(!dbUp)(
       expect(row?.reviewerName).toBe("Bruno Revisor");
       expect(row?.outcome).toBe("DELIVERED");
       expect(row?.contactName).toBe("Ana Ribeiro");
+      // Issued, the document goes by its own number; the expired one never took one.
+      expect(row?.issuedNumber).toBe("ORC-0003");
+      expect(
+        history.find((r) => r.id === String(expired.requestId))?.issuedNumber,
+      ).toBeNull();
       // A page starts after the last row of the one before, in the same order.
       const next = await listDecidedApprovals(ctx(), appDb, {
         cursor: BigInt(String(approved.requestId)),
@@ -768,6 +783,7 @@ describe.skipIf(!dbUp)(
       expect(await listDecidedApprovals(foreign, appDb)).toEqual([]);
       const read = await getApprovalRequest(ctx(), approved.requestId, appDb);
       expect(read.reviewerName).toBe("Bruno Revisor");
+      expect(read.issuedNumber).toBe("ORC-0003");
       await suDb.user.delete({ where: { id: reviewer.id } });
     });
 

@@ -16,7 +16,7 @@ import {
   wakeScheduler,
 } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
-import { formatDate } from "./format";
+import { formatDate, formatDocumentNumber } from "./format";
 import {
   APPROVAL_KEY_PREFIX,
   type DocumentSnapshot,
@@ -64,6 +64,9 @@ export interface ApprovalRequestDto {
   note: string | null;
   decidedAt: Date | null;
   issuedDocumentId: string | null;
+  // The issued document's own number as printed (ORC-0003), the name the team and the customer use
+  // for it from then on; null until it is issued.
+  issuedNumber: string | null;
   // What the decision came to in the conversation; null while it is on its way (schema.prisma).
   outcome: ApprovalOutcome | null;
   outcomeAt: Date | null;
@@ -92,10 +95,19 @@ const SELECT = {
   note: true,
   decidedAt: true,
   issuedDocumentId: true,
+  issuedDocument: { select: { number: true, numberPrefix: true } },
   outcome: true,
   outcomeAt: true,
   createdAt: true,
 } as const;
+
+function issuedNumber(
+  doc: { number: number | null; numberPrefix: string | null } | null,
+): string | null {
+  return doc?.number == null
+    ? null
+    : formatDocumentNumber(doc.number, doc.numberPrefix);
+}
 
 type Row = Prisma.DocumentApprovalRequestGetPayload<{
   select: typeof SELECT;
@@ -119,6 +131,7 @@ function toDto(r: Row, reviewerName: string | null = null): ApprovalRequestDto {
     decidedAt: r.decidedAt,
     issuedDocumentId:
       r.issuedDocumentId === null ? null : String(r.issuedDocumentId),
+    issuedNumber: issuedNumber(r.issuedDocument),
     outcome: r.outcome as ApprovalOutcome | null,
     outcomeAt: r.outcomeAt,
     createdAt: r.createdAt,
@@ -564,6 +577,7 @@ export interface DecidedApprovalItem extends PendingApprovalItem {
   // Null on an approval whose document was never issued (the failure after the claim): approving
   // again completes it, and nothing is on its way.
   issuedDocumentId: string | null;
+  issuedNumber: string | null;
 }
 
 // The history beside the queue: every request no longer waiting on the team, the latest DECISION first
@@ -594,6 +608,7 @@ export async function listDecidedApprovals(
         reviewerUserId: true,
         outcome: true,
         issuedDocumentId: true,
+        issuedDocument: { select: { number: true, numberPrefix: true } },
       },
     });
     const names = await reviewerNames(
@@ -611,6 +626,7 @@ export async function listDecidedApprovals(
       outcome: r.outcome as ApprovalOutcome | null,
       issuedDocumentId:
         r.issuedDocumentId === null ? null : String(r.issuedDocumentId),
+      issuedNumber: issuedNumber(r.issuedDocument),
     }));
   });
 }

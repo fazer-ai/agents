@@ -348,6 +348,38 @@ describe("snoozed ladder: configuration", () => {
     expect(cfg.cadences[0]?.steps[0]?.resolve).toBeUndefined();
     expect(cfg.cadences[0]?.steps[1]?.resolve).toBe(true);
   });
+
+  // The promise is "the default plus up to 10 per-label cadences": the default does not take one of
+  // the ten places, wherever it sits in the list.
+  test("the default does not count against the ten labeled cadences", () => {
+    const labeled = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        label: `adiar-${i + 1}`,
+        steps: [{ delayValue: 1 }],
+      }));
+    const defaultCadence = { label: null, steps: [{ delayValue: 24 }] };
+
+    const last = readSnoozedFollowUpConfig({
+      snoozedFollowUp: { cadences: [...labeled(10), defaultCadence] },
+    });
+    expect(last.cadences).toHaveLength(11);
+    expect(last.cadences.filter((c) => c.label === null)).toHaveLength(1);
+
+    const first = readSnoozedFollowUpConfig({
+      snoozedFollowUp: { cadences: [defaultCadence, ...labeled(10)] },
+    });
+    expect(first.cadences.map((c) => c.label)).toEqual([
+      null,
+      ...labeled(10).map((c) => c.label),
+    ]);
+
+    // ...and an eleventh LABELED one is still past the cap.
+    const over = readSnoozedFollowUpConfig({
+      snoozedFollowUp: { cadences: labeled(11) },
+    });
+    expect(over.cadences).toHaveLength(10);
+    expect(over.cadences.at(-1)?.label).toBe("adiar-10");
+  });
 });
 
 // Records every message the model is handed, whatever its role: where the nudge puts its directive is

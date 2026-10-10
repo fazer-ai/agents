@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowRightLeft,
+  BellRing,
   Brain,
   CalendarClock,
   Eye,
@@ -86,6 +87,7 @@ import {
   type ObservabilityConfig,
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
+import { SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES } from "@/modules/followups/snoozed-settings";
 import {
   SPOKEN_NOTICE_DEFAULT,
   TTS_CHECK_MODES,
@@ -124,6 +126,13 @@ import {
 } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
 import { signatureOnToggle } from "./signatureFormState";
+import {
+  newSnoozedStep,
+  type SnoozedCadenceState,
+  type SnoozedFollowUpIssues,
+  type SnoozedFollowUpState,
+  snoozedFollowUpIssues,
+} from "./snoozedFollowUpFormState";
 import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
@@ -465,6 +474,10 @@ interface BehaviorTabProps {
   // True when the WhatsApp→chat redirect is enabled with an inbox wired: the follow-up below is then
   // suppressed for the redirect's entry + widget inboxes (a callout in the section explains it).
   redirectSuppressesFollowUp: boolean;
+  snoozedFollowUp: SnoozedFollowUpState;
+  setSnoozedFollowUp: React.Dispatch<
+    React.SetStateAction<SnoozedFollowUpState>
+  >;
   onScheduleSaved: (savedId: string, setter: (v: string) => void) => void;
   dirty: boolean;
   saving: boolean;
@@ -996,22 +1009,12 @@ function ContactAuthTeamSelect({
   );
 }
 
-// The multi-step follow-up editor: an ordered list of step cards (delay + instructions + optional
-// label, and a resolve toggle on the LAST step). Labels are fetched once per agent from the inbox.
-function FollowUpStepsEditor({
-  agentId,
-  followUp,
-  setFollowUp,
-  stepRefusals,
-}: {
-  agentId: string;
-  followUp: FollowUpState;
-  setFollowUp: React.Dispatch<React.SetStateAction<FollowUpState>>;
-  // By index: the server refuses a note as `followUp.steps[2].instructions`, and the step it names is
-  // the one that has to carry the mark.
-  stepRefusals: readonly (string | null)[];
-}) {
-  const { t } = useTranslation();
+// The agent inbox's labels, for the label pickers of a step list (and the snoozed ladder's cadence
+// label). Fetched once per agent; best-effort, the pickers stay free-text without it.
+function useInboxLabels(agentId: string): {
+  labels: InboxLabelOption[];
+  multiAccount: boolean;
+} {
   const [labels, setLabels] = useState<InboxLabelOption[]>([]);
   const [multiAccount, setMultiAccount] = useState(false);
   useEffect(() => {
@@ -1031,33 +1034,83 @@ function FollowUpStepsEditor({
       cancelled = true;
     };
   }, [agentId]);
+  return { labels, multiAccount };
+}
 
-  const steps = followUp.steps;
+// The multi-step follow-up editor: an ordered list of step cards (delay + instructions + optional
+// label, and a resolve toggle on the LAST step). Labels are fetched once per agent from the inbox.
+function FollowUpStepsEditor({
+  agentId,
+  followUp,
+  setFollowUp,
+  stepRefusals,
+}: {
+  agentId: string;
+  followUp: FollowUpState;
+  setFollowUp: React.Dispatch<React.SetStateAction<FollowUpState>>;
+  // By index: the server refuses a note as `followUp.steps[2].instructions`, and the step it names is
+  // the one that has to carry the mark.
+  stepRefusals: readonly (string | null)[];
+}) {
+  const { t } = useTranslation();
+  const { labels, multiAccount } = useInboxLabels(agentId);
+  return (
+    <StepsEditor
+      steps={followUp.steps}
+      setSteps={(update) =>
+        setFollowUp((prev) => ({ ...prev, steps: update(prev.steps) }))
+      }
+      labels={labels}
+      multiAccount={multiAccount}
+      stepRefusals={stepRefusals}
+      showAppointmentPause={followUp.pauseWhileAppointment}
+      firstDelayLabel={t("editor.followUpDelay", "Inactivity delay")}
+      newStep={() => ({
+        delayValue: "1",
+        delayUnit: "days",
+        instructions: "",
+        assignLabels: [],
+        resolve: false,
+        ignoreAppointmentPause: false,
+      })}
+    />
+  );
+}
+
+// One ladder's step cards, shared by the follow-up and the snoozed follow-up, whose steps are the
+// same shape (one step reader on the server, one step mapper in ./followUpFormState): delay + unit,
+// instructions, labels to assign, and "resolve" on the LAST step only.
+function StepsEditor({
+  steps,
+  setSteps,
+  labels,
+  multiAccount,
+  stepRefusals,
+  showAppointmentPause,
+  firstDelayLabel,
+  newStep,
+}: {
+  steps: FollowUpStepState[];
+  setSteps: (
+    update: (prev: FollowUpStepState[]) => FollowUpStepState[],
+  ) => void;
+  labels: InboxLabelOption[];
+  multiAccount: boolean;
+  stepRefusals: readonly (string | null)[];
+  // The per-step appointment exemption, drawn only where the ladder has the agent-wide pause on. The
+  // snoozed ladder has no appointment pause, so it never draws it (the value is still carried).
+  showAppointmentPause: boolean;
+  firstDelayLabel: string;
+  newStep: () => FollowUpStepState;
+}) {
+  const { t } = useTranslation();
   const updateStep = (index: number, patch: Partial<FollowUpStepState>) =>
-    setFollowUp((prev) => ({
-      ...prev,
-      steps: prev.steps.map((s, i) => (i === index ? { ...s, ...patch } : s)),
-    }));
-  const addStep = () =>
-    setFollowUp((prev) => ({
-      ...prev,
-      steps: [
-        ...prev.steps,
-        {
-          delayValue: "1",
-          delayUnit: "days",
-          instructions: "",
-          assignLabels: [],
-          resolve: false,
-          ignoreAppointmentPause: false,
-        },
-      ],
-    }));
+    setSteps((prev) =>
+      prev.map((s, i) => (i === index ? { ...s, ...patch } : s)),
+    );
+  const addStep = () => setSteps((prev) => [...prev, newStep()]);
   const removeStep = (index: number) =>
-    setFollowUp((prev) => ({
-      ...prev,
-      steps: prev.steps.filter((_, i) => i !== index),
-    }));
+    setSteps((prev) => prev.filter((_, i) => i !== index));
 
   return (
     <div className="flex flex-col gap-3">
@@ -1087,7 +1140,7 @@ function FollowUpStepsEditor({
             <FormField
               label={
                 index === 0
-                  ? t("editor.followUpDelay", "Inactivity delay")
+                  ? firstDelayLabel
                   : t("editor.followUpStepDelay", "Wait after previous step")
               }
               group
@@ -1155,7 +1208,7 @@ function FollowUpStepsEditor({
             </FormField>
             {/* Only while the agent-wide pause is ON: with it off nothing pauses, so this switch
                 would decide nothing. Hidden is not off — the value is kept and saved either way. */}
-            {followUp.pauseWhileAppointment && (
+            {showAppointmentPause && (
               <div className="flex flex-col gap-1.5">
                 <SwitchField
                   checked={step.ignoreAppointmentPause}
@@ -1203,6 +1256,262 @@ function FollowUpStepsEditor({
           <Plus className="h-4 w-4" aria-hidden="true" />
           {t("editor.followUpAddStep", "Add step")}
         </Button>
+      )}
+    </div>
+  );
+}
+
+// The snoozed follow-up (settings.snoozedFollowUp, docs/snoozed-followup.md): reminders on a PERSON's
+// behalf when they snoozed a conversation "until next reply" and the customer never answered. A list
+// of cadences, each a step list in the follow-up's own editor: the default one (label null, optional)
+// first, then up to SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES picked by a Chatwoot label. What the reader
+// would drop (a label taken twice, a cadence with no step) is flagged here and blocks Save, instead of
+// being saved and silently ignored.
+function SnoozedFollowUpEditor({
+  agentId,
+  snoozedFollowUp,
+  setSnoozedFollowUp,
+  issues,
+  stepRefusals,
+}: {
+  agentId: string;
+  snoozedFollowUp: SnoozedFollowUpState;
+  setSnoozedFollowUp: React.Dispatch<
+    React.SetStateAction<SnoozedFollowUpState>
+  >;
+  issues: SnoozedFollowUpIssues;
+  // By cadence, then by step: the server refuses a note as
+  // `snoozedFollowUp.cadences[1].steps[0].instructions`.
+  stepRefusals: readonly (readonly (string | null)[])[];
+}) {
+  const { t } = useTranslation();
+  const { labels, multiAccount } = useInboxLabels(agentId);
+  const cadences = snoozedFollowUp.cadences;
+  const hasDefault = cadences.some((c) => c.label === null);
+  const labeledCount = cadences.filter((c) => c.label !== null).length;
+  const updateCadence = (
+    index: number,
+    update: (c: SnoozedCadenceState) => SnoozedCadenceState,
+  ) =>
+    setSnoozedFollowUp((prev) => ({
+      ...prev,
+      cadences: prev.cadences.map((c, i) => (i === index ? update(c) : c)),
+    }));
+  const removeCadence = (index: number) =>
+    setSnoozedFollowUp((prev) => ({
+      ...prev,
+      cadences: prev.cadences.filter((_, i) => i !== index),
+    }));
+  // The default goes first, where the form keeps it; a labeled one goes last, which is also the last
+  // place the reader tries.
+  const addDefault = () =>
+    setSnoozedFollowUp((prev) => ({
+      ...prev,
+      cadences: [{ label: null, steps: [newSnoozedStep()] }, ...prev.cadences],
+    }));
+  const addLabeled = () =>
+    setSnoozedFollowUp((prev) => ({
+      ...prev,
+      cadences: [...prev.cadences, { label: "", steps: [newSnoozedStep()] }],
+    }));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <SwitchField
+        checked={snoozedFollowUp.enabled}
+        onCheckedChange={(v) =>
+          setSnoozedFollowUp((prev) => ({ ...prev, enabled: v }))
+        }
+        label={t(
+          "editor.snoozedFollowUpEnabled",
+          "Remind the customer when a person snoozed the conversation and got no reply",
+        )}
+      />
+      {snoozedFollowUp.enabled && (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <SwitchField
+              checked={snoozedFollowUp.signature}
+              onCheckedChange={(v) =>
+                setSnoozedFollowUp((prev) => ({ ...prev, signature: v }))
+              }
+              label={t(
+                "editor.snoozedFollowUpSignature",
+                "Sign the reminders with the agent's signature",
+              )}
+            />
+            <p className="text-text-muted text-xs">
+              {t(
+                "editor.snoozedFollowUpSignatureHint",
+                "Off by default: the reminder speaks for the person who asked, so the agent's sign-off is usually wrong there.",
+              )}
+            </p>
+          </div>
+          <div>
+            <h4 className="font-medium text-sm text-text-secondary">
+              {t("editor.snoozedFollowUpCadences", "Cadences")}
+            </h4>
+            <p className="text-text-muted text-xs">
+              {t(
+                "editor.snoozedFollowUpCadencesHint",
+                "A conversation follows the first cadence below whose label it carries, and otherwise the default cadence.",
+              )}
+            </p>
+          </div>
+          {!hasDefault && (
+            <p className="rounded-md border border-border bg-bg-tertiary px-3 py-2 text-text-secondary text-xs">
+              {t(
+                "editor.snoozedFollowUpNoDefault",
+                "No default cadence: only conversations carrying one of the labels below are chased. A plain snooze, with none of them, gets no reminder.",
+              )}
+            </p>
+          )}
+          {issues.tooManyLabeled && (
+            <p role="alert" className="text-error text-xs">
+              {t(
+                "editor.snoozedFollowUpTooMany",
+                "Up to {{max}} cadences by label. Remove the extra ones to save.",
+                { max: SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES },
+              )}
+            </p>
+          )}
+          {cadences.map((cadence, index) => {
+            const issue = issues.cadences[index];
+            const isDefault = cadence.label === null;
+            return (
+              <div
+                // biome-ignore lint/suspicious/noArrayIndexKey: cadences are positional (no stable id); reorder is add/remove only
+                key={index}
+                className="flex flex-col gap-3 rounded-lg border border-border p-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <h5 className="font-medium text-sm">
+                    {isDefault
+                      ? t(
+                          "editor.snoozedFollowUpDefaultCadence",
+                          "Default cadence",
+                        )
+                      : t(
+                          "editor.snoozedFollowUpLabeledCadence",
+                          "Cadence by label",
+                        )}
+                  </h5>
+                  <button
+                    type="button"
+                    onClick={() => removeCadence(index)}
+                    aria-label={
+                      isDefault
+                        ? t(
+                            "editor.snoozedFollowUpRemoveDefault",
+                            "Remove the default cadence",
+                          )
+                        : t(
+                            "editor.snoozedFollowUpRemoveCadence",
+                            "Remove cadence",
+                          )
+                    }
+                    className="flex h-7 w-7 items-center justify-center rounded text-text-muted transition-colors hover:text-error"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+                {isDefault ? (
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.snoozedFollowUpDefaultHint",
+                      "For a snoozed conversation that carries none of the labels below.",
+                    )}
+                  </p>
+                ) : (
+                  <FormField
+                    label={t("editor.snoozedFollowUpLabel", "Label")}
+                    group
+                    description={t(
+                      "editor.snoozedFollowUpLabelHint",
+                      "A snoozed conversation with this label follows this cadence.",
+                    )}
+                    error={
+                      issue?.label === "missing"
+                        ? t(
+                            "editor.snoozedFollowUpLabelMissing",
+                            "Pick a label. Without one, this cadence would be read as a second default.",
+                          )
+                        : issue?.label === "duplicate"
+                          ? t(
+                              "editor.snoozedFollowUpLabelDuplicate",
+                              "Another cadence above already uses this label (case is ignored). Only the first one would ever be picked.",
+                            )
+                          : null
+                    }
+                  >
+                    <LabelPicker
+                      single
+                      value={cadence.label ?? ""}
+                      onChange={(v) =>
+                        updateCadence(index, (c) => ({ ...c, label: v }))
+                      }
+                      labels={labels}
+                      multiAccount={multiAccount}
+                      placeholder={t(
+                        "editor.snoozedFollowUpLabelPlaceholder",
+                        "Pick a label…",
+                      )}
+                      ariaLabel={t("editor.snoozedFollowUpLabel", "Label")}
+                    />
+                  </FormField>
+                )}
+                {isDefault && issue?.label === "duplicate" && (
+                  <p role="alert" className="text-error text-xs">
+                    {t(
+                      "editor.snoozedFollowUpDefaultDuplicate",
+                      "There is already a default cadence above. Only the first one would ever be used.",
+                    )}
+                  </p>
+                )}
+                <StepsEditor
+                  steps={cadence.steps}
+                  setSteps={(update) =>
+                    updateCadence(index, (c) => ({
+                      ...c,
+                      steps: update(c.steps),
+                    }))
+                  }
+                  labels={labels}
+                  multiAccount={multiAccount}
+                  stepRefusals={stepRefusals[index] ?? []}
+                  showAppointmentPause={false}
+                  firstDelayLabel={t(
+                    "editor.snoozedFollowUpFirstDelay",
+                    "Wait after the person's message",
+                  )}
+                  newStep={newSnoozedStep}
+                />
+                {issue?.noSteps && (
+                  <p role="alert" className="text-error text-xs">
+                    {t(
+                      "editor.snoozedFollowUpNoSteps",
+                      "A cadence with no step reminds nobody. Add a step or remove the cadence.",
+                    )}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+          <div className="flex flex-wrap gap-2">
+            {!hasDefault && (
+              <Button variant="secondary" size="sm" onClick={addDefault}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                {t("editor.snoozedFollowUpAddDefault", "Add default cadence")}
+              </Button>
+            )}
+            {labeledCount < SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES && (
+              <Button variant="secondary" size="sm" onClick={addLabeled}>
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                {t("editor.snoozedFollowUpAddLabeled", "Add cadence by label")}
+              </Button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -1292,6 +1601,8 @@ export function BehaviorTab({
   followUp,
   setFollowUp,
   redirectSuppressesFollowUp,
+  snoozedFollowUp,
+  setSnoozedFollowUp,
   onScheduleSaved,
   dirty,
   saving,
@@ -1572,6 +1883,15 @@ export function BehaviorTab({
     observation.decisions !== null &&
     decisionsFormIssues(observation.decisions, decisionsBaseline(observation))
       .size > 0;
+  // The snoozed ladder's cadences, checked the way its reader reads them (a label taken twice, a
+  // cadence with no step). On the gate only while its fields are drawn: a watcher hides the section and
+  // the switch hides the cadences, and a Save held by a field nobody can see is a dead button.
+  const snoozedIssues = useMemo(
+    () => snoozedFollowUpIssues(snoozedFollowUp),
+    [snoozedFollowUp],
+  );
+  const snoozedFollowUpInvalid =
+    mode !== "monitoring" && snoozedFollowUp.enabled && snoozedIssues.any;
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,
@@ -1703,6 +2023,11 @@ export function BehaviorTab({
       id: "proactive",
       icon: Megaphone,
       label: t("editor.proactiveSection", "Proactive messages"),
+    },
+    {
+      id: "snoozedFollowUp",
+      icon: BellRing,
+      label: t("editor.snoozedFollowUp", "Snoozed follow-up"),
     },
   ];
 
@@ -4312,6 +4637,29 @@ export function BehaviorTab({
               )}
             </div>
           </Section>
+
+          <Section
+            id="snoozedFollowUp"
+            hidden={watcher}
+            icon={BellRing}
+            title={t("editor.snoozedFollowUp", "Snoozed follow-up")}
+            description={t(
+              "editor.snoozedFollowUpSectionHint",
+              "Remind the customer on a person's behalf when a conversation they snoozed until the next reply gets no answer, then close it.",
+            )}
+            help={t(
+              "editor.snoozedFollowUpHelp",
+              "A person on the team asks the customer for something, such as an order number or a document, and snoozes the conversation in Chatwoot until the next reply. If the customer never answers, nothing else reminds them or closes it.\n\nEach step is a reminder the agent writes on that person's behalf, with no tools; the last step can add labels and resolve. The customer answering ends the reminders.\n\nSteps fire inside the follow-up's allowed schedule. To pick the pace in one click, create a Chatwoot macro that snoozes and adds a cadence's label.",
+            )}
+          >
+            <SnoozedFollowUpEditor
+              agentId={agentId}
+              snoozedFollowUp={snoozedFollowUp}
+              setSnoozedFollowUp={setSnoozedFollowUp}
+              issues={snoozedIssues}
+              stepRefusals={refusals.snoozedFollowUpSteps}
+            />
+          </Section>
         </div>
       </div>
 
@@ -4333,6 +4681,8 @@ export function BehaviorTab({
           fallbackBaseUrlUnsupported ||
           fallbackModelMissing ||
           decisionsBlockInvalid ||
+          // NOTE: Asked only where the section is drawn and switched on (see its declaration).
+          snoozedFollowUpInvalid ||
           // NOTE: A watcher draws the gate's conditions and its endpoint's fields, so a rule or a url
           // it cannot use is said there.
           contactAuthRuleBad ||

@@ -2,7 +2,7 @@
 
 The ordinary follow-up (`followUp`) chases a customer who went quiet on the BOT: it only acts on a conversation the bot holds (`pending`, no person assigned). Nothing chased the other half: a person on the team asks the customer for something (an order number, a document), snoozes the conversation in Chatwoot "until next reply", and the customer never answers. Chatwoot only unsnoozes on an incoming message, so the conversation sits snoozed forever and nobody reminds the customer or closes it. `snoozedFollowUp` (issue #1184) is that ladder: a reminder on the person's behalf, then another, then a close.
 
-Off by default, configured per agent through MCP `agent_settings_set` or REST. The console section is #1198.
+Off by default, configured per agent in the console (agent editor, Behavior tab, section "Snoozed follow-up"), or through MCP `agent_settings_set` or REST.
 
 ## Configuration (`settings.snoozedFollowUp`)
 
@@ -23,7 +23,7 @@ Off by default, configured per agent through MCP `agent_settings_set` or REST. T
 ```
 
 - **Steps** are the `followUp.steps` shape, read by the same reader (`readFollowUpStep`), so a step means the same thing in both ladders: delay, instructions, `assignLabels`, and `resolve` honored on the last step only. A step with no instructions that labels or resolves closes without a model call.
-- **Cadences** pick the pace per conversation: the first cadence, in list order, whose `label` the conversation carries; otherwise the one with `label: null`; with neither, the conversation is not chased. Labels compare ignoring case. The intended use is a Chatwoot macro that snoozes and adds the label in one click ("Snooze, fast" / "Snooze, slow"). Up to 10 cadences, one per label (a duplicate could never be picked and is dropped), and a cadence with no steps is dropped.
+- **Cadences** pick the pace per conversation: the first cadence, in list order, whose `label` the conversation carries; otherwise the one with `label: null`; with neither, the conversation is not chased. Labels compare ignoring case. The intended use is a Chatwoot macro that snoozes and adds the label in one click ("Snooze, fast" / "Snooze, slow"). The default is optional (without it only labeled conversations are chased) and does not count against the labeled ones: the list holds the default plus up to 10 labeled cadences (`SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES`), and the reader reads its first 11 entries. One cadence per label (a duplicate could never be picked and is dropped), and a cadence with no steps is dropped.
 - **Signature** is off by default: the reminder speaks for the person who asked, so the bot's sign-off is usually wrong there.
 
 ## What is chased
@@ -61,8 +61,11 @@ The nudge was built around "the bot owns the conversation". Under `holder: "snoo
 - an output guardrail that would **hand over** drops the reminder instead (no transfer, no hand-over line: the conversation is the person's) and the step ends as a silent one.
 - the conversation is left as it was: still snoozed, still the person's. Only the last step's `resolve` and labels change it.
 
+## Console
+
+The Behavior tab's "Snoozed follow-up" section (`SnoozedFollowUpEditor` in `src/client/pages/agents/BehaviorTab.tsx`, form pair in `snoozedFollowUpFormState.ts`) edits the whole block: the switch, the signature switch, and the cadences, the default first, each one's steps in the follow-up's own step editor (no appointment-pause switch: this ladder has no appointment pause, and the value is carried as stored). What the reader would drop is flagged on the cadence and blocks Save instead of being saved and ignored: a label used twice (ignoring case) or a second default, a labeled cadence with no label picked (it would read as a second default), a cadence with no step, and more than 10 labeled cadences. The section is hidden for a monitoring agent. The reminders themselves show in the conversation's timeline.
+
 ## Not covered
 
-- No console UI to configure the block yet (#1198, MCP and REST only); the reminders themselves show in the conversation's timeline.
 - The anchor search reads 3 pages of messages; a person's message older than that is not found and the conversation is not chased.
 - A snooze by a person on a conversation whose inbox has no agent is not chased: the ladder needs an agent's model and settings.

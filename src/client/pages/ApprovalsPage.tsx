@@ -88,7 +88,9 @@ export function ApprovalsPage() {
   }, [tab, load, refresh]);
 
   const loadMore = async () => {
-    if (!nextAfter) return;
+    // Not while the first page is read again: the cursor shown is the old read's, and a page asked
+    // with it under the new generation would be appended over the fresh rows.
+    if (!nextAfter || loading) return;
     const asked = generation.current;
     setLoadingMore(true);
     try {
@@ -245,6 +247,7 @@ export function ApprovalsPage() {
                 variant="secondary"
                 onClick={loadMore}
                 loading={loadingMore}
+                disabled={loading}
                 className="self-start"
               >
                 {t("approvalQueue.more", "Show more")}

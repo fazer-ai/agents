@@ -614,6 +614,44 @@ test("a next page asked before the queue was read again is dropped, not appended
   ).toBeNull();
 });
 
+test("a next page cannot be asked while the queue is read again", async () => {
+  role = "AGENT";
+  const SECOND = { ...DOCUMENT, id: "42", contactName: "Bruno Lima" };
+  // Set once the history is open: from then on, every first-page read (the queue's and the badge's)
+  // waits until released.
+  let holding = false;
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  const asked: string[] = [];
+  pending = async (url) => {
+    asked.push(url);
+    if (url.includes("after=41")) {
+      return { requests: [SECOND], total: 2, nextAfter: null };
+    }
+    if (holding) await held;
+    return { requests: [DOCUMENT], total: 2, nextAfter: "41" };
+  };
+  mount(<ApprovalsPage />);
+  await screen.findByRole("link", { name: /Orçamento for Ana Ribeiro/ });
+  fireEvent.click(screen.getByRole("tab", { name: "History" }));
+  holding = true;
+  fireEvent.click(screen.getByRole("tab", { name: /Waiting/ }));
+  const more = await screen.findByRole("button", { name: "Show more" });
+  await waitFor(() => expect((more as HTMLButtonElement).disabled).toBe(true));
+  fireEvent.click(more);
+  await new Promise((r) => setTimeout(r, 50));
+  expect(asked.some((u) => u.includes("after=41"))).toBe(false);
+  release();
+  await waitFor(() =>
+    expect(
+      (screen.getByRole("button", { name: "Show more" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false),
+  );
+});
+
 test("an older first-page read answering last does not bring back what a newer one cleared", async () => {
   role = "AGENT";
   let release: () => void = () => {};

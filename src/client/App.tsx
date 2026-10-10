@@ -32,6 +32,7 @@ import { ChatwootConversationLinkPage } from "@/client/pages/ChatwootConversatio
 import { ConversationDetailPage } from "@/client/pages/ConversationDetailPage";
 import { ConversationsPage } from "@/client/pages/ConversationsPage";
 import { DashboardPage } from "@/client/pages/DashboardPage";
+import { DocumentApprovalPage } from "@/client/pages/DocumentApprovalPage";
 import { LoginPage } from "@/client/pages/LoginPage";
 import { LogsPage } from "@/client/pages/LogsPage";
 import { McpPage } from "@/client/pages/McpPage";
@@ -99,6 +100,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute>
                                       <ConversationDetailPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/document-approvals/:id"
+                                  element={
+                                    <ProtectedRoute>
+                                      <DocumentApprovalPage />
                                     </ProtectedRoute>
                                   }
                                 />

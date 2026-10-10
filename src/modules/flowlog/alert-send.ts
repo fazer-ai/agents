@@ -9,7 +9,7 @@ import { consoleUrl } from "@/modules/mcp/console-links";
 import { turnLimitSettingsUrl } from "@/modules/turn-limit/service";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
-import { RECOVERY_RATE_KEY } from "./alerts";
+import { approvalRequestOfCause, RECOVERY_RATE_KEY } from "./alerts";
 
 // The one place an alert becomes an HTTP request. The worker and the console's Test button both
 // call it, so a green test is evidence about the path a real alert takes; they differ only in what
@@ -194,6 +194,24 @@ export function alertLinks(
   a: AlertBodyInput,
 ): { label: string; url: string }[] {
   const opts = { tenantId: a.tenantId };
+  // A document approval links to the request's page, where the decision is made, and to the
+  // conversation it came from. The link is the page and nothing else: the session is the credential.
+  const approvalId = approvalRequestOfCause(a.causeKey);
+  if (approvalId !== null) {
+    const links = [
+      {
+        label: "Review document",
+        url: consoleUrl(`/document-approvals/${approvalId}`, opts),
+      },
+    ];
+    if (a.conversationId != null) {
+      links.push({
+        label: "View conversation",
+        url: consoleUrl(`/conversations/${a.conversationId}`, opts),
+      });
+    }
+    return links;
+  }
   // A rate alert is about many failures from the start, so its link is the list even at count 1.
   if (a.count > 1 || a.causeKey?.startsWith("rate:")) {
     const q = new URLSearchParams();
@@ -231,6 +249,19 @@ export function alertLinks(
     });
   }
   return links;
+}
+
+function documentApprovalOf(
+  a: AlertBodyInput,
+): { requestId: string; url: string } | null {
+  const requestId = approvalRequestOfCause(a.causeKey);
+  if (requestId === null) return null;
+  return {
+    requestId,
+    url: consoleUrl(`/document-approvals/${requestId}`, {
+      tenantId: a.tenantId,
+    }),
+  };
 }
 
 const DISCORD_MAX = 1900;
@@ -304,6 +335,8 @@ export function buildAlertBody(a: AlertBodyInput): {
       // Additive too: the same console links Discord prints, for a receiver that forwards the alert
       // to a person, who needs somewhere to act (the turn limit's setting among them).
       links: alertLinks(a),
+      // Additive to version 1: the page a person decides a document approval on.
+      documentApproval: documentApprovalOf(a),
     }),
     contentType: "application/json",
   };

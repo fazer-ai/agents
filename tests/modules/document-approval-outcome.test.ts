@@ -14,10 +14,15 @@ import {
   approveDocumentRequest,
   expireDueApprovalRequests,
   issueOrRequestApproval,
+  openedJobKey,
   outcomeJobKey,
   rejectDocumentRequest,
 } from "@/modules/documents/approval";
-import { runApprovalOutcome } from "@/modules/documents/approval-outcome";
+import {
+  runApprovalOpened,
+  runApprovalOutcome,
+  runOutcomeJob,
+} from "@/modules/documents/approval-outcome";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -175,6 +180,16 @@ async function outcomeJobs(requestId: bigint) {
   });
 }
 
+// A note ends on the request's page, named for the tenant, so the person the conversation falls to
+// opens the decision from Chatwoot.
+function expectPageLink(note: unknown, requestId: bigint) {
+  expect(String(note)).toMatch(
+    new RegExp(
+      `\\n\\nVer aprovação: \\S+/document-approvals/${requestId}\\?switchTenant=${tenantId}$`,
+    ),
+  );
+}
+
 describe.skipIf(!dbUp)("document approval outcomes", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -277,6 +292,69 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     await rm(DIR, { recursive: true, force: true });
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  test("a request just opened tells the conversation's people in a private note, with the page", async () => {
+    const { requestId } = await conversationWithRequest({});
+    const armed = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "DOCUMENT_APPROVAL_OUTCOME",
+        dedupeKey: openedJobKey(requestId),
+      },
+      select: { payload: true },
+    });
+    expect(armed).toEqual([
+      { payload: { requestId: String(requestId), phase: "opened" } },
+    ]);
+    // Its own row: the decision's is not armed until there is a decision.
+    expect(await outcomeJobs(requestId)).toHaveLength(0);
+    const rec = recordingClient();
+    expect(
+      await runApprovalOpened(tenantId, requestId, appDb, {
+        makeClient: rec.makeClient,
+      }),
+    ).toBe("noted");
+    const notes = named(rec.calls, "sendPrivateNote");
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.[2])).toContain("Pedido de aprovação aberto");
+    expectPageLink(notes[0]?.[2], requestId);
+    expect(named(rec.calls, "sendMessage")).toHaveLength(0);
+    expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
+  });
+
+  test("a decision taken while the opening note waits on Chatwoot leaves that note unwritten", async () => {
+    const { requestId } = await conversationWithRequest({});
+    const rec = recordingClient();
+    const decidedMeanwhile = async () => {
+      await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+      return rec.makeClient();
+    };
+    expect(
+      await runApprovalOpened(tenantId, requestId, appDb, {
+        makeClient: decidedMeanwhile as never,
+      }),
+    ).toBe("decided");
+    expect(named(rec.calls, "sendPrivateNote")).toHaveLength(0);
+  });
+
+  test("a decision's run waits while the opening note is still being written", async () => {
+    const { requestId } = await conversationWithRequest({});
+    await rejectDocumentRequest({ ctx: ctx(), requestId, base: appDb });
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, dedupeKey: openedJobKey(requestId) },
+      data: { status: "CLAIMED", claimedAt: new Date() },
+    });
+    const before = Date.now();
+    const result = await runOutcomeJob(
+      tenantId,
+      { requestId: String(requestId) },
+      appDb,
+    );
+    expect(result.outcome).toBe("reschedule");
+    expect(
+      result.outcome === "reschedule" ? result.runAt.getTime() : 0,
+    ).toBeGreaterThan(before);
   });
 
   test("approval sends the numbered PDF on the agent's message, and approving again sends nothing", async () => {
@@ -1341,6 +1419,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("Documento aprovado");
     expect(String(notes[0]?.[2])).toContain("atendente");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     expect(named(rec.calls, "toggleStatus")).toHaveLength(0);
@@ -1368,6 +1447,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("janela de 24h");
     expect(String(notes[0]?.[2])).toContain("enviado por uma pessoa");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendTemplate")).toHaveLength(0);
     expect(named(rec.calls, "sendFileAttachment")).toHaveLength(0);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
@@ -1393,6 +1473,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const notes = named(rec.calls, "sendPrivateNote");
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("preço do item 2 errado, refazer");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "toggleStatus")).toEqual([
       [
         "toggleStatus",
@@ -1613,6 +1694,7 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
     const notes = named(rec.calls, "sendPrivateNote");
     expect(notes).toHaveLength(1);
     expect(String(notes[0]?.[2])).toContain("venceu");
+    expectPageLink(notes[0]?.[2], requestId);
     expect(named(rec.calls, "sendMessage")).toHaveLength(0);
     const line = await flowLogRow(suDb, {
       where: {

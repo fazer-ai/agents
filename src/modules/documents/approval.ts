@@ -1,11 +1,14 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import { emitFlowEvent } from "@/modules/flowlog/service";
 import { upsertJobRow, upsertJobRows } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
@@ -108,6 +111,13 @@ export function outcomeJobKey(requestId: bigint): string {
   return `doc-approval-outcome:${requestId}`;
 }
 
+// The note saying a request is open, on the outcome kind under its own key: sharing the decision's
+// row would let a claim taken before the decision deliver it, and the re-arm deliver it again. The
+// decision's run waits instead while this one is claimed (runOutcomeJob).
+export function openedJobKey(requestId: bigint): string {
+  return `doc-approval-opened:${requestId}`;
+}
+
 async function armApprovalOutcome(
   db: ScopedDb,
   tenantId: bigint,
@@ -168,6 +178,9 @@ export async function createApprovalRequest(params: {
   chatwootInstanceId?: bigint | null;
   conversationId?: bigint | null;
   now: Date;
+  // Runs inside the creating transaction, only for the call that inserts the request: a write that
+  // has to land with the request or not at all (the audit of a request asked again).
+  onCreate?: (db: ScopedDb, requestId: bigint) => Promise<void>;
 }): Promise<ApprovalRequestDto> {
   const base = params.base ?? basePrisma;
   const { ctx, frozen } = params;
@@ -212,6 +225,15 @@ export async function createApprovalRequest(params: {
       runAt: expiresAt,
       rearm: "new-work",
     });
+    await upsertJobRow(db, {
+      tenantId,
+      kind: "DOCUMENT_APPROVAL_OUTCOME",
+      dedupeKey: openedJobKey(row.id),
+      runAt: new Date(),
+      rearm: "new-work",
+      payload: { requestId: String(row.id), phase: "opened" },
+    });
+    await params.onCreate?.(db, row.id);
     return row;
   }).catch((err: unknown) => {
     if (err instanceof KeyAnswered) throw err;
@@ -235,7 +257,10 @@ export async function createApprovalRequest(params: {
     }
     throw err;
   });
-  if (created) return toDto(created);
+  if (created) {
+    await announceRequest(base, tenantId, created);
+    return toDto(created);
+  }
   const existing = await runScopedOn(base, ctx, (db) =>
     db.documentApprovalRequest.findUnique({
       where: {
@@ -251,6 +276,65 @@ export async function createApprovalRequest(params: {
     throw new AppError("failed to persist the approval request", 500);
   }
   return toDto(existing);
+}
+
+// The team hears of a request the moment it exists: an `info` line the alert path sends to every
+// channel as a cause (it needs a person, whatever the channel's level), linking to the request's
+// page. Best-effort: the request stands, and it is in the console's list either way.
+async function announceRequest(
+  base: PrismaClient,
+  tenantId: bigint,
+  row: Row,
+): Promise<void> {
+  try {
+    const agent =
+      row.conversationId === null
+        ? null
+        : await runScopedOn(base, sysCtx(tenantId), async (db) => {
+            const conv = await db.conversation.findUnique({
+              where: { id: row.conversationId as bigint },
+              select: { inboxId: true },
+            });
+            if (!conv?.inboxId) return null;
+            const inbox = await db.inbox.findUnique({
+              where: { id: conv.inboxId },
+              select: { agentId: true },
+            });
+            if (!inbox?.agentId) return null;
+            return db.agent.findUnique({
+              where: { id: inbox.agentId },
+              select: { id: true, settings: true },
+            });
+          });
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: row.conversationId,
+        agentId: agent?.id ?? null,
+        threadId: row.threadId,
+        base,
+        fullDetail: agent
+          ? readDebugModes(agent.settings, null).fullDetail
+          : false,
+      },
+      {
+        stage: "tool",
+        level: "info",
+        status: "ok",
+        detail: {
+          outcome: "document_approval_requested",
+          requestId: String(row.id),
+        },
+      },
+    );
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: String(tenantId), requestId: String(row.id) },
+      "document approval: the request could not be announced",
+    );
+  }
 }
 
 export async function listApprovalRequests(
@@ -342,6 +426,18 @@ function approvalDocumentKey(row: {
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(`${row.idempotencyKey}|${row.createdAt.toISOString()}`);
   return `${APPROVAL_KEY_PREFIX}${row.id}:${hasher.digest("hex")}`;
+}
+
+// The key a request asked again is opened under, in the same reserved namespace and for the same
+// reason: no document a caller issued through the REST route can already hold it.
+function againKey(row: {
+  id: bigint;
+  idempotencyKey: string;
+  createdAt: Date;
+}): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(`${row.idempotencyKey}|${row.createdAt.toISOString()}`);
+  return `${APPROVAL_KEY_PREFIX}again:${row.id}:${hasher.digest("hex")}`;
 }
 
 // A decision in the tenant's trail, written in the transaction that made it. The status only: the
@@ -498,6 +594,107 @@ export async function rejectDocumentRequest(params: {
     throw notPending(row.status);
   }
   return toDto(row);
+}
+
+function notExpired(status: string): AppError {
+  return new AppError(
+    `this approval request is ${status.toLowerCase()}, not expired`,
+    409,
+    "errors.documentApprovalNotExpired",
+    { status },
+  );
+}
+
+// The calendar a request asked again is dated in: the conversation's agent's business hours, the
+// one the agent's own call reads, else the default.
+async function timezoneOf(
+  db: ScopedDb,
+  conversationId: bigint | null,
+): Promise<string> {
+  if (conversationId === null) return DEFAULT_TIMEZONE;
+  const conv = await db.conversation.findUnique({
+    where: { id: conversationId },
+    select: { inboxId: true },
+  });
+  if (!conv?.inboxId) return DEFAULT_TIMEZONE;
+  const inbox = await db.inbox.findUnique({
+    where: { id: conv.inboxId },
+    select: { agentId: true },
+  });
+  if (!inbox?.agentId) return DEFAULT_TIMEZONE;
+  const agent = await db.agent.findUnique({
+    where: { id: inbox.agentId },
+    select: { businessHoursId: true },
+  });
+  if (!agent?.businessHoursId) return DEFAULT_TIMEZONE;
+  const hours = await db.businessHours.findUnique({
+    where: { id: agent.businessHoursId },
+    select: { timezone: true },
+  });
+  return hours?.timezone || DEFAULT_TIMEZONE;
+}
+
+// "Request again" on an expired request: the same values frozen again from the template as it is
+// now, dated today, as a NEW request for the same conversation. The expired one stays EXPIRED. The
+// key names the expired request, so asking twice opens one request, not two.
+export async function requestApprovalAgain(params: {
+  ctx: TenantContext;
+  requestId: bigint;
+  base?: PrismaClient;
+  now?: Date;
+}): Promise<ApprovalRequestDto> {
+  const base = params.base ?? basePrisma;
+  const { ctx, requestId } = params;
+  const now = params.now ?? new Date();
+  const row = await loadRequestWithSnapshot(ctx, requestId, base);
+  if (row.status !== "EXPIRED") throw notExpired(row.status);
+  // Asked before the template is: a replacement already made answers the retry (a lost response, a
+  // second click) even when the template has since been switched off or changed.
+  const again = againKey(row);
+  const existing = await runScopedOn(base, ctx, (db) =>
+    db.documentApprovalRequest.findFirst({
+      where: { idempotencyKey: again },
+      select: { id: true },
+    }),
+  );
+  if (existing) return toDto(await loadRequest(ctx, existing.id, base));
+  if (row.templateId === null) {
+    throw new NotFoundError(
+      "document template not found",
+      "errors.documentTemplateNotFound",
+    );
+  }
+  const stored = row.snapshot as unknown as DocumentSnapshot;
+  const timezone = await runScopedOn(base, ctx, (db) =>
+    timezoneOf(db, row.conversationId),
+  );
+  const frozen = await freezeDocumentSnapshot({
+    ctx,
+    base,
+    templateId: row.templateId,
+    values: stored.values,
+    now,
+    timezone,
+  });
+  const request = await createApprovalRequest({
+    ctx,
+    base,
+    frozen,
+    idempotencyKey: again,
+    threadId: row.threadId,
+    chatwootInstanceId: row.chatwootInstanceId,
+    conversationId: row.conversationId,
+    now,
+    // With the request or not at all, and only by the call that made it.
+    onCreate: (db, newId) =>
+      auditMutation(db, ctx, {
+        action: "document_approval.request_again",
+        target: `document_approval:${row.id}`,
+        before: { status: "EXPIRED" },
+        after: { requestId: String(newId) },
+      }),
+  });
+  return request;
 }
 
 // Moves the tenant's overdue PENDING requests to EXPIRED and returns their ids. Idempotent: a second

@@ -5,6 +5,7 @@
 export class Semaphore {
   private available: number;
   private readonly waiters: Array<() => void> = [];
+  private readonly freed = new Set<() => void>();
 
   constructor(permits: number) {
     this.available = Math.max(1, Math.floor(permits));
@@ -41,7 +42,17 @@ export class Semaphore {
       next();
     } else {
       this.available += 1;
+      for (const listener of [...this.freed]) listener();
     }
+  }
+
+  // Calls `listener` each time a permit becomes free with nobody queued for it, until the returned
+  // function is called. For a caller that only ever `tryAcquire`s and must learn when to try again.
+  onFree(listener: () => void): () => void {
+    this.freed.add(listener);
+    return () => {
+      this.freed.delete(listener);
+    };
   }
 
   // Takes a permit only if one is free right now, never joining the queue. Returns its release

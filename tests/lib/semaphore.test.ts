@@ -269,4 +269,26 @@ describe("Semaphore.tryAcquire", () => {
     expect(after).not.toBeNull();
     after?.();
   });
+
+  test("onFree fires when a permit comes back free, not when a waiter takes it, and stops when removed", async () => {
+    const sem = new Semaphore(1);
+    let calls = 0;
+    const stop = sem.onFree(() => {
+      calls += 1;
+    });
+    const held = sem.tryAcquire();
+    let release!: () => void;
+    const open = new Promise<void>((r) => {
+      release = r;
+    });
+    const waiting = sem.run(() => open);
+    held?.();
+    expect(calls).toBe(0);
+    release();
+    await waiting;
+    expect(calls).toBe(1);
+    stop();
+    sem.tryAcquire()?.();
+    expect(calls).toBe(1);
+  });
 });

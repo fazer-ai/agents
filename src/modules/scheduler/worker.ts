@@ -722,11 +722,17 @@ export interface TrafficTickOptions {
 // (the CPU a backlog takes from live traffic). Provider permits are taken BEFORE the claim, which
 // takes no more spending rows than it holds (`spendCap`): a claimed row never waits for capacity,
 // so every claim is a start and the observe drain never queues behind a backlog. `waitMs` is how
-// long until the window admits another start when it is what stopped the claim.
+// long until the window admits another start when it is what stopped the claim; `wantsPermit`, that
+// a spending row may be due and waiting on a permit.
 export async function runTrafficTick(
   base: PrismaClient,
   opts: TrafficTickOptions,
-): Promise<{ claimed: number; waitMs: number | null; settled: Promise<void> }> {
+): Promise<{
+  claimed: number;
+  waitMs: number | null;
+  wantsPermit: boolean;
+  settled: Promise<void>;
+}> {
   const free = opts.slots - trafficRunning;
   const now = Date.now();
   const allowed = Math.min(free, opts.window.available(now));
@@ -734,6 +740,7 @@ export async function runTrafficTick(
     return {
       claimed: 0,
       waitMs: free > 0 ? opts.window.nextFreeAt(now) - now : null,
+      wantsPermit: false,
       settled: Promise.resolve(),
     };
   }
@@ -758,6 +765,11 @@ export async function runTrafficTick(
     throw err;
   }
   const spending = jobs.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length;
+  // Every permit held went to a row and the claim still came up short: the cap may have bound.
+  const wantsPermit =
+    jobs.length < allowed &&
+    permits.length < allowed &&
+    spending === permits.length;
   for (const permit of permits.splice(spending)) permit();
   opts.window.record(Date.now(), jobs.length);
   trafficRunning += jobs.length;
@@ -782,7 +794,7 @@ export async function runTrafficTick(
         });
     }),
   ).then(() => {});
-  return { claimed: jobs.length, waitMs: null, settled };
+  return { claimed: jobs.length, waitMs: null, wantsPermit, settled };
 }
 
 interface Holder {
@@ -801,6 +813,8 @@ interface Holder {
   drainAgain: boolean;
   // The one wake-up armed for when the start window admits again.
   trafficWake?: ReturnType<typeof setTimeout>;
+  // Set while the traffic drain waits for a provider permit to free (`wantsPermit`).
+  trafficPermitWake?: () => void;
   // The wake-ups not fired yet, by the instant they are for, so stopping clears them.
   observeWakes: Map<number, ReturnType<typeof setTimeout>>;
 }
@@ -925,7 +939,14 @@ export function startScheduler(opts: StartOptions = {}): () => void {
       onFreed: drainTraffic,
       ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
     })
-      .then(({ waitMs }) => {
+      .then(({ waitMs, wantsPermit }) => {
+        if (wantsPermit && !h.trafficPermitWake) {
+          h.trafficPermitWake = gate.onFree(() => {
+            h.trafficPermitWake?.();
+            h.trafficPermitWake = undefined;
+            drainTraffic();
+          });
+        }
         // The window stopped the claim: wake when it admits again rather than at the next interval.
         if (waitMs !== null && !h.trafficWake) {
           h.trafficWake = setTimeout(() => {
@@ -983,6 +1004,8 @@ export function stopScheduler(): void {
     clearTimeout(h.trafficWake);
     h.trafficWake = undefined;
   }
+  h.trafficPermitWake?.();
+  h.trafficPermitWake = undefined;
   h.wakeObserve = undefined;
   for (const timer of h.observeWakes.values()) clearTimeout(timer);
   h.observeWakes.clear();

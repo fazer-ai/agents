@@ -324,6 +324,29 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
     expect(h.started).toEqual(["yields"]);
   });
 
+  test("a claim short of permits says it wants one, and a claim that had room does not", async () => {
+    install();
+    h.release();
+    await arm("DELIVERY_RECOVERY", "waits");
+    const gate = new Semaphore(1);
+    const taken = gate.tryAcquire();
+    const opts = {
+      slots: 2,
+      window: new StartWindow(100),
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    };
+    const starved = await runTrafficTick(appDb, opts);
+    expect(starved.claimed).toBe(0);
+    expect(starved.wantsPermit).toBe(true);
+    taken?.();
+    const ran = await runTrafficTick(appDb, { ...opts, slots: 1 });
+    await ran.settled;
+    expect(ran.claimed).toBe(1);
+    expect(ran.wantsPermit).toBe(false);
+  });
+
   test("a recovery is claimed before older ingestion, and ingestion before an older NOTHING_TO_ANSWER", async () => {
     await arm("NOTHING_TO_ANSWER", "nta", 3_600_000);
     await arm("INGEST_MESSAGE", "ingest", 1_800_000);

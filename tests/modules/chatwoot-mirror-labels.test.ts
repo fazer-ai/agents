@@ -305,5 +305,21 @@ describe.skipIf(!dbUp)("mirror: the conversation's labels", () => {
     });
     await mirror(inherited(10));
     expect(await pairingOf(10)).toBe(99_999);
+    // The same when the recovery's body is older than the row a webhook created without one.
+    await mirror(
+      convEvent("conversation_created", 11, { lastActivityAt: T + 40 }),
+    );
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 11 },
+      data: { contactInboxId: null },
+    });
+    await mirror(inherited(11));
+    expect(await pairingOf(11)).toBe(99_999);
+    // ...and an older body never replaces a stored pairing.
+    await mirror(
+      convEvent("conversation_created", 12, { lastActivityAt: T + 40 }),
+    );
+    await mirror(inherited(12));
+    expect(await pairingOf(12)).toBe(88_012);
   });
 });

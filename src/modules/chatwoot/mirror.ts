@@ -241,7 +241,8 @@ export async function mirrorChatwootEvent(
             // Read for the stale branch, which fills a missing route and contact. See the write there.
             inboxId: true,
             contactId: true,
-            // Read so a recovery's inherited pairing fills an empty one and never replaces a stored one.
+            // Read so a recovery's inherited pairing fills an empty one and never replaces a stored one,
+            // and so the stale branch fills a missing one.
             contactInboxId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
@@ -413,6 +414,11 @@ export async function mirrorChatwootEvent(
             // without naming one, and the contact gate fails closed on a row with no identity.
             ...(existing.contactId === null && contactId != null
               ? { contactId }
+              : {}),
+            // The pairing too, from NULL only: a row without one keys its turn on the conversation and
+            // misses the contact's shared memory.
+            ...(existing.contactInboxId === null && n.contactInboxId != null
+              ? { contactInboxId: n.contactInboxId }
               : {}),
           };
           if (Object.keys(staleWrites).length > 0) {

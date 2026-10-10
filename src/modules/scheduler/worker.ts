@@ -716,6 +716,13 @@ export interface TrafficTickOptions {
   onFreed?: () => void;
 }
 
+// The provider permits the traffic drain may take now: the free ones, less one owed to the observe
+// drain after it was refused (`observeRefused`). Read, never taken and handed back, so asking does
+// not wake whoever waits on a free permit.
+export function trafficPermitsFree(gate: Semaphore): number {
+  return Math.max(0, gate.free - (observeRefused ? 1 : 0));
+}
+
 // The drain of the traffic-proportional kinds (./lanes.ts, JOB_TRAFFIC_PROPORTIONAL), in SLOTS as
 // the observe drain: it claims into the free slots, as many as the start window allows, and returns
 // once its rows have STARTED. Concurrency bounds what runs at once, the window the sustained rate
@@ -745,12 +752,12 @@ export async function runTrafficTick(
     };
   }
   const permits: (() => void)[] = [];
-  while (permits.length < allowed) {
+  const take = Math.min(allowed, trafficPermitsFree(opts.gate));
+  while (permits.length < take) {
     const permit = opts.gate.tryAcquire();
     if (!permit) break;
     permits.push(permit);
   }
-  if (observeRefused) permits.pop()?.();
   let jobs: ClaimedJob[];
   try {
     jobs = await claimDueTrafficJobs(
@@ -942,10 +949,13 @@ export function startScheduler(opts: StartOptions = {}): () => void {
       .then(({ waitMs, wantsPermit }) => {
         if (wantsPermit && !h.trafficPermitWake) {
           h.trafficPermitWake = gate.onFree(() => {
+            if (trafficPermitsFree(gate) === 0) return;
             h.trafficPermitWake?.();
             h.trafficPermitWake = undefined;
             drainTraffic();
           });
+          // A permit freed while the claim was out notified nobody: look once more now.
+          if (trafficPermitsFree(gate) > 0) h.drainAgain = true;
         }
         // The window stopped the claim: wake when it admits again rather than at the next interval.
         if (waitMs !== null && !h.trafficWake) {

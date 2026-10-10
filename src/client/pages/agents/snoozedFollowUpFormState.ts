@@ -27,6 +27,10 @@ export interface SnoozedFollowUpState {
   // The default cadence first (when there is one), then the labeled ones in the stored order, which is
   // the order `pickSnoozedCadence` tries them in.
   cadences: SnoozedCadenceState[];
+  // Where the stored list had its default, so a save writes it back there: the size caps compare
+  // unchanged text by its indexed path, and moving it would read as a new text. Absent when none was
+  // stored, and a default added in the console is written first.
+  defaultAt?: number;
 }
 
 export function snoozedFollowUpToForm(settings: unknown): SnoozedFollowUpState {
@@ -58,6 +62,7 @@ export function snoozedFollowUpToForm(settings: unknown): SnoozedFollowUpState {
   // The default is shown first. Its position in the list never changes which cadence a conversation
   // follows (labels are tried first, in order, and the default is the fallback), so moving it is not
   // an edit; the labeled ones keep their relative order, which does decide.
+  const defaultAt = cadences.findIndex((c) => c.label === null);
   return {
     enabled: bag.enabled === true,
     signature: bag.signature === true,
@@ -65,6 +70,7 @@ export function snoozedFollowUpToForm(settings: unknown): SnoozedFollowUpState {
       ...cadences.filter((c) => c.label === null),
       ...cadences.filter((c) => c.label !== null),
     ],
+    ...(defaultAt >= 0 ? { defaultAt } : {}),
   };
 }
 
@@ -79,13 +85,21 @@ export function snoozedFollowUpToStored(form: SnoozedFollowUpState): {
     // A labeled cadence whose label was never picked is not written: stored blank, the reader would
     // read it as the default. Save is held while it is on screen; this covers the save made with the
     // ladder off, when the cadences (and that warning) are hidden.
-    cadences: form.cadences
+    cadences: storedOrder(form)
       .filter((c) => c.label === null || c.label.trim() !== "")
       .map((c) => ({
         label: c.label === null ? null : c.label.trim(),
         steps: stepsToStored(c.steps),
       })),
   };
+}
+
+// The labeled cadences in their order, with the default put back where the stored list had it.
+function storedOrder(form: SnoozedFollowUpState): SnoozedCadenceState[] {
+  const defaults = form.cadences.filter((c) => c.label === null);
+  const labeled = form.cadences.filter((c) => c.label !== null);
+  const at = Math.min(form.defaultAt ?? 0, labeled.length);
+  return [...labeled.slice(0, at), ...defaults, ...labeled.slice(at)];
 }
 
 // What is wrong with one cadence, in the reader's terms. Each one is a cadence the reader would drop

@@ -9,6 +9,10 @@ import {
 } from "@/client/pages/agents/snoozedFollowUpFormState";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import {
+  collectOversizedTextChanges,
+  FOLLOW_UP_INSTRUCTIONS_MAX,
+} from "@/modules/agents/text-caps";
+import {
   pickSnoozedCadence,
   SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES,
 } from "@/modules/followups/snoozed-settings";
@@ -282,5 +286,54 @@ describe("snoozed follow-up form: validation mirrors the reader", () => {
     expect(stored.cadences.map((c) => c.label)).toEqual([null]);
     const back = snoozedFollowUpToForm({ snoozedFollowUp: stored });
     expect(back.cadences.filter((c) => c.label === null)).toHaveLength(1);
+  });
+});
+
+describe("the stored order survives the console showing the default first", () => {
+  test("an untouched save writes the default back where it was, so no grandfathered text reads as new", () => {
+    const oversized = "x".repeat(FOLLOW_UP_INSTRUCTIONS_MAX + 50);
+    const stored = {
+      snoozedFollowUp: {
+        enabled: false,
+        signature: false,
+        cadences: [
+          {
+            label: "adiar-rapido",
+            steps: [
+              { delayValue: 2, delayUnit: "hours", instructions: oversized },
+            ],
+          },
+          {
+            label: null,
+            steps: [
+              { delayValue: 24, delayUnit: "hours", instructions: "padrão" },
+            ],
+          },
+        ],
+      },
+    };
+    const form = snoozedFollowUpToForm(stored);
+    // Shown default first.
+    expect(form.cadences.map((c) => c.label)).toEqual([null, "adiar-rapido"]);
+    const written = { snoozedFollowUp: snoozedFollowUpToStored(form) };
+    expect(written.snoozedFollowUp.cadences.map((c) => c.label)).toEqual([
+      "adiar-rapido",
+      null,
+    ]);
+    expect(collectOversizedTextChanges(written, stored)).toEqual([]);
+  });
+
+  test("a default added in the console, with none stored, is written first", () => {
+    const form = snoozedFollowUpToForm({
+      snoozedFollowUp: {
+        enabled: true,
+        cadences: [{ label: "vip", steps: [{ instructions: "a" }] }],
+      },
+    });
+    form.cadences.unshift({ label: null, steps: [newSnoozedStep()] });
+    expect(snoozedFollowUpToStored(form).cadences.map((c) => c.label)).toEqual([
+      null,
+      "vip",
+    ]);
   });
 });

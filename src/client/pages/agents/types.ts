@@ -84,6 +84,8 @@ export interface BehaviorRefusals {
   // By index, because the server refuses a follow-up note as `followUp.steps[2].instructions` and the
   // step it names is the one that has to carry the mark.
   followUpSteps: readonly (string | null)[];
+  // By cadence, then by step: `snoozedFollowUp.cadences[1].steps[0].instructions`.
+  snoozedFollowUpSteps: readonly (readonly (string | null)[])[];
 }
 
 export interface GuardrailsRefusals {

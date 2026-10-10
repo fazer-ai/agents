@@ -6,6 +6,7 @@ import {
   followUpStepField,
   hasNoConsoleControl,
   sentFromPatch,
+  snoozedFollowUpStepField,
   UNDRAWN_TOOL_NOTES,
 } from "@/client/lib/editorRefusal";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
@@ -35,6 +36,12 @@ function everyCappedPath(): string[] {
     },
     vision: { extractionPrompt: long },
     followUp: { steps: [{ instructions: long }, { instructions: long }] },
+    snoozedFollowUp: {
+      cadences: [
+        { label: null, steps: [{ instructions: long }] },
+        { label: "adiar", steps: [{ instructions: long }] },
+      ],
+    },
   };
   return collectOversizedTextChanges(bag, undefined).map((o) => o.path);
 }
@@ -150,6 +157,8 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     guardrailsEnabled: true,
     followUpEnabled: true,
     followUpSteps: 2,
+    snoozedFollowUpEnabled: true,
+    snoozedFollowUpSteps: [1, 2],
     ...over,
   };
 }
@@ -279,6 +288,14 @@ describe("editorRefusalFields", () => {
         { followUpEnabled: false },
         [followUpStepField(0), followUpStepField(1)],
       ],
+      [
+        { snoozedFollowUpEnabled: false },
+        [
+          snoozedFollowUpStepField(0, 0),
+          snoozedFollowUpStepField(1, 0),
+          snoozedFollowUpStepField(1, 1),
+        ],
+      ],
     ];
     for (const [off, gone] of cases) {
       const drawn = editorRefusalFields(view(off)).drawn;
@@ -309,6 +326,23 @@ describe("editorRefusalFields", () => {
     expect(drawn).toContain(followUpStepField(0));
     expect(drawn).toContain(followUpStepField(1));
     expect(drawn).not.toContain(followUpStepField(2));
+  });
+
+  test("the snoozed follow-up notes stop where each cadence's step list does", () => {
+    const { drawn, owned } = editorRefusalFields(
+      view({ snoozedFollowUpSteps: [1, 2] }),
+    );
+    expect(drawn).toContain(snoozedFollowUpStepField(0, 0));
+    expect(drawn).toContain(snoozedFollowUpStepField(1, 1));
+    expect(drawn).not.toContain(snoozedFollowUpStepField(0, 1));
+    expect(drawn).not.toContain(snoozedFollowUpStepField(2, 0));
+    // ...and the name is the one the server refuses with, which lands on the section.
+    expect(owned).toContain(
+      "snoozedFollowUp.cadences[1].steps[1].instructions",
+    );
+    expect(editorTargetFor(snoozedFollowUpStepField(1, 0))?.sectionId).toBe(
+      "snoozedFollowUp",
+    );
   });
 
   test("a tab the editor writes nothing on declares nothing", () => {

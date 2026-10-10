@@ -25,17 +25,28 @@ export function followUpToForm(settings: unknown): FollowUpState {
 // Always returns at least one step.
 function readSteps(fu: Record<string, unknown>): FollowUpStepState[] {
   const rawSteps =
-    Array.isArray(fu.steps) && fu.steps.length > 0
-      ? (fu.steps as Record<string, unknown>[])
-      : [{}];
-  return rawSteps.slice(0, FOLLOW_UP_MAX_STEPS).map((st) => ({
-    delayValue: num(st.delayValue) || "30",
-    delayUnit: str(st.delayUnit) || "minutes",
-    instructions: str(st.instructions),
-    assignLabels: stepLabels(st),
-    resolve: st.resolve === true,
-    ignoreAppointmentPause: st.ignoreAppointmentPause === true,
-  }));
+    Array.isArray(fu.steps) && fu.steps.length > 0 ? fu.steps : [{}];
+  return stepsToForm(rawSteps);
+}
+
+// One stored step list into the editor's rows, kept to FOLLOW_UP_MAX_STEPS like the reader. Shared with
+// the snoozed ladder (./snoozedFollowUpFormState), whose steps are the same shape: one step mapper, so
+// a field added to a step is carried by both editors or by neither. An empty list stays empty.
+export function stepsToForm(rawSteps: readonly unknown[]): FollowUpStepState[] {
+  return rawSteps.slice(0, FOLLOW_UP_MAX_STEPS).map((raw) => {
+    const st = (raw && typeof raw === "object" ? raw : {}) as Record<
+      string,
+      unknown
+    >;
+    return {
+      delayValue: num(st.delayValue) || "30",
+      delayUnit: str(st.delayUnit) || "minutes",
+      instructions: str(st.instructions),
+      assignLabels: stepLabels(st),
+      resolve: st.resolve === true,
+      ignoreAppointmentPause: st.ignoreAppointmentPause === true,
+    };
+  });
 }
 
 export function followUpToStored(form: FollowUpState): {
@@ -46,27 +57,35 @@ export function followUpToStored(form: FollowUpState): {
   return {
     enabled: form.enabled,
     pauseWhileAppointment: form.pauseWhileAppointment,
-    steps: form.steps.map((s, i) => {
-      const labels = s.assignLabels
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-      return {
-        delayValue: Math.max(1, Number(s.delayValue) || 1),
-        delayUnit: s.delayUnit,
-        instructions: s.instructions.trim(),
-        // NOTE: the optional actions are omitted when off, so the persisted shape stays minimal
-        // and an agent saved through this form is byte-comparable with one that was never opened.
-        ...(labels.length > 0 ? { assignLabels: labels } : {}),
-        // NOTE: `resolve` is sent only for the LAST step (the server also enforces this).
-        ...(i === form.steps.length - 1 && s.resolve ? { resolve: true } : {}),
-        // NOTE: sent whatever `pauseWhileAppointment` says. The editor HIDES this switch while
-        // the agent-wide pause is off, because there the opt-out decides nothing; hiding it must
-        // not delete it, or turning the pause off and on again would silently clear every step's
-        // exemption.
-        ...(s.ignoreAppointmentPause ? { ignoreAppointmentPause: true } : {}),
-      };
-    }),
+    steps: stepsToStored(form.steps),
   };
+}
+
+// The editor's rows back into the stored step list. Shared with the snoozed ladder for the reason
+// `stepsToForm` is.
+export function stepsToStored(
+  steps: readonly FollowUpStepState[],
+): Record<string, unknown>[] {
+  return steps.map((s, i) => {
+    const labels = s.assignLabels
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    return {
+      delayValue: Math.max(1, Number(s.delayValue) || 1),
+      delayUnit: s.delayUnit,
+      instructions: s.instructions.trim(),
+      // NOTE: the optional actions are omitted when off, so the persisted shape stays minimal
+      // and an agent saved through this form is byte-comparable with one that was never opened.
+      ...(labels.length > 0 ? { assignLabels: labels } : {}),
+      // NOTE: `resolve` is sent only for the LAST step (the server also enforces this).
+      ...(i === steps.length - 1 && s.resolve ? { resolve: true } : {}),
+      // NOTE: sent whatever `pauseWhileAppointment` says. The editor HIDES this switch while
+      // the agent-wide pause is off, because there the opt-out decides nothing; hiding it must
+      // not delete it, or turning the pause off and on again would silently clear every step's
+      // exemption. The snoozed editor never draws it, and carries it the same way.
+      ...(s.ignoreAppointmentPause ? { ignoreAppointmentPause: true } : {}),
+    };
+  });
 }
 
 function str(v: unknown): string {

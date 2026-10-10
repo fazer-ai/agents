@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-const ROOT = new URL("../..", import.meta.url).pathname;
+const ROOT = join(import.meta.dir, "../..");
 
 // A repository of its own per test: the hook reads the index, so each case stages exactly what it is
 // about without touching the real one. It carries the lint configuration, the plugins and the script,

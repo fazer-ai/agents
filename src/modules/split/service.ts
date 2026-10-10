@@ -162,6 +162,25 @@ export function typingDelayMs(chunk: string, cfg: SplitConfig): number {
 const realSleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The pause between balloons for every caller that does not inject its own sleep. Split is on by
+ * default with an 800ms floor, so without this every test that delivers a reply through the full
+ * runtime waits that out in real time. tests/setup.ts sets this symbol to a zero-delay pause without
+ * importing this module (a preload that imports it would load prisma and config ahead of the files
+ * that `mock.module` them); a test about the pacing itself passes `sleep` to `deliverReply`.
+ * Production never sets it.
+ */
+export const PACING_SLEEP_FOR_TEST = Symbol.for("agents.test.splitPacingSleep");
+
+const pacingSleep = (ms: number): Promise<void> => {
+  const override = (globalThis as Record<symbol, unknown>)[
+    PACING_SLEEP_FOR_TEST
+  ];
+  return typeof override === "function"
+    ? (override as (ms: number) => Promise<void>)(ms)
+    : realSleep(ms);
+};
+
 // What reached the customer, in three answers, following the rule `deliverPendingAttachments`
 // follows (../../graph/runtime.ts): "nothing was delivered" answers more than one question.
 export interface ReplyDelivery {
@@ -190,7 +209,7 @@ export async function deliverReply(
   conversationId: number,
   reply: string,
   cfg: SplitConfig,
-  sleep: (ms: number) => Promise<void> = realSleep,
+  sleep: (ms: number) => Promise<void> = (ms) => pacingSleep(ms),
   flow?: FlowContext,
   // Asked before each balloon: one answer before the loop covers only the first. Returns how many
   // landed, so the caller still reports what the customer received.

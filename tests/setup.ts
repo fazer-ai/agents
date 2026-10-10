@@ -45,6 +45,13 @@ afterEach(() => {
   if (fetchAtTestStart) globalThis.fetch = fetchAtTestStart;
 });
 
+// Split pacing (src/modules/split/service.ts, `PACING_SLEEP_FOR_TEST`) yields a tick instead of waiting
+// 800ms or more between balloons. Set through the global symbol so this preload does not import the
+// module graph that later files `mock.module`. A test about the pacing passes its own `sleep`.
+(globalThis as Record<symbol, unknown>)[
+  Symbol.for("agents.test.splitPacingSleep")
+] = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 

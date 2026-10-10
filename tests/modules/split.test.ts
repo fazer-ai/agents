@@ -7,6 +7,7 @@ import {
 import { recordSends } from "@/modules/chatwoot/record-sends";
 import {
   deliverReply,
+  PACING_SLEEP_FOR_TEST,
   readSplitConfig,
   SPLIT_DEFAULTS,
   splitReply,
@@ -191,6 +192,53 @@ describe("deliverReply", () => {
     expect(rec.sent).toEqual(["Olá!", "Como vai?"]);
     // typing on before each balloon + a final off
     expect(rec.typing).toEqual([true, true, false]);
+  });
+
+  test("a caller that injects no sleep is paced through the test override, one typing delay per balloon", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const slot = globalThis as Record<symbol, unknown>;
+    const installed = slot[PACING_SLEEP_FOR_TEST];
+    const waited: number[] = [];
+    slot[PACING_SLEEP_FOR_TEST] = async (ms: number) => {
+      waited.push(ms);
+    };
+    try {
+      await deliverReply(stub(rec), 1, "Olá!\n\nComo vai você hoje?", {
+        ...SPLIT_DEFAULTS,
+        enabled: true,
+        minDelayMs: 0,
+        typingWpm: 60,
+      });
+    } finally {
+      slot[PACING_SLEEP_FOR_TEST] = installed;
+    }
+    expect(waited).toEqual([1_000, 4_000]);
+  });
+
+  test("without the test override the default pause is a real timer of the typing delay", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const slot = globalThis as Record<symbol, unknown>;
+    const installed = slot[PACING_SLEEP_FOR_TEST];
+    const realSetTimeout = globalThis.setTimeout;
+    const timers: number[] = [];
+    delete slot[PACING_SLEEP_FOR_TEST];
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      timers.push(ms ?? 0);
+      return realSetTimeout(fn, 0);
+    }) as typeof setTimeout;
+    try {
+      await deliverReply(stub(rec), 1, "Olá!\n\nComo vai você hoje?", {
+        ...SPLIT_DEFAULTS,
+        enabled: true,
+        minDelayMs: 0,
+        typingWpm: 60,
+      });
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      slot[PACING_SLEEP_FOR_TEST] = installed;
+    }
+    expect(timers).toContain(1_000);
+    expect(timers).toContain(4_000);
   });
 
   // A split reply is several sends with a typing pause between them, so /reset landing after the

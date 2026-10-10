@@ -20,7 +20,10 @@ import {
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
-import { decisionsBlockFingerprint } from "@/modules/decisions/config";
+import {
+  decisionsBlockFingerprint,
+  decisionsIssues,
+} from "@/modules/decisions/config";
 
 // THE DECISIONS ENGINE IN THE AGENT EDITOR, drawn. The engine choice, the questions and the rules
 // are on screen for a monitoring agent; a rule that names a question that is gone is shown broken;
@@ -404,5 +407,204 @@ describe("the icon buttons of a card", () => {
     ).filter((b) => b.querySelector("svg") && (b.textContent ?? "") === "");
     expect(buttons.length).toBeGreaterThan(0);
     expect(buttons.filter((b) => b.hasAttribute("title")).length).toBe(0);
+  });
+});
+
+// What the write boundary refuses comes with the server's own sentence, written for a log. The
+// screen has its own words for every such problem, at the field: none of those sentences may be
+// what the operator reads.
+describe("a problem the server would name", () => {
+  type Draft = {
+    credentialRef: string;
+    questions: Record<string, unknown>[];
+    rules: {
+      when: Record<string, unknown>[];
+      action: { tool: string; args: Record<string, unknown> };
+    }[];
+  };
+  const at = <T,>(list: T[], i: number): T => {
+    const v = list[i];
+    if (v === undefined) throw new Error("fixture");
+    return v;
+  };
+  const q = (b: Draft, i: number) => at(b.questions, i);
+  const rule = (b: Draft, i: number) => at(b.rules, i);
+  const cond = (b: Draft, i: number) => at(rule(b, i).when, 0);
+  const SCORE = {
+    name: "urgencia",
+    type: "score",
+    instructions: "Urgência",
+    levels: [
+      { value: "baixa", description: "" },
+      { value: "alta", description: "" },
+    ],
+  };
+  const broken: [string, (b: Draft) => void][] = [
+    [
+      "no credential",
+      (b) => {
+        b.credentialRef = "";
+      },
+    ],
+    [
+      "a name with a space",
+      (b) => {
+        q(b, 0).name = "Pede Reembolso";
+      },
+    ],
+    [
+      "a choice with one option",
+      (b) => {
+        q(b, 1).options = [{ value: "so", description: "" }];
+      },
+    ],
+    [
+      "an option repeated",
+      (b) => {
+        q(b, 1).options = [
+          { value: "outro", description: "" },
+          { value: "outro", description: "" },
+        ];
+      },
+    ],
+    [
+      "a name repeated",
+      (b) => {
+        q(b, 1).name = "pede_reembolso";
+      },
+    ],
+    [
+      "a rule on a question that is gone",
+      (b) => {
+        cond(b, 0).question = "sumiu";
+      },
+    ],
+    [
+      "a rule on an option that is gone",
+      (b) => {
+        cond(b, 1).equals = "sumiu";
+      },
+    ],
+    [
+      "a yes or no condition with no probability",
+      (b) => {
+        rule(b, 0).when = [{ question: "pede_reembolso" }];
+      },
+    ],
+    [
+      "a probability above one",
+      (b) => {
+        cond(b, 0).minProbability = 2;
+      },
+    ],
+    [
+      "a choice condition with no option",
+      (b) => {
+        rule(b, 1).when = [{ question: "assunto" }];
+      },
+    ],
+    [
+      "a level past the last",
+      (b) => {
+        b.questions.push(SCORE);
+        rule(b, 0).when = [{ question: "urgencia", minLevel: 1, maxLevel: 5 }];
+      },
+    ],
+    [
+      "a score condition with no levels",
+      (b) => {
+        b.questions.push(SCORE);
+        rule(b, 0).when = [{ question: "urgencia" }];
+      },
+    ],
+    [
+      "an action that does not exist",
+      (b) => {
+        rule(b, 0).action.tool = "apagar";
+      },
+    ],
+    [
+      "a question with no wording",
+      (b) => {
+        q(b, 0).instructions = "";
+      },
+    ],
+  ];
+
+  // A piece of what the screen says about each case, in its own words.
+  const SAYS: Record<string, string> = {
+    "no credential": "Required.",
+    "a name with a space": "Lowercase letters",
+    "a choice with one option": "At least 2",
+    "an option repeated": "is already used in this list",
+    "a name repeated": "is already named",
+    "a rule on a question that is gone": "No question is named",
+    "a rule on an option that is gone": "is no longer one of",
+    "a yes or no condition with no probability": "Set the minimum probability",
+    "a probability above one": "At most 1",
+    "a choice condition with no option": "Pick the option.",
+    "a level past the last": "one past the last",
+    "a score condition with no levels": "Pick the lowest and the highest",
+    "an action that does not exist": "Not an accepted value.",
+    "a question with no wording": "Required.",
+  };
+
+  test("is worded by the screen, never shown as the server wrote it", () => {
+    const codes = new Set<string>();
+    for (const [what, breakIt] of broken) {
+      const block = JSON.parse(JSON.stringify(BLOCK)) as Draft;
+      breakIt(block);
+      const issues = decisionsIssues(block);
+      expect(issues.length, what).toBeGreaterThan(0);
+      stubApi();
+      renderSection({ monitoring: { engine: "decisions", decisions: block } });
+      expect(count("decisions-problems"), what).toBe(1);
+      const shown = document.body.textContent ?? "";
+      for (const issue of issues) {
+        codes.add(issue.code);
+        expect(shown.includes(issue.message), `${what}: ${issue.code}`).toBe(
+          false,
+        );
+      }
+      // ...and it IS said, so the absence above is not an empty screen.
+      expect(shown.includes(SAYS[what] ?? "\u0000"), what).toBe(true);
+      cleanup();
+    }
+    expect(codes.size).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// The two free-text fields are bounded when typed and cut nowhere, so a longer text stored through
+// the API is drawn whole: not marked invalid, and not under the counter that says the agent
+// receives only the first part of it.
+describe("a question or a note longer than the typing bound", () => {
+  test("is shown whole and unmarked, and cannot grow from there", () => {
+    const long = "x".repeat(2500);
+    const block = JSON.parse(JSON.stringify(BLOCK)) as typeof BLOCK;
+    (block.questions[0] as { instructions: string }).instructions = long;
+    (
+      block.rules[1] as { action: { args: { content: string } } }
+    ).action.args.content = long;
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: block } });
+    expect(count("decisions-problems")).toBe(0);
+    for (const fold of Array.from(
+      document.querySelectorAll<HTMLElement>('[aria-expanded="false"]'),
+    )) {
+      fireEvent.click(fold);
+    }
+    const areas = Array.from(document.querySelectorAll("textarea"));
+    const longOnes = areas.filter((a) => a.value.length === 2500);
+    expect(longOnes.length).toBe(2);
+    expect(longOnes.map((a) => a.maxLength)).toEqual([2500, 2500]);
+    expect(longOnes.filter((a) => a.getAttribute("aria-invalid")).length).toBe(
+      0,
+    );
+    expect((document.body.textContent ?? "").includes("over the limit")).toBe(
+      false,
+    );
+    // A text within the bound still declares the bound itself.
+    const short = areas.filter((a) => a.value === "Assunto");
+    expect(short.map((a) => a.maxLength)).toEqual([2000]);
   });
 });

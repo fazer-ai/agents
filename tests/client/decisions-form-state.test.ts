@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import {
   actionScope,
   conditionFor,
@@ -377,25 +376,6 @@ describe("the form marks what the server refuses, at the field", () => {
     ];
     expect(marked(tooManyOptions)).toEqual(["questions.1.options"]);
   });
-
-  test("every problem carries a code the screen can word", async () => {
-    const codes = new Set<string>();
-    for (const [, breakIt] of cases) {
-      const block = clone();
-      breakIt(block);
-      for (const i of decisionsIssues(decisionsToStored(formOf(block)))) {
-        codes.add(i.code);
-      }
-    }
-    // Every one of them is a code `issueText` (DecisionsFields.tsx) has a sentence for.
-    const source = await Bun.file(
-      "src/client/pages/agents/DecisionsFields.tsx",
-    ).text();
-    expect(codes.size).toBeGreaterThanOrEqual(8);
-    for (const code of codes) {
-      expect(source.includes(`case "${code}":`), code).toBe(true);
-    }
-  });
 });
 
 // The form fills in what a stored block lacks so it can be drawn. Judging that reading instead of
@@ -724,18 +704,6 @@ describe("the cap a free-text field declares", () => {
     );
     const long = "x".repeat(DECISION_TEXT_FIELD_MAX + 500);
     expect(decisionTextCap(long)).toBe(long.length);
-  });
-
-  test("both fields declare it through the value they hold", () => {
-    const src = readFileSync(
-      "src/client/pages/agents/DecisionsFields.tsx",
-      "utf8",
-    );
-    expect(src).not.toContain("maxLength={DECISION_TEXT_FIELD_MAX}");
-    expect(src).toContain("maxLength={decisionTextCap(q.instructions)}");
-    expect(src).toContain(
-      "maxLength={decisionTextCap(str(rule.args.content))}",
-    );
   });
 });
 

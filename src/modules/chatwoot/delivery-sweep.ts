@@ -5,7 +5,10 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
-import { drainStoredChatwootDeliveries } from "./delivery-queue";
+import {
+  drainStoredChatwootDeliveries,
+  heldDeliveryRowIds,
+} from "./delivery-queue";
 import { TURN_BEARING_EVENT } from "./normalize";
 import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
 import {
@@ -531,6 +534,7 @@ export async function sweepStrandedDeliveries(
   // reclaimed old rows would fill every slot and starve a real strand. Both arms are the
   // classifier's `claimedAt ?? receivedAt`, spelled for a nullable column.
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
+  const held = heldDeliveryRowIds();
   const rows = (await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findMany({
       where: {
@@ -540,8 +544,14 @@ export async function sweepStrandedDeliveries(
           { claimedAt: null, receivedAt: { lt: cutoff } },
         ],
         // A PENDING row that still holds its body is the drain's (delivery-queue.ts), which the
-        // handler ran just before this pass and which drops the body of every row it gives up on.
-        NOT: { status: "PENDING", payload: { not: null } },
+        // handler ran just before this pass and which drops the body of every row it gives up on;
+        // and one this process holds in its admission queue is waiting, not stranded.
+        AND: [
+          { NOT: { status: "PENDING", payload: { not: null } } },
+          ...(held.length > 0
+            ? [{ NOT: { status: "PENDING" as const, id: { in: held } } }]
+            : []),
+        ],
       },
       // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
       // cutoff above already excluded every row a live attempt could be working, so ORDER is

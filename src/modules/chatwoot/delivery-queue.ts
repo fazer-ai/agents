@@ -165,6 +165,16 @@ function pump(a: Admission, laneName: AdmissionLane): void {
   }
 }
 
+// The rows this process holds (waiting or running), which no other pass may treat as stranded.
+export function heldDeliveryRowIds(): bigint[] {
+  return [...admission().held.values()];
+}
+
+// Whether this process already holds the row, so a refusal is a duplicate and not a full lane.
+export function admissionHolds(rowId: bigint): boolean {
+  return admission().held.has(String(rowId));
+}
+
 // Whether a lane's waiting list is at its bound, so it turns rows away.
 export function admissionLaneFull(lane: AdmissionLane): boolean {
   return admission().lanes[lane].waiting.length >= ADMISSION_MAX_WAITING;
@@ -307,6 +317,7 @@ export async function drainStoredChatwootDeliveries(
           routeAgentBotId: true,
           bindingGeneration: true,
           payload: true,
+          receivedAt: true,
         },
       }),
     );
@@ -346,6 +357,7 @@ export async function drainStoredChatwootDeliveries(
           deps: params.deps,
         }),
       "meta",
+      row.receivedAt.getTime(),
     );
     if (ok) admitted++;
     else if (admissionLaneFull("meta")) break;

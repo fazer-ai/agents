@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
 import {
-  admissionLaneFull,
+  admissionHolds,
   admitChatwootDelivery,
 } from "@/modules/chatwoot/delivery-queue";
 import {
@@ -55,6 +55,8 @@ export const chatwootController = new Elysia({
         receivedAt = Date.now(),
       } = result;
       const lane = result.recoverable === true ? "turn" : "meta";
+      // Held already (a redelivery of a row waiting here) is a duplicate, not a full lane.
+      const duplicate = admissionHolds(deliveryRowId);
       const admitted = admitChatwootDelivery(
         deliveryRowId,
         () =>
@@ -69,7 +71,8 @@ export const chatwootController = new Elysia({
         lane,
         receivedAt,
       );
-      if (!admitted && lane === "turn" && admissionLaneFull(lane)) {
+      // Not admitted and not a duplicate: the waiting bound turned it away.
+      if (!admitted && !duplicate && lane === "turn") {
         // Failures are logged inside; the next drain hands the row over if this did not.
         void handToRecovery(basePrisma, {
           tenantId,

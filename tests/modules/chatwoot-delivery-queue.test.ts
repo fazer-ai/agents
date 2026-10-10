@@ -577,6 +577,53 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect((await settled(failing)).status).toBe("PROCESSED");
   });
 
+  // A busy queue can hold an admitted row past the ceiling; it is asked again when its slot opens.
+  test("a row that crosses the age ceiling while it waits is not processed", async () => {
+    const id = await ackOnly("queue-crosses-ceiling", 613);
+    await pastWindow(id, STORED_DELIVERY_MAX_AGE_MS - 300);
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate, "meta");
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.admitted).toBe(1);
+    await sleep(600);
+    g.release();
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    // The next pass clears the body and leaves the row to the sweep.
+    await drainStoredChatwootDeliveries({ base: appDb, tenantId, minAgeMs: 0 });
+    expect((await rowById(id)).payload).toBeNull();
+  });
+
+  // A customer message waiting in this process's queue past the sweep's window is waiting, not
+  // stranded: the sweep leaves it PENDING for the delivery already queued here.
+  test("the sweep leaves a customer message this process holds", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    const id = await ackMessage("queue-held-old", 647);
+    admitChatwootDelivery(-3n, () => g.gate, "turn");
+    admitChatwootDelivery(id, () => g.gate, "turn");
+    await pastWindow(id);
+    registerDeliverySweepHandler();
+    await getJobHandler("DELIVERY_SWEEP")?.(
+      { tenantId } as unknown as ClaimedJob,
+      appDb,
+    );
+    expect((await rowById(id)).status).toBe("PENDING");
+    g.release();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
+  });
+
   // A customer message the recovery can rebuild left PENDING with nothing here holding it (a restart's
   // leftover) is DEAD with its recovery armed at once, not after the stranded sweep's window, and
   // it is the recovery, not a stored body, that answers it.

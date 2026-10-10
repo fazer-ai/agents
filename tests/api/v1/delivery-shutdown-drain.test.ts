@@ -180,7 +180,6 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
           return false;
         },
       ),
-      spyOn(deliveryQueue, "admissionLaneFull").mockReturnValue(true),
       spyOn(chatwootWebhook, "handToRecovery").mockImplementation(
         async (_base, row) => {
           handed.push([row.rowId, row.from, row.reason]);
@@ -217,8 +216,8 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
         agentBotId: null,
         normalized: { event: "message_created" } as NormalizedChatwootEvent,
       }),
+      spyOn(deliveryQueue, "admissionHolds").mockReturnValue(true),
       spyOn(deliveryQueue, "admitChatwootDelivery").mockReturnValue(false),
-      spyOn(deliveryQueue, "admissionLaneFull").mockReturnValue(false),
       spyOn(chatwootWebhook, "handToRecovery").mockImplementation(
         async (_base, row) => {
           handed.push(row.rowId);

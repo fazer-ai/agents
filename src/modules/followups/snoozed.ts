@@ -370,7 +370,7 @@ export async function snoozedFollowUpHandler(
     if (!conv?.inboxId) return null;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true, provider: true },
+      select: { agentId: true, provider: true, chatwootInboxId: true },
     });
     if (!inbox?.agentId) return null;
     const agent = await db.agent.findUnique({
@@ -402,9 +402,17 @@ export async function snoozedFollowUpHandler(
       armedAt: agent.snoozedFollowUpArmedAt,
       hours,
       reply: { whatsappProvider: inbox.provider },
+      agentId: inbox.agentId,
+      chatwootInboxId: inbox.chatwootInboxId,
     };
   });
   if (!ctx) return { outcome: "done" };
+  // Still snoozed by a person, in the inbox whose agent and cadence were read above: a conversation
+  // moved to another inbox before its transfer reached the mirror (or while the model runs) is not
+  // this cadence's. A page with no inbox reads as before.
+  const heldHere = (c: NonNullable<ReturnType<typeof parseLiveConversation>>) =>
+    isSnoozedForAPerson(c) &&
+    (c.inboxId === null || c.inboxId === ctx.chatwootInboxId);
 
   // THE LIVE READ. Reads with the admin token: the bot token cannot list a conversation it does not
   // hold on every Chatwoot build, and a person holds this one.
@@ -416,7 +424,7 @@ export async function snoozedFollowUpHandler(
   let rows: ChatwootMessageRow[] = [];
   try {
     live = parseLiveConversation(await client.getConversation(conversationId));
-    if (live && isSnoozedForAPerson(live)) {
+    if (live && heldHere(live)) {
       let before: number | undefined;
       for (let page = 0; page < MAX_MESSAGE_PAGES; page++) {
         const got = readMessagePage(
@@ -454,7 +462,7 @@ export async function snoozedFollowUpHandler(
     };
   }
   // Unsnoozed, given to the bot, unassigned, resolved, or snoozed with an end date: not this ladder's.
-  if (!isSnoozedForAPerson(live)) return { outcome: "done" };
+  if (!heldHere(live)) return { outcome: "done" };
   const anchor = findSnoozedAnchor(rows, ctx.reply);
   if (!anchor || anchor.customerSpokeAfter) return { outcome: "done" };
   // The backlog fence: a person's message older than the switch-on is not chased. By the second:
@@ -525,6 +533,8 @@ export async function snoozedFollowUpHandler(
   let messageReadFailed = false;
   const outcome = await runAgentNudge({
     signal: run?.signal,
+    // The agent whose cadence, hours and fence were read: a rebinding since then is not its to send.
+    expectAgentId: ctx.agentId,
     tenantId,
     threadId,
     nudge: snoozedNudge({
@@ -565,7 +575,7 @@ export async function snoozedFollowUpHandler(
           messageReadFailed = true;
           return false;
         }
-        if (!isSnoozedForAPerson(now)) return false;
+        if (!heldHere(now)) return false;
         const since = readMessagePage(
           await client.getMessages(conversationId, {
             after: anchor.newestMessageId,

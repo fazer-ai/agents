@@ -461,6 +461,11 @@ function stub(over: {
   degradedAfter?: boolean;
   // The send-time read answers a full page of private notes, which may hide more behind it.
   fullAfter?: boolean;
+  // The Chatwoot inbox the conversation is in, on the first read and on every later one.
+  inboxId?: number;
+  inboxIdLater?: number;
+  // Runs on the handler's first live read, after its context was read.
+  onFirstRead?: () => Promise<void>;
   // The handler's own page read answers a body that is not a message list.
   degradedPage?: boolean;
   // The conversation payload carries no `snoozed_until` key at all.
@@ -488,8 +493,11 @@ function stub(over: {
   const client = {
     getConversation: async (c: number) => {
       const later = reads++ > 0;
+      if (!later) await over.onFirstRead?.();
+      const inbox = later ? (over.inboxIdLater ?? over.inboxId) : over.inboxId;
       return {
         id: c,
+        ...(inbox === undefined ? {} : { inbox_id: inbox }),
         status: unsnoozed
           ? "open"
           : later && over.statusLater
@@ -1266,6 +1274,65 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const r = await snoozedFollowUpHandler(jobFor(2083), appDb, s.deps);
     expect(s.sent).toEqual([]);
     expect(r.outcome).toBe("reschedule");
+  });
+
+  test("a conversation moved to another inbox is not this cadence's, before the model or at the send", async () => {
+    await setSettings(LADDER);
+    await seed(2084);
+    const moved = stub({ messages: [personAsked(266, 3)], inboxId: 99 });
+    expect(
+      await snoozedFollowUpHandler(jobFor(2084), appDb, moved.deps),
+    ).toEqual({ outcome: "done" });
+    expect(moved.sent).toEqual([]);
+    await seed(2085);
+    const movedLater = stub({
+      messages: [personAsked(267, 3)],
+      inboxId: 77,
+      inboxIdLater: 99,
+    });
+    await snoozedFollowUpHandler(jobFor(2085), appDb, movedLater.deps);
+    expect(movedLater.sent).toEqual([]);
+    expect(movedLater.toggles).toEqual([]);
+    // Still in its inbox: the reminder goes out.
+    await seed(2086);
+    const here = stub({ messages: [personAsked(268, 3)], inboxId: 77 });
+    await snoozedFollowUpHandler(jobFor(2086), appDb, here.deps);
+    expect(here.sent).toEqual([REPLY]);
+  });
+
+  test("an inbox rebound to another agent after the plan was read sends nothing", async () => {
+    await setSettings(LADDER);
+    await seed(2087);
+    const other = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Outro",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {},
+      },
+    });
+    try {
+      const s = stub({
+        messages: [personAsked(269, 3)],
+        onFirstRead: async () => {
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { agentId: other.id },
+          });
+        },
+      });
+      expect(await snoozedFollowUpHandler(jobFor(2087), appDb, s.deps)).toEqual(
+        { outcome: "done" },
+      );
+      expect(s.sent).toEqual([]);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { agentId },
+      });
+      await suDb.agent.delete({ where: { id: other.id } });
+    }
   });
 
   test("an unreadable conversation, or a snooze whose end date is missing, is tried again", async () => {

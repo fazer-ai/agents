@@ -296,6 +296,9 @@ export interface RunAgentNudgeParams {
   // instead, because a transfer would take the conversation from the person who holds it. Honored only
   // with `requireLiveBotOwnership`, the mode whose probe reads the live state the question needs.
   holder?: "bot" | "snoozed-human";
+  // The agent the caller validated its plan against. The inbox's agent is re-read here, and a different
+  // one (the inbox was rebound in between) answers `no-agent` instead of running someone else's plan.
+  expectAgentId?: bigint;
   // Whether the agent's signature goes under the text. Absent = the agent's own signature config.
   // The snoozed ladder passes its own switch: the reminder speaks for the person who asked.
   signature?: boolean;
@@ -598,6 +601,11 @@ async function runAgentNudgeBody(
       },
     });
     if (!inbox?.agentId) return null;
+    if (
+      params.expectAgentId !== undefined &&
+      inbox.agentId !== params.expectAgentId
+    )
+      return null;
     // Test-mode gate: a "test" agent must not send proactive messages in a conversation that
     // hasn't been activated with /teste. Covers EVERY nudge caller (follow-up + inbound events).
     const agent = await db.agent.findUnique({

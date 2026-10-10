@@ -417,7 +417,9 @@ export function DocumentsPanel() {
           </DataBoundary>
         </>
       ) : (
-        <IssuedDocumentsTab templateNames={templateNames} />
+        <IssuedDocumentsTab
+          templateNames={loading || error ? null : templateNames}
+        />
       )}
 
       <ConfirmDialog modal={confirm} />

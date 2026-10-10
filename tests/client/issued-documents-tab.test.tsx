@@ -67,7 +67,7 @@ let answer: (q: URLSearchParams) => {
   documents: Doc[];
   nextBefore: string | null;
 };
-// A request held until the test releases it, keyed by its `q`.
+// A request held until the test releases it, keyed by `<q>|<before>`.
 let held: Record<string, Promise<void>> = {};
 
 const json = (body: unknown) =>
@@ -88,7 +88,10 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const method = (init?.method ?? "GET").toUpperCase();
   requests.push(`${method} ${url.pathname}${url.search}`);
   if (method !== "GET") return json({ success: true });
-  const gate = held[url.searchParams.get("q") ?? ""];
+  const gate =
+    held[
+      `${url.searchParams.get("q") ?? ""}|${url.searchParams.get("before") ?? ""}`
+    ];
   if (gate) await gate;
   answered.push(url.searchParams.get("q") ?? "");
   return json(answer(url.searchParams));
@@ -104,11 +107,13 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 
-function mount() {
+function mount(
+  templateNames: Map<string, string> | null = new Map([["3", "Orçamento"]]),
+) {
   return render(
     <MemoryRouter initialEntries={["/resources/documents"]}>
       <ToastProvider>
-        <IssuedDocumentsTab templateNames={new Map([["3", "Orçamento"]])} />
+        <IssuedDocumentsTab templateNames={templateNames} />
       </ToastProvider>
     </MemoryRouter>,
   );
@@ -139,7 +144,7 @@ describe("issued documents tab", () => {
 
   test("an older search answering last does not take the screen", async () => {
     let release = () => {};
-    held.ORC = new Promise<void>((r) => {
+    held["ORC|"] = new Promise<void>((r) => {
       release = r;
     });
     answer = (q) =>
@@ -222,5 +227,80 @@ describe("issued documents tab", () => {
     expect(requests).toContain("POST /api/v1/documents/28/revoke");
     expect(requests.filter((r) => r.startsWith("GET")).length).toBe(2);
     expect(text().includes("ORC-0028")).toBe(true);
+  });
+
+  test("a search that replaces the list while Load more is out leaves Load more usable", async () => {
+    let release = () => {};
+    held["|29"] = new Promise<void>((r) => {
+      release = r;
+    });
+    answer = (q) =>
+      q.get("q")
+        ? { documents: [doc(2)], nextBefore: null }
+        : q.get("before") === "29"
+          ? { documents: [doc(28)], nextBefore: null }
+          : { documents: [doc(30), doc(29)], nextBefore: "29" };
+    mount();
+    fireEvent.click(await screen.findByText("Load more"));
+    await waitFor(() =>
+      expect(requests.some((r) => r.endsWith("before=29"))).toBe(true),
+    );
+    fireEvent.change(searchBox(), { target: { value: "ORC-0002" } });
+    await waitFor(() => expect(text().includes("ORC-0030")).toBe(false));
+    fireEvent.change(searchBox(), { target: { value: "" } });
+    await waitFor(() => expect(text().includes("ORC-0030")).toBe(true));
+    const button = () =>
+      screen
+        .getAllByRole("button")
+        .find((b) => b.textContent?.includes("Load more")) as HTMLButtonElement;
+    await waitFor(() => expect(button().disabled).toBe(false));
+    release();
+    await waitFor(() => expect(answered.includes("")).toBe(true));
+    expect(button().disabled).toBe(false);
+  });
+
+  test("a revoke survives a list that was read before it and answers after", async () => {
+    let release = () => {};
+    held["ORC|"] = new Promise<void>((r) => {
+      release = r;
+    });
+    answer = () => ({ documents: [doc(30), doc(29)], nextBefore: null });
+    mount();
+    await waitFor(() => expect(text().includes("ORC-0030")).toBe(true));
+    fireEvent.change(searchBox(), { target: { value: "ORC" } });
+    await waitFor(() =>
+      expect(requests.some((r) => r.endsWith("q=ORC"))).toBe(true),
+    );
+    fireEvent.click(screen.getAllByText("Revoke")[0] as HTMLElement);
+    const confirmButton = screen
+      .getAllByRole("button")
+      .filter((b) => b.textContent === "Revoke")
+      .pop() as HTMLButtonElement;
+    fireEvent.click(confirmButton);
+    await waitFor(() =>
+      expect(requests).toContain("POST /api/v1/documents/30/revoke"),
+    );
+    await waitFor(() => expect(screen.getAllByText("Revoke").length).toBe(1));
+    release();
+    await waitFor(() => expect(answered.at(-1)).toBe("ORC"));
+    await expect(
+      waitFor(() => expect(screen.getAllByText("Revoke").length).toBe(2), {
+        timeout: 300,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("a template name not read yet is not called deleted", async () => {
+    answer = () => ({
+      documents: [doc(5), doc(4, { templateId: null })],
+      nextBefore: null,
+    });
+    mount(null);
+    await waitFor(() => expect(text().includes("ORC-0004")).toBe(true));
+    expect(text().includes("Template deleted")).toBe(false);
+    cleanup();
+    mount(new Map());
+    await waitFor(() => expect(text().includes("ORC-0004")).toBe(true));
+    expect(text().includes("Template deleted")).toBe(true);
   });
 });

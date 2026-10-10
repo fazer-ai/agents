@@ -31,8 +31,9 @@ export function IssuedDocumentsTab({
   templateNames,
 }: {
   // Which template each document came from: the panel already has the templates, so the join is
-  // there rather than a column on the row.
-  templateNames: Map<string, string>;
+  // there rather than a column on the row. Null while the panel has not read them (loading, or the
+  // read failed), when a missing name says nothing about whether the template still exists.
+  templateNames: Map<string, string> | null;
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -47,6 +48,16 @@ export function IssuedDocumentsTab({
   // Which search the screen is answering. A page of an older search, or of the list before it, that
   // lands after the operator typed would put rows on screen that do not match what the box says.
   const seq = useRef(0);
+  // Revoked from this screen. A page read before the revoke can answer after it, and would hand the
+  // row back its PDF and Revoke buttons.
+  const revokedHere = useRef(new Set<string>());
+  const settle = useCallback(
+    (rows: readonly IssuedDocument[]) =>
+      rows.map((d) =>
+        revokedHere.current.has(d.id) ? { ...d, revoked: true } : d,
+      ),
+    [],
+  );
 
   useEffect(() => {
     const id = setTimeout(() => setQuery(search.trim()), 300);
@@ -57,6 +68,9 @@ export function IssuedDocumentsTab({
     const mine = ++seq.current;
     setLoading(true);
     setError(false);
+    // A Load more still in flight belongs to the list this replaces, and its own cleanup no longer
+    // runs once the generation moved.
+    setLoadingMore(false);
     try {
       const { data, error: err } = await api.api.v1.documents.get({
         query: { limit: PAGE_SIZE, ...(query ? { q: query } : {}) },
@@ -66,14 +80,14 @@ export function IssuedDocumentsTab({
         setError(true);
         return;
       }
-      setDocs([...data.documents]);
+      setDocs(settle(data.documents));
       setNextBefore(data.nextBefore);
     } catch {
       if (mine === seq.current) setError(true);
     } finally {
       if (mine === seq.current) setLoading(false);
     }
-  }, [query]);
+  }, [query, settle]);
 
   useEffect(() => {
     void load();
@@ -102,7 +116,10 @@ export function IssuedDocumentsTab({
       }
       setDocs((prev) => {
         const seen = new Set(prev.map((d) => d.id));
-        return [...prev, ...data.documents.filter((d) => !seen.has(d.id))];
+        return [
+          ...prev,
+          ...settle(data.documents.filter((d) => !seen.has(d.id))),
+        ];
       });
       setNextBefore(data.nextBefore);
     } catch {
@@ -195,6 +212,7 @@ export function IssuedDocumentsTab({
       throw e;
     }
     showToast(t("documents.revoked", "Revoked."), "success");
+    revokedHere.current.add(doc.id);
     // Marked in place rather than reloaded, so the pages the operator loaded stay on screen.
     setDocs((prev) =>
       prev.map((d) => (d.id === doc.id ? { ...d, revoked: true } : d)),
@@ -276,11 +294,15 @@ export function IssuedDocumentsTab({
                     document OUTLIVES its template (the FK nulls the id on delete), so the miss is a
                     real state and says so. */}
                 <p className="mt-0.5 truncate text-text-muted text-xs">
-                  {doc.templateId
-                    ? (templateNames.get(doc.templateId) ??
-                      t("documents.templateGone", "Template deleted"))
-                    : t("documents.templateGone", "Template deleted")}
-                  {" · "}
+                  {templateNames && (
+                    <>
+                      {doc.templateId
+                        ? (templateNames.get(doc.templateId) ??
+                          t("documents.templateGone", "Template deleted"))
+                        : t("documents.templateGone", "Template deleted")}
+                      {" · "}
+                    </>
+                  )}
                   {new Date(doc.createdAt).toLocaleString()}
                   {doc.conversationId && (
                     <>

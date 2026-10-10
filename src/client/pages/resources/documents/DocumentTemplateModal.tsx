@@ -81,6 +81,8 @@ export function DocumentTemplateModal({
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
   const [numberPrefix, setNumberPrefix] = useState("");
+  // Where numbering continues, as the operator types it. A string so a cleared field is not 0.
+  const [nextNumber, setNextNumber] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [requiresApproval, setRequiresApproval] = useState(false);
   const [approvalTtlHours, setApprovalTtlHours] = useState(24);
@@ -115,6 +117,7 @@ export function DocumentTemplateModal({
     setSlug(tpl.slug);
     setDescription(tpl.description ?? "");
     setNumberPrefix(tpl.numberPrefix ?? "");
+    setNextNumber(String(tpl.nextNumber));
     setEnabled(tpl.enabled);
     setRequiresApproval(tpl.requiresApproval);
     setApprovalTtlHours(tpl.approvalTtlHours);
@@ -125,6 +128,7 @@ export function DocumentTemplateModal({
       slug: tpl.slug,
       description: tpl.description ?? "",
       numberPrefix: tpl.numberPrefix ?? "",
+      nextNumber: String(tpl.nextNumber),
       enabled: tpl.enabled,
       requiresApproval: tpl.requiresApproval,
       approvalTtlHours: tpl.approvalTtlHours,
@@ -141,6 +145,7 @@ export function DocumentTemplateModal({
       slug,
       description,
       numberPrefix,
+      nextNumber,
       enabled,
       requiresApproval,
       approvalTtlHours,
@@ -188,6 +193,11 @@ export function DocumentTemplateModal({
     if (numberPrefix !== (template.numberPrefix ?? "")) {
       patch.numberPrefix = numberPrefix || null;
     }
+    // Sent only when the operator moved it: the template's next number also moves on its own as
+    // documents are issued, and restating the one this modal opened on would be refused once one was.
+    if (nextNumber !== String(template.nextNumber)) {
+      patch.nextNumber = Number(nextNumber);
+    }
     if (enabled !== template.enabled) patch.enabled = enabled;
     if (requiresApproval !== template.requiresApproval) {
       patch.requiresApproval = requiresApproval;
@@ -211,6 +221,7 @@ export function DocumentTemplateModal({
     slug,
     description,
     numberPrefix,
+    nextNumber,
     enabled,
     requiresApproval,
     approvalTtlHours,
@@ -302,6 +313,14 @@ export function DocumentTemplateModal({
   // be told something, and the modal keeps its payload after closing (Radix needs it for the exit
   // animation), so this never flashes a refusal at a form nobody has opened.
   const slugIssue = template ? slugProblem(slug) : null;
+  // The shape only, and only once the operator moved it; whether a number was already used is the
+  // server's to say, on save.
+  const nextNumberIssue =
+    template &&
+    nextNumber !== String(template.nextNumber) &&
+    !/^[1-9][0-9]{0,9}$/.test(nextNumber)
+      ? t("documents.nextNumberInvalid", "Enter a whole number from 1.")
+      : null;
   // The tool name the current template name would derive, offered when it differs from the one the
   // tool has; never applied by itself.
   const derivedSlug = slugifyTemplateName(name);
@@ -353,7 +372,11 @@ export function DocumentTemplateModal({
           <ModalCancelButton disabled={saving} />
           {/* Disabled on a refusal the FIELD is already explaining, in red, one line above the
               button. Sending it anyway would spend a round trip to be told what is on screen. */}
-          <Button onClick={save} loading={saving} disabled={Boolean(slugIssue)}>
+          <Button
+            onClick={save}
+            loading={saving}
+            disabled={Boolean(slugIssue || nextNumberIssue)}
+          >
             {t("common.save", "Save")}
           </Button>
         </div>
@@ -437,6 +460,28 @@ export function DocumentTemplateModal({
               ) : null}
             </div>
           </div>
+          <FormField
+            label={t("documents.nextNumber", "Next number")}
+            hint={
+              nextNumberIssue
+                ? undefined
+                : t(
+                    "documents.nextNumberHint",
+                    "The next document prints {{number}}. It cannot go back to a number already issued under this prefix; a new prefix starts a new sequence.",
+                    {
+                      number: `${numberPrefix}${nextNumber.padStart(4, "0")}`,
+                    },
+                  )
+            }
+            error={nextNumberIssue}
+          >
+            <Input
+              inputMode="numeric"
+              className="sm:max-w-48"
+              value={nextNumber}
+              onChange={(e) => setNextNumber(e.target.value.trim())}
+            />
+          </FormField>
 
           {style && (
             <div className="grid gap-3 sm:grid-cols-2">

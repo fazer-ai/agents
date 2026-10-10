@@ -47,6 +47,7 @@ function projection(t: {
   fields: { name: string; type: string; required?: boolean }[];
   style: Record<string, unknown>;
   numberPrefix: string | null;
+  nextNumber: number;
   enabled: boolean;
   requiresApproval: boolean;
   approvalTtlHours: number;
@@ -59,6 +60,7 @@ function projection(t: {
     fields: t.fields.map((f) => `${f.name}:${f.type}${f.required ? "*" : ""}`),
     style: t.style,
     numberPrefix: t.numberPrefix,
+    nextNumber: t.nextNumber,
     enabled: t.enabled,
     requiresApproval: t.requiresApproval,
     approvalTtlHours: t.approvalTtlHours,
@@ -73,6 +75,7 @@ export interface DocumentTemplateWriteArgs {
   fields?: unknown;
   style?: unknown;
   number_prefix?: string | null;
+  next_number?: number;
   enabled?: boolean;
   requires_approval?: boolean;
   approval_ttl_hours?: number;
@@ -121,6 +124,7 @@ export async function documentTemplateCreate(
       args.number_prefix !== undefined
         ? args.number_prefix
         : (starter?.numberPrefix ?? null),
+    nextNumber: args.next_number,
     enabled: args.enabled,
     requiresApproval: args.requires_approval,
     approvalTtlHours: args.approval_ttl_hours,
@@ -139,6 +143,7 @@ export async function documentTemplateCreate(
           description: input.description,
           numberPrefix: input.numberPrefix,
           approvalTtlHours: input.approvalTtlHours,
+          nextNumber: input.nextNumber,
         },
         base,
       );
@@ -202,6 +207,7 @@ export async function documentTemplateUpdate(
   if (args.fields !== undefined) patch.fields = args.fields;
   if (args.style !== undefined) patch.style = args.style;
   if (args.number_prefix !== undefined) patch.numberPrefix = args.number_prefix;
+  if (args.next_number !== undefined) patch.nextNumber = args.next_number;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
   if (args.requires_approval !== undefined) {
     patch.requiresApproval = args.requires_approval;
@@ -211,7 +217,7 @@ export async function documentTemplateUpdate(
   }
   if (Object.keys(patch).length === 0) {
     return err(
-      "no updatable fields provided (name, slug, description, blocks, fields, style, number_prefix, enabled, requires_approval, approval_ttl_hours)",
+      "no updatable fields provided (name, slug, description, blocks, fields, style, number_prefix, next_number, enabled, requires_approval, approval_ttl_hours)",
     );
   }
   try {
@@ -249,6 +255,9 @@ export async function documentTemplateUpdate(
           : {}),
         ...(patch.numberPrefix !== undefined
           ? { numberPrefix: patch.numberPrefix }
+          : {}),
+        ...(patch.nextNumber !== undefined
+          ? { nextNumber: patch.nextNumber }
           : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
         ...(patch.requiresApproval !== undefined

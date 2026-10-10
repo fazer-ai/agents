@@ -77,6 +77,12 @@ export const writeBody = t.Object({
         'Prefix for the document number, e.g. "ORC-" produces ORC-0001.',
     }),
   ),
+  nextNumber: t.Optional(
+    t.Number({
+      description:
+        "The number the next document issued from this template prints (without the prefix), to continue a sequence started elsewhere. Refused (409) at or below a number this workspace already issued under the template's prefix, by any template; a new prefix starts a new sequence. The template's `nextNumber` reads where numbering continues now.",
+    }),
+  ),
   enabled: t.Optional(
     t.Boolean({ description: "Whether agents may issue this document." }),
   ),

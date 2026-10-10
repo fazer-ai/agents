@@ -156,9 +156,13 @@ winner of an idempotency race cannot happen inside the transaction that lost it.
 conflict and re-reading in the same one turns a benign race — the very thing the key exists to make
 benign — into `current transaction is aborted` and a 500 for whoever arrived second.
 
-The number comes from `UPDATE document_templates SET last_number = last_number + 1 … RETURNING`, so
+The number comes from `UPDATE document_templates SET last_number = GREATEST(last_number, <highest>) + 1 … RETURNING`, so
 the row lock makes it atomic. It is bumped AFTER the insert, so losing a race on the key does not
 consume one. Monotonic, not gapless.
+
+**A printed number names one document in the tenant, and is never issued twice** (`numbering.ts`, issue #1230). The counter is the template's, but a prefix is not: two templates can share one, a prefix can move to one another template already used, and a new template can be created on a prefix that already has documents. So the sequence is the tenant's prefix (no prefix and an empty one print the same and are one sequence), and `<highest>` above is the highest number already issued in the tenant under the document's prefix, by any template, deleted or revoked ones included, since a printed number stays taken. An advisory lock on `doc-number:<tenant>:<prefix>`, taken after the template and document row locks, makes two templates on one prefix queue instead of reading the same highest number. No index serves the `MAX`: it runs over one tenant's documents through the `tenant_id`-led indexes, at issuance only.
+
+**Where numbering continues** is the template's `nextNumber` (REST, MCP `document_template_list`, and the console editor, which shows it as it will print): one above the larger of the counter and that highest number. An operator sets it with `nextNumber` on `POST`/`PATCH /v1/document-templates` (MCP `next_number`, the console's "Next number" field), to continue a sequence started elsewhere. It may go up (the gap is fine) or down to one above the highest number issued under the prefix the template will have after the write, and no lower: a number at or below one already printed is refused with 409 (`errors.documentNumberAlreadyUsed`), checked under the same sequence lock, and the refusal names the number in the way and says a new prefix starts a new sequence. The dry run asks the same without the lock. Setting it is an edit and is audited (`lastNumber` is in the projection); issuance moves the counter without an audit row.
 
 That last property is also why the **document row is claimed first**, with `SELECT … FOR UPDATE`,
 before the counter is touched: a row exists unnumbered for a moment by design, and in that window a

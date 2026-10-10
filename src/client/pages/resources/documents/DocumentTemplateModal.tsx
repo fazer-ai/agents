@@ -203,7 +203,17 @@ export function DocumentTemplateModal({
     }
     // Sent only when the operator moved it: the template's next number also moves on its own as
     // documents are issued, and restating the one this modal opened on would be refused once one was.
-    if (nextTouched) patch.nextNumber = Number(nextNumber);
+    // Typed back to what it opened on, with the prefix unchanged, it is an untouched number again:
+    // restating it would be refused once a document went out meanwhile, or undo another client's move.
+    if (
+      nextTouched &&
+      !(
+        nextNumber === String(template.nextNumber) &&
+        numberPrefix === (template.numberPrefix ?? "")
+      )
+    ) {
+      patch.nextNumber = Number(nextNumber);
+    }
     if (enabled !== template.enabled) patch.enabled = enabled;
     if (requiresApproval !== template.requiresApproval) {
       patch.requiresApproval = requiresApproval;

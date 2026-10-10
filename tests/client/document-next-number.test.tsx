@@ -207,3 +207,15 @@ test("a prefix being typed moves the untouched number to where the new prefix co
   expect(patches[0]?.numberPrefix).toBe("VIA-");
   expect("nextNumber" in (patches[0] ?? {})).toBe(false);
 });
+
+test("a number typed back to the one the editor opened on is not sent", async () => {
+  mount();
+  const field = await screen.findByDisplayValue("8");
+  fireEvent.change(field, { target: { value: "9" } });
+  fireEvent.change(field, { target: { value: "8" } });
+  const textarea = await screen.findByDisplayValue("Olá.");
+  fireEvent.change(textarea, { target: { value: "Bom dia." } });
+  fireEvent.click(saveButton());
+  await waitFor(() => expect(patches).toHaveLength(1));
+  expect("nextNumber" in (patches[0] ?? {})).toBe(false);
+});

@@ -76,10 +76,15 @@ export function snoozedFollowUpToStored(form: SnoozedFollowUpState): {
   return {
     enabled: form.enabled,
     signature: form.signature,
-    cadences: form.cadences.map((c) => ({
-      label: c.label === null ? null : c.label.trim(),
-      steps: stepsToStored(c.steps),
-    })),
+    // A labeled cadence whose label was never picked is not written: stored blank, the reader would
+    // read it as the default. Save is held while it is on screen; this covers the save made with the
+    // ladder off, when the cadences (and that warning) are hidden.
+    cadences: form.cadences
+      .filter((c) => c.label === null || c.label.trim() !== "")
+      .map((c) => ({
+        label: c.label === null ? null : c.label.trim(),
+        steps: stepsToStored(c.steps),
+      })),
   };
 }
 

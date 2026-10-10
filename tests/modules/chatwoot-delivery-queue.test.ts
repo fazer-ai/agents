@@ -410,14 +410,18 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     return r.deliveryRowId as bigint;
   };
   // A Chatwoot client whose conversation read answers `live` and whose every other call is recorded.
-  const fakeClient = (live: unknown, calls: string[]) =>
+  const fakeClient = (live: unknown, calls: string[], messages: unknown = []) =>
     new Proxy({} as Record<string, unknown>, {
       get: (_t, prop) =>
         prop === "then"
           ? undefined
           : async () => {
               calls.push(String(prop));
-              return prop === "getConversation" ? live : {};
+              return prop === "getConversation"
+                ? live
+                : prop === "getMessages"
+                  ? messages
+                  : {};
             },
     });
   // The live read is newer than any stored event: its version is now.
@@ -563,6 +567,48 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
         where: { id },
         data: { status: "PROCESSED", payload: null },
       });
+  });
+
+  // The customer wrote again before the replay: the newer message's delivery carries the reply.
+  test("a stored message the customer has already written past is left to the sweep", async () => {
+    await mirror(628);
+    const id = await ackMessage("queue-replay-behind", 628);
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            {
+              ...heldByPerson(628),
+              status: "pending",
+              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+            },
+            calls,
+            [
+              {
+                id: 62_800 + 5,
+                content: "outra coisa",
+                message_type: "incoming",
+                private: false,
+              },
+            ],
+          ) as never,
+      },
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    expect(row.payload).toBeNull();
+    expect(calls).not.toContain("sendMessage");
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
   });
 
   // A live read with no ownership in it is not a statement that nobody holds the conversation.

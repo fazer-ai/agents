@@ -7,6 +7,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "./instance";
+import { maxIncomingId, parseChatwootMessages } from "./messages";
 import { mirrorChatwootEvent } from "./mirror";
 import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
@@ -485,6 +486,33 @@ async function replayStored(
       }),
     );
     if (settledStatus) event = { ...normalized, status: settledStatus.status };
+    // A stored message the customer has already written past is not answered: the newer
+    // message's own delivery carries the reply, and a turn started for the older text would run its
+    // tools before any send-time check could stop it. Left to the sweep and the delivery recovery,
+    // which refuse it the same way and keep the operator's record. Only a new message: a late-media
+    // update of an older one still owes its transcription to memory.
+    const messageId = normalized.message?.id;
+    if (normalized.event === "message_created" && messageId != null) {
+      const newest = maxIncomingId(
+        parseChatwootMessages(await client.getMessages(conversationId)),
+        messageId,
+      );
+      if (newest > messageId) {
+        logger.info(
+          "chatwoot: stored delivery row %s is behind message %d on conversation %d; left to the sweep",
+          String(row.id),
+          newest,
+          conversationId,
+        );
+        await run((db) =>
+          db.chatwootWebhookDelivery.updateMany({
+            where: { id: row.id, status: "PENDING" },
+            data: { payload: null },
+          }),
+        );
+        return "skipped";
+      }
+    }
   }
   return processRecordedChatwootDelivery({
     tenantId: row.tenantId,

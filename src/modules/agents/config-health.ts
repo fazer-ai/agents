@@ -557,8 +557,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // Nothing configured is not a configuration that can fail: it IS the agent's model, and an agent
   // model that cannot run is the "model" issue above. Raising a second line for it would tell the
   // operator to fix the summariser when the thing to fix is the agent.
+  // Not for a decisions observer either: the compaction job stands down for it (no chat model
+  // to summarise with), and the editor hides the Memory section there.
   const compactionResolution =
-    compaction.enabled && compactionOverridden
+    chatModelUsed && compaction.enabled && compactionOverridden
       ? resolveModelOverride(
           {
             provider: compaction.provider,
@@ -670,26 +672,28 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // none, found out on the day the primary fails. Its credential can be PENDING after an import or
   // UNRESOLVED after a delete. `hasModelFallback` is its on switch.
   const fallback = readModelFallbackConfig(input.settings);
-  const fallbackResolution = hasModelFallback(fallback)
-    ? resolveModelOverride(
-        {
-          provider: fallback.provider,
-          model: fallback.model,
-          credentialRef: fallback.credentialRef,
-          baseURL: fallback.baseURL,
-        },
-        {
-          provider: input.savedModelProvider,
-          model: "",
-          baseURL: input.savedModelBaseURL ?? null,
-        },
-        {
-          ownCredentialBaseURL:
-            input.savedModelFallbackCredentialBaseURL ?? null,
-          isUsableBaseURL: isValidHttpUrl,
-        },
-      )
-    : null;
+  // A decisions observer builds no chat model, so there is nothing for a fallback to stand in for.
+  const fallbackResolution =
+    chatModelUsed && hasModelFallback(fallback)
+      ? resolveModelOverride(
+          {
+            provider: fallback.provider,
+            model: fallback.model,
+            credentialRef: fallback.credentialRef,
+            baseURL: fallback.baseURL,
+          },
+          {
+            provider: input.savedModelProvider,
+            model: "",
+            baseURL: input.savedModelBaseURL ?? null,
+          },
+          {
+            ownCredentialBaseURL:
+              input.savedModelFallbackCredentialBaseURL ?? null,
+            isUsableBaseURL: isValidHttpUrl,
+          },
+        )
+      : null;
   const fallbackIssue: ConfigIssue = {
     key: "modelFallback",
     tab: "behavior",

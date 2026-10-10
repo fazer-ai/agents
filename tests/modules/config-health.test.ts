@@ -1950,3 +1950,37 @@ describe("the chat model of a decisions observer", () => {
     ).toEqual(["model"]);
   });
 });
+
+// Nor its summariser and its fallback, which ride on the same chat model: the compaction job stands
+// down for it and the observe tick builds no model to fall back from. The editor hides both
+// sections there, and REST and MCP must not call the agent unhealthy over them.
+describe("the summariser and fallback of a decisions observer", () => {
+  const observer = (engine: string) => ({
+    ...base,
+    agentMonitoring: true,
+    settings: {
+      monitoring: {
+        engine,
+        decisions: {
+          provider: "typesafe",
+          credentialRef: "vault:1",
+          questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+        },
+      },
+      memory: { compaction: { enabled: true, provider: "anthropic" } },
+      modelFallback: { provider: "anthropic", model: "claude-x" },
+    },
+  });
+  const keys = (engine: string) =>
+    computeConfigIssues(observer(engine))
+      .map((i) => i.key)
+      .filter((k) => k === "memoryModel" || k === "modelFallback");
+
+  test("raise nothing on the decisions engine", () => {
+    expect(keys("decisions")).toEqual([]);
+  });
+
+  test("are still checked on the llm engine", () => {
+    expect(keys("llm")).toEqual(["memoryModel", "modelFallback"]);
+  });
+});

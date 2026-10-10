@@ -523,3 +523,19 @@ export function withNativeToolGranted<G extends NativeGrantRow>(
     g === row ? { ...g, enabledTools: [...(g.enabledTools ?? []), tool] } : g,
   );
 }
+
+// What the Tools tab holds once an "Allow" landed. The tab stays editable while the grant is written,
+// so edits made since the press are kept, with the tool added to them, and stay unsaved; untouched,
+// the tab takes the grant set as written. RAG rows are the Knowledge tab's and stay as edited.
+export function grantsAfterAllow<G extends NativeGrantRow>(
+  current: readonly G[],
+  editedSincePress: boolean,
+  written: readonly G[],
+  tool: string,
+): G[] {
+  if (editedSincePress) return withNativeToolGranted(current, tool);
+  return [
+    ...current.filter((g) => g.source === "RAG"),
+    ...written.filter((g) => g.source !== "RAG"),
+  ];
+}

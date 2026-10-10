@@ -4,6 +4,7 @@ import {
   type DecisionRuleForm,
   decisionsToForm,
   decisionsToStored,
+  grantsAfterAllow,
   nativeToolsGranted,
   ruleToolNotGranted,
   startingDecisionsForm,
@@ -279,6 +280,30 @@ describe("the native tools a grant set allows", () => {
     expect(next[1]?.enabledTools).toEqual(["private_note", "set_labels"]);
     expect(withNativeToolGranted(next, "set_labels")).toEqual(next);
     expect(withNativeToolGranted([], "set_labels")).toEqual([]);
+  });
+
+  // The Tools tab stays editable while an Allow is written: what the operator changed meanwhile is
+  // kept, with the tool added, rather than replaced by the set the request carried.
+  test("an Allow that lands keeps the Tools edits made while it was written", () => {
+    type Row = {
+      source: string;
+      enabledTools?: string[];
+      toolDefinitionId?: string;
+      knowledgeBaseId?: string;
+    };
+    const rag: Row = { source: "RAG", knowledgeBaseId: "k" };
+    const http: Row = { source: "HTTP", toolDefinitionId: "t9" };
+    const written: Row[] = [{ source: "NATIVE", enabledTools: ["set_labels"] }];
+    const edited: Row[] = [rag, http, { source: "NATIVE", enabledTools: [] }];
+    expect(grantsAfterAllow(edited, true, written, "set_labels")).toEqual([
+      rag,
+      http,
+      { source: "NATIVE", enabledTools: ["set_labels"] },
+    ]);
+    expect(grantsAfterAllow(edited, false, written, "set_labels")).toEqual([
+      rag,
+      { source: "NATIVE", enabledTools: ["set_labels"] },
+    ]);
   });
 });
 

@@ -36,6 +36,10 @@ export interface ObservationState {
   // The block as it was read, carried beside the form: an untouched block is written back as stored,
   // and a draft that cannot run is not written over a block that can while the engine is `llm`.
   storedDecisions: Record<string, unknown> | null;
+  // Whether the operator has edited the block since it was read. A stored value the form normalizes
+  // (an empty model, a threshold stored as text) reads back equal to what the form shows, so an
+  // edit that lands on that same reading is still an edit, and has to be written.
+  decisionsEdited: boolean;
   analysis: MonitoringAnalysis;
   // Numbers travel as text: an emptied field is a state the operator passes through, not a value.
   windowMessages: string;
@@ -70,6 +74,7 @@ export function observationToForm(settings: unknown): ObservationState {
       decisionsToForm(c.decisions) ??
       (c.engine === "decisions" ? startingDecisionsForm() : null),
     storedDecisions: c.decisions,
+    decisionsEdited: false,
     analysis: c.analysis,
     windowMessages: String(c.window.messages),
     windowSeconds: String(c.debounce.windowSeconds),
@@ -109,6 +114,24 @@ export type StoredMonitoring = Omit<MonitoringConfig, "decisions"> & {
   decisions?: Record<string, unknown>;
 };
 
+// An edit to the decisions block, through the one door every field of it uses.
+export function editDecisions(
+  prev: ObservationState,
+  next: (d: DecisionsForm) => DecisionsForm,
+): ObservationState {
+  return prev.decisions
+    ? { ...prev, decisions: next(prev.decisions), decisionsEdited: true }
+    : prev;
+}
+
+// The stored block the form is judged against: the block as read until the operator edits it,
+// nothing after, so an edit is judged (and written) as the form's own block.
+export function decisionsBaseline(
+  form: ObservationState,
+): Record<string, unknown> | null {
+  return form.decisionsEdited ? null : form.storedDecisions;
+}
+
 // The `monitoring` part of a Behavior save, spread into the settings it writes. The block is
 // replaced for a watcher and for an agent that already has one; an answering agent whose settings
 // never carried it saves without it, so a save that changed nothing writes nothing there.
@@ -133,7 +156,10 @@ export function decisionsBlockToStore(
   if (!watcher) return form.storedDecisions;
   const drawn = form.engine === "decisions";
   if (form.decisions === null) return form.storedDecisions;
-  if (decisionsUntouched(form.decisions, form.storedDecisions)) {
+  if (
+    !form.decisionsEdited &&
+    decisionsUntouched(form.decisions, form.storedDecisions)
+  ) {
     return form.storedDecisions;
   }
   const block = decisionsToStored(form.decisions);

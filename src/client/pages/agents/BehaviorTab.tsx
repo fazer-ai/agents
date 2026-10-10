@@ -118,7 +118,10 @@ import {
   overrideProviderChanged,
 } from "./modelOverrideForm";
 import { ObservationSection } from "./ObservationSection";
-import type { ObservationState } from "./observationFormState";
+import {
+  decisionsBaseline,
+  type ObservationState,
+} from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
 import { signatureOnToggle } from "./signatureFormState";
 import { TabActionBar } from "./TabActionBar";
@@ -1562,7 +1565,7 @@ export function BehaviorTab({
     mode === "monitoring" &&
     observation.engine === "decisions" &&
     observation.decisions !== null &&
-    decisionsFormIssues(observation.decisions, observation.storedDecisions)
+    decisionsFormIssues(observation.decisions, decisionsBaseline(observation))
       .size > 0;
   const fallbackSource = overridePickerSource(
     fallbackOverride,

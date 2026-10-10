@@ -9,6 +9,8 @@ import {
 } from "./DecisionsFields";
 import { startingDecisionsForm } from "./decisionsFormState";
 import {
+  decisionsBaseline,
+  editDecisions,
   OBSERVATION_LIMITS,
   type ObservationState,
 } from "./observationFormState";
@@ -184,7 +186,7 @@ export function ObservationSection({
           agentId={agentId}
           savedAt={savedAt}
           storedBlock={decisionsBlockFingerprint(observation.storedDecisions)}
-          storedDecisions={observation.storedDecisions}
+          storedDecisions={decisionsBaseline(observation)}
           storedRuleCount={
             Array.isArray(observation.storedDecisions?.rules)
               ? observation.storedDecisions.rules.length
@@ -192,11 +194,7 @@ export function ObservationSection({
           }
           decisions={observation.decisions}
           setDecisions={(next) =>
-            setObservation((prev) =>
-              prev.decisions
-                ? { ...prev, decisions: next(prev.decisions) }
-                : prev,
-            )
+            setObservation((prev) => editDecisions(prev, next))
           }
           credentialError={decisionsCredentialError}
           serverRefusal={decisionsRefusal}

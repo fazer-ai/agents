@@ -16,7 +16,9 @@ import {
   withActionScope,
 } from "@/client/pages/agents/decisionsFormState";
 import {
+  decisionsBaseline,
   decisionsBlockToStore,
+  editDecisions,
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
@@ -420,6 +422,48 @@ describe("a stored block the engine refuses is not shown as sound", () => {
     // Any edit writes the form's block, which carries the key, and the problem is gone.
     form.apply = "enforce";
     expect(decisionsFormIssues(form, block).size).toBe(0);
+  });
+});
+
+// A stored value the form reads as the same thing it shows (an empty model, a threshold stored as
+// text) compares equal to its own reading. Retyping it is still an edit, and is written.
+describe("a stored value the form normalizes can be repaired by editing it", () => {
+  const storedWith = (block: unknown) =>
+    observationToForm({
+      monitoring: { engine: "decisions", decisions: block },
+    });
+
+  test("an empty stored model, typed and cleared, is written as no model", () => {
+    const block: Record<string, unknown> = { ...clone(), model: "" };
+    expect(decisionsSchema.safeParse(block).success).toBe(false);
+    let form = storedWith(block);
+    expect(form.decisions?.model).toBe("");
+    form = editDecisions(form, (d) => ({ ...d, model: "jev-1.13.0" }));
+    form = editDecisions(form, (d) => ({ ...d, model: "" }));
+    const written = decisionsBlockToStore(form);
+    expect(written).not.toHaveProperty("model");
+    expect(decisionsIssues(written)).toEqual([]);
+    const edited = form.decisions;
+    if (!edited) throw new Error("fixture");
+    expect(decisionsFormIssues(edited, decisionsBaseline(form)).size).toBe(0);
+  });
+
+  test("a threshold stored as text, retyped as the number it shows, is written as a number", () => {
+    const block = clone();
+    got(block.rules[0]).when = [
+      { question: "pede_reembolso", minProbability: "0.7" },
+    ];
+    let form = storedWith(block);
+    form = editDecisions(form, (d) => structuredClone(d));
+    const written = decisionsBlockToStore(form) as unknown as Block;
+    expect(got(written.rules[0]).when[0]?.minProbability).toBe(0.7);
+  });
+
+  test("a form nobody edited still writes the stored block back as it is", () => {
+    const block: Record<string, unknown> = { ...clone(), model: "" };
+    const form = storedWith(block);
+    expect(decisionsBlockToStore(form)).toEqual(block);
+    expect(decisionsBaseline(form)).toEqual(block);
   });
 });
 

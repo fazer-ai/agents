@@ -68,6 +68,7 @@ import {
   type DecisionsStarter,
   type StarterNames,
   starterApplied,
+  starterFits,
   withStarter,
 } from "./decisionsStarters";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
@@ -1219,8 +1220,9 @@ export function DecisionsFields({
                   key={kind}
                   type="button"
                   data-testid={`decisions-starter-${kind}`}
+                  disabled={!starterFits(decisions, kind, starterNames)}
                   onClick={() => addStarter(kind)}
-                  className="flex flex-col gap-1 rounded-lg border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-hover"
+                  className="flex flex-col gap-1 rounded-lg border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-hover disabled:opacity-50"
                 >
                   <span className="font-medium text-sm text-text-primary">
                     {starterTitle(kind)}
@@ -1476,7 +1478,7 @@ export function DecisionsFields({
                 size="sm"
                 variant="ghost"
                 className="ml-2"
-                disabled={decisions.questions.length >= QUESTIONS_MAX}
+                disabled={!starterFits(decisions, kind, starterNames)}
                 onClick={() => addStarter(kind)}
               >
                 <Plus aria-hidden="true" />

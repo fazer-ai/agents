@@ -239,6 +239,12 @@ import {
   verifyChatwootSignature,
 } from "./signing";
 import type { NormalizedChatwootEvent } from "./types";
+import {
+  isUnchangedMessageUpdate,
+  markDeliveryPending,
+  rememberOnSuccess,
+  settleDeliveryPending,
+} from "./unchanged-update";
 import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
 // Dedicated Chatwoot Agent Bot webhook receiver: resolve tenant and instance by the opaque routeToken
@@ -999,6 +1005,19 @@ export async function receiveChatwootWebhook(
 
   const normalized = normalizeChatwootEvent(parsed);
   if (!normalized) return { ack: true, outcome: "ignored" };
+  // A delivery receipt (`source_id`, delivered, read) re-sends the message unchanged: nothing it carries
+  // differs from what this process already processed for that message and mirrored for that
+  // conversation, so it is acked here with no ledger row and no transaction (./unchanged-update.ts).
+  if (
+    isUnchangedMessageUpdate(
+      bot.tenantId,
+      bot.instanceId,
+      bot.agentBotId,
+      normalized,
+    )
+  ) {
+    return { ack: true, outcome: "ignored" };
+  }
 
   // X-Chatwoot-Delivery is always present in the fork; fall back to a body digest so a
   // (theoretical) missing header still dedupes deterministically.
@@ -1043,6 +1062,16 @@ export async function receiveChatwootWebhook(
     );
     throw new ServiceUnavailableError(
       "the delivery could not be recorded; retry",
+    );
+  }
+  // Owed a first attempt here: until its mirror runs, the rows it would write are not settled, and a
+  // receipt of them is not dropped (./unchanged-update.ts).
+  if (recorded.status === "PENDING") {
+    markDeliveryPending(
+      recorded.rowId,
+      bot.tenantId,
+      bot.instanceId,
+      normalized,
     );
   }
   return {
@@ -1122,6 +1151,8 @@ export async function handToRecovery(
       { label: `delivery row ${rowId} to recovery`, sleep },
     );
     if (!moved) return false;
+    // The recovery rebuilds the event from Chatwoot as it stands, so this body is never mirrored.
+    settleDeliveryPending(rowId);
   } catch (err) {
     logger.error(
       { err },
@@ -1230,8 +1261,28 @@ export async function processRecordedChatwootDelivery(
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
   const rowId = params.deliveryRowId;
+  // Taken on arrival, kept on success: see ./unchanged-update.ts.
+  const remember = rememberOnSuccess(
+    params.tenantId,
+    params.instanceId,
+    params.agentBotId,
+    params.normalized,
+  );
+  const outcome = await processRecordedOnce(params, base, rowId, remember);
+  // Its mirror has run (or the recovery took it). A throw leaves it owed, and the rows it would write
+  // stay unsettled until its next attempt here.
+  settleDeliveryPending(rowId);
+  return outcome;
+}
+
+async function processRecordedOnce(
+  params: ProcessRecordedChatwootParams,
+  base: PrismaClient,
+  rowId: bigint,
+  remember: () => void,
+): Promise<"processed" | "skipped"> {
   try {
-    return await processChatwootDelivery({
+    const outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
       deliveryRowId: rowId,
@@ -1241,6 +1292,11 @@ export async function processRecordedChatwootDelivery(
       base,
       deps: params.deps,
     });
+    // Only a delivery this attempt processed vouches for its message's repeats: a lost claim
+    // ("skipped") ran nothing here, and a throw never reaches this line. The conversation half is the
+    // mirror's own (`trackConversationMirror`).
+    if (outcome === "processed") remember();
+    return outcome;
   } catch (err) {
     if (!(err instanceof TurnOwedToRecovery)) throw err;
     await handToRecovery(

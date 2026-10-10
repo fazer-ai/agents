@@ -7,6 +7,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
 import { runScopedOn } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { registerFlowlogRetentionHandler } from "@/modules/flowlog/retention";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { proactiveBreakerGet } from "@/modules/mcp/read";
 import {
@@ -23,7 +24,10 @@ import {
   reserveProactiveSend,
   sendWithinProactiveLimit,
 } from "@/modules/proactive-limit/service";
+import type { ClaimedJob } from "@/modules/scheduler/service";
+import { getJobHandler } from "@/modules/scheduler/worker";
 import { updateProactiveBreakerSettings } from "@/modules/tenant-settings/service";
+import { burnSchedulerJobId } from "@/tests/utils/scheduler";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { until } from "../utils/poll";
@@ -577,6 +581,62 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     const empty = await getProactiveBreakerStatus(ctx(), appDb, now);
     expect(empty.limit).toBe(1000);
     expect(empty.auto.basis).toBe("floor");
+  });
+
+  test("the automatic peak counts the fixed sends the breaker counts, which leave no generate line", async () => {
+    await resetBreaker();
+    const now = new Date();
+    const day = 86_400_000;
+    await seedGenerate("messaged", new Date(now.getTime() - 9 * day), 200);
+    const conv = await seedConv(6960);
+    const peakAt = new Date(now.getTime() - 5 * day);
+    await suDb.agentTurnDelivery.createMany({
+      data: Array.from({ length: 700 }, (_, i) => ({
+        tenantId,
+        conversationId: conv,
+        proactive: true,
+        deliveredAt: new Date(peakAt.getTime() + i * 60_000),
+      })),
+    });
+    await seedDeliveries(conv, false, 5 * day - 1000, 5 * day - 2000);
+    const peak = await runScopedOn(appDb, ctx(), (db) =>
+      computeAutoPeak(db, tenantId, now),
+    );
+    expect(peak.peak).toBe(700);
+    expect(peak.at?.getTime()).toBe(peakAt.getTime());
+  });
+
+  test("the retention sweep keeps a proactive delivery for the automatic peak's month", async () => {
+    await resetBreaker();
+    const conv = await seedConv(6961);
+    const day = 86_400_000;
+    await seedDeliveries(conv, true, 10 * day, 32 * day);
+    await seedDeliveries(conv, false, 1 * day, 3 * day);
+    registerFlowlogRetentionHandler();
+    const handler = getJobHandler("FLOWLOG_SWEEP");
+    const job: ClaimedJob = {
+      id: await burnSchedulerJobId(suDb),
+      tenantId,
+      kind: "FLOWLOG_SWEEP",
+      payload: {},
+      attempts: 0,
+      claimSeq: 0,
+    };
+    await (handler as NonNullable<typeof handler>)(job, appDb);
+    const left = await suDb.agentTurnDelivery.findMany({
+      where: { tenantId },
+      select: { proactive: true, deliveredAt: true },
+      orderBy: { deliveredAt: "asc" },
+    });
+    expect(
+      left.map((r) => [
+        r.proactive,
+        Math.round((Date.now() - r.deliveredAt.getTime()) / day),
+      ]),
+    ).toEqual([
+      [true, 10],
+      [false, 1],
+    ]);
   });
 
   test("an invalid limit is refused and the stored one stays", async () => {

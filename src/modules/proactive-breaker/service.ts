@@ -87,32 +87,51 @@ async function countWindow(
 }
 
 // The largest number of proactive messages the account delivered in any 24h window of the last 30
-// days, read from what the app already recorded: the flow log's line for a nudge that reached the
-// customer (`generate` with outcome `messaged` or `templated`), written since before this breaker
-// existed, so no account starts below its own peak. Bounded by the log's retention.
+// days, from two records of the same sends: the delivery rows the breaker counts (every proactive
+// send, the redirect ladder's fixed ones included, kept a month), and the flow log's line for a nudge
+// that reached the customer (`generate` with outcome `messaged` or `templated`), written since before
+// the rows were, so no account starts below its own peak. The larger of the two wins.
 export async function computeAutoPeak(
   db: ScopedDb,
   tenantId: bigint,
   now: Date,
 ): Promise<{ peak: number; at: Date | null }> {
   const since = new Date(now.getTime() - AUTO_LOOKBACK_DAYS * WINDOW_MS);
-  const rows = await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
-    SELECT n, at FROM (
-      SELECT created_at AS at,
-             count(*) OVER (
-               ORDER BY created_at
-               RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
-             ) AS n
-        FROM execution_logs
-       WHERE tenant_id = ${tenantId}
-         AND stage = 'generate'
-         AND source = 'inbox'
-         AND created_at > ${since}
-         AND detail->>'outcome' IN ('messaged', 'templated')
-    ) w
-    ORDER BY n DESC, at ASC
-    LIMIT 1`);
-  const top = rows[0];
+  const fromDeliveries = await db.$queryRaw<
+    Array<{ n: bigint; at: Date }>
+  >(Prisma.sql`
+      SELECT n, at FROM (
+        SELECT delivered_at AS at,
+               count(*) OVER (
+                 ORDER BY delivered_at
+                 RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
+               ) AS n
+          FROM agent_turn_deliveries
+         WHERE tenant_id = ${tenantId}
+           AND proactive
+           AND delivered_at > ${since}
+      ) w
+      ORDER BY n DESC, at ASC
+      LIMIT 1`);
+  const fromLog = await db.$queryRaw<Array<{ n: bigint; at: Date }>>(Prisma.sql`
+      SELECT n, at FROM (
+        SELECT created_at AS at,
+               count(*) OVER (
+                 ORDER BY created_at
+                 RANGE BETWEEN CURRENT ROW AND INTERVAL '24 hours' FOLLOWING
+               ) AS n
+          FROM execution_logs
+         WHERE tenant_id = ${tenantId}
+           AND stage = 'generate'
+           AND source = 'inbox'
+           AND created_at > ${since}
+           AND detail->>'outcome' IN ('messaged', 'templated')
+      ) w
+      ORDER BY n DESC, at ASC
+      LIMIT 1`);
+  const a = fromDeliveries[0];
+  const b = fromLog[0];
+  const top = a && (!b || Number(a.n) >= Number(b.n)) ? a : b;
   return top ? { peak: Number(top.n), at: top.at } : { peak: 0, at: null };
 }
 

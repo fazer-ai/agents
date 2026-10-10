@@ -25,12 +25,14 @@ import {
 import {
   decisionsBodyOf,
   decisionsHeadOf,
+  monitoringPatch,
   observationToForm,
   observationToStored,
   timingOf,
   withDecisionsOf,
   withDraftEngine,
   withEngine,
+  withSavedDecisions,
 } from "@/client/pages/agents/observationFormState";
 import { rebaseToolGrantsOnto } from "@/client/pages/agents/toolsBaseline";
 import { decisionsIssues, RULES_MAX } from "@/modules/decisions/config";
@@ -92,6 +94,19 @@ describe("the Behavior save and the decision setup are written apart", () => {
     expect(out.debounce.windowSeconds).toBe(20);
     expect(out.analysis).toBe("incremental");
     expect(out.decisions).toEqual({ ...BLOCK, apply: "enforce" });
+  });
+
+  // An agent with no block yet gets one from its first setup save: a timing edit saved afterwards,
+  // with the agent flipped back to answering, is then still written and not dropped as never stored.
+  test("after the setup's save, the block counts as stored for the next Behavior save", () => {
+    const form = observationToForm({});
+    form.windowSeconds = "7";
+    const after = withSavedDecisions(form, observationToForm(STORED));
+    expect(after.storedPresent).toBe(true);
+    expect(after.windowSeconds).toBe("7");
+    expect(
+      monitoringPatch(after, false).monitoring?.debounce.windowSeconds,
+    ).toBe(7);
   });
 
   test("the timing and the setup are told apart for the unsaved marks", () => {

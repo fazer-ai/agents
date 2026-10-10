@@ -59,6 +59,7 @@ import {
   announceSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
+import { recordTurnDelivery } from "@/modules/turn-limit/service";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -444,6 +445,8 @@ interface NudgeClosing {
   // The turn reached the model. Before that, a gate that stops the turn (stale, not owned, a refused
   // contact) ran nothing and owes no line, unless it left a message.
   generating: boolean;
+  // Records a turn whose only customer-facing send was a tool's (an ack, a file), once, at the end.
+  recordToolSpeech: () => Promise<void>;
 }
 
 // EVERY PROACTIVE TURN CLOSES ON ONE LINE. The outcome line carries the messages the turn created
@@ -460,10 +463,12 @@ export async function runAgentNudge(
     sentIds: () => [],
     written: false,
     generating: false,
+    recordToolSpeech: async () => {},
   };
   try {
     return await runAgentNudgeBody(params, closing, turnStartedAt);
   } finally {
+    await closing.recordToolSpeech();
     const sentMessageIds = closing.sentIds();
     if (
       closing.flow &&
@@ -661,20 +666,39 @@ async function runAgentNudgeBody(
   // reached the customer (message or template, never a note), so a refused or failed send marks
   // nothing. Best-effort: a throw would fail the nudge into a retry that sends it again, and a lost
   // stamp only costs the answer "nobody spoke".
+  let deliveryCounted = false;
+  let toolSpoke = false;
+  closing.recordToolSpeech = async () => {
+    if (toolSpoke && !deliveryCounted) await recordProactiveSpeech();
+  };
   const recordProactiveSpeech = async (): Promise<void> => {
     try {
-      await runScopedOn(base, sysCtx(tenantId), (db) =>
+      const row = await runScopedOn(base, sysCtx(tenantId), async (db) => {
         // By the conversation's natural key rather than the id loaded with the config, which is
         // null when no mirror row existed yet and would then stamp nothing on the row a webhook
         // creates meanwhile.
-        db.conversation.updateMany({
-          where: {
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
+        const where = {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        };
+        await db.conversation.updateMany({
+          where,
           data: { lastProactiveAt: new Date() },
-        }),
-      );
+        });
+        return db.conversation.findFirst({ where, select: { id: true } });
+      });
+      // The proactive message counts toward the per-conversation turn limit like a reply does, once
+      // per turn: a tool's send and the reply after it are one turn, while the stamp above moves on
+      // every send.
+      if (row && !deliveryCounted) {
+        deliveryCounted = true;
+        await recordTurnDelivery({
+          tenantId,
+          conversationDbId: row.id,
+          proactive: true,
+          base,
+        });
+      }
     } catch (err) {
       logger.warn(
         { err, conversationId: String(conversationId) },
@@ -1383,6 +1407,9 @@ async function runAgentNudgeBody(
         checkpointer: params.deps?.checkpointer,
         // NOTE: the slow-tool ack's own ask, after its send.
         stillWanted: toolFence,
+        onCustomerSend: () => {
+          toolSpoke = true;
+        },
         // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
         // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
         // one that had already happened — but only as a FALLBACK: this snapshot is taken before
@@ -2114,6 +2141,9 @@ async function runAgentNudgeBody(
       });
   } finally {
     toolLogger.settle();
+    // NOTE: Before the claim is released, so a reactive turn waiting on it counts what a tool already
+    // sent; the closing line of the nudge asks again for a turn that never got here.
+    await closing.recordToolSpeech();
     // NOTE: best-effort, for the reason ../graph/runtime.ts states at its own release: a throw here
     // would leave through a `finally` that runs after the customer post, turning a delivered nudge
     // into a failure the caller retries. The lease is the recovery path.

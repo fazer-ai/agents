@@ -47,6 +47,7 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { outboundUrl } from "../utils/outbound";
 import {
   EmptyThenReplyModel,
   FailingModel,
@@ -504,18 +505,24 @@ async function seedConv(
 // What our side spoke, as the conversation row records it: the proactive stamp, and the two reply
 // marks a nudge must leave alone because it claims no customer message.
 async function speechOf(convId: number) {
-  return suDb.conversation.findFirstOrThrow({
+  const row = await suDb.conversation.findFirstOrThrow({
     where: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
     },
     select: {
+      id: true,
       lastProactiveAt: true,
       lastRepliedAt: true,
       lastRepliedMessageId: true,
     },
   });
+  // The turns the per-conversation turn limit counts: a proactive message is one of them.
+  const proactiveTurns = await suDb.agentTurnDelivery.count({
+    where: { conversationId: row.id, proactive: true },
+  });
+  return { ...row, proactiveTurns };
 }
 
 describe.skipIf(!dbUp)("runAgentNudge", () => {
@@ -749,6 +756,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // Our side spoke, and it answered no customer message: the reply marks stay put.
     const spoke = await speechOf(900);
     expect(spoke.lastProactiveAt).not.toBeNull();
+    expect(spoke.proactiveTurns).toBe(1);
     expect(spoke.lastRepliedAt).toBeNull();
     expect(spoke.lastRepliedMessageId).toBeNull();
   });
@@ -1766,6 +1774,133 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(closing.sentMessageIds).toEqual(s.noteIds);
     // The label still applies: it is how the operator triages what the bot left behind.
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  // A follow-up whose only words to the customer were a slow tool's "just a moment" still reached
+  // them, so it is one counted turn, once, even though the model then chose silence.
+  async function followUpWithAck(convId: number, then: "silence" | "reply") {
+    let replyAt = 0;
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tool = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "consulta_lenta",
+        label: "Consulta lenta",
+        method: "GET",
+        urlTemplate: outboundUrl("/v1/slow"),
+        allowedHosts: [new URL(outboundUrl()).hostname],
+        ackEnabled: true,
+        ackMessage: "Só um momento!",
+      },
+    });
+    const selection = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "HTTP",
+        toolDefinitionId: tool.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    let n = 0;
+    const model = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          n++;
+          if (n === 1)
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "consulta_lenta",
+                  args: { __wait_message: "Só um momento!" },
+                  id: "call_slow",
+                },
+              ],
+            });
+          if (n === 2 && then === "reply") return new AIMessage("Achei aqui!");
+          if (n === 2)
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "skip_reply",
+                  args: { reason: "acknowledged" },
+                  id: "call_skip",
+                },
+              ],
+            });
+          return new AIMessage("");
+        },
+      }),
+    };
+    try {
+      await seedConv(convId, null);
+      const s = stub();
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          // The reply is held a moment, so the activity stamp can tell it from the ack's.
+          makeClient: async () => {
+            const c = await s.makeClient();
+            const send = c.sendMessage.bind(c);
+            c.sendMessage = (async (
+              conv: number,
+              text: string,
+              ...rest: never[]
+            ) => {
+              if (text !== "Só um momento!") {
+                await Bun.sleep(30);
+                replyAt = Date.now();
+              }
+              return send(conv, text, ...rest);
+            }) as typeof c.sendMessage;
+            return c;
+          },
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      return { messages: s.messages, speech: await speechOf(convId), replyAt };
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: selection.id } });
+      await suDb.toolDefinition.delete({ where: { id: tool.id } });
+    }
+  }
+
+  test("a follow-up that only sent a tool's ack is one counted turn", async () => {
+    const r = await followUpWithAck(9695, "silence");
+    expect(r.messages).toEqual([[9695, "Só um momento!"]]);
+    expect(r.speech.proactiveTurns).toBe(1);
+  });
+
+  test("a follow-up that sent a tool's ack and then a reply is still one counted turn", async () => {
+    const r = await followUpWithAck(9696, "reply");
+    expect(r.messages).toEqual([
+      [9696, "Só um momento!"],
+      [9696, "Achei aqui!"],
+    ]);
+    expect(r.speech.proactiveTurns).toBe(1);
+    // NOTE: Counted once, but the activity stamp is the reply's, the last thing the customer got.
+    expect(r.speech.lastProactiveAt?.getTime()).toBeGreaterThanOrEqual(
+      r.replyAt,
+    );
   });
 
   test("a follow-up silent with needs_human goes to the pinned team, like handoff_to_human (#1027)", async () => {
@@ -2934,6 +3069,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     ).toBe(false);
     // Nothing reached the customer from a conversation a person holds.
     expect((await speechOf(960)).lastProactiveAt).toBeNull();
+    expect((await speechOf(960)).proactiveTurns).toBe(0);
   });
 
   // NOTE: NOT WHILE A HUMAN STILL OWNS IT. A nudge on a human-held conversation runs in

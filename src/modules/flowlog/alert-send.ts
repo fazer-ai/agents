@@ -6,6 +6,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { consoleUrl } from "@/modules/mcp/console-links";
+import { turnLimitSettingsUrl } from "@/modules/turn-limit/service";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 import { RECOVERY_RATE_KEY } from "./alerts";
@@ -62,6 +63,8 @@ export interface AlertSendTarget {
   tenantId: bigint | null;
   turnId: string | null;
   conversationId: bigint | null;
+  // The agent of the first event, for a link to its settings. Absent on a probe.
+  agentId?: bigint | null;
   // Set on a cause alert: its burst gathers every line of the cause, whatever level each was
   // written at, so the list it links to is not narrowed by level.
   causeKey: string | null;
@@ -178,6 +181,7 @@ type AlertBodyInput = Pick<
   | "conversationId"
   | "causeKey"
   | "context"
+  | "agentId"
 >;
 
 // Where the operator goes from the alert. The ids name the FIRST event of the window, and a burst's
@@ -213,6 +217,14 @@ export function alertLinks(
     links.push({
       label: "View conversation",
       url: consoleUrl(`/conversations/${a.conversationId}`, opts),
+    });
+  }
+  // NOTE: A tripped turn limit is a setting the operator may want to raise during legitimate use, so
+  // the alert goes straight to it.
+  if (a.stage === "turn_limit" && a.agentId != null) {
+    links.push({
+      label: "Change the limit",
+      url: turnLimitSettingsUrl(a.tenantId, a.agentId),
     });
   }
   return links;
@@ -286,6 +298,9 @@ export function buildAlertBody(a: AlertBodyInput): {
       inboxName: a.context?.inboxName ?? null,
       chatwootConversationId: a.context?.chatwootConversationId ?? null,
       firstAt: a.context?.firstAt?.toISOString() ?? null,
+      // Additive too: the same console links Discord prints, for a receiver that forwards the alert
+      // to a person, who needs somewhere to act (the turn limit's setting among them).
+      links: alertLinks(a),
     }),
     contentType: "application/json",
   };

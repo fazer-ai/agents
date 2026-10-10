@@ -92,11 +92,22 @@ describe("alert links", () => {
     );
   });
 
-  test("the generic webhook gets the ids as fields, not rendered URLs", () => {
+  // The ids stay fields, for a consumer that is code; the rendered links ride beside them, additive
+  // to version 1, for a receiver that forwards the alert to a person.
+  test("the generic webhook gets the ids as fields, and the links beside them", () => {
     const env = JSON.parse(body({ type: "webhook" }).rawBody);
     expect(env.turnId).toBe("71b89fbe-turn");
     expect(env.conversationId).toBe("7697");
-    expect(JSON.stringify(env)).not.toContain(host);
+    expect(env.links).toEqual([
+      {
+        label: "View log",
+        url: `${host}/logs?turnId=71b89fbe-turn&switchTenant=7`,
+      },
+      {
+        label: "View conversation",
+        url: `${host}/conversations/7697?switchTenant=7`,
+      },
+    ]);
     const none = JSON.parse(
       body({ type: "webhook", turnId: null, conversationId: null }).rawBody,
     );

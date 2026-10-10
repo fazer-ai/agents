@@ -132,6 +132,7 @@ model Tenant {
   inboxObservers                InboxObserver[]
   conversations                 Conversation[]
   messageReplyClaims            MessageReplyClaim[]
+  agentTurnDeliveries           AgentTurnDelivery[]
   replyDispensals               ReplyDispensal[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
@@ -943,6 +944,13 @@ model Conversation {
   // key (`GREATEST(last_inbound_at, last_replied_at)`): a follow-up step that moved it would open a
   // new episode and restart its own ladder. NULL on rows that predate it.
   lastProactiveAt              DateTime? @map("last_proactive_at")
+  // When the per-agent turn limit last handed this conversation to a person
+  // (src/modules/turn-limit). The window counts only deliveries after it, so a conversation handed
+  // back to the bot starts from zero instead of tripping again on its first reply. NULL = never.
+  turnLimitTrippedAt           DateTime? @map("turn_limit_tripped_at")
+  // The mirror's `chatwootOwnershipChangedAt` as the trip read it, before its own transfer. A
+  // hand-back is the mark moving past it: source versions only, never our clock against Chatwoot's.
+  turnLimitTripMark            Float?    @map("turn_limit_trip_mark")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.
@@ -1120,6 +1128,7 @@ model Conversation {
   inbox           Inbox?              @relation(fields: [inboxId], references: [id], onDelete: SetNull)
   contact         Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
   replyClaims     MessageReplyClaim[]
+  turnDeliveries  AgentTurnDelivery[]
   replyDispensals ReplyDispensal[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
@@ -2162,6 +2171,25 @@ model PromptVariantAssignment {
 // The month's cost per tenant and source, as the poll last summed it from `llm_usage` (issues #426,
 // #1060). The spend ceiling's gate reads THIS row, never the ledger: `polledAt` is the last
 // successful poll, the `pollError` pair the last failure, and a failure never overwrites the figure.
+// One row per agent turn that put something in front of the customer (a reply, an attachment, a
+// proactive message or template; never a private note), for the per-conversation turn limit
+// (src/modules/turn-limit). Written when the turn ends, so the window is counted from here and never
+// from the fire-and-forget execution log. Rows past the window are swept daily.
+model AgentTurnDelivery {
+  id             BigInt   @id @default(autoincrement())
+  tenantId       BigInt   @map("tenant_id")
+  conversationId BigInt   @map("conversation_id")
+  proactive      Boolean  @default(false)
+  deliveredAt    DateTime @default(now()) @map("delivered_at")
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, deliveredAt])
+  @@index([tenantId, deliveredAt])
+  @@map("agent_turn_deliveries")
+}
+
 model SpendCostSnapshot {
   id                    BigInt    @id @default(autoincrement())
   tenantId              BigInt    @map("tenant_id")
@@ -2199,10 +2227,10 @@ model SpendCostSnapshot {
 // (src/modules/pricing/unpriced-alert.ts). The row is the claim: inserting it is what entitles the
 // caller to announce, and a line that did not land deletes it so the next call tries again.
 model UnpricedModelAnnouncement {
-  id         BigInt   @id @default(autoincrement())
-  tenantId   BigInt   @map("tenant_id")
-  source     String
-  monthStart DateTime @map("month_start")
+  id          BigInt    @id @default(autoincrement())
+  tenantId    BigInt    @map("tenant_id")
+  source      String
+  monthStart  DateTime  @map("month_start")
   model       String
   claimedAt   DateTime  @default(now()) @map("claimed_at")
   deliveredAt DateTime? @map("delivered_at")
@@ -2214,45 +2242,45 @@ model UnpricedModelAnnouncement {
 }
 
 model LlmUsage {
-  id                  BigInt   @id @default(autoincrement())
-  tenantId            BigInt   @map("tenant_id")
-  agentId             BigInt?  @map("agent_id")
-  conversationId      BigInt?  @map("conversation_id")
+  id                    BigInt   @id @default(autoincrement())
+  tenantId              BigInt   @map("tenant_id")
+  agentId               BigInt?  @map("agent_id")
+  conversationId        BigInt?  @map("conversation_id")
   // The DB Inbox.id this usage was attributed to (null in the playground and for legacy rows).
   // Granularity for the per-inbox dashboard break-down.
-  inboxId             BigInt?  @map("inbox_id")
-  threadId            String?  @map("thread_id")
-  model               String
-  node                String?
+  inboxId               BigInt?  @map("inbox_id")
+  threadId              String?  @map("thread_id")
+  model                 String
+  node                  String?
   // "inbox" (real customer traffic) | "playground" (operator test turns). Lets the dashboard
   // keep test usage from polluting the real figures.
-  source              String   @default("inbox")
-  promptTokens        Int      @default(0) @map("prompt_tokens")
-  completionTokens    Int      @default(0) @map("completion_tokens")
+  source                String   @default("inbox")
+  promptTokens          Int      @default(0) @map("prompt_tokens")
+  completionTokens      Int      @default(0) @map("completion_tokens")
   // Cached-input accounting (a discounted SUBSET of promptTokens, never additive):
   // cachedReadTokens = prompt tokens served from the provider cache (OpenAI/Anthropic/Google);
   // cacheCreationTokens = tokens written to the cache this call (Anthropic, billed at a premium).
-  cachedReadTokens    Int      @default(0) @map("cached_read_tokens")
-  cacheCreationTokens Int      @default(0) @map("cache_creation_tokens")
+  cachedReadTokens      Int      @default(0) @map("cached_read_tokens")
+  cacheCreationTokens   Int      @default(0) @map("cache_creation_tokens")
   // Of cacheCreationTokens, the writes made under the 1-hour TTL (Anthropic bills them at 2x the input
   // rate against 1.25x for the 5-minute ones). A SUBSET, like the two above: 0 for every row before the
   // column and every call without a 1-hour mark.
-  cacheCreation1hTokens Int    @default(0) @map("cache_creation_1h_tokens")
+  cacheCreation1hTokens Int      @default(0) @map("cache_creation_1h_tokens")
   // The turn this call was billed to, the same id as its ExecutionLog rows and its Langfuse trace
   // (issue #839). Null for rows from before the column and for a call no turn owns. The playground
   // groups a reopened session's calls by it, so each message gets back the line it had live.
-  turnId              String?  @map("turn_id")
+  turnId                String?  @map("turn_id")
   // How long the call took, in milliseconds, as the capture measured it (issue #855). Null for rows
   // from before the column and for a call nothing timed.
-  durationMs          Int?     @map("duration_ms")
+  durationMs            Int?     @map("duration_ms")
   // What the call cost in USD, priced from the price table when the row was written (issue #863).
   // Null for a call the table could not price and for rows from before the column: never zero,
   // which would enter every total silently.
-  costUsd             Decimal? @map("cost_usd") @db.Decimal(18, 10)
+  costUsd               Decimal? @map("cost_usd") @db.Decimal(18, 10)
   // Which price table was in force when the row was written (`litellm@<commit>`), so a table found
   // wrong later can be corrected on exactly the rows it priced. Null on rows from before the column.
-  priceTable          String?  @map("price_table")
-  createdAt           DateTime @default(now()) @map("created_at")
+  priceTable            String?  @map("price_table")
+  createdAt             DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

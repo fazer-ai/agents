@@ -16,12 +16,14 @@ describe("limits form ↔ stored round trip", () => {
         maxToolCalls: 7,
         maxHistoryTokens: 12_000,
         retrySilence: false,
+        maxTurnsPerHour: 7,
       },
     };
     expect(limitsToStored(limitsToForm(stored))).toEqual({
       maxToolCalls: 7,
       maxHistoryTokens: 12_000,
       retrySilence: false,
+      maxTurnsPerHour: 7,
     });
   });
 
@@ -36,6 +38,19 @@ describe("limits form ↔ stored round trip", () => {
       maxToolCalls: 10,
       maxHistoryTokens: null,
       retrySilence: true,
+      maxTurnsPerHour: 60,
     });
+  });
+
+  test("a key never set shows the default of 60, not an empty field", () => {
+    expect(limitsToForm({}).maxTurnsPerHour).toBe("60");
+  });
+
+  test("an emptied turn limit is stored as 0, which reads back as no limit", () => {
+    const form = { ...limitsToForm({}), maxTurnsPerHour: "" };
+    const stored = limitsToStored(form);
+    expect(stored.maxTurnsPerHour).toBe(0);
+    expect(readLimitsConfig({ limits: stored }).maxTurnsPerHour).toBe(0);
+    expect(limitsToForm({ limits: stored }).maxTurnsPerHour).toBe("");
   });
 });

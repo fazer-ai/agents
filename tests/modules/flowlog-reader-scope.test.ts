@@ -165,6 +165,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/tool-flowlog.test.ts": 1,
   // NOTE: The clip lines two code tools wrote in one turn, one silenced and one not, read by that turn.
   "tests/graph/tool-silence-truncation-alert.test.ts": 1,
+  "tests/graph/turn-limit-turn.test.ts": 1,
   "tests/graph/tool-schema-refusal.test.ts": 2,
   // NOTE: Two readers in one test, and the second is the first one's control. The alert-channel test send
   // must write no line the alerting path would itself route, and the tenant is minutes old, so the zero

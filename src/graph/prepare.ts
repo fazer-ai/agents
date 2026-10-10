@@ -358,6 +358,9 @@ export interface AgentConfig {
   maxHistoryTokens: number | null;
   // Retry an unexplained silence once (agent.settings.limits.retrySilence).
   retrySilence: boolean;
+  // Delivered turns per conversation per rolling hour; 0 = no limit
+  // (agent.settings.limits.maxTurnsPerHour).
+  maxTurnsPerHour: number;
   // Whether a closed attendance gets folded into the contact's memory instead of staying raw on
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
@@ -1016,6 +1019,7 @@ export async function loadAgentConfig(
     maxToolCalls: limits.maxToolCalls,
     maxHistoryTokens: limits.maxHistoryTokens,
     retrySilence: limits.retrySilence,
+    maxTurnsPerHour: limits.maxTurnsPerHour,
     memoryCompaction: memoryCfg.enabled,
     historyDates: memoryRead.historyDates.enabled,
     memoryCompactionOverride: {
@@ -1069,6 +1073,9 @@ export function withMessageAge(
 
 export interface ToolsetCtx {
   tenantId: bigint;
+  // Called once per send a tool made straight to the customer (the slow-tool ack, a file a toolpack
+  // delivers). The reactive turn learns it from turnState; a nudge, which has none, from this.
+  onCustomerSend?: () => void;
   instanceId: bigint;
   base: PrismaClient;
   // The saver the turn's graph runs on, when the caller injected one. Absent ⇒ the global one.
@@ -1285,6 +1292,10 @@ export async function buildToolset(
   const resolveBusinessHours = (id: string): Promise<Schedule | null> =>
     readSchedule(sysCtx(ctx.tenantId), id, ctx.base);
   const flow = deps.flow;
+  const spokeToCustomer = (): void => {
+    if (ctx.turnState) ctx.turnState.spokeOutsideTheReply = true;
+    ctx.onCustomerSend?.();
+  };
   // A side effect that fails INSIDE a tool that still returns success is invisible in the
   // tool's own flowlog line (the tool legitimately succeeded for the model). This binding lets toolpacks and
   // native tools surface those failures as their OWN `tool`-stage warn line (same shape as the MCP
@@ -1348,7 +1359,7 @@ export async function buildToolset(
             // NOTE: recorded the instant it lands, and before the withdrawal check below: the
             // message is on the customer's phone either way, and the operator's timeline must not
             // call that turn silent.
-            if (ctx.turnState) ctx.turnState.spokeOutsideTheReply = true;
+            spokeToCustomer();
             if (ctx.stillWanted && !(await ctx.stillWanted())) {
               logger.info(
                 "tool ack: the run was called off after the acknowledgement (conv=%s); the tool will not run",
@@ -1447,7 +1458,11 @@ export async function buildToolset(
     // builds with conversationId 0 + a stub client, so customer-delivery tools degrade.
     ...(ctx.conversationId > 0
       ? {
-          chatwoot: { client: ctx.client, conversationId: ctx.conversationId },
+          chatwoot: {
+            client: ctx.client,
+            conversationId: ctx.conversationId,
+            onSent: spokeToCustomer,
+          },
         }
       : {}),
   });

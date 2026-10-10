@@ -112,8 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list. Measured at 32_793 together with the conversation-type and label conditions and the vision ceiling.
-const SETTINGS_SCHEMA_CEILING = 32_900;
+// tools/list. Measured at 32_926 with `limits.maxTurnsPerHour`, the conversation-type and label
+// conditions and the vision ceiling.
+const SETTINGS_SCHEMA_CEILING = 33_030;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -213,8 +214,8 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_950);
-    // Measured at 69_245, with the `decisions` block on agent_settings_set and the vision ceiling.
-    expect(schema).toBeLessThanOrEqual(69_350);
+    // Measured at 69_372, with `limits.maxTurnsPerHour` on agent_settings_set.
+    expect(schema).toBeLessThanOrEqual(69_450);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

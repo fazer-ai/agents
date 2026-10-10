@@ -194,7 +194,12 @@ function renderContactAuth(
       },
       setVision: noop,
       visionCredBaseUrl: null,
-      limits: { maxToolCalls: "10", maxHistoryTokens: "", retrySilence: true },
+      limits: {
+        maxToolCalls: "10",
+        maxHistoryTokens: "",
+        retrySilence: true,
+        maxTurnsPerHour: "60",
+      },
       setLimits: noop,
       memory: {
         compactionEnabled: false,

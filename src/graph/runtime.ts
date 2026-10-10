@@ -83,6 +83,18 @@ import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import {
+  applyTurnLimitHandoff,
+  TurnLimitHandoffFailedError,
+} from "@/modules/turn-limit/handoff";
+import {
+  markTurnLimitTripped,
+  recordTurnDelivery,
+  turnLimitLogMessage,
+  turnLimitNoteText,
+  turnLimitSettingsUrl,
+  turnLimitVerdict,
+} from "@/modules/turn-limit/service";
+import {
   attendanceHasStarted,
   claimAttendanceBoundary,
   needsAttendanceStartProbe,
@@ -1270,6 +1282,89 @@ async function runTurnBody(
     return handed ? "handed" : "failed";
   };
 
+  // Counted only on a real inbox conversation with a mirror row; the playground (id 0) and a turn
+  // with no row have nothing to count against. `blocked` consumes the burst: the person who now owns
+  // the conversation answers it, and the next message never reaches the agent while they do.
+  const turnLimitGate = async (): Promise<RunAgentTurnOutcome | null> => {
+    const limit = loaded.maxTurnsPerHour;
+    const convDbId = loaded.conversationDbId;
+    if (limit <= 0 || convDbId === null || flow.source !== "inbox") return null;
+    const verdict = await turnLimitVerdict({
+      tenantId,
+      conversationDbId: convDbId,
+      limit,
+      base,
+    });
+    // NOTE: Already handed over by an earlier turn, and the mirror has not caught up: the person who
+    // holds it gets the message, with no second transfer and no second note, whatever the count.
+    if (verdict.handoverPending) return "taken-over-unread";
+    if (!verdict.over) return null;
+    const blocked = await postBlocked();
+    if (blocked) return blocked;
+    // NOTE: A failed read lets the transfer go ahead, as the guardrail's does. Before the invoke, so a
+    // person who took it over meanwhile gets the message unread (docs/graph.md).
+    if (!(await ownershipNow().catch(() => true))) return "taken-over-unread";
+    if (await writeCalledOff()) return standDown();
+    const handed = await applyTurnLimitHandoff({
+      client,
+      conversationId,
+      instanceId,
+      handoff: loaded.handoffConfig,
+      flow,
+      stillWanted: async () => !(await writeCalledOff()),
+    });
+    handoffState.completed = handed;
+    if (handed)
+      await markTurnLimitTripped({
+        tenantId,
+        conversationDbId: convDbId,
+        fromMark: verdict.ownershipMark,
+        base,
+      });
+    // NOTE: Asked again at the note: a /reset during the transfer gave the conversation back to the
+    // agent, and a note announcing the hand-over would then be false.
+    if (await writeCalledOff()) return standDown();
+    await client
+      .sendPrivateNote(
+        conversationId,
+        turnLimitNoteText({
+          count: verdict.count,
+          limit,
+          handedOff: handed,
+          settingsUrl: turnLimitSettingsUrl(tenantId, loaded.agentId),
+        }),
+      )
+      .catch((err) =>
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "turn limit: the private note was not posted",
+        ),
+      );
+    emitFlowEvent(flow, {
+      stage: "turn_limit",
+      level: "error",
+      status: "error",
+      detail: {
+        outcome: handed ? "handed_off" : "handoff_failed",
+        limit,
+        count: verdict.count,
+      },
+      errorMessage: turnLimitLogMessage(verdict.count, limit, handed),
+    });
+    logger.info(
+      "turn: turn limit reached (conv=%s count=%d limit=%d handed=%s)",
+      String(conversationId),
+      verdict.count,
+      limit,
+      String(handed),
+    );
+    if (!handed) {
+      turnLimitHandoffFailed = true;
+      return "empty";
+    }
+    return "blocked";
+  };
+
   // The `tts` line of a reply that leaves its planned modality. Written from `deliverText`,
   // which a turn reaches once (a transfer's closing line takes the reply's place).
   const noteSentAsText = (reason: "contact_preference" | "model_choice") =>
@@ -1543,6 +1638,9 @@ async function runTurnBody(
   // A guardrail hand-over that did not land: the turn ends through its ordinary refusal and
   // throws on the way out, after every release, since only a throw keeps the message owed.
   let handoffFailed: "input" | "output" | null = null;
+  // The same for a tripped turn limit whose hand-over did not land: neither a reply nor a person
+  // reached the customer, so the message stays owed.
+  let turnLimitHandoffFailed = false;
   // The hand-back note was owed but an older invoke was reading the channel, so it rides in
   // this turn's own invoke input: the durable write waits, the correction does not.
   let handbackDeferred = false;
@@ -1859,6 +1957,12 @@ async function runTurnBody(
         );
       }
     }
+
+    // The per-conversation turn limit, before any model call: past it the other side is most likely
+    // automated, so the turn hands the conversation to a person instead of answering. See
+    // docs/graph.md, "Turn limit".
+    const turnLimit = await turnLimitGate();
+    if (turnLimit) return turnLimit;
 
     // Input guardrail, before the agent runs. A trip sends the template or a safe reply, or
     // stays silent; anything short of a trip proceeds, including a screening that could not run.
@@ -2582,6 +2686,24 @@ async function runTurnBody(
     return "posted";
   } finally {
     clearTurnInFlight(threadId);
+    // NOTE: Before the durable claim is released: the next turn on this thread waits on it, and its
+    // turn-limit gate must already see this delivery. After the in-flight mark, which no turn waits
+    // on and an unawaited rollback reads.
+    if (
+      loaded.conversationDbId !== null &&
+      flow.source === "inbox" &&
+      turnReachedTheCustomer({
+        balloons: deliveredBalloons,
+        attachment: sentAttachment,
+        spokeOutsideTheReply: turnState.spokeOutsideTheReply,
+      })
+    )
+      await recordTurnDelivery({
+        tenantId,
+        conversationDbId: loaded.conversationDbId,
+        proactive: false,
+        base,
+      });
     if (graphOwner) {
       const heldOwner: ThreadOwner = graphOwner;
       try {
@@ -2672,6 +2794,8 @@ async function runTurnBody(
     // NOTE: Last, so nothing above is skipped by it.
     // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose
     if (handoffFailed) throw new GuardrailHandoffFailedError(handoffFailed);
+    // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose
+    if (turnLimitHandoffFailed) throw new TurnLimitHandoffFailedError();
   }
 }
 

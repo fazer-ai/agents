@@ -306,6 +306,9 @@ export interface LimitsState {
   maxHistoryTokens: string;
   // No control on the tab: carried so the save does not delete it (see ./limitsFormState).
   retrySilence: boolean;
+  // Empty string = no limit, stored as 0 so it is told apart from a key never set (which reads as
+  // the default).
+  maxTurnsPerHour: string;
 }
 
 // The summarizer's block. The four model fields are an OVERRIDE of the agent's model: all blank is
@@ -3533,7 +3536,7 @@ export function BehaviorTab({
             title={t("editor.limits", "Execution limits")}
             description={t(
               "editor.limitsHint",
-              "Cap how much work the agent does in a single turn before it must answer.",
+              "Cap how much work the agent does in a turn, and how often it answers one conversation.",
             )}
           >
             <div className="grid gap-4 sm:grid-cols-2">
@@ -3555,7 +3558,10 @@ export function BehaviorTab({
                 />
               </FormField>
               <FormField
-                label={t("editor.limitsMaxHistoryTokens", "History ceiling")}
+                label={t(
+                  "editor.limitsMaxHistoryTokens",
+                  "History ceiling (tokens)",
+                )}
                 description={t(
                   "editor.limitsMaxHistoryTokensHint",
                   "Empty means no ceiling. Between 2,000 and 1,000,000.",
@@ -3567,11 +3573,11 @@ export function BehaviorTab({
                   watcher
                     ? t(
                         "editor.limitsMaxHistoryTokensHelpObserving",
-                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions.",
+                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions.",
                       )
                     : t(
                         "editor.limitsMaxHistoryTokensHelp",
-                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
+                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
                       )
                 }
               >
@@ -3586,6 +3592,33 @@ export function BehaviorTab({
                   }
                 />
               </FormField>
+              {!watcher && (
+                <FormField
+                  label={t(
+                    "editor.limitsMaxTurnsPerHour",
+                    "Max replies / conversation / hour",
+                  )}
+                  description={t(
+                    "editor.limitsMaxTurnsPerHourHint",
+                    "Past this, the conversation goes to your team with a note. Empty means no limit. 1-1000.",
+                  )}
+                  help={t(
+                    "editor.limitsMaxTurnsPerHourHelp",
+                    "Counts the agent's replies in one conversation over the last hour, follow-ups included. A reply split into several messages counts once, and private notes do not count.\n\nWhen the other side is another bot or an automatic e-mail reply, the two answer each other without end, and every message is billed. A person rarely gets past a few dozen replies in an hour.\n\nPast the limit the agent stops, opens the conversation for your team and leaves a note saying why. Giving it back to the agent starts the count from zero.",
+                  )}
+                >
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    placeholder={t("editor.limitsNoLimit", "No limit")}
+                    value={limits.maxTurnsPerHour}
+                    onChange={(e) =>
+                      setLimits({ ...limits, maxTurnsPerHour: e.target.value })
+                    }
+                  />
+                </FormField>
+              )}
             </div>
           </Section>
 

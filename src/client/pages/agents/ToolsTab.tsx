@@ -29,6 +29,8 @@ interface ToolsTabProps {
   // Passed straight through: a watcher's toolset is assembled MUTED, so the editor must not offer
   // the tools that assembly drops.
   observing?: boolean;
+  // Questions and rules: see ToolGrantsEditor.
+  decides?: boolean;
   catalog: ToolCatalog;
   grants: GrantState[];
   onChange: React.Dispatch<React.SetStateAction<GrantState[]>>;
@@ -95,6 +97,7 @@ interface ToolsTabProps {
 export function ToolsTab({
   agentId,
   observing,
+  decides,
   catalog,
   grants,
   onChange,
@@ -209,6 +212,7 @@ export function ToolsTab({
           <ToolGrantsEditor
             agentId={agentId}
             observing={observing}
+            decides={decides}
             catalog={catalog}
             grants={grants}
             onChange={onChange}

@@ -154,6 +154,7 @@ import {
 import { DecisionsSetupMissing, EngineCards } from "./EngineChoice";
 import { ExportAgentModal } from "./ExportAgentModal";
 import {
+  nativeToolAnchor,
   watcherIssueUsed,
   watcherSectionUsed,
   watcherTabKeys,
@@ -211,7 +212,11 @@ import {
   StaleNoticeContext,
   staleNoticeOf,
 } from "./StaleNotice";
-import { revealFirstProblem, setupSaveBlocked } from "./saveAttempt";
+import {
+  focusableIn,
+  revealFirstProblem,
+  setupSaveBlocked,
+} from "./saveAttempt";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import { TabActionBar } from "./TabActionBar";
 import {
@@ -2959,6 +2964,10 @@ function AgentEditor() {
         () => el.classList.remove("section-highlight"),
         { once: true },
       );
+      // An anchor that names its control (a tool's card) also takes the focus, as the reveal does.
+      if (el.hasAttribute("data-focus-control")) {
+        focusableIn(el)?.focus({ preventScroll: true });
+      }
       focusedKey.current = location.key;
     });
     return () => cancelAnimationFrame(raf);
@@ -4365,6 +4374,7 @@ function AgentEditor() {
               <ToolsTab
                 agentId={id}
                 observing={watcher}
+                decides={decides}
                 catalog={catalog}
                 grants={grants}
                 onChange={setGrants}
@@ -4501,7 +4511,12 @@ function AgentEditor() {
                   }
                   grantsPending={toolGrantsPending}
                   onGrantTool={(tool) => void grantNativeTool(tool)}
-                  onOpenTools={() => openTab("tools")}
+                  onOpenTools={(tool) =>
+                    goToEditorTarget({
+                      tab: "tools",
+                      sectionId: nativeToolAnchor(tool),
+                    })
+                  }
                   onOpenGeneral={() => openTab("general")}
                   showErrors={decisionsAttempted}
                 />

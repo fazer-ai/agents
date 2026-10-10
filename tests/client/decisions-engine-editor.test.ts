@@ -382,6 +382,26 @@ describe("the classifier's key list", () => {
   });
 });
 
+// The chat model's key list follows the same rule: a generic key serves as the provider's API key
+// on the server and in the health check, so the picker lists it and does not call it the wrong type.
+describe("the chat model's key list", () => {
+  test("offers the provider's own kind and a generic key", () => {
+    for (const [provider, kind] of [
+      ["openai", "openai"],
+      ["anthropic", "anthropic"],
+      ["google", "gemini"],
+    ] as const) {
+      const kinds = credentialCompat.model(provider);
+      expect(kinds.sort()).toEqual([kind, "generic"].sort());
+      for (const k of kinds) {
+        expect(
+          credentialServes({ kind: k, valueFitsKind: true }, "apiKey"),
+        ).toBe(true);
+      }
+    }
+  });
+});
+
 describe("the settings the warnings are computed from", () => {
   test("carry the engine as edited for a watcher, and only the engine", () => {
     const synced = {

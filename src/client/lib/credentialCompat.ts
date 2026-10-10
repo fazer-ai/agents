@@ -56,8 +56,15 @@ function single(map: Record<string, string>, key: string): string[] {
   return v ? [v] : [];
 }
 
+// A chat model's key: the provider's own kind first (what "create" makes) and a generic key, which
+// the server and the health check take as an API key all the same (`credentialServes`).
+function modelKinds(provider: string): string[] {
+  const own = single(MODEL_PROVIDER_TYPE, provider);
+  return own.length > 0 ? [...own, "generic"] : own;
+}
+
 export const credentialCompat = {
-  model: (provider: string) => single(MODEL_PROVIDER_TYPE, provider),
+  model: modelKinds,
   stt: (provider: string) => single(STT_PROVIDER_TYPE, provider),
   tts: (provider: string) => single(TTS_PROVIDER_TYPE, provider),
   vision: (provider: string) => single(VISION_PROVIDER_TYPE, provider),

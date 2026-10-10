@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 import {
+  focusableIn,
   revealFirstProblem,
   setupSaveBlocked,
 } from "@/client/pages/agents/saveAttempt";
@@ -118,5 +119,30 @@ describe("when a Save on the setup's tabs goes to the problems", () => {
     // Only the name edited on General: it is saved, the setup stays as stored.
     expect(setupSaveBlocked(1, false, true)).toBe(false);
     expect(setupSaveBlocked(0, true, false)).toBe(false);
+  });
+});
+
+// A section the editor scrolls to by link may name the control the focus goes to: the element itself
+// when it is one, else the first control inside it.
+describe("the control a linked section focuses", () => {
+  test("is the element itself, or the first control inside", () => {
+    const { container } = render(
+      <div>
+        <button type="button" data-mark="card">
+          Card
+        </button>
+        <div data-mark="box">
+          <span>Title</span>
+          <button type="button" data-mark="inner">
+            Toggle
+          </button>
+        </div>
+      </div>,
+    );
+    const card = container.querySelector<HTMLElement>('[data-mark="card"]');
+    const box = container.querySelector<HTMLElement>('[data-mark="box"]');
+    expect(focusableIn(card)?.dataset.mark).toBe("card");
+    expect(focusableIn(box)?.dataset.mark).toBe("inner");
+    expect(focusableIn(null)).toBeNull();
   });
 });

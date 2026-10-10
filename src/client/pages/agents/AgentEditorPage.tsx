@@ -217,7 +217,7 @@ import {
   serializeToolPreconditions,
 } from "./ToolPreconditionsEditor";
 import { ToolsTab } from "./ToolsTab";
-import { rebaseToolGrants } from "./toolsBaseline";
+import { rebaseToolGrants, rebaseToolGrantsOnto } from "./toolsBaseline";
 import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
 import type {
   GrantState,
@@ -2035,6 +2035,8 @@ function AgentEditor() {
   // Set by the Knowledge save, which writes the grants and none of the Tools tab's config: the next
   // Tools recapture then moves only the grants half of its baseline (see ./toolsBaseline).
   const toolGrantsOnlyRef = useRef(false);
+  // With it, the grants an "Allow" wrote, canonical: that recapture takes them instead of the form.
+  const toolGrantsWrittenRef = useRef<string | null>(null);
   // NOTE: Recapture each section's baseline during the render that follows ITS server sync (bumpSync for
   // that section); `sectionSnap` already reflects the freshly-synced state there. Per-section (not a
   // single token) so saving one tab leaves the others' baselines — and unsaved-changes dots — intact.
@@ -2045,11 +2047,17 @@ function AgentEditor() {
     if (lastSyncRef.current[k] !== sectionSync[k]) {
       lastSyncRef.current[k] = sectionSync[k];
       const grantsOnly = k === "tools" && toolGrantsOnlyRef.current;
-      if (k === "tools") toolGrantsOnlyRef.current = false;
+      const written = k === "tools" ? toolGrantsWrittenRef.current : null;
+      if (k === "tools") {
+        toolGrantsOnlyRef.current = false;
+        toolGrantsWrittenRef.current = null;
+      }
       baselineRef.current = {
         ...baselineRef.current,
         [k]: grantsOnly
-          ? rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)
+          ? written !== null
+            ? rebaseToolGrantsOnto(baselineRef.current.tools, written)
+            : rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)
           : sectionSnap[k],
       };
     }
@@ -3633,6 +3641,9 @@ function AgentEditor() {
       setCatalog(data.catalog);
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
       toolGrantsOnlyRef.current = true;
+      toolGrantsWrittenRef.current = canonicalGrants(
+        mapGrants(data.grants).filter((g) => g.source !== "RAG"),
+      );
       bumpSync("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {

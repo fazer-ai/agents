@@ -239,11 +239,23 @@ export async function awaitRouteTokenRefresh(
 export function trackRouteTokenRefresh(
   routeTokenHash: string,
   run: () => Promise<void>,
+  expireAfterMs: number = ROUTE_TOKEN_REFRESH_WAIT_MS,
 ): Promise<void> {
   const s = store();
   const existing = s.refreshing.get(routeTokenHash);
   if (existing) return existing;
   let p: Promise<void>;
+  // The registration expires on its own, as a failed lookup: a stale hit does not wait on it, so a
+  // refresh that never settles would otherwise hold later ones off until the stale entry ran out.
+  const expiry = setTimeout(() => {
+    if (s.refreshing.get(routeTokenHash) !== p) return;
+    s.refreshing.delete(routeTokenHash);
+    s.refreshFailedUntil.set(
+      routeTokenHash,
+      Date.now() + ROUTE_TOKEN_REFRESH_BACKOFF_MS,
+    );
+  }, expireAfterMs);
+  expiry.unref?.();
   p = run()
     .then(
       () => {
@@ -255,6 +267,7 @@ export function trackRouteTokenRefresh(
       },
     )
     .finally(() => {
+      clearTimeout(expiry);
       // BY IDENTITY, not by key. This refresh can be detached before it settles (an invalidation
       // retires it, or a waiter's bound drops it), and a later request registers its own under the same
       // key. Deleting by key here would remove THAT one while its lookup is still running, leaving the

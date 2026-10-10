@@ -13,6 +13,7 @@ import {
   trackRouteTokenRefresh,
   writeRouteTokenCache,
 } from "@/modules/chatwoot/route-token-cache";
+import { until } from "../utils/poll";
 
 const bot = {
   tenantId: 1n,
@@ -231,6 +232,24 @@ describe("route token cache", () => {
     await expect(awaitRouteTokenRefresh("h", 20)).rejects.toThrow();
     expect(routeTokenRefreshDue("h")).toBe(false);
     expect(readRouteTokenCache("h", past)).toEqual({ bot, stale: true });
+  });
+
+  // A STALE HIT DOES NOT WAIT ON THE REFRESH, so the registration cannot rely on a waiter to drop it:
+  // it expires by itself, and the token can be refreshed again once the backoff passes.
+  test("a refresh that never settles expires with no one waiting on it", async () => {
+    trackRouteTokenRefresh("h", () => new Promise<void>(() => {}), 20);
+    expect(routeTokenRefreshInFlight("h")).toBeDefined();
+    await until(
+      "the stalled refresh to expire",
+      () => routeTokenRefreshInFlight("h") === undefined,
+    );
+    expect(routeTokenRefreshDue("h")).toBe(false);
+    expect(
+      routeTokenRefreshDue(
+        "h",
+        Date.now() + ROUTE_TOKEN_REFRESH_BACKOFF_MS + 1,
+      ),
+    ).toBe(true);
   });
 
   // AND THE ONE THAT OVERRAN CANNOT EVICT ITS REPLACEMENT when it finally settles. `finally` deletes

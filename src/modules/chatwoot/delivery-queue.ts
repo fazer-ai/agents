@@ -6,6 +6,7 @@ import config from "@/config";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { type AdmissionLane, admissionLaneOf } from "./admission-lane";
 import { loadChatwootClient } from "./instance";
 import { maxIncomingId, parseChatwootMessages } from "./messages";
 import { mirrorChatwootEvent } from "./mirror";
@@ -54,13 +55,7 @@ export const ADMISSION_MAX_WAITING = 5_000;
 // runs its transcription or vision there), may hold its slot for a whole model call; every other event
 // (a status or assignment change, an agent's or a colleague's reply) is what tells a running turn it
 // lost the conversation, so it must not wait behind those, or a takeover stays invisible to the turn.
-export type AdmissionLane = "turn" | "meta";
-
-export function admissionLaneOf(event: NormalizedChatwootEvent): AdmissionLane {
-  return event.message?.messageType === "incoming" && !event.message.private
-    ? "turn"
-    : "meta";
-}
+export { type AdmissionLane, admissionLaneOf };
 
 interface Pending {
   rowId: string;
@@ -285,14 +280,30 @@ export async function drainStoredChatwootDeliveries(
     .filter(([key]) => !a.held.has(key))
     .map(([, id]) => id);
   const batch = params.batch ?? DRAIN_BATCH;
-  const read = (id: Prisma.BigIntFilter, take: number) =>
-    run((db) =>
+  // A lane that is full turns its rows away, so they are not read: a backlog of customer messages
+  // past the waiting bound cannot fill every page and keep the status changes stored behind it from
+  // the next pass, and the next, until it shrinks. A row the column does not name is a turn's.
+  const laneFilter = (): Prisma.ChatwootWebhookDeliveryWhereInput | null => {
+    const open = (["turn", "meta"] as const).filter(
+      (l) => !full[l] && !admissionLaneFull(l),
+    );
+    if (open.length === 2) return {};
+    if (open.length === 0) return null;
+    return open[0] === "turn"
+      ? { OR: [{ admissionLane: "turn" }, { admissionLane: null }] }
+      : { admissionLane: "meta" };
+  };
+  const read = async (id: Prisma.BigIntFilter, take: number) => {
+    const lanes = laneFilter();
+    if (lanes === null) return [];
+    return (await run((db) =>
       db.chatwootWebhookDelivery.findMany({
         where: {
           status: "PENDING",
           payload: { not: null },
           receivedAt: { lte: youngest },
           id,
+          ...lanes,
         },
         orderBy: { id: "asc" },
         take,
@@ -306,7 +317,8 @@ export async function drainStoredChatwootDeliveries(
           receivedAt: true,
         },
       }),
-    ) as Promise<StoredRow[]>;
+    )) as StoredRow[];
+  };
 
   let admitted = 0;
   // Whether a lane turned a row away for being full: a full lane does not stop the pass, which pages
@@ -549,6 +561,7 @@ async function writtenPast(
     routeBotId: route.routeBotId,
     base: route.base,
     ...(route.deps?.makeClient ? { makeClient: route.deps.makeClient } : {}),
+    throwOnReadFailure: true,
   });
   return moved !== null;
 }

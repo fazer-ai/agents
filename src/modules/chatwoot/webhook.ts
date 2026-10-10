@@ -178,6 +178,7 @@ import {
 } from "@/modules/vision/extract-message";
 import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
+import { type AdmissionLane, admissionLaneOf } from "./admission-lane";
 import {
   channelFailureOf,
   forgetMediaFallbacks,
@@ -1018,6 +1019,7 @@ export async function receiveChatwootWebhook(
       },
       // Encrypted like every other sensitive value at rest: it holds what the customer wrote.
       encryptJson(params.rawBody),
+      admissionLaneOf(normalized),
     );
   } catch (err) {
     logger.warn(
@@ -1400,6 +1402,7 @@ async function recordDeliveryOnAck(
   facts: Omit<LedgerFacts, "bindingGeneration">,
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
   payload: string,
+  lane: AdmissionLane,
 ): ReturnType<typeof recordDelivery> {
   // The payload's inbox when it names one, else the conversation's mirrored inbox, as
   // `inboxBindingGenerationIn` resolves it.
@@ -1430,11 +1433,11 @@ async function recordDeliveryOnAck(
     >`
       INSERT INTO chatwoot_webhook_deliveries
         (tenant_id, chatwoot_instance_id, delivery_id, event, conversation_id, inbound_message_id,
-         human_reply_shape, route_agent_bot_id, human_reply_message_id, binding_generation, payload)
+         human_reply_shape, route_agent_bot_id, human_reply_message_id, binding_generation, payload, admission_lane)
       VALUES
         (${scope.tenantId}, ${scope.instanceId}, ${deliveryId}, ${facts.event}, ${facts.conversationId},
          ${facts.inboundMessageId}, ${facts.humanReplyShape}, ${facts.routeAgentBotId},
-         ${facts.humanReplyMessageId}, ${generation}, ${payload})
+         ${facts.humanReplyMessageId}, ${generation}, ${payload}, ${lane})
       ON CONFLICT (chatwoot_instance_id, delivery_id) DO UPDATE SET
         conversation_id = COALESCE(chatwoot_webhook_deliveries.conversation_id, EXCLUDED.conversation_id),
         inbound_message_id = COALESCE(chatwoot_webhook_deliveries.inbound_message_id, EXCLUDED.inbound_message_id),
@@ -1443,7 +1446,8 @@ async function recordDeliveryOnAck(
         human_reply_message_id = COALESCE(chatwoot_webhook_deliveries.human_reply_message_id, EXCLUDED.human_reply_message_id),
         payload = CASE WHEN chatwoot_webhook_deliveries.status = 'PENDING'
           THEN COALESCE(chatwoot_webhook_deliveries.payload, EXCLUDED.payload)
-          ELSE chatwoot_webhook_deliveries.payload END
+          ELSE chatwoot_webhook_deliveries.payload END,
+        admission_lane = COALESCE(chatwoot_webhook_deliveries.admission_lane, EXCLUDED.admission_lane)
       RETURNING id, binding_generation, status::text AS status, (xmax = 0) AS inserted`,
   ]);
   const row = inserted[0];

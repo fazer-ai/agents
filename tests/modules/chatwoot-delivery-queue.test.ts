@@ -661,6 +661,59 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(calls).not.toContain("sendMessage");
   });
 
+  // A read that fails inside the already-answered check is an unknown answer, not a "no": the replay
+  // waits, since a turn would run its tools before any send-time check.
+  test("a failed read in the already-answered check defers the replay", async () => {
+    await mirror(633);
+    const id = await ackMessage("queue-replay-answer-unread", 633);
+    const calls: string[] = [];
+    const live = {
+      ...heldByPerson(633),
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    };
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          new Proxy({} as Record<string, unknown>, {
+            get: (_t, prop) =>
+              prop === "then"
+                ? undefined
+                : async (_conv: unknown, opts?: { after?: number }) => {
+                    calls.push(String(prop));
+                    if (prop === "getConversation") return live;
+                    if (prop === "getMessages") {
+                      if (opts?.after !== undefined)
+                        throw new Error("Chatwoot unavailable");
+                      return [
+                        {
+                          id: 63_300,
+                          content: "oi",
+                          message_type: "incoming",
+                          private: false,
+                        },
+                      ];
+                    }
+                    return {};
+                  },
+          }) as never,
+      },
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.payload).not.toBeNull();
+    expect(calls).not.toContain("sendMessage");
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   // A newest page that does not reach back to the stored message cannot say whether the customer
   // wrote again: the replay waits.
   test("a newest page that cannot answer defers the replay", async () => {
@@ -811,6 +864,34 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     g.release();
     await suDb.chatwootWebhookDelivery.update({
       where: { id: turnRow },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
+  // The rows of a full lane are not read at all: a backlog of them as long as every page a pass may
+  // read cannot keep a stored status change behind it waiting pass after pass.
+  test("a pass whose pages a full turn lane would fill still reaches the status change behind it", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    for (let i = 0; i <= ADMISSION_MAX_WAITING; i++)
+      admitChatwootDelivery(BigInt(40_000 + i), () => g.gate, "turn");
+    const turnA = await ackMessage("queue-lane-pages-turn-a", 634);
+    const turnB = await ackMessage("queue-lane-pages-turn-b", 635);
+    const metaRow = await ackOnly("queue-lane-pages-meta", 636);
+    expect((await rowById(turnA)).admissionLane).toBe("turn");
+    expect((await rowById(metaRow)).admissionLane).toBe("meta");
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+      maxPages: 1,
+    });
+    expect(r.admitted).toBe(1);
+    expect((await settled(metaRow)).status).toBe("PROCESSED");
+    g.release();
+    await suDb.chatwootWebhookDelivery.updateMany({
+      where: { id: { in: [turnA, turnB] } },
       data: { status: "PROCESSED", payload: null },
     });
   });

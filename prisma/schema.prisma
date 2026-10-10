@@ -551,6 +551,10 @@ model ChatwootWebhookDelivery {
   // which also keeps it out of WAL and backups in the clear. Null on every row an older build wrote,
   // and on every row whose first attempt has begun.
   payload                    String?
+  // The admission lane of the stored event (`admission-lane.ts`): "turn" for a customer message, "meta"
+  // for anything else. Written by the ack with the body, so the drain reads only the rows of a lane
+  // with room. Null on every row an older build wrote, which holds no body.
+  admissionLane              String?               @map("admission_lane")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

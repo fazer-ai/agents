@@ -1408,6 +1408,9 @@ export async function supersededLive(params: {
   routeBotId: number | null;
   base: PrismaClient;
   makeClient?: RuntimeDeps["makeClient"];
+  // A read that fails throws instead of reading as "not superseded": for a caller about to run a
+  // turn, an unknown answer is not permission.
+  throwOnReadFailure?: boolean;
 }): Promise<"answered" | "resolved" | null> {
   try {
     const client = await loadChatwootClient(
@@ -1446,6 +1449,7 @@ export async function supersededLive(params: {
     }
     return null;
   } catch (err) {
+    if (params.throwOnReadFailure) throw err;
     logger.warn(
       "chatwoot recovery: could not read conversation %d to tell an unanswered message from a superseded one: %s",
       params.conversationId,

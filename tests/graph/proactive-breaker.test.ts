@@ -349,6 +349,10 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(lines[0]?.errorMessage).toContain("3 proactive messages");
     expect(lines[0]?.errorMessage).toContain("limit 3");
     expect(lines[0]?.errorMessage).toContain("Components > Advanced");
+    for (const l of lines)
+      expect(
+        String((l.detail as Record<string, unknown>).settingsUrl),
+      ).toContain("/resources/advanced?section=proactive-breaker");
   });
 
   test("a resume is a fresh allowance, and changing the limit alone does not reopen", async () => {

@@ -7,6 +7,7 @@ import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   breakerLockKey,
   checkBreakerLocked,
+  proactiveBreakerSettingsUrl,
   refreshAutoPeak,
 } from "@/modules/proactive-breaker/service";
 
@@ -339,6 +340,8 @@ export function emitProactiveBreakerRefusal(
       limit: p.limit,
       count: p.count,
       trippedAt: p.trippedAt.toISOString(),
+      // The card where an admin resumes, raises the limit or turns the breaker off.
+      settingsUrl: proactiveBreakerSettingsUrl(flow.tenantId),
       ...p.detail,
     },
     errorMessage: p.trippedNow

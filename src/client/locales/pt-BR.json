@@ -2720,6 +2720,7 @@
     },
     "openConversation": "Abrir conversa",
     "page": "Página {{n}}",
+    "proactiveBreakerCard": "Retomar ou mudar o limite",
     "scopedConversation": "Conversa #{{id}}",
     "scopedFromDashboard": "Do painel",
     "scopedFromDashboardNoTool": "Do painel: linhas sem ferramenta",

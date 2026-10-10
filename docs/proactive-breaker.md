@@ -22,7 +22,7 @@ The automatic limit is 3x the account's largest 24h proactive volume of the last
 
 ## What the operator sees
 
-- **The trip** writes one `error` line at stage `proactive_breaker`, naming the count and the limit, so the alert channels deliver it, with a link to the card (`/resources/advanced?section=proactive-breaker`). Every refusal while tripped writes an `info` line saying what was not sent. The trip's line is written even when the occasion that tripped it was retired meanwhile, since it is about the account.
+- **The trip** writes one `error` line at stage `proactive_breaker`, naming the count and the limit, so the alert channels deliver it, with a link to the card (`/resources/advanced?section=proactive-breaker`). Every refusal while tripped writes an `info` line saying what was not sent. Both carry the card's console URL as `detail.settingsUrl`, and the Logs page shows a link to the card on every line of the stage. The trip's line is written even when the occasion that tripped it was retired meanwhile, since it is about the account.
 - **The banner** (`ProactiveBreakerBanner`, in `Layout`) shows on every console page while tripped, with Resume and Change limit for admins. Alert channels are opt-in, so the console cannot depend on them. The shell polls the status every minute and on focus.
 - **The card** in Components > Advanced shows the mode, the limit in force and where an automatic one came from (3x the peak of a day, or the floor), the count toward it, and the trip with its Resume button.
 

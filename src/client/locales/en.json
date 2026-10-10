@@ -2642,6 +2642,7 @@
     },
     "openConversation": "Open conversation",
     "page": "Page {{n}}",
+    "proactiveBreakerCard": "Resume or change the limit",
     "scopedConversation": "Conversation #{{id}}",
     "scopedFromDashboard": "From the dashboard",
     "scopedFromDashboardNoTool": "From the dashboard: lines that name no tool",

@@ -1165,6 +1165,7 @@
     "nextNumberInvalid": "Enter a whole number from 1.",
     "nextNumberPending": "Reading where the new prefix continues…",
     "nextNumberShort": "next {{number}}",
+    "nextNumberUnread": "Could not read where the new prefix continues; saving still computes it.",
     "noFields": "No fields yet.",
     "noTextBlocks": "This template has no text block.",
     "numberPrefix": "Number prefix",

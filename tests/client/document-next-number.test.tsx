@@ -26,12 +26,14 @@ const realFetch = globalThis.fetch;
 const patches: Record<string, unknown>[] = [];
 let refusal: string | null = null;
 const prefixAsked: string[] = [];
+let prefixFailsFirst = false;
 
 afterEach(() => {
   cleanup();
   globalThis.fetch = realFetch;
   patches.length = 0;
   prefixAsked.length = 0;
+  prefixFailsFirst = false;
   refusal = null;
 });
 
@@ -88,6 +90,12 @@ function mount() {
     }
     if (url.pathname.endsWith("/next-number")) {
       prefixAsked.push(url.searchParams.get("prefix") ?? "");
+      if (prefixFailsFirst && prefixAsked.length === 1) {
+        return new Response(JSON.stringify({ error: "boom" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify({ nextNumber: 41 }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -218,4 +226,23 @@ test("a number typed back to the one the editor opened on is not sent", async ()
   fireEvent.click(saveButton());
   await waitFor(() => expect(patches).toHaveLength(1));
   expect("nextNumber" in (patches[0] ?? {})).toBe(false);
+});
+
+test("a prefix read that fails says so and can be asked again", async () => {
+  prefixFailsFirst = true;
+  mount();
+  await screen.findByText(/ORC-0008/);
+  fireEvent.change(screen.getByDisplayValue("ORC-"), {
+    target: { value: "VIA-" },
+  });
+  const retry = await screen.findByText(
+    /^(Retry|Tentar novamente)$/,
+    undefined,
+    {
+      timeout: 3000,
+    },
+  );
+  fireEvent.click(retry);
+  await screen.findByText(/VIA-0041/, undefined, { timeout: 3000 });
+  expect(prefixAsked).toHaveLength(2);
 });

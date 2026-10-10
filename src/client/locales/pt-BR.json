@@ -1202,6 +1202,7 @@
     "nextNumberInvalid": "Informe um número inteiro a partir de 1.",
     "nextNumberPending": "Lendo onde o novo prefixo continua…",
     "nextNumberShort": "próximo {{number}}",
+    "nextNumberUnread": "Não foi possível ler onde o novo prefixo continua; ao salvar ele é calculado mesmo assim.",
     "noFields": "Nenhum campo ainda.",
     "noTextBlocks": "Este modelo não tem bloco de texto.",
     "numberPrefix": "Prefixo da numeração",

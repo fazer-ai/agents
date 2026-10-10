@@ -89,6 +89,9 @@ export function DocumentTemplateModal({
   // Where numbering would continue under the prefix as typed, read from the server once it differs
   // from the stored one; null while it matches or the answer has not come back.
   const [prefixNext, setPrefixNext] = useState<number | null>(null);
+  // That read failed; bumping `prefixRetry` asks again.
+  const [prefixFailed, setPrefixFailed] = useState(false);
+  const [prefixRetry, setPrefixRetry] = useState(0);
   const [enabled, setEnabled] = useState(true);
   const [requiresApproval, setRequiresApproval] = useState(false);
   const [approvalTtlHours, setApprovalTtlHours] = useState(24);
@@ -332,24 +335,35 @@ export function DocumentTemplateModal({
   useEffect(() => {
     const read = ++prefixReads.current;
     setPrefixNext(null);
+    setPrefixFailed(false);
     if (!templateId || nextTouched || numberPrefix === storedPrefix) return;
+    // Read by the effect only to ask again: a retry is a new request for the same prefix.
+    void prefixRetry;
     const timer = setTimeout(async () => {
       const { data } = await api.api.v1["document-templates"]({
         id: templateId,
       })
         ["next-number"].get({ query: { prefix: numberPrefix } })
         .catch(() => ({ data: null }));
-      if (read === prefixReads.current && data) setPrefixNext(data.nextNumber);
+      if (read !== prefixReads.current) return;
+      if (data) setPrefixNext(data.nextNumber);
+      else setPrefixFailed(true);
     }, 300);
     return () => clearTimeout(timer);
-  }, [templateId, storedPrefix, numberPrefix, nextTouched]);
+  }, [templateId, storedPrefix, numberPrefix, nextTouched, prefixRetry]);
   // Between a prefix change and its answer the stored number belongs to the OLD prefix, so nothing
   // is shown rather than a number the save would not print.
   const nextPending =
-    !nextTouched && numberPrefix !== storedPrefix && prefixNext === null;
+    !nextTouched &&
+    numberPrefix !== storedPrefix &&
+    prefixNext === null &&
+    !prefixFailed;
+  // Unread for the new prefix: nothing is shown either, and the save still computes it.
+  const nextUnread =
+    !nextTouched && numberPrefix !== storedPrefix && prefixFailed;
   const shownNext = nextTouched
     ? nextNumber
-    : nextPending
+    : nextPending || nextUnread
       ? ""
       : String(prefixNext ?? template?.nextNumber ?? "");
   // Answered here because the answer is a keystroke away, not because the write stopped checking:
@@ -507,7 +521,7 @@ export function DocumentTemplateModal({
           <FormField
             label={t("documents.nextNumber", "Next number")}
             hint={
-              nextNumberIssue
+              nextNumberIssue || nextUnread
                 ? undefined
                 : nextPending
                   ? t(
@@ -534,6 +548,21 @@ export function DocumentTemplateModal({
               }}
             />
           </FormField>
+          {nextUnread && (
+            <p className="-mt-2 text-text-muted text-xs">
+              {t(
+                "documents.nextNumberUnread",
+                "Could not read where the new prefix continues; saving still computes it.",
+              )}{" "}
+              <button
+                type="button"
+                className="text-accent underline-offset-2 hover:underline"
+                onClick={() => setPrefixRetry((n) => n + 1)}
+              >
+                {t("common.retry", "Retry")}
+              </button>
+            </p>
+          )}
 
           {style && (
             <div className="grid gap-3 sm:grid-cols-2">

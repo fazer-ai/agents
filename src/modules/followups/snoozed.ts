@@ -614,7 +614,10 @@ export async function snoozedFollowUpHandler(
         outcome,
         threadId,
       );
-      await stampStep();
+      // Ended, not spent: nothing reached the customer, and a step recorded as spent would let a
+      // later closing step (re-armed by the very edit that repairs the credential) resolve a
+      // conversation nobody was reminded on, as the window's end above.
+      await stampStep(true);
       return { outcome: "done" };
     }
     return {

@@ -1408,6 +1408,10 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         s.deps,
       );
       expect(spent).toEqual({ outcome: "done" });
+      // Ended on this message, not spent: a later closing step does not run on it.
+      expect((await stateOf(2036)).snoozedFollowUpStep).toBe(
+        SNOOZED_LADDER_ENDED,
+      );
     } finally {
       await suDb.agent.update({
         where: { id: agentId },

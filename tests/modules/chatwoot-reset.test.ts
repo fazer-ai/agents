@@ -652,6 +652,8 @@ describe.skipIf(!dbUp)(
       // it could be found, so the reset owes its line. The revoked live rows are cancelled work, not
       // deaths, and write nothing.
       const announced = await flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide. A dead letter has no turn to read by; the lines name their jobs,
+        // and the keys below carry this test's thread.
         where: { tenantId, stage: "dead_letter" },
       });
       expect(

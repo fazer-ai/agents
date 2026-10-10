@@ -546,15 +546,23 @@ export async function mirrorChatwootEvent(
           data: {
             // A recovery's body (`factsOnCreateOnly`) carries an INHERITED pairing, an inference, so it
             // fills an empty one and never replaces the one a webhook stored.
-            ...(decision.unversioned &&
-            n.contactInboxId != null &&
-            (!n.factsOnCreateOnly || existing.contactInboxId === null)
+            // A payload refused for the facts still fills a relation that is NULL, as the stale
+            // branch does: a newer degraded event can create the row naming none, and the pre-turn
+            // gates fail closed on a row without them.
+            ...(n.contactInboxId != null &&
+            (decision.unversioned
+              ? !n.factsOnCreateOnly || existing.contactInboxId === null
+              : existing.contactInboxId === null)
               ? { contactInboxId: n.contactInboxId }
               : {}),
-            ...(decision.unversioned && inboxRowId != null
+            ...(inboxRowId != null &&
+            (decision.unversioned || existing.inboxId === null)
               ? { inboxId: inboxRowId }
               : {}),
-            ...(decision.unversioned && contactId != null ? { contactId } : {}),
+            ...(contactId != null &&
+            (decision.unversioned || existing.contactId === null)
+              ? { contactId }
+              : {}),
             ...(appliedStatus != null ? { status: appliedStatus } : {}),
             // NOTE: The same question the stale branch asked, and the same answer: see
             // `dropsResolutionOrigin` above.

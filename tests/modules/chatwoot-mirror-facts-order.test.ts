@@ -243,6 +243,50 @@ describe.skipIf(!dbUp)(
       expect((await row(8)).labels).toEqual(["x", "y"]);
     });
 
+    test("an older snapshot still fills the relations a newer degraded one could not name", async () => {
+      const degraded = reply("message_updated", 9, {
+        updatedAt: T + 0.2,
+        labels: ["x", "y"],
+      });
+      const {
+        meta: _meta,
+        contact_inbox: _pairing,
+        inbox_id: _inbox,
+        ...bare
+      } = degraded.conversation;
+      await mirror({ ...degraded, inbox: undefined, conversation: bare });
+      await mirror(
+        reply("message_created", 9, { updatedAt: T + 0.1, labels: ["x"] }),
+      );
+      const r = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 9 },
+        select: {
+          contactId: true,
+          inboxId: true,
+          contactInboxId: true,
+          labels: true,
+        },
+      });
+      expect(r.contactId).not.toBeNull();
+      expect(r.inboxId).not.toBeNull();
+      expect(r.contactInboxId).toBe(89_009);
+      expect(r.labels).toEqual(["x", "y"]);
+    });
+
+    test("...and never replaces one the newer snapshot stored", async () => {
+      await mirror(reply("message_updated", 10, { updatedAt: T + 0.2 }));
+      const older = reply("message_created", 10, { updatedAt: T + 0.1 });
+      await mirror({
+        ...older,
+        conversation: { ...older.conversation, contact_inbox: { id: 99_999 } },
+      });
+      const r = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 10 },
+        select: { contactInboxId: true },
+      });
+      expect(r.contactInboxId).toBe(89_010);
+    });
+
     test("the newer snapshot arriving last still applies, in the same second", async () => {
       await mirror(
         reply("message_created", 6, { updatedAt: T + 0.1, labels: ["a"] }),

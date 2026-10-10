@@ -485,6 +485,86 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     });
   });
 
+  // A stored message ties a resolve that came after it at whole-second resolution; the replay must not
+  // reopen what the reconcile just closed.
+  test("a replayed message does not reopen a conversation the live read says is resolved", async () => {
+    await mirror(624);
+    const t = Math.floor(Date.now() / 1000) - 60;
+    const body = JSON.stringify({
+      event: "message_created",
+      id: 62_400,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: 624,
+        inbox_id: 7,
+        status: "pending",
+        updated_at: t + 0.1,
+        last_activity_at: t,
+        meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+      },
+    });
+    const r0 = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: headers(body, "queue-replay-resolved"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            {
+              id: 624,
+              status: "resolved",
+              inbox_id: 7,
+              updated_at: t + 0.5,
+              last_activity_at: t,
+              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+            },
+            calls,
+          ) as never,
+      },
+    });
+    await settled(r0.deliveryRowId as bigint);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 624 },
+    });
+    expect(conv.status).toBe("resolved");
+    expect(calls).not.toContain("sendMessage");
+  });
+
+  // Customer messages that fill a batch without filling their lane do not leave a status change
+  // stored behind them for the next pass.
+  test("a pass reads on past a batch of customer messages to the status change behind them", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(-2n, () => g.gate, "turn");
+    const first = await ackMessage("queue-scan-turn-1", 625);
+    const second = await ackMessage("queue-scan-turn-2", 626);
+    const status = await ackOnly("queue-scan-meta", 627);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(r.admitted).toBe(3);
+    expect((await settled(status)).status).toBe("PROCESSED");
+    g.release();
+    for (const id of [first, second])
+      await suDb.chatwootWebhookDelivery.update({
+        where: { id },
+        data: { status: "PROCESSED", payload: null },
+      });
+  });
+
   // A live read with no ownership in it is not a statement that nobody holds the conversation.
   test("a live read that states no ownership defers the replay", async () => {
     const id = await ackMessage("queue-replay-unstated", 622);
@@ -784,6 +864,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       tenantId,
       minAgeMs: 0,
       batch: 1,
+      maxPages: 1,
     });
     expect(r.admitted).toBe(1);
     expect((await settled(behind)).status).toBe("PROCESSED");

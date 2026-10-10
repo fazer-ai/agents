@@ -40,8 +40,7 @@ export const STORED_DELIVERY_MIN_AGE_MS = 60_000;
 // for the next pass.
 const DRAIN_BATCH = 500;
 
-// How many batches one pass may read when a full lane turns rows away and the pass pages on for the
-// other lane: the waiting list's own bound.
+// How many batches one pass may read: the waiting list's own bound.
 const DRAIN_MAX_PAGES = 10;
 
 // How many deliveries may wait in memory, in each lane. Past it a delivery is not queued here and stays a PENDING
@@ -244,6 +243,8 @@ export interface DrainStoredParams {
   batch?: number;
   // Tests: the Chatwoot client and the turn's seams.
   deps?: RuntimeDeps;
+  // Batches one pass may read (`DRAIN_MAX_PAGES`); tests shrink it.
+  maxPages?: number;
 }
 
 // Admits the stored rows nothing here holds, and clears the body of those past the sweep's window.
@@ -337,11 +338,11 @@ export async function drainStoredChatwootDeliveries(
     else if (admissionLaneFull(lane)) full[lane] = true;
   };
 
-  // One batch per pass, and another only while a full lane is turning rows away and the other lane
-  // still has room, so a backlog in one lane cannot hide the other lane's rows behind it.
+  // Batch after batch, up to a bound, until the stored rows run out or both lanes are full: a backlog
+  // in one lane (refused, or only waiting) cannot hide the other lane's rows behind it.
   let cursor: bigint | null = null;
   let room = 0;
-  for (let page = 0; page < DRAIN_MAX_PAGES; page++) {
+  for (let page = 0; page < (params.maxPages ?? DRAIN_MAX_PAGES); page++) {
     const rows = await read(
       {
         notIn: [...held, ...failed],
@@ -351,8 +352,7 @@ export async function drainStoredChatwootDeliveries(
     );
     for (const row of rows) await offer(row);
     room = batch - rows.length;
-    const oneFull = full.turn !== full.meta;
-    if (room > 0 || !oneFull) break;
+    if (room > 0 || (full.turn && full.meta)) break;
     cursor = rows[rows.length - 1]?.id ?? null;
   }
   // The rows whose last attempt here threw, with the room the others left.
@@ -421,6 +421,7 @@ async function replayStored(
       return "skipped";
     }
   }
+  let event = normalized;
   const conversationId = normalized.conversationId;
   // NOTE: A stored customer message can be replayed long after it arrived, past a takeover whose own
   // webhooks never reached the mirror while this process was down. The live conversation is read
@@ -469,13 +470,28 @@ async function replayStored(
       live,
       base,
     });
+    // The message proposes the status the mirror settled on, not the stored one: a stored
+    // message's whole-second clock can tie a resolve that came after it, and proposing its old
+    // `pending` would reopen what the reconcile just closed. Only the status: the clock and the
+    // pairing stay the message's own.
+    const settledStatus = await run((db) =>
+      db.conversation.findFirst({
+        where: {
+          tenantId: row.tenantId,
+          chatwootInstanceId: row.chatwootInstanceId,
+          chatwootConversationId: conversationId,
+        },
+        select: { status: true },
+      }),
+    );
+    if (settledStatus) event = { ...normalized, status: settledStatus.status };
   }
   return processRecordedChatwootDelivery({
     tenantId: row.tenantId,
     instanceId: row.chatwootInstanceId,
     deliveryRowId: row.id,
     agentBotId: row.routeAgentBotId,
-    normalized,
+    normalized: event,
     receiptBindingGeneration: row.bindingGeneration,
     base,
     deps,

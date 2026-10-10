@@ -292,13 +292,6 @@ const TAB_KEYS: TabKey[] = [
   "playground",
 ];
 
-// A watcher's editor. A monitoring agent never speaks, so what only an agent that speaks uses is
-// hidden: GUARDRAILS screen a reply, the CHANNEL REDIRECT messages the customer on another channel,
-// and the PLAYGROUND is a conversation with the agent. The rest follows its engine (./editorTabs):
-// the language model keeps KNOWLEDGE, questions and rules swap it for their own tab. A URL that
-// names a hidden tab lands on General. Nothing is deleted: flip the mode or the engine back and the
-// tabs return as they were.
-//
 // Whether a configuration warning has a CONTROL BEHIND IT in a watcher's editor, asked of the
 // issue's own deep-link target rather than of a list of keys: a key list answers only for the keys
 // somebody remembered (`textCap`, say, targets whichever section holds the oversized field, Vision
@@ -329,12 +322,13 @@ function watcherSectionReachable(
   engine: MonitoringEngine,
 ): boolean {
   if (!watcherTabKeys(engine).has(tab)) return false;
-  // NOTE: Behavior is drawn, but only some of its sections are.
+  // NOTE: Each engine replaces some cards (General's Model or Classifier, Behavior's memory and
+  // fallback), and Behavior is drawn with only some of its sections.
+  if (!watcherSectionUsed(engine, sectionId)) return false;
   return (
     tab !== "behavior" ||
     sectionId === undefined ||
-    (MONITORING_SECTIONS.has(sectionId) &&
-      watcherSectionUsed(engine, sectionId))
+    MONITORING_SECTIONS.has(sectionId)
   );
 }
 
@@ -759,6 +753,9 @@ type RefusalSection =
   | "channelRedirect"
   | "decisions";
 
+// A refusal about the decision setup, under either spelling the server uses for it.
+const DECISIONS_REFUSAL_FIELD = /^(settings\.)?monitoring\.decisions(\.|$)/;
+
 // Keyed by the record: the route element is REUSED when `:id` changes (cloning lands straight on the
 // clone's editor), and this page keeps state that means something for one record only, such as the
 // playground turns `usePlaygroundChat` does not reload. Keyed rather than reset field by field,
@@ -947,7 +944,7 @@ function AgentEditor() {
         : new Map(),
     [decides, observation],
   );
-  // NOTE: A URL naming a tab this editor does not draw lands on General, CARRYING the origin:
+  // A URL naming a tab this editor does not draw lands on General, CARRYING the origin:
   // dropping the query string would make `backToConversation` null and take away the way back on
   // the one navigation the operator did not ask for. Every tab link here preserves it. Asked of the
   // engine as edited: the tabs change with the card, saved or not.
@@ -1877,16 +1874,10 @@ function AgentEditor() {
       // block, so a field written out by hand here is deleted from the bag the moment someone
       // forgets it. ./observabilityFormState is the round-trip guard.
       observability: observabilityToStored(observability),
-      // NOTE: through the pair, not spelled out here. The Behavior save REPLACES the block, so a
-      // field the form dropped would be deleted on the next save; the round-trip test over
-      // ./memoryFormState is the guard.
-      //
-      // NOTE: The fallback is written for a watcher on the language model too: the section is drawn
-      // for it and its validator gates Save, and a field on screen that blocks Save is a better
-      // answer than a key the save drops, which would discard an edit the operator can see
-      // themselves making. A watcher on questions and rules draws neither block, so both go back as
-      // stored (the `...settings` spread above): hiding a section is two moves, and the second is
-      // that its save stops writing what nobody can see (docs/ui.md).
+      // NOTE: through the pairs; the round-trip tests over ./memoryFormState and
+      // ./modelFallbackFormState are the guard. A watcher on questions and rules draws neither
+      // block, so both go back as stored (the `...settings` spread): its save does not write
+      // what nobody can see (docs/ui.md).
       ...(decides
         ? {}
         : {
@@ -1923,10 +1914,9 @@ function AgentEditor() {
   // Grants are one array but split across two tabs by source: RAG → Knowledge,
   // everything else → Tools. Snapshot each subset so toggling one tab's grant
   // doesn't light up the other (each editor preserves the other's subset).
-  // The instructions and the chat model as General's save would write them: under questions and
-  // rules it writes neither, so what the form holds for them is not this save's change (it is still
-  // there, pending, when the operator switches back to the language model).
   const syncedForChat = syncedAgentRef.current;
+  // The instructions and the chat model as General's save would write them: under questions and
+  // rules it writes neither, so a pending edit to them is not this save's change.
   const chatSnap =
     decides && syncedForChat
       ? {
@@ -2044,7 +2034,7 @@ function AgentEditor() {
   const [baseHead = "", baseBody = ""] = (baseline?.decisions ?? "").split(
     "\u0000",
   );
-  // NOTE: Only a watcher draws the setup; an agent flipped to answering keeps the stored pair.
+  // Only a watcher draws the setup; an agent flipped to answering keeps the stored pair.
   const decisionsHeadDirty =
     watcher && !!baseline && decisionsHeadOf(observation) !== baseHead;
   const decisionsBodyDirty =
@@ -3132,7 +3122,7 @@ function AgentEditor() {
     patch: Record<string, unknown>,
     section: "general" | "behavior",
     force = false,
-  ) {
+  ): Promise<boolean> {
     savingRef.current += 1;
     setSavingAgent(true);
     // Snapshotted BEFORE the request, never after: the staleness check compares what went out
@@ -3146,7 +3136,7 @@ function AgentEditor() {
         ...replaceFor(force),
       });
       if (handleConflict(err, () => void saveAgent(patch, section, true))) {
-        return;
+        return false;
       }
       if (err || !data) throw err ?? new Error("no data");
       // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered.
@@ -3161,6 +3151,7 @@ function AgentEditor() {
       // that looks fine and is still refused.
       settleRefusalFor(section);
       showToast(t("editor.saved", "Agent saved."), "success");
+      return true;
     } catch (e) {
       answerRefusal(
         e,
@@ -3168,6 +3159,7 @@ function AgentEditor() {
         section,
         sent,
       );
+      return false;
     } finally {
       savingRef.current -= 1;
       setSavingAgent(false);
@@ -3518,6 +3510,12 @@ function AgentEditor() {
       markSynced(String(data.agent.updatedAt));
       bumpSync("decisions");
       settleRefusalFor("decisions");
+      // NOTE: The classifier is drawn on General, so `settleRefusalFor` (by drawing tab) leaves its
+      // marks; this save wrote the whole block, which answers every refusal about it.
+      for (const owner of REFUSAL_SECTIONS) {
+        const now = refusalRef.current[owner];
+        if (now.field && DECISIONS_REFUSAL_FIELD.test(now.field)) now.clear();
+      }
       showToast(t("editor.saved", "Agent saved."), "success");
       return true;
     } catch (e) {
@@ -3537,10 +3535,12 @@ function AgentEditor() {
 
   // General's save: identity, and the decision setup when it changed. Under questions and rules the
   // instructions and the chat model are not drawn, so they are not written either.
-  async function saveGeneral(): Promise<void> {
-    if (!decides && !guardModelBeforeSave()) return;
+  async function saveGeneral(): Promise<boolean> {
+    if (!decides && !guardModelBeforeSave()) return false;
     if (dirty.general) {
-      await saveAgent(
+      // A refused or conflicting identity save stops here: running the setup's save next would
+      // put its own retry in place of this one, and "save anyway" would then drop the identity.
+      const ok = await saveAgent(
         decides
           ? { name: name.trim(), enabled, mode: agentMode }
           : {
@@ -3552,8 +3552,9 @@ function AgentEditor() {
             },
         "general",
       );
+      if (!ok) return false;
     }
-    if (dirty.decisions) await saveDecisions();
+    return dirty.decisions ? saveDecisions() : true;
   }
 
   // "Allow" on a rule whose tool the agent was not granted: the saved grant set with that one native
@@ -3739,7 +3740,7 @@ function AgentEditor() {
         return false;
       }
       if (!decides && dirty.general && !guardModelBeforeSave()) return false;
-      await saveGeneral();
+      if (!(await saveGeneral())) return false;
     }
     if (dirty.behavior) {
       await saveAgent(

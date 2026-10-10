@@ -23,6 +23,11 @@ import {
   PRICE_OVERRIDE_RATE_MAX,
   PRICE_OVERRIDES_MAX,
 } from "@/modules/pricing/overrides";
+import {
+  getProactiveBreakerStatus,
+  resumeProactiveBreaker,
+} from "@/modules/proactive-breaker/service";
+import { FIXED_LIMIT_MAX } from "@/modules/proactive-breaker/settings";
 import { spendCeilingUsage } from "@/modules/spend-ceiling/service";
 import {
   SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
@@ -34,6 +39,7 @@ import {
   updateEmbeddingSettings,
   updateLangfuse,
   updatePriceOverrides,
+  updateProactiveBreakerSettings,
   updateSpendCeiling,
 } from "@/modules/tenant-settings/service";
 
@@ -265,6 +271,75 @@ export const tenantSettingsController = new Elysia({
         "Updates the tenant's monthly spend ceiling.",
       ),
       response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/proactive-breaker",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      proactiveBreaker: await getProactiveBreakerStatus(
+        ctxOrThrow(tenantContext),
+      ),
+    }),
+    {
+      detail: doc(
+        "Get the proactive breaker",
+        "The account-wide breaker for proactive messages: its mode (`auto`, `fixed` or `off`), the limit in force and, for the automatic one, the peak it came from; the proactive messages counted toward it now; and whether it is tripped, since when and at what count. Readable by every member of the account, since the console shows a banner on every page while it is tripped.",
+      ),
+      response: errors(401, 403, 404),
+    },
+  )
+  .put(
+    "/proactive-breaker",
+    async ({ tenantContext, body }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      await updateProactiveBreakerSettings(ctx, body);
+      return {
+        instance: instanceIdentity,
+        proactiveBreaker: await getProactiveBreakerStatus(ctx),
+      };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        mode: t.Optional(
+          t.Union([t.Literal("auto"), t.Literal("fixed"), t.Literal("off")], {
+            description:
+              "`auto`: 3x the account's largest 24h proactive volume of the last 30 days, never below 1,000. `fixed`: the `limit` below. `off`: no breaker.",
+          }),
+        ),
+        limit: t.Optional(
+          t.Union([
+            t.Integer({
+              minimum: 1,
+              maximum: FIXED_LIMIT_MAX,
+              description:
+                "Proactive messages per 24 hours for the whole account, used when `mode` is `fixed` and kept otherwise.",
+            }),
+            t.Null(),
+          ]),
+        ),
+      }),
+      detail: doc(
+        "Set the proactive breaker",
+        "Changes the breaker's mode or fixed limit. Changing the limit does not reopen a tripped breaker; resume does.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .post(
+    "/proactive-breaker/resume",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      proactiveBreaker: await resumeProactiveBreaker(ctxOrThrow(tenantContext)),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Resume proactive messages",
+        "Reopens a tripped breaker. The count toward the limit starts again from zero. On an open breaker it changes nothing.",
+      ),
+      response: errors(401, 403, 404),
     },
   )
   .put(

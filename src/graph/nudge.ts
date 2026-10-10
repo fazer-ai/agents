@@ -54,6 +54,7 @@ import { armCompaction } from "@/modules/memory/compact";
 import {
   claimProactiveAlert,
   confirmProactiveReservation,
+  emitProactiveBreakerRefusal,
   emitProactiveLimitRefusal,
   proactiveSourceLabel,
   releaseProactiveAlert,
@@ -1499,7 +1500,7 @@ async function runAgentNudgeBody(
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
     ) === "note";
-  if (cfg.maxProactivePerDay > 0 && cfg.conversationDbId !== null) {
+  if (cfg.conversationDbId !== null) {
     const verdict = await reserveProactiveSend({
       tenantId,
       conversationDbId: cfg.conversationDbId,
@@ -1509,6 +1510,30 @@ async function runAgentNudgeBody(
     if (!verdict.over) {
       reservation = verdict.reservationId;
     } else {
+      const integrationName = params.nudge.integrationInstanceId
+        ? await integrationNameOf(params.nudge.integrationInstanceId)
+        : null;
+      const refusalDetail = {
+        trigger: params.nudge.source,
+        ...(params.nudge.step != null ? { step: params.nudge.step } : {}),
+        ...(params.nudge.integrationInstanceId
+          ? { integrationInstanceId: params.nudge.integrationInstanceId }
+          : {}),
+      };
+      if (verdict.reason === "breaker") {
+        const wanted = await stillWanted();
+        // NOTE: The trip is the account's, not this occasion's, so its line is written even when the
+        // occasion was retired meanwhile: it is the one that alerts.
+        if (verdict.trippedNow || wanted)
+          emitProactiveBreakerRefusal(flow, {
+            ...verdict,
+            source: proactiveSourceLabel(params.nudge.source, integrationName),
+            detail: refusalDetail,
+          });
+        if (!wanted) return standDown();
+      }
+    }
+    if (verdict.over && verdict.reason === "conversation") {
       const integrationName = params.nudge.integrationInstanceId
         ? await integrationNameOf(params.nudge.integrationInstanceId)
         : null;
@@ -1551,6 +1576,8 @@ async function runAgentNudgeBody(
         verdict.limit,
         params.nudge.source,
       );
+    }
+    if (verdict.over) {
       // Ownership asked again, as on the refused contact: the reads above were waits, and a
       // person who took the conversation meanwhile does not get the step's labels.
       const stillOurs = await botStillOwnsIt().catch(() => "unavailable");

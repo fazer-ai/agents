@@ -336,7 +336,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],
   // The model a captured call could not be priced for, named in a flow event.
   "src/modules/pricing/unpriced-alert.ts": [1, "flow-event"],
-  "src/modules/proactive-limit/service.ts": [1, "flow-event"],
+  "src/modules/proactive-limit/service.ts": [2, "flow-event"],
   // The poll's failure line (the ledger read's error text) travels as a flow event.
   "src/modules/spend-ceiling/poll.ts": [1, "flow-event"],
   // The balloon send reports its failure without throwing: the flow line is the only place an

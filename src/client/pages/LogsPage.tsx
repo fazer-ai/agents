@@ -105,6 +105,9 @@ function groupByTurn(items: LogItem[]): TurnGroup[] {
   });
 }
 
+// The breaker's card, where its lines send the admin to resume, raise the limit or turn it off.
+const PROACTIVE_BREAKER_CARD = "/resources/advanced?section=proactive-breaker";
+
 function StageRow({ row }: { row: LogItem }) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -164,6 +167,14 @@ function StageRow({ row }: { row: LogItem }) {
             <p className="rounded-md border border-error/40 bg-error-soft px-2 py-1 text-error text-xs">
               {row.errorMessage}
             </p>
+          )}
+          {row.stage === "proactive_breaker" && (
+            <Link
+              to={PROACTIVE_BREAKER_CARD}
+              className="self-start text-accent text-xs hover:underline"
+            >
+              {t("logs.proactiveBreakerCard", "Resume or change the limit")}
+            </Link>
           )}
           {(() => {
             const detail = row.detail as Record<string, unknown> | null;

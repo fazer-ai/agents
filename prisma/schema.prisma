@@ -167,6 +167,7 @@ model Tenant {
   promptVariantAssignments      PromptVariantAssignment[]
   llmUsages                     LlmUsage[]
   spendCostSnapshots            SpendCostSnapshot[]
+  proactiveBreaker              ProactiveBreaker?
   unpricedModelAnnouncements    UnpricedModelAnnouncement[]
   executionLogs                 ExecutionLog[]
   alertChannels                 AlertChannel[]
@@ -2263,6 +2264,28 @@ model AgentTurnDelivery {
   @@index([conversationId, deliveredAt])
   @@index([tenantId, deliveredAt])
   @@map("agent_turn_deliveries")
+}
+
+// The account-wide proactive breaker's STATE (docs/proactive-breaker.md); its configuration is the
+// `proactiveBreaker` block of Tenant.settings. One row per tenant, created on first need.
+model ProactiveBreaker {
+  tenantId       BigInt    @id @map("tenant_id")
+  // The latch: set by the send that found the account at its limit, cleared only by a resume.
+  trippedAt      DateTime? @map("tripped_at")
+  // The count and the limit at the trip, as the banner and the alert state them.
+  tripCount      Int?      @map("trip_count")
+  tripLimit      Int?      @map("trip_limit")
+  // The last resume: the count after it starts from zero, so a resume is a fresh allowance.
+  resumedAt      DateTime? @map("resumed_at")
+  // The automatic limit's inputs: the largest proactive volume in any 24h window of the last 30 days
+  // and where that window started, refreshed at most daily.
+  autoPeak       Int?      @map("auto_peak")
+  autoPeakAt     DateTime? @map("auto_peak_at")
+  autoComputedAt DateTime? @map("auto_computed_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("proactive_breakers")
 }
 
 model SpendCostSnapshot {

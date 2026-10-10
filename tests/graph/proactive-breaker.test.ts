@@ -424,6 +424,29 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(next.over).toBe(true);
   });
 
+  test("turning the breaker off while a reservation holds its lock waits instead of deadlocking", async () => {
+    await resetBreaker();
+    await setBreaker("fixed", 5);
+    const conv = await seedConv(6950);
+    let off: Promise<unknown> | null = null;
+    // NOTE: The reservation's order: the breaker's lock, then a row referencing the tenant. The
+    // settings write must wait for the lock before it locks the tenant row, or the two deadlock.
+    await suDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`proactive-breaker:${tenantId}`})::bigint)`;
+      off = updateProactiveBreakerSettings(ctx(), { mode: "off" }, appDb);
+      await until("the settings write to wait", async () => {
+        const rows = await tx.$queryRaw<Array<{ n: bigint }>>`
+          SELECT count(*) AS n FROM pg_locks WHERE NOT granted`;
+        return Number(rows[0]?.n ?? 0) > 0;
+      });
+      await tx.agentTurnDelivery.create({
+        data: { tenantId, conversationId: conv, proactive: true },
+      });
+    });
+    await (off as unknown as Promise<unknown>);
+    expect((await getProactiveBreakerStatus(ctx(), appDb)).mode).toBe("off");
+  });
+
   test("resuming an open breaker changes nothing and writes no audit row", async () => {
     await resetBreaker();
     await setBreaker("fixed", 3);

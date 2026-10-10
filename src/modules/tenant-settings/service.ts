@@ -14,7 +14,10 @@ import {
   priceOverridesSchema,
   readPriceOverrides,
 } from "@/modules/pricing/overrides";
-import { clearTripForOff } from "@/modules/proactive-breaker/service";
+import {
+  breakerLockKey,
+  clearTripForOff,
+} from "@/modules/proactive-breaker/service";
 import {
   type ProactiveBreakerConfig,
   proactiveBreakerSettingsSchema,
@@ -259,9 +262,15 @@ async function patchBlock<
   merge: (raw: Record<string, unknown>) => T | Promise<T>,
   // Runs in the same transaction after the write, for state that has to move with the setting.
   afterWrite?: (db: ScopedDb, value: T) => Promise<void>,
+  // An advisory lock taken BEFORE the tenant row: a block whose state another path locks first and
+  // then writes rows referencing the tenant (the proactive breaker) takes it in that same order, or
+  // the two wait on each other.
+  lockFirst?: string,
 ): Promise<T> {
   const tenantId = requireTenantId(ctx);
   return runScopedOn(base, ctx, async (db) => {
+    if (lockFirst)
+      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockFirst})::bigint)`;
     await db.$queryRaw`SELECT 1 FROM "tenants" WHERE "id" = ${tenantId} FOR UPDATE`;
     const raw = await readRawSettings(db, tenantId);
     const value = await merge(raw);
@@ -594,6 +603,7 @@ export async function updateProactiveBreakerSettings(
     async (db, value) => {
       if (value.mode === "off") await clearTripForOff(db, requireTenantId(ctx));
     },
+    breakerLockKey(requireTenantId(ctx)),
   );
 }
 

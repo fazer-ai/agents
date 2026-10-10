@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7328 },
+          chatwootConversationId: { gte: 7310, lte: 7330 },
         },
       });
       await dropContact(77);
@@ -1056,6 +1056,37 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             },
           });
         },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("leaves a memory-only replay DEAD rather than send it to an inherited pairing", async () => {
+      // An inherited pairing is an inference; a webhook storing another one after the re-read would
+      // leave the words in the wrong memory, so a replay owed only to memory waits for a stored one.
+      const convId = 7329;
+      const messageId = 7829;
+      await dropContact(77);
+      const contact = await contactOf(77);
+      const sibling = await seedConversation(7330);
+      await suDb.conversation.update({
+        where: { id: sibling.id },
+        data: { contactId: contact.id, contactInboxId: 71_729 },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        event: "message_updated",
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
       });
       expect(
         await recoverStrandedDelivery({

@@ -29,6 +29,7 @@ import * as tenancy from "@/lib/tenancy";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { TURN_BEARING_EVENT } from "@/modules/chatwoot/normalize";
 import * as reconcileModule from "@/modules/chatwoot/reconcile";
 import {
   announceUnanswered,
@@ -37,6 +38,7 @@ import {
   MAX_RECOVERY_ATTEMPTS,
   putRowBack,
   recoverStrandedDelivery,
+  recoveryAgeCeilingMs,
   registerDeliveryRecoveryHandler,
   runRecoveryJob,
 } from "@/modules/chatwoot/recover-delivery";
@@ -1243,7 +1245,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
-    test("refuses a WhatsApp reply past ninety minutes from the mirror, before any read", async () => {
+    test("refuses a WhatsApp reply past ninety minutes from the mirror, and hands the conversation over", async () => {
       const convId = 7337;
       const messageId = 7837;
       const waInbox = await suDb.inbox.create({
@@ -1280,6 +1282,48 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(stub.asked).toEqual([]);
       expect(stub.sent).toEqual([]);
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+      // The job is still what says so: refused, the conversation goes to the team as unanswered
+      // instead of sitting with the bot.
+      const result = await runRecoveryJob(
+        {
+          id: phantomJobId,
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          payload: { deliveryRowId: String(rowId) },
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+        depsWith(stub),
+      );
+      expect(result.outcome).toBe("done");
+      expect(stub.sent).toEqual([]);
+      expect(
+        (await deliveryLines(conv.id)).map((l) => [
+          l.level,
+          (l.detail as Record<string, unknown> | null)?.outcome,
+        ]),
+      ).toEqual([["error", "unanswered"]]);
+    });
+
+    test("a WhatsApp delivery that owes only memory keeps six hours", () => {
+      const row = {
+        routeObserved: false,
+        event: TURN_BEARING_EVENT,
+        owesMemoryOnly: null as boolean | null,
+      };
+      expect(recoveryAgeCeilingMs(row, "Channel::Whatsapp")).toBe(
+        90 * 60 * 1000,
+      );
+      expect(
+        recoveryAgeCeilingMs(
+          { ...row, owesMemoryOnly: true },
+          "Channel::Whatsapp",
+        ),
+      ).toBe(MAX_RECOVERY_AGE_MS);
+      expect(recoveryAgeCeilingMs(row, "Channel::Api")).toBe(
+        MAX_RECOVERY_AGE_MS,
+      );
     });
 
     test("positions the contact it states at the live reading, even on a row a webhook created meanwhile", async () => {

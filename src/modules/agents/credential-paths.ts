@@ -63,15 +63,16 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     use: "apiKey",
   },
   // The classification API a monitoring agent on the `decisions` engine calls (modules/decisions).
+  // Drawn on General, in the Classifier card that takes the chat model's place.
   {
     path: ["monitoring", "decisions", "credentialRef"],
-    tab: "behavior",
-    sectionId: "observation",
+    tab: "general",
+    sectionId: "general-classifier",
     use: "apiKey",
   },
 ] as const satisfies ReadonlyArray<{
   path: readonly [keyof BehaviorSettingsPatch, ...string[]];
-  tab: "behavior" | "guardrails" | "knowledge";
+  tab: "behavior" | "guardrails" | "knowledge" | "general";
   sectionId: string;
   // What the field DOES with the entry, and therefore which kinds can serve it (secretTypeFits).
   // Required, so a credential field added to this list cannot be silently exempted from the check:

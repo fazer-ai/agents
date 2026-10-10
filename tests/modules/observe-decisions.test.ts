@@ -1909,6 +1909,80 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     });
   });
 
+  // A decisions observer never calls the chat model, so it does not need one: an agent configured
+  // only with questions, rules and a classifier key observes, and the llm engine keeps requiring it.
+  describe("a decisions observer and the chat model", () => {
+    const reembolso = () =>
+      providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.92 },
+          assunto: {
+            type: "choice",
+            choice: "reembolso",
+            confidence: 0.9,
+            probabilities: { reembolso: 0.95, troca: 0.03, duvida: 0.02 },
+          },
+          irritacao: {
+            type: "score",
+            score: 1,
+            confidence: 0.6,
+            probabilities: { "0": 0.1, "1": 0.7, "2": 0.2 },
+          },
+        }),
+      );
+    const setModelConfig = (modelConfig: Record<string, unknown>) =>
+      suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: modelConfig as never },
+      });
+
+    afterAll(async () => {
+      if (!dbUp) return;
+      await setModelConfig({ provider: "openai", model: "gpt-5.4-mini" });
+    });
+
+    test("with no chat model config at all, it decides and acts", async () => {
+      await setModelConfig({});
+      await setMonitoring(decisionsBlock());
+      const p = reembolso();
+      const { log, model } = await tick(p.fetchImpl);
+      expect(p.requests).toHaveLength(1);
+      expect(model.calls).toBe(0);
+      expect(log.labelsWritten).toEqual([["reembolso"]]);
+      const line = await lastLine();
+      expect(line.status).toBe("ok");
+      expect((line.detail as Record<string, unknown>).engine).toBe("decisions");
+    });
+
+    test("with a chat model whose key does not resolve, it decides and acts", async () => {
+      await setModelConfig({
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        credentialRef: "vault:987654321",
+      });
+      await setMonitoring(decisionsBlock());
+      const p = reembolso();
+      const { log, model } = await tick(p.fetchImpl);
+      expect(p.requests).toHaveLength(1);
+      expect(model.calls).toBe(0);
+      expect(log.labelsWritten).toEqual([["reembolso"]]);
+    });
+
+    test("on the llm engine, a chat model whose key does not resolve still stops the tick", async () => {
+      await setModelConfig({
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        credentialRef: "vault:987654321",
+      });
+      await setMonitoring({ engine: "llm" });
+      const p = reembolso();
+      const { log, model } = await tick(p.fetchImpl);
+      expect(p.requests).toHaveLength(0);
+      expect(model.calls).toBe(0);
+      expect(log.labelsWritten).toEqual([]);
+    });
+  });
+
   // The agent editor lists the account's labels and attributes for the rules' actions, and a
   // monitoring agent is attached through an observer row and answers no inbox at all.
   test("the editor's label and attribute listings cover the inboxes the agent observes", async () => {

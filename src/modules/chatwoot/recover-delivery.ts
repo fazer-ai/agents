@@ -818,10 +818,11 @@ async function runRecovery(params: {
     }),
   );
   const contactInboxId = mirrorNow ? mirrorNow.contactInboxId : inherited;
-  // A memory-only replay is owed to the shared memory, which only a pairing names: with no row and
-  // none to inherit it would settle as `no-thread` with the words remembered nowhere. Refused before
-  // the claim, so it stays on the worklist with its attempts intact.
-  if (!replayPosts && mirrorNow === null && contactInboxId == null) {
+  // A memory-only replay is owed to the shared memory, which only a pairing names: for a conversation
+  // this recovery found unmirrored, with no pairing to use (none inherited, or a row a webhook created
+  // meanwhile without one), it would settle as `no-thread` with the words remembered nowhere. Refused
+  // before the claim, so it stays on the worklist with its attempts intact.
+  if (!replayPosts && conv === null && contactInboxId == null) {
     logger.warn(
       "chatwoot recovery: %s owes memory on conversation %d, which has no mirror row and no pairing to inherit; left DEAD",
       row.deliveryId,

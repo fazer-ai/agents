@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7327 },
+          chatwootConversationId: { gte: 7310, lte: 7328 },
         },
       });
       await dropContact(77);
@@ -1029,6 +1029,42 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         }),
       ).toBe("unrecoverable");
       expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("leaves it DEAD too when a webhook created the row without a pairing during the reads", async () => {
+      const convId = 7328;
+      const messageId = 7828;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        event: "message_updated",
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        onAnchoredRead: async () => {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: convId,
+              status: "pending",
+              inboxId: inboxDbId,
+              threadId: threadOf(convId),
+              lastEventAt: new Date(),
+            },
+          });
+        },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     });
 

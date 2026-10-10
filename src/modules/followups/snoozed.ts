@@ -207,14 +207,15 @@ export interface SnoozedAnchor {
 // A message a PERSON on the team wrote to the customer, by either route `foreignReplyBoundary` trusts:
 // the Chatwoot composer (a `user` row the platform did not post under an admin token), or the phone
 // paired to the inbox's number (a sender-less row marked as the session's, trusted only where the
-// provider reserves echo ids). A reaction is a nod, not a request, and an imported row is old history
-// sorted under a new id.
+// provider reserves echo ids). A WhatsApp template a person sent is theirs too (`template`, as there).
+// A reaction is a nod, not a request, and an imported row is old history sorted under a new id.
 function personWrote(
   r: ChatwootMessageRow,
   opts: { whatsappProvider: string | null },
 ): boolean {
-  if (r.messageType !== "outgoing" || r.private || r.isReaction || r.imported)
+  if (r.messageType !== "outgoing" && r.messageType !== "template")
     return false;
+  if (r.private || r.isReaction || r.imported) return false;
   if (r.senderType === "user") return !r.platformSent;
   return (
     r.senderType === null &&

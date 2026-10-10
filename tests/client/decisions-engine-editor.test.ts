@@ -55,7 +55,6 @@ const BLOCK = {
       action: { tool: "set_labels", args: { add: ["reembolso"] } },
     },
   ],
-  apply: "shadow",
 };
 const STORED = {
   monitoring: {
@@ -74,7 +73,7 @@ describe("the Behavior save and the decision setup are written apart", () => {
     form.windowSeconds = "0";
     form.engine = "llm";
     if (!form.decisions) throw new Error("fixture");
-    form.decisions = { ...form.decisions, apply: "enforce" };
+    form.decisions = { ...form.decisions, model: "gpt-6-sol" };
     form.decisionsEdited = true;
     const out = observationToStored(withDecisionsOf(form, synced));
     expect(out.debounce.windowSeconds).toBe(0);
@@ -88,12 +87,12 @@ describe("the Behavior save and the decision setup are written apart", () => {
     form.windowSeconds = "5";
     form.analysis = "on_resolve";
     if (!form.decisions) throw new Error("fixture");
-    form.decisions = { ...form.decisions, apply: "enforce" };
+    form.decisions = { ...form.decisions, model: "gpt-6-sol" };
     form.decisionsEdited = true;
     const out = observationToStored(withDecisionsOf(synced, form));
     expect(out.debounce.windowSeconds).toBe(20);
     expect(out.analysis).toBe("incremental");
-    expect(out.decisions).toEqual({ ...BLOCK, apply: "enforce" });
+    expect(out.decisions).toEqual({ ...BLOCK, model: "gpt-6-sol" });
   });
 
   // An agent with no block yet gets one from its first setup save: a timing edit saved afterwards,
@@ -122,7 +121,7 @@ describe("the Behavior save and the decision setup are written apart", () => {
     expect(decisionsBodyOf(a)).toBe(decisionsBodyOf(c));
     const d = observationToForm(STORED);
     if (!d.decisions) throw new Error("fixture");
-    d.decisions = { ...d.decisions, apply: "enforce" };
+    d.decisions = { ...d.decisions, rules: [] };
     expect(decisionsHeadOf(a)).toBe(decisionsHeadOf(d));
     expect(decisionsBodyOf(a)).not.toBe(decisionsBodyOf(d));
   });

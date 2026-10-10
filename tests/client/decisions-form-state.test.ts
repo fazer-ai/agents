@@ -75,7 +75,6 @@ const BLOCK = {
       action: { tool: "handoff_to_human", args: {} },
     },
   ],
-  apply: "shadow",
 };
 
 // The fixture loosened to what a stored block may hold, so a test can break it.
@@ -94,7 +93,6 @@ interface Block {
     when: Record<string, unknown>[];
     action: { tool: string; args: Record<string, unknown> };
   }[];
-  apply: string;
 }
 const clone = (): Block => structuredClone(BLOCK) as Block;
 function got<T>(v: T | undefined): T {
@@ -145,8 +143,8 @@ describe("the decisions block round trip", () => {
     expect(decisionsSchema.safeParse(block).success).toBe(true);
     const form = formOf(block);
     // Edited elsewhere, so the block is written through the form.
-    form.apply = "enforce";
-    expect(decisionsToStored(form)).toEqual({ ...block, apply: "enforce" });
+    form.model = "gpt-6-sol";
+    expect(decisionsToStored(form)).toEqual({ ...block, model: "gpt-6-sol" });
     const issues = decisionsFormIssues(form);
     expect(issues.size).toBe(0);
     expect(ruleIsBroken(issues, 1)).toBe(false);
@@ -420,7 +418,7 @@ describe("a stored block the engine refuses is not shown as sound", () => {
       "questions.1.options.1.description",
     ]);
     // Any edit writes the form's block, which carries the key, and the problem is gone.
-    form.apply = "enforce";
+    form.model = "gpt-6-sol";
     expect(decisionsFormIssues(form, block).size).toBe(0);
   });
 });
@@ -538,13 +536,13 @@ describe("what a save of the Observation block writes", () => {
   test("an edit is written when the engine is decisions", () => {
     const form = observationToForm(stored);
     if (!form.decisions) throw new Error("fixture");
-    form.decisions.apply = "enforce";
+    form.decisions.model = "gpt-6-sol";
     expect(decisionsUntouched(form.decisions, form.storedDecisions)).toBe(
       false,
     );
     expect(observationToStored(form).decisions).toEqual({
       ...BLOCK,
-      apply: "enforce",
+      model: "gpt-6-sol",
     });
   });
 
@@ -572,7 +570,7 @@ describe("what a save of the Observation block writes", () => {
     const drafted = {
       ...fresh,
       engine: "decisions" as const,
-      decisions: formOf({ provider: "openai", apply: "shadow" }),
+      decisions: formOf({ provider: "openai" }),
     };
     const out = observationToStored(drafted, false);
     expect(out.engine).toBe("llm");
@@ -580,7 +578,7 @@ describe("what a save of the Observation block writes", () => {
     // The stored pair goes back whole even when the draft could run: half of an unseen change.
     const fine = observationToForm(stored);
     if (!fine.decisions) throw new Error("fixture");
-    fine.decisions.apply = "enforce";
+    fine.decisions.model = "gpt-6-sol";
     expect<unknown>(
       observationToStored({ ...fine, engine: "llm" }, false),
     ).toEqual(readMonitoringConfig(stored));
@@ -596,7 +594,6 @@ describe("what a save of the Observation block writes", () => {
       const form = observationToForm({ monitoring });
       expect(form.storedDecisions).toBeNull();
       expect(form.decisions?.provider).toBe("openai");
-      expect(form.decisions?.apply).toBe("shadow");
       expect(
         [
           ...decisionsFormIssues(got(form.decisions ?? undefined)).keys(),
@@ -679,7 +676,6 @@ describe("the mark of the questions and rules a tick ran", () => {
     expect(
       decisionsBlockFingerprint({
         ...BLOCK,
-        apply: "enforce",
         credentialRef: "vault:99",
       }),
     ).toBe(mark as string);
@@ -731,7 +727,7 @@ describe("a refusal the server answers about the block", () => {
       message: "no",
     });
     expect(
-      decisionsRefusalStanding(held, { ...BLOCK, apply: "enforce" }),
+      decisionsRefusalStanding(held, { ...BLOCK, model: "gpt-6-sol" }),
     ).toBeNull();
     expect(decisionsRefusalStanding(null, BLOCK)).toBeNull();
   });
@@ -852,7 +848,6 @@ describe("a threshold on screen", () => {
         action: { tool: "set_labels", args: { add: ["y"] } },
       },
     ],
-    apply: "shadow",
   };
   test("reads as a percentage and is written back as the fraction", () => {
     const form = decisionsToForm(stored);

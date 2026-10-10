@@ -57,6 +57,7 @@ import {
   type ScheduleException,
   type WindowSpec,
 } from "@/modules/business-hours/hours";
+import { withoutRemovedDecisionFields } from "@/modules/decisions/config";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
 import { documentToolName } from "@/modules/documents/slug";
 import {
@@ -1430,10 +1431,12 @@ export async function importAgent(
     const storable = structuredClone(
       disarmFullDetail(
         stripRetiredLabelKeys(
-          renameNativeToolKeys(
-            settingsForStorage(settings) ?? settings,
-            renamed,
-            customToolNames,
+          withoutRemovedDecisionFields(
+            renameNativeToolKeys(
+              settingsForStorage(settings) ?? settings,
+              renamed,
+              customToolNames,
+            ),
           ),
         ),
       ),

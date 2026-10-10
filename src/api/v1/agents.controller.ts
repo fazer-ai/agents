@@ -92,6 +92,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.settingsExpectedGreaterThan', 'a number greater than {{min}}')
 // translate('errors.settingsExpectedPattern', 'a value matching {{pattern}}')
 // translate('errors.settingsExpectedValid', 'a valid value')
+// translate('errors.unknownSettingsField', 'Unknown field `{{field}}`: it no longer exists, so it is not stored. Remove it from the request.')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
 // translate('errors.contactFieldNotInContext', 'A contact field the agent may update must also be in its context: {{fields}}.')

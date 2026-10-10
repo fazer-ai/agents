@@ -68,7 +68,6 @@ const BLOCK = {
       action: { tool: "private_note", args: { content: "ver" } },
     },
   ],
-  apply: "shadow",
 };
 
 // The mark the engine writes on each line for the block above (docs/decisions.md).
@@ -258,13 +257,13 @@ describe("the decisions engine in the agent editor", () => {
     expect(count("decisions-fields")).toBe(0);
   });
 
-  test("choosing the decisions engine opens an empty block in shadow, and says what is missing", () => {
+  test("choosing the decisions engine opens an empty block, and says what is missing", () => {
     stubApi();
     const { state } = renderSection({}, { showErrors: true });
     pickEngine("decisions");
     expect(count("decisions-fields")).toBe(1);
     expect(state().engine).toBe("decisions");
-    expect(state().decisions?.apply).toBe("shadow");
+    expect(Object.keys(state().decisions ?? {}).includes("apply")).toBe(false);
     expect(count("decisions-problems")).toBe(1);
     expect(
       screen.queryAllByText(/Add at least one question/).length,
@@ -335,7 +334,7 @@ describe("the decisions engine in the agent editor", () => {
       screen.queryAllByTestId(testId).map((el) => el.textContent ?? "");
     expect(text("decisions-activity-total")[0]).toContain("2 of");
     expect(text("decisions-rule-activity")).toEqual([
-      "Fired in 1 of 2 decisions, would have run 1 (rehearsal).",
+      "Fired in 1 of 2 decisions.",
       "Fired in 0 of 2 decisions.",
     ]);
     expect(text("decisions-question-answers")).toEqual([
@@ -375,7 +374,7 @@ describe("the decisions engine in the agent editor", () => {
         .map((el) => el.textContent ?? ""),
     ).toEqual([
       "Fired in 0 of 2 decisions.",
-      "Fired in 1 of 2 decisions, would have run 1 (rehearsal).",
+      "Fired in 1 of 2 decisions.",
       "Not saved yet, so it has not decided anything.",
     ]);
   });
@@ -747,22 +746,26 @@ describe("the editor follows the engine", () => {
     expect(count("decisions-rule")).toBe(0);
   });
 
-  test("rehearsal and live are chosen side by side, by their names", () => {
+  // Every rule that fires runs, so there is no rehearsal or live choice to draw and no word for it,
+  // and the activity total stays.
+  test("draws no rehearsal or live choice, and no rehearsal wording", () => {
     stubApi();
-    const { state } = renderSection({
+    renderSection({
       monitoring: { engine: "decisions", decisions: BLOCK },
     });
-    const live = screen.getByRole("radio", { name: /Live/ });
     expect(
-      screen
-        .getByRole("radio", { name: /Rehearsal/ })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
-    fireEvent.click(live);
-    expect(state().decisions?.apply).toBe("enforce");
+      screen.queryAllByRole("radio", { name: /Live|Rehearsal/ }).length,
+    ).toBe(0);
+    expect(count("decisions-apply")).toBe(0);
     const text = visible();
-    for (const jargon of ["shadow", "enforce", "Shadow", "Enforce"]) {
-      expect(text.includes(jargon), jargon).toBe(false);
+    for (const word of [
+      "Rehearsal",
+      "rehearsal",
+      "Live",
+      "shadow",
+      "enforce",
+    ]) {
+      expect(text.includes(word), word).toBe(false);
     }
   });
 

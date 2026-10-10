@@ -33,7 +33,6 @@ function tools(first: (c: AbortController) => Promise<string>) {
 }
 
 const config = {
-  apply: "enforce" as const,
   rules: [
     { when, action: { tool: "private_note" as const, args: {} } },
     { when, action: { tool: "set_labels" as const, args: {} } },
@@ -101,23 +100,27 @@ describe("applyDecisions under the tick's deadline", () => {
 });
 
 describe("applyDecisions under the agent's tool-call budget", () => {
-  test("rules past limits.maxToolCalls do not dispatch, in either mode, and say why", async () => {
-    for (const apply of ["enforce", "shadow"] as const) {
+  // A dry run (decide without writing, internal: not a setting) counts the same budget, so it reports
+  // what a run would.
+  test("rules past limits.maxToolCalls do not dispatch, run or dry, and say why", async () => {
+    for (const dryRun of [false, true]) {
       const t = tools(async () => "ok");
       const r = await applyDecisions(
-        { ...config, apply },
+        config,
         answers,
         t.list,
         [],
         t.controller.signal,
         async () => true,
         1,
+        undefined,
+        dryRun,
       );
       expect(r.actions.map((a) => a.outcome)).toEqual([
-        apply === "shadow" ? "shadow" : "ran",
+        dryRun ? "decided" : "ran",
         "over_budget",
       ]);
-      expect(t.ran).toEqual(apply === "shadow" ? [] : ["private_note"]);
+      expect(t.ran).toEqual(dryRun ? [] : ["private_note"]);
     }
   });
 });
@@ -183,7 +186,6 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     const r = recording();
     const report = await applyDecisions(
       {
-        apply: "enforce",
         rules: [
           rule("set_labels"),
           args(1),
@@ -229,7 +231,7 @@ describe("applyDecisions dispatching the actions that share a write", () => {
   test("a run of three neighbours is three in flight at once", async () => {
     const r = recording();
     await applyDecisions(
-      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      { rules: [args(1), args(2), args(3)] },
       answers,
       [r.make("set_custom_attribute")],
       [],
@@ -248,7 +250,7 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     let grouping = true;
     let fences = 0;
     const report = await applyDecisions(
-      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      { rules: [args(1), args(2), args(3)] },
       answers,
       [r.make("set_custom_attribute")],
       [],
@@ -285,7 +287,6 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     });
     const report = await applyDecisions(
       {
-        apply: "enforce",
         // A note with no content between two attribute rules: it can write nothing.
         rules: [args(1), rule("private_note"), args(2)],
       },
@@ -321,7 +322,6 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     });
     await applyDecisions(
       {
-        apply: "enforce",
         rules: [args(1), rule("private_note"), rule("set_labels")],
       },
       answers,
@@ -346,7 +346,7 @@ describe("applyDecisions dispatching the actions that share a write", () => {
   test("without a grouping every action runs alone, in rule order", async () => {
     const r = recording();
     await applyDecisions(
-      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      { rules: [args(1), args(2), args(3)] },
       answers,
       [r.make("set_custom_attribute")],
       [],
@@ -367,7 +367,6 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     let asked = 0;
     const report = await applyDecisions(
       {
-        apply: "enforce",
         rules: [rule("private_note"), args(1), args(2), args(3)],
       },
       answers,
@@ -393,7 +392,7 @@ describe("applyDecisions dispatching the actions that share a write", () => {
   test("the budget is spent in rule order, whatever the dispatch order", async () => {
     const r = recording();
     const report = await applyDecisions(
-      { apply: "enforce", rules: [args(1), rule("private_note"), args(2)] },
+      { rules: [args(1), rule("private_note"), args(2)] },
       answers,
       [r.make("set_custom_attribute"), r.make("private_note")],
       [],
@@ -412,7 +411,7 @@ describe("applyDecisions dispatching the actions that share a write", () => {
   test("one member failing is that action's failure, and the others still report", async () => {
     const r = recording();
     const report = await applyDecisions(
-      { apply: "enforce", rules: [args(1), args(2), args(3)] },
+      { rules: [args(1), args(2), args(3)] },
       answers,
       [r.make("set_custom_attribute", (input) => input.key === "k2")],
       [],
@@ -453,7 +452,7 @@ describe("applyDecisions dispatching the actions that share a write", () => {
     });
     await expect(
       applyDecisions(
-        { apply: "enforce", rules: [args(1), args(2), rule("private_note")] },
+        { rules: [args(1), args(2), rule("private_note")] },
         answers,
         [slow, r.make("private_note")],
         [],

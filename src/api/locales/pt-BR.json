@@ -347,6 +347,7 @@
     "unknownDeliveryStatus": "Status de entrega desconhecido: {{status}}",
     "unknownFlowStage": "Etapa de fluxo desconhecida: {{stage}}",
     "unknownProvider": "Provedor de {{capability}} desconhecido: {{provider}}.",
+    "unknownSettingsField": "Campo desconhecido `{{field}}`: ele não existe mais, então não é gravado. Tire-o da requisição.",
     "unknownWebhookEvent": "Evento de webhook desconhecido: {{event}}",
     "unprintableReason": "`{{field}}` tem caracteres que este documento não consegue imprimir ({{characters}}): as fontes do PDF só cobrem texto latino, e imprimir assim poria outro caractere no documento.",
     "unstorableReason": "`{{field}}` tem caracteres que o banco de dados não consegue guardar ({{codePoints}}): um NUL ou metade de um caractere, que o PostgreSQL recusa em colunas de texto e de JSON.",

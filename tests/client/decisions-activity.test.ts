@@ -51,20 +51,20 @@ const LINES: DecisionLine[] = [
 ];
 
 describe("what a decisions agent has been doing", () => {
-  test("counts each rule's fired, ran, shadow and blocked decisions", () => {
+  // The `shadow` action is an outcome only old lines carry: it reads as fired and neither run nor
+  // blocked.
+  test("counts each rule's fired, ran and blocked decisions, and an old recorded-only line as fired", () => {
     const a = summarizeDecisions(LINES, "aaaa", 3);
     expect(a.decisions).toBe(3);
     expect(a.rules.get(0)).toEqual({
       fired: 2,
       ran: 1,
-      shadow: 1,
       blocked: 0,
       merged: 0,
     });
     expect(a.rules.get(2)).toEqual({
       fired: 1,
       ran: 0,
-      shadow: 0,
       blocked: 1,
       merged: 0,
     });
@@ -104,7 +104,6 @@ describe("what a decisions agent has been doing", () => {
     expect(a.rules.get(0)).toEqual({
       fired: 1,
       ran: 1,
-      shadow: 0,
       blocked: 0,
       merged: 0,
     });
@@ -139,14 +138,12 @@ describe("what a decisions agent has been doing", () => {
     expect(a.rules.get(0)).toEqual({
       fired: 1,
       ran: 1,
-      shadow: 0,
       blocked: 0,
       merged: 0,
     });
     expect(a.rules.get(1)).toEqual({
       fired: 1,
       ran: 0,
-      shadow: 0,
       blocked: 0,
       merged: 1,
     });

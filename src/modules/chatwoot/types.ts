@@ -209,8 +209,9 @@ export interface NormalizedChatwootEvent {
   // Set only by a recovery's rebuilt body: the four facts above are for the row it creates, and
   // never update an existing one (a webhook may have created it since the recovery's read).
   factsOnCreateOnly?: true;
-  // Set only by the same body: the activity time a row it CREATES is stamped with at least, so the
-  // facts above are not older than the row's own order. Never moves an existing row.
+  // Set only by the same body: its live reading's activity. A row it CREATES is stamped with at least
+  // this, so the facts above are not older than the row's own order, and the contact identity it
+  // states is positioned at it. Never moves an existing conversation row.
   createActivityAt?: number;
   // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
   // (conversation.redirect_origin_display_id, written by the fork's token resolve). A number is the

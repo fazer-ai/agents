@@ -240,4 +240,39 @@ describe.skipIf(!dbUp)("mirror: the conversation's labels", () => {
     );
     expect(await stored(7)).toEqual(["lido-ao-vivo"]);
   });
+
+  test("a recovery's contact identity is positioned at the live reading, so a delayed event loses", async () => {
+    const live = convEvent("conversation_updated", 8, {
+      lastActivityAt: T + 10,
+    });
+    await mirror({
+      ...live,
+      meta: {
+        ...live.meta,
+        sender: { id: 708, name: "Lead", phone_number: "+5511900000001" },
+      },
+      fazer_facts_on_create_only: true,
+      fazer_create_activity_at: T + 50,
+    });
+    // Newer than the stranded message, older than the live reading the identity came from.
+    const delayed = convEvent("conversation_updated", 8, {
+      lastActivityAt: T + 30,
+    });
+    await mirror({
+      ...delayed,
+      meta: {
+        ...delayed.meta,
+        sender: { id: 708, name: "Lead", phone_number: "+5511900000002" },
+      },
+    });
+    const contact = await suDb.contact.findFirstOrThrow({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 708,
+      },
+      select: { phone: true },
+    });
+    expect(contact.phone).toBe("+5511900000001");
+  });
 });

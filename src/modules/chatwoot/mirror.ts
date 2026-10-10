@@ -175,6 +175,14 @@ export async function mirrorChatwootEvent(
   // busy inbox on one row. Each write is also conditional on a change, so an unchanged inbox or
   // contact is not written at all, and the conversation lock is the only lock the conversation
   // transaction takes.
+  // A recovery's body states the contact as its live reading has it, so that reading's activity
+  // positions the identity, not the stranded message's older clock (`createActivityAt`).
+  const contactEventAt =
+    n.createActivityAt != null &&
+    (newLastEventAt === null ||
+      n.createActivityAt * 1000 > newLastEventAt.getTime())
+      ? new Date(n.createActivityAt * 1000)
+      : newLastEventAt;
   const resolveRows = () =>
     runScopedOn(base, sysCtx(tenantId), async (db) => ({
       contactId: await upsertContact(
@@ -182,7 +190,7 @@ export async function mirrorChatwootEvent(
         tenantId,
         instanceId,
         n,
-        newLastEventAt,
+        contactEventAt,
       ),
       inboxRowId: await upsertInbox(db, tenantId, instanceId, n),
     }));

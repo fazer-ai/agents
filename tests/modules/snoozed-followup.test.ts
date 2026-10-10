@@ -1130,6 +1130,41 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("a full newest page still walks back for a quote its window makes", async () => {
+    const contact = (
+      id: number,
+      content: string,
+      extra: Partial<Msg> = {},
+    ): Msg => ({
+      id,
+      message_type: 0,
+      created_at: minutesAgo(200 - (id - 400)),
+      sender: { type: "contact", id: 1 },
+      content,
+      ...extra,
+    });
+    // Twenty eligible rows on the newest page, the anchor among them: the window is full on one page.
+    const newest: Msg[] = [
+      contact(601, "sim", { content_attributes: { in_reply_to: 590 } }),
+      ...Array.from({ length: 18 }, (_, i) =>
+        contact(602 + i, `linha ${602 + i}`),
+      ),
+      personAsked(620, 3),
+    ];
+    const model = new InputCapturingModel(REPLY);
+    await setSettings(LADDER);
+    await seed(2065);
+    const s = stub({
+      messages: newest,
+      olderPage: [contact(590, "Prefere retirar na loja ou receber em casa?")],
+      model: () => model,
+    });
+    await snoozedFollowUpHandler(jobFor(2065), appDb, s.deps);
+    expect(model.inputs.join("\n")).toContain(
+      "retirar na loja ou receber em casa",
+    );
+  });
+
   test("no media is opened under a contact gate, nor for a closing step that reaches no model", async () => {
     const image = (id: number): Msg => ({
       id,

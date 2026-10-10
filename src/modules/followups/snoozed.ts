@@ -277,6 +277,21 @@ function windowRows(
     );
 }
 
+// Whether the pages read cover the window: enough eligible rows, and every quote a window row makes
+// already fetched, as the observer's `quotesResolved` asks, so a "sim" is not rendered without the
+// question it answers while a page within the limit still holds it.
+function windowCovered(
+  rows: readonly ChatwootMessageRow[],
+  resetAtMessageId: number | null,
+): boolean {
+  const eligible = windowRows(rows, resetAtMessageId);
+  if (eligible.length < SNOOZED_WINDOW_MESSAGES) return false;
+  const fetched = new Set(rows.map((r) => r.id));
+  return eligible
+    .slice(-SNOOZED_WINDOW_MESSAGES)
+    .every((r) => r.inReplyTo === null || fetched.has(r.inReplyTo));
+}
+
 export function findSnoozedAnchor(
   rows: readonly ChatwootMessageRow[],
   // The inbox's WhatsApp provider, REQUIRED for the reason `isDeviceAttendantMessage` gives.
@@ -478,8 +493,7 @@ export async function snoozedFollowUpHandler(
           break;
         if (
           findSnoozedAnchor(rows, ctx.reply) &&
-          windowRows(rows, ctx.conv.resetAtMessageId).length >=
-            SNOOZED_WINDOW_MESSAGES
+          windowCovered(rows, ctx.conv.resetAtMessageId)
         )
           break;
         before = Math.min(...got.map((r) => r.id));

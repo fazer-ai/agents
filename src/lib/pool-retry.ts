@@ -18,6 +18,31 @@ export function isTransactionNeverStarted(err: unknown, depth = 0): boolean {
   );
 }
 
+// The `pg` adapter's own names for the same conditions. A raw query (every scoped transaction opens
+// with one) reports them as P2010 with the kind under `meta.driverAdapterError.cause`, not as P1017.
+const ADAPTER_UNAVAILABLE = new Set([
+  "ConnectionClosed",
+  "DatabaseNotReachable",
+  "SocketTimeout",
+  "TooManyConnections",
+]);
+
+// The database could not be reached or had no connection to give: a transaction that never started,
+// the connection codes (P1001 unreachable, P1002 timed out, P1017 closed by the server), or the
+// adapter's kinds above. Transient by nature and repaired by nobody, so a caller retries it rather
+// than reporting a fault elsewhere.
+export function isDatabaseUnavailable(err: unknown, depth = 0): boolean {
+  if (typeof err !== "object" || err === null || depth > 4) return false;
+  if (isTransactionNeverStarted(err)) return true;
+  const code = (err as { code?: unknown }).code;
+  if (code === "P1001" || code === "P1002" || code === "P1017") return true;
+  const kind = (err as { kind?: unknown }).kind;
+  if (typeof kind === "string" && ADAPTER_UNAVAILABLE.has(kind)) return true;
+  const meta = (err as { meta?: { driverAdapterError?: unknown } }).meta;
+  if (isDatabaseUnavailable(meta?.driverAdapterError, depth + 1)) return true;
+  return isDatabaseUnavailable((err as { cause?: unknown }).cause, depth + 1);
+}
+
 export interface PoolRetryOptions {
   // Names the caller in the line each retry writes.
   label: string;

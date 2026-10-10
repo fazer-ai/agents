@@ -88,8 +88,10 @@ const CENSUS: Record<string, string> = {
     "an inbound delivery past its processing budget (#356)",
   "src/modules/rag/documents.ts:runIngestJobForTenant":
     "a document that will never be indexed; the second line is the same fact broadcast live (#356)",
-  "src/modules/chatwoot/delivery-sweep.ts:record":
-    "a delivery stranded by a process death (#282)",
+  // Writes DEAD together with the recovery it owes, in one transaction, and leaves the line to its
+  // only caller: `record` decided the verdict, and reports it once this returns "won".
+  "src/modules/chatwoot/delivery-sweep.ts:finishDead":
+    "ANNOUNCES ELSEWHERE: ./delivery-sweep.ts record, its only caller (#282)",
   "src/modules/chatwoot/webhook.ts:handToRecovery":
     "a live turn the database pool never served, handed to its recovery at once (#1122)",
   // The one entry here that is not a death. It RESTORES the verdict `record` already reached and
@@ -101,7 +103,7 @@ const CENSUS: Record<string, string> = {
   // does page, from inside this same helper: from `PROCESSED` nothing revisits the row.
   "src/modules/chatwoot/recover-delivery.ts:putRowBack":
     "ALREADY ANNOUNCED: ./delivery-sweep.ts record, when this row was first declared DEAD",
-  // The two that announce ELSEWHERE, and the only exemptions here. Both are CAS writes in the
+  // The two scheduler writes that announce ELSEWHERE. Both are CAS writes in the
   // scheduler's service layer, and neither can announce from where it sits: what a dead job means is
   // decided per kind by a registry only the worker holds, and both roads converge on the worker's
   // `dispatchDeadLetter`, which announces for every kind. The complementary sweep that every reaper
@@ -117,6 +119,7 @@ const ANNOUNCES_ELSEWHERE = new Set([
   // Not "announces elsewhere" but "was announced ALREADY", which lands in the same set because the
   // question this asks is whether the write reaches an operator, and this one's already did.
   "src/modules/chatwoot/recover-delivery.ts:putRowBack",
+  "src/modules/chatwoot/delivery-sweep.ts:finishDead",
 ]);
 
 async function sweepSrc(): Promise<{ key: string; announces: boolean }[]> {

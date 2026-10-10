@@ -19,6 +19,7 @@ import {
 import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { parseDbId } from "@/lib/db-id";
+import { isDatabaseUnavailable } from "@/lib/pool-retry";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   announceFailedTurn,
@@ -362,9 +363,11 @@ async function runRecovery(params: {
       },
     }),
   );
-  // The mirror does not know this conversation, so nothing here can say who should answer it or
-  // whether they still may. A row this old with no mirror row is not going to grow one.
-  if (!conv) return "unrecoverable";
+  // NOTE: a conversation with no mirror row is still recovered. The mirror failing is how a first
+  // message strands, so those are exactly the customers this exists for. Everything below reads the
+  // conversation from Chatwoot; the mirror row is created by the delivery path from the rebuilt body,
+  // and the one field only a webhook carries (the contact's pairing) is inherited, see
+  // `pairingOfContact`.
 
   // Two reads off the account. The conversation's state cannot come from the mirror: the
   // delivery that would have mirrored this message is the one that died. An incoming message on a
@@ -379,6 +382,7 @@ async function runRecovery(params: {
   // What the catch-up read below found past the stranded message, when it was asked.
   let caughtUp: ReturnType<typeof parseChatwootMessages> = [];
   let live: ReturnType<typeof parseLiveConversation> = null;
+  let liveRaw: unknown = null;
   let reconciled: Awaited<ReturnType<typeof reconcileMirrorFromLive>> | null =
     null;
   try {
@@ -390,7 +394,8 @@ async function runRecovery(params: {
         ? { makeClient: params.deps.makeClient }
         : {}),
     });
-    live = parseLiveConversation(await client.getConversation(conversationId));
+    liveRaw = await client.getConversation(conversationId);
+    live = parseLiveConversation(liveRaw);
     // NOTE: applied immediately, before the two message reads: a snapshot is evidence about the
     // instant it was READ. The reconcile falls back to `last_activity_at` where versions are missing,
     // and that fallback cannot see a handoff or a resolve, so held across two round trips a takeover
@@ -434,6 +439,17 @@ async function runRecovery(params: {
         )
       : [];
   } catch (e) {
+    // NOTE: the mirror's reconcile runs inside this block too, so a database with no free connection
+    // lands here. That is not the account: it is waited out like a busy conversation, without
+    // spending the budget that gives up on an account nobody repairs.
+    if (isDatabaseUnavailable(e)) {
+      logger.warn(
+        "chatwoot recovery: the database had no free connection while reading conversation %d (delivery=%s); retrying later",
+        conversationId,
+        String(row.id),
+      );
+      return "deferred";
+    }
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
     // so this is a DEFERRAL rather than a verdict: the row keeps its attempt budget and the next
     // pass tries again.
@@ -457,6 +473,17 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
+  // NOTE: with no mirror row, the live read is the only statement of who holds the conversation, and a
+  // snapshot with no `meta` says nothing about it: its null assignee would be stated below as
+  // unassigned, and a `pending` conversation would pass the ownership gate with its holder unknown.
+  if (conv === null && !live.assigneeStated) {
+    logger.warn(
+      "chatwoot recovery: conversation %d is not mirrored and Chatwoot did not state who holds it (delivery=%s)",
+      conversationId,
+      String(row.id),
+    );
+    return "unreachable";
+  }
   // The row AFTER the reconcile, which is the truth in both directions: the live snapshot where it
   // won, and whatever outranked it where it lost. Null only if the mirror row vanished between the
   // two reads, and the row read above is then the best thing left.
@@ -464,7 +491,13 @@ async function runRecovery(params: {
   // Read from the reconcile above rather than re-read here, so what the body states is the row that
   // call decided; a second read would answer about a different moment, and the two message reads
   // sit between them.
-  const state = reconciled?.state ?? conv;
+  const state = reconciled?.state ??
+    conv ?? {
+      status: live.status,
+      assigneeType: live.assigneeType,
+      assigneeId: live.assigneeId,
+      assigneeName: live.assigneeName,
+    };
 
   // NOTE: the page has to reach back to the message: twenty outgoing or activity messages since the
   // strand would push a newer CUSTOMER message off the newest page, and this would replay a message
@@ -561,7 +594,7 @@ async function runRecovery(params: {
   const routeInboxId =
     typeof message.inbox_id === "number"
       ? message.inbox_id
-      : (conv.inbox?.chatwootInboxId ?? null);
+      : (conv?.inbox?.chatwootInboxId ?? null);
   // Neither reading can name the route. The rebuild is degraded, and closing the row on it would be
   // the failure above with an extra step. `unreachable` for the same reason a degraded message shape
   // is: the account answered with something unusable, which the next attempt may not.
@@ -710,19 +743,47 @@ async function runRecovery(params: {
   // NOTE: the mirror learns the route, as a repair: `runAgentTurn` resolves the agent from the
   // EVENT's inbox, but `maybeConsumeCommandOrGate` resolves it from `Conversation.inboxId`, and on null
   // it runs NOTHING (not test mode, availability or contact authorization) while the turn still runs,
-  // so a never-activated test agent would post to a real customer. Ordinary events write this column
-  // only when they win the ordering (./mirror.ts) and the rebuilt body is stale by construction, so it
-  // is done here, before the gates read it. Only from NULL: a column naming an inbox is a statement
-  // this module cannot overrule. The `if` is the cheap answer and the WHERE the one that holds.
-  if (conv.inbox === null && inbox != null) {
+  // so a never-activated test agent would post to a real customer. Done here before the gates read
+  // it, and again by the delivery path's own mirror write, whose stale branch fills a null route, so a
+  // row a webhook creates after this write is covered too. Only from NULL: a column naming an inbox is
+  // a statement this module cannot overrule. By the source's key, so a row a webhook created during
+  // the REST reads is repaired here as well.
+  if (inbox != null && (conv === null || conv.inbox === null)) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.conversation.updateMany({
-        where: { id: conv.id, inboxId: null },
+        where: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+          inboxId: null,
+        },
         data: { inboxId: inbox.id },
       }),
     );
   }
 
+  // The pairing a never-mirrored conversation inherits, asked here, ABOVE the re-read, since
+  // nothing may await between that read and the fence. Used only when the re-read still finds no
+  // row: a webhook that mirrored it during the REST reads carries the real pairing.
+  const contactToState =
+    conv === null
+      ? await contactToStateFor({
+          tenantId: params.tenantId,
+          instanceId,
+          raw: liveRaw,
+          base,
+        })
+      : undefined;
+  const inherited =
+    conv === null
+      ? await pairingOfContact({
+          tenantId: params.tenantId,
+          instanceId,
+          chatwootInboxId: routeInboxId,
+          chatwootContactId: senderIdOf(liveRaw),
+          base,
+        })
+      : null;
   // Re-read rather than carried from the load at the top: a webhook during the REST reads can
   // move `contactInboxId` (./mirror.ts writes it on an unversioned event), and the body and the
   // fence's graph key must come from the SAME reading, or the recovery fences one thread and runs on
@@ -732,11 +793,20 @@ async function runRecovery(params: {
   // event, so an old pairing would re-arm a follow-up for an episode the customer already left.
   const mirrorNow = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
-      where: { id: conv.id },
+      // By the source's key, not the row loaded at the top: that row may not exist, and a webhook
+      // during the REST reads may have created it.
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
       select: {
         contactInboxId: true,
         redirectOriginDisplayId: true,
         chatwootRedirectOriginAt: true,
+        contactId: true,
         // NOTE: the conversation's own STATE, from HERE rather than `reconciled.state`: both are the
         // same row and neither is the live snapshot, and this is the later reading, so a handoff or
         // resolve landing while the route queries ran is in it. ONE reading is stated, not two.
@@ -747,7 +817,24 @@ async function runRecovery(params: {
       },
     }),
   );
-  const contactInboxId = mirrorNow?.contactInboxId ?? null;
+  const contactInboxId = mirrorNow ? mirrorNow.contactInboxId : inherited;
+  // A memory-only replay is owed to the shared memory, which only a pairing names, and it needs one
+  // the mirror itself stored: an inherited pairing is an inference, and a webhook storing another one
+  // after this read would leave the words in the wrong memory. A row is no stand-in, since one
+  // without a pairing is a row no webhook reached (often an earlier attempt's). Refused before the
+  // claim, so it stays on the worklist with its attempts intact.
+  if (!replayPosts && (mirrorNow?.contactInboxId ?? null) == null) {
+    logger.warn(
+      "chatwoot recovery: %s owes memory on conversation %d, which has no pairing the mirror stored; left DEAD",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unrecoverable";
+  }
+  // Asked only where the load found no row; stated wherever the re-read still has no contact, since a
+  // conversation event that created the row meanwhile may have named none (see `contactToStateFor`).
+  const sender =
+    mirrorNow && mirrorNow.contactId !== null ? undefined : contactToState;
 
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({
@@ -758,7 +845,22 @@ async function runRecovery(params: {
         // `contact_inbox`. Re-read immediately above rather than taken from the load at the top,
         // because the pairing DOES move.
         contactInboxId,
-        redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
+        ...(sender !== undefined ? { sender } : {}),
+        ...(mirrorNow ? {} : conversationFactsOf(liveRaw)),
+        ...(!mirrorNow && live.updatedAt !== null
+          ? { stateVersion: live.updatedAt }
+          : {}),
+        // Wherever the live identity is stated too: a row a webhook created meanwhile without a
+        // contact still gets it, and its fields must be positioned at the reading they came from.
+        ...((!mirrorNow || sender !== undefined) && live.lastActivityAt !== null
+          ? {
+              liveActivityAt: Math.floor(live.lastActivityAt.getTime() / 1000),
+            }
+          : {}),
+        // Unstated without a row: only the mirror knows the pairing.
+        redirectOriginDisplayId: mirrorNow
+          ? mirrorNow.redirectOriginDisplayId
+          : undefined,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
         // NOTE: a resolve that lands after this read is not ordered away here, by the delivery path's
         // rule: a brand-new incoming message is the one event allowed to move a stored `resolved`
@@ -1044,7 +1146,13 @@ async function runRecovery(params: {
           : "NO, the write failed; the sweep will report it stranded again",
       e instanceof Error ? e.message : String(e),
     );
-    return "unreachable";
+    // The account was read before the claim, so this is never `unreachable`. The error reaches the
+    // job with its cause: a database with no connection is rescheduled there, anything else fails
+    // the job with a message naming what failed, and the scheduler backs off.
+    throw new Error(
+      `recovery: the delivery path failed: ${e instanceof Error ? e.message : String(e)}`,
+      { cause: e },
+    );
   } finally {
     // Both, in the same place, for the reason the mark states: an unbalanced one makes every reader
     // of that key defer on this conversation until the process restarts, and for the graph key that
@@ -1068,7 +1176,13 @@ async function runRecovery(params: {
   // nothing, `no-thread` has nowhere to hold it, `covered` is the responder already having it).
   // Silence is no route having asked, so the row goes back to DEAD for an inbox bound and switched
   // on again. Only for the replay that posts nothing; where a turn was owed, `TURN_SETTLED` answers.
-  const memoryUnsettled = !replayPosts && ingestOutcome === null;
+  const memoryUnsettled =
+    (!replayPosts && ingestOutcome === null) ||
+    // A reply replay the gate turned into memory (a person holds the conversation) still owes the
+    // words to the shared memory, which `no-thread` says no pairing names. Every webhook carries the
+    // pairing, so a row without one is a row no webhook reached, often the one an earlier attempt
+    // created: whether the row exists says nothing, and the delivery goes back to DEAD.
+    (replayPosts && turnOutcome === null && ingestOutcome === "no-thread");
   if (turnThrew || turnUnsettled || memoryUnsettled) {
     // The row goes BACK to DEAD, the same repair as for a throw: it left the worklist at the
     // claim and the customer is still owed. The attempt stays spent, so `MAX_RECOVERY_ATTEMPTS`
@@ -1098,7 +1212,9 @@ async function runRecovery(params: {
       turnThrew
         ? "threw"
         : memoryUnsettled
-          ? "never ran and no route ingested the message either"
+          ? ingestOutcome === "no-thread"
+            ? "never ran and the message has no stored pairing to be remembered under"
+            : "never ran and no route ingested the message either"
           : `came back "${turnOutcome}"`,
       row.deliveryId,
       conversationId,
@@ -1121,12 +1237,30 @@ async function runRecovery(params: {
   // "consumed", because with coalescing on the reply is the flush's, minutes from now. `warn`, like
   // the correction it stands in for, so it lands on the Logs page (a channel's `minLevel` defaults
   // to `error`) rather than paging.
+  // A conversation that had no row at the top has one now: the delivery path mirrored it.
+  const conversationRowId =
+    conv?.id ??
+    (
+      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId: params.tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conversationId,
+            },
+          },
+          select: { id: true },
+        }),
+      )
+    )?.id ??
+    null;
   const closed = await writeFlowEvent(
     {
       tenantId: params.tenantId,
       turnId: crypto.randomUUID(),
       source: "inbox",
-      conversationId: conv.id,
+      conversationId: conversationRowId,
       agentId,
       base,
     },
@@ -1203,6 +1337,103 @@ export function isRecoverableStrand<
   T extends { conversationId: number | null; inboundMessageId: number | null },
 >(row: T): row is T & { conversationId: number; inboundMessageId: number } {
   return row.conversationId !== null && row.inboundMessageId !== null;
+}
+
+// The contact's pairing on this inbox, for a conversation the mirror never learned: the REST
+// conversation renders no `contact_inbox`, and the memory a contact's conversations share is keyed
+// on it. Read off the contact's other mirrored conversations on the same inbox, and only when they
+// name exactly one: none is a first contact, with no shared memory to reach, and two is a contact
+// Chatwoot paired twice, where choosing would put this reply in the wrong history. Null in both,
+// which keys the turn on the conversation.
+async function pairingOfContact(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  chatwootInboxId: number;
+  chatwootContactId: number | null;
+  base: PrismaClient;
+}): Promise<number | null> {
+  const contactId = p.chatwootContactId;
+  if (contactId === null) return null;
+  const rows = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.conversation.findMany({
+      where: {
+        tenantId: p.tenantId,
+        chatwootInstanceId: p.instanceId,
+        contactInboxId: { not: null },
+        inbox: { chatwootInboxId: p.chatwootInboxId },
+        contact: { chatwootContactId: contactId },
+      },
+      distinct: ["contactInboxId"],
+      select: { contactInboxId: true },
+      take: 2,
+    }),
+  );
+  return rows.length === 1 ? (rows[0]?.contactInboxId ?? null) : null;
+}
+
+// The contact a never-mirrored conversation states, so the row the delivery path creates is linked to
+// it and the contact gate has an identity to ask about. A contact the mirror already has is linked by
+// id alone: its identity fields read now, at the stranded message's clock, could empty what a newer
+// event stored, and an absent key leaves the stored value alone. A contact the mirror never saw has
+// nothing to empty, so Chatwoot's whole reading is stated.
+async function contactToStateFor(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  raw: unknown;
+  base: PrismaClient;
+}): Promise<Record<string, unknown> | undefined> {
+  const id = senderIdOf(p.raw);
+  if (id === null || !isRecord(p.raw) || !isRecord(p.raw.meta))
+    return undefined;
+  const live = p.raw.meta.sender;
+  if (!isRecord(live)) return undefined;
+  const known = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.contact.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootContactId: {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootContactId: id,
+        },
+      },
+      select: { id: true },
+    }),
+  );
+  return known ? { id } : live;
+}
+
+// The facts a REST conversation states that the delivery path mirrors, for the body of one the mirror
+// never learned. The keys the normalizer reads off a conversation and this body does not set itself.
+const LIVE_FACT_KEYS = [
+  "custom_attributes",
+  "labels",
+  "kanban_task",
+  "group_type",
+  "channel",
+  "created_at",
+  "first_reply_created_at",
+] as const;
+
+function conversationFactsOf(raw: unknown): {
+  liveFacts?: Record<string, unknown>;
+} {
+  if (!isRecord(raw)) return {};
+  const facts: Record<string, unknown> = {};
+  for (const key of LIVE_FACT_KEYS) {
+    if (key in raw) facts[key] = raw[key];
+  }
+  // The REST view renders the channel under `meta`, where the webhook's body has it at the top.
+  if (!("channel" in facts) && isRecord(raw.meta) && "channel" in raw.meta) {
+    facts.channel = raw.meta.channel;
+  }
+  return { liveFacts: facts };
+}
+
+// The contact a REST conversation names, `meta.sender.id`.
+function senderIdOf(raw: unknown): number | null {
+  if (!isRecord(raw) || !isRecord(raw.meta)) return null;
+  const sender = raw.meta.sender;
+  return isRecord(sender) && typeof sender.id === "number" ? sender.id : null;
 }
 
 // Arms the recovery of ONE stranded row. Called by the sweep at the moment it declares the row DEAD,
@@ -1282,12 +1513,34 @@ export async function runRecoveryJob(
     return { outcome: "done" };
   }
 
-  const outcome = await recoverStrandedDelivery({
-    tenantId: job.tenantId,
-    deliveryRowId,
-    base,
-    ...(deps ? { deps } : {}),
-  });
+  let outcome: RecoveryOutcome;
+  try {
+    outcome = await recoverStrandedDelivery({
+      tenantId: job.tenantId,
+      deliveryRowId,
+      base,
+      ...(deps ? { deps } : {}),
+    });
+  } catch (err) {
+    // A database that could not serve the recovery's own reads says nothing about the delivery or
+    // the account: it is retried later, without spending the attempts the dead-letter line counts.
+    // Any other error fails the job with its own message. Either way, a claim the scheduler already
+    // gave up on is this attempt's last word, so the unanswered line is written first.
+    if (await schedulerGaveUp(job, base)) {
+      await announceUnanswered(job.tenantId, deliveryRowId, base, {
+        makeClient: deps?.makeClient,
+      });
+    }
+    if (!isDatabaseUnavailable(err)) throw err;
+    logger.warn(
+      "chatwoot recovery: the database had no free connection for delivery row %s; retrying later",
+      String(deliveryRowId),
+    );
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + BUSY_RETRY_MS),
+    };
+  }
   // NOTE: Every outcome that ends the job without retrying it is where the loss is decided: a row
   // still DEAD now stays DEAD, and the sweep's line about it was `info` because this job was coming.
   // A retrying outcome decides it too when the scheduler already gave up on this claim: a last

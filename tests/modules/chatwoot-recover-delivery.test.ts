@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -17,9 +25,11 @@ import {
   markTurnOwning,
   threadBusyForResetOn,
 } from "@/graph/thread-claim";
+import * as tenancy from "@/lib/tenancy";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import * as reconcileModule from "@/modules/chatwoot/reconcile";
 import {
   announceUnanswered,
   deliveryRecoveryDedupeKey,
@@ -30,6 +40,7 @@ import {
   registerDeliveryRecoveryHandler,
   runRecoveryJob,
 } from "@/modules/chatwoot/recover-delivery";
+import * as webhookModule from "@/modules/chatwoot/webhook";
 import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
@@ -145,6 +156,15 @@ function stubChatwoot(opts: {
   // split reply and refuses the rest.
   failSendFrom?: number;
   conv?: {
+    // A snapshot with no `meta` at all: Chatwoot saying nothing about who holds it.
+    noMeta?: boolean;
+    customAttributes?: Record<string, unknown>;
+    labels?: string[];
+    groupType?: string;
+    // Under `meta`, where the REST view renders it.
+    channel?: string;
+    // The snapshot's own version, `updated_at`.
+    updatedAt?: number;
     status?: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
@@ -166,15 +186,24 @@ function stubChatwoot(opts: {
         inbox_id: CHATWOOT_INBOX_ID,
         last_activity_at: c.lastActivityAt ?? SENT_AT,
         timestamp: c.lastActivityAt ?? SENT_AT,
-        meta: {
-          ...(c.assigneeType != null
-            ? {
-                assignee_type: c.assigneeType,
-                assignee: { id: c.assigneeId, name: "outro" },
-              }
-            : { assignee: null }),
-          sender: { id: 77, name: "Cliente" },
-        },
+        ...(c.customAttributes
+          ? { custom_attributes: c.customAttributes }
+          : {}),
+        ...(c.labels ? { labels: c.labels } : {}),
+        ...(c.groupType ? { group_type: c.groupType } : {}),
+        ...(c.updatedAt !== undefined ? { updated_at: c.updatedAt } : {}),
+        meta: c.noMeta
+          ? undefined
+          : {
+              ...(c.assigneeType != null
+                ? {
+                    assignee_type: c.assigneeType,
+                    assignee: { id: c.assigneeId, name: "outro" },
+                  }
+                : { assignee: null }),
+              sender: { id: 77, name: "Cliente" },
+              ...(c.channel ? { channel: c.channel } : {}),
+            },
       };
     },
     getMessages: async (
@@ -615,6 +644,782 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // answer.
     expect(stub.sent).toEqual([[convId, REPLY]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+  });
+
+  describe("a conversation the mirror never learned", () => {
+    // The mirror failing is how a first message strands, so the conversation it belonged to has no
+    // row: the recovery reads it from Chatwoot instead of giving up on exactly those customers.
+    const contactOf = async (chatwootContactId: number, name?: string) =>
+      suDb.contact.upsert({
+        where: {
+          tenantId_chatwootInstanceId_chatwootContactId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootContactId,
+          },
+        },
+        create: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootContactId,
+          ...(name !== undefined ? { name } : {}),
+        },
+        update: name !== undefined ? { name } : {},
+        select: { id: true },
+      });
+    const dropContact = (chatwootContactId: number) =>
+      suDb.contact.deleteMany({
+        where: { tenantId, chatwootInstanceId: instanceId, chatwootContactId },
+      });
+    // The delivery path mirrors these conversations and the contact Chatwoot names, and the contact
+    // id is the stub's for every test in this file.
+    afterEach(async () => {
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId,
+          chatwootConversationId: { gte: 7310, lte: 7334 },
+        },
+      });
+      await dropContact(77);
+    });
+
+    test("is answered from Chatwoot's own reading, and the mirror learns it", async () => {
+      const convId = 7310;
+      const messageId = 7810;
+      // A contact the mirror never saw: an earlier test's conversation may have mirrored this one.
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi, alguém aí?" }]),
+      });
+      const outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      expect(outcome).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      expect(await ledger(rowId)).toEqual({
+        status: "PROCESSED",
+        attempts: 1,
+      });
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true, contactInboxId: true },
+      });
+      // A first contact: no other conversation names its pairing, so the turn is the conversation's.
+      expect(mirrored.contactInboxId).toBeNull();
+      // ...and the row is linked to the contact Chatwoot named, with its identity, so a contact gate
+      // has someone to ask about.
+      const linked = await suDb.conversation.findFirstOrThrow({
+        where: { id: mirrored.id },
+        select: {
+          contact: { select: { chatwootContactId: true, name: true } },
+        },
+      });
+      expect(linked.contact).toEqual({
+        chatwootContactId: 77,
+        name: "Cliente",
+      });
+      const lines = await deliveryLines(mirrored.id);
+      expect(
+        lines.map((l) => (l.detail as { outcome?: string }).outcome),
+      ).toContain("recovered");
+    });
+
+    test("takes the contact's pairing from its other conversation on the same inbox", async () => {
+      const convId = 7311;
+      const messageId = 7811;
+      const contact = await contactOf(77);
+      const earlier = await seedConversation(7312);
+      await suDb.conversation.update({
+        where: { id: earlier.id },
+        data: { contactId: contact.id, contactInboxId: 71_555 },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "voltei" }]),
+      });
+      const saver = new MemorySaver();
+      const outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: { ...depsWith(stub), checkpointer: saver },
+      });
+      expect(outcome).toBe("recovered");
+      // The memory the contact's next conversations read, not one only this conversation has.
+      const tuple = await saver.getTuple({
+        configurable: {
+          thread_id: contactInboxThreadId(tenantId, instanceId, 71_555),
+        },
+      });
+      expect(tuple).toBeDefined();
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBe(71_555);
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: { in: [convId, 7312] } },
+      });
+      await dropContact(77);
+    });
+
+    test("takes no pairing when the contact's conversations name two", async () => {
+      const convId = 7313;
+      const messageId = 7813;
+      const contact = await contactOf(77);
+      for (const [other, pairing] of [
+        [7314, 71_601],
+        [7315, 71_602],
+      ] as const) {
+        const row = await seedConversation(other);
+        await suDb.conversation.update({
+          where: { id: row.id },
+          data: { contactId: contact.id, contactInboxId: pairing },
+        });
+      }
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBeNull();
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId,
+          chatwootConversationId: { in: [convId, 7314, 7315] },
+        },
+      });
+      await dropContact(77);
+    });
+
+    test("takes no pairing from the contact's conversation on another inbox", async () => {
+      // A pairing is per inbox: borrowing one from another inbox would write this turn into the
+      // memory of a channel the customer never wrote on.
+      const convId = 7320;
+      const messageId = 7820;
+      const contact = await contactOf(77);
+      const elsewhere = await seedConversation(7321, {
+        inboxId: observedInboxDbId,
+      });
+      await suDb.conversation.update({
+        where: { id: elsewhere.id },
+        data: { contactId: contact.id, contactInboxId: 71_701 },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBeNull();
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: { in: [convId, 7321] } },
+      });
+      await dropContact(77);
+    });
+
+    test("takes the pairing two of the contact's conversations share", async () => {
+      const convId = 7322;
+      const messageId = 7822;
+      const contact = await contactOf(77);
+      for (const other of [7323, 7324]) {
+        const row = await seedConversation(other);
+        await suDb.conversation.update({
+          where: { id: row.id },
+          data: { contactId: contact.id, contactInboxId: 71_702 },
+        });
+      }
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const mirrored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { contactInboxId: true },
+      });
+      expect(mirrored.contactInboxId).toBe(71_702);
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId,
+          chatwootConversationId: { in: [convId, 7323, 7324] },
+        },
+      });
+      await dropContact(77);
+    });
+
+    test("links a contact the mirror already has without restating its identity", async () => {
+      const convId = 7312;
+      const messageId = 7812;
+      await contactOf(77, "Nome mais novo");
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: {
+          contact: { select: { chatwootContactId: true, name: true } },
+        },
+      });
+      // Read at the stranded message's clock, Chatwoot's "Cliente" must not overwrite a newer name.
+      expect(row.contact).toEqual({
+        chatwootContactId: 77,
+        name: "Nome mais novo",
+      });
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: convId },
+      });
+      await dropContact(77);
+    });
+
+    test("carries the conversation's attributes, labels and type into the row it creates", async () => {
+      const convId = 7313;
+      const messageId = 7813;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: {
+          customAttributes: { plano: "ouro" },
+          labels: ["vip"],
+          groupType: "group",
+        },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      // What a contact gate's label and attribute rules read, from Chatwoot rather than empty.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: {
+          customAttributes: true,
+          labels: true,
+          conversationType: true,
+        },
+      });
+      expect(row.customAttributes).toEqual({ plano: "ouro" });
+      expect(row.labels).toEqual(["vip"]);
+      expect(row.conversationType).toBe("group");
+    });
+
+    test("states no redirect pairing it never read, and marks its facts for the row it creates", async () => {
+      // Only the mirror knows the pairing, and a webhook can store one after the re-read; a null
+      // here would clear it. The facts are read before that webhook, so they create and never update.
+      const convId = 7326;
+      const messageId = 7826;
+      // No conversation of an earlier test may lend this contact a pairing.
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { labels: ["vip"], lastActivityAt: SENT_AT + 600 },
+      });
+      const real = webhookModule.processChatwootDelivery;
+      const path = spyOn(webhookModule, "processChatwootDelivery");
+      path.mockImplementation((p) => real(p));
+      let handed: Parameters<typeof real>[0] | undefined;
+      try {
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("recovered");
+        handed = path.mock.calls[0]?.[0];
+      } finally {
+        path.mockRestore();
+      }
+      expect(handed).toBeDefined();
+      expect(handed?.normalized.redirectOriginDisplayId).toBeUndefined();
+      expect(handed?.normalized.factsOnCreateOnly).toBe(true);
+      // The row it creates is stamped no older than the reading those facts came from.
+      expect(handed?.normalized.createActivityAt).toBe(SENT_AT + 600);
+    });
+
+    test("leaves a memory-only replay DEAD when no pairing names the memory it owes", async () => {
+      // A transcription replay is owed to the contact's shared memory; with no row and nothing to
+      // inherit it would settle with the words remembered nowhere.
+      const convId = 7327;
+      const messageId = 7827;
+      // No conversation of an earlier test may lend this contact a pairing.
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        event: "message_updated",
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("leaves it DEAD too when a webhook created the row without a pairing during the reads", async () => {
+      const convId = 7328;
+      const messageId = 7828;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        event: "message_updated",
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        onAnchoredRead: async () => {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: convId,
+              status: "pending",
+              inboxId: inboxDbId,
+              threadId: threadOf(convId),
+              lastEventAt: new Date(),
+            },
+          });
+        },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("leaves a memory-only replay DEAD rather than send it to an inherited pairing", async () => {
+      // An inherited pairing is an inference; a webhook storing another one after the re-read would
+      // leave the words in the wrong memory, so a replay owed only to memory waits for a stored one.
+      const convId = 7329;
+      const messageId = 7829;
+      await dropContact(77);
+      const contact = await contactOf(77);
+      const sibling = await seedConversation(7330);
+      await suDb.conversation.update({
+        where: { id: sibling.id },
+        data: { contactId: contact.id, contactInboxId: 71_729 },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        event: "message_updated",
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("leaves a reply replay DEAD when a takeover turns it into memory no pairing names", async () => {
+      // The row owed a reply, so the memory-only guard does not stop it; a person holding the
+      // conversation now closes the gate, and what is left is memory with nowhere stored to hold it.
+      const convId = 7332;
+      const messageId = 7832;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unreachable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    });
+
+    test("keeps it DEAD on the next attempt, when the row the first attempt created has no pairing", async () => {
+      // The first attempt mirrors the conversation; the second finds that row, which still names no
+      // memory, and the words are still owed.
+      const convId = 7333;
+      const messageId = 7833;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      const attempt = () =>
+        recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        });
+      expect(await attempt()).toBe("unreachable");
+      expect(
+        await suDb.conversation.findFirst({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { contactInboxId: true },
+        }),
+      ).toEqual({ contactInboxId: null });
+      // The first attempt left the row owing memory only, so the second is refused before its claim.
+      expect(await attempt()).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    });
+
+    test("puts it back to DEAD on a row that exists without a pairing, not only on the attempt that creates one", async () => {
+      const convId = 7334;
+      const messageId = 7834;
+      await dropContact(77);
+      // The mirror's row is the state the recovery reads, so the takeover is on it.
+      const seeded = await seedConversation(convId);
+      await suDb.conversation.update({
+        where: { id: seeded.id },
+        data: {
+          status: "open",
+          assigneeType: "User",
+          assigneeId: 41,
+          contactInboxId: null,
+        },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unreachable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    });
+
+    test("positions the contact it states at the live reading, even on a row a webhook created meanwhile", async () => {
+      const convId = 7331;
+      const messageId = 7831;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { lastActivityAt: SENT_AT + 900 },
+        // A conversation event that named no contact.
+        onAnchoredRead: async () => {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: convId,
+              status: "pending",
+              inboxId: inboxDbId,
+              threadId: threadOf(convId),
+              lastEventAt: new Date(),
+            },
+          });
+        },
+      });
+      const real = webhookModule.processChatwootDelivery;
+      const path = spyOn(webhookModule, "processChatwootDelivery");
+      path.mockImplementation((p) => real(p));
+      let handed: Parameters<typeof real>[0] | undefined;
+      try {
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        });
+        handed = path.mock.calls[0]?.[0];
+      } finally {
+        path.mockRestore();
+      }
+      expect(handed?.normalized.contact?.id).toBe(77);
+      expect(handed?.normalized.createActivityAt).toBe(SENT_AT + 900);
+    });
+
+    test("leaves a mirrored conversation's attributes to the events that stored them", async () => {
+      // The body is filed at the stranded message's clock, so attributes restated in it would land on
+      // the row as that old a reading, over what the events stored. The mirror keeps its own.
+      const convId = 7325;
+      const messageId = 7825;
+      const conv = await seedConversation(convId, {
+        lastEventAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      });
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { customAttributes: { plano: "prata" }, labels: ["antigo"] },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { customAttributes: { plano: "ouro" }, labels: ["vip"] },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { id: conv.id },
+        select: { customAttributes: true, labels: true },
+      });
+      expect(row).toEqual({
+        customAttributes: { plano: "prata" },
+        labels: ["antigo"],
+      });
+    });
+
+    test("teaches an inbox that never learned its channel the one Chatwoot renders", async () => {
+      const convId = 7310;
+      const messageId = 7810;
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true, metadataAt: true },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { channelType: null, metadataAt: null },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { channel: "Channel::Whatsapp" },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      const inbox = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true },
+      });
+      expect(inbox.channelType).toBe("Channel::Whatsapp");
+      await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+    });
+
+    test("creates the row with the version its state was read at", async () => {
+      const convId = 7311;
+      const messageId = 7811;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const version = SENT_AT + 1800.25;
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { updatedAt: version },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      // A delayed event older than the snapshot then loses to it, instead of reading as newer.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { chatwootStatusAt: true },
+      });
+      expect(row.chatwootStatusAt).toBe(version);
+    });
+
+    test("repairs the route and contact of a row a webhook created during the reads", async () => {
+      const convId = 7316;
+      const messageId = 7816;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        // A conversation event that named no inbox and no contact, newer than the stranded message.
+        onAnchoredRead: async () => {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: convId,
+              status: "pending",
+              inboxId: null,
+              threadId: threadOf(convId),
+              lastEventAt: new Date(),
+            },
+          });
+        },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: {
+          inboxId: true,
+          contact: { select: { chatwootContactId: true } },
+        },
+      });
+      expect(row.inboxId).toBe(inboxDbId);
+      // The event that created it named no contact either, and the contact gate fails closed
+      // without one.
+      expect(row.contact?.chatwootContactId).toBe(77);
+    });
+
+    test("is not answered when Chatwoot does not say who holds it", async () => {
+      const convId = 7315;
+      const messageId = 7815;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { noMeta: true },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unreachable");
+      expect(stub.sent).toEqual([]);
+    });
+
+    test("is not answered when Chatwoot says a person holds it", async () => {
+      const convId = 7316;
+      const messageId = 7816;
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+      expect(stub.sent).toEqual([]);
+    });
   });
 
   // A STRANDED REACTION NO PAGED READ CARRIES. The fork keeps a reaction on a
@@ -3720,8 +4525,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // The write itself is `putRowBack`, which has its own DB-backed tests below; what only the source
     // can say is which state THIS branch names.
     expect(block).toContain('from: "PROCESSING"');
-    // `unreachable`, so the scheduler backs off and the retry finds a row it can claim.
-    expect(block).toContain('return "unreachable"');
+    // Never `unreachable`: the account was read before the claim. The two exits are covered
+    // behaviourally in the job tests below.
+    expect(block).not.toContain('return "unreachable"');
   });
 
   test("nothing awaits between the fence answering free and the mark that holds it", async () => {
@@ -3768,9 +4574,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         import.meta.url,
       ),
     ).text();
-    const read = src.indexOf(
-      "const contactInboxId = mirrorNow?.contactInboxId ?? null;",
-    );
+    const read = src.indexOf("const contactInboxId = mirrorNow");
     expect(read).toBeGreaterThan(-1);
     // The FIRST of the fence's three steps: the middle one awaits `turnOwnsThread` by design, so an
     // anchor past it would measure a stretch that is allowed to suspend.
@@ -4277,28 +5081,6 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
-  test("a conversation the mirror never knew is unrecoverable", async () => {
-    // No mirror row means nothing here can say who should answer or whether they still may, and a
-    // row this old is not going to grow one.
-    const rowId = await seedDeadDelivery({
-      conversationId: 8908,
-      inboundMessageId: 9408,
-    });
-    const stub = stubChatwoot({
-      page: pageWith([{ id: 9408, content: "oi" }]),
-    });
-
-    const outcome = await recoverStrandedDelivery({
-      tenantId,
-      deliveryRowId: rowId,
-      base: appDb,
-      deps: depsWith(stub),
-    });
-
-    expect(outcome).toBe("unrecoverable");
-    expect(stub.asked).toEqual([]);
-  });
-
   test("a row naming no message cannot be rebuilt", async () => {
     // What an older build's ledger rows look like: the sweep reports them, and there is no second
     // source to rebuild a body from.
@@ -4750,6 +5532,135 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
+    test("a database with no free connection is retried, not reported as an unreadable account", async () => {
+      const convId = 7317;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 7817,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: 7817, content: "oi" }]),
+      });
+      // The mirror's reconcile runs inside the account reads.
+      const reconcile = spyOn(
+        reconcileModule,
+        "reconcileMirrorFromLive",
+      ).mockRejectedValueOnce(
+        Object.assign(
+          new Error(
+            "Transaction API error: Unable to start a transaction in the given time.",
+          ),
+          { code: "P2028" },
+        ),
+      );
+      let result: Awaited<ReturnType<typeof runRecoveryJob>>;
+      try {
+        result = await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+      } finally {
+        reconcile.mockRestore();
+      }
+      expect(result.outcome).toBe("reschedule");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("a database that fails the recovery's own reads reschedules the job", async () => {
+      const rowId = await seedDeadDelivery({
+        conversationId: 7314,
+        inboundMessageId: 7814,
+      });
+      const scoped = spyOn(tenancy, "runScopedOn").mockRejectedValueOnce(
+        Object.assign(new Error("Can't reach database server"), {
+          code: "P1001",
+        }),
+      );
+      let result: Awaited<ReturnType<typeof runRecoveryJob>>;
+      try {
+        result = await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+        );
+      } finally {
+        scoped.mockRestore();
+      }
+      expect(result.outcome).toBe("reschedule");
+    });
+
+    test("a database lost after the claim is retried with the row put back, not reported as an unreadable account", async () => {
+      const convId = 7318;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 7818,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: 7818, content: "oi" }]),
+      });
+      const path = spyOn(
+        webhookModule,
+        "processChatwootDelivery",
+      ).mockRejectedValueOnce(
+        Object.assign(new Error("Server has closed the connection."), {
+          code: "P1017",
+        }),
+      );
+      let calls = 0;
+      let result: Awaited<ReturnType<typeof runRecoveryJob>>;
+      try {
+        result = await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+      } finally {
+        calls = path.mock.calls.length;
+        path.mockRestore();
+      }
+      expect(calls).toBe(1);
+      expect(result.outcome).toBe("reschedule");
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    });
+
+    test("any other failure after the claim fails the job with its own error", async () => {
+      const convId = 7319;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 7819,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: 7819, content: "oi" }]),
+      });
+      const path = spyOn(
+        webhookModule,
+        "processChatwootDelivery",
+      ).mockRejectedValueOnce(new Error("trigger refused the insert"));
+      let calls = 0;
+      let thrown: unknown;
+      try {
+        await runRecoveryJob(
+          jobFor({ deliveryRowId: String(rowId) }),
+          appDb,
+          depsWith(stub),
+        );
+      } catch (e) {
+        thrown = e;
+      } finally {
+        calls = path.mock.calls.length;
+        path.mockRestore();
+      }
+      expect(calls).toBe(1);
+      const message = thrown instanceof Error ? thrown.message : "";
+      expect(message).toContain("trigger refused the insert");
+      expect(message).not.toContain("could not be read");
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    });
+
     test("a BUSY conversation reschedules, so the ladder is not spent waiting on a turn", async () => {
       // `fail` would be the intuitive answer and it is the wrong one here. A turn is deliberately
       // unbounded — the sweep waits thirty minutes before calling one abandoned — while the
@@ -5014,6 +5925,127 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
             ]),
           ).toEqual(expected.map((e) => [...e]));
         } finally {
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+      }
+    });
+
+    // The same for an attempt whose delivery path threw: the error fails the job, and when the
+    // scheduler already gave up on this claim nothing else is left to say the message went unanswered.
+    test("a failure after the claim the scheduler already gave up on says the message went unanswered", async () => {
+      for (const [convId, messageId, status, expected] of [
+        [18950, 19460, "DEAD", [["error", "unanswered"]]],
+        [18951, 19461, "CLAIMED", []],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+        });
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status,
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true },
+        });
+        const path = spyOn(
+          webhookModule,
+          "processChatwootDelivery",
+        ).mockRejectedValueOnce(new Error("trigger refused the insert"));
+        try {
+          await expect(
+            runRecoveryJob(
+              {
+                id: job.id,
+                tenantId,
+                kind: "DELIVERY_RECOVERY",
+                payload: { deliveryRowId: String(rowId) },
+                attempts: 4,
+                claimSeq: job.claimSeq,
+              },
+              appDb,
+              depsWith(
+                stubChatwoot({
+                  page: pageWith([{ id: messageId, content: "oi" }]),
+                }),
+              ),
+            ),
+          ).rejects.toThrow("trigger refused the insert");
+          const lines = await deliveryLines(conv.id);
+          expect(
+            lines.map((l) => [
+              l.level,
+              (l.detail as Record<string, unknown> | null)?.outcome,
+            ]),
+          ).toEqual(expected.map((e) => [...e]));
+        } finally {
+          path.mockRestore();
+          await suDb.schedulerJob.delete({ where: { id: job.id } });
+        }
+      }
+    });
+
+    test("a database lost after a claim the scheduler already gave up on still says the message went unanswered", async () => {
+      for (const [convId, messageId, status, expected] of [
+        [18952, 19462, "DEAD", [["error", "unanswered"]]],
+        [18953, 19463, "CLAIMED", []],
+      ] as const) {
+        const conv = await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+        });
+        const job = await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "DELIVERY_RECOVERY",
+            dedupeKey: deliveryRecoveryDedupeKey(rowId),
+            status,
+            runAt: new Date(),
+            payload: { deliveryRowId: String(rowId) },
+          },
+          select: { id: true, claimSeq: true },
+        });
+        const path = spyOn(
+          webhookModule,
+          "processChatwootDelivery",
+        ).mockRejectedValueOnce(
+          Object.assign(new Error("Server has closed the connection."), {
+            code: "P1017",
+          }),
+        );
+        try {
+          const result = await runRecoveryJob(
+            {
+              id: job.id,
+              tenantId,
+              kind: "DELIVERY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              attempts: 4,
+              claimSeq: job.claimSeq,
+            },
+            appDb,
+            depsWith(
+              stubChatwoot({
+                page: pageWith([{ id: messageId, content: "oi" }]),
+              }),
+            ),
+          );
+          expect(result.outcome).toBe("reschedule");
+          const lines = await deliveryLines(conv.id);
+          expect(
+            lines.map((l) => [
+              l.level,
+              (l.detail as Record<string, unknown> | null)?.outcome,
+            ]),
+          ).toEqual(expected.map((e) => [...e]));
+        } finally {
+          path.mockRestore();
           await suDb.schedulerJob.delete({ where: { id: job.id } });
         }
       }

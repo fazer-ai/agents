@@ -807,8 +807,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       data: { status: "DEAD" },
     });
     const stub = stubChatwoot(convId, messageId, texto, undefined, INBOX_TEST);
-    // O ARME FALHA NO REPLAY TAMBÉM, que é a condição do caso: o scheduler continua recusando.
-    await recoverStrandedDelivery({
+    // O ARME FALHA NO REPLAY TAMBÉM, que é a condição do caso: o scheduler continua recusando. O erro
+    // chega ao job com a causa real, para que o scheduler tente de novo.
+    const falha = recoverStrandedDelivery({
       tenantId,
       deliveryRowId: delivery.id,
       base: semFila(),
@@ -819,6 +820,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         sleep: async () => {},
       },
     });
+    await expect(falha).rejects.toThrow("could not be armed");
 
     const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
       where: { id: delivery.id },

@@ -192,4 +192,134 @@ describe.skipIf(!dbUp)("mirror: the conversation's labels", () => {
     );
     expect(await stored(4)).toEqual(["atual"]);
   });
+
+  test("a recovery's create-only facts land on the row they create and never update one", async () => {
+    // A recovery reads these before it mirrors; a webhook that created the row since is newer.
+    await mirror({
+      ...convEvent("conversation_updated", 5, {
+        lastActivityAt: T + 10,
+        updatedAt: T + 10,
+        labels: ["lido-pela-recuperacao"],
+      }),
+      fazer_facts_on_create_only: true,
+    });
+    expect(await stored(5)).toEqual(["lido-pela-recuperacao"]);
+    await mirror(
+      convEvent("conversation_updated", 6, {
+        lastActivityAt: T + 10,
+        updatedAt: T + 10,
+        labels: ["do-webhook"],
+      }),
+    );
+    await mirror({
+      ...convEvent("conversation_updated", 6, {
+        lastActivityAt: T + 30,
+        updatedAt: T + 30,
+        labels: ["lido-pela-recuperacao"],
+      }),
+      fazer_facts_on_create_only: true,
+    });
+    expect(await stored(6)).toEqual(["do-webhook"]);
+  });
+
+  test("a recovery's row is stamped no older than the live reading, so a delayed event loses", async () => {
+    await mirror({
+      ...convEvent("conversation_updated", 7, {
+        lastActivityAt: T + 10,
+        labels: ["lido-ao-vivo"],
+      }),
+      fazer_facts_on_create_only: true,
+      fazer_create_activity_at: T + 50,
+    });
+    // Newer than the stranded message, older than the live reading the facts came from.
+    await mirror(
+      convEvent("conversation_updated", 7, {
+        lastActivityAt: T + 30,
+        labels: ["defasado"],
+      }),
+    );
+    expect(await stored(7)).toEqual(["lido-ao-vivo"]);
+  });
+
+  test("a recovery's contact identity is positioned at the live reading, so a delayed event loses", async () => {
+    const live = convEvent("conversation_updated", 8, {
+      lastActivityAt: T + 10,
+    });
+    await mirror({
+      ...live,
+      meta: {
+        ...live.meta,
+        sender: { id: 708, name: "Lead", phone_number: "+5511900000001" },
+      },
+      fazer_facts_on_create_only: true,
+      fazer_create_activity_at: T + 50,
+    });
+    // Newer than the stranded message, older than the live reading the identity came from.
+    const delayed = convEvent("conversation_updated", 8, {
+      lastActivityAt: T + 30,
+    });
+    await mirror({
+      ...delayed,
+      meta: {
+        ...delayed.meta,
+        sender: { id: 708, name: "Lead", phone_number: "+5511900000002" },
+      },
+    });
+    const contact = await suDb.contact.findFirstOrThrow({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 708,
+      },
+      select: { phone: true },
+    });
+    expect(contact.phone).toBe("+5511900000001");
+  });
+
+  test("a recovery's inherited pairing fills an empty one and never replaces a stored one", async () => {
+    const pairingOf = async (convId: number) =>
+      (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { contactInboxId: true },
+        })
+      ).contactInboxId;
+    const inherited = (convId: number) => ({
+      ...convEvent("conversation_updated", convId, {
+        lastActivityAt: T + 20,
+      }),
+      contact_inbox: { id: 99_999 },
+      fazer_facts_on_create_only: true,
+    });
+    await mirror(
+      convEvent("conversation_created", 9, { lastActivityAt: T + 10 }),
+    );
+    await mirror(inherited(9));
+    expect(await pairingOf(9)).toBe(88_009);
+    await mirror(
+      convEvent("conversation_created", 10, { lastActivityAt: T + 10 }),
+    );
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 10 },
+      data: { contactInboxId: null },
+    });
+    await mirror(inherited(10));
+    expect(await pairingOf(10)).toBe(99_999);
+    // The same when the recovery's body is older than the row a webhook created without one.
+    await mirror(
+      convEvent("conversation_created", 11, { lastActivityAt: T + 40 }),
+    );
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 11 },
+      data: { contactInboxId: null },
+    });
+    await mirror(inherited(11));
+    expect(await pairingOf(11)).toBe(99_999);
+    // ...and an older body never replaces a stored pairing.
+    await mirror(
+      convEvent("conversation_created", 12, { lastActivityAt: T + 40 }),
+    );
+    await mirror(inherited(12));
+    expect(await pairingOf(12)).toBe(88_012);
+  });
 });

@@ -294,6 +294,12 @@ export function normalizeChatwootEvent(
   ) {
     normalized.conversationType = conv.group_type;
   }
+  // Never sent by Chatwoot: ./recover-payload.ts marks a body whose facts were read for a row it is
+  // about to create. A forged one only narrows what the mirror writes.
+  if (conv && conv.fazer_facts_on_create_only === true)
+    normalized.factsOnCreateOnly = true;
+  const createActivityAt = conv ? num(conv.fazer_create_activity_at) : null;
+  if (createActivityAt !== null) normalized.createActivityAt = createActivityAt;
   // NOTE: the redirect episode's other half, when the fork wrote one. PRESENCE of the key is the
   // statement: the fork always ships it (nil included) and a Chatwoot without it never does, so a
   // payload that says nothing never clears an established pairing. A present-but-unusable value (0,

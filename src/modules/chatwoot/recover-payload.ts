@@ -20,12 +20,32 @@ export interface RecoveryConversation {
   // `EventDataPresenter` (webhook and cable), never in the REST show, so the mirror is authoritative
   // here and nowhere else. It must travel because `processChatwootDelivery` arms the REDIRECT_FOLLOWUP
   // ladder from the EVENT, and a body without it arms the ladder with nothing.
-  redirectOriginDisplayId: number | null;
+  // Undefined when no mirror row supplied it: the REST read cannot state it, and a fabricated null
+  // would be a clear.
+  redirectOriginDisplayId: number | null | undefined;
   // The version that stamped that pairing (`chatwootRedirectOriginAt`), or null if nothing ever did.
   // It travels WITH the pairing because on the wire they are one fact and the mirror refuses an older
   // pairing by comparing them: the pairing alone, unversioned, could RESTORE one a re-entry replaced
   // while the recovery was doing its REST reads.
   redirectOriginAt: number | null;
+  // The contact, for a conversation the mirror never learned and only then: `meta.sender` as the
+  // recovery chose to state it (see `contactToStateFor` in ./recover-delivery.ts). Absent everywhere
+  // else, for the reason in the header.
+  sender?: Record<string, unknown>;
+  // ...and the conversation's own facts as the live read states them (attributes, labels, group type,
+  // channel, kanban card, creation and first-reply times), for the same conversation only: with no row
+  // there is nothing a stale read could undo, and a row created without them answers the gates that
+  // read them (the contact gate's label, attribute and conversation-type rules) with empty values.
+  // Spread under the keys this body sets itself.
+  liveFacts?: Record<string, unknown>;
+  // The version the stated status and assignee were READ at (the live snapshot's `updated_at`), for
+  // the same conversation only: the row it creates carries the marks that let a delayed event older
+  // than that snapshot lose. Used only where no redirect version is stated.
+  stateVersion?: number;
+  // The live snapshot's `last_activity_at`, for the same conversation only: the row it creates is
+  // stamped no older than the facts it carries, so a delayed event older than that reading loses.
+  // Separate from the message's own clock, which keeps the inbound watermark.
+  liveActivityAt?: number;
 }
 
 // A message as the REST read gives it. REST and the wire spell two fields differently: `message_type`
@@ -127,22 +147,31 @@ export function buildRecoveryPayload(params: {
       ? { inbox: { id: params.inboxId, name: params.inboxName } }
       : {}),
     conversation: {
+      ...c.liveFacts,
       id: c.chatwootConversationId,
       ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
       status: c.status,
-      // ALWAYS emitted, nil included, because PRESENCE of this key is the statement the normalizer
-      // reads: the fork always ships it and a Chatwoot without the feature never does, so absence
-      // means "this instance does not speak about pairings" and would leave the ladder unarmed.
-      //
-      // Sending the mirror's own value can only re-affirm what the row already holds. A null lands
-      // as a CLEAR only where the row already knew a pairing (`redirectOriginAnswers` requires
-      // `redirectOriginKnown`), and there the value being cleared is the one this read came from.
-      redirect_origin_display_id: c.redirectOriginDisplayId,
+      // Emitted whenever the mirror supplied it, nil included, because PRESENCE of this key is the
+      // statement the normalizer reads: absence means "says nothing about pairings". Sending the
+      // mirror's own value can only re-affirm what the row holds; a null clears only where the row
+      // knew a pairing, and there the value cleared is the one this read came from. With no row the
+      // key is left out, so a pairing a webhook stores meanwhile is not cleared by a guess.
+      ...(c.redirectOriginDisplayId !== undefined
+        ? { redirect_origin_display_id: c.redirectOriginDisplayId }
+        : {}),
+      ...(c.liveFacts !== undefined
+        ? { fazer_facts_on_create_only: true }
+        : {}),
+      ...(c.liveActivityAt !== undefined
+        ? { fazer_create_activity_at: c.liveActivityAt }
+        : {}),
       // Only when there IS one. A row nothing ever stamped cannot be regressed, and inventing a
       // version for it would order every other field in this body by a number nobody measured.
       ...(c.redirectOriginAt !== null
         ? { updated_at: c.redirectOriginAt }
-        : {}),
+        : c.stateVersion !== undefined
+          ? { updated_at: c.stateVersion }
+          : {}),
       // The customer's own clock, on the field `normalizeChatwootEvent` reads it from. On the wire
       // this is the CONVERSATION's activity time, and for a `message_created` that is exactly this
       // message's, which is why the message's own timestamp is the right source for it.
@@ -161,6 +190,7 @@ export function buildRecoveryPayload(params: {
           c.assigneeId === null
             ? null
             : { id: c.assigneeId, name: c.assigneeName },
+        ...(c.sender !== undefined ? { sender: c.sender } : {}),
       },
     },
   };

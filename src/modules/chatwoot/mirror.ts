@@ -175,6 +175,14 @@ export async function mirrorChatwootEvent(
   // busy inbox on one row. Each write is also conditional on a change, so an unchanged inbox or
   // contact is not written at all, and the conversation lock is the only lock the conversation
   // transaction takes.
+  // A recovery's body states the contact as its live reading has it, so that reading's activity
+  // positions the identity, not the stranded message's older clock (`createActivityAt`).
+  const contactEventAt =
+    n.createActivityAt != null &&
+    (newLastEventAt === null ||
+      n.createActivityAt * 1000 > newLastEventAt.getTime())
+      ? new Date(n.createActivityAt * 1000)
+      : newLastEventAt;
   const resolveRows = () =>
     runScopedOn(base, sysCtx(tenantId), async (db) => ({
       contactId: await upsertContact(
@@ -182,7 +190,7 @@ export async function mirrorChatwootEvent(
         tenantId,
         instanceId,
         n,
-        newLastEventAt,
+        contactEventAt,
       ),
       inboxRowId: await upsertInbox(db, tenantId, instanceId, n),
     }));
@@ -230,6 +238,12 @@ export async function mirrorChatwootEvent(
             // ahead of it. See the write there.
             lastInboundAt: true,
             lastInboundMessageId: true,
+            // Read for the stale branch, which fills a missing route and contact. See the write there.
+            inboxId: true,
+            contactId: true,
+            // Read so a recovery's inherited pairing fills an empty one and never replaces a stored one,
+            // and so the stale branch fills a missing one.
+            contactInboxId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
             statusClaimUntil: true,
@@ -390,6 +404,22 @@ export async function mirrorChatwootEvent(
               ? { lastInboundAt: inboundAt }
               : {}),
             ...forwardInboundId(existing.lastInboundMessageId, inboundId),
+            // NOTE: the route, from NULL only. A conversation never changes inbox in Chatwoot, so a
+            // stale event still names the right one, and a row without it runs no pre-turn gate
+            // (test mode, contact authorization) while the turn still resolves its agent from the event.
+            ...(existing.inboxId === null && inboxRowId != null
+              ? { inboxId: inboxRowId }
+              : {}),
+            // The contact, from NULL only, for the same gates: a conversation event can create the row
+            // without naming one, and the contact gate fails closed on a row with no identity.
+            ...(existing.contactId === null && contactId != null
+              ? { contactId }
+              : {}),
+            // The pairing too, from NULL only: a row without one keys its turn on the conversation and
+            // misses the contact's shared memory.
+            ...(existing.contactInboxId === null && n.contactInboxId != null
+              ? { contactInboxId: n.contactInboxId }
+              : {}),
           };
           if (Object.keys(staleWrites).length > 0) {
             await db.conversation.update({
@@ -414,7 +444,14 @@ export async function mirrorChatwootEvent(
 
         if (!existing) {
           const createdStatus = decision.status ?? "open";
-          const createdLastEventAt = decision.activityAt;
+          // A recovery's row is stamped no older than the live reading its facts came from; the
+          // inbound watermark below keeps the message's own clock.
+          const createdLastEventAt =
+            n.createActivityAt != null &&
+            (decision.activityAt === null ||
+              n.createActivityAt * 1000 > decision.activityAt.getTime())
+              ? new Date(n.createActivityAt * 1000)
+              : decision.activityAt;
           const created = await db.conversation.create({
             data: {
               tenantId,
@@ -483,6 +520,7 @@ export async function mirrorChatwootEvent(
         }
 
         const effectiveLastEventAt = decision.activityAt;
+        const factsUpdate = decision.unversioned && !n.factsOnCreateOnly;
         const appliedStatus = decision.status;
         const nextStatus = appliedStatus ?? existing.status;
         const assigneeKnown = decision.assignee;
@@ -495,7 +533,11 @@ export async function mirrorChatwootEvent(
         await db.conversation.update({
           where: { id: existing.id },
           data: {
-            ...(decision.unversioned && n.contactInboxId != null
+            // A recovery's body (`factsOnCreateOnly`) carries an INHERITED pairing, an inference, so it
+            // fills an empty one and never replaces the one a webhook stored.
+            ...(decision.unversioned &&
+            n.contactInboxId != null &&
+            (!n.factsOnCreateOnly || existing.contactInboxId === null)
               ? { contactInboxId: n.contactInboxId }
               : {}),
             ...(decision.unversioned && inboxRowId != null
@@ -535,21 +577,23 @@ export async function mirrorChatwootEvent(
             ...slaWrites,
             // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
             // event carried one: a payload without them must not wipe the stored snapshot.
-            ...(decision.unversioned && n.customAttributes
+            // A recovery's body states them for the row it CREATES only (`factsOnCreateOnly`): read
+            // before a webhook that created the row since, they never update it.
+            ...(factsUpdate && n.customAttributes
               ? {
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
                 }
               : {}),
-            ...(decision.unversioned && n.kanbanAttributes
+            ...(factsUpdate && n.kanbanAttributes
               ? {
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
               : {}),
-            ...(decision.unversioned && n.conversationType
+            ...(factsUpdate && n.conversationType
               ? { conversationType: n.conversationType }
               : {}),
             // The label list, on the bags' terms: assigned whole, by recency, and only when carried.
-            ...(decision.unversioned && n.labels !== undefined
+            ...(factsUpdate && n.labels !== undefined
               ? { labels: n.labels }
               : {}),
             // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget

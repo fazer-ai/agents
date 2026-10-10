@@ -10,7 +10,7 @@ import {
   heldDeliveryRowIds,
 } from "./delivery-queue";
 import { TURN_BEARING_EVENT } from "./normalize";
-import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
+import { armDeliveryRecoveryOn, isRecoverableStrand } from "./recover-delivery";
 import {
   armHumanReplyRecovery,
   namesRecoverableHumanReply,
@@ -500,6 +500,36 @@ export async function finish(
   return count > 0;
 }
 
+// The DEAD verdict and the recovery it owes, committed together: a DEAD row with no job is invisible to
+// every later sweep (they read PENDING and PROCESSING), so arming after the CAS, as its own write,
+// left the customer on the worklist with nothing retrying them whenever that write failed. A failure
+// here rolls both back and the row stays where the next sweep finds it again.
+async function finishDead(
+  row: StrandedRow,
+  tenantId: bigint,
+  base: PrismaClient,
+  armRecovery: boolean,
+  label: string,
+): Promise<"won" | "lost" | "failed"> {
+  try {
+    return await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const { count } = await db.chatwootWebhookDelivery.updateMany({
+        where: { id: row.id, status: row.status },
+        data: { status: "DEAD", processedAt: new Date() },
+      });
+      if (count === 0) return "lost";
+      if (armRecovery) await armDeliveryRecoveryOn(db, tenantId, row.id);
+      return "won";
+    });
+  } catch (error) {
+    logger.error(
+      { error },
+      `chatwoot delivery sweep: ${label} could not be declared DEAD with its recovery; left for the next sweep`,
+    );
+    return "failed";
+  }
+}
+
 export interface SweepStrandedDeliveriesParams {
   tenantId: bigint;
   base: PrismaClient;
@@ -654,22 +684,13 @@ async function record(
   // takeover: a `warn` saying what was owed, since no reply was ever coming on these routes and
   // paging would be about a memory gap the replay is closing.
   if (verdict === "owed-transcription") {
-    if (!(await finish(row, tenantId, "DEAD", base))) {
+    const dead = await finishDead(row, tenantId, base, true, label);
+    if (dead === "failed") return;
+    if (dead === "lost") {
       counts.raced += 1;
       return;
     }
     counts.owedTranscription += 1;
-    try {
-      await armDeliveryRecovery(tenantId, row.id, base);
-    } catch (error) {
-      // NOTE: nothing follows, because the line below would say the replay was armed. The row is
-      // already DEAD and never revisited, so these two lines are the whole record.
-      logger.error(
-        { error },
-        `chatwoot delivery sweep: ${label} was stranded owing a transcription and its replay could not be armed; the words stay out of the conversation's memory and the row stays DEAD`,
-      );
-      return;
-    }
     logger.warn(
       "chatwoot delivery sweep: %s stranded on %s carrying the transcription of message %s on conversation %s; nobody is owed a reply, but the words never reached the memory — replay armed",
       label,
@@ -783,32 +804,19 @@ async function record(
     return;
   }
 
-  // NOTE: the CAS goes first and the line only if it wins: `writeFlowEvent` dispatches the alert as
+  // Armed with the CAS, the only moment anything knows the row became recoverable (the query reads
+  // PENDING and PROCESSING). Rows DEAD before recovery existed are never backfilled: that would arm
+  // a whole backlog of model calls and replies at once, and they are already on the worklist.
+  const recoveryArmed = isRecoverableStrand(row);
+  // The CAS goes first and the line only if it wins: `writeFlowEvent` dispatches the alert as
   // it writes and nothing retracts it, and a redelivery claiming the row in between is a designed
-  // path. A write failing after a won CAS leaves a DEAD row with no line, which is still the record
-  // (and an outage, not a race). A rescue landing after the CAS writes its own correction, so both
-  // lines end up on the conversation; the loss is never unreported.
-  if (!(await finish(row, tenantId, "DEAD", base))) {
+  // path. A write failing after a won CAS leaves a DEAD row with no line, which is still the record.
+  // Armed before the line, so the alert is never newer than the attempt.
+  const dead = await finishDead(row, tenantId, base, recoveryArmed, label);
+  if (dead === "failed") return;
+  if (dead === "lost") {
     counts.raced += 1;
     return;
-  }
-
-  let recoveryArmed = false;
-  // NOTE: the recovery is armed now, the only moment anything knows the row became recoverable (the
-  // query reads PENDING and PROCESSING). Rows already DEAD before recovery existed are never
-  // recovered, deliberately: a backfill would arm a whole backlog of model calls and real replies
-  // at once, and those rows are already on the DEAD worklist. Best-effort and logged loudly (the
-  // row is already reported). Armed before the line, so the alert is never newer than the attempt.
-  try {
-    if (isRecoverableStrand(row)) {
-      await armDeliveryRecovery(tenantId, row.id, base);
-      recoveryArmed = true;
-    }
-  } catch (error) {
-    logger.error(
-      { error },
-      `chatwoot delivery sweep: ${label} is DEAD and its recovery could not be armed; the row stays in the DEAD list and nothing will retry it`,
-    );
   }
 
   const written = await writeFlowEvent(

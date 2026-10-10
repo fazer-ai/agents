@@ -5,6 +5,7 @@ import { useNavigate } from "react-router";
 import { Button } from "@/client/components/Button";
 import { useToast } from "@/client/components/Toast";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
 import { useProactiveBreaker } from "@/client/contexts/ProactiveBreakerContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -21,6 +22,7 @@ export function ProactiveBreakerBanner() {
   const { status, set } = useProactiveBreaker();
   const { user } = useAuth();
   const { showToast } = useToast();
+  const confirmLeave = useConfirmLeave();
   const navigate = useNavigate();
   const [resuming, setResuming] = useState(false);
 
@@ -94,7 +96,9 @@ export function ProactiveBreakerBanner() {
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => navigate(PROACTIVE_BREAKER_SETTINGS_PATH)}
+            onClick={() =>
+              confirmLeave(() => navigate(PROACTIVE_BREAKER_SETTINGS_PATH))
+            }
           >
             {t("proactiveBreaker.changeLimit", "Change limit")}
           </Button>

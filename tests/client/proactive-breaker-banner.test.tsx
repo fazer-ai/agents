@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 
 // While the account's proactive breaker is tripped the shell shows one banner, on every page, with the
 // sentence the operator acts on and the two ways out; a resume from it clears it without a reload.
@@ -19,9 +19,12 @@ import { MemoryRouter } from "react-router";
 // DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let role = "TENANT_ADMIN";
+// Every other export stays the real one: a module mock replaces the module for the rest of the
+// process, and a file that runs after this one still imports the context itself.
+const realAuth = await import("@/client/contexts/AuthContext");
 mock.module("@/client/contexts/AuthContext", () => ({
+  ...realAuth,
   useAuth: () => ({ user: { id: 1, role } }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
 const { ProactiveBreakerBanner } = await import(
@@ -34,6 +37,17 @@ const { ProactiveBreakerCard } = await import(
   "@/client/pages/resources/ProactiveBreakerCard"
 );
 const { ToastProvider } = await import("@/client/components/Toast");
+const { NavGuardProvider, useNavGuard } = await import(
+  "@/client/contexts/NavGuardContext"
+);
+
+function UnsavedEdit({ dirty }: { dirty: boolean }) {
+  useNavGuard(dirty);
+  return null;
+}
+function Where() {
+  return <span data-testid="where">{useLocation().pathname}</span>;
+}
 
 const realFetch = globalThis.fetch;
 const status = (tripped: boolean) => ({
@@ -158,4 +172,33 @@ test("an edit in progress survives the shell's periodic re-read", async () => {
       "500",
     ),
   );
+});
+
+test("Change limit asks before leaving an editor with unsaved changes", async () => {
+  for (const dirty of [true, false]) {
+    render(
+      <MemoryRouter initialEntries={["/agents/1"]}>
+        <NavGuardProvider>
+          <ToastProvider>
+            <ProactiveBreakerProvider>
+              <UnsavedEdit dirty={dirty} />
+              <Where />
+              <ProactiveBreakerBanner />
+            </ProactiveBreakerProvider>
+          </ToastProvider>
+        </NavGuardProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(Boolean(screen.queryByRole("alert"))).toBe(true),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Change limit" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent ?? "").toBe(
+        dirty ? "/agents/1" : "/resources/advanced",
+      ),
+    );
+    expect(Boolean(screen.queryByRole("dialog"))).toBe(dirty);
+    cleanup();
+  }
 });

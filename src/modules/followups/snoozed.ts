@@ -602,7 +602,7 @@ export async function snoozedFollowUpHandler(
     // Its images and documents nobody read yet are read first, as the re-engage reads them (`all`): a
     // person asked for this conversation, and the eager pass never runs on one a person holds. Never
     // under a contact authorization gate: this path does not ask it, so it opens nothing there.
-    // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here (#1240).
+    // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here, as there.
     if (!readContactAuthConfig(ctx.settings).enabled) {
       await fillMissingVisuals({
         tenantId,

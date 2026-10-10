@@ -20,13 +20,17 @@ export function metricsBudget(): TxBudget {
   };
 }
 
-// 57014: the statement ran past the budget. 55P03: it waited on a lock past `DB_LOCK_TIMEOUT_MS`,
-// which is the same answer for whoever is looking at the dashboard. P2028: no connection within the
-// wait, or the transaction outlived its budget between statements.
+// 57014: a statement ran past the budget. 25P04: the transaction did (`transaction_timeout`,
+// PostgreSQL 17+). 55P03: a statement waited on a lock past `DB_LOCK_TIMEOUT_MS`, which is the same
+// answer for whoever is looking at the dashboard. P2028: no connection within the wait, or the
+// transaction outlived its budget between statements.
 export function isOverMetricsBudget(error: unknown): boolean {
   const code = postgresCodeOf(error);
   return (
-    code === "57014" || code === "55P03" || isPrismaTransactionError(error)
+    code === "57014" ||
+    code === "25P04" ||
+    code === "55P03" ||
+    isPrismaTransactionError(error)
   );
 }
 

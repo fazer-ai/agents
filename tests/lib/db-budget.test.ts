@@ -31,7 +31,7 @@ describe("connection budget", () => {
       shares(45, 45),
       limits({ "db.internal": 100 }),
     );
-    expect(fit).toEqual([
+    expect(fit.map((l) => l.line)).toEqual([
       "db.internal:5432: 97 of 97 connections (DB_POOL_MAX=45, LANGGRAPH_POOL_MAX=45, CHATWOOT_ACK_POOL_MAX=4, METRICS_POOL_MAX=3)",
     ]);
 
@@ -71,10 +71,23 @@ describe("connection budget", () => {
     expect(err.message).not.toContain("DB_POOL_MAX=10");
   });
 
-  test("a server that does not answer is not a refusal", async () => {
-    const err = await assertConnectionBudget(shares(10, 10), async () => {
-      throw new Error("connect ECONNREFUSED");
-    }).catch((e) => e);
-    expect(err).not.toBeInstanceOf(ConnectionBudgetError);
+  test("a server that does not answer is reported unchecked, and does not hide another server's refusal", async () => {
+    const down = async (url: string) => {
+      if (new URL(url).hostname === "checkpoints.internal") {
+        throw new Error("connect ECONNREFUSED");
+      }
+      return { maxConnections: 100, reserved: 3 };
+    };
+    const fit = await assertConnectionBudget(shares(10, 10, OTHER), down);
+    expect(fit.map((l) => [l.server, l.checked])).toEqual([
+      ["db.internal:5432", true],
+      ["checkpoints.internal:6543", false],
+    ]);
+
+    const err = await assertConnectionBudget(shares(91, 10, OTHER), down).catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(ConnectionBudgetError);
+    expect(err.message).toContain("DB_POOL_MAX=91");
   });
 });

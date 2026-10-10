@@ -119,23 +119,42 @@ export async function readServerLimits(url: string): Promise<ServerLimits> {
   }
 }
 
-// Throws ConnectionBudgetError when a server is over its limit; any other error (a server that
-// does not answer) is the caller's to log, as the runtime role check does. Returns one line per
-// server for the boot log.
+// One line per server for the boot log, and whether that server's limits could be read.
+export interface BudgetLine {
+  server: string;
+  line: string;
+  checked: boolean;
+}
+
+// Throws ConnectionBudgetError when any server it could read is over its limit. A server that does not
+// answer is reported as not checked and never masks another server's refusal: each server is read on
+// its own.
 export async function assertConnectionBudget(
   pools: PoolShare[] = poolShares(),
   read: (url: string) => Promise<ServerLimits> = readServerLimits,
-): Promise<string[]> {
-  const lines: string[] = [];
+): Promise<BudgetLine[]> {
+  const lines: BudgetLine[] = [];
   const refusals: string[] = [];
   for (const [server, group] of groupByServer(pools)) {
-    const limits = await read(group[0]?.url ?? "");
+    const total = group.reduce((n, p) => n + p.size, 0);
+    let limits: ServerLimits;
+    try {
+      limits = await read(group[0]?.url ?? "");
+    } catch (error) {
+      lines.push({
+        server,
+        checked: false,
+        line: `${server}: ${total} connections (${describeShares(group)}), not checked: ${(error as Error).message}`,
+      });
+      continue;
+    }
     const refusal = budgetRefusal(server, group, limits);
     if (refusal) refusals.push(refusal);
-    const total = group.reduce((n, p) => n + p.size, 0);
-    lines.push(
-      `${server}: ${total} of ${limits.maxConnections - limits.reserved} connections (${describeShares(group)})`,
-    );
+    lines.push({
+      server,
+      checked: true,
+      line: `${server}: ${total} of ${limits.maxConnections - limits.reserved} connections (${describeShares(group)})`,
+    });
   }
   if (refusals.length > 0) throw new ConnectionBudgetError(refusals.join(" "));
   return lines;

@@ -95,6 +95,7 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     );
     expect((result as { statusCode?: number }).statusCode).toBe(503);
     expect((result as Error).message).toContain("Try a shorter period");
+    expect((result as { field?: string }).field).toBe("since");
     expect(elapsed).toBeLessThan(2_000);
     expect(left).toBe(0);
   });

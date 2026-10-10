@@ -118,8 +118,9 @@ let costs: Record<string, unknown> | "error" = COSTS;
 let kpis = KPIS;
 let ceilingPollMs = 300_000;
 let healthFails = false;
-// The status a failing health request answers with.
+// The status a failing health request answers with, and the field its refusal names.
 let healthFailStatus = 500;
+let healthFailField: string | undefined;
 let costsHang = false;
 let optionsFail = false;
 
@@ -176,7 +177,10 @@ const stubFetch = (async (input: unknown) => {
   if (p.endsWith("/metrics/labels"))
     return json({ instance: "i", labels: { labels: [], unlabeled: 0 } });
   if (p.endsWith("/metrics/health") && healthFails)
-    return json({ error: "x" }, healthFailStatus);
+    return json(
+      healthFailField ? { error: "x", field: healthFailField } : { error: "x" },
+      healthFailStatus,
+    );
   if (p.endsWith("/metrics/health"))
     return json({ instance: "i", health: { latency: [], problems: [] } });
   if (p.endsWith("/metrics/follow-ups"))
@@ -277,6 +281,7 @@ beforeEach(() => {
   ceilingPollMs = 300_000;
   healthFails = false;
   healthFailStatus = 500;
+  healthFailField = undefined;
   optionsFail = false;
   costsHang = false;
 });
@@ -522,9 +527,10 @@ describe("a block whose request fails", () => {
 });
 
 describe("a block the server refused as too slow", () => {
-  test("says the period took too long, keeps the retry, and only for a 503", async () => {
+  test("says the period took too long and keeps the retry, only for the period's 503", async () => {
     healthFails = true;
     healthFailStatus = 503;
+    healthFailField = "since";
     await renderDash("/");
     await waitFor(() => {
       expect(has("This period took too long to compute.")).toBe(true);
@@ -533,13 +539,21 @@ describe("a block the server refused as too slow", () => {
       ).toBe(2);
     });
     expect(has("Could not load metrics.")).toBe(false);
-    cleanup();
-    healthFailStatus = 500;
-    await renderDash("/");
-    await waitFor(() => {
-      expect(has("Could not load metrics.")).toBe(true);
-    });
-    expect(has("This period took too long to compute.")).toBe(false);
+    // Another 503 (the database down, a session that could not be read) and a 500 are not about the
+    // period.
+    for (const [status, field] of [
+      [503, undefined],
+      [500, undefined],
+    ] as const) {
+      cleanup();
+      healthFailStatus = status;
+      healthFailField = field;
+      await renderDash("/");
+      await waitFor(() => {
+        expect(has("Could not load metrics.")).toBe(true);
+      });
+      expect(has("This period took too long to compute.")).toBe(false);
+    }
   });
 });
 

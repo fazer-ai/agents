@@ -3,7 +3,7 @@ import { setPublisher } from "@/api/features/realtime/realtime.service";
 import logger, { configForBootLog } from "@/api/lib/logger";
 import app from "@/app";
 import config from "@/config";
-import { assertConnectionBudget, ConnectionBudgetError } from "@/lib/db-budget";
+import { assertConnectionBudget } from "@/lib/db-budget";
 import {
   assertRuntimeRoleIsNotSuperuser,
   RuntimeIsolationError,
@@ -80,17 +80,10 @@ function isPermissionDenied(error: unknown): boolean {
 
 // NOTE: Fail fast, before the port is bound, when this replica's pools can open more connections than
 // a database server accepts (src/lib/db-budget.ts). A server that does not answer only warns, like
-// the runtime role check below.
-try {
-  for (const line of await assertConnectionBudget()) {
-    logger.info("Connection budget %s", line);
-  }
-} catch (error) {
-  if (error instanceof ConnectionBudgetError) throw error;
-  logger.warn(
-    { error },
-    "Could not check the connection budget (DB unavailable?); continuing",
-  );
+// the runtime role check below, and does not hide another server's refusal.
+for (const { line, checked } of await assertConnectionBudget()) {
+  if (checked) logger.info("Connection budget %s", line);
+  else logger.warn("Connection budget %s (DB unavailable?); continuing", line);
 }
 
 let port = config.port;

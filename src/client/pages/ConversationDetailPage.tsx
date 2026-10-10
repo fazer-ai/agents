@@ -10,6 +10,7 @@ import {
   Clock,
   ExternalLink,
   Eye,
+  FileCheck,
   Gauge,
   Lock,
   Megaphone,
@@ -65,6 +66,7 @@ import { approvalBreadcrumb } from "@/client/lib/approval-breadcrumb";
 import { isAdminRole } from "@/client/lib/roles";
 import { type TurnFacts, toolLabel } from "@/client/lib/tool-label";
 import { cn, formatRelativeTime } from "@/client/lib/utils";
+import { ConversationApprovals } from "@/client/pages/approvals/ConversationApprovals";
 import {
   buildTimeline,
   type FollowUpBadgeInfo,
@@ -157,7 +159,12 @@ function FollowUpBadge({
   outgoing: boolean;
 }) {
   const label = useFollowUpBadgeLabel(badge);
-  const Icon = badge.kind === "event" ? Webhook : Megaphone;
+  const Icon =
+    badge.kind === "event"
+      ? Webhook
+      : badge.kind === "approval"
+        ? FileCheck
+        : Megaphone;
   return (
     <span
       className={cn(
@@ -207,9 +214,9 @@ function MessageBubble({
           {t("conversation.privateNote", "Private note")}
           {m.senderName ? ` · ${m.senderName}` : ""}
         </div>
-        <p className="whitespace-pre-wrap text-sm text-text-primary">
-          {m.content}
-        </p>
+        {/* Chatwoot renders a private note as Markdown, and the notes the platform writes link with it
+            (docs/documents.md, Approval), so the console renders it the same way. */}
+        <Markdown className="text-sm">{m.content ?? ""}</Markdown>
         {(when || turnUsage) && (
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-text-muted">
             {when && <span>{when}</span>}
@@ -459,6 +466,14 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
   } else if (entry.kind === "redirect") {
     Icon = Megaphone;
     label = t("conversation.trail.redirectSent", "Redirect follow-up sent");
+  } else if (entry.kind === "approval") {
+    // The bubble's own words, and no claim of a send: a marker means no message carried the PDF here
+    // (the WhatsApp window closed and only a note was posted, or the message is on an older page).
+    Icon = FileCheck;
+    label = followUpBadgeText(
+      { kind: "approval", step: null, total: 0, integrationName: null },
+      t,
+    );
   } else if (entry.kind === "event") {
     Icon = Webhook;
     label = entry.integrationName
@@ -1635,22 +1650,24 @@ export function ConversationDetailPage() {
 
   return (
     <PageContainer size="wide" className="flex h-full min-h-0 flex-col gap-4">
-      <Link
-        to="/conversations"
-        className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        {t("conversation.back", "Back to conversations")}
-      </Link>
-      {backToApproval && (
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
         <Link
-          to={backToApproval}
-          className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+          to="/conversations"
+          className="inline-flex w-fit items-center gap-1.5 text-sm text-text-muted hover:text-text-primary"
         >
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          {t("conversation.backToApproval", "Back to the approval")}
+          {t("conversation.back", "Back to conversations")}
         </Link>
-      )}
+        {backToApproval && (
+          <Link
+            to={backToApproval}
+            className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            {t("conversation.backToApproval", "Back to the approval")}
+          </Link>
+        )}
+      </div>
 
       <DataBoundary
         loading={metaLoading}
@@ -1935,6 +1952,11 @@ export function ConversationDetailPage() {
                 </div>
               </div>
             </Card>
+
+            <ConversationApprovals
+              conversationId={id}
+              refreshKey={messages.length}
+            />
 
             {conv.lastError && (
               <Card className="flex flex-wrap items-center justify-between gap-3 border-warning/40 bg-warning-soft">

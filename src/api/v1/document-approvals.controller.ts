@@ -10,6 +10,7 @@ import {
   countPendingApprovals,
   getApprovalRequest,
   listApprovalRequests,
+  listDecidedApprovals,
   listPendingApprovals,
   PENDING_PAGE_SIZE,
   rejectDocumentRequest,
@@ -56,6 +57,11 @@ export const documentApprovalsController = new Elysia({
       instance: instanceIdentity,
       requests: await listApprovalRequests(ctxOrThrow(tenantContext), {
         status: query.status,
+        waiting: query.waiting === "true",
+        conversationId:
+          query.conversationId === undefined
+            ? undefined
+            : requireDbId(query.conversationId),
         limit: query.limit ? Number(query.limit) : undefined,
       }),
     }),
@@ -63,6 +69,19 @@ export const documentApprovalsController = new Elysia({
       requireRole: "AGENT",
       query: t.Object({
         status: t.Optional(STATUS),
+        waiting: t.Optional(
+          t.Union([t.Literal("true"), t.Literal("false")], {
+            description:
+              "Only the requests waiting on the team now: pending and not past their validity.",
+          }),
+        ),
+        conversationId: t.Optional(
+          t.String({
+            pattern: "^[0-9]+$",
+            description:
+              "Only the requests of this conversation (the console's conversation id).",
+          }),
+        ),
         limit: t.Optional(
           t.String({
             pattern: "^[1-9][0-9]*$",
@@ -106,6 +125,42 @@ export const documentApprovalsController = new Elysia({
       detail: doc(
         "List pending document approvals",
         "The requests waiting on the team now: pending and not past their validity, oldest first, with the conversation and the customer's name. The console's approvals queue and its badge read this.",
+      ),
+      response: errors(401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/decided",
+    async ({ tenantContext, query }) => {
+      const requests = await listDecidedApprovals(
+        ctxOrThrow(tenantContext),
+        undefined,
+        {
+          cursor:
+            query.cursor === undefined ? undefined : requireDbId(query.cursor),
+          limit: PENDING_PAGE_SIZE + 1,
+        },
+      );
+      const more = requests.length > PENDING_PAGE_SIZE;
+      const shown = more ? requests.slice(0, PENDING_PAGE_SIZE) : requests;
+      return {
+        requests: shown,
+        nextCursor: more ? (shown[shown.length - 1]?.id ?? null) : null,
+      };
+    },
+    {
+      requireRole: "AGENT",
+      query: t.Object({
+        cursor: t.Optional(
+          t.String({
+            pattern: "^[0-9]+$",
+            description: "The last id of the previous page (`nextCursor`).",
+          }),
+        ),
+      }),
+      detail: doc(
+        "List decided document approvals",
+        "The approvals history: every request no longer waiting on the team (approved, rejected, expired, cancelled), the latest decision first, with who decided, what it came to in the conversation, and the customer's name.",
       ),
       response: errors(401, 403, 404, 422),
     },

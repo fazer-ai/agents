@@ -10,9 +10,13 @@ import { auditMutation } from "@/modules/audit/service";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { upsertJobRow, upsertJobRows } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobResult,
+  registerJobHandler,
+  wakeScheduler,
+} from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
-import { formatDate } from "./format";
+import { formatDate, formatDocumentNumber } from "./format";
 import {
   APPROVAL_KEY_PREFIX,
   type DocumentSnapshot,
@@ -55,11 +59,26 @@ export interface ApprovalRequestDto {
   conversationId: string | null;
   expiresAt: Date;
   reviewerUserId: string | null;
+  // Who decided, by the name the console shows (their email when they have none).
+  reviewerName: string | null;
   note: string | null;
   decidedAt: Date | null;
   issuedDocumentId: string | null;
+  // The issued document's own number as printed (ORC-0003), the name the team and the customer use
+  // for it from then on; null until it is issued.
+  issuedNumber: string | null;
+  // What the decision came to in the conversation; null while it is on its way (schema.prisma).
+  outcome: ApprovalOutcome | null;
+  outcomeAt: Date | null;
   createdAt: Date;
 }
+
+export type ApprovalOutcome =
+  | "DELIVERED"
+  | "NOTED"
+  | "NOT_SENT"
+  | "HANDED"
+  | "NO_AGENT";
 
 const SELECT = {
   id: true,
@@ -76,8 +95,19 @@ const SELECT = {
   note: true,
   decidedAt: true,
   issuedDocumentId: true,
+  issuedDocument: { select: { number: true, numberPrefix: true } },
+  outcome: true,
+  outcomeAt: true,
   createdAt: true,
 } as const;
+
+function issuedNumber(
+  doc: { number: number | null; numberPrefix: string | null } | null,
+): string | null {
+  return doc?.number == null
+    ? null
+    : formatDocumentNumber(doc.number, doc.numberPrefix);
+}
 
 type Row = Prisma.DocumentApprovalRequestGetPayload<{
   select: typeof SELECT;
@@ -86,7 +116,7 @@ type Row = Prisma.DocumentApprovalRequestGetPayload<{
 // The frozen snapshot can run to megabytes, so only preview and issuance read it.
 const WITH_SNAPSHOT = { ...SELECT, snapshot: true } as const;
 
-function toDto(r: Row): ApprovalRequestDto {
+function toDto(r: Row, reviewerName: string | null = null): ApprovalRequestDto {
   return {
     id: String(r.id),
     templateId: r.templateId === null ? null : String(r.templateId),
@@ -96,12 +126,52 @@ function toDto(r: Row): ApprovalRequestDto {
     conversationId: r.conversationId === null ? null : String(r.conversationId),
     expiresAt: r.expiresAt,
     reviewerUserId: r.reviewerUserId === null ? null : String(r.reviewerUserId),
+    reviewerName,
     note: r.note,
     decidedAt: r.decidedAt,
     issuedDocumentId:
       r.issuedDocumentId === null ? null : String(r.issuedDocumentId),
+    issuedNumber: issuedNumber(r.issuedDocument),
+    outcome: r.outcome as ApprovalOutcome | null,
+    outcomeAt: r.outcomeAt,
     createdAt: r.createdAt,
   };
+}
+
+// The names of the people who decided, by user id. `users` is a global identity table, outside tenant
+// RLS (docs/tenancy.md), so only the ids the tenant's own rows carry are read.
+export async function reviewerNames(
+  db: ScopedDb,
+  ids: (bigint | null)[],
+): Promise<Map<bigint, string>> {
+  const wanted = [...new Set(ids.filter((id): id is bigint => id !== null))];
+  if (wanted.length === 0) return new Map();
+  const users = await db.user.findMany({
+    where: { id: { in: wanted } },
+    select: { id: true, name: true, email: true },
+  });
+  return new Map(users.map((u) => [u.id, u.name?.trim() || u.email]));
+}
+
+async function toDtos(
+  db: ScopedDb,
+  rows: Row[],
+): Promise<ApprovalRequestDto[]> {
+  const names = await reviewerNames(
+    db,
+    rows.map((r) => r.reviewerUserId),
+  );
+  return rows.map((r) =>
+    toDto(
+      r,
+      r.reviewerUserId === null ? null : (names.get(r.reviewerUserId) ?? null),
+    ),
+  );
+}
+
+async function toDtoNamed(db: ScopedDb, row: Row): Promise<ApprovalRequestDto> {
+  const [dto] = await toDtos(db, [row]);
+  return dto as ApprovalRequestDto;
 }
 
 // What a decided or expired request says in its conversation is a job armed by the transition
@@ -259,6 +329,8 @@ export async function createApprovalRequest(params: {
   });
   if (created) {
     await announceRequest(base, tenantId, created);
+    // The opening note is for a person watching the conversation now, not on the next interval.
+    wakeScheduler();
     return toDto(created);
   }
   const existing = await runScopedOn(base, ctx, (db) =>
@@ -339,18 +411,33 @@ async function announceRequest(
 
 export async function listApprovalRequests(
   ctx: TenantContext,
-  opts: { status?: ApprovalStatus; limit?: number } = {},
+  opts: {
+    status?: ApprovalStatus;
+    // Only what waits on the team now: PENDING and inside its validity, as the queue counts it.
+    // Applied before the limit, so overdue rows the expiry has not closed never crowd one out.
+    waiting?: boolean;
+    conversationId?: bigint;
+    limit?: number;
+  } = {},
   base: PrismaClient = basePrisma,
 ): Promise<ApprovalRequestDto[]> {
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.documentApprovalRequest.findMany({
-      where: opts.status ? { status: opts.status } : {},
+  return runScopedOn(base, ctx, async (db) => {
+    const rows = await db.documentApprovalRequest.findMany({
+      where: {
+        ...(opts.status ? { status: opts.status } : {}),
+        ...(opts.waiting
+          ? { status: "PENDING", expiresAt: { gt: new Date() } }
+          : {}),
+        ...(opts.conversationId === undefined
+          ? {}
+          : { conversationId: opts.conversationId }),
+      },
       orderBy: { id: "desc" },
       take: Math.min(Math.max(opts.limit ?? 50, 1), 200),
       select: SELECT,
-    }),
-  );
-  return rows.map(toDto);
+    });
+    return toDtos(db, rows);
+  });
 }
 
 export interface PendingApprovalItem {
@@ -381,6 +468,79 @@ export async function countPendingApprovals(
   );
 }
 
+// The conversation and the customer's name a queue row shows, read in two queries for the whole page.
+async function withConversations<
+  R extends {
+    id: bigint;
+    title: string;
+    createdAt: Date;
+    expiresAt: Date;
+    conversationId: bigint | null;
+  },
+>(
+  db: ScopedDb,
+  rows: R[],
+): Promise<
+  (R & { chatwootConversationId: number | null; contactName: string | null })[]
+> {
+  const convIds = rows
+    .map((r) => r.conversationId)
+    .filter((id): id is bigint => id !== null);
+  const convs =
+    convIds.length === 0
+      ? []
+      : await db.conversation.findMany({
+          where: { id: { in: convIds } },
+          select: {
+            id: true,
+            chatwootConversationId: true,
+            contactId: true,
+          },
+        });
+  const contactIds = convs
+    .map((c) => c.contactId)
+    .filter((id): id is bigint => id !== null);
+  const contacts =
+    contactIds.length === 0
+      ? []
+      : await db.contact.findMany({
+          where: { id: { in: contactIds } },
+          select: { id: true, name: true },
+        });
+  const convById = new Map(convs.map((c) => [c.id, c]));
+  const nameById = new Map(contacts.map((c) => [c.id, c.name]));
+  return rows.map((r) => {
+    const conv =
+      r.conversationId === null ? undefined : convById.get(r.conversationId);
+    return {
+      ...r,
+      chatwootConversationId: conv?.chatwootConversationId ?? null,
+      contactName:
+        conv?.contactId == null ? null : (nameById.get(conv.contactId) ?? null),
+    };
+  });
+}
+
+function queueItem(r: {
+  id: bigint;
+  title: string;
+  createdAt: Date;
+  expiresAt: Date;
+  conversationId: bigint | null;
+  chatwootConversationId: number | null;
+  contactName: string | null;
+}): PendingApprovalItem {
+  return {
+    id: String(r.id),
+    title: r.title,
+    createdAt: r.createdAt,
+    expiresAt: r.expiresAt,
+    conversationId: r.conversationId === null ? null : String(r.conversationId),
+    chatwootConversationId: r.chatwootConversationId,
+    contactName: r.contactName,
+  };
+}
+
 // One page of the queue, oldest first; `after` is the last id of the previous page.
 export async function listPendingApprovals(
   ctx: TenantContext,
@@ -405,49 +565,69 @@ export async function listPendingApprovals(
         conversationId: true,
       },
     });
-    const convIds = rows
-      .map((r) => r.conversationId)
-      .filter((id): id is bigint => id !== null);
-    const convs =
-      convIds.length === 0
-        ? []
-        : await db.conversation.findMany({
-            where: { id: { in: convIds } },
-            select: {
-              id: true,
-              chatwootConversationId: true,
-              contactId: true,
-            },
-          });
-    const contactIds = convs
-      .map((c) => c.contactId)
-      .filter((id): id is bigint => id !== null);
-    const contacts =
-      contactIds.length === 0
-        ? []
-        : await db.contact.findMany({
-            where: { id: { in: contactIds } },
-            select: { id: true, name: true },
-          });
-    const convById = new Map(convs.map((c) => [c.id, c]));
-    const nameById = new Map(contacts.map((c) => [c.id, c.name]));
-    return rows.map((r) => {
-      const conv =
-        r.conversationId === null ? undefined : convById.get(r.conversationId);
-      return {
-        id: String(r.id),
-        title: r.title,
-        createdAt: r.createdAt,
-        expiresAt: r.expiresAt,
-        conversationId:
-          r.conversationId === null ? null : String(r.conversationId),
-        chatwootConversationId: conv?.chatwootConversationId ?? null,
-        contactName:
-          conv?.contactId == null
-            ? null
-            : (nameById.get(conv.contactId) ?? null),
-      };
+    return (await withConversations(db, rows)).map(queueItem);
+  });
+}
+
+export interface DecidedApprovalItem extends PendingApprovalItem {
+  status: Exclude<ApprovalStatus, "PENDING">;
+  decidedAt: Date | null;
+  reviewerName: string | null;
+  outcome: ApprovalOutcome | null;
+  // Null on an approval whose document was never issued (the failure after the claim): approving
+  // again completes it, and nothing is on its way.
+  issuedDocumentId: string | null;
+  issuedNumber: string | null;
+}
+
+// The history beside the queue: every request no longer waiting on the team, the latest DECISION first
+// (a request asked long ago and decided now belongs at the top, and that is where the view looks for
+// an outcome still landing); `cursor` is the last id of the previous page. A pending request past its
+// validity is the queue's until the expiry closes it, so it shows in neither for that moment.
+export async function listDecidedApprovals(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+  page: { cursor?: bigint; limit?: number } = {},
+): Promise<DecidedApprovalItem[]> {
+  return runScopedOn(base, ctx, async (db) => {
+    const rows = await db.documentApprovalRequest.findMany({
+      where: { status: { not: "PENDING" } },
+      orderBy: [{ decidedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }],
+      ...(page.cursor === undefined
+        ? {}
+        : { cursor: { id: page.cursor }, skip: 1 }),
+      take: page.limit ?? PENDING_PAGE_SIZE,
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        expiresAt: true,
+        conversationId: true,
+        status: true,
+        decidedAt: true,
+        reviewerUserId: true,
+        outcome: true,
+        issuedDocumentId: true,
+        issuedDocument: { select: { number: true, numberPrefix: true } },
+      },
     });
+    const names = await reviewerNames(
+      db,
+      rows.map((r) => r.reviewerUserId),
+    );
+    return (await withConversations(db, rows)).map((r) => ({
+      ...queueItem(r),
+      status: r.status as DecidedApprovalItem["status"],
+      decidedAt: r.decidedAt,
+      reviewerName:
+        r.reviewerUserId === null
+          ? null
+          : (names.get(r.reviewerUserId) ?? null),
+      outcome: r.outcome as ApprovalOutcome | null,
+      issuedDocumentId:
+        r.issuedDocumentId === null ? null : String(r.issuedDocumentId),
+      issuedNumber: issuedNumber(r.issuedDocument),
+    }));
   });
 }
 
@@ -483,7 +663,8 @@ export async function getApprovalRequest(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<ApprovalRequestDto> {
-  return toDto(await loadRequest(ctx, id, base));
+  const row = await loadRequest(ctx, id, base);
+  return runScopedOn(base, ctx, (db) => toDtoNamed(db, row));
 }
 
 // The frozen document as the reviewer sees it, with a placeholder where the number goes. Rendered on
@@ -628,6 +809,7 @@ export async function approveDocumentRequest(params: {
   });
   // The call that LINKS the document is the one that arms its delivery, in the same
   // transaction: approving again, in parallel or later, finds it linked and delivers nothing twice.
+  let armed = false;
   const linked = await runScopedOn(base, ctx, async (db) => {
     const issued = await db.issuedDocument.findUniqueOrThrow({
       where: {
@@ -644,13 +826,19 @@ export async function approveDocumentRequest(params: {
     });
     if (link.count === 1) {
       await armApprovalOutcome(db, ctx.tenantId as bigint, requestId, now);
+      armed = true;
     }
-    return db.documentApprovalRequest.findUniqueOrThrow({
-      where: { id: requestId },
-      select: SELECT,
-    });
+    return toDtoNamed(
+      db,
+      await db.documentApprovalRequest.findUniqueOrThrow({
+        where: { id: requestId },
+        select: SELECT,
+      }),
+    );
   });
-  return { request: toDto(linked), document };
+  // The reviewer is watching for it: the outcome runs now, not on the scheduler's next interval.
+  if (armed) wakeScheduler();
+  return { request: linked, document };
 }
 
 export async function rejectDocumentRequest(params: {
@@ -683,6 +871,7 @@ export async function rejectDocumentRequest(params: {
     }
     return r;
   });
+  if (claimed.count === 1) wakeScheduler();
   const row = await loadRequest(ctx, requestId, base);
   if (claimed.count === 0) {
     if (row.status === "PENDING") {
@@ -691,7 +880,7 @@ export async function rejectDocumentRequest(params: {
     }
     throw notPending(row.status);
   }
-  return toDto(row);
+  return runScopedOn(base, ctx, (db) => toDtoNamed(db, row));
 }
 
 function notExpired(status: string): AppError {

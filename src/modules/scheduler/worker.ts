@@ -822,6 +822,8 @@ interface Holder {
   trafficWake?: ReturnType<typeof setTimeout>;
   // Set while the traffic drain waits for a provider permit to free (`wantsPermit`).
   trafficPermitWake?: () => void;
+  // The started worker's traffic drain, for `wakeScheduler`.
+  wakeTraffic?: () => void;
   // The wake-ups not fired yet, by the instant they are for, so stopping clears them.
   observeWakes: Map<number, ReturnType<typeof setTimeout>>;
 }
@@ -865,6 +867,8 @@ export interface StartOptions {
   // The traffic drain's bounds; production reads config.schedulerWorker.
   trafficConcurrency?: number;
   trafficPerMinute?: number;
+  // What a traffic drain runs; tests replace it, since a real one claims every tenant's rows.
+  runTraffic?: typeof runTrafficTick;
 }
 
 // Idempotent singleton (survives `bun --hot` reloads via globalThis, so no ghost timers). The tick
@@ -938,7 +942,7 @@ export function startScheduler(opts: StartOptions = {}): () => void {
     }
     h.draining = true;
     h.drainAgain = false;
-    void runTrafficTick(base, {
+    void (opts.runTraffic ?? runTrafficTick)(base, {
       slots: trafficSlots,
       window,
       gate,
@@ -972,6 +976,7 @@ export function startScheduler(opts: StartOptions = {}): () => void {
       });
   };
   h.trafficTimer = setInterval(drainTraffic, intervalMs);
+  h.wakeTraffic = drainTraffic;
   h.wakeObserve = (atMs) => {
     const slot =
       Math.ceil(atMs / OBSERVE_WAKE_GRAIN_MS) * OBSERVE_WAKE_GRAIN_MS;
@@ -1016,7 +1021,17 @@ export function stopScheduler(): void {
   }
   h.trafficPermitWake?.();
   h.trafficPermitWake = undefined;
+  h.wakeTraffic = undefined;
   h.wakeObserve = undefined;
   for (const timer of h.observeWakes.values()) clearTimeout(timer);
   h.observeWakes.clear();
+}
+
+// Drains the traffic lane now rather than on the next interval, for a job a person is watching for
+// (a document they just approved). The document approval kinds are traffic-proportional, so this is
+// the drain that claims them; one already running drains once more when it ends, so a job armed
+// after its claim is not left for the interval. Without a started worker in this process (an
+// API-only replica, a script) it does nothing, and the job runs on the worker's next drain anyway.
+export function wakeScheduler(): void {
+  holder().wakeTraffic?.();
 }

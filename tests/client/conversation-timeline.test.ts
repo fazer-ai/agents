@@ -72,6 +72,24 @@ describe("which bubble a proactive turn badges", () => {
     expect(markers(tl)).toEqual([]);
   });
 
+  test("an approved document's delivery badges the message that carried it", () => {
+    const sent = msg(12, T0 + 20_000);
+    const tl = buildTimeline(
+      [sent],
+      [
+        entry({
+          id: "a1",
+          kind: "approval",
+          name: "document_approval",
+          messageId: 12,
+        }),
+      ],
+      3,
+    );
+    expect(tl.followUpBadges.get("m-12")?.kind).toBe("approval");
+    expect(markers(tl)).toEqual([]);
+  });
+
   test("a recorded turn that sent nothing badges nothing, however close a reply is", async () => {
     const tl = buildTimeline(
       [msg(20, T0 + 10_000)],
@@ -186,6 +204,10 @@ describe("what the badge says", () => {
       "Event: ERP da loja",
     );
     expect(b({ kind: "event" })).toBe("External event");
+  });
+
+  test("an approved document's delivery says so, not that an external system spoke", () => {
+    expect(b({ kind: "approval" })).toBe("Approved document");
   });
 
   test("a redirect follow-up has its own label", () => {

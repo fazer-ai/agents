@@ -10,6 +10,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
+import { fetchTracker } from "@/tests/utils/fetch-settle";
+
+const fetches = fetchTracker();
 
 // A request's approval page (docs/documents.md, Approval): it shows one request at a time, offers to
 // finish an approval that never issued its document, and says why the server refused an action.
@@ -63,8 +66,13 @@ const posted: string[] = [];
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === "string" ? input : input.toString();
   if (init?.method === "POST") posted.push(url);
-  return handler(url, init);
+  return fetches.track(handler(url, init));
 }) as typeof fetch;
+
+// The preview frame's address. Read off the element, which reflects the attribute as set.
+function frameSrc() {
+  return document.querySelector("iframe")?.src;
+}
 
 function context() {
   return json({
@@ -109,6 +117,7 @@ function mount(path: string) {
 
 afterEach(() => {
   cleanup();
+  fetches.reset();
   posted.length = 0;
   serverOffsetMs = 0;
 });
@@ -143,21 +152,15 @@ test("moving to another request drops the previous request's preview at once", a
     return json({});
   };
   mount("/document-approvals/6");
-  await waitFor(() =>
-    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
-      "blob:old",
-    ),
-  );
+  await waitFor(() => expect(frameSrc()).toBe("blob:old"));
   act(() => goTo("/document-approvals/26"));
-  await waitFor(() => expect(screen.queryByText("Orçamento 6")).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByText("Orçamento 6") === null).toBe(true),
+  );
   expect(document.querySelector("iframe")).toBeNull();
   next.open();
   await screen.findByText("Orçamento 26");
-  await waitFor(() =>
-    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
-      "blob:new",
-    ),
-  );
+  await waitFor(() => expect(frameSrc()).toBe("blob:new"));
 });
 
 test("a load of the previous request that lands after the next one changes nothing", async () => {
@@ -179,12 +182,10 @@ test("a load of the previous request that lands after the next one changes nothi
   act(() => goTo("/document-approvals/26"));
   await screen.findByText("Orçamento 26");
   old.open();
-  await new Promise((r) => setTimeout(r, 50));
+  await fetches.settled();
   expect(screen.queryByText("Orçamento 6")).toBeNull();
   expect(screen.getByText("Orçamento 26")).toBeTruthy();
-  expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
-    "blob:new",
-  );
+  expect(frameSrc()).toBe("blob:new");
 });
 
 test("an approval that never issued its document can be approved again", async () => {
@@ -365,7 +366,7 @@ test("a request again that answers after the reviewer moved on leaves them where
   act(() => goTo("/document-approvals/26"));
   await screen.findByText("Orçamento 26");
   answer.open();
-  await new Promise((r) => setTimeout(r, 50));
+  await fetches.settled();
   expect(screen.getByText("Orçamento 26")).toBeTruthy();
   expect(screen.queryByText("Orçamento 30")).toBeNull();
 });
@@ -385,12 +386,8 @@ test("a page load renders the request's preview once", async () => {
   };
   mount("/document-approvals/17");
   await screen.findByRole("button", { name: "Approve and send" });
-  await waitFor(() =>
-    expect(document.querySelector("iframe")?.getAttribute("src")).toBe(
-      "blob:p",
-    ),
-  );
-  await new Promise((r) => setTimeout(r, 50));
+  await waitFor(() => expect(frameSrc()).toBe("blob:p"));
+  await fetches.settled();
   expect(previews).toBe(1);
 });
 
@@ -433,3 +430,228 @@ test("a message that is only a voice note shows its transcription, and a bare fi
   await screen.findByText("Transcription: três salas, por favor");
   expect(screen.getByText("Image")).toBeTruthy();
 });
+
+test("a decided request shows who decided, what it came to, and the issued document instead of the draft", async () => {
+  let drafts = 0;
+  handler = async (url) => {
+    if (url.includes("/preview")) {
+      drafts += 1;
+      return pdf("draft");
+    }
+    if (url.includes("/documents/5/pdf")) return pdf("issued");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/18")) {
+      return json({
+        request: request("18", {
+          status: "APPROVED",
+          reviewerName: "Ana Souza",
+          decidedAt: new Date().toISOString(),
+          issuedDocumentId: "5",
+          issuedNumber: "ORC-0005",
+          outcome: "DELIVERED",
+          outcomeAt: new Date().toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/18");
+  await screen.findByText(/Decided by Ana Souza/);
+  // Issued, the document goes by its own number, as the PDF and the note in Chatwoot name it.
+  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+    "Orçamento 18 ORC-0005",
+  );
+  await screen.findByText(/Sent to the customer/);
+  await waitFor(() => expect(frameSrc()).toBe("blob:issued"));
+  expect(drafts).toBe(0);
+  expect(
+    screen
+      .getByRole("link", { name: "Back to approvals" })
+      .getAttribute("href"),
+  ).toBe("/approvals?tab=history");
+});
+
+test("an approval whose outcome has not landed yet is read again until it does", async () => {
+  let reads = 0;
+  handler = async (url) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/19")) {
+      reads += 1;
+      return json({
+        request: request("19", {
+          status: "APPROVED",
+          decidedAt: new Date().toISOString(),
+          issuedDocumentId: "6",
+          outcome: reads > 1 ? "DELIVERED" : null,
+          outcomeAt: reads > 1 ? new Date().toISOString() : null,
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/19");
+  await screen.findByText(/The agent sends the document/);
+  await screen.findByText(/Sent to the customer/, {}, { timeout: 6000 });
+}, 10_000);
+
+test("a rejected request says what the rejection came to in the conversation", async () => {
+  handler = async (url) => {
+    if (url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/20")) {
+      return json({
+        request: request("20", {
+          status: "REJECTED",
+          reviewerName: "Ana Souza",
+          note: "valor errado",
+          decidedAt: new Date().toISOString(),
+          outcome: "HANDED",
+          outcomeAt: new Date().toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/20");
+  await screen.findByText(/Rejected with the note: valor errado/);
+  await screen.findByText("Conversation handed to a person");
+});
+
+test("an approval that could not be sent points to the numbered document to send by hand, and an expiry says when it expired", async () => {
+  handler = async (url) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/21")) {
+      return json({
+        request: request("21", {
+          status: "APPROVED",
+          reviewerName: "Ana Souza",
+          decidedAt: new Date().toISOString(),
+          issuedDocumentId: "8",
+          outcome: "NOTED",
+          outcomeAt: new Date().toISOString(),
+        }),
+      });
+    }
+    if (url.includes("/document-approvals/22")) {
+      return json({
+        request: request("22", {
+          status: "EXPIRED",
+          expiresAt: new Date(0).toISOString(),
+          decidedAt: new Date().toISOString(),
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/21");
+  await screen.findByText(/to send from Chatwoot/);
+  cleanup();
+  mount("/document-approvals/22");
+  await screen.findByText(/^Expired /);
+  expect(screen.queryByText(/^Decided /)).toBeNull();
+});
+
+test("approving drops the draft at once and shows the issued document when it arrives", async () => {
+  let approved = false;
+  const issued = gate();
+  handler = async (url, init) => {
+    if (url.includes("/preview")) return pdf("draft");
+    if (url.includes("/documents/9/pdf")) {
+      await issued.shut;
+      return pdf("issued");
+    }
+    if (url.includes("/context")) return context();
+    if (
+      url.endsWith("/document-approvals/23/approve") &&
+      init?.method === "POST"
+    ) {
+      approved = true;
+      return json({ request: {}, document: { number: "ORC-9" } });
+    }
+    if (url.includes("/document-approvals/23")) {
+      return json({
+        request: request(
+          "23",
+          approved
+            ? {
+                status: "APPROVED",
+                decidedAt: new Date().toISOString(),
+                issuedDocumentId: "9",
+                outcome: "DELIVERED",
+                outcomeAt: new Date().toISOString(),
+              }
+            : {},
+        ),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/23");
+  await waitFor(() => expect(frameSrc()).toBe("blob:draft"));
+  fireEvent.click(screen.getByRole("button", { name: "Approve and send" }));
+  await screen.findByText(/Sent to the customer/);
+  expect(frameSrc() ?? null).not.toBe("blob:draft");
+  issued.open();
+  await waitFor(() => expect(frameSrc()).toBe("blob:issued"));
+});
+
+test("an untouched page stops saying the document is on its way when that runs out", async () => {
+  handler = async (url) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (url.includes("/document-approvals/24")) {
+      return json({
+        request: request("24", {
+          status: "APPROVED",
+          // Ten minutes after the decision, less a second and a half.
+          decidedAt: new Date(Date.now() - 10 * 60_000 + 1500).toISOString(),
+          issuedDocumentId: "10",
+          outcome: null,
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/24");
+  await screen.findByText("On its way to the customer");
+  await screen.findByText(
+    "No confirmation that it was sent",
+    {},
+    { timeout: 5000 },
+  );
+}, 10_000);
+
+test("approving again an old approval whose document was never issued reads its new outcome", async () => {
+  let completed = false;
+  let reads = 0;
+  handler = async (url, init) => {
+    if (url.includes("/pdf") || url.includes("/preview")) return pdf("p");
+    if (url.includes("/context")) return context();
+    if (
+      url.endsWith("/document-approvals/25/approve") &&
+      init?.method === "POST"
+    ) {
+      completed = true;
+      return json({ request: {}, document: { number: "ORC-11" } });
+    }
+    if (url.includes("/document-approvals/25")) {
+      if (completed) reads += 1;
+      return json({
+        request: request("25", {
+          status: "APPROVED",
+          // The first decision, long before this page.
+          decidedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+          issuedDocumentId: completed ? "11" : null,
+          outcome: completed && reads > 1 ? "DELIVERED" : null,
+          outcomeAt: completed && reads > 1 ? new Date().toISOString() : null,
+        }),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/25");
+  fireEvent.click(await screen.findByRole("button", { name: "Approve again" }));
+  await screen.findByText(/Sent to the customer/, {}, { timeout: 6000 });
+}, 10_000);

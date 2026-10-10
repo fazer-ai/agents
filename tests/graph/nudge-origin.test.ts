@@ -7,6 +7,8 @@ describe("nudgeOrigin", () => {
     expect(nudgeOrigin({ source: "followup" })).toBe("followup");
     expect(nudgeOrigin({ source: "appointment_reminder" })).toBe("reminder");
     expect(nudgeOrigin({ source: "channel-redirect" })).toBe("redirect");
+    // The delivery of a document the team approved is the team speaking, not an external system.
+    expect(nudgeOrigin({ source: "document_approval" })).toBe("approval");
   });
 
   test("every other source is an inbound integration's event", () => {
@@ -15,8 +17,8 @@ describe("nudgeOrigin", () => {
     }
   });
 
-  test("the reader accepts exactly the four origins", () => {
-    for (const o of ["followup", "reminder", "redirect", "event"]) {
+  test("the reader accepts exactly the five origins", () => {
+    for (const o of ["followup", "reminder", "redirect", "event", "approval"]) {
       expect(isNudgeOrigin(o)).toBe(true);
     }
     for (const o of ["tool", "", null, undefined, 1, "Event"]) {

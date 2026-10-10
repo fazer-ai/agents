@@ -12,11 +12,16 @@
 # CHECK_STAGED_LIST prints what would be linted; CHECK_STAGED_LINT_ONLY runs the lint step alone.
 set -e
 
-files=$(git diff --cached --name-only --diff-filter=ACMR)
-lint_all=$(printf '%s\n' "$files" | grep -E '^(biome\.jsonc|biome-plugins/)' || true)
+# Paths travel NUL-separated from git to Biome: with git's default core.quotePath, a newline-separated
+# list quotes a name with non-ASCII bytes, and Biome would look for that quoted name and find nothing.
+work=$(mktemp -d "${TMPDIR:-/tmp}/check-staged.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+list="$work/staged"
+git diff --cached --name-only -z --diff-filter=ACMR >"$list"
+lint_all=$(tr '\0' '\n' <"$list" | grep -E '^(biome\.jsonc|biome-plugins/)' || true)
 
 if [ -n "$CHECK_STAGED_LIST" ]; then
-  if [ -n "$lint_all" ]; then echo "lint: all"; else printf '%s\n' "$files" | sed '/^$/d; s/^/lint: /'; fi
+  if [ -n "$lint_all" ]; then echo "lint: all"; else tr '\0' '\n' <"$list" | sed '/^$/d; s/^/lint: /'; fi
   exit 0
 fi
 
@@ -24,15 +29,12 @@ fi
 if [ -n "$lint_all" ]; then
   echo "[check-staged] $(printf '%s' "$lint_all" | head -1) changes the lint rules: linting the whole tree"
   bun run lint
-elif [ -n "$files" ]; then
+elif [ -s "$list" ]; then
   root=$(pwd)
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/check-staged.XXXXXX")
-  trap 'rm -rf "$scratch"' EXIT
-  { printf '%s\n' "$files"; echo biome.jsonc; git ls-files biome-plugins; } |
-    git checkout-index --prefix="$scratch/" --stdin
-  (cd "$scratch" && printf '%s\n' "$files" | tr '\n' '\0' |
-    xargs -0 "$root/node_modules/.bin/biome" check --vcs-enabled=false --error-on-warnings \
-      --no-errors-on-unmatched --files-ignore-unknown=true)
+  { cat "$list"; printf 'biome.jsonc\0'; git ls-files -z biome-plugins; } |
+    git checkout-index -z --prefix="$work/tree/" --stdin
+  (cd "$work/tree" && xargs -0 "$root/node_modules/.bin/biome" check --vcs-enabled=false \
+    --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true <"$list")
 fi
 [ -n "$CHECK_STAGED_LINT_ONLY" ] && exit 0
 bun run build-check

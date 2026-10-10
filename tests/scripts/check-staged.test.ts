@@ -114,6 +114,14 @@ describe("the lint step", () => {
     expect(refused.output).toContain("tests/bad.ts");
   });
 
+  test("reads a file whose name git would quote", () => {
+    write("tests/café.ts", BAD);
+    git("add", "tests/café.ts");
+    const refused = hook();
+    expect(refused.code).not.toBe(0);
+    expect(refused.output).toContain("noDebugger");
+  });
+
   test("refuses a staged file whose only finding is a warning, as CI does", () => {
     write("tests/warn.tsx", WARN);
     git("add", "tests/warn.tsx");

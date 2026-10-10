@@ -1826,6 +1826,7 @@ export function DecisionsFields({
           role={tone === "error" ? "alert" : "status"}
           data-testid="decisions-problems"
           data-tone={tone}
+          data-problems-summary
           className={cn(
             "flex items-start gap-2 rounded-lg border px-3 py-2 text-text-primary text-xs",
             tone === "error"

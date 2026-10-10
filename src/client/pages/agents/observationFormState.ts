@@ -1,3 +1,4 @@
+import { decisionsIssues } from "@/modules/decisions/config";
 import {
   MONITORING_DEFAULTS,
   type MonitoringAnalysis,
@@ -9,6 +10,13 @@ import {
   WINDOW_MESSAGES_MAX,
   WINDOW_MESSAGES_MIN,
 } from "@/modules/observe/settings";
+import {
+  type DecisionsForm,
+  decisionsToForm,
+  decisionsToStored,
+  decisionsUntouched,
+  startingDecisionsForm,
+} from "./decisionsFormState";
 
 // The agent editor's Observation block, as the same pair of pure functions the Memory and TTS blocks
 // are: stored settings → form state → stored settings. The Behavior save REPLACES the whole
@@ -16,11 +24,22 @@ import {
 // next save; the round-trip test (tests/client/observation-form-state.test.ts) guards the next field.
 
 export interface ObservationState {
-  // Carried, not edited: the console has no control for the engine or its questions yet (they are
-  // written through REST and MCP), and the save replaces the whole block, so dropping them here would
-  // switch a `decisions` agent back to `llm` the first time someone saved its Behavior tab.
+  // Whether the settings as read carried a `monitoring` key at all. An answering agent that never
+  // had one saves without one (./monitoringPatch).
+  storedPresent: boolean;
   engine: MonitoringEngine;
-  decisions: Record<string, unknown> | null;
+  // The engine as it was read. Written back, with the stored block, while the section that chooses
+  // it is hidden (an agent flipped to production): a choice nobody can see is not a choice to save.
+  storedEngine: MonitoringEngine;
+  // The decisions block as the form edits it (./decisionsFormState), null while the agent has none.
+  decisions: DecisionsForm | null;
+  // The block as it was read, carried beside the form: an untouched block is written back as stored,
+  // and a draft that cannot run is not written over a block that can while the engine is `llm`.
+  storedDecisions: Record<string, unknown> | null;
+  // Whether the operator has edited the block since it was read. A stored value the form normalizes
+  // (an empty model, a threshold stored as text) reads back equal to what the form shows, so an
+  // edit that lands on that same reading is still an edit, and has to be written.
+  decisionsEdited: boolean;
   analysis: MonitoringAnalysis;
   // Numbers travel as text: an emptied field is a state the operator passes through, not a value.
   windowMessages: string;
@@ -42,8 +61,20 @@ export function observationToForm(settings: unknown): ObservationState {
   // persist the difference on the next save.
   const c = readMonitoringConfig(settings);
   return {
+    storedPresent:
+      typeof settings === "object" &&
+      settings !== null &&
+      (settings as Record<string, unknown>).monitoring !== undefined,
     engine: c.engine,
-    decisions: c.decisions,
+    storedEngine: c.engine,
+    // An agent stored on the decisions engine with NO block is one every tick skips. It opens on
+    // an empty draft, as a first switch to the engine does, so the fields and what is missing are
+    // on screen instead of an engine choice with nothing under it.
+    decisions:
+      decisionsToForm(c.decisions) ??
+      (c.engine === "decisions" ? startingDecisionsForm() : null),
+    storedDecisions: c.decisions,
+    decisionsEdited: false,
     analysis: c.analysis,
     windowMessages: String(c.window.messages),
     windowSeconds: String(c.debounce.windowSeconds),
@@ -60,24 +91,96 @@ function intOr(v: string, fallback: number): number {
 // narrows on load; otherwise "saved" would show one value while the runtime runs another. Normalize
 // a field here only if the write boundary lets it through: anything the server REFUSES must travel
 // as typed, or the save succeeds with the value quietly deleted.
-export function observationToStored(form: ObservationState): MonitoringConfig {
-  const draft = draftFromForm(form);
-  const stored = readMonitoringConfig({ monitoring: draft });
+export function observationToStored(
+  form: ObservationState,
+  watcher = true,
+): StoredMonitoring {
+  const { decisions, ...rest } = readMonitoringConfig({
+    monitoring: draftFromForm(form, watcher),
+  });
   // A negative window is REFUSED by the write boundary, so it travels as typed: read through the
   // reader it would become 0, the one value that changes what the agent costs, saved by a typo.
   // Asked of what was TYPED, before the draft rounds it: -0.5 rounds to a zero.
   const typed = Number(form.windowSeconds);
   if (form.windowSeconds.trim() !== "" && typed < 0)
-    stored.debounce.windowSeconds = typed;
-  return stored;
+    rest.debounce.windowSeconds = typed;
+  // No block, no key: the reader answers null for a missing `decisions`, and writing that null
+  // back would store a key the agent never had.
+  return decisions === null ? rest : { ...rest, decisions };
 }
 
-function draftFromForm(form: ObservationState): MonitoringConfig {
+// What the save stores: the reader's shape, with `decisions` present only when there is a block.
+export type StoredMonitoring = Omit<MonitoringConfig, "decisions"> & {
+  decisions?: Record<string, unknown>;
+};
+
+// An edit to the decisions block, through the one door every field of it uses.
+export function editDecisions(
+  prev: ObservationState,
+  next: (d: DecisionsForm) => DecisionsForm,
+): ObservationState {
+  return prev.decisions
+    ? { ...prev, decisions: next(prev.decisions), decisionsEdited: true }
+    : prev;
+}
+
+// The stored block the form is judged against: the block as read until the operator edits it,
+// nothing after, so an edit is judged (and written) as the form's own block.
+export function decisionsBaseline(
+  form: ObservationState,
+): Record<string, unknown> | null {
+  return form.decisionsEdited ? null : form.storedDecisions;
+}
+
+// The `monitoring` part of a Behavior save, spread into the settings it writes. The block is
+// replaced for a watcher and for an agent that already has one; an answering agent whose settings
+// never carried it saves without it, so a save that changed nothing writes nothing there.
+export function monitoringPatch(
+  form: ObservationState,
+  watcher: boolean,
+): { monitoring?: StoredMonitoring } {
+  if (!watcher && !form.storedPresent) return {};
+  return { monitoring: observationToStored(form, watcher) };
+}
+
+// The decisions block a save writes: a form nobody touched writes the stored block back as it is; a
+// draft that could not run while the model engine is chosen (its fields are not on screen) is not
+// stored over the block that was there, since the server would refuse the whole save about fields
+// nobody can see; anything else is the form. `watcher` false is the section hidden altogether.
+export function decisionsBlockToStore(
+  form: ObservationState,
+  watcher = true,
+): Record<string, unknown> | null {
+  // Hidden means the STORED pair goes back whole, engine and block: a block that runs under an
+  // engine choice that was never saved is still half of a change nobody can see.
+  if (!watcher) return form.storedDecisions;
+  const drawn = form.engine === "decisions";
+  if (form.decisions === null) return form.storedDecisions;
+  if (
+    !form.decisionsEdited &&
+    decisionsUntouched(form.decisions, form.storedDecisions)
+  ) {
+    return form.storedDecisions;
+  }
+  const block = decisionsToStored(form.decisions);
+  if (!drawn && decisionsIssues(block).length > 0) {
+    return form.storedDecisions;
+  }
+  return block;
+}
+
+function draftFromForm(
+  form: ObservationState,
+  watcher: boolean,
+): MonitoringConfig {
   const d = MONITORING_DEFAULTS;
   const windowSeconds = intOr(form.windowSeconds, d.debounce.windowSeconds);
   return {
-    engine: form.engine === "decisions" ? "decisions" : "llm",
-    decisions: form.decisions,
+    engine:
+      (watcher ? form.engine : form.storedEngine) === "decisions"
+        ? "decisions"
+        : "llm",
+    decisions: decisionsBlockToStore(form, watcher),
     analysis: form.analysis === "on_resolve" ? "on_resolve" : "incremental",
     window: { messages: intOr(form.windowMessages, d.window.messages) },
     debounce: {

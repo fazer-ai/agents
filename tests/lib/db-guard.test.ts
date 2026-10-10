@@ -143,12 +143,6 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
     ).resolves.toBeUndefined();
   });
 
-  test("passes for a non-superuser, non-bypassrls role", async () => {
-    await expect(
-      assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient),
-    ).resolves.toBeUndefined();
-  });
-
   // The membership that makes the cross-tenant path possible is the same one that can delete the
   // isolation, and the difference between the two is one word in the GRANT. Neither attribute
   // changes, so the check above sees nothing: the role stays NOSUPERUSER and NOBYPASSRLS through

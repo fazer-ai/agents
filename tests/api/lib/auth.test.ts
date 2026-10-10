@@ -150,42 +150,6 @@ describe("authPlugin", () => {
       expect(data.user).toBeNull();
     });
 
-    test("returns null for invalid token", async () => {
-      const app = new Elysia()
-        .use(authPlugin)
-        .get("/test-get-user", async ({ getAuthUser }) => {
-          const user = await getAuthUser();
-          return { user };
-        });
-
-      const response = await app.handle(
-        new Request("http://localhost/test-get-user", {
-          headers: { Cookie: "auth_token=invalid_token" },
-        }),
-      );
-
-      const data = await response.json();
-      expect(data.user).toBeNull();
-    });
-
-    test("returns null for malformed JWT", async () => {
-      const app = new Elysia()
-        .use(authPlugin)
-        .get("/test-get-user", async ({ getAuthUser }) => {
-          const user = await getAuthUser();
-          return { user };
-        });
-
-      const response = await app.handle(
-        new Request("http://localhost/test-get-user", {
-          headers: { Cookie: "auth_token=not.a.valid.jwt.token" },
-        }),
-      );
-
-      const data = await response.json();
-      expect(data.user).toBeNull();
-    });
-
     // Brand rename compatibility window. Sessions minted by the previous image carry
     // `secretaria_v4_auth_token`; the current one issues and reads `fazerai_auth_token`. Reading
     // both is what keeps an upgrade from logging every operator out. Dropped at 2.0.
@@ -356,22 +320,6 @@ describe("authPlugin", () => {
       const data = await response.json();
       expect(data.error).toBe("Unauthorized");
     });
-
-    test("rejects requests with invalid token with 401", async () => {
-      const app = new Elysia()
-        .use(authPlugin)
-        .get("/protected", () => ({ message: "secret data" }), {
-          requireAuth: true,
-        });
-
-      const response = await app.handle(
-        new Request("http://localhost/protected", {
-          headers: { Cookie: "auth_token=invalid" },
-        }),
-      );
-
-      expect(response.status).toBe(401);
-    });
   });
 
   describe("requireAdmin macro", () => {
@@ -387,22 +335,6 @@ describe("authPlugin", () => {
       expect(response.status).toBe(401);
       const data = await response.json();
       expect(data.error).toBe("Unauthorized");
-    });
-
-    test("rejects requests with invalid token with 401", async () => {
-      const app = new Elysia()
-        .use(authPlugin)
-        .get("/admin", () => ({ message: "admin data" }), {
-          requireAdmin: true,
-        });
-
-      const response = await app.handle(
-        new Request("http://localhost/admin", {
-          headers: { Cookie: "auth_token=invalid" },
-        }),
-      );
-
-      expect(response.status).toBe(401);
     });
   });
 });

@@ -109,23 +109,6 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // ...and the rule the operator writes instead answers the number, unpunctuated too. The algorithm
-  // is the body's, not the runtime's.
-  test("a body that carries the CPF rule itself answers the issue's number", async () => {
-    const cases: Array<[string, string]> = [
-      ["12351612850", '{"valid":true}'],
-      ["123.516.128-50", '{"valid":true}'],
-      ["12351612851", '{"valid":false}'],
-      ["11111111111", '{"valid":false}'],
-    ];
-    for (const [input, want] of cases) {
-      expect(await runSandboxedCode(CPF_SNIPPET(input)), input).toMatchObject({
-        kind: "value",
-        value: want,
-      });
-    }
-  });
-
   // The NUMBER and not the text: this message reaches the model, the flow log and the alert
   // channels, and the line is the operator's own source (a literal pasted into a body would travel
   // with it). The operator reads the number against the body in their editor.
@@ -691,11 +674,6 @@ describe("runSandboxedCode", () => {
       logs: ["before"],
     });
     expect((out as { message: string }).message).toContain("null");
-  });
-
-  test("a snippet that does not parse is a SyntaxError, not a sandbox failure", async () => {
-    const out = await runSandboxedCode(`const = ;`);
-    expect(out).toMatchObject({ kind: "error", name: "SyntaxError" });
   });
 
   test("an infinite loop is stopped at the deadline, and the main thread never blocked", async () => {

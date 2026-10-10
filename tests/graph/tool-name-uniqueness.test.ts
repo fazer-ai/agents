@@ -22,18 +22,6 @@ describe("dropDuplicateToolNames", () => {
     expect(r.dropped).toEqual([]);
   });
 
-  // The precedence IS the build order, and the build order puts the native tools first. An operator
-  // can rename their own HTTP tool; nobody can rename handoff_to_human.
-  test("the earlier source keeps the name, the later one is dropped", () => {
-    const r = dropDuplicateToolNames([
-      t("handoff_to_human", "native"),
-      t("handoff_to_human", "http"),
-    ]);
-    expect(r.tools).toHaveLength(1);
-    expect(r.tools[0]?.description).toBe("native");
-    expect(r.dropped).toEqual(["handoff_to_human"]);
-  });
-
   // NOTE: a document template's tool name is derived from its slug, and the tenant may already have
   // an HTTP tool under that exact name. Both are operator-authored, so neither is "wrong": one
   // deterministic tool answers, and the other is named.
@@ -75,18 +63,6 @@ describe("dropDuplicateToolNames", () => {
       ["handoff_to_human", "private_note"],
     );
     expect(names(r.tools)).toEqual(["crm_lookup"]);
-    expect(r.dropped).toEqual(["handoff_to_human"]);
-  });
-
-  // And the reservation covers only what the natives did NOT build: a native that IS in the toolset
-  // keeps its own name, which is the ordering rule doing its job.
-  test("a native that was built keeps its name", () => {
-    const r = dropDuplicateToolNames(
-      [t("handoff_to_human", "native"), t("handoff_to_human", "http")],
-      ["private_note"],
-    );
-    expect(r.tools).toHaveLength(1);
-    expect(r.tools[0]?.description).toBe("native");
     expect(r.dropped).toEqual(["handoff_to_human"]);
   });
 

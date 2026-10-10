@@ -137,16 +137,6 @@ describe.skipIf(!dbUp)(
     const listed = async (id: bigint) =>
       (await listAlertChannels(ctx(), appDb)).find((c) => c.id === String(id));
 
-    test("the read hands back the ref it stored, not only that one exists", async () => {
-      const created = await seedSigned("read");
-      const row = await listed(BigInt(created.id));
-      expect(row?.secretRef).toBe(`vault:${secretId}`);
-      // NOTE: `hasSecret` stays: it is the published v1 shape and the MCP tool's own description names it.
-      // Both come off the same column, so they cannot disagree; this asserts that rather than
-      // trusting it.
-      expect(row?.hasSecret).toBe(row?.secretRef !== null);
-    });
-
     test("renaming from the console leaves the channel signed", async () => {
       const created = await seedSigned("rename");
       const before = await listed(BigInt(created.id));

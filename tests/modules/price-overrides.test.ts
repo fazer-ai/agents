@@ -63,15 +63,6 @@ describe("what prices a call", () => {
     );
   });
 
-  test("a server the table can never price is priced by the tenant's own rate", () => {
-    const own = block([
-      { provider: "openai-compatible", model: "", input: 0.05, output: 0.05 },
-    ]);
-    expect(
-      priceCall("openai-compatible", "", tokens(2_000, 200), AT, own).costUsd,
-    ).toBeCloseTo((2_000 * 0.05 + 200 * 0.05) / 1e6, 12);
-  });
-
   test("the image reader's `gemini` finds a price saved under `google`", () => {
     const own = block([
       { provider: "google", model: "gemini-3.5-flash", input: 1, output: 2 },

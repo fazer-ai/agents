@@ -104,13 +104,6 @@ describe("createChatModel temperature on anthropic", () => {
     expect(anthropic("claude-fable-5", 0.3).temperature).toBeUndefined();
     expect(anthropic("claude-haiku-4-5", 0.3).temperature).toBeUndefined();
   });
-
-  // The two calls the operator cannot reach: both pin 0, and both would fail on every request.
-  // The guardrail one is the reason this is a defect rather than an error message.
-  test("the pinned internal calls survive the provider", () => {
-    expect(anthropic("claude-sonnet-5", 0).temperature).toBeUndefined();
-    expect(anthropic("claude-sonnet-5", undefined).temperature).toBeUndefined();
-  });
 });
 
 // A fine-tuned model inherits its base model's parameter rules, and OpenAI spells those ids

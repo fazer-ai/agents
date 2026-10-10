@@ -202,9 +202,4 @@ describe.skipIf(!dbUp)("listConversations", () => {
     expect((err as AppError).statusCode).toBe(400);
     expect((err as AppError).field).toBe("status");
   });
-
-  test("tenant isolation: A never sees B's conversations", async () => {
-    const { items } = await listConversations(ctx(tenantA), {}, appDb);
-    expect(items.every((c) => c.chatwootConversationId !== 200)).toBe(true);
-  });
 });

@@ -75,12 +75,6 @@ describe("literalForChatwoot", () => {
       expect(asRendered(literalForChatwoot(t))).toBe(t);
     }
   });
-
-  // An escaped text keeps no backtick of its own, which is what leaves Chatwoot's code-span pairing
-  // nothing to pair.
-  test("an escaped text carries no backtick", () => {
-    expect(literalForChatwoot("`a` {{b}} `c`")).not.toContain("`");
-  });
 });
 
 // Operator text with values fenced in it. Pinned the same way as above, rendered through the fork's

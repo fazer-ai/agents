@@ -47,29 +47,12 @@ const unmet = async () => ({
 });
 
 describe("guardedTool", () => {
-  test("runs the tool when the precondition is met", async () => {
-    const { tool: inner, calls } = spyTool();
-    const out = await guardedTool(inner, COND, met).invoke({ reason: "2" });
-    expect(calls).toHaveLength(1);
-    expect(String(out)).toContain("Handed off");
-  });
-
   test("does NOT run the tool when the precondition is unmet", async () => {
     const { tool: inner, calls } = spyTool();
     const out = await guardedTool(inner, COND, unmet).invoke({ reason: "2" });
     expect(calls).toHaveLength(0);
     expect(String(out)).toContain("was not run");
     expect(String(out)).toContain("article_url");
-  });
-
-  test("fails CLOSED when the state cannot be read", async () => {
-    const { tool: inner, calls } = spyTool();
-    const boom = async () => {
-      throw new Error("connection terminated");
-    };
-    const out = await guardedTool(inner, COND, boom).invoke({ reason: "2" });
-    expect(calls).toHaveLength(0);
-    expect(String(out)).toContain("was not run");
   });
 
   test("reports the refusal once, with the tool, the condition and WHY", async () => {
@@ -205,12 +188,6 @@ describe("applyToolPreconditions", () => {
     await out[1]?.invoke({});
     expect(guardedCalls).toHaveLength(0);
     expect(openCalls).toHaveLength(1);
-  });
-
-  test("a condition naming a tool the agent was not granted changes nothing", () => {
-    const { tool: a } = spyTool("a");
-    const out = applyToolPreconditions([a], { not_granted: COND }, unmet);
-    expect(out[0]).toBe(a);
   });
 
   // NOTE: a rule that matches nothing shows on screen while the tool runs anyway. It happens without

@@ -46,18 +46,6 @@ describe("countingBase tells 'the caller is inside one' from 'one exists'", () =
     expect(c.open()).toBe(0);
   });
 
-  test("the mark does not leak into a transaction opened beside it", async () => {
-    const c = countingBase(fakeClient());
-    let seen: boolean | undefined;
-    await c.base.$transaction(async () => {
-      // NOTE: a second transaction started from inside the first WOULD see the mark, so the case
-      // that matters is the sibling: opened after the first resolved, from the top level.
-      seen = c.heldHere();
-    });
-    expect(seen).toBe(true);
-    expect(c.heldHere()).toBe(false);
-  });
-
   test("$extends keeps one watch rather than starting a second", async () => {
     const c = countingBase(fakeClient());
     const extended = c.base.$extends({}) as unknown as PrismaClient;

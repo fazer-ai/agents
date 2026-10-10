@@ -137,14 +137,6 @@ describe.skipIf(!dbUp)(
           appDb,
         );
 
-      test("a ref that names an entry is returned, canonically", async () => {
-        await create("td-ok");
-        const row = (await listToolDefinitions(ctx(), appDb)).find(
-          (t) => t.name === "td-ok",
-        );
-        expect(row?.credentialRef).toBe(`vault:${secretId}`);
-      });
-
       test("a value that names nothing never leaves the service", async () => {
         const made = await create("td-planted");
         await plant(

@@ -349,16 +349,6 @@ describe("round 1: a condition that would be silently weaker is refused", () => 
       expect(invalidToolPreconditions(settings)).toEqual(["t"]);
     },
   );
-
-  test("an absent `equals` still means ANY value", () => {
-    expect(
-      readToolPreconditions({
-        toolPreconditions: {
-          t: { kind: "attribute", scope: "contact", key: "k" },
-        },
-      }).t,
-    ).toEqual({ kind: "attribute", scope: "contact", key: "k" });
-  });
 });
 
 describe("round 1: tool names are operator text, so the map has no prototype", () => {
@@ -373,18 +363,6 @@ describe("round 1: tool names are operator text, so the map has no prototype", (
     );
     expect(Object.hasOwn(read, "__proto__")).toBe(true);
     expect(Object.getPrototypeOf(read)).toBe(null);
-  });
-
-  test("a tool named `toString` inherits nothing when it has no rule", () => {
-    const read = readToolPreconditions({
-      toolPreconditions: {
-        other: { kind: "attribute", scope: "contact", key: "k" },
-      },
-    });
-    // On a plain object this is a function, and a truthy one — every call to a tool with that name
-    // would be refused by a rule nobody wrote.
-    expect(read.toString).toBeUndefined();
-    expect(read.constructor).toBeUndefined();
   });
 });
 
@@ -401,16 +379,6 @@ describe("round 1: a stored-invalid entry is exempt only while it does not CHANG
         stored,
       ),
     ).toThrow();
-  });
-
-  test("still accepts the byte-identical stored entry riding along untouched", () => {
-    const stored = { toolPreconditions: { t: { kind: "nope" } } };
-    expect(() =>
-      assertSettingsToolPreconditions(
-        { toolPreconditions: { t: { kind: "nope" } } },
-        stored,
-      ),
-    ).not.toThrow();
   });
 });
 

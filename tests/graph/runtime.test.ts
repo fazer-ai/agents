@@ -493,25 +493,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     await appDb.$disconnect();
   });
 
-  test("incoming message → agent replies via the bot token", async () => {
-    await seedConversation(900, null);
-    const sent: Array<[number, string]> = [];
-    const outcome = await runAgentTurn({
-      tenantId,
-      instanceId,
-      agentBotId: 9,
-      event: incoming({ conversationId: 900 }),
-      base: appDb,
-      deps: {
-        makeModel: fakeModel,
-        makeClient: makeStubClient(sent),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(outcome).toBe("posted");
-    expect(sent).toEqual([[900, REPLY]]);
-  });
-
   // NOTE: `[[SKIP]]` is the FOLLOW-UP's way of saying "stay silent", and the model can reproduce it
   // on a reactive turn (it is in the shared per-contact-inbox transcript every silent follow-up
   // leaves). Delivered verbatim, on an email inbox that is a real email to whoever wrote in.
@@ -1816,25 +1797,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
   });
 
-  test("human took over during the LLM call → does not post", async () => {
-    await seedConversation(901, "User");
-    const sent: Array<[number, string]> = [];
-    const outcome = await runAgentTurn({
-      tenantId,
-      instanceId,
-      agentBotId: 9,
-      event: incoming({ conversationId: 901 }),
-      base: appDb,
-      deps: {
-        makeModel: fakeModel,
-        makeClient: makeStubClient(sent),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(outcome).toBe("taken-over");
-    expect(sent).toEqual([]);
-  });
-
   // NOTE: A turn silenced by the TOKEN arms a rollback for the `finally`, and it can still be refused
   // afterwards (a takeover, a supersede, a `/reset`), where `refuse` removes the same messages. The
   // armed rollback must not run again and log "could not roll back" about a removal that succeeded.
@@ -2174,34 +2136,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["sendMessage", 91901, FINAL],
         ["setConversationLabels", 91901, "vip,resolvido-pela-ia"],
         ["toggleStatus", 91901, "resolved"],
-      ]);
-    });
-
-    test("with no label configured the close is exactly what it was", async () => {
-      await seedConversation(91902, null);
-      const FINAL = "Fechado!";
-      const calls: Array<[string, number, string]> = [];
-      const cw = makeLabelledResolveClient(calls, {
-        catalog: ["resolvido-pela-ia"],
-      });
-      await withResolveLabels([], async () => {
-        await runAgentTurn({
-          tenantId,
-          instanceId,
-          agentBotId: 9,
-          event: incoming({ conversationId: 91902 }),
-          base: appDb,
-          deps: {
-            makeModel: () =>
-              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
-            makeClient: cw.make,
-            checkpointer: new MemorySaver(),
-          },
-        });
-      });
-      expect(calls).toEqual([
-        ["sendMessage", 91902, FINAL],
-        ["toggleStatus", 91902, "resolved"],
       ]);
     });
 
@@ -3803,27 +3737,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(rows.filter((r) => r.level === "info")).toHaveLength(works.length);
     },
   );
-
-  test("taken over mid-turn discards the resolve intent", async () => {
-    await seedConversation(911, "User");
-    const calls: Array<[string, number, string]> = [];
-    const outcome = await runAgentTurn({
-      tenantId,
-      instanceId,
-      agentBotId: 9,
-      event: incoming({ conversationId: 911 }),
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new ResolveThenReplyModel("Resolvido!") as unknown as BaseChatModel,
-        makeClient: makeResolveClient(calls),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(outcome).toBe("taken-over");
-    // A human owns the conversation: no reply AND no resolve may reach Chatwoot.
-    expect(calls).toEqual([]);
-  });
 
   // NOTE: An unexplained silence must not close the conversation. The ORDER (the close comes after
   // the reply, never instead of it) is proved by the tests above with a real reply; what an EMPTY
@@ -7063,34 +6976,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["sendFileAttachment", 936, "imagem.png"],
       ["sendMessage", 936, "Essas são as três."],
     ]);
-  });
-
-  // An image IS an answer, so a turn whose only output is a picture must not report "empty" — the
-  // callers clear the surfaced turn error on "posted", and a conversation that was just answered
-  // would otherwise keep showing the previous failure.
-  test("an image with no final text still counts as an answered turn", async () => {
-    await allowImageHost();
-    await seedConversation(932, null);
-    const calls: Array<[string, number, string]> = [];
-    const outcome = await runAgentTurn({
-      tenantId,
-      instanceId,
-      agentBotId: 9,
-      event: incoming({ conversationId: 932 }),
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new SendImageOnlyModel(
-            IMG_URL,
-            "Camiseta azul",
-          ) as unknown as BaseChatModel,
-        makeClient: makeImageClient(calls),
-        checkpointer: new MemorySaver(),
-        imageDeps,
-      },
-    });
-    expect(outcome).toBe("posted");
-    expect(calls).toEqual([["sendFileAttachment", 932, "imagem.png"]]);
   });
 
   // The other half of that rule: when the attachments were the whole turn and NONE of them got

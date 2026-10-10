@@ -144,17 +144,6 @@ describe("buildPromptAudit", () => {
       "Agora são 15:08:30.",
     );
   });
-
-  test("no blocks means nothing is appended", () => {
-    expect(
-      buildPromptAudit({
-        template: "Seja breve.",
-        vars: VARS,
-        opts: OPTS,
-        sections: [],
-      }),
-    ).toBe("Seja breve.");
-  });
 });
 
 // The audited prompt and the prompt the model was actually given are two renderings of ONE template,

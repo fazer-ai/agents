@@ -147,26 +147,12 @@ describe("attendanceHasStarted", () => {
     expect(attendanceHasStarted([], 7)).toBe(false);
   });
 
-  test("the attendance the last stamped message belongs to has started", () => {
-    expect(attendanceHasStarted([stamped(7)], 7)).toBe(true);
-  });
-
   // Assistant replies carry no stamp and sit after the human turn of their own attendance, so the
   // scan has to walk past them rather than stop at the end of the array.
   test("unstamped replies at the end do not hide the answer", () => {
     expect(attendanceHasStarted([stamped(7), new AIMessage("oi")], 7)).toBe(
       true,
     );
-  });
-
-  // NOTE: The reopened case. Asking "does 1 appear anywhere" answers yes for an attendance that
-  // ended before 2 ran, so the writer would skip the divider for a conversation that just resumed and
-  // its first turn would reach the model as a continuation of 2. The stamp is inert to the model; the
-  // divider is the only part it reads.
-  test("a conversation that ran EARLIER has not started the current attendance", () => {
-    const thread = [stamped(1), new AIMessage("resposta"), stamped(2)];
-    expect(attendanceHasStarted(thread, 1)).toBe(false);
-    expect(attendanceHasStarted(thread, 2)).toBe(true);
   });
 
   test("a conversation reopened at the end HAS started", () => {

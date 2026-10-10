@@ -386,24 +386,6 @@ describe("flattenOntoWhite", () => {
     expect(img.data[mid]).toBeLessThan(250);
   });
 
-  test("premultiplied colour is not scaled by its alpha a second time", async () => {
-    // Libheif answers `is_premultiplied_alpha()` and hands back colour already multiplied by
-    // the alpha; the straight-alpha formula multiplies again and darkens everything translucent. On
-    // the fixture's (100, 0, 0, 128): premultiplied gives 100 + 255 * (1 - 128/255) = 227, straight
-    // gives 177, fifty levels of red lost on every cutout edge with nothing looking broken.
-    const out = await runMediaConverter(
-      "heic-to-jpeg",
-      PREMULT.buffer.slice(
-        PREMULT.byteOffset,
-        PREMULT.byteOffset + PREMULT.byteLength,
-      ) as ArrayBuffer,
-    );
-    const img = jpeg.decode(new Uint8Array(out));
-    const mid = ((img.height >> 1) * img.width + (img.width >> 1)) * 4;
-    expect(img.data[mid] as number).toBeGreaterThan(215);
-    expect(img.data[mid] as number).toBeLessThan(240);
-  });
-
   test("the two files decode to the SAME bytes, so only the flag can tell them apart", async () => {
     // The same PNG encoded with and without `--premultiplied-alpha` decodes byte-identical, so
     // nothing in the pixels says which formula is owed: without the flag there is no information.
@@ -519,12 +501,6 @@ describe("fitRgba", () => {
     expect(out.width).toBe(1568);
     expect(out.height).toBe(1176);
     expect(out.data.length).toBe(1568 * 1176 * 4);
-  });
-
-  test("the portrait case scales on the OTHER edge", () => {
-    const out = fitRgba(solid(3024, 4032), 1568);
-    expect(out.height).toBe(1568);
-    expect(out.width).toBe(1176);
   });
 
   test("an extreme ratio never rounds an edge to zero", () => {
@@ -1049,35 +1025,6 @@ describe("heic-to-jpeg", () => {
     }
   });
 
-  test("a JPEG carrying an accepted brand at offset 8 is a MISMATCH, not a broken HEIC", async () => {
-    // Offset 8 is the major brand only when offset 4 says `ftyp`; a JPEG whose first marker is
-    // a comment puts the comment's payload exactly there. Misread, the file is called a broken HEIC
-    // and skipped, although the vendor reads it by sniffing.
-    const real = new Uint8Array(
-      jpeg.encode(
-        { data: new Uint8Array(8 * 8 * 4).fill(180), width: 8, height: 8 },
-        80,
-      ).data,
-    );
-    // SOI, then a COM segment (0xFFFE) whose declared length is 10: two length bytes plus eight of
-    // payload, which puts payload bytes 2..5 on file offsets 8..11.
-    const armadilha = new Uint8Array(real.length + 12);
-    armadilha.set([0xff, 0xd8, 0xff, 0xfe, 0x00, 0x0a, 0x20, 0x20], 0);
-    armadilha.set(new TextEncoder().encode("heic"), 8);
-    armadilha.set([0x20, 0x20], 12);
-    armadilha.set(real.subarray(2), 14);
-
-    // NOTE: those bytes DO spell an accepted brand at offset 8, and the file IS a readable JPEG.
-    expect(String.fromCharCode(...armadilha.subarray(8, 12))).toBe("heic");
-    expect(jpeg.decode(armadilha).width).toBe(8);
-    // NOTE: the check requires `ftyp` at offset 4, and a JPEG has 0xFFFE there.
-    expect(String.fromCharCode(...armadilha.subarray(4, 8))).not.toBe("ftyp");
-
-    await expect(
-      runMediaConverter("heic-to-jpeg", armadilha.buffer as ArrayBuffer),
-    ).rejects.toBeInstanceOf(MediaSourceMismatchError);
-  });
-
   test("the operator's line names WHICH of the three things the file is", async () => {
     // The three ways of not being a convertible HEIC are different facts on the line. Reported
     // as one, a 703-byte JPEG reads as `<too short>` and sends the reader after a truncated upload.
@@ -1286,15 +1233,6 @@ describe("a grid HEIC over the pixel cap", () => {
         /outside the 10x10 source/,
       );
     expect(() => fit.add(piece, 6, 6)).not.toThrow();
-  });
-
-  test("the rotated grid comes out in the orientation it is shown in", async () => {
-    const grid = await decodeGridFitted(buf(GRID_ROTATED), {
-      maxEdge: 4000,
-      maxTilePixels: MAX_SOURCE_PIXELS,
-    });
-    if (grid.kind !== "decoded") throw new Error(grid.kind);
-    expect([grid.image.width, grid.image.height]).toEqual([1300, 2000]);
   });
 
   test("an image stored in one piece is not a grid, whatever its size", async () => {

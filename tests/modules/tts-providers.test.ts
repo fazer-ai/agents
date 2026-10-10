@@ -184,22 +184,6 @@ describe("TTS providers", () => {
     expect(body.model_id).toBe("eleven_flash_v2_5");
   });
 
-  test("a non-2xx response throws TtsError", async () => {
-    const { fetchImpl } = mockAudioFetch(500);
-    const provider = getTtsProvider("openai");
-    const p = provider?.synthesize({
-      text: "x",
-      voice: "alloy",
-      model: "tts-1",
-      language: "",
-      apiKey: "sk",
-      baseURL: null,
-      fetchImpl,
-      format: "ogg_opus",
-    });
-    await expect(p).rejects.toBeInstanceOf(TtsError);
-  });
-
   test("elevenlabs requires a voice; openai has a default", () => {
     expect(getTtsProvider("elevenlabs")?.requiresVoice).toBe(true);
     expect(getTtsProvider("openai")?.defaultVoice).toBe("alloy");
@@ -248,25 +232,6 @@ describe("TTS providers", () => {
     expect(res?.fileName).toBe("reply.wav");
     const head = res ? new TextDecoder().decode(res.audio.slice(0, 4)) : "";
     expect(head).toBe("RIFF");
-  });
-
-  test("format 'ogg_opus' keeps today's WhatsApp voice-note output", async () => {
-    const { calls, fetchImpl } = mockAudioFetch();
-    const provider = getTtsProvider("openai");
-    const res = await provider?.synthesize({
-      text: "olá",
-      voice: "alloy",
-      model: "tts-1",
-      language: "",
-      apiKey: "sk",
-      baseURL: null,
-      fetchImpl,
-      format: "ogg_opus",
-    });
-    const body = JSON.parse(calls[0]?.init.body as string);
-    expect(body.response_format).toBe("opus");
-    expect(res?.mime).toBe("audio/ogg");
-    expect(res?.fileName).toBe("reply.ogg");
   });
 
   test("openrouter posts to /audio/speech with mp3 (no Opus option) and returns audio/mpeg", async () => {

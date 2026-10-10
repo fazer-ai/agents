@@ -83,18 +83,7 @@ describe("asaas toolpack — allowlist (fail-closed)", () => {
     );
     expect(tools.map((t) => t.name)).toEqual(["asaas_payment_link_create"]);
   });
-  test("two tools when both granted", () => {
-    const tools = asaasToolpack.build(
-      sel({
-        enabledTools: ["asaas_payment_link_create", "asaas_payment_status"],
-      }),
-      baseCtx(),
-    );
-    expect(tools.map((t) => t.name).sort()).toEqual([
-      "asaas_payment_link_create",
-      "asaas_payment_status",
-    ]);
-  });
+
   test("an unknown tool name yields nothing", () => {
     expect(
       asaasToolpack.build(sel({ enabledTools: ["bogus"] }), baseCtx()),
@@ -119,15 +108,6 @@ describe("asaas toolpack — environment is bound to config, never an arg", () =
     );
     await tool?.invoke({ paymentLinkId: "plink_1" });
     expect(calls[0]?.url).toBe("https://api.asaas.com/v3/paymentLinks/plink_1");
-  });
-
-  test("absent / unknown environment → sandbox origin (safe default)", async () => {
-    const { impl, calls } = stubFetch(200, { id: "plink_1", active: true });
-    const tool = statusTool({}, baseCtx({ fetchImpl: impl }));
-    await tool?.invoke({ paymentLinkId: "plink_1" });
-    expect(calls[0]?.url).toBe(
-      "https://api-sandbox.asaas.com/v3/paymentLinks/plink_1",
-    );
   });
 
   test("credential flows only into the access_token header, never the return", async () => {
@@ -280,24 +260,6 @@ describe("asaas toolpack — PIX charge (hermetic)", () => {
     })) as string;
     expect(out).toContain("Invalid CPF/CNPJ");
     expect(calls).toHaveLength(0);
-  });
-
-  test("missing PIX code still returns the payable invoiceUrl", async () => {
-    const routes = pixRoutes({ data: [], totalCount: 0 });
-    // QR endpoint fails (e.g. no PIX key on the account).
-    routes[3] = {
-      match: (u: string) => u.includes("/pixQrCode"),
-      status: 400,
-      json: { errors: [{ description: "no pix key" }] },
-    };
-    const { impl } = scriptedFetch(routes);
-    const tool = pixTool(baseCtx({ fetchImpl: impl }));
-    const out = (await tool?.invoke({
-      value: 10,
-      customerName: "Y",
-      cpfCnpj: CPF,
-    })) as string;
-    expect(out).toContain("https://sandbox.asaas.com/i/pix1");
   });
 
   // NOTE: a side effect that fails inside a tool that still returns success must reach

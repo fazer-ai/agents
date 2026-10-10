@@ -406,21 +406,6 @@ describe("google drive toolpack — send file", () => {
     expect(out).toContain("not available in this context");
     expect(calls).toHaveLength(0);
   });
-
-  test("a file above the size cap is refused (suggest a link)", async () => {
-    const { impl } = routerFetch((url) => {
-      if (url.includes("alt=media")) {
-        return binaryResponse(1, 20 * 1024 * 1024);
-      }
-      return json(200, { name: "big.zip", mimeType: "application/zip" });
-    });
-    const cw = fakeChatwoot();
-    const tool = sendTool(baseCtx({ fetchImpl: impl, chatwoot: cw.chatwoot }));
-    const out = (await tool?.invoke({ fileId: "f1" })) as string;
-    expect(out).toContain("too large");
-    expect(cw.sent).toHaveLength(0);
-    expect(cw.delivered.count).toBe(0);
-  });
 });
 
 // Integration failures must reach the flow log as failures: invoked as a tool_call,

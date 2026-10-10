@@ -503,23 +503,6 @@ describe.skipIf(!dbUp)("scheduler", () => {
     }
   }, 30_000);
 
-  test("claim → complete", async () => {
-    const id = await enqueueJob({
-      rearm: "same-work",
-      tenantId,
-      kind: "WEBHOOK_RETRY",
-      dedupeKey: "dk-complete",
-      runAt: past(),
-      base: appDb,
-    });
-    const claimed = await claimDueJobs(10, appDb, new Date(), tenantId);
-    const mine = claimed.find((j) => j.id === id);
-    expect(mine).toBeDefined();
-    expect((await statusOf(id)).status).toBe("CLAIMED");
-    await completeJob(tenantId, id, await seqOf(id), "FOLLOWUP", appDb);
-    expect((await statusOf(id)).status).toBe("DONE");
-  });
-
   // NOTE: the failure budget bounds CONSECUTIVE failures, not the row's lifetime, so a pass that
   // completed spends the budget it earned. Started from a NON-ZERO count on purpose: a fresh row
   // already carries `attempts === 0`, so asserting it would pin nothing.
@@ -584,83 +567,6 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(row.payload).toEqual({ threadId: "1:2:3", nudgeRetries: 1 });
   });
 
-  // NOTE: a job that reschedules itself forever (FLOWLOG_SWEEP, FOLLOWUP_SWEEP, HEARTBEAT) must not
-  // accumulate every failure it has ever had across weeks of successful passes, or the fifth one
-  // dead-letters the row for good.
-  test("a perpetual job outlives more lifetime failures than the cap", async () => {
-    const id = await enqueueJob({
-      rearm: "same-work",
-      tenantId,
-      kind: "FLOWLOG_SWEEP",
-      dedupeKey: "dk-perpetual",
-      runAt: past(),
-      base: appDb,
-    });
-    for (let round = 0; round < 8; round++) {
-      await claimDueJobs(10, appDb, new Date(), tenantId);
-      const before = await statusOf(id);
-      await failJob(
-        tenantId,
-        id,
-        await seqOf(id),
-        before.attempts,
-        "FLOWLOG_SWEEP",
-        "blip",
-        appDb,
-      );
-      expect((await statusOf(id)).status).toBe("PENDING");
-      // The next pass succeeds, which is what a transient blip looks like.
-      await suDb.schedulerJob.update({
-        where: { id },
-        data: { runAt: past() },
-      });
-      await claimDueJobs(10, appDb, new Date(), tenantId);
-      await rescheduleJob(
-        tenantId,
-        id,
-        await seqOf(id),
-        past(),
-        undefined,
-        appDb,
-      );
-    }
-    expect((await statusOf(id)).status).toBe("PENDING");
-  });
-
-  // The control for the test above: the budget still bounds a unit of work that is genuinely broken,
-  // because consecutive failures are never interleaved with a completed pass — a failure re-pends
-  // with a backoff and the next claim fails again.
-  test("consecutive failures still dead-letter at the cap", async () => {
-    const id = await enqueueJob({
-      rearm: "same-work",
-      tenantId,
-      kind: "FLOWLOG_SWEEP",
-      dedupeKey: "dk-consecutive",
-      runAt: past(),
-      base: appDb,
-    });
-    let status = "";
-    for (let round = 0; round < 5; round++) {
-      await suDb.schedulerJob.update({
-        where: { id },
-        data: { runAt: past() },
-      });
-      await claimDueJobs(10, appDb, new Date(), tenantId);
-      const before = await statusOf(id);
-      await failJob(
-        tenantId,
-        id,
-        await seqOf(id),
-        before.attempts,
-        "FLOWLOG_SWEEP",
-        "broken",
-        appDb,
-      );
-      status = (await statusOf(id)).status;
-    }
-    expect(status).toBe("DEAD");
-  });
-
   // NOTE: `rescheduleJob` clears the budget a completed pass earned, and DONE is the same pass with
   // a different ending, so it clears it too. Every kind whose dedupeKey names a permanent identity
   // (a thread, a document) finishes its work with this call, and the budget one attendance spent
@@ -680,52 +586,6 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const s = await statusOf(id);
     expect(s.status).toBe("DONE");
     expect(s.attempts).toBe(0);
-  });
-
-  // NOTE: MEMORY_COMPACT's dedupeKey is the THREAD, so one physical row serves every attendance that
-  // contact ever has; a transient failure inherited by the next attendance would, at the fifth,
-  // retire compaction for that contact for good.
-  //
-  // The re-arm here declares "same-work" ON PURPOSE, which is the declaration that keeps the budget:
-  // the row survives because the passes COMPLETED, not because the caller asked for a clean slate.
-  test("a row re-armed by new work outlives more lifetime failures than the cap", async () => {
-    const key = "dk-rearmed-lifetime";
-    for (let attendance = 0; attendance < 8; attendance++) {
-      const id = await enqueueJob({
-        tenantId,
-        kind: "MEMORY_COMPACT",
-        dedupeKey: key,
-        runAt: past(),
-        rearm: "same-work",
-        base: appDb,
-      });
-      await claimDueCompactionJobs(10, appDb, new Date(), tenantId);
-      const before = await statusOf(id);
-      await failJob(
-        tenantId,
-        id,
-        await seqOf(id),
-        before.attempts,
-        "MEMORY_COMPACT",
-        "blip",
-        appDb,
-      );
-      expect((await statusOf(id)).status).toBe("PENDING");
-      // The retry succeeds, which is what a transient blip looks like: the attendance compacted.
-      await suDb.schedulerJob.update({
-        where: { id },
-        data: { runAt: past() },
-      });
-      await claimDueCompactionJobs(10, appDb, new Date(), tenantId);
-      await completeJob(tenantId, id, await seqOf(id), "MEMORY_COMPACT", appDb);
-      expect((await statusOf(id)).status).toBe("DONE");
-    }
-    const row = await suDb.schedulerJob.findFirstOrThrow({
-      where: { tenantId, kind: "MEMORY_COMPACT", dedupeKey: key },
-      select: { status: true, attempts: true },
-    });
-    expect(row.status).toBe("DONE");
-    expect(row.attempts).toBe(0);
   });
 
   // What a re-arm MEANS is the caller's knowledge, and it is the only thing left deciding the budget

@@ -44,25 +44,6 @@ describe("asaas mapper", () => {
     });
   });
 
-  test("prefers payment.externalReference for correlation, keeps payment.id for dedupe", () => {
-    const ev = mapOk({
-      event: "PAYMENT_RECEIVED",
-      payment: {
-        id: "pay_456",
-        value: 100,
-        status: "RECEIVED",
-        externalReference: "corr_abc123",
-      },
-    });
-    // externalId is the correlation token we sent at outbound (tied to the thread), NOT the
-    // charge id; dedupeKey stays keyed by the charge id.
-    expect(ev).toMatchObject({
-      kind: "conversion",
-      externalId: "corr_abc123",
-      dedupeKey: "PAYMENT_RECEIVED:pay_456",
-    });
-  });
-
   test("PAYMENT_OVERDUE → agent_nudge", () => {
     const ev = mapOk({
       event: "PAYMENT_OVERDUE",

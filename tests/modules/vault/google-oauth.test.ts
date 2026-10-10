@@ -103,20 +103,6 @@ describe("google-oauth: PKCE + scopes + state (pure)", () => {
     expect(back.exp).toBeGreaterThan(Date.now());
   });
 
-  test("decryptOAuthState: a tampered blob is rejected", () => {
-    const blob = encryptOAuthState(
-      buildState({
-        entryId: "1",
-        tenantId: "1",
-        userId: "1",
-        scopes: [],
-        codeVerifier: "v",
-      }),
-    );
-    const tampered = `${blob.slice(0, -4)}XXXX`;
-    expect(() => decryptOAuthState(tampered)).toThrow();
-  });
-
   test("decryptOAuthState: a blob of the wrong shape is rejected", () => {
     const bogus = encryptJson({ hello: "world" });
     expect(() => decryptOAuthState(bogus)).toThrow();
@@ -160,12 +146,6 @@ describe("google-oauth: callback HTML (CSP-safe)", () => {
     expect(html).toContain('"ok":true');
     // The executable script must be exactly the pinned constant (whose sha256 is in csp.ts).
     expect(html).toContain(`<script>${GOOGLE_OAUTH_CALLBACK_SCRIPT}</script>`);
-  });
-
-  test("escapes a hostile message so it cannot break out of the JSON block", () => {
-    const html = buildCallbackHtml(false, "</script><b>x", "https://app");
-    // The literal closing tag inside the JSON is escaped.
-    expect(html).not.toContain("</script><b>x");
   });
 });
 

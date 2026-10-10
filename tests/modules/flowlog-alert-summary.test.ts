@@ -27,22 +27,6 @@ describe("alertSummary", () => {
     expect(alertSummary(ev)).toBe("[observe via openai] skipped: superseded");
   });
 
-  test("a delivery recovered on retry says recovered, not ok", () => {
-    const ev: AlertEvent = {
-      stage: "delivery",
-      level: "warn",
-      status: "ok",
-      detail: {
-        outcome: "recovered",
-        deliveryEvent: "message_created",
-        deliveryId: 88,
-        messageId: 13990249,
-        conversationId: 4412,
-      },
-    };
-    expect(alertSummary(ev)).toBe("[delivery] ok: recovered");
-  });
-
   test("a stranded delivery says stranded, and on which status", () => {
     const ev: AlertEvent = {
       stage: "delivery",

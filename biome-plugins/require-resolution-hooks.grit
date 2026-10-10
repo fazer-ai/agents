@@ -1,0 +1,30 @@
+// A write that can move a conversation's mirrored status to `resolved` runs the resolution hooks
+// itself (`runResolutionHooks`, in src/modules/chatwoot/webhook.ts). Every such write announces the
+// move (`announceStatusChange`), and the resolve's own webhook arrives after it, finds the status
+// already `resolved` and sees no transition, so hooks the write leaves behind are never run.
+//
+// Matched: a function declaration whose body calls `announceStatusChange` with a `status` that is not
+// a literal other than "resolved", and never calls `runResolutionHooks`. Asked of the function the
+// call sits in, so a second writer beside one that already runs them is not covered by it.
+//
+// Suppress with `// biome-ignore lint/plugin/require-resolution-hooks: <reason>` only where the hooks
+// run elsewhere off the transition the function reports (the webhook mirror).
+language js;
+
+or {
+    `async function $name($params) { $body }`,
+    `async function $name($params): $ret { $body }`,
+    `function $name($params) { $body }`,
+    `function $name($params): $ret { $body }`
+} where {
+    $body <: contains `announceStatusChange($db, $tenant, $payload)` where {
+        $payload <: contains `status: $status` where {
+            $status <: not or { `"open"`, `"pending"`, `"snoozed"` }
+        }
+    },
+    $body <: not contains `runResolutionHooks($_)`,
+    register_diagnostic(
+        span = $name,
+        message = "This function can move a conversation to `resolved` (it announces a status it does not fix to another literal) and does not call `runResolutionHooks`. The resolve's own webhook finds the status already `resolved` and runs nothing, so the memory compaction and the redirect's cancel and closing are lost. Call `runResolutionHooks` after the transaction commits when the status this function wrote is `resolved`."
+    )
+}

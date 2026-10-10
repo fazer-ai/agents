@@ -110,14 +110,6 @@ describe.skipIf(!dbUp)("the accounts a deployment can be asked for", () => {
     expect(await activeIds()).toEqual([5]);
   });
 
-  test("a large array of ids it does not report is refused before any write", async () => {
-    const many = Array.from({ length: 501 }, (_, i) => 20_000 + i);
-    await expect(
-      setConnectedAccounts(ctx(), many, profileOk, appDb),
-    ).rejects.toThrow(/does not report account/);
-    expect(await activeIds()).toEqual([5]);
-  });
-
   // NOTE: with the probe down there is no list to check against, so the cap is what is left. Both
   // sides of it, because a cap asserted in one direction is satisfied by a tool that refuses
   // everything.

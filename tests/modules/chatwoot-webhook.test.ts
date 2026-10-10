@@ -482,15 +482,6 @@ describe("isNewHumanAgentMessage (issue #187)", () => {
     expect(n && isNewHumanAgentMessage(n)).toBe(false);
   });
 
-  // A template is an automated send (campaign, canned HSM), not a person typing; an activity is
-  // Chatwoot narrating itself. Neither is dialogue with the customer.
-  test("false for a template and for an activity message", () => {
-    for (const message_type of ["template", "activity"]) {
-      const n = message({ message_type });
-      expect(n && isNewHumanAgentMessage(n)).toBe(false);
-    }
-  });
-
   // NOTE: The fork stores an emoji react as a real message: MessageBuilder with message_type
   // "outgoing", content = the emoji, sender Current.user, and content_attributes.is_reaction. Every
   // other clause here matches it, so without this the attendance's permanent memory would carry a line

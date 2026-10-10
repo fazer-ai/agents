@@ -35,6 +35,12 @@ const VISION_PROVIDER_TYPE: Record<string, string> = {
   openrouter: "openrouter",
 };
 
+// The decisions engine's classification APIs (src/modules/decisions/config.ts). TypeSafe has no
+// secret type of its own, so it filters nothing.
+const DECISIONS_PROVIDER_TYPE: Record<string, string> = {
+  openai: "openai",
+};
+
 const CATALOG_TYPE_TYPE: Record<string, string> = {
   ASAAS: "asaas",
   GOOGLE_CALENDAR: "google_oauth",
@@ -52,5 +58,6 @@ export const credentialCompat = {
   stt: (provider: string) => single(STT_PROVIDER_TYPE, provider),
   tts: (provider: string) => single(TTS_PROVIDER_TYPE, provider),
   vision: (provider: string) => single(VISION_PROVIDER_TYPE, provider),
+  decisions: (provider: string) => single(DECISIONS_PROVIDER_TYPE, provider),
   catalog: (catalogType: string) => single(CATALOG_TYPE_TYPE, catalogType),
 };

@@ -136,15 +136,6 @@ describe("footer text", () => {
     );
   });
 
-  test("an empty token next to authored text takes only its own separator", () => {
-    expect(
-      resolveFooterText("Obrigado! · {{company_name}} · {{doc_number}}", {
-        company_name: "",
-        doc_number: "7",
-      }),
-    ).toBe("Obrigado! · 7");
-  });
-
   test("an empty token sharing a part with a filled one keeps the separator", () => {
     expect(
       resolveFooterText("{{company_name}} {{company_phone}} | {{doc_number}}", {

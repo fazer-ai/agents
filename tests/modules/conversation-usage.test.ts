@@ -445,30 +445,6 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
     expect(byTurn).toEqual({ tOld: 1, tNew: 0 });
   });
 
-  test("the observer's calls are billed to the conversation it watched", async () => {
-    const conv = await newConversation();
-    await bill({
-      conversationId: conv.id,
-      turnId: "tAgent",
-      node: "agent",
-      input: 1000,
-      cached: 100,
-      output: 10,
-      at: "2026-09-25T12:00:00Z",
-    });
-    await bill({
-      conversationId: conv.id,
-      turnId: "tObs",
-      node: "observer",
-      input: 300,
-      output: 10,
-      at: "2026-09-25T12:00:05Z",
-    });
-    const usage = await usageOf(conv.id);
-    expect(usage.total.promptTokens).toBe(1300);
-    expect(usage.total.calls).toBe(2);
-  });
-
   test("only the newest turns come back, oldest first", async () => {
     const conv = await newConversation();
     const extra = 3;

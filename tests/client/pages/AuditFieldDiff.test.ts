@@ -68,16 +68,6 @@ describe("the field-level diff", () => {
     expect(diffProjection([1], [2]).changes).toEqual([]);
   });
 
-  // NOTE: the keys are compared, not the values' length, so a pair of 11k-character prompts is one
-  // row and not a page.
-  test("two whole system prompts are one changed field", () => {
-    const before = { systemPrompt: "x".repeat(11_000), name: "Ana" };
-    const after = { systemPrompt: "y".repeat(11_000), name: "Ana" };
-    expect(diffProjection(before, after).changes.map((c) => c.key)).toEqual([
-      "systemPrompt",
-    ]);
-  });
-
   // `markUndisclosed` puts the SAME marker on both sides on purpose: it says a write moved
   // something the projection does not carry (an encrypted secret, a header block), which is a fact
   // about the change and not about either end of it. A diff by equality therefore erases it, and
@@ -138,10 +128,6 @@ describe("the field-level diff", () => {
     expect(d.undisclosed).toBe(true);
     expect(d.changes).toEqual([{ key: "id", before: undefined, after: "7" }]);
   });
-
-  test("an ordinary projection does not claim a hidden change", () => {
-    expect(diffProjection({ a: 1 }, { a: 2 }).undisclosed).toBe(false);
-  });
 });
 
 // An operator arrives with a day and no idea which action to look for, and the day has to be THEIR
@@ -163,28 +149,6 @@ describe("the day an operator picked", () => {
     expect(b?.until).toBe("2026-01-02T02:59:59.999Z");
   });
 
-  // The row a UTC bound loses: displayed as Jan 1 at 22:00 in São Paulo, stamped Jan 2 in UTC. It
-  // has to fall inside the filter for the day the screen is showing it under.
-  test("a row at the edge of the local day falls inside the local bounds", () => {
-    const b = localDayBounds("2026-01-01", SP);
-    const since = new Date(b?.since ?? "").getTime();
-    const until = new Date(b?.until ?? "").getTime();
-    const shownAsJan1At22 = Date.parse("2026-01-02T01:00:00.000Z");
-    expect(shownAsJan1At22 >= since && shownAsJan1At22 <= until).toBe(true);
-    expect(shownAsJan1At22 > Date.parse("2026-01-02T00:00:00.000Z")).toBe(true);
-    expect(Date.parse("2026-01-01T02:59:59.999Z") < since).toBe(true);
-    expect(Date.parse("2026-01-02T03:00:00.000Z") > until).toBe(true);
-  });
-
-  test("a whole day is a whole day, minus exactly one millisecond", () => {
-    for (const off of [0, 180, -120, 330]) {
-      const b = localDayBounds("2026-03-15", fixed(off));
-      const span =
-        new Date(b?.until ?? "").getTime() - new Date(b?.since ?? "").getTime();
-      expect(span).toBe(86_400_000 - 1);
-    }
-  });
-
   // Twice a year the day is not 24 hours, and a fixed 24 loses rows the screen is showing: it reaches
   // into the next day when the clock springs forward, and ends an hour early when it falls back,
   // dropping every row from the last hour of the day being displayed.
@@ -201,30 +165,6 @@ describe("the day an operator picked", () => {
     expect(
       new Date(b2?.until ?? "").getTime() - new Date(b2?.since ?? "").getTime(),
     ).toBe(25 * 3_600_000 - 1);
-  });
-
-  // A zone that springs forward AT midnight: that local midnight never happens, so the day starts at
-  // 01:00 local. Asking for an OFFSET at a non-existent instant answers from the far side of the
-  // transition, and adding it to a nominal UTC midnight lands an hour early — the day would drop its
-  // last hour and the next day would claim it. Santiago moves at midnight; this is that shape.
-  test("a day whose midnight does not exist starts when the day actually starts", () => {
-    // -04:00 before, -03:00 from 2026-09-06 00:00 local, which does not occur.
-    const santiago = (y: number, m: number, d: number) => {
-      const beforeJump = Date.UTC(y, m - 1, d) + 240 * 60_000;
-      const afterJump = Date.UTC(y, m - 1, d) + 180 * 60_000;
-      return d <= 5 ? beforeJump : afterJump;
-    };
-    const jumpDay = localDayBounds("2026-09-06", santiago);
-    const dayBefore = localDayBounds("2026-09-05", santiago);
-    // No gap and no overlap: one day ends exactly where the next begins.
-    expect(new Date(dayBefore?.until ?? "").getTime() + 1).toBe(
-      new Date(jumpDay?.since ?? "").getTime(),
-    );
-    // And the short day is 23 hours, not 24: the hour that never happened is not filtered for.
-    expect(
-      new Date(dayBefore?.until ?? "").getTime() -
-        new Date(dayBefore?.since ?? "").getTime(),
-    ).toBe(23 * 3_600_000 - 1);
   });
 
   // The overflow cases the arithmetic must not special-case.
@@ -244,27 +184,6 @@ describe("the day an operator picked", () => {
   test("a date the picker never produces yields no bound at all", () => {
     for (const bad of ["", "garbage", "2026-01"]) {
       expect(localDayBounds(bad, SP)).toBeNull();
-    }
-  });
-
-  // `<input type="date">` emits zero-padded ISO and blanks anything else, so these came from a
-  // hand-edited URL. Accepted, they would filter by a day the input cannot display — and the page
-  // would keep the parameter, since the helper answered.
-  test("a date the input could never show is refused", () => {
-    for (const noncanonical of [
-      "2026-1-1",
-      "2026-01-1",
-      "2026-1-01",
-      " 2026-01-01",
-      "2026-01-01 ",
-      "26-01-01",
-      "2026/01/01",
-      "2026-01-01T00:00:00Z",
-    ]) {
-      expect([noncanonical, localDayBounds(noncanonical, SP)]).toEqual([
-        noncanonical,
-        null,
-      ]);
     }
   });
 

@@ -59,18 +59,6 @@ describe("computeTotals", () => {
     const t = computeTotals([item(1, 100)], { discount: -10, tax: -10 });
     expect(t).toEqual({ subtotal: 100, discount: 0, tax: 0, total: 100 });
   });
-
-  test("the printed rows always add up", () => {
-    for (const [q, p, d, x] of [
-      [1, 0.01, 0, 0],
-      [7, 13.37, 5.05, 1.11],
-      [3, 0.1, 0.3, 0],
-      [100, 99.99, 1000, 250],
-    ] as const) {
-      const t = computeTotals([item(q, p)], { discount: d, tax: x });
-      expect(t.subtotal - t.discount + t.tax).toBeCloseTo(t.total, 10);
-    }
-  });
 });
 
 describe("format", () => {

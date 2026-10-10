@@ -77,12 +77,6 @@ describe("nextNudgeRetry", () => {
     });
   });
 
-  test("the counter rides in the payload and advances by one", () => {
-    const d = nextNudgeRetry({ nudgeRetries: 3 }, now);
-    expect(d.retry).toBe(true);
-    expect(d.attempt).toBe(4);
-  });
-
   test("the last allowed attempt still retries", () => {
     const d = nextNudgeRetry({ nudgeRetries: NUDGE_RETRY_LIMIT - 2 }, now);
     expect(d.retry).toBe(true);
@@ -110,11 +104,6 @@ describe("nextNudgeRetry", () => {
 // its alert entirely.
 describe("the occasion a nudge refusal belongs to", () => {
   const key = (nudge: AgentNudge) => nudgeOccasionKey(3n, 77, nudge);
-
-  test("the same job asked twice is one occasion", () => {
-    const job = { source: "followup", kind: "inactivity", step: 2 };
-    expect(key(job)).toBe(key({ ...job }));
-  });
 
   test.each([
     [

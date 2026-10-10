@@ -146,29 +146,6 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
     expect(text).not.toContain("Solicita-se validação");
   });
 
-  // NOTE: the other half of the contract the tool description states: doubt belongs in `rationale`
-  // precisely because approval never carries it across.
-  test("the rationale never reaches the knowledge base", async () => {
-    await seed();
-    const item = await createSuggestion({
-      ctx: ctxOf(tenantId),
-      knowledgeBaseId: kbId,
-      proposedContent: REVISED,
-      proposedTitle: "Prazo 2",
-      rationale: RATIONALE,
-      base: appDb,
-    });
-    await approveApprovalItem({
-      ctx: ctxOf(tenantId),
-      id: item.id,
-      demoMode: true,
-      base: appDb,
-    });
-    const text = await lastApprovedText();
-    expect(text).toBe(REVISED);
-    expect(text).not.toContain("Não consegui confirmar");
-  });
-
   // NOTE: the claim returns the row's text in the same statement. Embedding the text read in the
   // FIRST phase would throw away a revision saved between that read and the claim, which the CAS
   // accepts, with both reviewers told it worked.

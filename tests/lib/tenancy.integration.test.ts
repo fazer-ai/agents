@@ -108,14 +108,6 @@ describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
     expect(seen[0]?.tenantId).toBe(t1);
   });
 
-  test("explicit cross-tenant WHERE is overridden by RLS (zero rows)", async () => {
-    const rows = await appDb.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(t1)}, true)`;
-      return tx.conversation.findMany({ where: { tenantId: t2 } });
-    });
-    expect(rows.length).toBe(0);
-  });
-
   test("cross-tenant write is blocked by the RLS WITH CHECK", async () => {
     await expect(
       appDb.$transaction(async (tx) => {

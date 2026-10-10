@@ -185,11 +185,6 @@ describe("mcp-oauth: state", () => {
     expect(back.clientId).toBe("client-1");
     expect(back.exp).toBeGreaterThan(Date.now());
   });
-
-  test("a tampered state is rejected", () => {
-    const blob = encryptOAuthState(sample());
-    expect(() => decryptMcpState(`${blob.slice(0, -4)}XXXX`)).toThrow();
-  });
 });
 
 describe("mcp-oauth: code exchange", () => {

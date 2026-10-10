@@ -14,6 +14,8 @@ import {
   JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
   JOB_RETRY_BASE_MS,
+  JOB_SPENDS_PROVIDER,
+  JOB_TRAFFIC_RANK,
   kindsInLane,
   type SchedulerLane,
 } from "@/modules/scheduler/lanes";
@@ -861,6 +863,15 @@ export async function revokeJobsByKeyPrefixOn(
 // a test of tenants sharing one cannot fence to a single tenant). Unset in production.
 export type TenantFence = bigint | readonly bigint[];
 
+// A claim ordered by kind before run_at (`trafficOrder`). With `spendCap`, at most that many of the
+// rows taken may be of a kind `spends` marks: the caller holds that many provider permits, so no row
+// it claims waits for one, and the due rows past the cap are left for the next claim.
+export interface ClaimOrder {
+  rank: Prisma.Sql;
+  spends: Prisma.Sql;
+  spendCap?: number;
+}
+
 // The claim's statement, exported so a test runs the exact SQL the lanes run
 // (tests/modules/scheduler-claim-limit.test.ts). A MATERIALIZED CTE, not `id IN (SELECT ... FOR
 // UPDATE SKIP LOCKED LIMIT n)`: as a semi-join the subquery can be re-executed per outer row, each run
@@ -875,6 +886,8 @@ export function claimSql(
   keyPrefix?: string,
   // Share the slots between tenants instead of oldest-first. Only the debounce lane asks for it.
   share?: boolean,
+  // Ignored with `share`.
+  order?: ClaimOrder,
 ): Prisma.Sql {
   // The prefix branch (the turn barrier) takes future-dated rows, since a job deferred for a
   // previous turn is exactly what a starting turn is missing, but not rows in failure backoff, or
@@ -929,12 +942,31 @@ export function claimSql(
       FOR UPDATE OF s SKIP LOCKED
       LIMIT ${lim}
     )`
-    : Prisma.sql`
+    : order?.spendCap !== undefined
+      ? Prisma.sql`
+    ranked AS (
+      SELECT id AS ranked_id, run_at AS ranked_run_at, ${order.rank} AS ranked_rank,
+        ${order.spends} AS ranked_spends,
+        SUM(${order.spends}) OVER (ORDER BY ${order.rank}, run_at, id) AS spent
+      FROM scheduler_jobs
+      WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
+        ${tenantClause} ${excludeClause}
+    ),
+    due AS MATERIALIZED (
+      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
+      WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
+        ${tenantClause} ${excludeClause}
+        AND (r.ranked_spends = 0 OR r.spent <= ${order.spendCap})
+      ORDER BY r.ranked_rank, r.ranked_run_at, r.ranked_id
+      FOR UPDATE OF s SKIP LOCKED
+      LIMIT ${lim}
+    )`
+      : Prisma.sql`
     due AS MATERIALIZED (
       SELECT id FROM scheduler_jobs
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
-      ORDER BY run_at
+      ORDER BY ${order ? Prisma.sql`${order.rank}, ` : Prisma.empty}run_at
       FOR UPDATE SKIP LOCKED
       LIMIT ${lim}
     )`;
@@ -970,6 +1002,7 @@ async function claimWhere(
   // with run_at a minute out, and those are precisely the messages a starting turn is missing.
   keyPrefix?: string,
   share?: boolean,
+  order?: ClaimOrder,
 ): Promise<ClaimedJob[]> {
   // NOTE: a lane claims nothing once the shutdown drain started (src/lib/shutdown.ts). The barrier's
   // claim (`keyPrefix`) belongs to a turn already running, which the drain is waiting for.
@@ -987,6 +1020,7 @@ async function claimWhere(
       excludeIds,
       keyPrefix,
       share,
+      order,
     );
     for (const job of jobs) holdUnstarted(job, base);
     return jobs;
@@ -1002,6 +1036,7 @@ async function selectClaim(
   excludeIds: bigint[] | undefined,
   keyPrefix: string | undefined,
   share: boolean | undefined,
+  order: ClaimOrder | undefined,
 ): Promise<ClaimedJob[]> {
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
@@ -1026,6 +1061,7 @@ async function selectClaim(
         [...new Set([...(excludeIds ?? []), ...runningJobIds()])],
         keyPrefix,
         share,
+        order,
       ),
     );
     return rows.map((r) => ({
@@ -1120,13 +1156,39 @@ export function claimDueJobs(
 // so ordered by run_at they are always the oldest and always fill it, and a fixed-rate kind that
 // exists to arrive on time never gets claimed at all (../scheduler/lanes.ts,
 // JOB_TRAFFIC_PROPORTIONAL). Splitting the claim is what reserves the rest of the batch for them.
+// Ordered by JOB_TRAFFIC_RANK first. `spendCap` is the provider permits the caller holds (ClaimOrder).
 export function claimDueTrafficJobs(
   limit: number,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   tenantId?: bigint,
+  spendCap?: number,
 ): Promise<ClaimedJob[]> {
-  return claimWhere(limit, base, now, laneFilter("shared", true), tenantId);
+  return claimWhere(
+    limit,
+    base,
+    now,
+    laneFilter("shared", true),
+    tenantId,
+    undefined,
+    undefined,
+    undefined,
+    trafficOrder(spendCap),
+  );
+}
+
+function trafficOrder(spendCap: number | undefined): ClaimOrder {
+  const kinds = kindsInLane("shared", true);
+  const caseOf = (value: (kind: SchedulerJobKind) => number) =>
+    Prisma.sql`CASE kind ${Prisma.join(
+      kinds.map((kind) => Prisma.sql`WHEN ${kind} THEN ${value(kind)}::int`),
+      " ",
+    )} END`;
+  return {
+    rank: caseOf((kind) => JOB_TRAFFIC_RANK[kind]),
+    spends: caseOf((kind) => (JOB_SPENDS_PROVIDER[kind] ? 1 : 0)),
+    ...(spendCap === undefined ? {} : { spendCap }),
+  };
 }
 
 // The observe lane: OBSERVE only, claimed by the scheduler's fast drain for the permits it holds

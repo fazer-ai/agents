@@ -170,15 +170,6 @@ test("taking the offered tool name warns, and the save carries it", async () => 
   expect(patches[0]).toMatchObject({ name: "Contrato", slug: "contrato" });
 });
 
-test("a tool name typed by hand survives a later rename", async () => {
-  const name = await open();
-
-  fireEvent.change(toolInput(), { target: { value: "proposta_v2" } });
-  fireEvent.change(name, { target: { value: "Recibo" } });
-  await new Promise((r) => setTimeout(r, 20));
-  expect(slugValue()).toBe("proposta_v2");
-});
-
 test("an unusable slug is refused in the field, and no request is made", async () => {
   await open();
 

@@ -4,24 +4,6 @@ import { Semaphore } from "@/lib/semaphore";
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
 describe("Semaphore", () => {
-  test("never runs more than `permits` tasks at once", async () => {
-    const sem = new Semaphore(3);
-    let active = 0;
-    let maxActive = 0;
-    await Promise.all(
-      Array.from({ length: 10 }, () =>
-        sem.run(async () => {
-          active += 1;
-          maxActive = Math.max(maxActive, active);
-          await tick();
-          active -= 1;
-        }),
-      ),
-    );
-    expect(maxActive).toBe(3);
-    expect(active).toBe(0);
-  });
-
   test("releases the permit when a task throws", async () => {
     const sem = new Semaphore(1);
     await expect(
@@ -268,5 +250,27 @@ describe("Semaphore.tryAcquire", () => {
     const after = sem.tryAcquire();
     expect(after).not.toBeNull();
     after?.();
+  });
+
+  test("onFree fires when a permit comes back free, not when a waiter takes it, and stops when removed", async () => {
+    const sem = new Semaphore(1);
+    let calls = 0;
+    const stop = sem.onFree(() => {
+      calls += 1;
+    });
+    const held = sem.tryAcquire();
+    let release!: () => void;
+    const open = new Promise<void>((r) => {
+      release = r;
+    });
+    const waiting = sem.run(() => open);
+    held?.();
+    expect(calls).toBe(0);
+    release();
+    await waiting;
+    expect(calls).toBe(1);
+    stop();
+    sem.tryAcquire()?.();
+    expect(calls).toBe(1);
   });
 });

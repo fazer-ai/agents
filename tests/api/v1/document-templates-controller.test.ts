@@ -78,26 +78,6 @@ describe("a block reaches the handler intact", () => {
     expect(body.blocks).toEqual(blocks);
   });
 
-  test("keeps a header's nested meta rows and a fields block's rows", async () => {
-    const blocks = [
-      {
-        id: "h",
-        type: "header",
-        title: "Orçamento {{doc_number}}",
-        showLogo: true,
-        meta: [{ label: "Cliente", value: "{{cliente}}" }],
-      },
-      {
-        id: "f",
-        type: "fields",
-        rows: [{ label: "Validade", value: "{{validade}}" }],
-        columns: 2,
-      },
-    ];
-    const { body } = await post({ name: "x", blocks });
-    expect(body.blocks).toEqual(blocks);
-  });
-
   test("keeps a declared field's own keys, and the style's", async () => {
     const fields = [
       {

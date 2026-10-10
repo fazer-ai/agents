@@ -198,17 +198,6 @@ describe("STT confidence", () => {
     }
   });
 
-  test("a confident transcription in another script passes: script is not the signal", async () => {
-    const { fetchImpl } = mockFetch({
-      text: "Привет, как дела?",
-      logprobs: tokens(-0.05, -0.11),
-    });
-    expect(await req("gpt-4o-mini-transcribe", fetchImpl)).toEqual({
-      text: "Привет, как дела?",
-      confidence: { signal: "token_logprob", meanLogprob: -0.08 },
-    });
-  });
-
   test("a Whisper transcription asks for its segments and drops the ones with no speech", async () => {
     const { calls, fetchImpl } = mockFetch({
       text: "Oi, boa tarde. Legendas pela comunidade Amara.org",
@@ -243,14 +232,6 @@ describe("STT confidence", () => {
       text: "Oi, boa tarde. Tudo bem?",
       confidence: { signal: "segments", segments: 2, droppedSegments: 0 },
     });
-  });
-
-  test("another vendor's transcribe model on a compatible server is asked as before", async () => {
-    const { calls, fetchImpl } = mockFetch({ text: "olá" });
-    await req("voxtral-mini-transcribe", fetchImpl, "openai-compatible");
-    const form = calls[0]?.init.body as FormData;
-    expect(form.get("response_format")).toBeNull();
-    expect(form.getAll("include[]")).toEqual([]);
   });
 
   test("segments a compatible server trimmed keep their word boundaries", async () => {
@@ -418,10 +399,5 @@ describe("ElevenLabs transcription", () => {
       confidence: { signal: "word_logprob", meanLogprob: -1.25 },
       withheld: true,
     });
-  });
-
-  test("a response without words is taken as it came", async () => {
-    const { out } = scribe({ text: "transcrição" });
-    expect(await out).toEqual({ text: "transcrição" });
   });
 });

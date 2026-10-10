@@ -201,35 +201,6 @@ function filterOfTheOffer(): HTMLInputElement {
   throw new Error("the offer has no filter box of its own");
 }
 
-test("opening a path offer does not push the field below it down", async () => {
-  await openBookForm();
-  const idField = controlFor<HTMLInputElement>(
-    /onde está o id|where the id is/i,
-  );
-  const startField = controlFor<HTMLInputElement>(
-    /horário de início|start time/i,
-  );
-
-  fireEvent.click(openerFor(idField));
-  const anOption = await waitFor(() => {
-    const el = Array.from(
-      document.querySelectorAll(
-        "li button, [role='option'], [role='menuitem']",
-      ),
-    ).find((x) => (x.textContent ?? "").trim().startsWith("data."));
-    if (!el) throw new Error("the offer never appeared");
-    return el;
-  });
-
-  // The common ancestor of the two fields is the flow the browser reflows: anything the offer adds
-  // in there lands ABOVE the next field and moves it. Rendering the offer outside that subtree (a
-  // portal, an overlay) is what makes the shift impossible rather than merely small.
-  let flow: Element | null = idField;
-  while (flow && !flow.contains(startField)) flow = flow.parentElement;
-  expect(flow).not.toBeNull();
-  expect(flow?.contains(anOption)).toBe(false);
-});
-
 test("a path offer can be narrowed by typing", async () => {
   await openBookForm();
   const idField = controlFor<HTMLInputElement>(

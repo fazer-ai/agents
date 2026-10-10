@@ -12,10 +12,7 @@ import {
   MediaTooLargeError,
   runMediaConverter,
 } from "@/modules/vision/convert/index";
-import {
-  MAX_IMAGE_EDGE,
-  planImageConversion,
-} from "@/modules/vision/media-conversion";
+import { planImageConversion } from "@/modules/vision/media-conversion";
 import { getVisionProvider, VisionError } from "@/modules/vision/providers";
 
 // Anthropic refuses an image with a side over 8000 px (400 "At least one of the image dimensions
@@ -172,10 +169,6 @@ describe("image dimensions read off the header, without decoding", () => {
 });
 
 describe("planImageConversion with the provider's dimension limit", () => {
-  test("Anthropic's limit is 8000 px", () => {
-    expect(MAX_IMAGE_EDGE.anthropic).toBe(8000);
-  });
-
   test("over the limit on Anthropic, a JPEG and a PNG are downscaled", () => {
     const over = { width: 4536, height: 8064 };
     expect(

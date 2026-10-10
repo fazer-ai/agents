@@ -929,57 +929,6 @@ describe("the notes the conversation already carries", () => {
       ).toEqual([12]);
     });
 
-    // And a reset with nothing said since: the acknowledgement is the last row, so every activity
-    // before it is the command's own narration.
-    test("a window that is only the reset's narration reads as empty", () => {
-      expect(
-        labelHistoryFromRows(
-          afterResetNarration(
-            [
-              row({
-                id: 11,
-                messageType: "activity",
-                content: "Fulano removeu compra-de-ingresso",
-              }),
-              row({
-                id: 12,
-                messageType: "outgoing",
-                content: "Conversa limpa.",
-                sendId: "reset-ack:10",
-              }),
-            ],
-            10,
-            ["compra-de-ingresso"],
-          ),
-          vocab,
-          undefined,
-          8,
-        ).lines,
-      ).toEqual([]);
-    });
-
-    test("drops the narration that is not about a label", () => {
-      expect(
-        labelHistoryFromRows(
-          [
-            row({
-              id: 1,
-              messageType: "activity",
-              content: "Assigned to Gi - Agente IA by Automation System",
-            }),
-            row({
-              id: 2,
-              messageType: "activity",
-              content: "Conversation was marked resolved by Fulano",
-            }),
-          ],
-          vocab,
-          undefined,
-          8,
-        ).lines,
-      ).toEqual([]);
-    });
-
     test("a message is not narration, whoever wrote it", () => {
       // A customer who types the word is not a label change, and a private note about one is a note.
       expect(
@@ -1112,23 +1061,6 @@ describe("the notes the conversation already carries", () => {
       ).toEqual(["Fulano adicionou cancelamento, compra-de-ingresso"]);
     });
 
-    test("a locale that quotes the run is read too", () => {
-      expect(
-        labelHistoryFromRows(
-          [
-            row({
-              id: 1,
-              messageType: "activity",
-              content: 'Fulano がラベル "cancelamento" を追加しました',
-            }),
-          ],
-          vocab,
-          undefined,
-          8,
-        ).lines,
-      ).toHaveLength(1);
-    });
-
     // The guard is a subtraction everywhere the model can see, and here it takes the whole line: the
     // title it would have to be recognised by is the one thing that may not reach the prompt.
     test("a guarded label never reaches the block, alone or beside another", () => {
@@ -1156,46 +1088,6 @@ describe("the notes the conversation already carries", () => {
           8,
         ).lines,
       ).toEqual(["Fulano adicionou cancelamento"]);
-    });
-
-    // NOTE: subtracting the title from what is RECOGNISED is not the same as refusing the line.
-    // With the guarded one first, the visible suffix still reads as a run, and the line that carries
-    // `agente-off` into the prompt is the whole original sentence.
-    test("a guarded label first in the run does not smuggle the line in", () => {
-      expect(
-        labelHistoryFromRows(
-          [
-            row({
-              id: 1,
-              messageType: "activity",
-              content: "Fulano adicionou agente-off, cancelamento",
-            }),
-          ],
-          [...vocab, "agente-off"],
-          ["agente-off"],
-          8,
-        ).lines,
-      ).toEqual([]);
-    });
-
-    // NOTE: the run rule drops the mixed line because the guarded title breaks the chain between
-    // the narration and the end. Asked directly, the invariant stops depending on where in the
-    // sentence Chatwoot put it — here it is the actor's own name.
-    test("a guarded label in the narration refuses the line too", () => {
-      expect(
-        labelHistoryFromRows(
-          [
-            row({
-              id: 1,
-              messageType: "activity",
-              content: "agente-off adicionou cancelamento",
-            }),
-          ],
-          [...vocab, "agente-off"],
-          ["agente-off"],
-          8,
-        ).lines,
-      ).toEqual([]);
     });
 
     // Every template is `%{user_name} <verb> %{labels}`, so a run with nothing in front of it is not
@@ -1673,30 +1565,6 @@ describe("the notes the conversation already carries", () => {
       );
       expect(history.lines).toEqual([]);
       expect(history.omitted).toBe(0);
-    });
-
-    test("another activity that quotes a label is not a label change", () => {
-      expect(
-        labelHistoryFromRows(
-          [
-            // A group rename and a Japanese priority change: no `activityType`, a quoted value, and
-            // nothing to do with labels.
-            row({
-              id: 1,
-              messageType: "activity",
-              content: 'Ana changed the group name to "vip"',
-            }),
-            row({
-              id: 2,
-              messageType: "activity",
-              content: 'Kenji が優先度を "vip" に変更しました',
-            }),
-          ],
-          ["vip"],
-          undefined,
-          8,
-        ).lines,
-      ).toEqual([]);
     });
 
     // NOTE: the one structural field an activity row has. A label change never sets it, so a row

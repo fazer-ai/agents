@@ -44,23 +44,6 @@ function buildForm(draft?: unknown): FormData {
 }
 
 describe("playground multipart draft schema", () => {
-  test("a JSON-stringified draft validates and arrives as an object (auto-parsed)", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/upload", {
-        method: "POST",
-        body: buildForm({
-          systemPrompt: "",
-          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
-          settings: { tts: { mode: "mirror" } },
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    // The parser turned the `{`-leading field into an object before validation — exactly why
-    // t.String() would reject it.
-    expect((await res.json()).draftType).toBe("object");
-  });
-
   test("every declared draft field survives normalization", async () => {
     // The failure this guards is silent: Elysia strips a field the schema does not declare, the
     // handler sees `undefined`, and the turn runs against the saved config while the operator

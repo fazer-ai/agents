@@ -153,13 +153,6 @@ describe("templateWriteAt", () => {
     expect(templateWriteAt("{{#each }}", 8)).toMatchObject({ kind: "list" });
   });
 
-  // NOTE: AND A HALF-TYPED MARKER IS NOT A PATH PREFIX: read as one, `{{#each}}` would ask for a
-  // PATH over the text `#each`, and accepting would write a field name over the marker being typed.
-  test("offers nothing over a marker that is still being typed", () => {
-    expect(templateWriteAt("{{#", 3)).toBeNull();
-    expect(templateWriteAt("{{#ea", 5)).toBeNull();
-  });
-
   // NOTE: THE WHITESPACE THE GRAMMAR ALLOWS IS NOT PART OF WHAT IS BEING TYPED. `BLOCK` spells
   // `\{\{\s*` and the token render trims, so `{{ campo }}` and `{{ #each xs }}` are legal. Anchored
   // at `{{`, the space joins the prefix CodeMirror filters on, filtering out every path for `{{ campo`

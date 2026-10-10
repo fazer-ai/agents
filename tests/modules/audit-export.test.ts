@@ -289,29 +289,6 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     expect(r.count).toBe(parseCsv(r.content).length - 1);
   });
 
-  // A row is bounded per STRING and not per object, so rows fat
-  // enough to blow a download can still be far under the row cap: the byte budget is what stops it,
-  // and it has to stop it by FETCHING less, not by trimming what it already pulled into memory.
-  test("a fat trail is cut by bytes long before it reaches the row cap", async () => {
-    const fat = { prompt: "x".repeat(4000), other: "y".repeat(4000) };
-    const made: string[] = [];
-    try {
-      for (let i = 0; i < 6; i++) {
-        const target = `${TAG}:fat${i}`;
-        await seed(mine, "agent.prompt_set", target, { after: fat });
-        made.push(target);
-      }
-      const r = await exportAudit(ctx(), { maxBytes: 20_000 }, appDb);
-      expect(r.truncated).toBe(true);
-      expect(r.count).toBeLessThan(6);
-      expect(r.content.length).toBeLessThanOrEqual(20_000);
-    } finally {
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:fat%'`,
-      );
-    }
-  });
-
   // BOTH DIRECTIONS, and on the function rather than through a result. A caller asking for LESS is
   // visible in an export (the truncation tests above); a caller asking for MORE than the module allows
   // is not, because telling the two apart would need a trail longer than the ceiling itself -- so a

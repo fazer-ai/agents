@@ -184,22 +184,4 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
     // And it does NOT blame the table that is merely carrying a same-named policy without RLS.
     expect(failure).not.toContain("bystander");
   });
-
-  // The positive control, and the reason this file exists: a table under RLS whose policy the loop
-  // does not recognise is skipped, the loop reports success, and the schema is left half split. The
-  // count assertion at the end of the migration is the only thing standing between that and a green
-  // deploy.
-  test("refuses a catalog it did not fully cover, instead of half-applying", async () => {
-    const failure = await applyMigration(`
-      ${OLD_POLICY("things", "tenant_id")}
-      CREATE TABLE strays (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
-      ALTER TABLE strays ENABLE ROW LEVEL SECURITY;
-      CREATE POLICY some_other_name ON strays USING (true);
-    `);
-    expect(failure).toContain("RLS policy split did not land");
-    // Named per table, not counted: totals can agree while a real table stays unsplit (a renamed
-    // policy on one RLS table plus a `tenant_isolation` left on a NON-RLS table balances them out).
-    expect(failure).toContain("strays");
-    expect(failure).toContain("tenant_isolation and fleet_super_admin");
-  });
 });

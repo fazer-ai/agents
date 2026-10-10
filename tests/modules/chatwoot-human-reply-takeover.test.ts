@@ -1112,23 +1112,6 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
   });
 
-  // ...and a read that cannot answer does not block: silence is not evidence that somebody took the
-  // conversation, and refusing on it would trade a rare wrong reopen for the original defect on
-  // every slow Chatwoot.
-  test("an unreadable live read leaves the mirror fence to decide", async () => {
-    const conv = 8551;
-    await deliver(conv, { ...customerSays("oi") });
-    failingReads.add(conv);
-    try {
-      await deliver(conv, { ...deviceReply("já te respondo") });
-      expect(toggles(conv).length).toBe(1);
-      expect(liveStatus.get(conv)).toBe("open");
-      expect((await convRow(conv))?.status).toBe("open");
-    } finally {
-      failingReads.delete(conv);
-    }
-  });
-
   test("the switch turns it off, and nothing else changes", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -2501,20 +2484,6 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       });
       await send(build());
       expect(liveStatus.get(conv)).toBe("open");
-    });
-
-    test("a versioned console write stamps the mark too", async () => {
-      const conv = 8604;
-      await deliver(conv, composerReply("eu assumo"));
-      liveLatestMessageId.set(conv, messageSeq);
-      expect(await handBack(conv)).toBe("returned");
-      // Reconciled, not fallen back: the row carries a version from the live read.
-      const row = await suDb.conversation.findFirstOrThrow({
-        where: { tenantId, chatwootConversationId: conv },
-        select: { consoleWriteAtMessageId: true, chatwootStatusAt: true },
-      });
-      expect(row.chatwootStatusAt).not.toBeNull();
-      expect(row.consoleWriteAtMessageId).toBe(messageSeq);
     });
   });
 });

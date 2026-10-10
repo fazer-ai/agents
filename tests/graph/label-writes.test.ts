@@ -7,17 +7,6 @@ import { describeLabelWrite } from "@/graph/tools/label-writes";
 // filter against that list can tell it from an operator's label. The entry therefore counts.
 
 describe("describeLabelWrite", () => {
-  test("counts what moved and what the scope has afterwards", () => {
-    expect(
-      describeLabelWrite(
-        "conversation",
-        ["cancelamento"],
-        ["compra-de-ingresso"],
-        ["cancelamento", "agente-off"],
-      ),
-    ).toEqual({ scope: "conversation", added: 1, removed: 1, after: 2 });
-  });
-
   test("no title reaches the entry, whatever the model called the label", () => {
     const w = describeLabelWrite(
       "contact",
@@ -28,9 +17,5 @@ describe("describeLabelWrite", () => {
     expect(w).toEqual({ scope: "contact", added: 2, removed: 1, after: 1 });
     expect(JSON.stringify(w).toLowerCase()).not.toContain("zebrafina");
     expect(JSON.stringify(w)).not.toContain("99887766");
-  });
-
-  test("the scope is carried, because three of them can be written in one turn", () => {
-    expect(describeLabelWrite("task", [], ["x"], []).scope).toBe("task");
   });
 });

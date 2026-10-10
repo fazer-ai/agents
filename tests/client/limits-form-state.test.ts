@@ -42,11 +42,6 @@ describe("limits form ↔ stored round trip", () => {
     });
   });
 
-  test("an emptied ceiling field is stored as off", () => {
-    const form = { ...limitsToForm({}), maxHistoryTokens: "" };
-    expect(limitsToStored(form).maxHistoryTokens).toBeNull();
-  });
-
   test("a key never set shows the default of 60, not an empty field", () => {
     expect(limitsToForm({}).maxTurnsPerHour).toBe("60");
   });

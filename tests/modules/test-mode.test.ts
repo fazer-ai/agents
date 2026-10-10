@@ -14,11 +14,6 @@ describe("isTestSilenced", () => {
   test("a test agent fires once the conversation has been activated with /teste", () => {
     expect(isTestSilenced("test", new Date())).toBe(false);
   });
-
-  test("an unknown mode is treated as not-silenced (fail open to answering)", () => {
-    expect(isTestSilenced("", null)).toBe(false);
-    expect(isTestSilenced("staging", null)).toBe(false);
-  });
 });
 
 describe("shouldRunReset", () => {

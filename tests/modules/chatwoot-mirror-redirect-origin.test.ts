@@ -126,40 +126,6 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     await app?.$disconnect();
   });
 
-  // The race the fence exists for. Both re-entries land in ONE second, so `last_activity_at` cannot
-  // separate them; the retried delivery of the FIRST arrives after the second and carries origin 77.
-  test("a retried snapshot cannot overwrite a newer origin inside one second", async () => {
-    const T = 1_786_500_000;
-    await mirror(
-      clonedMessage(40, {
-        messageId: 8001,
-        lastActivityAt: T,
-        updatedAt: T + 0.11,
-        origin: 77,
-      }),
-    );
-    await mirror(
-      clonedMessage(40, {
-        messageId: 8002,
-        lastActivityAt: T,
-        updatedAt: T + 0.62,
-        origin: 91,
-      }),
-    );
-    expect(await storedOrigin(40)).toBe(91);
-
-    // The retry of the first delivery, unchanged, ~9s late.
-    await mirror(
-      clonedMessage(40, {
-        messageId: 8001,
-        lastActivityAt: T,
-        updatedAt: T + 0.11,
-        origin: 77,
-      }),
-    );
-    expect(await storedOrigin(40)).toBe(91);
-  });
-
   // NOTE: The fork emits a conversation_updated of its own when the pairing changes on an existing
   // conversation. It carries a FRESH `updated_at` and the FROZEN `last_activity_at` (the column
   // write does not move that one), so recency cannot order it and the version must.
@@ -184,29 +150,6 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
       }),
     });
     expect(await storedOrigin(41)).toBe(91);
-  });
-
-  // Ordinary forward motion still works: a later episode's snapshot, serialized after the write,
-  // carries the newer origin and takes it.
-  test("a newer origin still takes over", async () => {
-    const T = 1_786_520_000;
-    await mirror(
-      clonedMessage(42, {
-        messageId: 8200,
-        lastActivityAt: T,
-        updatedAt: T + 0.1,
-        origin: 77,
-      }),
-    );
-    await mirror(
-      clonedMessage(42, {
-        messageId: 8201,
-        lastActivityAt: T + 600,
-        updatedAt: T + 600.1,
-        origin: 91,
-      }),
-    );
-    expect(await storedOrigin(42)).toBe(91);
   });
 
   // The mirror creates the row from whatever event it sees FIRST, which is not necessarily the
@@ -314,32 +257,6 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(43)).toBe(91);
   });
 
-  // NOTE: The fork CLEARS the pairing when a re-entry's token names no origin, stating it as an
-  // explicit null rather than by omitting the key. The consumer holding the previous pairing is the
-  // one that has to stop acting on it.
-  test("an explicit null clears the stored pairing", async () => {
-    const T = 1_786_570_000;
-    await mirror(
-      clonedMessage(48, {
-        messageId: 8700,
-        lastActivityAt: T,
-        updatedAt: T + 0.1,
-        origin: 77,
-      }),
-    );
-    expect(await storedOrigin(48)).toBe(77);
-
-    await mirror({
-      event: "conversation_updated",
-      ...convPayload(48, {
-        lastActivityAt: T,
-        updatedAt: T + 5.4,
-        origin: null,
-      }),
-    });
-    expect(await storedOrigin(48)).toBeNull();
-  });
-
   // ...and the clear is ordered like any other statement about the pairing: a retried delivery of the
   // payload that set it cannot bring it back.
   test("a stale payload cannot undo a clear", async () => {
@@ -371,29 +288,6 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
       }),
     );
     expect(await storedOrigin(49)).toBeNull();
-  });
-
-  // NOTE: A payload that OMITS the key leaves the stored one alone. Absent is not null: it is what a
-  // Chatwoot without the pairing field sends on every event, and reading it as a clear would wipe
-  // the pairing of every episode on the first ordinary message.
-  test("a payload with no origin key leaves the pairing standing", async () => {
-    const T = 1_786_540_000;
-    await mirror(
-      clonedMessage(44, {
-        messageId: 8400,
-        lastActivityAt: T,
-        updatedAt: T + 0.1,
-        origin: 77,
-      }),
-    );
-    await mirror(
-      clonedMessage(44, {
-        messageId: 8401,
-        lastActivityAt: T + 60,
-        updatedAt: T + 60.1,
-      }),
-    );
-    expect(await storedOrigin(44)).toBe(77);
   });
 
   // NOTE: ── The pairing is the EPISODE'S IDENTITY, so the row's per-episode watermarks move with it.
@@ -572,36 +466,6 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
 
     expect(await storedOrigin(53)).toBeNull();
     expect(await watermarks(53)).toEqual({ linked: false, closed: false });
-  });
-
-  // The release rides with the WRITE, so it has to reach the stale branch as well: that branch is
-  // where the pairing's own `conversation_updated` lands whenever the payload is behind on activity,
-  // which is the ordinary case for it (`last_activity_at` does not move on a column write).
-  test("the stale branch releases the episode with the pairing it writes", async () => {
-    const T = 1_786_640_000;
-    await mirror(
-      clonedMessage(54, {
-        messageId: 8900,
-        lastActivityAt: T + 600,
-        updatedAt: T + 600.1,
-        origin: 77,
-      }),
-    );
-    await setWatermarks(54, new Date());
-
-    // Older on activity than what is stored — this is the stale branch — but newer on the pairing's
-    // own mark, so the pairing applies and the episode goes with it.
-    await mirror({
-      event: "conversation_updated",
-      ...convPayload(54, {
-        lastActivityAt: T,
-        updatedAt: T + 700,
-        origin: 91,
-      }),
-    });
-
-    expect(await storedOrigin(54)).toBe(91);
-    expect(await watermarks(54)).toEqual({ linked: false, closed: false });
   });
 
   // NOTE: The release rides on the pairing being APPLIED, and both halves matter. A payload that

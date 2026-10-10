@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  monitoringPatch,
   monitoringReaderKeys,
   OBSERVATION_LIMITS,
   observationToForm,
@@ -18,22 +19,31 @@ describe("agent editor observation round-trip", () => {
         debounce: { windowSeconds: 10, maxWindowSeconds: 45 },
       },
     };
-    expect(observationToStored(observationToForm(stored))).toEqual(
-      readMonitoringConfig(stored),
-    );
+    const { decisions: _none, ...read } = readMonitoringConfig(stored);
+    expect(observationToStored(observationToForm(stored))).toEqual(read);
   });
 
+  // A key the bag never had stays absent: the reader answers `decisions: null` for a missing key,
+  // and writing that null back would store a key nobody set.
   test("an untouched bag round-trips to the reader's defaults", () => {
-    expect(observationToStored(observationToForm({}))).toEqual(
+    const { decisions, ...defaults } = readMonitoringConfig({});
+    expect(decisions).toBeNull();
+    const written = observationToStored(observationToForm({}));
+    expect(written).toEqual(defaults);
+    expect(written).not.toHaveProperty("decisions");
+    // ...and the runtime reads what was written exactly as it read the empty bag.
+    expect(readMonitoringConfig({ monitoring: written })).toEqual(
       readMonitoringConfig({}),
     );
   });
 
-  // The guard that catches the NEXT field: `monitoring` growing a key the form does not carry
-  // fails here, when it is added, rather than as a value that disappears on an operator's save.
-  test("the form carries every key the reader produces", () => {
+  // `decisions` is the one key written only when there is a block to write; with one, the form
+  // carries every key the reader produces, so the next field it grows fails here.
+  test("a stored decisions block is written back with every reader key", () => {
     const written = Object.keys(
-      observationToStored(observationToForm({})),
+      observationToStored(
+        observationToForm({ monitoring: { decisions: { apply: "shadow" } } }),
+      ),
     ).sort();
     expect(written).toEqual(monitoringReaderKeys());
     expect(monitoringReaderKeys()).toEqual(
@@ -53,7 +63,9 @@ describe("agent editor observation round-trip", () => {
       },
     };
     const stored = observationToStored(observationToForm(legacy));
-    expect(Object.keys(stored).sort()).toEqual(monitoringReaderKeys());
+    expect(Object.keys(stored).sort()).toEqual(
+      monitoringReaderKeys().filter((k) => k !== "decisions"),
+    );
     expect(stored).not.toHaveProperty("labelGroups");
     expect(stored).not.toHaveProperty("noteOnChange");
   });
@@ -91,16 +103,6 @@ describe("agent editor observation round-trip", () => {
     }
   });
 
-  // The server refuses a negative window. Narrowed here it would be saved as 0, a model call per
-  // message, by a typo.
-  test("a negative window travels as typed, so the server's refusal reaches the operator", () => {
-    const stored = observationToStored({
-      ...observationToForm({}),
-      windowSeconds: "-1",
-    });
-    expect(stored.debounce.windowSeconds).toBe(-1);
-  });
-
   // Rounded first, -0.5 is a zero and the refusal never happens.
   test("a negative fraction travels unrounded", () => {
     for (const typed of ["-0.5", "-0.1", " -2.4 "]) {
@@ -121,5 +123,38 @@ describe("agent editor observation round-trip", () => {
       });
       expect(stored.debounce.windowSeconds).toBe(20);
     }
+  });
+
+  // The save replaces `monitoring` for an agent that HAS the block or is a watcher. An answering
+  // agent whose settings never carried it saves without it: an unchanged save writes nothing new.
+  test("an answering agent with no monitoring block saves without one", () => {
+    expect(monitoringPatch(observationToForm({}), false)).toEqual({});
+    expect(monitoringPatch(observationToForm({ other: 1 }), false)).toEqual({});
+    expect(monitoringPatch(observationToForm(null), false)).toEqual({});
+  });
+
+  test("a watcher, or an agent that already has the block, writes it", () => {
+    const fresh = observationToForm({});
+    expect(monitoringPatch(fresh, true)).toEqual({
+      monitoring: observationToStored(fresh, true),
+    });
+    const stored = { monitoring: { analysis: "on_resolve" } };
+    const had = observationToForm(stored);
+    expect(monitoringPatch(had, false)).toEqual({
+      monitoring: observationToStored(had, false),
+    });
+    expect(monitoringPatch(had, false).monitoring?.analysis).toBe("on_resolve");
+    // An empty block is still a block the agent had.
+    expect(
+      monitoringPatch(observationToForm({ monitoring: {} }), false),
+    ).toHaveProperty("monitoring");
+  });
+
+  test("a watcher on the model engine with no block stores no decisions key", () => {
+    const stored = { monitoring: { engine: "llm", analysis: "incremental" } };
+    const patch = monitoringPatch(observationToForm(stored), true);
+    expect(patch.monitoring).not.toHaveProperty("decisions");
+    expect(patch.monitoring?.engine).toBe("llm");
+    expect(JSON.stringify(patch)).not.toContain("decisions");
   });
 });

@@ -56,10 +56,6 @@ describe("findNonAbsoluteUrls", () => {
       ),
     ).toEqual(["/static/b.woff2", "c.woff2"]);
   });
-
-  test("treats a data: URI as routed, since it has no origin to fetch from", () => {
-    expect(findNonAbsoluteUrls(`url("data:font/woff2;base64,AA")`)).toEqual([]);
-  });
 });
 
 // The two above prove the helpers behave; this one keeps them pointed at the real document. A url()

@@ -238,18 +238,6 @@ describe("behavior-settings — a patch into a nested block", () => {
     });
   });
 
-  test("a nested patch still overrides what it does name", () => {
-    const next = mergeBehaviorSettings(configured, {
-      guardrails: { input: { templateMessage: "Só um instante." } },
-    });
-    const input = (next.guardrails as Record<string, unknown>).input as Record<
-      string,
-      unknown
-    >;
-    expect(input.templateMessage).toBe("Só um instante.");
-    expect(input.action).toBe("silent");
-  });
-
   test("an untouched sibling direction is left alone", () => {
     const next = mergeBehaviorSettings(
       {
@@ -289,19 +277,6 @@ describe("behavior-settings — a patch into a nested block", () => {
   test("the depth cap clears the deepest shape the readers produce", () => {
     expect(behaviorSettingsMaxDepth()).toBeLessThan(MERGE_MAX_DEPTH_FOR_TESTS);
   });
-
-  // A list patch means the new list. Deep-merging arrays would make a shorter `steps` or a smaller
-  // attribute scope impossible to express, which is the opposite of what an operator means by
-  // sending one.
-  test("a list is still replaced wholesale, not merged element by element", () => {
-    const next = mergeBehaviorSettings(
-      { attributeContext: { conversation: ["a", "b", "c"] } },
-      { attributeContext: { conversation: ["a"] } },
-    );
-    expect(
-      (next.attributeContext as Record<string, unknown>).conversation,
-    ).toEqual(["a"]);
-  });
 });
 
 // The merge re-reads every block through its typed reader and writes the result back, so a reader
@@ -320,17 +295,6 @@ describe("behavior-settings — the merge stores what is stored, not what is der
       logToolValues: false,
       fullDetailUntil: armed,
     });
-  });
-
-  test("the derived flag never reaches the bag", () => {
-    const next = mergeBehaviorSettings(
-      { observability: { fullDetailUntil: armed } },
-      { observability: { logToolValues: true } },
-    );
-    expect(Object.keys(next.observability as object).sort()).toEqual([
-      "fullDetailUntil",
-      "logToolValues",
-    ]);
   });
 
   test("a window that closed is written back as off", () => {

@@ -86,6 +86,7 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
+// biome-ignore lint/plugin/require-resolution-hooks: processChatwootDelivery runs them off the transition this reports
 export async function mirrorChatwootEvent(
   tenantId: bigint,
   instanceId: bigint,

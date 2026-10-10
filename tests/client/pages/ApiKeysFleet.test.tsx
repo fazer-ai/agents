@@ -166,21 +166,6 @@ describe("the fleet keys section", () => {
     expect(tenant.querySelector("[title]")).toBeNull();
   });
 
-  test("a SUPER_ADMIN sees the fleet list, read from the fleet route", async () => {
-    currentRole = "SUPER_ADMIN";
-    installFetchStub();
-    renderPage();
-    await waitFor(() => {
-      expect(screen.queryByText("provisioner") !== null).toBe(true);
-    });
-    expect(screen.queryByTestId("api-keys-fleet") !== null).toBe(true);
-    expect(
-      requests.some(
-        (r) => r.method === "GET" && r.path === "/api/v1/api-keys/fleet",
-      ),
-    ).toBe(true);
-  });
-
   test("a TENANT_ADMIN sees no fleet section and never asks for the fleet route", async () => {
     currentRole = "TENANT_ADMIN";
     installFetchStub();

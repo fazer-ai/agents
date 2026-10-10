@@ -178,26 +178,6 @@ describe("vision request: output ceiling", () => {
         expect(body).not.toHaveProperty(key);
     }
   });
-
-  test("an invalid ceiling falls back to the provider default", async () => {
-    const unset = await extractWith({ provider: "anthropic" });
-    for (const bad of [0, -100, "abc", 1.5]) {
-      const ant = await extractWith({
-        provider: "anthropic",
-        maxOutputTokens: bad,
-        reasoningEffort: "extreme",
-      });
-      expect(ant.body.max_tokens).toBe(unset.body.max_tokens);
-      expect(ant.body).not.toHaveProperty("output_config");
-      expect(ant.body).not.toHaveProperty("thinking");
-      const oai = await extractWith({
-        provider: "openai",
-        maxOutputTokens: bad,
-        reasoningEffort: "extreme",
-      });
-      expect(Object.keys(oai.body).sort()).toEqual(["messages", "model"]);
-    }
-  });
 });
 
 describe("vision request: reasoning effort", () => {

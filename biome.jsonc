@@ -78,6 +78,10 @@
       "plugins": ["./biome-plugins/no-dynamic-translate-key.grit"]
     },
     {
+      "includes": ["src/modules/**/*.ts", "tests/lint/.probe-*/**/*.ts"],
+      "plugins": ["./biome-plugins/require-resolution-hooks.grit"]
+    },
+    {
       "includes": ["src/client/pages/*.tsx"],
       "plugins": ["./biome-plugins/require-page-container.grit"]
     },

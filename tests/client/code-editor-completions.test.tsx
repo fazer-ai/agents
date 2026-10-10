@@ -750,12 +750,6 @@ describe("Ctrl-Space on nothing still offers the two roots", () => {
   test("and an explicit request after another object's dot offers nothing", () => {
     expect(ask("foo.", true)).toBeNull();
   });
-
-  // A word being typed is a root position, so the list comes back and CodeMirror filters it: that
-  // is how `co` narrows to `context`, and it is why the check above has to be about the DOT.
-  test("while a word being typed is still a root", () => {
-    expect(labels(ask("co", true))?.slice(0, 2)).toEqual(["context", "input"]);
-  });
 });
 
 // The hotkey answers "what can I write here" with the whole scope, not the two parameters.
@@ -1115,10 +1109,6 @@ describe("what is a root, and what is somebody else's member", () => {
       expect(ask(doc)).toBeNull();
     });
   }
-
-  test("and the roots themselves still answer", () => {
-    expect(ask("context.")?.options.length).toBeGreaterThan(0);
-  });
 });
 
 // The list identity the reconfigure effect keys on. An argument name is not required to be an

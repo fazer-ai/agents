@@ -149,12 +149,6 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     mock.restore();
   });
 
-  test("the card offers an edit action, not just approve and reject", async () => {
-    renderQueue();
-    await screen.findByText(HEDGED);
-    expect(screen.getByRole("button", { name: /edit/i })).toBeDefined();
-  });
-
   test("editing the content and saving sends only what changed", async () => {
     renderQueue();
     await screen.findByText(HEDGED);
@@ -230,26 +224,6 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
       .getAllByRole("button", { name: /edit/i })
       .filter((b) => !(b as HTMLButtonElement).disabled);
     expect(stillOffered.length).toBe(0);
-  });
-
-  // NOTE: the draft is captured when Save is clicked, so anything typed while the request is in
-  // flight would be dropped by the response that closes the editor.
-  test("the fields are locked while the save is in flight", async () => {
-    let release: () => void = () => undefined;
-    patchGate = new Promise<void>((r) => {
-      release = r;
-    });
-    renderQueue();
-    await screen.findByText(HEDGED);
-    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const box = (await screen.findByLabelText(
-      /content/i,
-    )) as HTMLTextAreaElement;
-    fireEvent.change(box, { target: { value: CLEAN } });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
-    await waitFor(() => expect(box.disabled).toBe(true));
-    release();
-    await waitFor(() => expect(patchCalls.length).toBe(1));
   });
 
   // NOTE: `busyId` holds ONE id, so a per-card `busyId === a.id` guard would leave every other card

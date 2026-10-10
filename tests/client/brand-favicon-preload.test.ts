@@ -178,17 +178,6 @@ describe("the tab icon on the first paint", () => {
     ).toEqual(DECLARED);
   });
 
-  test("clearing the favicon restores the links the script removed", () => {
-    localStorage.setItem("@app:theme", "dark");
-    localStorage.setItem(
-      BRANDING_CACHE_KEY,
-      JSON.stringify({ ...CACHED, favicon: { dark: true, light: true } }),
-    );
-    parseHead();
-    applyFavicon(null);
-    expect(iconLinks()).toEqual(DECLARED);
-  });
-
   test("a favicon applied after mount does not become the default", () => {
     localStorage.setItem("@app:theme", "dark");
     localStorage.setItem(

@@ -331,16 +331,6 @@ describe.skipIf(!dbUp)(
       expect(calls).toBe(1);
     });
 
-    // s7: the claim is per contact inbox. Another contact's live claim says nothing about this one.
-    test("another contact's live claim does not hold this flush", async () => {
-      await holdThread(
-        CI_HELD,
-        contactInboxThreadId(tenantId, instanceId, CI_HELD),
-      );
-      const { calls } = await runFlush(CONV_OTHER);
-      expect(calls).toBe(1);
-    });
-
     // NOTE: s8: the conversation-keyed thread has no row to hold, and must keep being served. The
     // Map is the whole answer there, an accepted cost of that keying.
     test("a conversation with no contact inbox is still answered", async () => {

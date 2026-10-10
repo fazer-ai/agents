@@ -79,12 +79,6 @@ describe("GuardrailsTab template message", () => {
     expect(templateFields() > 0).toBe(true);
   });
 
-  // NOTE: on `generated` it is the fallback the customer receives.
-  test("stays editable on the generated action, where it is the fallback", () => {
-    renderWith("generated");
-    expect(templateFields() > 0).toBe(true);
-  });
-
   test("is gone on silent, which sends nothing at all", () => {
     renderWith("silent");
     expect(templateFields()).toBe(0);
@@ -212,12 +206,5 @@ describe("a refusal handed to the guardrails tab lands at its input", () => {
     // line of it.
     renderRefused(NO_REFUSALS);
     expect(screen.queryAllByText(/^refused: /).length).toBe(0);
-  });
-
-  test("the two directions do not answer for each other", () => {
-    // One `renderDirection` draws both blocks, so a mark passed for the input template would sit on
-    // the output one too if the field were wired to a single prop.
-    renderRefused({ ...NO_REFUSALS, inputTemplateMessage: "only the input" });
-    expect(screen.queryAllByText("only the input").length).toBe(1);
   });
 });

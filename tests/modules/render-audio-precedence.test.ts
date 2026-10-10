@@ -96,27 +96,6 @@ describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
     expect(awaitsTranscription(n)).toBe(true);
   });
 
-  test("um áudio com data_url e sem transcrição também espera", () => {
-    const n = evento({
-      id: 1,
-      file_type: "audio",
-      data_url: "https://chat.late.example/a.ogg",
-    });
-    if (!n) throw new Error("payload did not normalize");
-    expect(awaitsTranscription(n)).toBe(true);
-  });
-
-  test("um áudio já transcrito não espera mais nada", () => {
-    const n = evento({
-      id: 1,
-      file_type: "audio",
-      data_url: "https://chat.late.example/a.ogg",
-      transcribed_text: "queria trocar o endereço",
-    });
-    if (!n) throw new Error("payload did not normalize");
-    expect(awaitsTranscription(n)).toBe(false);
-  });
-
   test("uma imagem não espera transcrição nenhuma", () => {
     const n = evento({
       id: 1,

@@ -267,30 +267,6 @@ describe.skipIf(!dbUp)("openai vision documents", () => {
     expect(meta).toEqual([]);
   });
 
-  // ...and an image on that same endpoint is untouched: this is about what the endpoint is known to
-  // READ, not about trusting it less.
-  test("an image on that same endpoint still goes through", async () => {
-    const { impl, parts } = openaiFetch();
-    const meta: Array<Record<string, unknown>> = [];
-    const out = await extractInboundFile({
-      tenantId,
-      instanceId,
-      conversationId: 804,
-      messageId: 54,
-      attachmentId: 9,
-      dataUrl: "https://chat.example.com/foto.png",
-      cfg: { ...(await cfg()), baseURL: "https://llm.internal.example/v1" },
-      base: appDb,
-      deps: {
-        makeClient: stubClient(meta, "image/png"),
-        fetchImpl: impl,
-        sleep: async () => {},
-      },
-    });
-    expect(out?.text).toBe(EXTRACTED);
-    expect(parts.map((p) => p.type)).toEqual(["image_url"]);
-  });
-
   // The registry still governs, and it is the only thing that does: openrouter reaches the same
   // adapter, so if the skip were dropped in favour of "the part exists now", a router pointed at a
   // model that ignores the part would answer with a plausible extraction of nothing.

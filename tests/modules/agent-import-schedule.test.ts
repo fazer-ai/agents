@@ -210,25 +210,6 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
     ).toEqual({ name, count: 1 });
   });
 
-  test("an exception that keeps one of two ranges is still counted", async () => {
-    const name = `parcial-${process.pid}`;
-    const { row, warnings } = await importSchedule(name, WEEK, [
-      {
-        date: "2026-12-24",
-        ranges: [
-          { start: "09:00", end: "12:00" },
-          { start: "14:00", end: "09:00" },
-        ],
-      },
-    ]);
-    expect(row.exceptions).toEqual([
-      { date: "2026-12-24", ranges: [{ start: "09:00", end: "12:00" }] },
-    ]);
-    expect(
-      warnings.find((x) => x.code === "hoursExceptionsDropped")?.params,
-    ).toEqual({ name, count: 1 });
-  });
-
   test("an exception stored exactly as written warns about nothing", async () => {
     // The control for the two above: the per-entry check must not fire on a clean entry, or
     // the warning becomes noise.

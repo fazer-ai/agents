@@ -136,6 +136,11 @@ import {
   readContactAuthEndpointEnabled,
   readContactAuthRuleForm,
 } from "./contactAuthRuleForm";
+import {
+  type DecisionsRefusalHeld,
+  decisionsRefusalFrom,
+  decisionsRefusalStanding,
+} from "./decisionsFormState";
 import { ExportAgentModal } from "./ExportAgentModal";
 import { followUpToForm, followUpToStored } from "./followUpFormState";
 import { GeneralTab } from "./GeneralTab";
@@ -158,9 +163,10 @@ import {
   observabilityToStored,
 } from "./observabilityFormState";
 import {
+  decisionsBlockToStore,
+  monitoringPatch,
   type ObservationState,
   observationToForm,
-  observationToStored,
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
@@ -766,6 +772,11 @@ function AgentEditor() {
   >({});
   const refusedSaveRef = useRef(refusedSave);
   refusedSaveRef.current = refusedSave;
+  // What the server last refused about a field of the decisions block, with the block that was
+  // sent. The block is a list of questions and rules, so its marks are placed from the path by the
+  // section that draws it rather than by one owned name per input (./decisionsFormState).
+  const [decisionsRefused, setDecisionsRefused] =
+    useState<DecisionsRefusalHeld | null>(null);
   const [savingGrants, setSavingGrants] = useState(false);
   const [savingChannelRedirect, setSavingChannelRedirect] = useState(false);
   const [savingGuardrails, setSavingGuardrails] = useState(false);
@@ -1087,6 +1098,10 @@ function AgentEditor() {
       contactAuth.enabled && contactAuth.endpointEnabled,
     memoryCompactionEnabled: memory.compactionEnabled,
     modelFallbackChosen: !!modelFallback.provider,
+    decisionsEngineShown:
+      agentMode === "monitoring" &&
+      observation.engine === "decisions" &&
+      observation.decisions !== null,
     guardrailsEnabled: guardrails.enabled,
     followUpEnabled: followUp.enabled,
     followUpSteps: followUp.steps.length,
@@ -1174,6 +1189,11 @@ function AgentEditor() {
     "settings.memory.compaction.credentialRef": memory.credentialRef,
     "settings.knowledge.suggestionReview.credentialRef": review.credentialRef,
     "settings.modelFallback.credentialRef": modelFallback.credentialRef,
+    // NOTE: Through the writer: an untouched block goes out as stored, not as the form holds it.
+    "settings.monitoring.decisions.credentialRef": decisionsBlockToStore(
+      observation,
+      agentMode === "monitoring",
+    )?.credentialRef,
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
@@ -1764,7 +1784,7 @@ function AgentEditor() {
       modelFallback: modelFallbackToStored(modelFallback),
       // NOTE: The Observation block replaces `monitoring` the same way; the round-trip test over
       // ./observationFormState is its guard.
-      monitoring: observationToStored(observation),
+      ...monitoringPatch(observation, agentMode === "monitoring"),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -2959,7 +2979,10 @@ function AgentEditor() {
       if (err || !data) throw err ?? new Error("no data");
       // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered.
       if (section === "general") applyGeneral(data.agent);
-      else applyBehavior(data.agent);
+      else {
+        applyBehavior(data.agent);
+        setDecisionsRefused(null);
+      }
       markSynced(String(data.agent.updatedAt));
       bumpSync(section);
       // NOTE: Only for the section this holder DRAWS. One function writes both, and a Behavior save
@@ -2969,6 +2992,14 @@ function AgentEditor() {
       settleRefusalFor(section);
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
+      if (section === "behavior") {
+        const settings = patch.settings as
+          | { monitoring?: { decisions?: unknown } }
+          | undefined;
+        setDecisionsRefused(
+          decisionsRefusalFrom(readRefusal(e), settings?.monitoring?.decisions),
+        );
+      }
       answerRefusal(
         e,
         t("editor.saveError", "Could not save the agent."),
@@ -4033,6 +4064,14 @@ function AgentEditor() {
                 mode={agentMode}
                 observation={observation}
                 setObservation={setObservation}
+                agentSavedAt={loadedUpdatedAtRef.current}
+                decisionsRefusal={decisionsRefusalStanding(
+                  decisionsRefused,
+                  decisionsBlockToStore(
+                    observation,
+                    agentMode === "monitoring",
+                  ),
+                )}
                 modelFallback={modelFallback}
                 setModelFallback={setModelFallback}
                 observability={observability}
@@ -4090,6 +4129,12 @@ function AgentEditor() {
                   modelFallbackCredential: refusal.at(
                     "settings.modelFallback.credentialRef",
                     currentRef.current["settings.modelFallback.credentialRef"],
+                  ),
+                  decisionsCredential: refusal.at(
+                    "settings.monitoring.decisions.credentialRef",
+                    currentRef.current[
+                      "settings.monitoring.decisions.credentialRef"
+                    ],
                   ),
                   awayMessage: refusal.at(
                     "availability.awayMessage",

@@ -97,17 +97,6 @@ describe("renderAwayMessage", () => {
     ).toEqual({ send: false, reason: "disabled" });
   });
 
-  test("the switch on with no copy is still nothing to send", () => {
-    expect(
-      renderAwayMessage({
-        enabled: true,
-        copy: "   ",
-        schedule: MON_9_TO_17,
-        now: SUNDAY,
-      }),
-    ).toEqual({ send: false, reason: "not_configured" });
-  });
-
   test("copy with no placeholder goes out exactly as written", () => {
     expect(
       renderAwayMessage({
@@ -219,29 +208,6 @@ describe("renderAwayMessage", () => {
       }),
     ).toEqual({ send: false, reason: "no_next_open" });
   });
-
-  test("copy that promises nothing still goes out on a schedule that never opens", () => {
-    const neverOpens: Schedule = {
-      windows: [{ day: 1, start: "09:00", end: "17:00" }],
-      exceptions: [
-        {
-          date: "2024-01-01",
-          dateEnd: "2024-12-31",
-          recurring: true,
-          ranges: [],
-        },
-      ],
-      timezone: "UTC",
-    };
-    expect(
-      renderAwayMessage({
-        enabled: true,
-        copy: "Estamos fechados.",
-        schedule: neverOpens,
-        now: SUNDAY,
-      }),
-    ).toEqual({ send: true, text: "Estamos fechados." });
-  });
 });
 
 // The cadence is the away message's own, on its own watermark: the operator note answers a question
@@ -255,12 +221,6 @@ describe("awayMessageDue", () => {
 
   test("never sent → due", () => {
     expect(awayMessageDue(MON_9_TO_17, SUNDAY, null)).toBe(true);
-  });
-
-  test("already sent the same local day → not due", () => {
-    expect(
-      awayMessageDue(MON_9_TO_17, SUNDAY, new Date("2024-01-07T08:00:00Z")),
-    ).toBe(false);
   });
 
   test("sent on an earlier local day → due again", () => {

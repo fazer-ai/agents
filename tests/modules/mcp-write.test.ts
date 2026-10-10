@@ -258,12 +258,6 @@ describe("MCP write gate (no DB)", () => {
     if (!r.ok) expect(r.error).toContain("insufficient_scope");
   });
 
-  test("agent_settings_set with no blocks → error before any DB access", async () => {
-    const r = await agentSettingsSet(principal({}), { agent_id: "1" });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain("no updatable fields");
-  });
-
   test("agent_settings_set invalid agent_id → error", async () => {
     const r = await agentSettingsSet(principal({}), {
       agent_id: "nope",

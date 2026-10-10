@@ -2,21 +2,37 @@ import { Eye } from "lucide-react";
 import type React from "react";
 import { useTranslation } from "react-i18next";
 import { FormField, Input, Select } from "@/client/components";
+import { decisionsBlockFingerprint } from "@/modules/decisions/config";
 import {
+  DecisionsFields,
+  type DecisionsServerRefusal,
+} from "./DecisionsFields";
+import { startingDecisionsForm } from "./decisionsFormState";
+import {
+  decisionsBaseline,
+  editDecisions,
   OBSERVATION_LIMITS,
   type ObservationState,
 } from "./observationFormState";
 import { Section } from "./SectionNav";
 
-// The Behavior tab's Observation block: WHEN a monitoring agent looks, and how much of the
-// conversation it reads. Drawn only for an agent in monitoring mode. What it does with what it reads
-// is its prompt and its tools, on the same tabs every other agent uses.
+// The Behavior tab's Observation block: WHEN a monitoring agent looks, how much of the conversation
+// it reads, and WHAT DECIDES: the agent's model with its prompt and tools, or the decisions engine
+// with its questions and rules (./DecisionsFields). Drawn only for an agent in monitoring mode.
 export function ObservationSection({
+  agentId,
+  savedAt,
   observation,
   setObservation,
+  decisionsCredentialError,
+  decisionsRefusal,
 }: {
+  agentId: string;
+  savedAt: string | null;
   observation: ObservationState;
   setObservation: React.Dispatch<React.SetStateAction<ObservationState>>;
+  decisionsCredentialError: string | null;
+  decisionsRefusal: DecisionsServerRefusal | null;
 }) {
   const { t } = useTranslation();
   const lim = OBSERVATION_LIMITS;
@@ -118,6 +134,72 @@ export function ObservationSection({
           />
         </FormField>
       </div>
+      <FormField
+        label={t("editor.decisionsEngine", "What decides")}
+        description={
+          observation.engine === "decisions"
+            ? t(
+                "editor.decisionsEngineDecisionsHint",
+                "A classification API answers the questions below and the rules turn the answers into actions. No chat model runs, and the prompt is not read.",
+              )
+            : t(
+                "editor.decisionsEngineLlmHint",
+                "The agent's model reads the conversation with its prompt and acts with its tools.",
+              )
+        }
+        help={t(
+          "editor.decisionsEngineHelp",
+          "The decisions engine asks typed questions (yes or no, one of a list, a level on a scale) and gets back probabilities, in a fraction of the time and cost of a model turn. What it does with them is fixed by rules you write here, so the same answer always leads to the same action.\n\nStart in shadow: it decides and logs what each rule would have done, and writes nothing. Switch to enforce once the log shows what you expect.\n\nSwitching back to the model keeps the questions and rules for the next time.",
+        )}
+      >
+        <Select
+          value={observation.engine}
+          onChange={(e) =>
+            setObservation((prev) => ({
+              ...prev,
+              engine: e.target.value === "decisions" ? "decisions" : "llm",
+              // A first switch starts from an empty block in shadow, so nothing is written before
+              // the operator has read what it would do.
+              decisions:
+                e.target.value === "decisions" && prev.decisions === null
+                  ? startingDecisionsForm()
+                  : prev.decisions,
+            }))
+          }
+        >
+          <option value="llm">
+            {t(
+              "editor.decisionsEngineLlm",
+              "The agent's model (prompt and tools)",
+            )}
+          </option>
+          <option value="decisions">
+            {t(
+              "editor.decisionsEngineDecisions",
+              "Decisions engine (questions and rules)",
+            )}
+          </option>
+        </Select>
+      </FormField>
+      {observation.engine === "decisions" && observation.decisions && (
+        <DecisionsFields
+          agentId={agentId}
+          savedAt={savedAt}
+          storedBlock={decisionsBlockFingerprint(observation.storedDecisions)}
+          storedDecisions={decisionsBaseline(observation)}
+          storedRuleCount={
+            Array.isArray(observation.storedDecisions?.rules)
+              ? observation.storedDecisions.rules.length
+              : 0
+          }
+          decisions={observation.decisions}
+          setDecisions={(next) =>
+            setObservation((prev) => editDecisions(prev, next))
+          }
+          credentialError={decisionsCredentialError}
+          serverRefusal={decisionsRefusal}
+        />
+      )}
     </Section>
   );
 }

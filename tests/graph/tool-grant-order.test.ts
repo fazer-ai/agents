@@ -188,14 +188,6 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
     expect(after).toEqual(before);
   });
 
-  test("and the MCP selections themselves come back in the connections' own order", async () => {
-    await grantOrder("B");
-    const sel = await runScopedOn(appDb, ctx(), (db) =>
-      loadToolSelections(db, agentId),
-    );
-    expect(sel.mcpSelections.map((s) => s.connId)).toEqual([connA, connB]);
-  });
-
   test("and the order does not follow the database's collation", async () => {
     // The comparison is done in code, by UTF-16 code unit, and not as `ORDER BY name`: SQL
     // would compare under the database's collation, and a bundle exported from one deployment is

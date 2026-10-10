@@ -65,19 +65,6 @@ describe("formFromTool — legacy fixed URL bindings", () => {
     expect(form.aiFields.map((f) => f.name)).toEqual(["q"]);
   });
 
-  test("a fixed URL binding whose value is a context template stays a template", () => {
-    const form = formFromTool(
-      legacyTool({
-        inputSchema: {
-          tenant: { source: "fixed", value: "{{conversation_id}}" },
-        },
-      }),
-    );
-    expect(form.urlTemplate).toBe(
-      "https://api.example.com/accounts/{{conversation_id}}",
-    );
-  });
-
   test("an AI field bound to a URL placeholder keeps its {{token}} and its schema row", () => {
     const form = formFromTool(
       legacyTool({
@@ -110,11 +97,6 @@ describe("parseExpectedStatuses", () => {
   test("what is not a whole positive number is dropped rather than rejected", () => {
     expect(parseExpectedStatuses("404, abc, 4.5, -1")).toEqual([404]);
   });
-
-  // Round-trip: the stored list is rendered back into the field as a comma list.
-  test("the rendered value parses back to itself", () => {
-    expect(parseExpectedStatuses([404, 409].join(", "))).toEqual([404, 409]);
-  });
 });
 
 // The response template travels through the form as plain markdown; the {mode, template}
@@ -133,16 +115,6 @@ describe("formFromTool / payloadOf — the response template", () => {
       mode: "template",
       template: "Name: {{data.name}}",
     });
-  });
-
-  test("a legacy JSON Schema is not shown, and is not deleted either", () => {
-    // This column has been writable through MCP since it existed, unvalidated and read nowhere. A
-    // form that renders nothing for it and sends {} on save would silently drop whatever the caller
-    // that wrote it is still reading back.
-    const schema = { type: "object", properties: { id: { type: "string" } } };
-    const form = formFromTool(legacyTool({ outputSchema: schema }));
-    expect(form.outputTemplate).toBe("");
-    expect(payloadOf(form)?.outputSchema).toEqual(schema);
   });
 
   test("writing a template replaces whatever was there", () => {

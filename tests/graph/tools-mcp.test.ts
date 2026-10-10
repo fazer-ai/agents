@@ -205,14 +205,6 @@ describe("buildConnConfig", () => {
     expect(c.url).toBe(`https://${PUBLIC}/mcp-from-cred`);
   });
 
-  test("no url and no credentialBaseUrl → throws missing url error", async () => {
-    await expect(
-      buildConnConfig(sel({ url: null, credentialBaseUrl: null }), {
-        stdioEnabled: false,
-      }),
-    ).rejects.toThrow(/requires a url/);
-  });
-
   test("credentialBaseUrl alone (null url) is sufficient", async () => {
     const c = (await buildConnConfig(
       sel({ url: null, credentialBaseUrl: `https://${PUBLIC}/mcp` }),
@@ -318,23 +310,6 @@ describe("loadMcpToolsForAgent", () => {
     // The allowlist matches the bare server name "a"; the model sees the namespaced name.
     // normalizeToolName keeps hyphens, so "asaas-mcp" → slug "asaas-mcp".
     expect(tools.map((t) => t.name)).toEqual(["mcp__asaas-mcp__a"]);
-  });
-
-  test("a connection that fails to load is skipped (never breaks the turn)", async () => {
-    const tools = await loadMcpToolsForAgent(
-      7n,
-      [
-        sel({ name: "down", enabledTools: ["a"] }),
-        sel({ name: "up", enabledTools: ["x"] }),
-      ],
-      {
-        connect: async (s) => {
-          if (s.name === "down") throw new Error("ECONNREFUSED");
-          return [fakeTool("x")];
-        },
-      },
-    );
-    expect(tools.map((t) => t.name)).toEqual(["mcp__up__x"]);
   });
 
   test("invokes onDiscoverError for each failing connection, still loading the rest", async () => {

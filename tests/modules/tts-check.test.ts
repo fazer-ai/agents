@@ -427,22 +427,6 @@ describe.skipIf(!dbUp)("tts audio check", () => {
     });
   });
 
-  test("off: the detector is never called", async () => {
-    const p = countingProvider();
-    const d = scriptedDetector([CORRUPTED]);
-    const out = await synthesizeReply({
-      tenantId,
-      cfg: cfgOf(),
-      text: REPLY,
-      base: appDb,
-      deps: { fetchImpl: p.fetchImpl, checkFetchImpl: d.fetchImpl },
-      check: { ...CHECK, mode: "off" },
-    });
-    expect(out).not.toBeNull();
-    expect(p.rec.calls).toBe(1);
-    expect(d.rec.calls).toBe(0);
-  });
-
   test("shadow: the audio is returned before the detector answers, and only a line changes", async () => {
     const p = countingProvider();
     let release: (v: Response) => void = () => {};

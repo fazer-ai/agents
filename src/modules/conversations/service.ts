@@ -48,6 +48,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { announceStatusChange } from "@/modules/chatwoot/status-announce";
+import { runResolutionHooks } from "@/modules/chatwoot/webhook";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import {
@@ -747,7 +748,7 @@ async function updateMirror(
     assigneeName?: string | null;
   },
 ): Promise<void> {
-  await runScopedOn(base, ctx, async (db) => {
+  const resolved = await runScopedOn(base, ctx, async (db) => {
     const key = await db.conversation.findUnique({
       where: { id },
       select: {
@@ -756,11 +757,11 @@ async function updateMirror(
         chatwootConversationId: true,
       },
     });
-    if (!key) return;
+    if (!key) return null;
     // NOTE: under the conversation's own lock, the one the mirror, the reconcile and the takeover claim
     // take: the status this write moves is announced here, and read outside the lock a webhook for the
     // same click could read the old status too and announce the transition a second time.
-    await withEntityLock(
+    return withEntityLock(
       db,
       `${key.tenantId}:${key.chatwootInstanceId}:${key.chatwootConversationId}`,
       async () => {
@@ -769,7 +770,13 @@ async function updateMirror(
             ? null
             : await db.conversation.findUnique({
                 where: { id },
-                select: { status: true, inboxId: true, assigneeType: true },
+                select: {
+                  status: true,
+                  inboxId: true,
+                  assigneeType: true,
+                  inbox: { select: { chatwootInboxId: true } },
+                  contactInboxId: true,
+                },
               });
         await db.conversation.updateMany({ where: { id }, data });
         if (before && data.status !== undefined) {
@@ -784,9 +791,23 @@ async function updateMirror(
                 : data.assigneeType,
           });
         }
+        return before &&
+          before.status !== "resolved" &&
+          data.status === "resolved"
+          ? {
+              tenantId: key.tenantId,
+              instanceId: key.chatwootInstanceId,
+              conversationId: key.chatwootConversationId,
+              inboxId: before.inbox?.chatwootInboxId ?? null,
+              contactInboxId: before.contactInboxId,
+            }
+          : null;
       },
     );
   });
+  // NOTE: after the commit, like the webhook it stands in for: Chatwoot's own event for this click finds
+  // the status already `resolved` and runs nothing.
+  if (resolved) await runResolutionHooks({ ...resolved, base });
 }
 
 // The conversation state as it stands after a console write, when the live read decided it. null =

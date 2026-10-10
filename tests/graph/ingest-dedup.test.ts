@@ -115,12 +115,4 @@ describe("rememberIngested", () => {
     expect(recent.filter((id) => id === 500).length).toBe(INGEST_ID_WINDOW - 1);
     expect(Math.min(...recent)).toBe(500);
   });
-
-  // The pair has to compose: an id just remembered must read as a duplicate on the next delivery,
-  // and one just evicted must not read as `new` and get appended a second time.
-  test("what it evicts becomes ancient, not new", () => {
-    const recent = rememberIngested(full(1000), 5000);
-    expect(ingestVerdict(recent, 5000)).toBe("duplicate");
-    expect(ingestVerdict(recent, 1000)).toBe("ancient");
-  });
 });

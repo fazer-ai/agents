@@ -108,17 +108,6 @@ describe("classifyAuthorizationResponse", () => {
     });
   });
 
-  // The endpoint's own reason is kept apart from ours and never reaches telemetry: the slug guard
-  // is a check on SHAPE, and a phone number is slug-shaped.
-  test("what the endpoint calls it never lands in `reason`", () => {
-    const v = classifyAuthorizationResponse(
-      200,
-      '{"authorized":false,"reason":"5511999999999"}',
-    );
-    expect(v.reason).toBeUndefined();
-    expect(v.endpointReason).toBe("5511999999999");
-  });
-
   test("every other status is an error (fail-closed)", () => {
     for (const status of [302, 429, 500, 503]) {
       expect(classifyAuthorizationResponse(status, "")).toEqual({

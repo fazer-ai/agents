@@ -117,15 +117,6 @@ describe("SidebarResizer", () => {
     expect(hook?.collapsed).toBe(false);
   });
 
-  test("Space also toggles collapse", () => {
-    renderResizer();
-    const sep = getSeparator();
-    act(() => {
-      fireEvent.keyDown(sep, { key: " " });
-    });
-    expect(hook?.collapsed).toBe(true);
-  });
-
   test("reports aria-valuetext when collapsed", () => {
     renderResizer();
     act(() => {

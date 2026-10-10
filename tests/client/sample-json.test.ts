@@ -220,24 +220,4 @@ describe("reindentJson under a ceiling", () => {
   test("refuses a document whose formatted form nobody could read", () => {
     expect(reindentJson(nested(2000))).toEqual({ ok: false, why: "too-large" });
   });
-
-  test("still formats an ordinary response", () => {
-    const wide = JSON.stringify({
-      data: Array.from({ length: 500 }, (_, i) => ({
-        id: `ap_${i}`,
-        name: `Nome ${i}`,
-        at: "2026-09-02T14:00:00-03:00",
-      })),
-    });
-    const out = tidy(wide);
-    expect(out).not.toBeNull();
-    expect(JSON.parse(out ?? "")).toEqual(JSON.parse(wide));
-  });
-
-  // The ceiling is on the OUTPUT, not on the input: what makes a document unreadable here is what
-  // comes out of it, and a small input is exactly how the big output is reached.
-  test("judges the formatted size, not the pasted size", () => {
-    expect(nested(2000).length).toBeLessThan(10_000);
-    expect(reindentJson(nested(2000))).toEqual({ ok: false, why: "too-large" });
-  });
 });

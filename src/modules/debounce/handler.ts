@@ -655,6 +655,7 @@ export async function fillMissingAudio(args: {
         dataUrl: audio.dataUrl,
         cfg,
         base: args.base,
+        signal: args.fill.signal,
         flow: {
           tenantId: args.tenantId,
           turnId: args.fill.turnId,

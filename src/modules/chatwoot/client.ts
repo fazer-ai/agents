@@ -276,6 +276,8 @@ export interface AttachmentDownloadOptions {
   retryOnMissing?: boolean;
   // Injectable for tests (no real waiting).
   sleep?: (ms: number) => Promise<void>;
+  // The caller's deadline, on top of the request timeout.
+  signal?: AbortSignal;
 }
 
 export type ChatwootMessageType = "outgoing" | "incoming";
@@ -1348,7 +1350,12 @@ export class ChatwootClient {
           ? { [CHATWOOT_AUTH_HEADER]: this.config.adminToken }
           : {},
         redirect: "follow",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: opts.signal
+          ? AbortSignal.any([
+              AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+              opts.signal,
+            ])
+          : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (res.ok) {
         const bytes = await res.arrayBuffer();

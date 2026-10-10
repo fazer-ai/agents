@@ -107,7 +107,10 @@ import {
   type ContactFieldsConfig,
   readContactFieldsConfig,
 } from "@/modules/chatwoot/contact-fields";
-import { decisionsBlockFingerprint } from "@/modules/decisions/config";
+import {
+  DECISION_ACTION_TOOLS,
+  decisionsBlockFingerprint,
+} from "@/modules/decisions/config";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
@@ -163,6 +166,7 @@ import { followUpToForm, followUpToStored } from "./followUpFormState";
 import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
+import { grantsToSave } from "./hiddenGrants";
 import { KnowledgeTab } from "./KnowledgeTab";
 import {
   type SuggestionReviewState,
@@ -2021,13 +2025,21 @@ function AgentEditor() {
       ? guidanceOf(readBehaviorState(syncedForChat))
       : null;
   const savedGuidance = guidanceToSave(formGuidance, storedGuidance);
+  // The grants a Tools save writes, the hidden ones as stored (./hiddenGrants).
+  const savedGrants = grantsToSave(
+    grants,
+    decides ? mapGrants(syncedGrantsRef.current) : null,
+    DECISION_ACTION_TOOLS,
+    catalog?.native.map((n) => n.name) ?? [],
+  );
   // The edits no save of this engine writes: they are still the operator's, so leaving the editor
   // asks about them even with every Save done.
   const hiddenDraftsPending =
     (decides &&
       JSON.stringify({ systemPrompt, model, memory, modelFallback }) !==
         JSON.stringify({ ...chatSnap, ...hiddenSnap })) ||
-    guidanceDraftHidden(formGuidance, storedGuidance);
+    guidanceDraftHidden(formGuidance, storedGuidance) ||
+    canonicalGrants(grants) !== canonicalGrants(savedGrants);
   const sectionSnap = {
     // NOTE: General covers identity + model (the tabs merged). Track the raw model
     // form state, not buildModelConfig() — the latter collapses to {} until
@@ -2081,7 +2093,7 @@ function AgentEditor() {
     // NOTE: transferWithSummary + handoff are config of the handoff_to_human tool (Tools tab), saved with
     // the grant set, so they flag the Tools tab's unsaved-changes dot — not Behavior's.
     tools: JSON.stringify({
-      grants: canonicalGrants(grants.filter((g) => g.source !== "RAG")),
+      grants: canonicalGrants(savedGrants.filter((g) => g.source !== "RAG")),
       transferWithSummary: savedGuidance.transferWithSummary,
       handoff: { ...handoff, instructions: savedGuidance.handoffInstructions },
       kanbanInstructions: savedGuidance.kanbanInstructions,
@@ -2164,7 +2176,7 @@ function AgentEditor() {
   // Whether the Tools tab holds grant changes not saved yet: a rule's "Allow" then sends the operator
   // there instead of writing one grant beside a selection nobody confirmed.
   const toolGrantsPending =
-    canonicalGrants(grants.filter((g) => g.source !== "RAG")) !==
+    canonicalGrants(savedGrants.filter((g) => g.source !== "RAG")) !==
     canonicalGrants(
       mapGrants(syncedGrantsRef.current).filter((g) => g.source !== "RAG"),
     );
@@ -3487,7 +3499,7 @@ function AgentEditor() {
       }
       const expected = expectedFor(force);
       const grantsRes = await api.api.v1.agents({ id })["tool-selections"].put({
-        grants,
+        grants: savedGrants,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
       });
       if (handleConflict(grantsRes.error, () => void saveTools(true))) return;
@@ -3517,7 +3529,8 @@ function AgentEditor() {
       // would reset the Behavior sub-forms and drop their unsaved edits. Keep the local settings bag's
       // handoff in step so a later Behavior save (which spreads it) doesn't rewrite a stale value.
       syncedGrantsRef.current = grantsRes.data.grants;
-      setGrants(mapGrants(grantsRes.data.grants));
+      // On questions and rules the form keeps its hidden grant drafts; what it draws was just written.
+      if (!decides) setGrants(mapGrants(grantsRes.data.grants));
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
       syncToolConfig(agentRes.data.agent, decides);

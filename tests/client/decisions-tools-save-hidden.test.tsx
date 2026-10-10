@@ -11,6 +11,8 @@ const { ToastProvider } = await import("@/client/components/Toast");
 const { AuthProvider } = await import("@/client/contexts/AuthContext");
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
 const { NavGuardProvider } = await import("@/client/contexts/NavGuardContext");
+const { nativeToolAnchor } = await import("@/client/pages/agents/editorTabs");
+const { focusableIn } = await import("@/client/pages/agents/saveAttempt");
 const { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } = await import(
   "@/graph/tools/catalog"
 );
@@ -37,7 +39,12 @@ const GRANTS = [
     documentTemplateId: null,
     codeToolDefinitionId: null,
     knowledgeBaseIds: [],
-    enabledTools: ["resolve_conversation", "set_labels", "private_note"],
+    enabledTools: [
+      "resolve_conversation",
+      "set_labels",
+      "private_note",
+      "skip_reply",
+    ],
   },
 ];
 
@@ -182,4 +189,60 @@ test("a close label removed on the language model is not saved by a Tools save o
   expect(JSON.stringify(settingsSent.resolveConversation)).toBe(
     JSON.stringify({ assignLabels: ["vip"] }),
   );
+});
+
+// The same holds for the grants: a tool this engine does not draw, revoked on the language model
+// before the switch, stays granted through a Tools save on questions and rules.
+test("a hidden tool revoked on the language model stays granted through a Tools save on questions and rules", async () => {
+  const asked = stubApi();
+  render(
+    <MemoryRouter initialEntries={["/agents/1/tools"]}>
+      <ThemeProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <NavGuardProvider>
+              <Routes>
+                <Route path="/agents/:id/:tab" element={<AgentEditorPage />} />
+              </Routes>
+            </NavGuardProvider>
+          </AuthProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+  const skip = await waitFor(() => {
+    const el = document.getElementById(nativeToolAnchor("skip_reply"));
+    if (!el) throw new Error("the skip_reply card is not there yet");
+    return el;
+  });
+  fireEvent.click(focusableIn(skip) ?? skip);
+  fireEvent.click(
+    [...document.querySelectorAll('[role="tab"]')].find((t) =>
+      t.textContent?.includes("General"),
+    ) as HTMLElement,
+  );
+  const decisions = await waitFor(() => {
+    const el = document.querySelector<HTMLElement>(
+      '[data-testid="engine-decisions"]',
+    );
+    if (!el) throw new Error("the engine cards are not there yet");
+    return el;
+  });
+  fireEvent.click(decisions);
+  fireEvent.click(
+    [...document.querySelectorAll('[role="tab"]')].find((t) =>
+      t.textContent?.includes("Tools"),
+    ) as HTMLElement,
+  );
+  await waitFor(() => expect(Boolean(button("Save tools"))).toBe(true));
+  fireEvent.click(button("Save tools"));
+  const put = await waitFor(() => {
+    const p = asked.find((a) => a.method === "PUT");
+    if (!p) throw new Error("no PUT yet");
+    return p;
+  });
+  const native = (
+    put.body as { grants: { source: string; enabledTools?: string[] }[] }
+  ).grants.find((g) => g.source === "NATIVE");
+  expect((native?.enabledTools ?? []).includes("skip_reply")).toBe(true);
 });

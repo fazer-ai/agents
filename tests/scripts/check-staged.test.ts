@@ -61,6 +61,7 @@ beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), "check-staged-"));
   git("init", "-q");
   cpSync(join(ROOT, "biome.jsonc"), join(repo, "biome.jsonc"));
+  cpSync(join(ROOT, "package.json"), join(repo, "package.json"));
   cpSync(join(ROOT, "biome-plugins"), join(repo, "biome-plugins"), {
     recursive: true,
   });
@@ -126,6 +127,18 @@ describe("the lint step", () => {
     const refused = hook();
     expect(refused.code).not.toBe(0);
     expect(refused.output).toContain("noDebugger");
+  });
+
+  // Biome enables its React rules from the dependencies package.json lists.
+  test("applies the React rules CI applies", () => {
+    write(
+      "tests/hook.tsx",
+      'import { useState } from "react";\n\nexport function C({ on }: { on: boolean }) {\n  if (on) {\n    useState(0);\n  }\n  return null;\n}\n',
+    );
+    git("add", "tests/hook.tsx");
+    const refused = hook();
+    expect(refused.code).not.toBe(0);
+    expect(refused.output).toContain("useHookAtTopLevel");
   });
 
   test("refuses a staged file whose only finding is a warning, as CI does", () => {

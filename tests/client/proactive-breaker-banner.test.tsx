@@ -141,3 +141,21 @@ test("the card shows the trip with its Resume and where the automatic limit came
   expect(auto.includes("1,500")).toBe(true);
   expect(auto.includes("500 proactive messages in 24 hours")).toBe(true);
 });
+
+test("an edit in progress survives the shell's periodic re-read", async () => {
+  tripped = false;
+  shell(<ProactiveBreakerCard />);
+  await waitFor(() =>
+    expect(Boolean(screen.queryByRole("spinbutton"))).toBe(true),
+  );
+  const input = screen.getByRole("spinbutton") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "500" } });
+  const before = calls.length;
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(calls.length > before).toBe(true));
+  await waitFor(() =>
+    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe(
+      "500",
+    ),
+  );
+});

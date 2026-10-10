@@ -308,11 +308,12 @@ export async function getProactiveBreakerStatus(
 export async function resumeProactiveBreaker(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
-  now: Date = new Date(),
+  at?: Date,
 ): Promise<ProactiveBreakerStatus> {
   const tenantId = requireTenantId(ctx);
   return runScopedOn(base, ctx, (db) =>
     withEntityLock(db, breakerLockKey(tenantId), async () => {
+      const now = at ?? new Date();
       const row = await db.proactiveBreaker.findUnique({
         where: { tenantId },
         select: ROW_SELECT,
@@ -345,24 +346,21 @@ export async function resumeProactiveBreaker(
 
 // Turning the breaker off ends a trip: an off breaker is never asked, so a latch left behind would
 // keep the banner up for a guard that is not running, and come back by surprise the day it is turned
-// on again. Same effect as a resume, recorded by the settings write that caused it.
+// on again. Same effect as a resume, recorded by the settings write that caused it, and run inside
+// that write's transaction under the breaker's lock, so no trip can land between the two.
 export async function clearTripForOff(
-  ctx: TenantContext,
-  base: PrismaClient = basePrisma,
-  now: Date = new Date(),
+  db: ScopedDb,
+  tenantId: bigint,
 ): Promise<void> {
-  const tenantId = requireTenantId(ctx);
-  await runScopedOn(base, ctx, (db) =>
-    withEntityLock(db, breakerLockKey(tenantId), () =>
-      db.proactiveBreaker.updateMany({
-        where: { tenantId, trippedAt: { not: null } },
-        data: {
-          trippedAt: null,
-          tripCount: null,
-          tripLimit: null,
-          resumedAt: now,
-        },
-      }),
-    ),
-  );
+  await withEntityLock(db, breakerLockKey(tenantId), async () => {
+    await db.proactiveBreaker.updateMany({
+      where: { tenantId, trippedAt: { not: null } },
+      data: {
+        trippedAt: null,
+        tripCount: null,
+        tripLimit: null,
+        resumedAt: new Date(),
+      },
+    });
+  });
 }

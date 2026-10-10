@@ -257,6 +257,8 @@ async function patchBlock<
   // Last so it stays a trailing callback. May be async to read under the lock before the commit: the
   // logo upload needs the key it supersedes, and a read outside the lock is already stale.
   merge: (raw: Record<string, unknown>) => T | Promise<T>,
+  // Runs in the same transaction after the write, for state that has to move with the setting.
+  afterWrite?: (db: ScopedDb, value: T) => Promise<void>,
 ): Promise<T> {
   const tenantId = requireTenantId(ctx);
   return runScopedOn(base, ctx, async (db) => {
@@ -268,6 +270,7 @@ async function patchBlock<
       where: { id: tenantId },
       data: { settings: settings as Prisma.InputJsonValue },
     });
+    if (afterWrite) await afterWrite(db, value);
     await auditMutation(db, ctx, {
       action: audit.action,
       target: audit.target,
@@ -569,7 +572,7 @@ export async function updateProactiveBreakerSettings(
   patch: Partial<ProactiveBreakerConfig>,
   base: PrismaClient = basePrisma,
 ): Promise<ProactiveBreakerConfig> {
-  const next = await patchBlock(
+  return patchBlock(
     ctx,
     base,
     "proactiveBreaker",
@@ -588,9 +591,10 @@ export async function updateProactiveBreakerSettings(
         );
       return parsed.data;
     },
+    async (db, value) => {
+      if (value.mode === "off") await clearTripForOff(db, requireTenantId(ctx));
+    },
   );
-  if (next.mode === "off") await clearTripForOff(ctx, base);
-  return next;
 }
 
 export type SpendCeilingUpdateInput = Partial<SpendCeilingConfig>;

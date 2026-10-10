@@ -58,14 +58,21 @@ export async function reserveProactiveSend(params: {
   base?: PrismaClient;
   now?: Date;
 }): Promise<ProactiveLimitVerdict> {
-  const now = params.now ?? new Date();
-  await refreshAutoPeak(params.tenantId, params.base ?? basePrisma, now);
+  await refreshAutoPeak(
+    params.tenantId,
+    params.base ?? basePrisma,
+    params.now ?? new Date(),
+  );
   try {
     return await runScopedOn(
       params.base ?? basePrisma,
       sysCtx(params.tenantId),
       (db) =>
         withEntityLock(db, breakerLockKey(params.tenantId), async () => {
+          // Read once the lock is held, so the reservation's instant is ordered with a resume
+          // that ran ahead of it: an instant taken before the wait would date the row before the
+          // resume's window, and the next send would not count it.
+          const now = params.now ?? new Date();
           const breaker = await checkBreakerLocked(db, params.tenantId, now);
           if (!breaker.open)
             return {

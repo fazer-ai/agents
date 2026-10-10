@@ -26,6 +26,7 @@ import {
 import { updateProactiveBreakerSettings } from "@/modules/tenant-settings/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 
 // The account-wide proactive breaker, through the real `runAgentNudge` and the real reservation: the
 // send that finds the account at its limit trips it, and nothing proactive goes out until a resume.
@@ -368,6 +369,59 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     expect(resumed.count).toBe(0);
     expect(await nudge(6105).run).toBe("messaged");
     expect(await nudge(6106).run).toBe("messaged");
+  });
+
+  test("a reservation that waited behind a resume counts after it", async () => {
+    await resetBreaker();
+    await setBreaker("fixed", 1);
+    await suDb.proactiveBreaker.create({
+      data: {
+        tenantId,
+        trippedAt: new Date(),
+        tripCount: 1,
+        tripLimit: 1,
+        autoComputedAt: new Date(),
+      },
+    });
+    const first = await seedConv(6901);
+    const second = await seedConv(6902);
+    let waiting: Promise<
+      Awaited<ReturnType<typeof reserveProactiveSend>>
+    > | null = null;
+    // NOTE: The resume runs in a transaction that holds the breaker's lock while the reservation
+    // waits for it, which is the order the reservation's instant must respect.
+    await suDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`proactive-breaker:${tenantId}`})::bigint)`;
+      waiting = reserveProactiveSend({
+        tenantId,
+        conversationDbId: first,
+        limit: 0,
+        base: appDb,
+      });
+      await until("the reservation to wait on the breaker's lock", async () => {
+        const rows = await tx.$queryRaw<Array<{ n: bigint }>>`
+          SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+        return Number(rows[0]?.n ?? 0) > 0;
+      });
+      await tx.proactiveBreaker.update({
+        where: { tenantId },
+        data: {
+          trippedAt: null,
+          tripCount: null,
+          tripLimit: null,
+          resumedAt: new Date(),
+        },
+      });
+    });
+    const v = await (waiting as unknown as Promise<{ over: boolean }>);
+    expect(v.over).toBe(false);
+    const next = await reserveProactiveSend({
+      tenantId,
+      conversationDbId: second,
+      limit: 0,
+      base: appDb,
+    });
+    expect(next.over).toBe(true);
   });
 
   test("resuming an open breaker changes nothing and writes no audit row", async () => {

@@ -42,11 +42,16 @@ export function ProactiveBreakerCard() {
   const [saving, setSaving] = useState(false);
   const [resuming, setResuming] = useState(false);
 
+  // The draft follows the SAVED configuration, never the status object: the shell re-reads the status
+  // every minute and on focus, and a new object with the same mode and number must not overwrite an
+  // edit in progress.
+  const savedMode = status?.mode;
+  const savedLimit = status?.fixedLimit;
   useEffect(() => {
-    if (!status) return;
-    setMode(status.mode);
-    setLimitText(status.fixedLimit === null ? "" : String(status.fixedLimit));
-  }, [status]);
+    if (savedMode === undefined) return;
+    setMode(savedMode);
+    setLimitText(savedLimit == null ? "" : String(savedLimit));
+  }, [savedMode, savedLimit]);
 
   if (!status) {
     return (

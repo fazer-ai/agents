@@ -284,8 +284,8 @@ describe.skipIf(!dbUp)("document numbering", () => {
       { document_template_id: String(moving), number_prefix: "VIA-" },
       { base: appDb },
     );
-    expect(dry.ok).toBe(true);
-    const diff = JSON.stringify((dry as { data: { diff: unknown } }).data.diff);
+    if (!dry.ok) throw new Error("the dry run was refused");
+    const diff = JSON.stringify((dry.data as { diff: unknown }).diff);
     expect(diff).toContain("nextNumber");
     expect(diff).toContain("4");
     const applied = await updateDocumentTemplate(

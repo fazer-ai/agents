@@ -367,6 +367,130 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       },
     });
 
+  const customerMessage = (conversationId: number, messageId: number) =>
+    JSON.stringify({
+      event: "message_created",
+      id: messageId,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: conversationId,
+        inbox_id: 7,
+        status: "pending",
+        meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+      },
+    });
+  const ackMessage = async (deliveryId: string, conversationId: number) => {
+    const body = customerMessage(conversationId, conversationId * 100);
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: headers(body, deliveryId),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    return r.deliveryRowId as bigint;
+  };
+  // A Chatwoot client whose conversation read answers `live` and whose every other call is recorded.
+  const fakeClient = (live: unknown, calls: string[]) =>
+    new Proxy({} as Record<string, unknown>, {
+      get: (_t, prop) =>
+        prop === "then"
+          ? undefined
+          : async () => {
+              calls.push(String(prop));
+              return prop === "getConversation" ? live : {};
+            },
+    });
+  const heldByPerson = (conversationId: number) => ({
+    id: conversationId,
+    status: "open",
+    inbox_id: 7,
+    last_activity_at: Math.floor(Date.now() / 1000),
+    meta: { assignee_type: "User", assignee: { id: 55, name: "Ana" } },
+  });
+
+  // With no mirror yet (the process died before the first message was mirrored), the live ownership
+  // is what creates it, not the stored snapshot.
+  test("a stored first message of a conversation takes its ownership from the live read", async () => {
+    const id = await ackMessage("queue-replay-unmirrored", 616);
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () => fakeClient(heldByPerson(616), calls) as never,
+      },
+    });
+    await settled(id);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 616 },
+    });
+    expect(conv.assigneeType).toBe("User");
+    expect(conv.assigneeId).toBe(55);
+    expect(calls).not.toContain("sendMessage");
+  });
+
+  // A live read that cannot say who holds the conversation is not a reason to fall back on the stored
+  // snapshot: the row waits, with its body, for the next pass.
+  test("a live read that cannot say who holds the conversation defers the replay", async () => {
+    const id = await ackMessage("queue-replay-unreadable", 617);
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            {
+              id: 617,
+              status: "pending",
+              meta: { assignee_type: "AgentBot", assignee: {} },
+            },
+            calls,
+          ) as never,
+      },
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    expect(row.payload).not.toBeNull();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
+  // A full customer-message lane turns its rows away, and the pass pages on to the other lane's rows
+  // behind them instead of reading the same refused batch every time.
+  test("a full turn lane does not hide the stored status changes behind it", async () => {
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    for (let i = 0; i <= ADMISSION_MAX_WAITING; i++)
+      admitChatwootDelivery(BigInt(30_000 + i), () => g.gate, "turn");
+    const turnRow = await ackMessage("queue-lane-full-turn", 618);
+    const metaRow = await ackOnly("queue-lane-full-meta", 619);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(r.admitted).toBe(1);
+    expect((await settled(metaRow)).status).toBe("PROCESSED");
+    expect((await rowById(turnRow)).status).toBe("PENDING");
+    g.release();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: turnRow },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   // A stored customer message can be replayed after a takeover whose own webhooks never reached the
   // mirror while the process was down: the live conversation is reconciled before the replay.
   test("a stored customer message is replayed against the live conversation, not the stale mirror", async () => {

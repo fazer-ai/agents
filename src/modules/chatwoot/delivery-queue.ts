@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -35,6 +35,10 @@ export const STORED_DELIVERY_MIN_AGE_MS = 60_000;
 // One drain pass's ceiling. A pass admits into the same bounded queue the ack does; the rest waits
 // for the next pass.
 const DRAIN_BATCH = 500;
+
+// How many batches one pass may read when a full lane turns rows away and the pass pages on for the
+// other lane: the waiting list's own bound.
+const DRAIN_MAX_PAGES = 10;
 
 // How many deliveries may wait in memory, in each lane. Past it a delivery is not queued here and stays a PENDING
 // row with its body, which the periodic drain takes once it is old enough: memory stays bounded by
@@ -166,6 +170,11 @@ function pump(a: Admission, laneName: AdmissionLane): void {
   }
 }
 
+// Whether a lane's waiting list is at its bound, so it turns rows away.
+export function admissionLaneFull(lane: AdmissionLane): boolean {
+  return admission().lanes[lane].waiting.length >= ADMISSION_MAX_WAITING;
+}
+
 // Queues one delivery's processing in its lane. False when this process already holds the row, or
 // when the waiting list is full (the row stays PENDING with its body for the drain).
 export function admitChatwootDelivery(
@@ -254,7 +263,7 @@ export async function drainStoredChatwootDeliveries(
     .filter(([key]) => !a.held.has(key))
     .map(([, id]) => id);
   const batch = params.batch ?? DRAIN_BATCH;
-  const read = (id: { notIn: bigint[] } | { in: bigint[] }, take: number) =>
+  const read = (id: Prisma.BigIntFilter, take: number) =>
     run((db) =>
       db.chatwootWebhookDelivery.findMany({
         where: {
@@ -276,13 +285,12 @@ export async function drainStoredChatwootDeliveries(
         },
       }),
     ) as Promise<StoredRow[]>;
-  const rows = await read({ notIn: [...held, ...failed] }, batch);
-  if (rows.length < batch && failed.length > 0) {
-    rows.push(...(await read({ in: failed }, batch - rows.length)));
-  }
 
   let admitted = 0;
-  for (const row of rows) {
+  // Whether a lane turned a row away for being full: a full lane does not stop the pass, which pages
+  // on for rows of the other lane, and both full ends it.
+  const full = { turn: false, meta: false };
+  const offer = async (row: StoredRow): Promise<void> => {
     const normalized = parseStored(row.payload);
     // NOTE: A row the ack wrote decrypts and normalizes unless the encryption key changed since; a body
     // that does neither is dropped, never read another way, which hands the row to the sweep's report.
@@ -297,69 +305,42 @@ export async function drainStoredChatwootDeliveries(
           data: { payload: null },
         }),
       );
-      continue;
+      return;
     }
+    const lane = admissionLaneOf(normalized);
+    if (full[lane]) return;
     const ok = admitChatwootDelivery(
       row.id,
-      async () => {
-        // NOTE: The ceiling is asked again when the slot opens, since a busy queue can hold a row past it;
-        // a row that crossed it is handed to the sweep exactly as the clearing pass above would.
-        if (
-          Date.now() - row.receivedAt.getTime() >
-          STORED_DELIVERY_MAX_AGE_MS
-        ) {
-          await run((db) =>
-            db.chatwootWebhookDelivery.updateMany({
-              where: { id: row.id, status: "PENDING" },
-              data: { payload: null },
-            }),
-          );
-          return "skipped";
-        }
-        // A stored customer message can be replayed long after it arrived, past a takeover whose
-        // own webhooks never reached the mirror while this process was down. The live conversation is
-        // read and reconciled first, as the delivery recovery does, so the gate sees who holds it now;
-        // a read that fails throws, and the row waits for the next pass with its body.
-        const conversationId = normalized.conversationId;
-        if (admissionLaneOf(normalized) === "turn" && conversationId !== null) {
-          const client = await loadChatwootClient(
-            row.tenantId,
-            row.chatwootInstanceId,
-            {
-              base,
-              ...(params.deps?.makeClient
-                ? { makeClient: params.deps.makeClient }
-                : {}),
-            },
-          );
-          const live = parseLiveConversation(
-            await client.getConversation(conversationId),
-          );
-          if (live) {
-            await reconcileMirrorFromLive({
-              tenantId: row.tenantId,
-              instanceId: row.chatwootInstanceId,
-              conversationId,
-              live,
-              base,
-            });
-          }
-        }
-        return processRecordedChatwootDelivery({
-          tenantId: row.tenantId,
-          instanceId: row.chatwootInstanceId,
-          deliveryRowId: row.id,
-          agentBotId: row.routeAgentBotId,
-          normalized,
-          receiptBindingGeneration: row.bindingGeneration,
-          base,
-          deps: params.deps,
-        });
-      },
-      admissionLaneOf(normalized),
+      () => replayStored(row, normalized, base, run, params.deps),
+      lane,
     );
     if (ok) admitted++;
+    else if (admissionLaneFull(lane)) full[lane] = true;
+  };
+
+  // One batch per pass, and another only while a full lane is turning rows away and the other lane
+  // still has room, so a backlog in one lane cannot hide the other lane's rows behind it.
+  let cursor: bigint | null = null;
+  let room = 0;
+  for (let page = 0; page < DRAIN_MAX_PAGES; page++) {
+    const rows = await read(
+      {
+        notIn: [...held, ...failed],
+        ...(cursor === null ? {} : { gt: cursor }),
+      },
+      batch,
+    );
+    for (const row of rows) await offer(row);
+    room = batch - rows.length;
+    const oneFull = full.turn !== full.meta;
+    if (room > 0 || !oneFull) break;
+    cursor = rows[rows.length - 1]?.id ?? null;
   }
+  // The rows whose last attempt here threw, with the room the others left.
+  if (room > 0 && failed.length > 0) {
+    for (const row of await read({ in: failed }, room)) await offer(row);
+  }
+
   if (admitted > 0 || cleared > 0) {
     logger.warn(
       "chatwoot: drained %d stored deliveries%s; %d bodies cleared",
@@ -369,6 +350,82 @@ export async function drainStoredChatwootDeliveries(
     );
   }
   return { admitted, cleared };
+}
+
+// What the queue runs for a stored row once its slot opens.
+async function replayStored(
+  row: StoredRow,
+  normalized: NormalizedChatwootEvent,
+  base: PrismaClient,
+  run: <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) => Promise<T>,
+  deps: RuntimeDeps | undefined,
+): Promise<unknown> {
+  // NOTE: The ceiling is asked again when the slot opens, since a busy queue can hold a row past it; a
+  // row that crossed it is handed to the sweep exactly as the clearing pass would.
+  if (Date.now() - row.receivedAt.getTime() > STORED_DELIVERY_MAX_AGE_MS) {
+    await run((db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: row.id, status: "PENDING" },
+        data: { payload: null },
+      }),
+    );
+    return "skipped";
+  }
+  let event = normalized;
+  const conversationId = normalized.conversationId;
+  // NOTE: A stored customer message can be replayed long after it arrived, past a takeover whose own
+  // webhooks never reached the mirror while this process was down. The live conversation is read
+  // first, as the delivery recovery does: it repairs the mirror, and its ownership replaces the stored
+  // snapshot's in the event, which is what creates the mirror when there was none yet. A read that
+  // fails, or that cannot say who holds the conversation, throws, and the row waits for the next pass
+  // with its body.
+  if (admissionLaneOf(normalized) === "turn" && conversationId !== null) {
+    const client = await loadChatwootClient(
+      row.tenantId,
+      row.chatwootInstanceId,
+      { base, ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}) },
+    );
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (live === null) {
+      throw new Error(
+        `the live conversation ${conversationId} does not say who holds it; replay deferred`,
+      );
+    }
+    await reconcileMirrorFromLive({
+      tenantId: row.tenantId,
+      instanceId: row.chatwootInstanceId,
+      conversationId,
+      live,
+      base,
+    });
+    event = {
+      ...normalized,
+      status: live.status,
+      ...(live.assigneeStated
+        ? {
+            assigneeType: live.assigneeType,
+            assigneeId: live.assigneeId,
+            assigneeName: live.assigneeName,
+          }
+        : {
+            assigneeType: undefined,
+            assigneeId: undefined,
+            assigneeName: undefined,
+          }),
+    };
+  }
+  return processRecordedChatwootDelivery({
+    tenantId: row.tenantId,
+    instanceId: row.chatwootInstanceId,
+    deliveryRowId: row.id,
+    agentBotId: row.routeAgentBotId,
+    normalized: event,
+    receiptBindingGeneration: row.bindingGeneration,
+    base,
+    deps,
+  });
 }
 
 function parseStored(payload: string | null) {

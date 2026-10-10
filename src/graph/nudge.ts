@@ -1411,13 +1411,13 @@ async function runAgentNudgeBody(
     )
       .then((r) => r?.name ?? null)
       .catch(() => null);
-  // THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the customer, and
-  // only when it could reach them: the note for the person who holds the conversation reaches nobody.
-  // Outside an official channel's window with no template the reply is a note, but a tool's own send
-  // (an ack) can still reach the customer, so the run is gated too; refused, it ends as the
-  // `noted-window` it would have been, so a follow-up stops there. Over the limit the occasion is
-  // spent, not retried, and the conversation stays the agent's. The labels still land, as on the
-  // refused contact; no resolve, since nothing was said.
+  // THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the model. Every run
+  // is gated, the note-only ones included (a person holds it, or the window closed with no template):
+  // their reply is a note, but a tool's own send (an ack) can still reach the customer, and only a
+  // run that never starts cannot. A note-only run under the limit counts nothing unless a tool spoke.
+  // Over the limit the occasion is spent, not retried (an operator event for a person who holds the
+  // conversation became their note before this), and a window run ends as the `noted-window` it would
+  // have been. The labels still land, as on the refused contact; no resolve, since nothing was said.
   const windowNoteOnly =
     proactiveSendMode(
       cfg.serviceWindowConfig,
@@ -1425,11 +1425,7 @@ async function runAgentNudgeBody(
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
     ) === "note";
-  if (
-    canMessagePre &&
-    cfg.maxProactivePerDay > 0 &&
-    cfg.conversationDbId !== null
-  ) {
+  if (cfg.maxProactivePerDay > 0 && cfg.conversationDbId !== null) {
     const verdict = await reserveProactiveSend({
       tenantId,
       conversationDbId: cfg.conversationDbId,
@@ -1487,8 +1483,8 @@ async function runAgentNudgeBody(
         allowResolve: false,
       });
       if (applied === "stale") return standDown();
-      // NOTE: A confirmed takeover still owes the person the operator's event, as on the refused
-      // contact: the note is for them, and the limit counts only what reaches the customer.
+      // NOTE: A person who took the conversation during the reads above is still owed the operator's
+      // event, as on the refused contact: the note is for them, and it is no proactive message.
       if (operatorEvent && stillOurs === "not-ours") return noteOperatorEvent();
       return windowNoteOnly ? "noted-window" : "silent";
     }

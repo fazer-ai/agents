@@ -394,17 +394,32 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect(r.messages).toHaveLength(1);
   });
 
-  test("a conversation a person holds gets the event as a note, which neither counts nor is refused", async () => {
-    await setLimit(1);
+  test("on a conversation a person holds, a note-only run under the limit leaves its note and counts nothing", async () => {
+    await setLimit(5);
     const conv = await seedConv(5107, "User");
-    await seedDeliveries(conv, true, 60_000);
     const { r, run } = nudge(5107, {
       nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
     });
     expect(await run).toBe("noted");
     expect(r.notes).toHaveLength(1);
+    expect(await proactiveRows(conv)).toBe(0);
+  });
+
+  test("over the limit, a note-only run does not start, but an operator event still reaches the person as a note", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5116, "User");
+    await seedDeliveries(conv, true, 60_000);
+    const authored = nudge(5116, {
+      nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+    });
+    expect(await authored.run).toBe("silent");
+    expect(authored.r.notes).toEqual([]);
+    expect(authored.r.messages).toEqual([]);
+    const event = nudge(5116);
+    expect(await event.run).toBe("noted");
+    expect(event.r.notes).toHaveLength(1);
+    expect(event.r.messages).toEqual([]);
     expect(await proactiveRows(conv)).toBe(1);
-    expect(await limitLines(conv)).toEqual([]);
   });
 
   test("a refused follow-up step still lands its labels, and does not resolve", async () => {

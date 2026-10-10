@@ -112,9 +112,8 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list. `snoozedFollowUp` too, whose cost is the step shape it shares with `followUp`. Measured at
-// 34_032 with `limits.maxTurnsPerHour`, the conversation-type and label conditions, the vision ceiling
-// and that block.
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 34_032
+// with `limits.maxTurnsPerHour`, the conversation-type and label conditions and the vision ceiling.
 const SETTINGS_SCHEMA_CEILING = 34_120;
 
 describe("MCP tool descriptions", () => {

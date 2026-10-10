@@ -18,6 +18,8 @@ export const UNCHANGED_UPDATE_ROWS_MAX = 20_000;
 interface Part {
   key: string;
   digest: string;
+  // The inbox's account, for an inbox row: an inbox sync writes every inbox of the account.
+  account?: string;
 }
 
 interface InFlight {
@@ -40,9 +42,11 @@ interface Store {
   // Until when no receipt is dropped, because the pending bookkeeping hit its bound and let go of
   // deliveries it could no longer follow.
   saturatedUntil: number;
+  // Inbox syncs in flight per account (`syncInboxes`, the other writer of inbox names).
+  inboxSyncs: Map<string, number>;
 }
 
-const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates.v3");
+const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates.v4");
 
 function store(): Store {
   const g = globalThis as unknown as Record<symbol, Store | undefined>;
@@ -53,7 +57,8 @@ function store(): Store {
     !(held.rows instanceof Map) ||
     !(held.mirroring instanceof Map) ||
     !(held.pending instanceof Map) ||
-    !(held.pendingByDelivery instanceof Map)
+    !(held.pendingByDelivery instanceof Map) ||
+    !(held.inboxSyncs instanceof Map)
   ) {
     g[KEY] = {
       messages: new Map(),
@@ -62,6 +67,7 @@ function store(): Store {
       pending: new Map(),
       pendingByDelivery: new Map(),
       saturatedUntil: 0,
+      inboxSyncs: new Map(),
     };
   }
   return g[KEY] as Store;
@@ -88,35 +94,42 @@ function partsOf(
   instanceId: bigint,
   n: NormalizedChatwootEvent,
 ): Part[] {
-  const parts: Part[] = [];
-  if (n.conversationId !== null) {
-    const {
-      event: _event,
-      message: _message,
-      changedAttributes: _changed,
-      inboxName: _inboxName,
-      contact: _contact,
-      ...snapshot
-    } = n;
-    parts.push({
+  // No conversation, no mirror write at all (`mirrorChatwootEvent` returns before any row).
+  if (n.conversationId === null) return [];
+  const {
+    event: _event,
+    message: _message,
+    changedAttributes: _changed,
+    inboxName: _inboxName,
+    contact,
+    ...snapshot
+  } = n;
+  // The contact's identity stays with the conversation: the row links to it, and a payload naming a
+  // contact the row does not have yet fills the link.
+  const parts: Part[] = [
+    {
       key: `c:${tenantId}:${instanceId}:${n.conversationId}`,
-      digest: digest(snapshot),
-    });
-  }
-  if (n.contact != null && n.contact.id != null) {
+      digest: digest({ ...snapshot, contactId: contact?.id ?? null }),
+    },
+  ];
+  if (contact != null && contact.id != null) {
     parts.push({
-      key: `k:${tenantId}:${instanceId}:${n.contact.id}`,
-      digest: digest(n.contact),
+      key: `k:${tenantId}:${instanceId}:${contact.id}`,
+      digest: digest(contact),
     });
   }
   if (n.inboxId != null && n.inboxName != null) {
     parts.push({
-      key: `b:${tenantId}:${instanceId}:${n.inboxId}`,
+      key: `${inboxPrefix(tenantId, instanceId)}${n.inboxId}`,
+      account: inboxPrefix(tenantId, instanceId),
       digest: digest(n.inboxName),
     });
   }
   return parts;
 }
+
+const inboxPrefix = (tenantId: bigint, instanceId: bigint) =>
+  `b:${tenantId}:${instanceId}:`;
 
 function messageKey(
   tenantId: bigint,
@@ -155,6 +168,9 @@ function droppableShape(n: NormalizedChatwootEvent): boolean {
 // Whether something other than this digest is about to be written to the row: a run in flight, or a
 // delivery accepted and not mirrored yet.
 function rowUnsettled(s: Store, part: Part): boolean {
+  if (part.account !== undefined && (s.inboxSyncs.get(part.account) ?? 0) > 0) {
+    return true;
+  }
   const differs = (m: Map<string, number> | undefined) =>
     m !== undefined && [...m.keys()].some((d) => d !== part.digest);
   return (
@@ -311,6 +327,28 @@ export function trackConversationMirror(
   };
 }
 
+// Around an inbox sync, which writes the account's inbox names from Chatwoot's list outside the
+// mirror: nothing on those inboxes is dropped while it runs, and their records are forgotten after.
+export function trackInboxSync(
+  tenantId: bigint,
+  instanceId: bigint,
+): { done: () => void } {
+  const s = store();
+  const account = inboxPrefix(tenantId, instanceId);
+  s.inboxSyncs.set(account, (s.inboxSyncs.get(account) ?? 0) + 1);
+  let settled = false;
+  return {
+    done: () => {
+      if (settled) return;
+      settled = true;
+      for (const key of [...s.rows.keys()]) {
+        if (key.startsWith(account)) s.rows.delete(key);
+      }
+      bump(s.inboxSyncs, account, -1);
+    },
+  };
+}
+
 // The message half, taken on arrival and kept only once the delivery was processed on this route:
 // call the returned function then.
 export function rememberOnSuccess(
@@ -371,4 +409,5 @@ export function resetUnchangedUpdateRecords(): void {
   s.pending.clear();
   s.pendingByDelivery.clear();
   s.saturatedUntil = 0;
+  s.inboxSyncs.clear();
 }

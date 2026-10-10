@@ -32,6 +32,7 @@ import {
   withDraftEngine,
   withEngine,
 } from "@/client/pages/agents/observationFormState";
+import { rebaseToolGrantsOnto } from "@/client/pages/agents/toolsBaseline";
 import { decisionsIssues, RULES_MAX } from "@/modules/decisions/config";
 import { credentialServes } from "@/modules/vault/secret-types";
 
@@ -284,6 +285,16 @@ describe("the native tools a grant set allows", () => {
 
   // The Tools tab stays editable while an Allow is written: what the operator changed meanwhile is
   // kept, with the tool added, rather than replaced by the set the request carried.
+  // ...and those edits stay unsaved: the Tools baseline takes the grants the server stored, not the
+  // form's, and keeps its config half as it was.
+  test("after an Allow, the Tools baseline is the written grants", () => {
+    const baseline = JSON.stringify({ grants: "old", handoff: "h0" });
+    const form = JSON.stringify({ grants: "edited", handoff: "h1" });
+    const next = rebaseToolGrantsOnto(baseline, "written");
+    expect(JSON.parse(next)).toEqual({ grants: "written", handoff: "h0" });
+    expect(next === form).toBe(false);
+  });
+
   test("an Allow that lands keeps the Tools edits made while it was written", () => {
     type Row = {
       source: string;

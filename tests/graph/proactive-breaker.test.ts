@@ -352,9 +352,8 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
     // An alert channel that excludes an agent drops that agent's lines, so the account's alarm is
     // written with no agent and names it in the detail; the refusals after it keep their agent.
     expect(lines.map((l) => l.agentId)).toEqual([null, agentId]);
-    expect((lines[0]?.detail as Record<string, unknown>).trippedByAgentId).toBe(
-      String(agentId),
-    );
+    const tripDetail = (lines[0]?.detail ?? {}) as Record<string, unknown>;
+    expect(tripDetail.trippedByAgentId).toBe(String(agentId));
     for (const l of lines)
       expect(
         String((l.detail as Record<string, unknown>).settingsUrl),

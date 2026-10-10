@@ -344,7 +344,21 @@ export async function drainStoredChatwootDeliveries(
     if (full[lane]) return;
     const ok = admitChatwootDelivery(
       row.id,
-      () => replayStored(row, normalized, base, run, params.deps),
+      () =>
+        runQueuedDelivery(
+          {
+            tenantId: row.tenantId,
+            instanceId: row.chatwootInstanceId,
+            deliveryRowId: row.id,
+            agentBotId: row.routeAgentBotId,
+            normalized,
+            receiptBindingGeneration: row.bindingGeneration,
+            receivedAt: row.receivedAt.getTime(),
+            base,
+            deps: params.deps,
+          },
+          true,
+        ),
       lane,
       row.receivedAt.getTime(),
     );
@@ -385,56 +399,6 @@ export async function drainStoredChatwootDeliveries(
   return { admitted, cleared };
 }
 
-// What the queue runs for a stored row once its slot opens.
-async function replayStored(
-  row: StoredRow,
-  normalized: NormalizedChatwootEvent,
-  base: PrismaClient,
-  run: <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) => Promise<T>,
-  deps: RuntimeDeps | undefined,
-): Promise<unknown> {
-  // NOTE: A customer message whose inbox binding moved since receipt (an observer made the responder, a
-  // persona swapped) is left to the sweep and the delivery recovery, whose fences decide what the
-  // route's role was then: the body is dropped. A status or assignment change keeps its replay: it has
-  // no recovery, and what it mirrors does not depend on the role. The age ceiling is admission's.
-  if (
-    admissionLaneOf(normalized) === "turn" &&
-    row.bindingGeneration !== null &&
-    (await run((db) =>
-      inboxBindingGenerationIn(db, row.chatwootInstanceId, {
-        chatwootInboxId: normalized.inboxId ?? null,
-        chatwootConversationId: normalized.conversationId,
-      }),
-    )) !== row.bindingGeneration
-  ) {
-    logger.warn(
-      "chatwoot: stored delivery row %s was received under another inbox binding; left to the sweep and the delivery recovery",
-      String(row.id),
-    );
-    await run((db) =>
-      db.chatwootWebhookDelivery.updateMany({
-        where: { id: row.id, status: "PENDING" },
-        data: { payload: null },
-      }),
-    );
-    return "skipped";
-  }
-  return runQueuedDelivery(
-    {
-      tenantId: row.tenantId,
-      instanceId: row.chatwootInstanceId,
-      deliveryRowId: row.id,
-      agentBotId: row.routeAgentBotId,
-      normalized,
-      receiptBindingGeneration: row.bindingGeneration,
-      receivedAt: row.receivedAt.getTime(),
-      base,
-      deps,
-    },
-    true,
-  );
-}
-
 // How long a live delivery may wait for its slot before its freshness is asked again when the slot
 // opens: under that, the wait is ordinary latency; past it, the customer may have written again.
 export const QUEUED_RECHECK_AFTER_MS = 15_000;
@@ -466,14 +430,40 @@ export async function runQueuedDelivery(
   let owesMemoryOnly = false;
   const conversationId = event.conversationId;
   const messageId = event.message?.id;
+  const base = d.base ?? basePrisma;
+  const run = <T>(fn: Parameters<typeof runScopedOn<T>>[2]) =>
+    runScopedOn(base, sysCtx(d.tenantId), fn);
+  // NOTE: A customer message whose inbox binding moved while it waited (an observer made the responder,
+  // a persona swapped) is left to the sweep and the delivery recovery, whose fences decide what the
+  // route's role was at receipt: the body is dropped. A status or assignment change runs: it has no
+  // recovery, and what it mirrors does not depend on the role.
+  if (
+    admissionLaneOf(event) === "turn" &&
+    d.receiptBindingGeneration !== null &&
+    (await run((db) =>
+      inboxBindingGenerationIn(db, d.instanceId, {
+        chatwootInboxId: event.inboxId ?? null,
+        chatwootConversationId: conversationId,
+      }),
+    )) !== d.receiptBindingGeneration
+  ) {
+    logger.warn(
+      "chatwoot: delivery row %s was received under another inbox binding; left to the sweep and the delivery recovery",
+      String(d.deliveryRowId),
+    );
+    await run((db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: d.deliveryRowId, status: "PENDING" },
+        data: { payload: null },
+      }),
+    );
+    return "skipped";
+  }
   if (
     (late || Date.now() - d.receivedAt > QUEUED_RECHECK_AFTER_MS) &&
     admissionLaneOf(event) === "turn" &&
     conversationId !== null
   ) {
-    const base = d.base ?? basePrisma;
-    const run = <T>(fn: Parameters<typeof runScopedOn<T>>[2]) =>
-      runScopedOn(base, sysCtx(d.tenantId), fn);
     const where = {
       tenantId: d.tenantId,
       chatwootInstanceId: d.instanceId,

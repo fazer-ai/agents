@@ -916,6 +916,68 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     });
   });
 
+  // The same fence for a live message that waited in memory, with no restart in between.
+  test("a live customer message whose inbox binding moved while it waited is left to the sweep", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 78,
+        name: "Rebound live",
+      },
+    });
+    const body = JSON.stringify({
+      event: "message_created",
+      id: 64_000,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: 640,
+        inbox_id: 78,
+        status: "pending",
+        meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+      },
+    });
+    const id = (
+      await receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: headers(body, "queue-rebound-live"),
+        nowSeconds: NOW,
+        base: appDb,
+      })
+    ).deliveryRowId as bigint;
+    const normalized = normalizeChatwootEvent(JSON.parse(body));
+    if (!normalized) throw new Error("the event did not normalize");
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { bindingGeneration: { increment: 1 } },
+    });
+    const calls: string[] = [];
+    expect(
+      await runQueuedDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: id,
+        agentBotId: 9,
+        normalized,
+        receiptBindingGeneration: inbox.bindingGeneration,
+        receivedAt: Date.now(),
+        base: appDb,
+        deps: { makeClient: async () => fakeClient({}, calls) as never },
+      }),
+    ).toBe("skipped");
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.payload).toBeNull();
+    expect(calls).toEqual([]);
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
+  });
+
   // The mirror a replay creates carries the live read's version, so a status or assignment that is
   // newer than the stored message but older than the live read cannot overwrite the takeover.
   test("a mirror created by a replay is stamped with the live read's version", async () => {

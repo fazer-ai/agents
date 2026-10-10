@@ -191,7 +191,6 @@ function decisionsBlock(over: Record<string, unknown> = {}) {
           action: { tool: "set_labels", args: { add: ["reembolso"] } },
         },
       ],
-      apply: "enforce",
       ...over,
     },
   };
@@ -587,7 +586,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect(line.model).toBe("jev-latest");
     const d = line.detail as Record<string, unknown>;
     expect(d.engine).toBe("decisions");
-    expect(d.apply).toBe("enforce");
+    // Every rule that fires runs, so a line carries no `apply`.
+    expect("apply" in d).toBe(false);
     // The mark of the questions and rules the tick ran, which the console matches its counts by.
     expect(d.block).toBe(
       decisionsBlockFingerprint(decisionsBlock().decisions) as string,
@@ -614,26 +614,6 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect(rows[0]?.promptTokens).toBe(1000);
     expect(rows[0]?.completionTokens).toBe(0);
     expect(Number(rows[0]?.costUsd)).toBeCloseTo(0.000042, 9);
-  });
-
-  test("shadow decides, logs what would run and pays for the call, and writes nothing", async () => {
-    await setMonitoring(decisionsBlock({ apply: "shadow" }));
-    const before = (await usageRows()).length;
-    const p = providerDouble(() =>
-      typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
-    );
-    const { log } = await tick(p.fetchImpl);
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const d = await detail();
-    expect(d.apply).toBe("shadow");
-    expect(d.acted).toBe(false);
-    expect(d.actions).toEqual([
-      { rule: 0, tool: "set_labels", outcome: "shadow" },
-    ]);
-    expect((await usageRows()).slice(before).map((r) => r.node)).toEqual([
-      "decision",
-    ]);
   });
 
   test("below the threshold nothing runs, and the line says which question and by how much", async () => {
@@ -1002,27 +982,25 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect(d.failure).toBe("timeout");
   });
 
-  test("enforce switched to shadow while the provider answered writes nothing", async () => {
-    const block = (apply: string) =>
-      decisionsBlock({
-        apply,
-        rules: [
-          {
-            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
-            action: {
-              tool: "private_note",
-              args: { content: "não deveria sair" },
-            },
+  test("an engine switched to the language model while the provider answered writes nothing", async () => {
+    const block = decisionsBlock({
+      rules: [
+        {
+          when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+          action: {
+            tool: "private_note",
+            args: { content: "não deveria sair" },
           },
-        ],
-      });
-    await setMonitoring(block("enforce"));
+        },
+      ],
+    });
+    await setMonitoring(block);
     const p = providerDouble(() =>
       typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
     );
     const switching = (async (u: RequestInfo | URL, init?: RequestInit) => {
       const r = await p.fetchImpl(u, init);
-      await setMonitoring(block("shadow"));
+      await setMonitoring({ ...block, engine: "llm" });
       return r;
     }) as typeof fetch;
     const { log } = await tick(switching);
@@ -1155,14 +1133,13 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     }
   });
 
-  test("arguments the tool would refuse read the same in shadow as on enforce", async () => {
+  test("arguments the tool would refuse fail the action and write nothing", async () => {
     const p = providerDouble(() =>
       typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.99 } }),
     );
-    for (const apply of ["shadow", "enforce"] as const) {
+    {
       await setMonitoring(
         decisionsBlock({
-          apply,
           rules: [
             {
               when: [{ question: "pede_reembolso", minProbability: 0.5 }],
@@ -1243,14 +1220,6 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       const line = await lastLine();
       expect(line.level).toBe("warn");
       expect((line.detail as Record<string, unknown>).actions).toEqual([
-        { rule: 0, tool: "set_labels", outcome: "not_granted" },
-      ]);
-      // Shadow reports the same missing grant enforce would hit, not an action that could run.
-      await setMonitoring(decisionsBlock({ apply: "shadow" }));
-      await tick(p.fetchImpl);
-      const shadow = await lastLine();
-      expect(shadow.level).toBe("warn");
-      expect((shadow.detail as Record<string, unknown>).actions).toEqual([
         { rule: 0, tool: "set_labels", outcome: "not_granted" },
       ]);
     } finally {
@@ -1906,6 +1875,80 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         },
         { rule: 2, tool: "set_labels", outcome: "ran" },
       ]);
+    });
+  });
+
+  // A decisions observer never calls the chat model, so it does not need one: an agent configured
+  // only with questions, rules and a classifier key observes, and the llm engine keeps requiring it.
+  describe("a decisions observer and the chat model", () => {
+    const reembolso = () =>
+      providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: 0.92 },
+          assunto: {
+            type: "choice",
+            choice: "reembolso",
+            confidence: 0.9,
+            probabilities: { reembolso: 0.95, troca: 0.03, duvida: 0.02 },
+          },
+          irritacao: {
+            type: "score",
+            score: 1,
+            confidence: 0.6,
+            probabilities: { "0": 0.1, "1": 0.7, "2": 0.2 },
+          },
+        }),
+      );
+    const setModelConfig = (modelConfig: Record<string, unknown>) =>
+      suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: modelConfig as never },
+      });
+
+    afterAll(async () => {
+      if (!dbUp) return;
+      await setModelConfig({ provider: "openai", model: "gpt-5.4-mini" });
+    });
+
+    test("with no chat model config at all, it decides and acts", async () => {
+      await setModelConfig({});
+      await setMonitoring(decisionsBlock());
+      const p = reembolso();
+      const { log, model } = await tick(p.fetchImpl);
+      expect(p.requests).toHaveLength(1);
+      expect(model.calls).toBe(0);
+      expect(log.labelsWritten).toEqual([["reembolso"]]);
+      const line = await lastLine();
+      expect(line.status).toBe("ok");
+      expect((line.detail as Record<string, unknown>).engine).toBe("decisions");
+    });
+
+    test("with a chat model whose key does not resolve, it decides and acts", async () => {
+      await setModelConfig({
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        credentialRef: "vault:987654321",
+      });
+      await setMonitoring(decisionsBlock());
+      const p = reembolso();
+      const { log, model } = await tick(p.fetchImpl);
+      expect(p.requests).toHaveLength(1);
+      expect(model.calls).toBe(0);
+      expect(log.labelsWritten).toEqual([["reembolso"]]);
+    });
+
+    test("on the llm engine, a chat model whose key does not resolve still stops the tick", async () => {
+      await setModelConfig({
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        credentialRef: "vault:987654321",
+      });
+      await setMonitoring({ engine: "llm" });
+      const p = reembolso();
+      const { log, model } = await tick(p.fetchImpl);
+      expect(p.requests).toHaveLength(0);
+      expect(model.calls).toBe(0);
+      expect(log.labelsWritten).toEqual([]);
     });
   });
 

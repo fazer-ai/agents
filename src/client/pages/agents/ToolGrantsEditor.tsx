@@ -62,6 +62,7 @@ import {
   CrossInboxCaseFields,
   type CrossInboxCaseState,
 } from "./CrossInboxCaseFields";
+import { nativeToolAnchor } from "./editorTabs";
 import {
   ResolveConversationFields,
   type ResolveConversationState,
@@ -135,6 +136,10 @@ interface Props {
   // would be a control that cannot fire. Grants already saved are left ALONE, so flipping the mode
   // back returns the agent as it was.
   observing?: boolean;
+  // An agent on questions and rules: its rules fire fixed actions and no model reads a tool's
+  // description, so the fields written for that reader are not drawn. What a tool enforces on its
+  // own (grants, transfer destination, label lists, preconditions) stays.
+  decides?: boolean;
   catalog: ToolCatalog;
   grants: GrantState[];
   onChange: (grants: GrantState[]) => void;
@@ -390,7 +395,10 @@ function ConfigurableToolCard({
   configured,
   warning,
   children,
+  id,
 }: {
+  // An anchor a link can land on (scrolled to, its toggle focused).
+  id?: string;
   selected: boolean;
   onToggle: () => void;
   title: React.ReactNode;
@@ -416,8 +424,10 @@ function ConfigurableToolCard({
   };
   return (
     <div
+      id={id}
+      data-focus-control={id ? "" : undefined}
       className={cn(
-        "overflow-hidden rounded-lg border transition-colors",
+        "scroll-mt-4 overflow-hidden rounded-lg border transition-colors",
         selected ? "border-accent" : "border-border",
       )}
     >
@@ -530,6 +540,7 @@ export function offeredPackTools<T extends { deliversToCustomer?: boolean }>(
 export function ToolGrantsEditor({
   agentId,
   observing,
+  decides,
   catalog,
   grants,
   onChange,
@@ -747,7 +758,7 @@ export function ToolGrantsEditor({
     : handoffAccounts.length === 0
       ? t(
           "editor.handoffPinnedNoInbox",
-          "Bind at least one inbox in the Channels tab first.",
+          "Attach this agent to at least one inbox in the Channels tab first, to answer or to observe it.",
         )
       : handoffAccounts.length > 1
         ? t(
@@ -1660,6 +1671,7 @@ export function ToolGrantsEditor({
               return (
                 <SelectableCard
                   key={n.name}
+                  id={nativeToolAnchor(n.name)}
                   selected={selectedNative.has(n.name)}
                   onToggle={() => toggleNative(n.name)}
                   icon={meta.icon}
@@ -1672,13 +1684,14 @@ export function ToolGrantsEditor({
         {handoffEntry && (
           <ConfigurableToolCard
             selected={handoffEnabled}
+            id={nativeToolAnchor(HANDOFF_TOOL)}
             onToggle={() => toggleNative(HANDOFF_TOOL)}
             icon={nativeToolMeta(HANDOFF_TOOL, t).icon}
             title={nativeToolMeta(HANDOFF_TOOL, t).label}
             description={nativeToolMeta(HANDOFF_TOOL, t).description}
             configured={
               handoff.mode !== "route" ||
-              handoff.instructions.trim() !== "" ||
+              (!decides && handoff.instructions.trim() !== "") ||
               !transferWithSummary
             }
           >
@@ -1814,97 +1827,106 @@ export function ToolGrantsEditor({
                 )}
               </p>
             )}
-            <FormField
-              label={t("editor.handoffInstructions", "Transfer instructions")}
-              error={refusals.handoffInstructions}
-              group
-              description={t(
-                "editor.handoffInstructionsHint",
-                "Optional. Centralizes the transfer logic (when and to whom to escalate). Appended to the handoff tool description the AI reads.",
-              )}
-            >
-              <Textarea
-                value={handoff.instructions}
-                onChange={(e) =>
-                  setHandoff({ ...handoff, instructions: e.target.value })
-                }
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.handoffInstructionsPlaceholder",
-                  "e.g. Only escalate after two failed attempts. Send billing issues to the Finance team.",
+            {!decides && (
+              <FormField
+                label={t("editor.handoffInstructions", "Transfer instructions")}
+                error={refusals.handoffInstructions}
+                group
+                description={t(
+                  "editor.handoffInstructionsHint",
+                  "Optional. Centralizes the transfer logic (when and to whom to escalate). Appended to the handoff tool description the AI reads.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={handoff.instructions}
+                  onChange={(e) =>
+                    setHandoff({ ...handoff, instructions: e.target.value })
+                  }
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.handoffInstructionsPlaceholder",
+                    "e.g. Only escalate after two failed attempts. Send billing issues to the Finance team.",
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {kanbanEntry && (
           <ConfigurableToolCard
             selected={kanbanEnabled}
+            id={nativeToolAnchor(KANBAN_TOOL)}
             onToggle={() => toggleNative(KANBAN_TOOL)}
             icon={nativeToolMeta(KANBAN_TOOL, t).icon}
             title={nativeToolMeta(KANBAN_TOOL, t).label}
             description={nativeToolMeta(KANBAN_TOOL, t).description}
-            configured={kanbanInstructions.trim() !== ""}
+            configured={!decides && kanbanInstructions.trim() !== ""}
           >
-            <FormField
-              label={t("editor.kanbanInstructions", "Funnel guidance")}
-              error={refusals.kanbanInstructions}
-              group
-              description={t(
-                "editor.kanbanInstructionsHint",
-                "Optional: describe your funnel and rules for moving the card; the AI already receives its steps and card data.",
-              )}
-            >
-              <Textarea
-                value={kanbanInstructions}
-                onChange={(e) => setKanbanInstructions(e.target.value)}
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.kanbanInstructionsPlaceholder",
-                  'e.g. Move to "Proposal sent" only after pricing was shared. Never skip steps.',
+            {!decides && (
+              <FormField
+                label={t("editor.kanbanInstructions", "Funnel guidance")}
+                error={refusals.kanbanInstructions}
+                group
+                description={t(
+                  "editor.kanbanInstructionsHint",
+                  "Optional: describe your funnel and rules for moving the card; the AI already receives its steps and card data.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={kanbanInstructions}
+                  onChange={(e) => setKanbanInstructions(e.target.value)}
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.kanbanInstructionsPlaceholder",
+                    'e.g. Move to "Proposal sent" only after pricing was shared. Never skip steps.',
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {updateKanbanEntry && (
           <ConfigurableToolCard
             selected={updateKanbanEnabled}
+            id={nativeToolAnchor(UPDATE_KANBAN_TOOL)}
             onToggle={() => toggleNative(UPDATE_KANBAN_TOOL)}
             icon={nativeToolMeta(UPDATE_KANBAN_TOOL, t).icon}
             title={nativeToolMeta(UPDATE_KANBAN_TOOL, t).label}
             description={nativeToolMeta(UPDATE_KANBAN_TOOL, t).description}
-            configured={updateKanbanTaskInstructions.trim() !== ""}
+            configured={!decides && updateKanbanTaskInstructions.trim() !== ""}
           >
-            <FormField
-              label={t("editor.updateKanbanInstructions", "Usage guidance")}
-              error={refusals.updateKanbanInstructions}
-              group
-              description={t(
-                "editor.updateKanbanInstructionsHint",
-                "Optional. Say when and how the agent should change the card's title, description, priority, or dates.",
-              )}
-            >
-              <Textarea
-                value={updateKanbanTaskInstructions}
-                onChange={(e) =>
-                  setUpdateKanbanTaskInstructions(e.target.value)
-                }
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.updateKanbanInstructionsPlaceholder",
-                  "e.g. When the customer confirms a meeting, set the due date; keep the title as the customer's full name.",
+            {!decides && (
+              <FormField
+                label={t("editor.updateKanbanInstructions", "Usage guidance")}
+                error={refusals.updateKanbanInstructions}
+                group
+                description={t(
+                  "editor.updateKanbanInstructionsHint",
+                  "Optional. Say when and how the agent should change the card's title, description, priority, or dates.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={updateKanbanTaskInstructions}
+                  onChange={(e) =>
+                    setUpdateKanbanTaskInstructions(e.target.value)
+                  }
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.updateKanbanInstructionsPlaceholder",
+                    "e.g. When the customer confirms a meeting, set the due date; keep the title as the customer's full name.",
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {openCaseEntry && !(observing && openCaseEntry.deliversToCustomer) && (
           <ConfigurableToolCard
             selected={openCaseEnabled}
+            id={nativeToolAnchor(OPEN_CASE_TOOL)}
             onToggle={() => toggleNative(OPEN_CASE_TOOL)}
             icon={nativeToolMeta(OPEN_CASE_TOOL, t).icon}
             title={nativeToolMeta(OPEN_CASE_TOOL, t).label}
@@ -1930,6 +1952,7 @@ export function ToolGrantsEditor({
           !(observing && sendImageEntry.deliversToCustomer) && (
             <ConfigurableToolCard
               selected={sendImageEnabled}
+              id={nativeToolAnchor(SEND_IMAGE_TOOL)}
               onToggle={() => toggleNative(SEND_IMAGE_TOOL)}
               icon={nativeToolMeta(SEND_IMAGE_TOOL, t).icon}
               title={nativeToolMeta(SEND_IMAGE_TOOL, t).label}
@@ -1953,6 +1976,7 @@ export function ToolGrantsEditor({
         {resolveEntry && (
           <ConfigurableToolCard
             selected={resolveEnabled}
+            id={nativeToolAnchor(RESOLVE_TOOL)}
             onToggle={() => toggleNative(RESOLVE_TOOL)}
             icon={nativeToolMeta(RESOLVE_TOOL, t).icon}
             title={nativeToolMeta(RESOLVE_TOOL, t).label}
@@ -1969,67 +1993,75 @@ export function ToolGrantsEditor({
         {attrEntry && (
           <ConfigurableToolCard
             selected={attrEnabled}
+            id={nativeToolAnchor(ATTR_TOOL)}
             onToggle={() => toggleNative(ATTR_TOOL)}
             icon={nativeToolMeta(ATTR_TOOL, t).icon}
             title={nativeToolMeta(ATTR_TOOL, t).label}
             description={nativeToolMeta(ATTR_TOOL, t).description}
-            configured={customAttributeInstructions.trim() !== ""}
+            configured={!decides && customAttributeInstructions.trim() !== ""}
           >
-            <FormField
-              label={t("editor.attrInstructions", "Usage guidance")}
-              error={refusals.attributeInstructions}
-              group
-              description={t(
-                "editor.attrInstructionsHint",
-                "Optional. Say which conversation, contact, or kanban card attribute the agent should set, and when.",
-              )}
-            >
-              <Textarea
-                value={customAttributeInstructions}
-                onChange={(e) => setCustomAttributeInstructions(e.target.value)}
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.attrInstructionsPlaceholder",
-                  'e.g. Save the qualified budget on the contact as "orcamento"; set "lead_stage" on the card.',
+            {!decides && (
+              <FormField
+                label={t("editor.attrInstructions", "Usage guidance")}
+                error={refusals.attributeInstructions}
+                group
+                description={t(
+                  "editor.attrInstructionsHint",
+                  "Optional. Say which conversation, contact, or kanban card attribute the agent should set, and when.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={customAttributeInstructions}
+                  onChange={(e) =>
+                    setCustomAttributeInstructions(e.target.value)
+                  }
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.attrInstructionsPlaceholder",
+                    'e.g. Save the qualified budget on the contact as "orcamento"; set "lead_stage" on the card.',
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {labelEntry && (
           <ConfigurableToolCard
             selected={labelEnabled}
+            id={nativeToolAnchor(LABEL_TOOL)}
             onToggle={() => toggleNative(LABEL_TOOL)}
             icon={nativeToolMeta(LABEL_TOOL, t).icon}
             title={nativeToolMeta(LABEL_TOOL, t).label}
             description={nativeToolMeta(LABEL_TOOL, t).description}
             configured={
-              labelInstructions.trim() !== "" ||
+              (!decides && labelInstructions.trim() !== "") ||
               protectedLabels.trim() !== "" ||
               allowedLabels.trim() !== ""
             }
           >
-            <FormField
-              label={t("editor.labelInstructions", "Usage guidance")}
-              error={refusals.labelInstructions}
-              group
-              description={t(
-                "editor.labelInstructionsHint",
-                "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
-              )}
-            >
-              <Textarea
-                value={labelInstructions}
-                onChange={(e) => setLabelInstructions(e.target.value)}
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.labelInstructionsPlaceholder",
-                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
+            {!decides && (
+              <FormField
+                label={t("editor.labelInstructions", "Usage guidance")}
+                error={refusals.labelInstructions}
+                group
+                description={t(
+                  "editor.labelInstructionsHint",
+                  "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={labelInstructions}
+                  onChange={(e) => setLabelInstructions(e.target.value)}
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.labelInstructionsPlaceholder",
+                    'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
+                  )}
+                />
+              </FormField>
+            )}
             <FormField
               label={t("editor.protectedLabels", "Labels off limits")}
               description={t(

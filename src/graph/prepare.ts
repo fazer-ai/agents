@@ -145,6 +145,7 @@ import {
   type FallbackModel,
   type SilenceRetryInfo,
 } from "./graph";
+import { DEFAULT_MODEL_CONFIG } from "./model-config";
 import { PRIMARY_MAX_RETRIES, PRIMARY_TIMEOUT_MS } from "./model-fallback";
 import type {
   ModelLabels,
@@ -154,6 +155,7 @@ import type {
 import {
   createChatModel,
   type ModelConfig,
+  modelConfigSchema,
   parseModelConfig,
   type ResolvedModelConfig,
 } from "./models";
@@ -469,6 +471,12 @@ export async function loadAgentConfig(
     // fixed prompt of its own — would be inventing participants for an experiment it takes no part
     // in, lowering its reported rates with nothing in the numbers to say why.
     skipExperiment?: boolean;
+    // The caller never builds the chat model: a monitoring agent that decides through a
+    // classification API (docs/decisions.md) needs the rest of the config (tools, fences, limits)
+    // and nothing of the model. A bag no schema accepts then loads as an unconfigured one, and a key
+    // that does not resolve as no key, where every other caller treats both as an agent that cannot
+    // run. `mc` keeps whatever parsed, for the lines that name it.
+    chatModelUnused?: boolean;
   } = {},
 ): Promise<AgentConfig | null> {
   const agent = await db.agent.findUnique({
@@ -502,10 +510,15 @@ export async function loadAgentConfig(
   const ov = opts.overrides;
   const effModelConfig = ov?.modelConfig ?? agent.modelConfig;
   const effSettings = (ov?.settings ?? agent.settings) as typeof agent.settings;
-  const mc = parseModelConfig(effModelConfig);
+  const parsedModel = modelConfigSchema.safeParse(effModelConfig);
+  // The default stands in only as a name for the lines; it has no key, so nothing can call it.
+  const mc: ModelConfig =
+    opts.chatModelUnused && !parsedModel.success
+      ? { ...DEFAULT_MODEL_CONFIG }
+      : parseModelConfig(effModelConfig);
   let apiKey = "";
   let credentialBaseUrl: string | null = null;
-  if (mc.credentialRef) {
+  if (mc.credentialRef && !opts.chatModelUnused) {
     const entry = await tryResolveApiKeyEntry(db, mc.credentialRef);
     if (entry.state !== "ok") {
       // NOTE: A credentialRef that no longer resolves (deleted / still-pending / a NAME passed where a

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import en from "@/client/locales/en.json";
 import { MONITORING_SECTIONS } from "@/client/pages/agents/BehaviorTab";
+import { watcherTabKeys } from "@/client/pages/agents/editorTabs";
 
 // A watcher's editor. The page has eight tabs and a Behavior tab of fifteen sections, and a
 // monitoring agent runs almost none of it: drawn in full, the page would say the agent could answer.
@@ -17,31 +19,31 @@ const BEHAVIOR = readFileSync(
 
 describe("the editor of a monitoring agent", () => {
   test("draws only the tabs a watcher has a use for", () => {
-    const def = EDITOR.indexOf("const MONITORING_TABS");
-    expect(def).toBeGreaterThan(-1);
-    const body = EDITOR.slice(def, EDITOR.indexOf("]);", def));
-    // NOTE: tools and knowledge are drawn: a watcher runs the ordinary graph, so its grants and its
-    // knowledge bases are the whole of what it can do.
-    for (const key of [
-      "general",
-      "channels",
-      "behavior",
-      "tools",
-      "knowledge",
-    ]) {
-      expect(body).toContain(`"${key}"`);
+    // NOTE: tools are drawn on both engines: their grants fence the model's calls and the rules'
+    // actions alike. Knowledge is the language model's; questions and rules have their own tab
+    // (agents#1224, tested in tests/client/decisions-engine-editor.test.ts).
+    for (const engine of ["llm", "decisions"] as const) {
+      const tabs = watcherTabKeys(engine);
+      for (const key of ["general", "channels", "behavior", "tools"]) {
+        expect(tabs.has(key)).toBe(true);
+      }
+      // What stays out is what only an agent that SPEAKS has: a reply to screen, a redirect that
+      // messages the customer on another channel, a conversation to hold in the playground.
+      for (const key of ["guardrails", "channelRedirect", "playground"]) {
+        expect(tabs.has(key)).toBe(false);
+      }
     }
-    // What stays out is what only an agent that SPEAKS has: a reply to screen, a redirect that
-    // messages the customer on another channel, a conversation to hold in the playground.
-    for (const key of ["guardrails", "channelRedirect", "playground"]) {
-      expect(body).not.toContain(`"${key}"`);
-    }
-    // And the list the Tabs control draws is the filtered one, keyed on the mode.
+    // And the list the Tabs control draws is the filtered one, keyed on the mode and the engine.
     expect(EDITOR).toContain("items={visibleTabs}");
     expect(EDITOR).toContain('const watcher = agentMode === "monitoring";');
-    // A URL naming a hidden tab lands on General rather than rendering a tab the page hides.
-    expect(EDITOR).toContain(
-      'if (agentMode === "monitoring" && !MONITORING_TABS.has(tab))',
+    expect(EDITOR).toContain("watcherTabKeys(engine).has(item.key)");
+    // A URL naming a hidden tab lands on General rather than rendering a tab the page hides, and
+    // only once the agent is read: before that the engine is the form's default, and a link straight
+    // to Questions and rules would be bounced off a tab the agent does have.
+    expect(EDITOR).toContain("? !watcherTabKeys(engine).has(tab)");
+    const effect = EDITOR.indexOf("? !watcherTabKeys(engine).has(tab)");
+    expect(EDITOR.slice(effect - 200, effect)).toContain(
+      "if (loading) return;",
     );
   });
 
@@ -112,7 +114,7 @@ describe("the editor of a monitoring agent", () => {
     // and exposes no setting.
     expect(EDITOR).toContain("function watcherSectionReachable(");
     expect(EDITOR.replace(/\s+/g, " ")).toContain(
-      "watcherSectionReachable( w.target.tab, w.target.sectionId, )",
+      "watcherSectionReachable( w.target.tab, w.target.sectionId, engine, )",
     );
     expect(EDITOR).not.toContain("WATCHER_ISSUE_KEYS");
 
@@ -128,9 +130,10 @@ describe("the editor of a monitoring agent", () => {
     const first = BEHAVIOR.indexOf('<Section\n            id="availability"');
     expect(at).toBeLessThan(first);
     // The save REPLACES the `monitoring` block through the form-state pair, like memory, and only
-    // for an agent that is a watcher or already has the block.
-    expect(EDITOR).toContain(
-      '...monitoringPatch(observation, agentMode === "monitoring")',
+    // for an agent that is a watcher or already has the block. Its timing is the form's, and the
+    // decision setup goes back as stored (it has its own save, agents#1224).
+    expect(EDITOR.replace(/\s+/g, " ")).toContain(
+      '...monitoringPatch( withDecisionsOf( observation, observationToForm(syncedAgentRef.current?.settings ?? {}), ), agentMode === "monitoring", )',
     );
     expect(EDITOR).not.toContain("monitoring: observationToStored(");
   });
@@ -276,9 +279,16 @@ describe("the Channels tab of a watcher", () => {
     expect(behavior).toContain(
       "contactAuthRuleBad || contactAuthEmpty || contactAuthUrlInvalid || (!watcher && (normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
     );
+    // NOTE: ...and memory and the fallback are asked for a watcher on the language model, the one that
+    // draws them; a watcher on questions and rules draws neither (agents#1224).
     expect(behavior).toContain(
-      "fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing ||",
+      "(!chatModelUnused && (memoryBaseUrlInvalid || memoryBaseUrlUnsupported || fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing)) ||",
     );
+    expect(behavior).toContain(
+      'const chatModelUnused = watcher && observation.engine === "decisions";',
+    );
+    expect(behavior).toContain('id="memory" hidden={chatModelUnused}');
+    expect(behavior).toContain('id="modelFallback" hidden={chatModelUnused}');
   });
 
   // NOTE: the fallback section is drawn for a watcher, with its validator, so the save writes the block
@@ -328,12 +338,108 @@ describe("the Channels tab of a watcher", () => {
   });
 
   test("the tab redirect keeps the way back to the conversation", () => {
-    const at = EDITOR.indexOf(
-      'if (agentMode === "monitoring" && !MONITORING_TABS.has(tab))',
-    );
+    const at = EDITOR.indexOf("? !watcherTabKeys(engine).has(tab)");
     expect(at).toBeGreaterThan(-1);
     expect(EDITOR.slice(at, at + 400).replace(/\s+/g, " ")).toContain(
       `backToConversation ? \`?from=${D}{backToConversation}\` : ""`,
     );
+  });
+});
+
+// A composite save stops at the first write that did not land: the next one would replace the
+// conflict retry, and "save anyway" would then drop what the first one carried.
+describe("General's save of identity and decision setup", () => {
+  test("stops when the identity save is refused or conflicts", () => {
+    const flat = EDITOR.replace(/\s+/g, " ");
+    expect(flat).toContain(
+      'section: "general" | "behavior", force = false, retry?: () => void, ): Promise<boolean>',
+    );
+    expect(flat).toContain(
+      "if (!ok) return false; } return dirty.decisions ? saveDecisions(force) : true;",
+    );
+    expect(flat).toContain("if (!(await saveGeneral())) return false;");
+    // ...and "save anyway" after the identity's conflict re-runs the whole save, setup included.
+    expect(flat).toContain(
+      '"general", force, // NOTE: "Save anyway" re-runs the whole of this save, identity and setup alike. () => void saveGeneral(true), );',
+    );
+    expect(flat).toContain(
+      "return dirty.decisions ? saveDecisions(force) : true;",
+    );
+    expect(flat).toContain(
+      "retry ?? (() => void saveAgent(patch, section, true)),",
+    );
+  });
+
+  test("a saved setup answers every refusal about the block, the classifier's included", () => {
+    expect(EDITOR).toContain(
+      "if (now.field && DECISIONS_REFUSAL_FIELD.test(now.field)) now.clear();",
+    );
+  });
+});
+
+// What a watcher on questions and rules does not draw (instructions, chat model, memory, fallback)
+// is neither written by its saves nor thrown away by them: the forms keep the edits, the dots
+// leave them out, and leaving the editor still asks about them.
+describe("the drafts a decisions watcher does not draw", () => {
+  const flat = EDITOR.replace(/\s+/g, " ");
+  test("survive a Behavior save and a General save", () => {
+    expect(flat).toContain("} else applyBehavior(data.agent, !decides);");
+    expect(flat).toContain("if (chat) setMemory(b.memory);");
+    expect(flat).toContain("if (chat) setModelFallback(b.modelFallback);");
+    expect(flat).toContain(
+      'applyGeneral(data.agent, "systemPrompt" in patch);',
+    );
+  });
+  test("are refused by save-everything, before any section is written", () => {
+    const body = flat.slice(flat.indexOf("async function saveAllDirty"));
+    const guard = body.indexOf("if (hiddenDraftsPending) {");
+    expect(guard > 0).toBe(true);
+    expect(guard < body.indexOf("if (dirty.general || dirty.decisions)")).toBe(
+      true,
+    );
+  });
+  test("keep the navigation guard up", () => {
+    expect(flat).toContain("const anyDirty = hiddenDraftsPending ||");
+    expect(flat).toContain("useNavGuard(anyDirty);");
+  });
+});
+
+// The monitoring hint belongs to General, where the engine is chosen, and says where each engine's
+// behaviour is actually configured.
+describe("the monitoring hint", () => {
+  const flat = EDITOR.replace(/\s+/g, " ");
+  test("is drawn on General only", () => {
+    expect(flat).toContain('{watcher && tab === "general" && (');
+  });
+  test("does not send a language-model watcher to Observation for what it does", () => {
+    expect(en.editor.monitoringTabsHint).not.toContain("Observation");
+    expect(en.editor.monitoringTabsHint).toContain("Tools");
+  });
+});
+
+// Warnings that depend on the engine follow the engine as edited, like the "to save" line: a watcher
+// switched to questions and rules is not warned about the chat model it will no longer use.
+describe("the configuration warnings of a watcher", () => {
+  test("are computed with the engine the editor shows", () => {
+    expect(EDITOR.replace(/\s+/g, " ")).toContain(
+      "settings: withDraftEngine( syncedAgentRef.current?.settings, observation, watcher, ),",
+    );
+  });
+});
+
+// Both tabs of the setup answer a Save pressed with something missing the same way: nothing is
+// written, the lines turn into errors and the first problem is revealed (saveAttempt.ts, whose
+// reveal is tested in tests/client/pages/SaveAttempt.test.tsx).
+describe("a Save on the setup's tabs", () => {
+  test("is never off for the setup and never a silent click", () => {
+    const flat = EDITOR.replace(/\s+/g, " ");
+    expect(flat).toContain(
+      'if (decisionsBlocked("decisions", false)) return; void saveDecisions();',
+    );
+    expect(flat).toContain(
+      'if (decisionsBlocked("general", dirty.general)) return; void saveGeneral();',
+    );
+    expect(flat).toContain("showErrors={decisionsAttempted}");
+    expect(flat).not.toContain("saveBlocked");
   });
 });

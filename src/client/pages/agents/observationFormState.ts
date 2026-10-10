@@ -201,3 +201,98 @@ export function monitoringReaderKeys(): string[] {
   const c: MonitoringConfig = readMonitoringConfig({});
   return Object.keys(c).sort();
 }
+
+// THE TWO HALVES OF THE BLOCK, saved by different tabs (agents#1224). The decision setup (engine and
+// decisions block) is edited on General and on the Questions and rules tab and saved by either; the
+// timing (when the agent looks) is the Behavior tab's. Each save writes its own half from the form
+// and the other half AS SYNCED, so neither carries the other's pending edits.
+
+// `base` with the decision setup of `from`: `withDecisionsOf(synced, form)` is what the decisions
+// save writes, `withDecisionsOf(form, synced)` what the Behavior save writes.
+export function withDecisionsOf(
+  base: ObservationState,
+  from: ObservationState,
+): ObservationState {
+  return {
+    ...base,
+    engine: from.engine,
+    storedEngine: from.storedEngine,
+    decisions: from.decisions,
+    storedDecisions: from.storedDecisions,
+    decisionsEdited: from.decisionsEdited,
+  };
+}
+
+// The form after the decision setup was saved: that setup as synced, the timing as edited, and the
+// block now stored, so a later Behavior save of an agent flipped back to answering still writes it
+// (`monitoringPatch` skips a block that was never stored).
+export function withSavedDecisions(
+  form: ObservationState,
+  synced: ObservationState,
+): ObservationState {
+  return {
+    ...withDecisionsOf(form, synced),
+    storedPresent: synced.storedPresent,
+  };
+}
+
+// The halves as text, for the unsaved marks. The setup is split once more by where it is drawn: the
+// head (engine and Classifier) on General, the body (questions, rules, rehearsal or live) on its tab.
+export function timingOf(form: ObservationState): string {
+  return JSON.stringify({
+    analysis: form.analysis,
+    windowMessages: form.windowMessages,
+    windowSeconds: form.windowSeconds,
+    maxWindowSeconds: form.maxWindowSeconds,
+  });
+}
+
+export function decisionsHeadOf(form: ObservationState): string {
+  // Of the block the save would WRITE, not of the form: a draft left behind the language
+  // model that could not run is not written, so switching back leaves nothing unsaved.
+  const d = decisionsBlockToStore(form);
+  return JSON.stringify({
+    engine: form.engine,
+    provider: d?.provider ?? null,
+    model: d?.model ?? null,
+    credentialRef: d?.credentialRef ?? null,
+  });
+}
+
+export function decisionsBodyOf(form: ObservationState): string {
+  const d = decisionsBlockToStore(form);
+  if (!d) return "null";
+  const { provider: _p, model: _m, credentialRef: _c, ...body } = d;
+  return JSON.stringify(body);
+}
+
+// The engine cards' one move. A first switch to questions and rules starts from an empty draft in
+// rehearsal, so nothing is written before the operator has read what it would do; switching back
+// keeps the draft (and a stored block) for the next time.
+export function withEngine(
+  prev: ObservationState,
+  engine: MonitoringEngine,
+): ObservationState {
+  return {
+    ...prev,
+    engine,
+    decisions:
+      engine === "decisions" && prev.decisions === null
+        ? startingDecisionsForm()
+        : prev.decisions,
+  };
+}
+
+// The saved settings with the engine the editor shows, for the configuration warnings: the warnings
+// that depend on the engine follow the card before the save. Only the engine moves; every other
+// stored value, the decisions block included, is read as saved. Unchanged for an answering agent.
+export function withDraftEngine<S>(
+  settings: S,
+  form: ObservationState,
+  watcher: boolean,
+): S {
+  if (!watcher) return settings;
+  const bag = (settings ?? {}) as Record<string, unknown>;
+  const monitoring = (bag.monitoring ?? {}) as Record<string, unknown>;
+  return { ...bag, monitoring: { ...monitoring, engine: form.engine } } as S;
+}

@@ -24,6 +24,7 @@ export function hasNoConsoleControl(field: string): boolean {
 
 export type EditorTab =
   | "general"
+  | "decisions"
   | "behavior"
   | "guardrails"
   | "channelRedirect"
@@ -95,12 +96,23 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
     tab: "behavior",
     sectionId: "observability",
   },
-  // The decisions engine's block: a list of questions and rules, which the Observation section marks
-  // field by field from the path itself (DecisionsFields), so it is targeted here and not owned.
+  // The decision setup of a monitoring agent: the engine choice and the Classifier on General, the
+  // questions, rules and rehearsal-or-live on their own tab. The block is a list, marked field by
+  // field from the path itself (DecisionsFields), so it is targeted here and not owned.
   {
-    match: /^monitoring\.(engine|decisions)(\.|$)/,
-    tab: "behavior",
-    sectionId: "observation",
+    match: /^monitoring\.engine$/,
+    tab: "general",
+    sectionId: "general-engine",
+  },
+  {
+    match: /^monitoring\.decisions\.(provider|model|credentialRef)$/,
+    tab: "general",
+    sectionId: "general-classifier",
+  },
+  {
+    match: /^monitoring\.decisions(\.|$)/,
+    tab: "decisions",
+    sectionId: "decisions-questions",
   },
   // TARGETED AND NOT OWNED, all three of them, which is a distinction this map makes on purpose.
   // Owning a name means marking a control with the server's sentence, and that needs one box holding

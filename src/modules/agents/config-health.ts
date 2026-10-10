@@ -98,7 +98,8 @@ export interface ConfigIssue {
     | "guardrails"
     | "channelRedirect"
     | "tools"
-    | "knowledge";
+    | "knowledge"
+    | "decisions";
   // The DOM anchor id of the section to scroll to (matches the section's `id`).
   sectionId?: string;
   // When true, the credential IS referenced but its secret has not been filled yet (a "pending"
@@ -418,9 +419,19 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     tab: "general",
     sectionId: "general-model",
   } as const;
-  if (!modelConfigSchema.safeParse(input.modelConfig).success) {
+  // A monitoring agent that decides through a classification API never builds the chat model
+  // (`chatModelUnused` in loadAgentConfig), so nothing about that model is a fault for it, and its
+  // fields are not drawn: General shows the Classifier in their place.
+  const monitoring = readMonitoringConfig(input.settings);
+  const chatModelUsed = !(
+    input.agentMonitoring && monitoring.engine === "decisions"
+  );
+  if (
+    chatModelUsed &&
+    !modelConfigSchema.safeParse(input.modelConfig).success
+  ) {
     issues.push({ ...modelTarget });
-  } else {
+  } else if (chatModelUsed) {
     const endpoint = endpointVerdict(
       input.modelProvider,
       input.modelBaseURL ?? "",
@@ -440,7 +451,8 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "model", tab: "general", sectionId: "general-model" },
     credIssue(
-      Boolean(input.modelProvider) &&
+      chatModelUsed &&
+        Boolean(input.modelProvider) &&
         (input.modelProvider !== "openai-compatible" ||
           Boolean(input.modelCredentialRef)),
       input.modelCredentialRef,
@@ -545,8 +557,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // Nothing configured is not a configuration that can fail: it IS the agent's model, and an agent
   // model that cannot run is the "model" issue above. Raising a second line for it would tell the
   // operator to fix the summariser when the thing to fix is the agent.
+  // Not for a decisions observer either: the compaction job stands down for it (no chat model
+  // to summarise with), and the editor hides the Memory section there.
   const compactionResolution =
-    compaction.enabled && compactionOverridden
+    chatModelUsed && compaction.enabled && compactionOverridden
       ? resolveModelOverride(
           {
             provider: compaction.provider,
@@ -658,26 +672,28 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // none, found out on the day the primary fails. Its credential can be PENDING after an import or
   // UNRESOLVED after a delete. `hasModelFallback` is its on switch.
   const fallback = readModelFallbackConfig(input.settings);
-  const fallbackResolution = hasModelFallback(fallback)
-    ? resolveModelOverride(
-        {
-          provider: fallback.provider,
-          model: fallback.model,
-          credentialRef: fallback.credentialRef,
-          baseURL: fallback.baseURL,
-        },
-        {
-          provider: input.savedModelProvider,
-          model: "",
-          baseURL: input.savedModelBaseURL ?? null,
-        },
-        {
-          ownCredentialBaseURL:
-            input.savedModelFallbackCredentialBaseURL ?? null,
-          isUsableBaseURL: isValidHttpUrl,
-        },
-      )
-    : null;
+  // A decisions observer builds no chat model, so there is nothing for a fallback to stand in for.
+  const fallbackResolution =
+    chatModelUsed && hasModelFallback(fallback)
+      ? resolveModelOverride(
+          {
+            provider: fallback.provider,
+            model: fallback.model,
+            credentialRef: fallback.credentialRef,
+            baseURL: fallback.baseURL,
+          },
+          {
+            provider: input.savedModelProvider,
+            model: "",
+            baseURL: input.savedModelBaseURL ?? null,
+          },
+          {
+            ownCredentialBaseURL:
+              input.savedModelFallbackCredentialBaseURL ?? null,
+            isUsableBaseURL: isValidHttpUrl,
+          },
+        )
+      : null;
   const fallbackIssue: ConfigIssue = {
     key: "modelFallback",
     tab: "behavior",
@@ -719,10 +735,9 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   );
   // The classification API's key, on an agent that decides through it: unresolved, the tick skips
   // every burst (`decisions_credential_unresolved`) while everything else looks configured.
-  const monitoring = readMonitoringConfig(input.settings);
   const decisionsRef = monitoring.decisions?.credentialRef;
   push(
-    { key: "decisions", tab: "behavior", sectionId: "observation" },
+    { key: "decisions", tab: "general", sectionId: "general-classifier" },
     credIssue(
       // Only while it observes: a detached watcher switched to production keeps its stored block.
       Boolean(input.agentMonitoring) &&

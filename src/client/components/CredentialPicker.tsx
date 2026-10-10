@@ -478,7 +478,7 @@ export function CredentialPicker({
         <span className="text-warning text-xs" role="status">
           {t(
             "credentialPicker.unresolvedMissing",
-            "The selected credential was deleted — pick another.",
+            "The selected credential was deleted. Pick another.",
           )}
         </span>
       )}
@@ -506,7 +506,7 @@ export function CredentialPicker({
         <span className="text-warning text-xs" role="status">
           {t(
             "credentialPicker.requiredMissing",
-            "This feature is enabled but has no credential — select one.",
+            "This feature is enabled but has no credential. Select one.",
           )}
         </span>
       )}

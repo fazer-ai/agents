@@ -924,7 +924,7 @@ const monitoringShape = (decisions: z.ZodType<Record<string, unknown>>) => ({
     .nullable()
     .optional()
     .describe(
-      "provider openai|typesafe, model, credentialRef, questions, rules, apply shadow|enforce",
+      "provider openai|typesafe, model, credentialRef, questions, rules",
     ),
   analysis: oneOf(["incremental", "on_resolve"] as const)
     .optional()

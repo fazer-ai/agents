@@ -11,7 +11,7 @@ import {
   interopSafeParseAsync,
   isInteropZodSchema,
 } from "@langchain/core/utils/types";
-import type { DecisionApply, DecisionsConfig } from "./config";
+import type { DecisionsConfig } from "./config";
 import {
   DECISION_PROVIDER_REGISTRY,
   type DecisionAnswer,
@@ -43,12 +43,13 @@ export async function askProvider(
 export interface ActionReport {
   rule: number;
   tool: string;
-  // `shadow`: decided and not run. `ran`: the tool was invoked and returned. `not_granted`: the agent
+  // `decided`: decided and not run, only under `dryRun` (never on an observation's line). `ran`: the
+  // tool was invoked and returned. `not_granted`: the agent
   // does not have the tool, so the rule cannot act (the operator grants it, as for the LLM path).
   // `failed`: the tool threw; `failure` says which way, never the tool's text: `invalid_arguments`
   // (the rule's args do not fit the tool's schema) or `tool_error`. `over_budget`: the agent's
   // `limits.maxToolCalls` was spent by the rules before it, as the graph caps a model's turn.
-  outcome: "shadow" | "ran" | "not_granted" | "failed" | "over_budget";
+  outcome: "decided" | "ran" | "not_granted" | "failed" | "over_budget";
   failure?: string;
 }
 
@@ -63,12 +64,13 @@ export interface DecisionTickReport {
 
 // Runs what the rules fired through the SAME tool objects the LLM observer calls, with the tick's
 // tool logger as callback, so a decision's write gets the tool's protections, flow line and label
-// accounting. Shadow invokes nothing. In rule order, one action at a time, except for the actions
-// `together` groups (docs/decisions.md, How the actions reach Chatwoot). The observation's fence is
-// asked before every action, as the graph asks it before every hop: not every tool asks on its own
-// (`private_note` does not), and the provider call leaves time to withdraw.
+// accounting. In rule order, one at a time, except what `together` groups (docs/decisions.md). The
+// fence is asked before every action, as the graph asks it before every hop: not every tool asks on
+// its own (`private_note` does not), and the provider call leaves time to withdraw. `dryRun` decides
+// without writing (grant, budget and arguments checked, nothing invoked): internal, not a setting,
+// for a caller that only shows the decisions.
 export async function applyDecisions(
-  config: { rules: DecisionsConfig["rules"]; apply: DecisionApply },
+  config: { rules: DecisionsConfig["rules"] },
   answers: Record<string, DecisionAnswer>,
   tools: readonly StructuredToolInterface[],
   callbacks: Callbacks,
@@ -76,15 +78,16 @@ export async function applyDecisions(
   stillWanted: () => Promise<boolean>,
   maxCalls: number,
   together: (action: FiredAction) => string | null = () => null,
+  dryRun = false,
 ): Promise<DecisionTickReport> {
   const { fired, missed } = evaluateRules(config.rules, answers);
   // One slot per fired action, filled in whatever order the actions settle and read in rule order.
   const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
-  // Every call the tick dispatches counts, shadow's included, so shadow reports what enforce would.
+  // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
   let calls = 0;
   for (const [at, f] of fired.entries()) {
-    // The grant is checked first, so shadow shows the same missing grant enforce would hit.
+    // The grant is checked first, so a dry run shows the same missing grant a run would hit.
     const tool = tools.find((t) => t.name === f.tool);
     if (!tool) {
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
@@ -95,14 +98,14 @@ export async function applyDecisions(
       continue;
     }
     calls += 1;
-    if (config.apply === "shadow") {
-      // The arguments are asked of the tool's own schema without running it, so shadow shows the
-      // `invalid_arguments` enforce would hit. The watcher's writes are native tools, schema'd in zod.
+    if (dryRun) {
+      // The arguments are asked of the tool's own schema without running it, so a dry run shows the
+      // `invalid_arguments` a run would hit. The watcher's writes are native tools, schema'd in zod.
       const fits =
         !isInteropZodSchema(tool.schema) ||
         (await interopSafeParseAsync(tool.schema, f.args)).success;
       slots[at] = fits
-        ? { rule: f.rule, tool: f.tool, outcome: "shadow" }
+        ? { rule: f.rule, tool: f.tool, outcome: "decided" }
         : {
             rule: f.rule,
             tool: f.tool,

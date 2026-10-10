@@ -7,3 +7,13 @@ export function rebaseToolGrants(baseline: string, snapshot: string): string {
   const now = JSON.parse(snapshot) as Record<string, unknown>;
   return JSON.stringify({ ...old, grants: now.grants });
 }
+
+// The same move after a write whose grants are known from its response (a rule's "Allow"): the
+// grants half becomes what the server stored, not the form, which the operator may have edited on
+// Tools while the request ran. Taking the form would mark those edits as saved.
+export function rebaseToolGrantsOnto(
+  baseline: string,
+  writtenGrants: string,
+): string {
+  return rebaseToolGrants(baseline, JSON.stringify({ grants: writtenGrants }));
+}

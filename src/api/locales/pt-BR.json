@@ -265,6 +265,7 @@
     "unknownDeliveryStatus": "Status de entrega desconhecido: {{status}}",
     "unknownFlowStage": "Etapa de fluxo desconhecida: {{stage}}",
     "unknownProvider": "Provedor de {{capability}} desconhecido: {{provider}}.",
+    "unknownSettingsField": "Campo desconhecido `{{field}}`: ele não existe mais, então não é gravado. Tire-o da requisição.",
     "unknownWebhookEvent": "Evento de webhook desconhecido: {{event}}",
     "unstorableText": "{{field}} contém caracteres que não podem ser armazenados ({{codePoints}})",
     "unsupportedAudioType": "Tipo de áudio não suportado",

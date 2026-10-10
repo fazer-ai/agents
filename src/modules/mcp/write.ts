@@ -41,6 +41,7 @@ import {
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
   assertSettingsProtectedLabels,
+  assertSettingsRemovedFields,
   assertSettingsRetiredLabelKeys,
   assertSettingsTextSizes,
   assertSettingsToolPreconditions,
@@ -664,6 +665,7 @@ export async function agentSettingsSet(
     // retired taxonomy keys, so they would vanish and both halves answer ok for configuration that
     // does nothing. Asked of the PATCH, the only place the key still exists.
     assertSettingsRetiredLabelKeys(patch);
+    assertSettingsRemovedFields(patch);
     assertSettingsProtectedLabels(patch, current.settings);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,

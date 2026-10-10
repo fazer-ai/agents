@@ -154,3 +154,28 @@ describe("configIssueMessage", () => {
     ).toBe("held 3 items");
   });
 });
+
+// A monitoring agent never answers anyone, so a broken chat model does not stop it "replying": it
+// stops it reading the conversations it observes. The sentence says what actually stops.
+describe("a chat-model warning for a monitoring agent", () => {
+  const issues: ConfigIssue[] = [
+    { key: "model" },
+    { key: "modelNotRunnable" },
+    { key: "modelNoEndpoint" },
+    { key: "modelBadEndpoint" },
+    { key: "model", unresolved: true },
+    { key: "model", wrongKind: true },
+  ];
+  test("does not say the agent cannot reply, in either language", () => {
+    for (const issue of issues) {
+      const out = message(issue, { watcher: true });
+      expect(/\breply\b|answer/i.test(out), JSON.stringify(issue)).toBe(false);
+      expect(out.includes("observ"), JSON.stringify(issue)).toBe(true);
+      const ptOut = configIssueMessage(issue, { translate: pt, watcher: true });
+      expect(/responder/i.test(ptOut), JSON.stringify(issue)).toBe(false);
+    }
+  });
+  test("an answering agent keeps its own sentence", () => {
+    expect(message({ key: "model" })).toContain("cannot reply");
+  });
+});

@@ -38,13 +38,17 @@ export interface DecisionConditionForm {
 
 // One condition of a folded rule, in the terms the engine checks it. The confidence floor is part
 // of when the rule fires, so two rules that differ only in it must not read the same.
+const percent = (v: string): string =>
+  Number.isFinite(Number(v)) && v.trim() !== "" ? `${v}%` : v;
+
 export function conditionSummary(
   c: DecisionConditionForm,
   q: DecisionQuestionForm | undefined,
 ): string {
   const name = c.question;
-  const floor = c.minConfidence.trim() === "" ? "" : ` (≥ ${c.minConfidence})`;
-  if (q?.type === "yes_no") return `${name} ≥ ${c.minProbability}`;
+  const floor =
+    c.minConfidence.trim() === "" ? "" : ` (≥ ${percent(c.minConfidence)})`;
+  if (q?.type === "yes_no") return `${name} ≥ ${percent(c.minProbability)}`;
   if (q?.type === "choice") return `${name} = ${c.equals}${floor}`;
   if (q?.type === "score") {
     const level = (v: string) => q.levels[Number(v)]?.value.trim() || v;
@@ -74,7 +78,6 @@ export interface DecisionsForm {
   provider: string;
   model: string;
   credentialRef: string;
-  apply: string;
   questions: DecisionQuestionForm[];
   rules: DecisionRuleForm[];
 }
@@ -107,6 +110,16 @@ const text = (v: unknown): string =>
   typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
+// A threshold as the operator reads and types it, a percentage, from the fraction the engine stores.
+// Text that is not a number stays as it was, so the server's refusal still names it.
+const percentText = (v: unknown): string => {
+  const raw = text(v);
+  const n = Number(raw);
+  return raw.trim() !== "" && Number.isFinite(n)
+    ? String(Number((n * 100).toFixed(4)))
+    : raw;
+};
+
 function optionsToForm(v: unknown): DecisionOptionForm[] {
   return list(v).map((o) => ({
     value: text(bag(o)?.value),
@@ -119,16 +132,14 @@ export function emptyDecisionsForm(): DecisionsForm {
     provider: "",
     model: "",
     credentialRef: "",
-    apply: "",
     questions: [],
     rules: [],
   };
 }
 
-// Where an agent with no block starts: OpenAI Decisions in shadow, so nothing is written before
-// the operator has read what it would do.
+// Where an agent with no block starts: OpenAI Decisions.
 export function startingDecisionsForm(): DecisionsForm {
-  return { ...emptyDecisionsForm(), provider: "openai", apply: "shadow" };
+  return { ...emptyDecisionsForm(), provider: "openai" };
 }
 
 export function decisionsToForm(raw: unknown): DecisionsForm | null {
@@ -138,7 +149,6 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
     provider: text(b.provider),
     model: text(b.model),
     credentialRef: text(b.credentialRef),
-    apply: text(b.apply),
     questions: list(b.questions).map((q, i) => {
       const o = bag(q) ?? {};
       return {
@@ -162,9 +172,9 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
           const cond = bag(c) ?? {};
           return {
             question: text(cond.question),
-            minProbability: text(cond.minProbability),
+            minProbability: percentText(cond.minProbability),
             equals: text(cond.equals),
-            minConfidence: text(cond.minConfidence),
+            minConfidence: percentText(cond.minConfidence),
             minLevel: text(cond.minLevel),
             maxLevel: text(cond.maxLevel),
           };
@@ -183,6 +193,12 @@ function num(v: string): number | string | undefined {
   if (t === "") return undefined;
   const n = Number(t);
   return Number.isFinite(n) ? n : t;
+}
+
+// The stored fraction of a percentage typed on screen, under the same rule as `num`.
+function fraction(v: string): number | string | undefined {
+  const n = num(v);
+  return typeof n === "number" ? Number((n / 100).toFixed(6)) : n;
 }
 
 function put(out: Record<string, unknown>, key: string, value: unknown): void {
@@ -243,21 +259,22 @@ export function decisionsToStored(
           // while the operator points it somewhere else.
           const type = questionTypeOf(form, name);
           if (type === "yes_no" || type === null) {
-            put(o, "minProbability", num(c.minProbability));
+            put(o, "minProbability", fraction(c.minProbability));
           }
           if (type === "choice" || type === null) put(o, "equals", c.equals);
           if (type === "score" || type === null) {
             put(o, "minLevel", num(c.minLevel));
             put(o, "maxLevel", num(c.maxLevel));
           }
-          if (type !== "yes_no") put(o, "minConfidence", num(c.minConfidence));
+          if (type !== "yes_no") {
+            put(o, "minConfidence", fraction(c.minConfidence));
+          }
           return o;
         }),
         action,
       };
     });
   }
-  put(out, "apply", form.apply);
   return out;
 }
 
@@ -421,7 +438,7 @@ export function conditionFor(
   const q = form.questions.find((x) => x.name === question);
   const base = emptyCondition(question);
   if (!q) return base;
-  if (q.type === "yes_no") return { ...base, minProbability: "0.7" };
+  if (q.type === "yes_no") return { ...base, minProbability: "70" };
   if (q.type === "choice") {
     return { ...base, equals: q.options[0]?.value ?? "" };
   }
@@ -461,4 +478,59 @@ export function decisionsRefusalStanding(
 ): { path: string; message: string } | null {
   if (!held || JSON.stringify(blockNow ?? null) !== held.sent) return null;
   return { path: held.path, message: held.message };
+}
+
+// Whether a rule names a tool the agent was not granted, so it never runs (`not_granted` on every
+// decision). Asked of the grants AS SAVED: that is what the engine checks. A rule with no tool yet
+// is incomplete, which the schema already reports, not ungranted.
+export function ruleToolNotGranted(
+  rule: DecisionRuleForm,
+  granted: ReadonlySet<string>,
+): boolean {
+  return rule.tool !== "" && !granted.has(rule.tool);
+}
+
+// The shape of a grant row this needs: the Tools tab's own (./types GrantState).
+interface NativeGrantRow {
+  source: string;
+  enabledTools?: string[];
+}
+
+// The native tools a grant set allows, as the runtime reads it: no NATIVE row is every native tool
+// (the permissive default of a new agent), a row is its allowlist, an empty one is none.
+export function nativeToolsGranted(
+  grants: readonly NativeGrantRow[],
+  allNative: readonly string[],
+): Set<string> {
+  const row = grants.find((g) => g.source === "NATIVE");
+  return new Set(row ? (row.enabledTools ?? []) : allNative);
+}
+
+// The grant set with one native tool allowed and everything else as it was: the one write a
+// rule's "Allow" makes. With no NATIVE row the tool is already allowed, so nothing changes.
+export function withNativeToolGranted<G extends NativeGrantRow>(
+  grants: readonly G[],
+  tool: string,
+): G[] {
+  const row = grants.find((g) => g.source === "NATIVE");
+  if (!row || (row.enabledTools ?? []).includes(tool)) return [...grants];
+  return grants.map((g) =>
+    g === row ? { ...g, enabledTools: [...(g.enabledTools ?? []), tool] } : g,
+  );
+}
+
+// What the Tools tab holds once an "Allow" landed. The tab stays editable while the grant is written,
+// so edits made since the press are kept, with the tool added to them, and stay unsaved; untouched,
+// the tab takes the grant set as written. RAG rows are the Knowledge tab's and stay as edited.
+export function grantsAfterAllow<G extends NativeGrantRow>(
+  current: readonly G[],
+  editedSincePress: boolean,
+  written: readonly G[],
+  tool: string,
+): G[] {
+  if (editedSincePress) return withNativeToolGranted(current, tool);
+  return [
+    ...current.filter((g) => g.source === "RAG"),
+    ...written.filter((g) => g.source !== "RAG"),
+  ];
 }

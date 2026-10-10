@@ -2090,6 +2090,43 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       });
     });
 
+    // A monitoring agent that decides through a classification API has no chat model to summarize
+    // with, and nothing it decides reads the thread's memory (agents#1224): its compaction stands
+    // down instead of failing on a model it was never configured with.
+    test("a decisions observer with no chat model is not compacted", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          mode: "monitoring",
+          modelConfig: {},
+          settings: {
+            memory: { compaction: { enabled: true } },
+            monitoring: {
+              engine: "decisions",
+              decisions: {
+                provider: "typesafe",
+                credentialRef: "vault:1",
+                questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+              },
+            },
+          },
+        },
+      });
+      const off = captureModel();
+      expect(await compactWith(5310, off.makeModel)).toEqual({
+        outcome: "done",
+      });
+      expect(off.captured).toEqual([]);
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          mode: "production",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: { memory: { compaction: { enabled: true } } },
+        },
+      });
+    });
+
     // NOTE: Same vendor, different model, which is the swap this whole knob exists for. `reasoningEffort` is
     // OpenAI-only and picked for ONE model id, and an explicit value routes the call to /v1/responses
     // carrying it (planOpenAITransport), so carrying the agent's onto a model that does not take it fails

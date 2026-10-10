@@ -265,6 +265,7 @@
     "unknownDeliveryStatus": "Unknown delivery status: {{status}}",
     "unknownFlowStage": "Unknown flow stage: {{stage}}",
     "unknownProvider": "Unknown {{capability}} provider: {{provider}}.",
+    "unknownSettingsField": "Unknown field `{{field}}`: it no longer exists, so it is not stored. Remove it from the request.",
     "unknownWebhookEvent": "Unknown webhook event: {{event}}",
     "unstorableText": "{{field}} contains characters that cannot be stored ({{codePoints}})",
     "unsupportedAudioType": "Unsupported audio type",

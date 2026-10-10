@@ -1848,11 +1848,12 @@ describe("a decisions observer's classification key", () => {
     expect(decisions({ ...base, settings: settings("", "llm") })).toEqual([]);
   });
 
-  test("missing, pending or gone, it is an issue on the observation section", () => {
+  // The key is a field of the Classifier, which the General tab draws where the chat model would be.
+  test("missing, pending or gone, it is an issue on General's classifier", () => {
     const at = {
       key: "decisions" as const,
-      tab: "behavior" as const,
-      sectionId: "observation",
+      tab: "general" as const,
+      sectionId: "general-classifier",
     };
     expect(decisions({ ...base, settings: settings(undefined) })).toEqual([at]);
     expect(
@@ -1876,5 +1877,110 @@ describe("a decisions observer's classification key", () => {
         knownRefs: new Set(["vault:1", "vault:7"]),
       }),
     ).toEqual([]);
+  });
+});
+
+// A decisions observer never builds the chat model, so nothing about that model is a fault there:
+// no key, a key that is gone, a bag no schema accepts. The llm engine, and an agent that answers,
+// keep every one of those warnings.
+describe("the chat model of a decisions observer", () => {
+  const observer = (engine: string) => ({
+    agentMonitoring: true,
+    settings: {
+      monitoring: {
+        engine,
+        decisions: {
+          provider: "typesafe",
+          credentialRef: "vault:1",
+          questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+        },
+      },
+    },
+  });
+  const modelKeys = (issues: { key: string }[]) =>
+    issues
+      .map((i) => i.key)
+      .filter((k) => k.startsWith("model") && k !== "modelFallback");
+
+  test("raises nothing when it is missing, gone or unbuildable", () => {
+    expect(
+      modelKeys(
+        computeConfigIssues({
+          ...base,
+          ...observer("decisions"),
+          modelProvider: "",
+          modelCredentialRef: "",
+          modelConfig: {},
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      modelKeys(
+        computeConfigIssues({
+          ...base,
+          ...observer("decisions"),
+          modelCredentialRef: "vault:9",
+          knownRefs: new Set(["vault:1"]),
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  test("is still checked on the llm engine and on an agent that answers", () => {
+    expect(
+      modelKeys(
+        computeConfigIssues({
+          ...base,
+          ...observer("llm"),
+          modelProvider: "",
+          modelCredentialRef: "",
+          modelConfig: {},
+        }),
+      ),
+    ).toContain("modelNotRunnable");
+    expect(
+      modelKeys(
+        computeConfigIssues({
+          ...base,
+          ...observer("decisions"),
+          agentMonitoring: false,
+          modelCredentialRef: "",
+        }),
+      ),
+    ).toEqual(["model"]);
+  });
+});
+
+// Nor its summariser and its fallback, which ride on the same chat model: the compaction job stands
+// down for it and the observe tick builds no model to fall back from. The editor hides both
+// sections there, and REST and MCP must not call the agent unhealthy over them.
+describe("the summariser and fallback of a decisions observer", () => {
+  const observer = (engine: string) => ({
+    ...base,
+    agentMonitoring: true,
+    settings: {
+      monitoring: {
+        engine,
+        decisions: {
+          provider: "typesafe",
+          credentialRef: "vault:1",
+          questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+        },
+      },
+      memory: { compaction: { enabled: true, provider: "anthropic" } },
+      modelFallback: { provider: "anthropic", model: "claude-x" },
+    },
+  });
+  const keys = (engine: string) =>
+    computeConfigIssues(observer(engine))
+      .map((i) => i.key)
+      .filter((k) => k === "memoryModel" || k === "modelFallback");
+
+  test("raise nothing on the decisions engine", () => {
+    expect(keys("decisions")).toEqual([]);
+  });
+
+  test("are still checked on the llm engine", () => {
+    expect(keys("llm")).toEqual(["memoryModel", "modelFallback"]);
   });
 });

@@ -75,7 +75,6 @@ const BLOCK = {
       action: { tool: "handoff_to_human", args: {} },
     },
   ],
-  apply: "shadow",
 };
 
 // The fixture loosened to what a stored block may hold, so a test can break it.
@@ -94,7 +93,6 @@ interface Block {
     when: Record<string, unknown>[];
     action: { tool: string; args: Record<string, unknown> };
   }[];
-  apply: string;
 }
 const clone = (): Block => structuredClone(BLOCK) as Block;
 function got<T>(v: T | undefined): T {
@@ -145,8 +143,8 @@ describe("the decisions block round trip", () => {
     expect(decisionsSchema.safeParse(block).success).toBe(true);
     const form = formOf(block);
     // Edited elsewhere, so the block is written through the form.
-    form.apply = "enforce";
-    expect(decisionsToStored(form)).toEqual({ ...block, apply: "enforce" });
+    form.model = "gpt-6-sol";
+    expect(decisionsToStored(form)).toEqual({ ...block, model: "gpt-6-sol" });
     const issues = decisionsFormIssues(form);
     expect(issues.size).toBe(0);
     expect(ruleIsBroken(issues, 1)).toBe(false);
@@ -173,9 +171,9 @@ describe("the decisions block round trip", () => {
     const cond = form.rules[1]?.when[1];
     if (!cond) throw new Error("fixture");
     cond.question = "pede_reembolso";
-    cond.minProbability = "0.5";
+    cond.minProbability = "50";
     cond.equals = "reembolso";
-    cond.minConfidence = "0.9";
+    cond.minConfidence = "90";
     const out = decisionsToStored(form) as unknown as Block;
     expect(out.rules[1]?.when[1]).toEqual({
       question: "pede_reembolso",
@@ -194,7 +192,7 @@ describe("the decisions block round trip", () => {
       maxLevel: "0",
     });
     expect(conditionFor(form, "assunto").equals).toBe("reembolso");
-    expect(conditionFor(form, "pede_reembolso").minProbability).toBe("0.7");
+    expect(conditionFor(form, "pede_reembolso").minProbability).toBe("70");
   });
 
   test("text that is not a number travels as typed and is refused at its field", () => {
@@ -420,7 +418,7 @@ describe("a stored block the engine refuses is not shown as sound", () => {
       "questions.1.options.1.description",
     ]);
     // Any edit writes the form's block, which carries the key, and the problem is gone.
-    form.apply = "enforce";
+    form.model = "gpt-6-sol";
     expect(decisionsFormIssues(form, block).size).toBe(0);
   });
 });
@@ -538,13 +536,13 @@ describe("what a save of the Observation block writes", () => {
   test("an edit is written when the engine is decisions", () => {
     const form = observationToForm(stored);
     if (!form.decisions) throw new Error("fixture");
-    form.decisions.apply = "enforce";
+    form.decisions.model = "gpt-6-sol";
     expect(decisionsUntouched(form.decisions, form.storedDecisions)).toBe(
       false,
     );
     expect(observationToStored(form).decisions).toEqual({
       ...BLOCK,
-      apply: "enforce",
+      model: "gpt-6-sol",
     });
   });
 
@@ -572,7 +570,7 @@ describe("what a save of the Observation block writes", () => {
     const drafted = {
       ...fresh,
       engine: "decisions" as const,
-      decisions: formOf({ provider: "openai", apply: "shadow" }),
+      decisions: formOf({ provider: "openai" }),
     };
     const out = observationToStored(drafted, false);
     expect(out.engine).toBe("llm");
@@ -580,7 +578,7 @@ describe("what a save of the Observation block writes", () => {
     // The stored pair goes back whole even when the draft could run: half of an unseen change.
     const fine = observationToForm(stored);
     if (!fine.decisions) throw new Error("fixture");
-    fine.decisions.apply = "enforce";
+    fine.decisions.model = "gpt-6-sol";
     expect<unknown>(
       observationToStored({ ...fine, engine: "llm" }, false),
     ).toEqual(readMonitoringConfig(stored));
@@ -596,7 +594,6 @@ describe("what a save of the Observation block writes", () => {
       const form = observationToForm({ monitoring });
       expect(form.storedDecisions).toBeNull();
       expect(form.decisions?.provider).toBe("openai");
-      expect(form.decisions?.apply).toBe("shadow");
       expect(
         [
           ...decisionsFormIssues(got(form.decisions ?? undefined)).keys(),
@@ -679,7 +676,6 @@ describe("the mark of the questions and rules a tick ran", () => {
     expect(
       decisionsBlockFingerprint({
         ...BLOCK,
-        apply: "enforce",
         credentialRef: "vault:99",
       }),
     ).toBe(mark as string);
@@ -731,7 +727,7 @@ describe("a refusal the server answers about the block", () => {
       message: "no",
     });
     expect(
-      decisionsRefusalStanding(held, { ...BLOCK, apply: "enforce" }),
+      decisionsRefusalStanding(held, { ...BLOCK, model: "gpt-6-sol" }),
     ).toBeNull();
     expect(decisionsRefusalStanding(null, BLOCK)).toBeNull();
   });
@@ -786,31 +782,31 @@ describe("a folded rule's condition", () => {
       "assunto = reembolso",
     );
     const low = conditionSummary(
-      cond({ equals: "reembolso", minConfidence: "0.1" }),
+      cond({ equals: "reembolso", minConfidence: "10" }),
       q,
     );
     const high = conditionSummary(
-      cond({ equals: "reembolso", minConfidence: "0.95" }),
+      cond({ equals: "reembolso", minConfidence: "95" }),
       q,
     );
-    expect(low).toBe("assunto = reembolso (≥ 0.1)");
-    expect(high).toBe("assunto = reembolso (≥ 0.95)");
+    expect(low).toBe("assunto = reembolso (≥ 10%)");
+    expect(high).toBe("assunto = reembolso (≥ 95%)");
   });
 
   test("names it on a score, for one level and for a range", () => {
     const q = question("score");
     expect(
       conditionSummary(
-        cond({ minLevel: "1", maxLevel: "1", minConfidence: "0.8" }),
+        cond({ minLevel: "1", maxLevel: "1", minConfidence: "80" }),
         q,
       ),
-    ).toBe("assunto = alto (≥ 0.8)");
+    ).toBe("assunto = alto (≥ 80%)");
     expect(
       conditionSummary(
-        cond({ minLevel: "0", maxLevel: "1", minConfidence: "0.8" }),
+        cond({ minLevel: "0", maxLevel: "1", minConfidence: "80" }),
         q,
       ),
-    ).toBe("assunto = baixo…alto (≥ 0.8)");
+    ).toBe("assunto = baixo…alto (≥ 80%)");
     expect(conditionSummary(cond({ minLevel: "0", maxLevel: "1" }), q)).toBe(
       "assunto = baixo…alto",
     );
@@ -818,8 +814,63 @@ describe("a folded rule's condition", () => {
 
   test("a yes or no condition reads by its probability", () => {
     expect(
-      conditionSummary(cond({ minProbability: "0.7" }), question("yes_no")),
-    ).toBe("assunto ≥ 0.7");
+      conditionSummary(cond({ minProbability: "70" }), question("yes_no")),
+    ).toBe("assunto ≥ 70%");
     expect(conditionSummary(cond({}), undefined)).toBe("assunto");
+  });
+});
+
+// Thresholds are read and typed as percentages and stored as the fraction the engine compares
+// with: an operator thinks "70%", not "0.7".
+describe("a threshold on screen", () => {
+  const stored = {
+    provider: "openai",
+    credentialRef: "vault:1",
+    questions: [
+      { name: "pede", type: "yes_no", instructions: "?" },
+      {
+        name: "assunto",
+        type: "choice",
+        instructions: "?",
+        options: [
+          { value: "a", description: "" },
+          { value: "b", description: "" },
+        ],
+      },
+    ],
+    rules: [
+      {
+        when: [{ question: "pede", minProbability: 0.7 }],
+        action: { tool: "set_labels", args: { add: ["x"] } },
+      },
+      {
+        when: [{ question: "assunto", equals: "a", minConfidence: 0.65 }],
+        action: { tool: "set_labels", args: { add: ["y"] } },
+      },
+    ],
+  };
+  test("reads as a percentage and is written back as the fraction", () => {
+    const form = decisionsToForm(stored);
+    if (!form) throw new Error("fixture");
+    expect(form.rules[0]?.when[0]?.minProbability).toBe("70");
+    expect(form.rules[1]?.when[0]?.minConfidence).toBe("65");
+    const out = decisionsToStored(form) as unknown as typeof stored;
+    expect(out.rules[0]?.when[0]).toEqual({
+      question: "pede",
+      minProbability: 0.7,
+    });
+    expect(out.rules[1]?.when[0]).toEqual({
+      question: "assunto",
+      equals: "a",
+      minConfidence: 0.65,
+    });
+  });
+  test("a percentage past 100 is refused at its field", () => {
+    const form = decisionsToForm(stored);
+    if (!form?.rules[0]?.when[0]) throw new Error("fixture");
+    form.rules[0].when[0].minProbability = "150";
+    expect([...decisionsFormIssues(form).keys()]).toContain(
+      "rules.0.when.0.minProbability",
+    );
   });
 });

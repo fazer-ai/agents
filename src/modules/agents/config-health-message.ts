@@ -20,6 +20,52 @@ export interface ConfigIssueMessageDeps {
   // How a timestamp is rendered for this reader. The console says "3 hours ago" in the operator's
   // language; a caller reading JSON wants the instant. Absent → the raw value.
   formatWhen?: (iso: string) => string;
+  // A monitoring agent answers no one, so what a broken chat model stops is its reading of the
+  // conversations it observes, and the sentence says that instead of "cannot reply".
+  watcher?: boolean;
+}
+
+function watcherModelMessage(
+  issue: ConfigIssue,
+  t: ConfigIssueMessageDeps["translate"],
+): string | null {
+  if (issue.key === "model" && issue.unresolved) {
+    return t(
+      "editor.configIssueWatcherModelUnresolved",
+      "The model credential no longer exists, so this agent cannot analyze the conversations it observes. Pick another one.",
+    );
+  }
+  if (issue.key === "model" && issue.wrongKind) {
+    return t(
+      "editor.configIssueWatcherModelWrongKind",
+      "The model credential is a type that cannot be used as an API key, so this agent cannot analyze the conversations it observes. Pick a credential that holds a single key.",
+    );
+  }
+  if (issue.pending) return null;
+  switch (issue.key) {
+    case "model":
+      return t(
+        "editor.configIssueWatcherModel",
+        "The model has no API key set, so this agent cannot analyze the conversations it observes.",
+      );
+    case "modelNotRunnable":
+      return t(
+        "editor.configIssueWatcherModelNotRunnable",
+        "This model configuration cannot be built, so this agent cannot analyze the conversations it observes. Check the provider and the model.",
+      );
+    case "modelNoEndpoint":
+      return t(
+        "editor.configIssueWatcherModelNoEndpoint",
+        "This model needs a base URL and has none, so it cannot be reached and this agent cannot analyze the conversations it observes.",
+      );
+    case "modelBadEndpoint":
+      return t(
+        "editor.configIssueWatcherModelBadEndpoint",
+        "The model's base URL is not an http(s) address, so every request goes nowhere and this agent cannot analyze the conversations it observes.",
+      );
+    default:
+      return null;
+  }
 }
 
 export function configIssueMessage(
@@ -99,6 +145,10 @@ export function configIssueMessage(
           "Chatwoot sends an out-of-hours message on {{inboxes}}, but this agent follows only its own schedule. The customer can be told the business is closed and receive service moments later.",
           { inboxes },
         );
+  }
+  if (deps.watcher) {
+    const said = watcherModelMessage(issue, t);
+    if (said !== null) return said;
   }
   if (issue.pending) {
     return t(

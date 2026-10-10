@@ -35,10 +35,13 @@ const VISION_PROVIDER_TYPE: Record<string, string> = {
   openrouter: "openrouter",
 };
 
-// The decisions engine's classification APIs (src/modules/decisions/config.ts). TypeSafe has no
-// secret type of its own, so it filters nothing.
-const DECISIONS_PROVIDER_TYPE: Record<string, string> = {
-  openai: "openai",
+// The decisions engine's classification APIs (src/modules/decisions/config.ts): the provider's own
+// kind and a generic key, which the server takes as an API key all the same (`credentialServes`).
+// TypeSafe has no kind of its own, so a generic key is what it lists; never everything, or tracing
+// keys and OAuth blobs that cannot serve would be offered first.
+const DECISIONS_PROVIDER_TYPES: Record<string, string[]> = {
+  openai: ["openai", "generic"],
+  typesafe: ["generic"],
 };
 
 const CATALOG_TYPE_TYPE: Record<string, string> = {
@@ -53,11 +56,20 @@ function single(map: Record<string, string>, key: string): string[] {
   return v ? [v] : [];
 }
 
+// A chat model's key: the provider's own kind first (what "create" makes) and a generic key, which
+// the server and the health check take as an API key all the same (`credentialServes`).
+function modelKinds(provider: string): string[] {
+  const own = single(MODEL_PROVIDER_TYPE, provider);
+  return own.length > 0 ? [...own, "generic"] : own;
+}
+
 export const credentialCompat = {
-  model: (provider: string) => single(MODEL_PROVIDER_TYPE, provider),
+  model: modelKinds,
   stt: (provider: string) => single(STT_PROVIDER_TYPE, provider),
   tts: (provider: string) => single(TTS_PROVIDER_TYPE, provider),
   vision: (provider: string) => single(VISION_PROVIDER_TYPE, provider),
-  decisions: (provider: string) => single(DECISIONS_PROVIDER_TYPE, provider),
+  decisions: (provider: string) => [
+    ...(DECISIONS_PROVIDER_TYPES[provider] ?? ["generic"]),
+  ],
   catalog: (catalogType: string) => single(CATALOG_TYPE_TYPE, catalogType),
 };

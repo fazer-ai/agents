@@ -1094,7 +1094,13 @@ export async function runObserve(
     const cfg = await loadAgentConfig(
       db,
       { tenantId, instanceId, conversationId, agentId, threadId },
-      { skipExperiment: true, ignoreMode: true },
+      {
+        skipExperiment: true,
+        ignoreMode: true,
+        // The decisions engine asks its classification API and never builds the chat model, so an
+        // agent configured only for it observes (agents#1224).
+        chatModelUnused: mon.engine === "decisions",
+      },
     );
     // NOTE: A CONFIG THAT DOES NOT BUILD IS NOT AN AGENT THAT STOPPED OBSERVING: the checks above
     // are operator states and end the job; this is a credential the vault cannot hand over, and it
@@ -1250,7 +1256,7 @@ export async function runObserve(
         ? {
             provider: decisions.config.provider,
             model: decisions.config.model,
-            engine: { engine: "decisions", apply: decisions.config.apply },
+            engine: { engine: "decisions" },
           }
         : {
             provider: decisions.provider,
@@ -1488,14 +1494,11 @@ export async function runObserve(
       refusal = "analysis_changed";
       return false;
     }
-    // The engine and the decisions apply mode, asked again: an operator switching to `shadow` (or off
-    // the engine) while the call is in flight has refused the writes this tick would make next.
-    const applyNow =
-      monNow?.decisions?.apply === "enforce" ? "enforce" : "shadow";
+    // The engine, asked again: an operator switching engines while the call is in flight has refused
+    // the writes this tick would make next.
     if (
       monNow !== null &&
-      (monNow.engine !== (decisions === null ? "llm" : "decisions") ||
-        (decisions?.ok === true && applyNow !== decisions.config.apply))
+      monNow.engine !== (decisions === null ? "llm" : "decisions")
     ) {
       refusal = "engine_changed";
       return false;
@@ -1791,7 +1794,6 @@ export async function runObserve(
         detail: {
           reason,
           engine: "decisions",
-          apply: config.apply,
           // Which questions and rules this tick ran: the rule indices below mean nothing without it.
           block: decisionsFingerprint(config),
           ...detail,

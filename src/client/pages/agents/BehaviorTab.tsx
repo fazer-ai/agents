@@ -101,8 +101,7 @@ import {
   contactAuthGateEmpty,
   contactAuthRuleInvalid,
 } from "./contactAuthRuleForm";
-import type { DecisionsServerRefusal } from "./DecisionsFields";
-import { decisionsFormIssues } from "./decisionsFormState";
+import { watcherSectionUsed } from "./editorTabs";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 import {
@@ -118,10 +117,7 @@ import {
   overrideProviderChanged,
 } from "./modelOverrideForm";
 import { ObservationSection } from "./ObservationSection";
-import {
-  decisionsBaseline,
-  type ObservationState,
-} from "./observationFormState";
+import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
 import { signatureOnToggle } from "./signatureFormState";
 import { TabActionBar } from "./TabActionBar";
@@ -426,10 +422,6 @@ interface BehaviorTabProps {
   mode: AgentMode;
   observation: ObservationState;
   setObservation: React.Dispatch<React.SetStateAction<ObservationState>>;
-  // When the agent was last saved, and what the server last refused about the decisions block
-  // (./DecisionsFields): the first bounds the activity it counts, the second lands on its field.
-  agentSavedAt: string | null;
-  decisionsRefusal: DecisionsServerRefusal | null;
   modelFallback: ModelFallbackState;
   setModelFallback: React.Dispatch<React.SetStateAction<ModelFallbackState>>;
   modelFallbackCredBaseUrl: string | null;
@@ -973,7 +965,7 @@ function ContactAuthTeamSelect({
             {accounts.length === 0
               ? t(
                   "editor.handoffPinnedNoInbox",
-                  "Bind at least one inbox in the Channels tab first.",
+                  "Attach this agent to at least one inbox in the Channels tab first, to answer or to observe it.",
                 )
               : keptElsewhere
                 ? t(
@@ -1270,8 +1262,6 @@ export function BehaviorTab({
   mode,
   observation,
   setObservation,
-  agentSavedAt,
-  decisionsRefusal,
   modelFallback,
   setModelFallback,
   modelFallbackCredBaseUrl,
@@ -1563,15 +1553,6 @@ export function BehaviorTab({
   // (`assertSettingsModelFallback`, which is what covers the MCP patch); this is what keeps the
   // operator from meeting that refusal as a 400 on a button they were never stopped from pressing.
   const fallbackModelMissing = fallbackModelIsMissing(modelFallback);
-  // The decisions block, asked the write boundary's own schema. On the gate only where its fields
-  // are drawn (a watcher running the decisions engine): a draft left behind an agent on the model
-  // engine has no field on screen to say why Save is off, and its save keeps the stored block.
-  const decisionsBlockInvalid =
-    mode === "monitoring" &&
-    observation.engine === "decisions" &&
-    observation.decisions !== null &&
-    decisionsFormIssues(observation.decisions, decisionsBaseline(observation))
-      .size > 0;
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,
@@ -1707,6 +1688,9 @@ export function BehaviorTab({
   ];
 
   const watcher = mode === "monitoring";
+  // A watcher deciding with questions and rules runs no chat model, so the sections that configure
+  // one (memory is compacted by it, the fallback stands in for it) are not drawn for it (agents#1224).
+  const chatModelUnused = watcher && observation.engine === "decisions";
   const visibleSections = watcher
     ? [
         {
@@ -1714,7 +1698,11 @@ export function BehaviorTab({
           icon: Eye,
           label: t("editor.observation", "Observation"),
         },
-        ...sections.filter((s) => MONITORING_SECTIONS.has(s.id)),
+        ...sections.filter(
+          (s) =>
+            MONITORING_SECTIONS.has(s.id) &&
+            watcherSectionUsed(observation.engine, s.id),
+        ),
       ]
     : sections;
 
@@ -1725,12 +1713,8 @@ export function BehaviorTab({
         <div className="flex min-w-0 grow flex-col gap-4">
           {watcher && (
             <ObservationSection
-              agentId={agentId}
-              savedAt={agentSavedAt}
               observation={observation}
               setObservation={setObservation}
-              decisionsCredentialError={refusals.decisionsCredential}
-              decisionsRefusal={decisionsRefusal}
             />
           )}
           <Section
@@ -3656,6 +3640,7 @@ export function BehaviorTab({
 
           <Section
             id="memory"
+            hidden={chatModelUnused}
             icon={Brain}
             title={t("editor.memory", "Memory")}
             help={t(
@@ -3845,6 +3830,7 @@ export function BehaviorTab({
 
           <Section
             id="modelFallback"
+            hidden={chatModelUnused}
             icon={LifeBuoy}
             title={t("editor.modelFallback", "Fallback provider")}
             help={t(
@@ -4326,13 +4312,14 @@ export function BehaviorTab({
           // on a tab where no field says why. Answer-only validators are asked only where their fields are.
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
-          memoryBaseUrlInvalid ||
-          memoryBaseUrlUnsupported ||
-          // NOTE: The fallback's three are asked wherever their fields are, watcher included.
-          fallbackBaseUrlInvalid ||
-          fallbackBaseUrlUnsupported ||
-          fallbackModelMissing ||
-          decisionsBlockInvalid ||
+          // NOTE: Memory and the fallback are asked wherever their fields are, a watcher on the
+          // language model included; a watcher on questions and rules does not draw them.
+          (!chatModelUnused &&
+            (memoryBaseUrlInvalid ||
+              memoryBaseUrlUnsupported ||
+              fallbackBaseUrlInvalid ||
+              fallbackBaseUrlUnsupported ||
+              fallbackModelMissing)) ||
           // NOTE: A watcher draws the gate's conditions and its endpoint's fields, so a rule or a url
           // it cannot use is said there.
           contactAuthRuleBad ||

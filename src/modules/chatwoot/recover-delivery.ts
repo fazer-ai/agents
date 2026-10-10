@@ -72,6 +72,22 @@ export const MAX_RECOVERY_ATTEMPTS = 3;
 // `proactiveSendMode` here. Not covered: an agent whose `serviceWindow.windowHours` is below this.
 export const MAX_RECOVERY_AGE_MS = 6 * 60 * 60 * 1000;
 
+// The ceiling for a REPLY on WhatsApp. NINETY MINUTES is policy: a WhatsApp customer writes for an
+// answer now, and one that arrives hours later lands after they gave up or a person answered them.
+export const WHATSAPP_RECOVERY_AGE_MS = 90 * 60 * 1000;
+
+// The ceiling a stranded delivery is held to: the channel's, for a delivery that owes the customer a
+// reply, and `MAX_RECOVERY_AGE_MS` for one that owes only memory, since the reason for the shorter
+// one is a customer waiting. `channelType` is the inbox's Chatwoot channel; null means not known.
+export function recoveryAgeCeilingMs(
+  row: Parameters<typeof owesAReply>[0],
+  channelType: string | null,
+): number {
+  return owesAReply(row) && channelType === "Channel::Whatsapp"
+    ? WHATSAPP_RECOVERY_AGE_MS
+    : MAX_RECOVERY_AGE_MS;
+}
+
 // How long to wait before asking again about a conversation that was BUSY. A minute: long enough
 // that a short turn is over, short enough that a customer's second stranded message is not left
 // behind the first one for a scheduler interval. Nothing measures a turn's length (there is no
@@ -358,11 +374,25 @@ async function runRecovery(params: {
             chatwootInboxId: true,
             name: true,
             agentId: true,
+            channelType: true,
           },
         },
       },
     }),
   );
+  // NOTE: the channel's ceiling, on the row's receipt and before any network, where the mirror knows
+  // the inbox. A conversation it does not know is asked again once the live read names the inbox.
+  if (
+    params.now.getTime() - row.receivedAt.getTime() >
+    recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
+  ) {
+    logger.warn(
+      "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unrecoverable";
+  }
   // NOTE: a conversation with no mirror row is still recovered. The mirror failing is how a first
   // message strands, so those are exactly the customers this exists for. Everything below reads the
   // conversation from Chatwoot; the mirror row is created by the delivery path from the rebuilt body,
@@ -625,6 +655,7 @@ async function runRecovery(params: {
         chatwootInboxId: true,
         name: true,
         agentId: true,
+        channelType: true,
         // When THIS binding was made. A role the row never stated cannot be read off a binding
         // younger than the delivery; see the refusal below.
         responderBoundAt: true,
@@ -939,7 +970,8 @@ async function runRecovery(params: {
   // creation keeps the ceiling.
   if (
     row.event === TURN_BEARING_EVENT &&
-    params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS
+    params.now.getTime() - sentAt * 1000 >
+      recoveryAgeCeilingMs(row, inbox?.channelType ?? liveChannelOf(liveRaw))
   ) {
     return "unrecoverable";
   }
@@ -1598,6 +1630,13 @@ async function schedulerGaveUp(
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a
 // transcription write-back (`message_updated`) and a row marked `owesMemoryOnly` replay into memory and
 // post nothing.
+// The channel the live conversation names (`meta.channel`, the inbox's channel type), for an inbox the
+// mirror has no row for.
+function liveChannelOf(raw: unknown): string | null {
+  const meta = isRecord(raw) && isRecord(raw.meta) ? raw.meta : null;
+  return typeof meta?.channel === "string" ? meta.channel : null;
+}
+
 function owesAReply(row: {
   routeObserved: boolean | null;
   event: string;

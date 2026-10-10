@@ -37,7 +37,7 @@ import {
   getConversationMessages,
 } from "@/modules/conversations/service";
 import { documentAuthoringSchema } from "@/modules/documents/blocks";
-import { listIssuedDocuments } from "@/modules/documents/issue";
+import { pageIssuedDocuments } from "@/modules/documents/issue";
 import { documentStarters } from "@/modules/documents/starters";
 import {
   getDocumentTemplate,
@@ -429,7 +429,7 @@ export async function issuedDocumentList(
   }
   try {
     return ok({
-      documents: await listIssuedDocuments(
+      ...(await pageIssuedDocuments(
         ctx,
         {
           templateId,
@@ -439,7 +439,7 @@ export async function issuedDocumentList(
           query: args.q,
         },
         base,
-      ),
+      )),
     });
   } catch (e) {
     return failOf(e);

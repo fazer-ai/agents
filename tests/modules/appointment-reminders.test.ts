@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
@@ -609,6 +617,13 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         lastInboundAt: new Date(),
       },
     });
+  });
+
+  // Every test here messages the same conversation, so the deliveries one leaves behind count against
+  // the next one's proactive limit for the day.
+  beforeEach(async () => {
+    if (!dbUp) return;
+    await suDb.agentTurnDelivery.deleteMany({ where: { tenantId } });
   });
 
   afterAll(async () => {

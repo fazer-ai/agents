@@ -1061,6 +1061,7 @@
     "notFound": "It does not exist in this organization, or it belongs to another one.",
     "notFoundTitle": "This approval request is not here",
     "notSentHint": "Not sent to the customer: a private note in the conversation says why. The document is beside this, numbered, to send from Chatwoot.",
+    "notSentUnexplainedHint": "Not sent to the customer. The document is beside this, numbered, to send from Chatwoot.",
     "openConversation": "Open conversation #{{number}}",
     "outcome": {
       "delivered": "Sent to the customer",
@@ -1068,6 +1069,7 @@
       "noAgent": "No agent left in the conversation to tell",
       "notIssued": "Not issued: approve it again",
       "notSent": "Not sent: a private note in the conversation says why",
+      "notSentUnexplained": "Not sent to the customer",
       "rejectedNotHanded": "Nothing sent, and the conversation was not handed over",
       "sending": "On its way to the customer",
       "unconfirmed": "No confirmation that it was sent"

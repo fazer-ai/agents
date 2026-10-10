@@ -109,7 +109,14 @@ export function ConversationApprovals({
   if (shown.length === 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      {shown.map((r) => {
+      {shown.map((row) => {
+        // Past its validity and not yet closed by the expiry: it no longer waits on anyone, so it
+        // reads as expired rather than offering a review that would be refused.
+        const r =
+          row.status === "PENDING" &&
+          new Date(row.expiresAt).getTime() <= serverNow()
+            ? { ...row, status: "EXPIRED" }
+            : row;
         const outcome = approvalOutcomeLabel(r, t);
         return (
           <Card

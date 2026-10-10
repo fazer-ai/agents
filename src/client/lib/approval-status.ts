@@ -62,6 +62,12 @@ export function approvalOutcomeLabel(
         "Not sent: a private note in the conversation says why",
       );
     }
+    if (r.outcome === "NOT_SENT") {
+      return t(
+        "documentApproval.outcome.notSentUnexplained",
+        "Not sent to the customer",
+      );
+    }
     // The failure after the claim: nothing was issued, so nothing is on its way.
     if (r.outcome === null && r.issuedDocumentId === null) {
       return t(

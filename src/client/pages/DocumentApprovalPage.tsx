@@ -714,7 +714,12 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                                 "documentApproval.notSentHint",
                                 "Not sent to the customer: a private note in the conversation says why. The document is beside this, numbered, to send from Chatwoot.",
                               )
-                            : approvalOutcomeLabel(request, t)}
+                            : request.outcome === "NOT_SENT"
+                              ? t(
+                                  "documentApproval.notSentUnexplainedHint",
+                                  "Not sent to the customer. The document is beside this, numbered, to send from Chatwoot.",
+                                )
+                              : approvalOutcomeLabel(request, t)}
                     </p>
                   )}
                 {/* Approved, but the document was never issued (the template went away after the

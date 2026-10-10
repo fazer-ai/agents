@@ -1042,8 +1042,9 @@ describe.skipIf(!dbUp)("document approval outcomes", () => {
           persistUsage: async () => {},
         },
       });
-      // The customer got the replacement and not the PDF: not a delivery, and not a retry either.
-      expect(outcome).toBe("noted");
+      // The customer got the replacement and not the PDF, and the note saying why was refused: not a
+      // delivery, not a note, and not a retry either.
+      expect(outcome).toBe("not-sent");
       expect(named(rec.calls, "sendMessage")).toHaveLength(1);
     } finally {
       await suDb.agent.update({

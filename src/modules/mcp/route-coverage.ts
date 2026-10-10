@@ -144,6 +144,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/document-approvals/pending": {
     gap: "list the document approvals waiting on the team",
   },
+  "GET /v1/document-approvals/decided": {
+    gap: "list the document approvals already decided",
+  },
   "GET /v1/document-approvals/:id/preview": { none: BINARY },
   "POST /v1/document-approvals/:id/approve": {
     gap: "approve a document approval request",

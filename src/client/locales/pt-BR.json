@@ -1092,6 +1092,7 @@
     "notFound": "Ele não existe nesta organização, ou pertence a outra.",
     "notFoundTitle": "Este pedido de aprovação não está aqui",
     "notSentHint": "Não enviado ao cliente: uma nota privada na conversa explica o motivo. O documento numerado está aqui ao lado para enviar pelo Chatwoot.",
+    "notSentUnexplainedHint": "Não enviado ao cliente. O documento numerado está aqui ao lado para enviar pelo Chatwoot.",
     "openConversation": "Abrir a conversa #{{number}}",
     "outcome": {
       "delivered": "Enviado ao cliente",
@@ -1099,6 +1100,7 @@
       "noAgent": "Nenhum agente na conversa para avisar",
       "notIssued": "Não emitido: aprove de novo",
       "notSent": "Não enviado: uma nota privada na conversa explica o motivo",
+      "notSentUnexplained": "Não enviado ao cliente",
       "rejectedNotHanded": "Nada enviado, e a conversa não foi transferida",
       "sending": "A caminho do cliente",
       "unconfirmed": "Sem confirmação de envio"

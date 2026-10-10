@@ -70,7 +70,12 @@ export interface ApprovalRequestDto {
   createdAt: Date;
 }
 
-export type ApprovalOutcome = "DELIVERED" | "NOTED" | "HANDED" | "NO_AGENT";
+export type ApprovalOutcome =
+  | "DELIVERED"
+  | "NOTED"
+  | "NOT_SENT"
+  | "HANDED"
+  | "NO_AGENT";
 
 const SELECT = {
   id: true,

@@ -25,7 +25,16 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   if (readDelayMs > 0) await new Promise((r) => setTimeout(r, readDelayMs));
   // As the server answers: the pending ones on their own, else the latest.
   const answer = url.includes("waiting=true")
-    ? rows.filter((r) => (r as { status: string }).status === "PENDING")
+    ? rows.filter((r) => {
+        const { status, expiresAt } = r as {
+          status: string;
+          expiresAt?: string;
+        };
+        return (
+          status === "PENDING" &&
+          !(expiresAt && new Date(expiresAt).getTime() <= Date.now())
+        );
+      })
     : rows.slice(0, 1);
   return new Response(JSON.stringify({ requests: answer }), {
     status: 200,
@@ -180,3 +189,15 @@ test("a waiting request decided without a new message still moves on", async () 
   ];
   await screen.findByText("Rejected by Ana Souza", {}, { timeout: 18_000 });
 }, 22_000);
+
+test("a request past its validity that the expiry has not closed reads as expired, not as a review", async () => {
+  rows = [row("6", { expiresAt: new Date(Date.now() - 60_000).toISOString() })];
+  render(
+    <MemoryRouter>
+      <ConversationApprovals conversationId="29" refreshKey={0} />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Expired");
+  expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
+  screen.getByRole("link", { name: "View approval" });
+});

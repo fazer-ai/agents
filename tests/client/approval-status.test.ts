@@ -53,3 +53,9 @@ test("a rejection the bot could not hand over does not claim a person had the co
     approvalOutcomeLabel({ status: "REJECTED", outcome: "NOTED" }, t),
   ).toBe("Nothing sent, and the conversation was not handed over");
 });
+
+test("an approval sent without its PDF and without a note does not claim a note", () => {
+  expect(
+    approvalOutcomeLabel({ status: "APPROVED", outcome: "NOT_SENT" }, t),
+  ).toBe("Not sent to the customer");
+});

@@ -50,6 +50,8 @@ export interface ApprovalOutcomeDeps {
 type Outcome =
   | "delivered"
   | "noted"
+  // The customer was messaged without the PDF and the note saying why could not be posted.
+  | "not-sent"
   | "handed"
   | "no-conversation"
   | "no-agent"
@@ -475,7 +477,10 @@ export async function runApprovalOutcome(
     outcome === "noted-window"
   ) {
     commit();
-    return outcome === "messaged" && attached ? "delivered" : "noted";
+    // "messaged" without the PDF is the replacement line that went out and whose note failed: nothing
+    // in the conversation says why, so it is not recorded as a note.
+    if (outcome === "messaged") return attached ? "delivered" : "not-sent";
+    return "noted";
   }
   if (outcome === "live-unavailable") return "retry";
   // Every other end sent nothing (the spend ceiling, an agent switched off, a contact the gate
@@ -599,6 +604,7 @@ export async function runOutcomeJob(
 const RECORDED: Partial<Record<Outcome, ApprovalOutcome>> = {
   delivered: "DELIVERED",
   noted: "NOTED",
+  "not-sent": "NOT_SENT",
   handed: "HANDED",
   "no-agent": "NO_AGENT",
 };

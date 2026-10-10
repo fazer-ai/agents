@@ -147,16 +147,14 @@ export const SCOPED_TX_OPTIONS: TxBudget = {
 
 // Prisma checks `timeout` only when a statement returns, so a statement that runs or waits on a lock
 // past it keeps the connection to the end and only then fails the commit (measured: a 9 s statement
-// under a 5 s budget held its connection 9 s). Postgres enforces it instead: `transaction_timeout`
-// (PostgreSQL 17+) ends the transaction at the budget however many statements it ran, and terminates
-// its session, which the pool replaces; `statement_timeout` is the bound on an older server, per
-// statement. A transaction past the budget could never commit, so neither fails one that could. Set
-// in the statement that opens the scope, which costs no round trip.
+// under a 5 s budget held its connection 9 s). The same number as `statement_timeout`, local to the
+// transaction, lets Postgres cancel such a statement at the budget: it could never commit. Per
+// statement, so a transaction of several statements is bounded by Prisma's own check between them.
+// Not `transaction_timeout`: it terminates the session, and a pooled connection killed under a
+// transaction that was idle failed the next request that drew it. Set in the statement that opens
+// the scope, which costs no round trip.
 function budgetSql(budget: TxBudget): Prisma.Sql {
-  const ms = String(budget.timeout);
-  return Prisma.sql`set_config('statement_timeout', ${ms}, true),
-    CASE WHEN current_setting('server_version_num')::int >= 170000
-         THEN set_config('transaction_timeout', ${ms}, true) END`;
+  return Prisma.sql`set_config('statement_timeout', ${String(budget.timeout)}, true)`;
 }
 
 export async function runScopedOn<T>(

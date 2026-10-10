@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { runMetricsScoped } from "@/modules/analytics/budget";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { getHealth } from "@/modules/analytics/health";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -122,6 +123,26 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       ),
     );
     expect(JSON.stringify(result)).toContain("Try a shorter period");
+  });
+
+  test("a read of several aggregates is bounded as a whole, not per aggregate", async () => {
+    // Each aggregate fits the 1 s budget; together they do not. Per statement, the second would start
+    // at 0.8 s with a fresh second and hold the connection to 1.6 s.
+    const t0 = Date.now();
+    const result = await withMetricsTimeout(1_000, () =>
+      runMetricsScoped(app as PrismaClient, ctx, async (db) => {
+        await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text /* mb_two */");
+        await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text /* mb_two */");
+        return "answered";
+      }).catch((e) => e),
+    );
+    const elapsed = Date.now() - t0;
+    expect((result as { statusCode?: number }).statusCode).toBe(503);
+    expect(elapsed).toBeLessThan(1_400);
+    const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+       WHERE state = 'active' AND query LIKE '%mb_two%' AND pid <> pg_backend_pid()`;
+    expect(row?.n).toBe(0);
   });
 
   test("a read inside the budget answers with its figures", async () => {

@@ -100,26 +100,6 @@ describe.skipIf(!dbUp)("transaction budget", () => {
     expect(err).not.toBe("committed");
   });
 
-  test("a transaction is ended at its budget even when each of its statements fits it", async () => {
-    // Each statement is under the 1 s budget; together they are not. Per statement, the second would
-    // start at 0.8 s with a fresh second and hold the connection to 1.6 s.
-    const t0 = Date.now();
-    const err = await runScopedOn(
-      app as PrismaClient,
-      ctx,
-      async (db) => {
-        await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text /* txb_two */");
-        await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text /* txb_two */");
-        return "committed";
-      },
-      { maxWait: 1_000, timeout: 1_000 },
-    ).catch((e) => e);
-    const elapsed = Date.now() - t0;
-    expect(err).not.toBe("committed");
-    expect(elapsed).toBeLessThan(1_400);
-    expect(await stillRunning("txb_two")).toBe(0);
-  });
-
   test("a transaction inside its budget commits as before", async () => {
     const out = await runScopedOn(
       app as PrismaClient,

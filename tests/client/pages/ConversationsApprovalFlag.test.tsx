@@ -33,6 +33,9 @@ const { ConversationsPage, flagRefresh } = await import(
 
 const realFetch = globalThis.fetch;
 let pending: unknown[] = [];
+// Set per test: the list's rows, and a conversation's own pending answer.
+let rows: unknown[] | null = null;
+let pendingByConversation: Record<string, unknown[]> = {};
 // Set per test: an answer to hold back, by the order the flag was asked.
 let holdFirstFlagRead: Promise<void> | null = null;
 let flagReads = 0;
@@ -78,10 +81,15 @@ beforeAll(() => {
     if (url.pathname.endsWith("/conversations/agents"))
       return json({ agents: [] });
     if (url.pathname.endsWith("/conversations"))
-      return json({ instance: "i", conversations: [ROW], nextCursor: null });
+      return json({
+        instance: "i",
+        conversations: rows ?? [ROW],
+        nextCursor: null,
+      });
     if (url.pathname.endsWith("/document-approvals")) {
       flagReads += 1;
-      const snapshot = pending;
+      const conv = url.searchParams.get("conversationId") ?? "";
+      const snapshot = pendingByConversation[conv] ?? pending;
       if (flagReads === 1 && holdFirstFlagRead) await holdFirstFlagRead;
       if (flagReadDelayMs > 0)
         await new Promise((r) => setTimeout(r, flagReadDelayMs));
@@ -100,6 +108,8 @@ afterEach(() => {
   holdFirstFlagRead = null;
   flagReads = 0;
   flagReadDelayMs = 0;
+  rows = null;
+  pendingByConversation = {};
 });
 
 test("a decision while the list is open drops the flag on the next event", async () => {
@@ -228,3 +238,53 @@ test("flag reads slower than the clock still land", async () => {
     flagRefresh.ms = before;
   }
 }, 15_000);
+
+test("a quiet flagged row is still read while other rows keep re-sorting the list", async () => {
+  const before = flagRefresh.ms;
+  flagRefresh.ms = 400;
+  rows = [
+    { ...ROW, id: "41", contact: { name: "Quieta" } },
+    { ...ROW, id: "42", contact: { name: "Ativa" } },
+    { ...ROW, id: "43", contact: { name: "Outra" } },
+  ];
+  pendingByConversation = { "41": [WAITING], "42": [WAITING], "43": [WAITING] };
+  render(
+    withI18n(
+      <MemoryRouter initialEntries={["/conversations"]}>
+        <TooltipPrimitive.Provider>
+          <ToastProvider>
+            <ConversationsPage />
+          </ToastProvider>
+        </TooltipPrimitive.Provider>
+      </MemoryRouter>,
+    ),
+  );
+  await waitFor(() =>
+    expect(screen.getAllByText("Document awaiting approval")).toHaveLength(3),
+  );
+  // The quiet one is decided with no event; the other two keep swapping places, faster than the clock.
+  pendingByConversation["41"] = [];
+  let t = Date.parse("2026-10-04T13:00:00.000Z");
+  const churn = setInterval(() => {
+    t += 1000;
+    handlers.onConversation?.({
+      conversationId: t % 2000 === 0 ? "42" : "43",
+      status: "pending",
+      assigneeId: null,
+      assigneeType: null,
+      lastEventAt: new Date(t).toISOString(),
+    });
+  }, 25);
+  try {
+    await waitFor(
+      () =>
+        expect(screen.getAllByText("Document awaiting approval")).toHaveLength(
+          2,
+        ),
+      { timeout: 5000 },
+    );
+  } finally {
+    clearInterval(churn);
+    flagRefresh.ms = before;
+  }
+}, 10_000);

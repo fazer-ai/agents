@@ -362,19 +362,22 @@ export function ConversationsPage() {
 
   // A flagged row is also read again on a slow clock: a decision does not always leave an event (no
   // bot left to write the note), and the flag must not outlive the request it stands for.
-  const flagged = conversations
+  // The clock runs while anything is flagged and reads which rows are through a ref: tied to the list
+  // itself, every live event that re-sorts it would restart the clock before it ever fired.
+  const flaggedIds = useRef<string[]>([]);
+  flaggedIds.current = conversations
     .filter((c) => c.awaitingApproval)
-    .map((c) => c.id)
-    .join(",");
+    .map((c) => c.id);
+  const anyFlagged = flaggedIds.current.length > 0;
   useEffect(() => {
-    if (!flagged) return;
+    if (!anyFlagged) return;
     const timer = setInterval(() => {
-      for (const id of flagged.split(",")) {
+      for (const id of flaggedIds.current) {
         if (!flagInFlight.current.has(id)) void refreshAwaitingApproval(id);
       }
     }, flagRefresh.ms);
     return () => clearInterval(timer);
-  }, [flagged, refreshAwaitingApproval]);
+  }, [anyFlagged, refreshAwaitingApproval]);
 
   // Live updates on the active tenant's channel. Known rows merge in place (and
   // re-sort by recency); an unknown id (a brand-new conversation) triggers a

@@ -659,6 +659,7 @@ async function runRecovery(params: {
         chatwootInboxId: true,
         name: true,
         agentId: true,
+        channelType: true,
         // When THIS binding was made. A role the row never stated cannot be read off a binding
         // younger than the delivery; see the refusal below.
         responderBoundAt: true,
@@ -974,7 +975,14 @@ async function runRecovery(params: {
   if (
     row.event === TURN_BEARING_EVENT &&
     params.now.getTime() - sentAt * 1000 >
-      recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
+      recoveryAgeCeilingMs(
+        row,
+        // A mirror row with no inbox was repaired above to the route's, so that is the channel the
+        // hand-over will read. A conversation the mirror never learned has nothing to hand over.
+        conv === null
+          ? null
+          : (conv.inbox?.channelType ?? inbox?.channelType ?? null),
+      )
   ) {
     return "unrecoverable";
   }

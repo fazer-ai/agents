@@ -19,6 +19,9 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   modelNoEndpoint: "blocking",
   // An endpoint that is stated and undialable: every request goes to an address nothing answers.
   modelBadEndpoint: "blocking",
+  // A decisions observer without its classifier key decides nothing, as a language-model watcher
+  // without its model observes nothing.
+  decisions: "blocking",
   // Fail-open: the analysis is skipped and every message is delivered as if it had been screened.
   guardrails: "blocking",
   // The same consequence, observed rather than deduced: those turns already went out unscreened.
@@ -39,8 +42,6 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   // The one override whose whole purpose is the day the primary fails.
   modelFallback: "degraded",
   vision: "degraded",
-  // An observer answers nobody; a decisions observer without its key decides nothing.
-  decisions: "degraded",
   // Documents are in the base and unsearchable until somebody indexes them.
   knowledge: "degraded",
   // The prerequisite for the line above: indexing cannot run at all.

@@ -1,5 +1,5 @@
-// The text the Tools tab writes for a model to read: transfer instructions, funnel guidance, usage
-// guidance. An agent on questions and rules has no model to read it and does not draw these fields,
+// What the Tools tab sets for a model: transfer instructions, funnel guidance, usage guidance, and the
+// summary a model writes before a handoff. An agent on questions and rules has no model to read it and does not draw these fields,
 // so its Tools save writes them as stored, and an edit made before the switch stays pending for a
 // switch back, like the instructions and the chat model on General.
 export interface ToolGuidance {
@@ -8,6 +8,7 @@ export interface ToolGuidance {
   customAttributeInstructions: string;
   labelInstructions: string;
   updateKanbanTaskInstructions: string;
+  transferWithSummary: boolean;
 }
 
 // What a Tools save writes: the form's guidance, or the stored one when `stored` is given (the

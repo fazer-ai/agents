@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
+import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import type { CrossInboxCaseState } from "./CrossInboxCaseFields";
 import type { ResolveConversationState } from "./ResolveConversationFields";
 import { SectionNav } from "./SectionNav";
@@ -156,11 +157,16 @@ export function ToolsTab({
     nativeGrant
       ? (nativeGrant.enabledTools ?? [])
       : catalog.native.map((n) => n.name)
-  ).filter((n) => offeredNative.has(n));
+  )
+    .filter((n) => offeredNative.has(n))
+    .filter(
+      (n) =>
+        !decides || (DECISION_ACTION_TOOLS as readonly string[]).includes(n),
+    );
 
   // Section index for the Tools tab: mirrors the section ids set on ToolGrantsEditor's
   // blocks + the capability map below.
-  const sections = [
+  const allSections = [
     {
       id: "tools-http",
       icon: Webhook,
@@ -203,6 +209,12 @@ export function ToolsTab({
       label: t("editor.tools.preconditions", "Preconditions"),
     },
   ];
+  // Questions and rules draw only the native tools and their preconditions.
+  const sections = decides
+    ? allSections.filter(
+        (sec) => sec.id === "tools-native" || sec.id === "tools-preconditions",
+      )
+    : allSections;
 
   return (
     <div className="flex grow flex-col gap-4">
@@ -255,6 +267,7 @@ export function ToolsTab({
             rows={toolPreconditions}
             onChange={setToolPreconditions}
             grantedNativeTools={grantedNativeTools}
+            decides={decides}
           />
         </div>
       </div>

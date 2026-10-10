@@ -13,6 +13,7 @@ const STORED: ToolGuidance = {
   customAttributeInstructions: "",
   labelInstructions: "uma etiqueta por assunto",
   updateKanbanTaskInstructions: "",
+  transferWithSummary: true,
 };
 const EDITED: ToolGuidance = {
   ...STORED,
@@ -30,4 +31,12 @@ describe("the guidance a Tools save writes", () => {
     expect(guidanceToSave(EDITED, null)).toEqual(EDITED);
     expect(guidanceDraftHidden(EDITED, null)).toBe(false);
   });
+});
+
+// The summary before a handoff is a model's too: switched off before the engine changed, it stays a
+// draft rather than being saved unseen.
+test("the summary switch is a hidden draft on questions and rules", () => {
+  const off = { ...STORED, transferWithSummary: false };
+  expect(guidanceToSave(off, STORED).transferWithSummary).toBe(true);
+  expect(guidanceDraftHidden(off, STORED)).toBe(true);
 });

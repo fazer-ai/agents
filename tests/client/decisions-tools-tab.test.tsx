@@ -45,7 +45,11 @@ const CATALOG = {
   documentTemplates: [],
 };
 
-function renderEditor(decides: boolean) {
+function renderEditor(
+  decides: boolean,
+  handoffMode = "pinned",
+  transferWithSummary = false,
+) {
   const noop = () => undefined;
   return render(
     <MemoryRouter>
@@ -80,10 +84,10 @@ function renderEditor(decides: boolean) {
               }
               onChange={noop}
               onCatalogChange={noop}
-              transferWithSummary={false}
+              transferWithSummary={transferWithSummary}
               setTransferWithSummary={noop}
               handoff={{
-                mode: "pinned",
+                mode: handoffMode,
                 target: "",
                 targetInstanceId: null,
                 instructions: "",
@@ -201,4 +205,48 @@ test("each tool a rule can fire has its card's anchor, with a control to focus",
     expect(card?.hasAttribute("data-focus-control"), tool).toBe(true);
     expect(focusableIn(card)?.getAttribute("role"), tool).toBe("checkbox");
   }
+});
+
+// The list is what a rule can run: the four natives a rule names. The rest of the catalog (HTTP,
+// code, MCP, integrations, the natives of an agent that answers) is not drawn, and nothing about
+// the tools is written for a model to read.
+test("on questions and rules, only what a rule can run is listed", async () => {
+  stubAuth();
+  renderEditor(true);
+  const text = await openSettings();
+  for (const id of [
+    "tools-http",
+    "tools-code",
+    "tools-mcp",
+    "tools-integrations",
+  ]) {
+    expect(document.getElementById(id) === null, id).toBe(true);
+  }
+  expect(text.includes("Skip reply")).toBe(false);
+  expect(text.includes("Move kanban card")).toBe(false);
+  expect(
+    document.getElementById(nativeToolAnchor("private_note")) === null,
+  ).toBe(false);
+  expect(text.includes("provided automatically")).toBe(false);
+  // No summary written before the handoff: that is a model's.
+  expect(text.includes("private summary before handing off")).toBe(false);
+});
+
+test("on the language model, the catalog and the summary switch are there", async () => {
+  stubAuth();
+  renderEditor(false);
+  const text = await openSettings();
+  expect(document.getElementById("tools-http") === null).toBe(false);
+  expect(text.includes("Skip reply")).toBe(true);
+  expect(text.includes("private summary before handing off")).toBe(true);
+});
+
+// "Let the AI choose" has no AI to choose on this engine: not offered, and a stored one is a problem
+// that says what to do.
+test("a handoff stored as the AI's choice is a problem with the way out", async () => {
+  stubAuth();
+  renderEditor(true, "agent_choice");
+  const text = await openSettings();
+  expect(text.includes("no model to choose")).toBe(true);
+  expect(text.includes("Chatwoot routing")).toBe(true);
 });

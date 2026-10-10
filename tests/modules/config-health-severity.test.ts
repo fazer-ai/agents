@@ -28,7 +28,9 @@ const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   suggestionReviewModel: "degraded",
   modelFallback: "degraded",
   vision: "degraded",
-  decisions: "degraded",
+  // A decisions observer without its classifier key decides nothing at all: the same as a language
+  // model watcher without its model.
+  decisions: "blocking",
   knowledge: "degraded",
   embedding: "degraded",
   redirect: "degraded",

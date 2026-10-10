@@ -470,6 +470,7 @@ function guidanceOf(b: ReturnType<typeof readBehaviorState>): ToolGuidance {
     customAttributeInstructions: b.customAttributeInstructions,
     labelInstructions: b.labelInstructions,
     updateKanbanTaskInstructions: b.updateKanbanTaskInstructions,
+    transferWithSummary: b.transferWithSummary,
   };
 }
 
@@ -1540,7 +1541,7 @@ function AgentEditor() {
   // form's guidance as edited (./toolGuidance).
   const syncToolConfig = useCallback((a: Agent, keepGuidance = false) => {
     const b = readBehaviorState(a);
-    setTransferWithSummary(b.transferWithSummary);
+    if (!keepGuidance) setTransferWithSummary(b.transferWithSummary);
     setHandoff((prev) =>
       keepGuidance
         ? { ...b.handoff, instructions: prev.instructions }
@@ -2005,6 +2006,7 @@ function AgentEditor() {
     customAttributeInstructions,
     labelInstructions,
     updateKanbanTaskInstructions,
+    transferWithSummary,
   };
   const storedGuidance: ToolGuidance | null =
     decides && syncedForChat
@@ -2072,7 +2074,7 @@ function AgentEditor() {
     // the grant set, so they flag the Tools tab's unsaved-changes dot — not Behavior's.
     tools: JSON.stringify({
       grants: canonicalGrants(grants.filter((g) => g.source !== "RAG")),
-      transferWithSummary,
+      transferWithSummary: savedGuidance.transferWithSummary,
       handoff: { ...handoff, instructions: savedGuidance.handoffInstructions },
       kanbanInstructions: savedGuidance.kanbanInstructions,
       customAttributeInstructions: savedGuidance.customAttributeInstructions,
@@ -3491,7 +3493,7 @@ function AgentEditor() {
       if (afterGrants) loadedUpdatedAtRef.current = afterGrants;
       const patchExpected = force ? undefined : afterGrants;
       const agentRes = await api.api.v1.agents({ id }).patch({
-        transferWithSummary,
+        transferWithSummary: savedGuidance.transferWithSummary,
         settings: toolsSettings,
         ...(patchExpected ? { expectedUpdatedAt: patchExpected } : {}),
         ...replaceFor(force),

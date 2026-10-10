@@ -20,12 +20,15 @@ interface Props {
   // Native tools this agent actually has. A precondition on a tool the agent was not granted is
   // inert, so it is not offered.
   grantedNativeTools: string[];
+  // Questions and rules: a refused tool is a rule's action that does not run, and no model is told.
+  decides?: boolean;
 }
 
 export function ToolPreconditionsEditor({
   rows,
   onChange,
   grantedNativeTools,
+  decides = false,
 }: Props) {
   const { t } = useTranslation();
   const patch = (i: number, next: Partial<ToolPreconditionRow>) =>
@@ -53,10 +56,17 @@ export function ToolPreconditionsEditor({
             {t("editor.toolPreconditions.title", "Tool preconditions")}
           </span>
         }
-        description={t(
-          "editor.toolPreconditions.description",
-          "Block a tool until a conversation or contact attribute holds a value. The agent is told why and continues the conversation; nothing is said to the customer.",
-        )}
+        description={
+          decides
+            ? t(
+                "editor.toolPreconditions.descriptionDecisions",
+                "Block a tool until a conversation or contact attribute holds a value. The rule's action does not run and the refusal is recorded in the logs; nothing is said to the customer.",
+              )
+            : t(
+                "editor.toolPreconditions.description",
+                "Block a tool until a conversation or contact attribute holds a value. The agent is told why and continues the conversation; nothing is said to the customer.",
+              )
+        }
       >
         <div className="flex flex-col gap-2">
           {rows.map((row, i) => (

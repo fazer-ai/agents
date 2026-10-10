@@ -135,6 +135,8 @@ export async function mirrorChatwootEvent(
     assigneeId: n.assigneeId ?? null,
     redirectOriginStated: n.redirectOriginDisplayId !== undefined,
     redirectOriginCleared: n.redirectOriginDisplayId === null,
+    kanbanCardId: n.kanbanCardId ?? null,
+    kanbanCardAt: n.kanbanCardAt ?? null,
     // The event that exists only for a status transition says so by its name: the fork dispatches it
     // after commit, when the model's own change record is already gone, so it carries no
     // `changed_attributes`. A holder change has no event of its own and says so in that list.
@@ -234,6 +236,9 @@ export async function mirrorChatwootEvent(
             chatwootCreatedAt: true,
             chatwootFirstReplyAt: true,
             chatwootRedirectOriginAt: true,
+            chatwootFactsAt: true,
+            chatwootKanbanCardId: true,
+            chatwootKanbanCardAt: true,
             // Read for the stale branch, which advances this watermark only when the payload really is
             // ahead of it. See the write there.
             lastInboundAt: true,
@@ -275,6 +280,9 @@ export async function mirrorChatwootEvent(
                 statusClaimFrom: existing.statusClaimFrom,
                 statusClaimStampedAt: existing.statusClaimStampedAt,
                 statusClaimRefusedAt: existing.statusClaimRefusedAt,
+                factsAt: existing.chatwootFactsAt,
+                kanbanCardId: existing.chatwootKanbanCardId,
+                kanbanCardAt: existing.chatwootKanbanCardAt,
               }
             : null,
           now,
@@ -470,6 +478,7 @@ export async function mirrorChatwootEvent(
               chatwootOwnershipChangedAt: decision.ownershipChangedAt,
               chatwootAssigneeAt: decision.assigneeAt,
               chatwootRedirectOriginAt: decision.redirectOriginAt,
+              chatwootFactsAt: decision.factsAt,
               lastInboundAt: inboundAt,
               lastInboundMessageId: inboundId,
               // A row created mid-dialogue needs no special case here: what it stores is what
@@ -486,6 +495,8 @@ export async function mirrorChatwootEvent(
                 ? {
                     kanbanAttributes:
                       n.kanbanAttributes as Prisma.InputJsonValue,
+                    chatwootKanbanCardId: n.kanbanCardId ?? null,
+                    chatwootKanbanCardAt: n.kanbanCardAt ?? null,
                   }
                 : {}),
               ...(n.conversationType
@@ -584,9 +595,16 @@ export async function mirrorChatwootEvent(
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
                 }
               : {}),
-            ...(factsUpdate && n.kanbanAttributes
+            ...(factsUpdate && decision.factsAt != null
+              ? { chatwootFactsAt: decision.factsAt }
+              : {}),
+            // The card's id and clock travel with its attributes, so the clock stored always
+            // describes the attributes stored.
+            ...(factsUpdate && decision.kanban && n.kanbanAttributes
               ? {
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
+                  chatwootKanbanCardId: n.kanbanCardId ?? null,
+                  chatwootKanbanCardAt: n.kanbanCardAt ?? null,
                 }
               : {}),
             ...(factsUpdate && n.conversationType

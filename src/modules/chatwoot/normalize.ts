@@ -285,6 +285,14 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
+  if (kanbanTask) {
+    normalized.kanbanCardId = num(kanbanTask.id);
+    const cardAt =
+      typeof kanbanTask.updated_at === "string"
+        ? Date.parse(kanbanTask.updated_at)
+        : Number.NaN;
+    normalized.kanbanCardAt = Number.isFinite(cardAt) ? cardAt / 1000 : null;
+  }
   // NOTE: the fork's `group_type`, read by the contact gate's rule. A value outside the two types says
   // nothing rather than something wrong: absent leaves the stored value alone. The label list is read
   // above, once, for the dashboard and the gate alike.

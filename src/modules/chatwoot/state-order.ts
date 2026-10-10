@@ -2,7 +2,7 @@
  * Ordering rules for the conversation state the mirror keeps in sync with Chatwoot. Pure: no DB, no
  * clock. `mirrorChatwootEvent` collects the facts, calls this once and writes what it is told, so
  * the reasoning is a decision table (`tests/modules/chatwoot-state-order.test.ts`). The rule, why a
- * message snapshot moves no state, the reopen exception and why there are three marks:
+ * message snapshot moves no state, the reopen exception and why each field has its own mark:
  * docs/chatwoot.md, "Conversation state ordering".
  */
 
@@ -57,6 +57,13 @@ export interface StatePayload {
    * `redirectOriginAnswers` below.
    */
   redirectOriginCleared: boolean;
+  /** The linked kanban card's id, null when the payload names no card. */
+  kanbanCardId: number | null;
+  /**
+   * The card's own `updated_at`, in unix seconds. Editing a card writes the card and not the
+   * conversation, so this is the only clock that orders two states of one card under one version.
+   */
+  kanbanCardAt: number | null;
 }
 
 /** The ordering state already stored for this conversation. Null when there is no row yet. */
@@ -88,6 +95,11 @@ export interface StateRow {
   statusClaimFrom: string | null;
   statusClaimStampedAt: number | null;
   statusClaimRefusedAt: number | null;
+  /** The facts mark (see `factsAt` on the decision). */
+  factsAt: number | null;
+  /** The card whose attributes are stored, and its clock as of them. */
+  kanbanCardId: number | null;
+  kanbanCardAt: number | null;
 }
 
 export interface StateDecision {
@@ -105,13 +117,25 @@ export interface StateDecision {
   assignee: boolean;
   /**
    * Whether the payload's UNVERSIONED fields may be written: the relations (contact, contact inbox,
-   * inbox) and the attribute bags, which every payload carries, keeping the agent's attribute context
-   * current without an extra API call. They need a recency fence: a conversation event can win on
-   * version alone, and one with an older `last_activity_at` would roll a bag back (a Kanban card
-   * jumping back a column) or restore a relation a contact merge moved (and the graph's thread key
-   * is built from the contact inbox). Behind on this axis: state ruling kept, these fields silent.
+   * inbox) and the attribute bags, which every payload carries. They need a recency fence: a
+   * conversation event can win on version alone, and one with an older `last_activity_at` would roll
+   * a bag back (a Kanban card jumping back a column) or restore a relation a contact merge moved (the
+   * graph's thread key is built from the contact inbox). Behind on this axis, or on the `factsAt`
+   * mark inside one second: state ruling kept, these fields silent.
    */
   unversioned: boolean;
+  /**
+   * Version to stamp on the FACTS mark, or null to leave it: the version of the newest payload whose
+   * unversioned fields were written. `last_activity_at` does not move on a label, attribute or
+   * `group_type` write while `updated_at` does, so a snapshot behind this mark is older than the facts
+   * stored even when it shares their second.
+   */
+  factsAt: number | null;
+  /**
+   * Whether the payload's kanban card attributes may be written: the facts rule, plus the card's own
+   * clock when the conversation version is the same and so is the card.
+   */
+  kanban: boolean;
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
   /**
@@ -217,6 +241,8 @@ export function decideConversationWrites(
           : null,
       statusClaimRefusedAt: null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
+      factsAt: payload.version,
+      kanban: true,
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
       activityAt: eventAt,
@@ -276,6 +302,8 @@ export function decideConversationWrites(
       ownershipChangedAt: lateChangeAt,
       statusClaimRefusedAt: null,
       assigneeAt: null,
+      factsAt: null,
+      kanban: false,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
         redirectOriginAnswers && !olderThanRedirectOrigin
@@ -358,11 +386,32 @@ export function decideConversationWrites(
   // stamps nothing: with no key to order by, the last write wins.
   const redirectOrigin = redirectOriginAnswers && !olderThanRedirectOrigin;
 
+  const unversioned =
+    (row.activityAt == null || eventAt >= row.activityAt) &&
+    !(
+      payload.version != null &&
+      row.factsAt != null &&
+      payload.version < row.factsAt
+    );
+  // At an equal version the facts on the conversation row agree by construction, the card does not:
+  // its edits move only its own clock, and linking a card moves neither, so a different card at the
+  // same version has nothing to be ordered by and is written.
+  const olderCardState =
+    payload.version != null &&
+    payload.version === row.factsAt &&
+    payload.kanbanCardId != null &&
+    payload.kanbanCardId === row.kanbanCardId &&
+    payload.kanbanCardAt != null &&
+    row.kanbanCardAt != null &&
+    payload.kanbanCardAt < row.kanbanCardAt;
+
   return {
     stale: false,
     status,
     assignee,
-    unversioned: row.activityAt == null || eventAt >= row.activityAt,
+    unversioned,
+    factsAt: unversioned ? advances(row.factsAt) : null,
+    kanban: unversioned && !olderCardState,
     statusAt: status != null ? advances(row.statusAt) : null,
     ownershipChangedAt:
       (status != null &&

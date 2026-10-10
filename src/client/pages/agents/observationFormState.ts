@@ -235,7 +235,7 @@ export function timingOf(form: ObservationState): string {
 }
 
 export function decisionsHeadOf(form: ObservationState): string {
-  // NOTE: Of the block the save would WRITE, not of the form: a draft left behind the language
+  // Of the block the save would WRITE, not of the form: a draft left behind the language
   // model that could not run is not written, so switching back leaves nothing unsaved.
   const d = decisionsBlockToStore(form);
   return JSON.stringify({

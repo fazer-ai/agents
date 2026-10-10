@@ -26,23 +26,24 @@ export function watcherTabKeys(engine: MonitoringEngine): ReadonlySet<string> {
   return engine === "decisions" ? DECISIONS_WATCHER_TABS : LLM_WATCHER_TABS;
 }
 
-// The Behavior sections only the language model uses: conversation memory is compacted by a chat
-// model, and the backup provider stands in for one. A decisions watcher has neither, so neither is
-// drawn for it, and their warnings point nowhere.
+// The sections only one engine draws: memory is compacted by a chat model, the backup provider
+// stands in for one, and General's Model card configures it; the Classifier card is the decisions
+// engine's. Asked of the engine AS EDITED, so a warning never links to a card the switch replaced.
 const CHAT_MODEL_SECTIONS: ReadonlySet<string> = new Set([
   "memory",
   "modelFallback",
+  "general-model",
 ]);
+const DECISIONS_SECTIONS: ReadonlySet<string> = new Set(["general-classifier"]);
 
 export function watcherSectionUsed(
   engine: MonitoringEngine,
   sectionId: string | undefined,
 ): boolean {
-  return (
-    engine !== "decisions" ||
-    sectionId === undefined ||
-    !CHAT_MODEL_SECTIONS.has(sectionId)
-  );
+  if (sectionId === undefined) return true;
+  return engine === "decisions"
+    ? !CHAT_MODEL_SECTIONS.has(sectionId)
+    : !DECISIONS_SECTIONS.has(sectionId);
 }
 
 // The warnings with no tab of their own that are about knowledge bases (a base to index, the

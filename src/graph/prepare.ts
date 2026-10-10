@@ -511,7 +511,7 @@ export async function loadAgentConfig(
   const effModelConfig = ov?.modelConfig ?? agent.modelConfig;
   const effSettings = (ov?.settings ?? agent.settings) as typeof agent.settings;
   const parsedModel = modelConfigSchema.safeParse(effModelConfig);
-  // NOTE: the default stands in only as a name for the lines; it has no key, so nothing can call it.
+  // The default stands in only as a name for the lines; it has no key, so nothing can call it.
   const mc: ModelConfig =
     opts.chatModelUnused && !parsedModel.success
       ? { ...DEFAULT_MODEL_CONFIG }

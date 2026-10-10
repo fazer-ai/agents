@@ -270,6 +270,14 @@ describe("what a watcher on questions and rules does not draw", () => {
     }
   });
 
+  test("General's Model card on questions and rules, and its Classifier on the language model", () => {
+    expect(watcherSectionUsed("decisions", "general-model")).toBe(false);
+    expect(watcherSectionUsed("decisions", "general-classifier")).toBe(true);
+    expect(watcherSectionUsed("llm", "general-classifier")).toBe(false);
+    expect(watcherSectionUsed("llm", "general-model")).toBe(true);
+    expect(watcherSectionUsed("llm", "general-engine")).toBe(true);
+  });
+
   test("warnings about knowledge bases, which it never searches", () => {
     for (const key of ["knowledge", "embedding"]) {
       expect(watcherIssueUsed("decisions", key)).toBe(false);

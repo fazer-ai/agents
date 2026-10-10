@@ -1640,6 +1640,7 @@
     "engineLlm": "Modelo de linguagem",
     "engineLlmHint": "Lê a conversa com as suas instruções e age com as ferramentas. Flexível; leva alguns segundos e custa mais por mensagem.",
     "engineMissing": "Para salvar: {{items}}.",
+    "engineMissingBody_zero": "corrija {{count}} problemas em Perguntas e regras",
     "engineMissingBody_one": "corrija {{count}} problema em Perguntas e regras",
     "engineMissingBody_many": "corrija {{count}} problemas em Perguntas e regras",
     "engineMissingBody_other": "corrija {{count}} problemas em Perguntas e regras",

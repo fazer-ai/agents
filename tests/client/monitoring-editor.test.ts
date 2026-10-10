@@ -344,3 +344,24 @@ describe("the Channels tab of a watcher", () => {
     );
   });
 });
+
+// A composite save stops at the first write that did not land: the next one would replace the
+// conflict retry, and "save anyway" would then drop what the first one carried.
+describe("General's save of identity and decision setup", () => {
+  test("stops when the identity save is refused or conflicts", () => {
+    const flat = EDITOR.replace(/\s+/g, " ");
+    expect(flat).toContain(
+      'async function saveAgent( patch: Record<string, unknown>, section: "general" | "behavior", force = false, ): Promise<boolean>',
+    );
+    expect(flat).toContain(
+      "if (!ok) return false; } return dirty.decisions ? saveDecisions() : true;",
+    );
+    expect(flat).toContain("if (!(await saveGeneral())) return false;");
+  });
+
+  test("a saved setup answers every refusal about the block, the classifier's included", () => {
+    expect(EDITOR).toContain(
+      "if (now.field && DECISIONS_REFUSAL_FIELD.test(now.field)) now.clear();",
+    );
+  });
+});

@@ -18,10 +18,16 @@ const ROOT = new URL("../..", import.meta.url).pathname;
 // committed, and borrows the repository's node_modules for Biome.
 let repo = "";
 
+// Run from a pre-commit hook, git exports GIT_DIR, GIT_INDEX_FILE and the like, absolute in a linked
+// worktree, and they win over `cwd`: inherited, every command below would act on the real repository.
+const env = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+);
+
 function git(...args: string[]) {
   const out = Bun.spawnSync(
     ["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args],
-    { cwd: repo },
+    { cwd: repo, env },
   );
   if (out.exitCode !== 0) throw new Error(out.stderr.toString());
   return out.stdout.toString();
@@ -32,10 +38,10 @@ function write(path: string, body: string) {
   writeFileSync(join(repo, path), body);
 }
 
-function hook(env: Record<string, string> = {}) {
+function hook(extra: Record<string, string> = {}) {
   const out = Bun.spawnSync(["sh", "scripts/check-staged.sh"], {
     cwd: repo,
-    env: { ...process.env, CHECK_STAGED_LINT_ONLY: "1", ...env },
+    env: { ...env, CHECK_STAGED_LINT_ONLY: "1", ...extra },
   });
   return {
     code: out.exitCode,
@@ -169,6 +175,7 @@ describe("the lint step", () => {
 function blob(body: string): string {
   const out = Bun.spawnSync(["git", "hash-object", "-w", "--stdin"], {
     cwd: repo,
+    env,
     stdin: new TextEncoder().encode(body),
   });
   return out.stdout.toString().trim();

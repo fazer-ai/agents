@@ -147,6 +147,14 @@ describe("storage the browser refuses", () => {
     });
   });
 
+  test("a blocked tab store with a shared default reads the default and pins nothing", () => {
+    localStorage.setItem(KEY, "3");
+    const l = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    withStores({ get: blocked }, l ?? {}, () => {
+      expect(getActiveTenantId()).toBe("3");
+    });
+  });
+
   test("a tab store that refuses the pin fails loudly instead of following the shared default", () => {
     const tabRefusingWrites = {
       getItem: () => null,

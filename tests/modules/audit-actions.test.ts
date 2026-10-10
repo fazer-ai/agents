@@ -3,13 +3,41 @@ import {
   AUDIT_ACTIONS,
   canonicalAuditAction,
   FLEET_LEVEL_ACTIONS,
+  isFleetLevelAction,
   RENAMED_AUDIT_ACTIONS,
 } from "@/lib/audit/actions";
 import { withoutComments } from "@/tests/utils/source-text";
 
 // The console's action filter offers a constant list (see AUDIT_ACTIONS), worth offering only while
-// it agrees with the code that writes the rows. A MISSING name is a type error (`AuditEntry.action` is
-// `AuditAction`); an EXTRA one no type can see, and the sweep below asks for it.
+// it agrees with the code that writes the rows: MISSING and EXTRA below are the two directions.
+
+// The whole value expression after `action:`, up to the comma or brace that ends the property, so
+// `cond ? "company_logo.clear" : "company_logo.set"` yields both literals. Depth- and string-aware
+// for nested calls, objects and commas inside templates. A name computed from a variable
+// contributes nothing, and the entry it needs shows up as `extra` on the list.
+function actionValue(code: string, from: number): string {
+  let depth = 0;
+  let quote: string | null = null;
+  let i = from;
+  for (; i < code.length; i++) {
+    const ch = code[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0) break;
+      depth--;
+    } else if (ch === "," && depth === 0) break;
+  }
+  return code.slice(from, i);
+}
 
 function literalsIn(expr: string): string[] {
   return [...expr.matchAll(/"([a-z_]+\.[a-z_]+)"/g)].map((m) => m[1] as string);
@@ -30,6 +58,27 @@ async function producerSources(): Promise<string[]> {
 }
 
 describe("the audit action vocabulary", () => {
+  // MISSING: a family adds `channel.foo` and the operator cannot pick it. The type is the real
+  // fence (`AuditEntry.action` is `AuditAction`); this costs one sweep and fails with the NAME
+  // rather than with a union of ninety alternatives.
+  test("every action the code writes is on the list", async () => {
+    const written = new Set<string>();
+    for (const code of await producerSources()) {
+      for (const m of code.matchAll(/\baction:/g)) {
+        for (const name of literalsIn(
+          actionValue(code, m.index + m[0].length),
+        )) {
+          written.add(name);
+        }
+      }
+    }
+    // Worthless if it matched nothing, which is what a rename of the `action:` field would do to it.
+    expect(written.size).toBeGreaterThan(50);
+    expect(
+      [...written].filter((a) => !AUDIT_ACTIONS.includes(a as never)),
+    ).toEqual([]);
+  });
+
   // EXTRA: a producer is deleted or renamed and its name stays on the list, so an operator picks a
   // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
   // THIS: a union member nobody constructs is not an error anywhere. Asked as PRESENCE, not by
@@ -139,6 +188,16 @@ describe("which actions belong to no tenant", () => {
       (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
     );
     expect(unknown).toEqual([]);
+  });
+
+  // The two that write both ways: naming them is what keeps a future edit from "simplifying" the
+  // sweep into one that cannot tell them apart.
+  test("an action written both ways is not fleet-only", async () => {
+    const { fleet, tenant } = await sweep();
+    for (const a of ["api_key.create", "api_key.revoke"]) {
+      expect([fleet.has(a), tenant.has(a)]).toEqual([true, true]);
+      expect(isFleetLevelAction(a)).toBe(false);
+    }
   });
 });
 

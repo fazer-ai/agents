@@ -164,6 +164,8 @@ async function deliverCustomerMessage(params: {
   // The message body. Blank (with no attachment) is a message that renders to nothing for the agent,
   // which the turn skips before any billed call.
   content?: string;
+  // An email's Subject header, which the mailbox writes into `content_attributes.email`.
+  subject?: string;
   // A Prisma client that misbehaves in a named way, for the tests about what a gate does when a read
   // it depends on cannot answer.
   base?: PrismaClient;
@@ -175,6 +177,9 @@ async function deliverCustomerMessage(params: {
     content: params.content ?? "oi, preciso de ajuda",
     message_type: "incoming",
     private: false,
+    ...(params.subject
+      ? { content_attributes: { email: { subject: params.subject } } }
+      : {}),
     conversation: {
       id: params.convId,
       inbox_id: INBOX,
@@ -761,6 +766,27 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(s.statusToggles.filter(([c]) => c === 9419)).toEqual([]);
     expect(s.notesOn(9419)).toEqual([]);
     expect(await ceilingRows(9419)).toEqual([]);
+  });
+
+  // The other side: an email whose whole request is its subject is a message the agent reads, so
+  // the gate refuses it like any other, rather than taking it for one that renders to nothing.
+  test("an email whose only words are its subject is refused like any other message", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxUsd: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9422);
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9422,
+      makeClient: s.makeClient,
+      content: "",
+      subject: "Reembolso do pedido",
+    });
+    expect(s.publicOn(9422).map((m) => m.content)).toEqual([OVER_COPY]);
+    expect(await ceilingRows(9422)).toHaveLength(1);
   });
 
   // NOTE: a probe that could not answer is not an agent that cannot run. The ceiling fails OPEN

@@ -8,6 +8,8 @@
 import { describe, expect, test } from "bun:test";
 import type { TFunction } from "i18next";
 import { flowStageLabel } from "@/client/lib/flowLabels";
+import en from "@/client/locales/en.json";
+import ptBR from "@/client/locales/pt-BR.json";
 import { FLOW_STAGES } from "@/modules/flowlog/stages";
 
 // Answers with the key it was asked for, so the label shows which catalog entry the stage reads.
@@ -19,6 +21,18 @@ describe("the stage labels", () => {
       (stage) => flowStageLabel(stage, keyOf) !== `logs.stage.${stage}`,
     );
     expect(unlabelled).toEqual([]);
+  });
+
+  // The other direction: a stage the vocabulary dropped keeps its label only while its copy stays in
+  // the catalogs, so every stage the catalogs carry copy for has to still be one.
+  test("no stage the catalogs carry copy for has left the vocabulary", () => {
+    const known = new Set<string>(FLOW_STAGES);
+    for (const catalog of [en, ptBR]) {
+      const stale = Object.keys(catalog.logs.stage).filter(
+        (stage) => !known.has(stage),
+      );
+      expect(stale).toEqual([]);
+    }
   });
 
   // The control: a slug outside the vocabulary is what `default` answers with, so the test above is

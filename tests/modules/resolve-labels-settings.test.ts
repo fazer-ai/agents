@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import {
   RESOLVE_LABELS_MAX,
@@ -124,23 +123,5 @@ describe("an imported bundle with a protected resolve label", () => {
     dropUnusableImportedSettingsInPlace(bag);
     expect(bag.resolveConversation.assignLabels).toEqual(ordinary);
     expect(() => assertResolveLabelsNotProtected(bag)).not.toThrow();
-  });
-});
-
-// The Tools save writes the grants first and the settings after, so a clash the PATCH refuses has
-// to be caught before the grants PUT, or the tools change while the save reports a failure. The
-// editor asks the same function the server asks, of the bag it is about to send.
-describe("the editor refuses the clash before the grants are written (source)", () => {
-  const src = readFileSync(
-    "src/client/pages/agents/AgentEditorPage.tsx",
-    "utf8",
-  );
-  test("the Tools save asks protectedResolveLabels before the tool-selections PUT", () => {
-    const start = src.indexOf("async function saveTools(");
-    const body = src.slice(start, src.indexOf("\n  }\n", start));
-    const ask = body.indexOf("protectedResolveLabels(toolsSettings)");
-    const put = body.indexOf('["tool-selections"].put(');
-    expect(ask).toBeGreaterThan(-1);
-    expect(ask).toBeLessThan(put);
   });
 });

@@ -18,8 +18,8 @@ import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 // This is also the family where the metadata and the thing that authenticates sit in adjacent
 // columns, so the split matters more than usual: `secret` is compared and never carried, `baseUrl`
 // is an operator-typed URL and reaches the row as its origin, and the fence in
-// `tests/modules/audit-config-families.test.ts` reads `prisma/schema.prisma` so a column added to
-// `VaultEntry` later has to be placed rather than forgotten.
+// `tests/modules/audit-config-families.test.ts` moves every `VaultEntry` column through the service,
+// so a column added later has to be placed rather than forgotten.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

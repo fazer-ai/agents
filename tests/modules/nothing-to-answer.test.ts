@@ -208,6 +208,18 @@ class Silent {
   }
 }
 
+// Answers, and keeps the text of every prompt it was handed.
+class Reads {
+  prompts: string[] = [];
+  async invoke(messages: unknown): Promise<AIMessage> {
+    this.prompts.push(JSON.stringify(messages));
+    return new AIMessage("Olá! Como posso ajudar?");
+  }
+  bindTools(_t: unknown) {
+    return { invoke: (m: unknown) => this.invoke(m) };
+  }
+}
+
 class NeverCalled {
   async invoke(): Promise<AIMessage> {
     throw new Error("nothing to answer must not reach the model");
@@ -283,7 +295,11 @@ async function flush(
   });
 }
 
-function event(convId: number, content: string): NormalizedChatwootEvent {
+function event(
+  convId: number,
+  content: string,
+  extra: { emailSubject?: string; inReplyTo?: number } = {},
+): NormalizedChatwootEvent {
   return {
     event: "message_created",
     conversationId: convId,
@@ -293,7 +309,13 @@ function event(convId: number, content: string): NormalizedChatwootEvent {
     assigneeId: OUR_BOT,
     assigneeName: null,
     contactInboxId: null,
-    message: { id: 2, content, messageType: "incoming", private: false },
+    message: {
+      id: 2,
+      content,
+      messageType: "incoming",
+      private: false,
+      ...extra,
+    },
   };
 }
 
@@ -301,15 +323,17 @@ async function direct(
   convId: number,
   cw: ReturnType<typeof chatwoot>,
   content = "",
+  opts: { emailSubject?: string; inReplyTo?: number; model?: unknown } = {},
 ) {
+  const { model, ...extra } = opts;
   return runAgentTurn({
     tenantId,
     instanceId,
     agentBotId: OUR_BOT,
-    event: event(convId, content),
+    event: event(convId, content, extra),
     base: appDb,
     deps: {
-      makeModel: () => new NeverCalled() as never,
+      makeModel: () => (model ?? new NeverCalled()) as never,
       makeClient: cw.makeClient as never,
       checkpointer: new MemorySaver(),
     },
@@ -671,6 +695,44 @@ describe.skipIf(!dbUp)(
         expect(await armedRow(convId)).toBeNull();
       },
     );
+
+    // An email whose whole request is its subject is a message: both paths hand the model the
+    // subject, and neither arms the close.
+    test("an email whose only words are its subject reaches the model on the flush", async () => {
+      await seedConversation(89_706);
+      const cw = chatwoot([{ id: 2, content: "", subject: "Reembolso" }]);
+      const model = new Reads();
+      await flush(89_706, cw, model);
+      expect(model.prompts.join("\n")).toContain(
+        "<assunto>Reembolso</assunto>",
+      );
+      expect(await armedRow(89_706)).toBeNull();
+    });
+
+    // The reply case carries a body too: a quote is only re-rendered over a message that renders on
+    // its own, and the re-render is where the subject could be left behind.
+    test("and on the direct turn, a reply to an earlier message included", async () => {
+      for (const [convId, content, inReplyTo] of [
+        [89_707, "", undefined],
+        [89_708, "segue o número", 1],
+      ] as const) {
+        await seedConversation(convId);
+        const cw = chatwoot([
+          { id: 1, content: "pedido 4417" },
+          { id: 2, content, subject: "Reembolso" },
+        ]);
+        const model = new Reads();
+        await direct(convId, cw, content, {
+          emailSubject: "Reembolso",
+          ...(inReplyTo ? { inReplyTo } : {}),
+          model,
+        });
+        expect(
+          `${convId}: ${model.prompts.join("\n").includes("<assunto>Reembolso</assunto>")}`,
+        ).toBe(`${convId}: true`);
+        expect(await armedRow(convId)).toBeNull();
+      }
+    });
 
     // ---- the job -------------------------------------------------------------------------------
 

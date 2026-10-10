@@ -3,7 +3,7 @@ import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
@@ -74,6 +74,7 @@ const CONV_REACTION = 9437;
 const CONV_RULE_REFUSED = 9438;
 const CONV_RULE_ALLOWED = 9439;
 const CONV_ENDPOINT_DENIED = 9440;
+const CONV_SUBJECT_ONLY = 9441;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
@@ -93,6 +94,8 @@ function page(
     senderId?: number;
     // Epoch seconds, as Chatwoot sends `created_at`.
     createdAt?: number;
+    // An email's Subject header, which the mailbox writes into `content_attributes.email`.
+    subject?: string;
   }>,
 ) {
   return {
@@ -102,6 +105,9 @@ function page(
       message_type: m.type ?? 0,
       private: false,
       ...(m.createdAt ? { created_at: m.createdAt } : {}),
+      ...(m.subject
+        ? { content_attributes: { email: { subject: m.subject } } }
+        : {}),
       ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
     })),
   };
@@ -324,6 +330,7 @@ describe.skipIf(!dbUp)(
       await seedConversation(CONV_CEILING_CLIENT, 94_320);
       await seedConversation(CONV_PAST_BOUND, 94_330);
       await seedConversation(CONV_REACTION, 94_370);
+      await seedConversation(CONV_SUBJECT_ONLY, 94_410);
       for (const [convId, type] of [
         [CONV_RULE_REFUSED, "individual"],
         [CONV_RULE_ALLOWED, "group"],
@@ -435,6 +442,45 @@ describe.skipIf(!dbUp)(
           [2, new Date(1_789_563_900 * 1000).toISOString()],
         ]);
         expect(await watermarkOf(CONV_OBSERVED)).toBe(2);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    // An email whose whole request is its subject is remembered as the subject, the text a turn
+    // would have read, and not dropped as a message with nothing in it.
+    test("an email whose only words are its subject is remembered as its subject", async () => {
+      const job = await claimedJob(CONV_SUBJECT_ONLY, 1);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "monitoring" },
+      });
+      const s = stub([page([{ id: 1, content: "", subject: "Reembolso" }])]);
+      try {
+        await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s.makeClient as never,
+          },
+        });
+        const row = await suDb.schedulerJob.findFirst({
+          where: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: { endsWith: "94410:1" },
+          },
+          select: { payloadSecret: true },
+        });
+        expect(
+          row?.payloadSecret ? decryptJson<string>(row.payloadSecret) : null,
+        ).toBe("<assunto>Reembolso</assunto>");
       } finally {
         await suDb.agent.update({
           where: { id: agentDbId },

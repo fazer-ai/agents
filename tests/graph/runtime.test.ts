@@ -1884,8 +1884,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
     });
-    // NOTE: Scoped to the conversation; `flowLogRow` settles the fire-and-forget writes first, so one
-    // read answers whether the row exists.
+    // Scoped to the conversation; `flowLogRow` settles the fire-and-forget writes first, so one read
+    // answers whether the row exists.
     const row = await flowLogRow(suDb, {
       where: { tenantId, stage: "handoff", conversationId: conversation.id },
       orderBy: { id: "desc" },

@@ -6,7 +6,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { PROACTIVE_LIMIT_WINDOW_MS } from "@/modules/proactive-limit/service";
+import {
+  confirmProactiveReservation,
+  PROACTIVE_LIMIT_WINDOW_MS,
+  reserveProactiveSend,
+} from "@/modules/proactive-limit/service";
+import { turnLimitVerdict } from "@/modules/turn-limit/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -39,6 +44,7 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let whatsappInboxDbId = 0n;
 let agentId = 0n;
 let integrationId = 0n;
 
@@ -88,18 +94,19 @@ async function setLimit(limit: number | undefined) {
 async function seedConv(
   convId: number,
   assigneeType: string | null = null,
+  inbox: { id: bigint; lastInboundAt: Date } | null = null,
 ): Promise<bigint> {
   const row = await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
-      inboxId: inboxDbId,
+      inboxId: inbox?.id ?? inboxDbId,
       chatwootConversationId: convId,
       status: assigneeType === "User" ? "open" : "pending",
       assigneeType,
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
-      lastInboundAt: new Date(),
+      lastInboundAt: inbox?.lastInboundAt ?? new Date(),
     },
     select: { id: true },
   });
@@ -139,9 +146,16 @@ function nudge(
     reply?: string;
     nudge?: AgentNudge;
     postActions?: { assignLabels?: string[]; resolve?: boolean };
+    base?: PrismaClient;
+    stillWanted?: () => Promise<boolean>;
+    requireLiveBotOwnership?: boolean;
+    getConversation?: (c: number) => Promise<unknown>;
   } = {},
 ) {
   const r = recorder();
+  if (opts.getConversation)
+    (r.client as unknown as Record<string, unknown>).getConversation =
+      opts.getConversation;
   return {
     r,
     run: runAgentNudge({
@@ -149,7 +163,9 @@ function nudge(
       threadId: `${tenantId}:${instanceId}:${convId}`,
       nudge: opts.nudge ?? event(),
       postActions: opts.postActions,
-      base: appDb,
+      stillWanted: opts.stillWanted,
+      requireLiveBotOwnership: opts.requireLiveBotOwnership,
+      base: opts.base ?? appDb,
       deps: {
         makeModel: () =>
           new FakeListChatModel({
@@ -223,6 +239,18 @@ describe.skipIf(!dbUp)("proactive limit", () => {
       },
     });
     inboxDbId = inbox.id;
+    const whatsapp = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 8,
+        name: "WhatsApp",
+        agentId: agent.id,
+        channelType: "Channel::Whatsapp",
+        provider: "whatsapp_cloud",
+      },
+    });
+    whatsappInboxDbId = whatsapp.id;
     const integration = await suDb.integrationInstance.create({
       data: { tenantId, catalogType: "GENERIC", name: "Integracao-A" },
       select: { id: true },
@@ -405,5 +433,103 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect(sent).toHaveLength(3);
     expect(outcomes.filter((o) => o === "messaged")).toHaveLength(3);
     expect(await proactiveRows(conv)).toBe(3);
+  });
+
+  test("a reservation the nudge has not sent yet is not a delivery the turn limit counts", async () => {
+    await setLimit(5);
+    const conv = await seedConv(5110);
+    const verdict = await reserveProactiveSend({
+      tenantId,
+      conversationDbId: conv,
+      limit: 5,
+      base: appDb,
+    });
+    if (verdict.over) throw new Error("expected a reservation");
+    const reactive = () =>
+      turnLimitVerdict({
+        tenantId,
+        conversationDbId: conv,
+        limit: 1,
+        base: appDb,
+      });
+    expect((await reactive()).over).toBe(false);
+    await confirmProactiveReservation({
+      tenantId,
+      reservationId: verdict.reservationId as bigint,
+      base: appDb,
+    });
+    expect((await reactive()).over).toBe(true);
+  });
+
+  test("outside the window with no template the event is still left as a note, whatever the count", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5111, null, {
+      id: whatsappInboxDbId,
+      lastInboundAt: new Date(Date.now() - 2 * PROACTIVE_LIMIT_WINDOW_MS),
+    });
+    await seedDeliveries(conv, true, 60_000);
+    const { r, run } = nudge(5111, {
+      nudge: { source: "followup", step: 2 },
+    });
+    expect(await run).toBe("noted-window");
+    expect(r.messages).toEqual([]);
+    expect(r.notes).toHaveLength(1);
+    expect(await limitLines(conv)).toEqual([]);
+  });
+
+  test("a person who takes the conversation during the count does not get the refused step's labels", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5112);
+    await seedDeliveries(conv, true, 60_000);
+    let counted = false;
+    const base = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            counted = true;
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const { r, run } = nudge(5112, {
+      nudge: { source: "followup", step: 2 },
+      postActions: { assignLabels: ["sem-resposta"] },
+      requireLiveBotOwnership: true,
+      base,
+      getConversation: async (c) =>
+        counted
+          ? { id: c, status: "open", meta: { assignee: { id: 5 } } }
+          : { id: c, status: "pending", meta: {} },
+    });
+    expect(await run).toBe("silent");
+    expect(r.messages).toEqual([]);
+    expect(r.labelSets).toEqual([]);
+  });
+
+  test("an occasion retired during the count takes no alert and writes no line", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5113);
+    await seedDeliveries(conv, true, 60_000);
+    let wanted = true;
+    const base = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            wanted = false;
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const { r, run } = nudge(5113, { base, stillWanted: async () => wanted });
+    expect(await run).toBe("stale");
+    expect(r.messages).toEqual([]);
+    expect(await limitLines(conv)).toEqual([]);
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv },
+      select: { proactiveLimitAlertedAt: true },
+    });
+    expect(row.proactiveLimitAlertedAt).toBeNull();
   });
 });

@@ -21,15 +21,10 @@ function sysCtx(tenantId: bigint): TenantContext {
 }
 
 export type ProactiveLimitVerdict =
-  // Under the limit: a row is reserved for this nudge, released if nothing reaches the customer.
+  // Under the limit: a pending row is reserved for this nudge, confirmed when its send reaches the
+  // customer and released otherwise.
   | { over: false; reservationId: bigint | null }
-  | {
-      over: true;
-      count: number;
-      limit: number;
-      // The first refusal since the last alert a day ago or more: the one line written at `error`.
-      alert: boolean;
-    };
+  | { over: true; count: number; limit: number };
 
 // Over when the proactive messages already delivered in the window reach the limit: the one about
 // to run would be one past it.
@@ -72,29 +67,14 @@ export async function reserveProactiveSend(params: {
                   tenantId: params.tenantId,
                   conversationId: params.conversationDbId,
                   proactive: true,
+                  pending: true,
                   deliveredAt: now,
                 },
                 select: { id: true },
               });
               return { over: false as const, reservationId: row.id };
             }
-            const conv = await db.conversation.findUnique({
-              where: { id: params.conversationDbId },
-              select: { proactiveLimitAlertedAt: true },
-            });
-            const last = conv?.proactiveLimitAlertedAt ?? null;
-            const alert = last === null || last <= windowStart;
-            if (alert)
-              await db.conversation.update({
-                where: { id: params.conversationDbId },
-                data: { proactiveLimitAlertedAt: now },
-              });
-            return {
-              over: true as const,
-              count,
-              limit: params.limit,
-              alert,
-            };
+            return { over: true as const, count, limit: params.limit };
           },
         ),
     );
@@ -104,6 +84,69 @@ export async function reserveProactiveSend(params: {
       "proactive limit: could not count the window, the send goes ahead",
     );
     return { over: false, reservationId: null };
+  }
+}
+
+// The reservation's send reached the customer: from here on it is a delivery the turn limit counts.
+// Best-effort like the delivery it stands for, since a throw would fail a nudge that already spoke.
+export async function confirmProactiveReservation(params: {
+  tenantId: bigint;
+  reservationId: bigint;
+  base?: PrismaClient;
+}): Promise<void> {
+  try {
+    await runScopedOn(
+      params.base ?? basePrisma,
+      sysCtx(params.tenantId),
+      (db) =>
+        db.agentTurnDelivery.updateMany({
+          where: { id: params.reservationId },
+          data: { pending: false, deliveredAt: new Date() },
+        }),
+    );
+  } catch (err) {
+    logger.warn(
+      { err, reservationId: String(params.reservationId) },
+      "proactive limit: could not confirm a reservation; the turn limit misses one delivery",
+    );
+  }
+}
+
+// Whether this refusal is the first since the last alert a day ago or more, claiming the window if
+// so. One conditional write, so two refusals at once cannot both page the alert channels. Asked
+// apart from the count, after the caller has confirmed the occasion is still wanted, so a retired
+// nudge never takes the alert a later real refusal needs. A failed write reports no alert.
+export async function claimProactiveAlert(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  base?: PrismaClient;
+  now?: Date;
+}): Promise<boolean> {
+  const now = params.now ?? new Date();
+  const windowStart = new Date(now.getTime() - PROACTIVE_LIMIT_WINDOW_MS);
+  try {
+    const { count } = await runScopedOn(
+      params.base ?? basePrisma,
+      sysCtx(params.tenantId),
+      (db) =>
+        db.conversation.updateMany({
+          where: {
+            id: params.conversationDbId,
+            OR: [
+              { proactiveLimitAlertedAt: null },
+              { proactiveLimitAlertedAt: { lte: windowStart } },
+            ],
+          },
+          data: { proactiveLimitAlertedAt: now },
+        }),
+    );
+    return count === 1;
+  } catch (err) {
+    logger.warn(
+      { err, conversationDbId: String(params.conversationDbId) },
+      "proactive limit: could not claim the alert window",
+    );
+    return false;
   }
 }
 

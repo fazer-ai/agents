@@ -103,6 +103,7 @@ export async function turnLimitVerdict(params: {
         const delivered = await db.agentTurnDelivery.count({
           where: {
             conversationId: params.conversationDbId,
+            pending: false,
             deliveredAt: { gt: since },
           },
         });

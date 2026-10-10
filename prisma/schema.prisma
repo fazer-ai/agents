@@ -2194,6 +2194,9 @@ model AgentTurnDelivery {
   tenantId       BigInt   @map("tenant_id")
   conversationId BigInt   @map("conversation_id")
   proactive      Boolean  @default(false)
+  // The proactive limit's reservation, taken before the nudge runs and cleared when its send reaches
+  // the customer: counted by the proactive limit, never by the turn limit.
+  pending        Boolean  @default(false)
   deliveredAt    DateTime @default(now()) @map("delivered_at")
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)

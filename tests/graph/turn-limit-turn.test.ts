@@ -215,12 +215,7 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
             model: "gpt-5.4-mini",
             credentialRef: `vault:${llmKey.id}`,
           },
-          // NOTE: The proactive limit off, so a follow-up here records its send where the turn limit
-          // reads it, and not as the proactive limit's reservation taken before the claim.
-          settings: {
-            split: { enabled: false },
-            limits: { ...limits, maxProactivePerDay: 0 },
-          },
+          settings: { split: { enabled: false }, limits },
         },
       });
     const limited = await agent("Limitado", { maxTurnsPerHour: LIMIT });
@@ -344,15 +339,24 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       contactInboxId,
     );
     const seen: boolean[] = [];
+    const held = async () => {
+      const lease = await suDb.$queryRaw<{ live: boolean }[]>`
+        SELECT turn_held_until > now() AS live FROM agent_threads
+         WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${instanceId}
+           AND contact_inbox_id = ${contactInboxId}`;
+      return isTurnRunning(gid) && lease[0]?.live === true;
+    };
     const base = appDb.$extends({
       query: {
+        // NOTE: The writes that make a turn count: a delivery inserted, or the proactive limit's
+        // reservation confirmed. The reservation itself is pending, which the turn limit skips.
         agentTurnDelivery: {
           async create({ args, query }) {
-            const lease = await suDb.$queryRaw<{ live: boolean }[]>`
-              SELECT turn_held_until > now() AS live FROM agent_threads
-               WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${instanceId}
-                 AND contact_inbox_id = ${contactInboxId}`;
-            seen.push(isTurnRunning(gid) && lease[0]?.live === true);
+            if (args.data.pending !== true) seen.push(await held());
+            return query(args);
+          },
+          async updateMany({ args, query }) {
+            if (args.data.pending === false) seen.push(await held());
             return query(args);
           },
         },

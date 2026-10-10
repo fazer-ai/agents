@@ -51,6 +51,8 @@ import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
 import { GENERIC_TEXT_MAX_CHARS } from "@/modules/integrations/types";
 import { armCompaction } from "@/modules/memory/compact";
 import {
+  claimProactiveAlert,
+  confirmProactiveReservation,
   proactiveLimitLogMessage,
   proactiveSourceLabel,
   releaseProactiveReservation,
@@ -712,6 +714,11 @@ async function runAgentNudgeBody(
       // every send.
       if (row && !deliveryCounted && reservation !== null) {
         deliveryCounted = true;
+        await confirmProactiveReservation({
+          tenantId,
+          reservationId: reservation,
+          base,
+        });
       } else if (row && !deliveryCounted) {
         deliveryCounted = true;
         await recordTurnDelivery({
@@ -1404,12 +1411,21 @@ async function runAgentNudgeBody(
     )
       .then((r) => r?.name ?? null)
       .catch(() => null);
-  // NOTE: THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the customer, and
-  // only when it could reach them: a nudge left as a note for the person who holds the conversation
-  // reaches nobody. Over the limit the occasion is spent, not retried, and the conversation stays the
-  // agent's. The labels still land, as on the refused contact; no resolve, since nothing was said.
-  if (
+  // THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the customer, and
+  // only when it could reach them: a note for the person who holds the conversation, or the note an
+  // official channel leaves outside its window with no template, reaches nobody. Over the limit the
+  // occasion is spent, not retried, and the conversation stays the agent's. The labels still land, as
+  // on the refused contact; no resolve, since nothing was said.
+  const reachesCustomer =
     canMessagePre &&
+    proactiveSendMode(
+      cfg.serviceWindowConfig,
+      loaded.lastInboundAt,
+      params.deps?.now?.() ?? new Date(),
+      { channelType: loaded.channelType, provider: loaded.provider },
+    ) !== "note";
+  if (
+    reachesCustomer &&
     cfg.maxProactivePerDay > 0 &&
     cfg.conversationDbId !== null
   ) {
@@ -1422,6 +1438,14 @@ async function runAgentNudgeBody(
     if (!verdict.over) {
       reservation = verdict.reservationId;
     } else {
+      // NOTE: Asked again, because the count was a locked transaction deep: a retired occasion must
+      // not take the day's alert, which the next real refusal needs.
+      if (!(await stillWanted())) return standDown();
+      const alert = await claimProactiveAlert({
+        tenantId,
+        conversationDbId: cfg.conversationDbId,
+        base,
+      });
       const integrationName = params.nudge.integrationInstanceId
         ? await integrationNameOf(params.nudge.integrationInstanceId)
         : null;
@@ -1433,8 +1457,8 @@ async function runAgentNudgeBody(
       });
       emitFlowEvent(flow, {
         stage: "proactive_limit",
-        level: verdict.alert ? "error" : "warn",
-        status: verdict.alert ? "error" : "skipped",
+        level: alert ? "error" : "warn",
+        status: alert ? "error" : "skipped",
         detail: {
           outcome: "not_sent",
           limit: verdict.limit,
@@ -1454,8 +1478,11 @@ async function runAgentNudgeBody(
         verdict.limit,
         params.nudge.source,
       );
+      // Ownership asked again, as on the refused contact: the reads above were waits, and a
+      // person who took the conversation meanwhile does not get the step's labels.
+      const stillOurs = await botStillOwnsIt().catch(() => "unavailable");
       const applied = await applyPostActions({
-        canMessage: canMessagePre,
+        canMessage: stillOurs === "ours",
         allowResolve: false,
       });
       if (applied === "stale") return standDown();

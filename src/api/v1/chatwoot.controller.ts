@@ -47,8 +47,8 @@ export const chatwootController = new Elysia({
         agentBotId = null,
         receiptBindingGeneration = null,
         normalized,
+        receivedAt = Date.now(),
       } = result;
-      const receivedAt = Date.now();
       admitChatwootDelivery(
         deliveryRowId,
         () =>

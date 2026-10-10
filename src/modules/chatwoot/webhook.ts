@@ -947,6 +947,8 @@ export interface ReceiveChatwootResult {
   // Whether the row still owes its first attempt (PENDING). A redelivery of a settled row is acked
   // and not processed again; one of a row still PENDING is, and the CAS decides.
   dispatch?: boolean;
+  // When the row was first received (epoch ms): a redelivery of an older PENDING row keeps its age.
+  receivedAt?: number;
   agentBotId?: number | null;
   normalized?: NormalizedChatwootEvent;
 }
@@ -1040,6 +1042,7 @@ export async function receiveChatwootWebhook(
     deliveryRowId: recorded.rowId,
     receiptBindingGeneration: recorded.bindingGeneration,
     dispatch: recorded.status === "PENDING",
+    receivedAt: recorded.receivedAt.getTime(),
     agentBotId: bot.agentBotId,
     normalized,
   };
@@ -1403,7 +1406,7 @@ async function recordDeliveryOnAck(
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
   payload: string,
   lane: AdmissionLane,
-): ReturnType<typeof recordDelivery> {
+): Promise<Awaited<ReturnType<typeof recordDelivery>> & { receivedAt: Date }> {
   // The payload's inbox when it names one, else the conversation's mirrored inbox, as
   // `inboxBindingGenerationIn` resolves it.
   const generation =
@@ -1429,6 +1432,7 @@ async function recordDeliveryOnAck(
         binding_generation: number | null;
         status: string;
         inserted: boolean;
+        received_at: Date;
       }[]
     >`
       INSERT INTO chatwoot_webhook_deliveries
@@ -1448,7 +1452,7 @@ async function recordDeliveryOnAck(
           THEN COALESCE(chatwoot_webhook_deliveries.payload, EXCLUDED.payload)
           ELSE chatwoot_webhook_deliveries.payload END,
         admission_lane = COALESCE(chatwoot_webhook_deliveries.admission_lane, EXCLUDED.admission_lane)
-      RETURNING id, binding_generation, status::text AS status, (xmax = 0) AS inserted`,
+      RETURNING id, binding_generation, status::text AS status, (xmax = 0) AS inserted, received_at`,
   ]);
   const row = inserted[0];
   if (row === undefined) {
@@ -1461,6 +1465,7 @@ async function recordDeliveryOnAck(
     duplicate: !row.inserted,
     status: row.status,
     bindingGeneration: row.binding_generation,
+    receivedAt: row.received_at,
   };
 }
 

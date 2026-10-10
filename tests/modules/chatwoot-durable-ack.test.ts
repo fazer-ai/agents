@@ -286,6 +286,40 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     expect(rows[0]?.payload).toBeNull();
   });
 
+  // A redelivery of an older PENDING row is that row's age, not a new arrival: processing asks its
+  // late checks by when the delivery was first received.
+  test("a redelivery of a PENDING row reports the row's first receipt", async () => {
+    invalidateRouteTokenCache();
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 505,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    const ack = () =>
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, "durable-age"),
+        nowSeconds: NOW,
+        base: appDb,
+      });
+    await ack();
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    await suDb.chatwootWebhookDelivery.updateMany({
+      where: { deliveryId: "durable-age" },
+      data: { receivedAt: old },
+    });
+    const again = await ack();
+    expect(again.dispatch).toBe(true);
+    expect(again.receivedAt).toBe(old.getTime());
+    await suDb.chatwootWebhookDelivery.updateMany({
+      where: { deliveryId: "durable-age" },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   // Chatwoot retries exactly when the first ack was slow, so the retry's own ack must not cost more round
   // trips than the first: one statement answers it, filling only what a row an older build wrote lacks.
   test("a redelivery is answered by one transaction and fills what a legacy row lacks", async () => {

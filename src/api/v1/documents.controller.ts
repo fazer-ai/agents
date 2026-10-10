@@ -43,7 +43,7 @@ import {
 // translate('errors.invalidDocumentTemplateDescription', 'This document template description is not valid: {{reason}}')
 // translate('errors.documentTemplateUnreadable', 'This template contains content a newer version wrote, so it cannot be saved from here: {{reason}}')
 // translate('errors.invalidDocumentNumberPrefix', 'This document number prefix is not valid: {{reason}}')
-// translate('errors.documentNumberAlreadyUsed', '{{asked}} cannot be the next number: {{used}} was already issued under this prefix. Choose {{min}} or above, or change the prefix to start a new sequence.')
+// translate('errors.documentNumberAlreadyUsed', '{{asked}} cannot be the next number: {{used}} was already issued. Choose {{min}} or above, or change the prefix to start a new sequence.')
 // translate('errors.invalidDocumentNextNumber', 'This next document number is not valid: {{reason}}')
 // translate('errors.invalidIdempotencyKey', 'This idempotency key is not valid: {{reason}}')
 // translate('errors.documentNotStored', 'This document could not be stored')

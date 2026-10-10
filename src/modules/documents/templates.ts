@@ -31,12 +31,10 @@ import { documentDraws } from "./draws";
 import { formatDate, formatDocumentNumber } from "./format";
 import { calendarDay } from "./issue";
 import {
-  highestIssuedByPrefix,
-  highestIssuedNumber,
-  lockNumberSequence,
-  nextNumberOf,
+  lockNumbering,
+  nextNumberFor,
   nextNumberProblem,
-  usedNumberRefusal,
+  usedNumberProblem,
 } from "./numbering";
 import { unprintableProblem } from "./printable";
 import { renderDocumentPdf } from "./render";
@@ -432,7 +430,7 @@ const UNDISCLOSED = ["blocks", "fields", "style"] as const;
 // by an older version of this file may not satisfy today's schema. Falling back to an empty document
 // rather than throwing keeps the console listable: a template that cannot be parsed has to be
 // visible to be fixed.
-function toDto(row: Row, highestIssued = 0): DocumentTemplateDto {
+function toDto(row: Row, nextNumber?: number): DocumentTemplateDto {
   const parsed = parseTemplateContent(row.blocks, row.fields, row.style);
   return {
     id: String(row.id),
@@ -445,7 +443,7 @@ function toDto(row: Row, highestIssued = 0): DocumentTemplateDto {
     style: parseDocumentStyle(row.style),
     numberPrefix: row.numberPrefix,
     lastNumber: row.lastNumber,
-    nextNumber: nextNumberOf(row.lastNumber, highestIssued),
+    nextNumber: nextNumber ?? row.lastNumber + 1,
     enabled: row.enabled,
     requiresApproval: row.requiresApproval,
     approvalTtlHours: row.approvalTtlHours,
@@ -617,10 +615,10 @@ async function nextNumberWriteProblem(
                 select: { numberPrefix: true },
               })
             )?.numberPrefix ?? null);
-    const highest = await highestIssuedNumber(db, tenantId, prefix);
-    return (next as number) <= highest
-      ? usedNumberRefusal(next as number, highest, prefix).message
-      : null;
+    return (
+      (await usedNumberProblem(db, tenantId, prefix, next as number))
+        ?.message ?? null
+    );
   });
 }
 
@@ -642,9 +640,9 @@ async function counterForNextNumber(
   prefix: string | null,
   next: number,
 ): Promise<number> {
-  await lockNumberSequence(db, tenantId, prefix);
-  const highest = await highestIssuedNumber(db, tenantId, prefix);
-  if (next <= highest) throw usedNumberRefusal(next, highest, prefix);
+  await lockNumbering(db, tenantId);
+  const refusal = await usedNumberProblem(db, tenantId, prefix, next);
+  if (refusal) throw refusal;
   return next - 1;
 }
 
@@ -711,8 +709,16 @@ export async function listDocumentTemplates(
     if (rows.length === 0 || ctx.tenantId === null) {
       return rows.map((r) => toDto(r));
     }
-    const highest = await highestIssuedByPrefix(db, ctx.tenantId);
-    return rows.map((r) => toDto(r, highest.get(r.numberPrefix ?? "") ?? 0));
+    const tenantId = ctx.tenantId;
+    // One read per template: a tenant has a handful, and the answer depends on each one's counter.
+    return Promise.all(
+      rows.map(async (r) =>
+        toDto(
+          r,
+          await nextNumberFor(db, tenantId, r.numberPrefix, r.lastNumber),
+        ),
+      ),
+    );
   });
 }
 
@@ -723,7 +729,10 @@ async function dtoOf(
   tenantId: bigint | null,
 ) {
   if (tenantId === null) return toDto(row);
-  return toDto(row, await highestIssuedNumber(db, tenantId, row.numberPrefix));
+  return toDto(
+    row,
+    await nextNumberFor(db, tenantId, row.numberPrefix, row.lastNumber),
+  );
 }
 
 export async function getDocumentTemplate(
@@ -771,10 +780,7 @@ export async function nextNumberUnderPrefix(
     }
     const target =
       prefix === undefined ? row.numberPrefix : parseNumberPrefix(prefix);
-    return nextNumberOf(
-      row.lastNumber,
-      await highestIssuedNumber(db, tenantId, target),
-    );
+    return nextNumberFor(db, tenantId, target, row.lastNumber);
   });
 }
 

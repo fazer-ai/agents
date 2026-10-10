@@ -16,7 +16,7 @@ import {
 import { documentVerdict } from "./deliverable";
 import { documentDraws } from "./draws";
 import { formatDate, formatDocumentNumber } from "./format";
-import { highestIssuedNumber, lockNumberSequence } from "./numbering";
+import { lockNumbering, nextNumberFor } from "./numbering";
 import { renderDocumentPdf } from "./render";
 import { readRenderContext } from "./templates";
 import {
@@ -700,18 +700,23 @@ async function assignNumber(
   // Someone numbered it while we waited for the lock. Their number is the document's number.
   if (doc.number !== null) return doc.number;
 
-  // The sequence is the tenant's prefix, as this document prints it, not the template's counter alone
-  // (numbering.ts): another template on the same prefix, or a prefix this template moved to, may have
-  // issued past the counter. Locked after the template and the document, the order every path keeps.
-  await lockNumberSequence(db, doc.tenant_id, doc.number_prefix);
-  const highest = await highestIssuedNumber(
+  // Not the template's counter alone (numbering.ts): another template on the same prefix, a prefix
+  // this template moved to, or another prefix printing the same text may already hold the next one.
+  // Locked after the template and the document, the order every path keeps.
+  await lockNumbering(db, doc.tenant_id);
+  const counter = await db.$queryRaw<{ last_number: number }[]>`
+    SELECT "last_number" FROM "document_templates" WHERE "id" = ${templateId}
+  `;
+  if (counter.length === 0) return null;
+  const take = await nextNumberFor(
     db,
     doc.tenant_id,
     doc.number_prefix,
+    counter[0]?.last_number ?? 0,
   );
   const rows = await db.$queryRaw<{ last_number: number }[]>`
     UPDATE "document_templates"
-    SET "last_number" = GREATEST("last_number", ${highest}) + 1
+    SET "last_number" = ${take}
     WHERE "id" = ${templateId}
     RETURNING "last_number"
   `;

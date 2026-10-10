@@ -296,4 +296,28 @@ describe.skipIf(!dbUp)("document numbering", () => {
     );
     expect(applied.nextNumber).toBe(4);
   });
+
+  test("two prefixes that print the same text never print it twice", async () => {
+    const wide = await template(tenantA, "INV-");
+    await updateDocumentTemplate(
+      ctx(tenantA),
+      wide,
+      { nextNumber: 10001 },
+      appDb,
+    );
+    expect(await issue(tenantA, wide)).toBe("INV-10001");
+    // "INV-1" with 0001 would print INV-10001 again.
+    const narrow = await template(tenantA, "INV-1");
+    expect(
+      (await getDocumentTemplate(ctx(tenantA), narrow, appDb)).nextNumber,
+    ).toBe(2);
+    const refused = await refusal(
+      updateDocumentTemplate(ctx(tenantA), narrow, { nextNumber: 1 }, appDb),
+    );
+    expect(refused.statusCode).toBe(409);
+    expect(refused.message).toContain("INV-10001");
+    expect(await issue(tenantA, narrow)).toBe("INV-10002");
+    // And the wide one steps over what the narrow one printed.
+    expect(await issue(tenantA, wide)).toBe("INV-10003");
+  });
 });

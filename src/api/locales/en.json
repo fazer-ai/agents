@@ -53,7 +53,7 @@
     "documentNotFound": "Document not found",
     "documentNotNumbered": "This document could not be numbered because its template no longer exists",
     "documentNotStored": "This document could not be stored",
-    "documentNumberAlreadyUsed": "{{asked}} cannot be the next number: {{used}} was already issued under this prefix. Choose {{min}} or above, or change the prefix to start a new sequence.",
+    "documentNumberAlreadyUsed": "{{asked}} cannot be the next number: {{used}} was already issued. Choose {{min}} or above, or change the prefix to start a new sequence.",
     "documentRevoked": "This document was revoked and cannot be issued again",
     "documentTemplateDisabled": "This document template is disabled",
     "documentTemplateNameCollides": "\"{{name}}\" collides with the template \"{{existing}}\": both produce the tool name {{tool}}",

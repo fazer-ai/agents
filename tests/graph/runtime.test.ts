@@ -3247,9 +3247,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       );
       await until("both turns to wait for the thread", () => waits >= 2);
       wake();
+      // Both halves: the winner's turn-limit check runs between the queue and the model, so the loser
+      // can be back in the wait before the winner's model starts.
       await until(
-        "the loser to wait again, or to run beside the winner",
-        () => started.length >= 2 || waits >= 3,
+        "the winner in its model and the loser waiting again, or both models running",
+        () => started.length >= 2 || (started.length === 1 && waits >= 3),
       );
       expect(started).toHaveLength(1);
       releaseFirst();

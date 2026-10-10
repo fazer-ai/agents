@@ -26,7 +26,6 @@ import {
 import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
-import { mediaFetch } from "@/client/lib/media";
 import { type CompanyProfile, CompanyProfileCard } from "./CompanyProfileCard";
 import {
   DocumentStarterModal,
@@ -37,11 +36,7 @@ import {
   type DocumentTemplate,
   DocumentTemplateModal,
 } from "./DocumentTemplateModal";
-
-type IssuedData = Awaited<
-  ReturnType<(typeof api.api.v1)["documents"]["get"]>
->["data"];
-type IssuedDocument = NonNullable<IssuedData>["documents"][number];
+import { IssuedDocumentsTab } from "./IssuedDocumentsTab";
 
 // The line under the company name in the summary row: what is filled in, in the order it prints on
 // the page. Empty when nothing is, which is what makes the row read as an invitation rather than as
@@ -70,15 +65,12 @@ export function DocumentsPanel() {
   const tenantName = useActiveTenantName();
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [starters, setStarters] = useState<Starter[]>([]);
-  const [issued, setIssued] = useState<IssuedDocument[]>([]);
   const [company, setCompany] = useState<CompanyProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // The two secondary lists get their own flags rather than taking the whole page down: an operator
-  // can still edit templates when the starter list or the recent-documents list failed — they just
-  // must not be told those are empty.
+  // The starter list gets its own flag rather than taking the whole page down: an operator can
+  // still edit templates when it failed — they just must not be told it is empty.
   const [startersError, setStartersError] = useState(false);
-  const [issuedError, setIssuedError] = useState(false);
   const [deleting, setDeleting] = useState(false);
   // null = still loading, "error" = the lookup failed. Two states, because collapsing them leaves a
   // dialog claiming to be checking something it has already given up on.
@@ -160,13 +152,12 @@ export function DocumentsPanel() {
     if (!loadedOnce.current) setLoading(true);
     setError(false);
     try {
-      const [list, startersRes, settings, issuedRes] = await Promise.all([
+      const [list, startersRes, settings] = await Promise.all([
         api.api.v1["document-templates"].get(),
         api.api.v1["document-templates"].starters.get({
           query: { locale: starterLocale },
         }),
         api.api.v1["tenant-settings"].get(),
-        api.api.v1.documents.get({ query: { limit: "20" } }),
       ]);
       // NOTE: every request's error, not just the list's. Eden RESOLVES an HTTP failure as
       // `{ error }`, so an unchecked call reads as empty data: a blank profile over stored
@@ -186,8 +177,6 @@ export function DocumentsPanel() {
       if (companyWrites.current === writes) {
         setCompany(settings.data?.company ?? null);
       }
-      setIssued(issuedRes.data ? [...issuedRes.data.documents] : []);
-      setIssuedError(!!issuedRes.error);
       loadedOnce.current = true;
     } catch {
       if (current()) failed();
@@ -266,91 +255,9 @@ export function DocumentsPanel() {
     }
   }
 
-  // A blob URL rather than a link to the endpoint. The PDF route is tenant-scoped, and for a
-  // SUPER_ADMIN the tenant lives ONLY in the X-Tenant-Id header — which a plain navigation cannot
-  // send, so the tab would land on "a target tenant is required" instead of the document. Same fix
-  // the logo and the preview already use.
-  //
-  // The tab is opened SYNCHRONOUSLY, inside the click, and pointed at the blob afterwards. Opening
-  // it after the await spends the browser's transient user activation on a fetch, and the popup
-  // blocker then swallows the call: the button downloads the bytes and appears to do nothing.
-  async function openPdf(doc: IssuedDocument) {
-    // No `noopener` FEATURE here: by spec it makes window.open return null, which would leave a real
-    // blank tab open with no handle to point at the blob — and the fallback would then navigate the
-    // console itself away while that tab sat there empty. The handle is kept and `opener` is severed
-    // on it instead, which is the same protection without losing the tab.
-    const tab = window.open("", "_blank");
-    if (tab) tab.opener = null;
-    // The fetch can REJECT (offline, DNS, a dropped connection), not merely answer non-OK;
-    // uncaught, the tab just opened would stay blank with no message to the operator.
-    let url: string;
-    try {
-      const res = await mediaFetch(`/api/v1/documents/${doc.id}/pdf`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      url = URL.createObjectURL(await res.blob());
-    } catch {
-      tab?.close();
-      showToast(
-        t("documents.openPdfError", "Could not open the PDF."),
-        "error",
-      );
-      return;
-    }
-    if (tab) {
-      tab.location.href = url;
-    } else {
-      // The popup blocker refused even the synchronous open. Navigating this tab is better than a
-      // button that silently does nothing.
-      window.location.href = url;
-    }
-    // The tab has the bytes by the time it paints; holding the handle any longer leaks it for as
-    // long as the console stays open.
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }
-
-  // Asked first, because there is no un-revoke. The PDF stops being served, and the agent's
-  // idempotency key is derived from the VALUES, so every later send of the same document resolves
-  // to this revoked row rather than issuing a fresh one — an accidental click on a row in a list is
-  // permanent, and it takes the customer's copy with it.
-  function askRevoke(doc: IssuedDocument) {
-    confirm.open({
-      title: t("documents.revokeTitle", "Revoke document"),
-      message: t(
-        "documents.revokeMessage",
-        'Revoke "{{name}}"? Its PDF stops being served and this cannot be undone.',
-        { name: doc.number ?? doc.title },
-      ),
-      danger: true,
-      confirmLabel: t("documents.revoke", "Revoke"),
-      onConfirm: () => revoke(doc),
-    });
-  }
-
-  async function revoke(doc: IssuedDocument) {
-    try {
-      const { error: err } = await api.api.v1
-        .documents({ id: doc.id })
-        .revoke.post();
-      if (err) throw err;
-    } catch (e) {
-      showToast(
-        apiErrorMessage(e) || t("documents.revokeError", "Could not revoke."),
-        "error",
-      );
-      // Rethrown so the confirm dialog stays OPEN on failure, per its own contract: a revoke worth
-      // asking about is worth retrying without hunting the row down in the list again. Eden
-      // RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure, so both halves
-      // land here.
-      throw e;
-    }
-    showToast(t("documents.revoked", "Revoked."), "success");
-    void load();
-  }
-
   // Which template each issued document came from. The issued list carries `templateId`, not the
   // name, and the panel already has the templates — so the join is here rather than a column on the
-  // row. A document OUTLIVES its template (the FK nulls the id on delete), so the miss is a real
-  // state, not a loading one, and it says so instead of showing a blank.
+  // row.
   const templateNames = new Map(templates.map((tpl) => [tpl.id, tpl.name]));
 
   return (
@@ -510,81 +417,9 @@ export function DocumentsPanel() {
           </DataBoundary>
         </>
       ) : (
-        <DataBoundary
-          loading={loading}
-          error={issuedError || error}
-          isEmpty={issued.length === 0}
-          onRetry={load}
-          empty={
-            <EmptyState
-              icon={FileCheck}
-              title={t("documents.issuedEmptyTitle", "No documents issued yet")}
-              description={t(
-                "documents.issuedEmptyDesc",
-                "Documents your agents issue from a template show up here, with the PDF the customer received.",
-              )}
-            />
-          }
-        >
-          <div className="flex flex-col gap-2">
-            {issued.map((doc) => (
-              <Card
-                key={doc.id}
-                className="flex items-center justify-between gap-4 py-2"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-sm text-text-primary">
-                      {doc.number ? `${doc.title} ${doc.number}` : doc.title}
-                    </span>
-                    {doc.revoked && (
-                      <Badge variant="secondary">
-                        {t("documents.revokedBadge", "Revoked")}
-                      </Badge>
-                    )}
-                    {!doc.revoked && doc.status !== "READY" && (
-                      <Badge variant="secondary">
-                        {t("documents.pendingBadge", "Not rendered")}
-                      </Badge>
-                    )}
-                  </div>
-                  {/* Which template it came from, and when. Without the first, two documents from
-                      different templates that happen to share a title are the same row twice. */}
-                  <p className="mt-0.5 truncate text-text-muted text-xs">
-                    {doc.templateId
-                      ? (templateNames.get(doc.templateId) ??
-                        t("documents.templateGone", "Template deleted"))
-                      : t("documents.templateGone", "Template deleted")}
-                    {" · "}
-                    {new Date(doc.createdAt).toLocaleString()}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => openPdf(doc)}
-                    // A row exists before its PDF does: the render happens after the insert, and a
-                    // failure there leaves a PENDING row with no storage key. Enabled, the button
-                    // could only ever fetch a 404 and say nothing about why.
-                    disabled={doc.revoked || doc.status !== "READY"}
-                  >
-                    {t("documents.openPdf", "Open PDF")}
-                  </Button>
-                  {!doc.revoked && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => askRevoke(doc)}
-                    >
-                      {t("documents.revoke", "Revoke")}
-                    </Button>
-                  )}
-                </div>
-              </Card>
-            ))}
-          </div>
-        </DataBoundary>
+        <IssuedDocumentsTab
+          templateNames={loading || error ? null : templateNames}
+        />
       )}
 
       <ConfirmDialog modal={confirm} />

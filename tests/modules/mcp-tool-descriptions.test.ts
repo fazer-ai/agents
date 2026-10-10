@@ -214,8 +214,10 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_950);
-    // Measured at 69_529, with `limits.maxProactivePerDay` on agent_settings_set.
-    expect(schema).toBeLessThanOrEqual(69_610);
+    // Measured at 70_232, with `limits.maxProactivePerDay` on agent_settings_set, the approval
+    // switch and validity on the document template writes, the next number on them, and the search
+    // and cursor on issued_document_list.
+    expect(schema).toBeLessThanOrEqual(70_310);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

@@ -276,4 +276,11 @@ describe("snoozed follow-up form: validation mirrors the reader", () => {
       snoozedFollowUpBlocksSave(form([cadence("a")]), "production"),
     ]).toEqual([true, false, false, false]);
   });
+  test("a labeled cadence saved with no label picked is not written, so it never comes back as the default", () => {
+    const f = { ...form([cadence(null), cadence("")]), enabled: false };
+    const stored = snoozedFollowUpToStored(f);
+    expect(stored.cadences.map((c) => c.label)).toEqual([null]);
+    const back = snoozedFollowUpToForm({ snoozedFollowUp: stored });
+    expect(back.cadences.filter((c) => c.label === null)).toHaveLength(1);
+  });
 });

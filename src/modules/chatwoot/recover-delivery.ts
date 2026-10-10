@@ -806,6 +806,7 @@ async function runRecovery(params: {
         contactInboxId: true,
         redirectOriginDisplayId: true,
         chatwootRedirectOriginAt: true,
+        contactId: true,
         // NOTE: the conversation's own STATE, from HERE rather than `reconciled.state`: both are the
         // same row and neither is the live snapshot, and this is the later reading, so a handoff or
         // resolve landing while the route queries ran is in it. ONE reading is stated, not two.
@@ -828,8 +829,10 @@ async function runRecovery(params: {
     );
     return "unrecoverable";
   }
-  // Asked only where the re-read still finds no row; awaits nothing (see `contactToStateFor`).
-  const sender = mirrorNow ? undefined : contactToState;
+  // Asked only where the load found no row; stated wherever the re-read still has no contact, since a
+  // conversation event that created the row meanwhile may have named none (see `contactToStateFor`).
+  const sender =
+    mirrorNow && mirrorNow.contactId !== null ? undefined : contactToState;
 
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({

@@ -1953,6 +1953,52 @@ describe.skipIf(!dbUp)(
         });
         expect(await inboxOf()).toBe(learned);
       });
+
+      test("a stale event fills a contact the row never learned, and only that", async () => {
+        const convId = 98;
+        const contactOf = async () =>
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: convId },
+              select: { contactId: true },
+            })
+          ).contactId;
+        await staleIncoming(convId, {
+          messageId: 9800,
+          at: T + 300,
+          snapshotAt: T + 300,
+        });
+        const learned = await contactOf();
+        expect(learned).not.toBeNull();
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: convId },
+          data: { contactId: null },
+        });
+        await staleIncoming(convId, {
+          messageId: 9801,
+          at: T + 100,
+          snapshotAt: T + 100,
+        });
+        expect(await contactOf()).toBe(learned);
+        // A row that names its contact keeps it against a stale event naming another.
+        const other = convPayload(convId, {
+          status: "pending",
+          lastActivityAt: T + 50,
+          updatedAt: T + 50,
+        });
+        await mirror({
+          event: "message_created",
+          id: 9802,
+          content: "oi",
+          message_type: "incoming",
+          private: false,
+          conversation: {
+            ...other,
+            meta: { ...other.meta, sender: { id: 9898, name: "Outro" } },
+          },
+        });
+        expect(await contactOf()).toBe(learned);
+      });
     });
   },
 );

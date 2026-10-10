@@ -971,6 +971,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // here would clear it. The facts are read before that webhook, so they create and never update.
       const convId = 7326;
       const messageId = 7826;
+      // No conversation of an earlier test may lend this contact a pairing.
+      await dropContact(77);
       const rowId = await seedDeadDelivery({
         conversationId: convId,
         inboundMessageId: messageId,
@@ -996,6 +998,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       } finally {
         path.mockRestore();
       }
+      expect(handed).toBeDefined();
       expect(handed?.normalized.redirectOriginDisplayId).toBeUndefined();
       expect(handed?.normalized.factsOnCreateOnly).toBe(true);
       // The row it creates is stamped no older than the reading those facts came from.
@@ -1007,6 +1010,8 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       // inherit it would settle with the words remembered nowhere.
       const convId = 7327;
       const messageId = 7827;
+      // No conversation of an earlier test may lend this contact a pairing.
+      await dropContact(77);
       const rowId = await seedDeadDelivery({
         conversationId: convId,
         inboundMessageId: messageId,
@@ -1124,7 +1129,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(row.chatwootStatusAt).toBe(version);
     });
 
-    test("repairs the route of a row a webhook created during the reads", async () => {
+    test("repairs the route and contact of a row a webhook created during the reads", async () => {
       const convId = 7316;
       const messageId = 7816;
       const rowId = await seedDeadDelivery({
@@ -1133,7 +1138,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       const stub = stubChatwoot({
         page: pageWith([{ id: messageId, content: "oi" }]),
-        // A conversation event that named no inbox, newer than the stranded message.
+        // A conversation event that named no inbox and no contact, newer than the stranded message.
         onAnchoredRead: async () => {
           await suDb.conversation.create({
             data: {
@@ -1156,9 +1161,15 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       const row = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: convId },
-        select: { inboxId: true },
+        select: {
+          inboxId: true,
+          contact: { select: { chatwootContactId: true } },
+        },
       });
       expect(row.inboxId).toBe(inboxDbId);
+      // The event that created it named no contact either, and the contact gate fails closed
+      // without one.
+      expect(row.contact?.chatwootContactId).toBe(77);
     });
 
     test("is not answered when Chatwoot does not say who holds it", async () => {

@@ -230,8 +230,9 @@ export async function mirrorChatwootEvent(
             // ahead of it. See the write there.
             lastInboundAt: true,
             lastInboundMessageId: true,
-            // Read for the stale branch, which fills a missing route. See the write there.
+            // Read for the stale branch, which fills a missing route and contact. See the write there.
             inboxId: true,
+            contactId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
             statusClaimUntil: true,
@@ -397,6 +398,11 @@ export async function mirrorChatwootEvent(
             // (test mode, contact authorization) while the turn still resolves its agent from the event.
             ...(existing.inboxId === null && inboxRowId != null
               ? { inboxId: inboxRowId }
+              : {}),
+            // The contact, from NULL only, for the same gates: a conversation event can create the row
+            // without naming one, and the contact gate fails closed on a row with no identity.
+            ...(existing.contactId === null && contactId != null
+              ? { contactId }
               : {}),
           };
           if (Object.keys(staleWrites).length > 0) {

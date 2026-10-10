@@ -475,7 +475,19 @@ type Msg = {
   sender?: { type: string; id: number } | null;
   content?: string;
   content_attributes?: Record<string, unknown>;
+  attachments?: unknown[];
 };
+
+// A PNG header declaring its size, which is all the download path reads before the provider.
+function png(): ArrayBuffer {
+  const b = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write("IHDR", 12, "ascii");
+  b.writeUInt32BE(800, 16);
+  b.writeUInt32BE(600, 20);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+}
 
 // Records every message the model is handed, the nudge's prompt included: the window is built for
 // the model, and the message it receives is the only place it is observable.
@@ -502,6 +514,8 @@ class InputCapturingModel extends BaseChatModel {
   }
 }
 
+let llmKeyId = 0n;
+
 function stub(over: {
   status?: string;
   assigneeType?: string | null;
@@ -527,6 +541,8 @@ function stub(over: {
   onSend?: () => Promise<void>;
   // The operator unsnoozes while the post-actions read the labels: every later read sees it open.
   unsnoozeOnLabelRead?: boolean;
+  // The vision provider's answer, for a window image nobody read yet.
+  visionFetch?: typeof fetch;
   model?: (cfg: {
     model: string;
   }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
@@ -617,6 +633,11 @@ function stub(over: {
       toggles.push(status);
       return {};
     },
+    downloadAttachment: async () => ({
+      bytes: png(),
+      contentType: "image/png",
+    }),
+    updateAttachmentMeta: async () => ({}),
   } as unknown as ChatwootClient;
   return {
     sent,
@@ -634,6 +655,7 @@ function stub(over: {
       makeClient: async () => client,
       checkpointer: new MemorySaver(),
       persistUsage: async () => {},
+      ...(over.visionFetch ? { visionFetch: over.visionFetch } : {}),
     },
   };
 }
@@ -736,6 +758,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       data: { tenantId, name: "llm-key", secret: encryptJson("sk-test") },
       select: { id: true },
     });
+    llmKeyId = llmKey.id;
     const agent = await suDb.agent.create({
       data: {
         tenantId,
@@ -967,6 +990,58 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       "👍",
     ]) {
       expect(seen).not.toContain(absent);
+    }
+  });
+
+  test("an image in the window nobody read yet is read, as the re-engage reads it, and reaches the model", async () => {
+    await setSettings({
+      ...LADDER,
+      vision: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${llmKeyId}`,
+      },
+    });
+    try {
+      await seed(2061);
+      const model = new InputCapturingModel(REPLY);
+      let providerCalls = 0;
+      const s = stub({
+        messages: [
+          {
+            id: 420,
+            message_type: 0,
+            created_at: minutesAgo(10),
+            sender: { type: "contact", id: 1 },
+            content: "",
+            attachments: [
+              {
+                id: 51,
+                file_type: "image",
+                data_url: "https://chat.example.com/a/51.png",
+              },
+            ],
+          },
+          personAsked(421, 3),
+        ],
+        model: () => model,
+        visionFetch: (async () => {
+          providerCalls++;
+          return new Response(
+            JSON.stringify({
+              choices: [
+                { message: { content: "comprovante de PIX de R$ 120" } },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2061), appDb, s.deps);
+      expect(providerCalls).toBe(1);
+      expect(model.inputs.join("\n")).toContain("comprovante de PIX de R$ 120");
+    } finally {
+      await setSettings(LADDER);
     }
   });
 

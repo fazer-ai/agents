@@ -29,6 +29,7 @@ import {
   SESSION_SENDER_NAME,
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
+import { fillMissingVisuals } from "@/modules/debounce/handler";
 import { renderTranscript, transcriptFromRows } from "@/modules/observe/job";
 import {
   type ClaimedJob,
@@ -440,6 +441,8 @@ export async function snoozedFollowUpHandler(
       armedAt: agent.snoozedFollowUpArmedAt,
       hours,
       reply: { whatsappProvider: inbox.provider },
+      agentId: inbox.agentId,
+      settings: agent.settings,
     };
   });
   if (!ctx) return { outcome: "done" };
@@ -570,17 +573,38 @@ export async function snoozedFollowUpHandler(
     return stamped > 0;
   };
 
+  // The window's images and documents nobody read yet are read first, as the re-engage reads them
+  // (`all`): a person asked for this conversation, and the eager pass never runs on one a person holds.
+  // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here, as there.
+  const window = windowRows(rows, ctx.conv.resetAtMessageId).slice(
+    -SNOOZED_WINDOW_MESSAGES,
+  );
+  await fillMissingVisuals({
+    tenantId,
+    instanceId,
+    conversationId,
+    settings: ctx.settings,
+    messages: rows,
+    pending: window.filter((r) => r.messageType === "incoming"),
+    fill: {
+      mode: "all",
+      signal: run?.signal,
+      turnId: crypto.randomUUID(),
+      convDbId: ctx.conv.id,
+      agentId: ctx.agentId,
+      inboxDbId: ctx.conv.inboxId,
+      threadId,
+    },
+    base,
+    deps,
+  });
   const conversation = renderTranscript(
-    transcriptFromRows(
-      windowRows(rows, ctx.conv.resetAtMessageId),
-      SNOOZED_WINDOW_MESSAGES,
-      {
-        ownBotIds: new Set(
-          await instanceAgentBotChatwootIds(tenantId, instanceId, base),
-        ),
-        trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
-      },
-    ),
+    transcriptFromRows(window, SNOOZED_WINDOW_MESSAGES, {
+      ownBotIds: new Set(
+        await instanceAgentBotChatwootIds(tenantId, instanceId, base),
+      ),
+      trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
+    }),
   );
 
   // A send-time message read that failed is not a withdrawal: the step is tried again, not dropped.

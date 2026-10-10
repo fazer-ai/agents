@@ -1165,6 +1165,70 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     );
   });
 
+  test("a reminder withdrawn while its window is read opens no further file", async () => {
+    await setSettings({
+      ...LADDER,
+      vision: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${llmKeyId}`,
+      },
+    });
+    try {
+      await seed(2066);
+      const row = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "SNOOZED_FOLLOWUP",
+          dedupeKey: snoozedDedupeKey(threadOf(2066)),
+          runAt: new Date(),
+          status: "CLAIMED",
+          claimSeq: 1,
+          payload: { threadId: threadOf(2066) },
+        },
+      });
+      const image = (id: number, minutes: number): Msg => ({
+        id,
+        message_type: 0,
+        created_at: minutesAgo(minutes),
+        sender: { type: "contact", id: 1 },
+        content: "",
+        attachments: [
+          {
+            id: id + 1000,
+            file_type: "image",
+            data_url: `https://chat.example.com/a/${id}.png`,
+          },
+        ],
+      });
+      let providerCalls = 0;
+      const s = stub({
+        messages: [image(450, 12), image(451, 11), personAsked(452, 3)],
+        // The /reset lands while the first image is being read.
+        visionFetch: (async () => {
+          providerCalls++;
+          await suDb.schedulerJob.update({
+            where: { id: row.id },
+            data: { claimSeq: 2, status: "DONE" },
+          });
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content: "lida" } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await snoozedFollowUpHandler(
+        { ...jobFor(2066), id: row.id, claimSeq: 1 },
+        appDb,
+        s.deps,
+      );
+      expect(providerCalls).toBe(1);
+      expect(s.sent).toEqual([]);
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
   test("no media is opened under a contact gate, nor for a closing step that reaches no model", async () => {
     const image = (id: number): Msg => ({
       id,

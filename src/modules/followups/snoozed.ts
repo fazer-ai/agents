@@ -74,6 +74,9 @@ const MAX_MESSAGE_PAGES = 3;
 // reply can fail to be remembered, a test-mode agent keeps only its own turns), so the reminder is
 // written from the conversation itself, rendered as the observer renders it.
 const SNOOZED_WINDOW_MESSAGES = 20;
+// How long the window's media reads may take, of the job's deadline: one document's budget, so the
+// model call and the send keep the rest.
+const SNOOZED_MEDIA_BUDGET_MS = 60_000;
 // Chatwoot's message page, reactions aside (the observer's paging reads it the same way).
 const CHATWOOT_MESSAGES_PAGE = 20;
 // Same backoffs as the bot's ladder, for the same reasons (see ./handlers.ts).
@@ -605,6 +608,8 @@ export async function snoozedFollowUpHandler(
     // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here, as there.
     if (!readContactAuthConfig(ctx.settings).enabled) {
       await fillMissingVisuals({
+        // A withdrawn reminder (a /reset retired the job) opens no further file.
+        stillWanted: async () => !(await jobRetired(job, base)),
         tenantId,
         instanceId,
         conversationId,
@@ -615,7 +620,14 @@ export async function snoozedFollowUpHandler(
           .filter((r) => r.messageType === "incoming"),
         fill: {
           mode: "all",
-          signal: run?.signal,
+          // Its own budget, inside the job's: the reminder still has to be written and sent after it,
+          // and what the budget cuts renders as unread.
+          signal: run?.signal
+            ? AbortSignal.any([
+                run.signal,
+                AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS),
+              ])
+            : AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS),
           turnId: crypto.randomUUID(),
           convDbId: ctx.conv.id,
           agentId: ctx.agentId,

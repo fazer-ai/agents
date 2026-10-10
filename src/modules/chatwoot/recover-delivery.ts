@@ -818,15 +818,12 @@ async function runRecovery(params: {
     }),
   );
   const contactInboxId = mirrorNow ? mirrorNow.contactInboxId : inherited;
-  // A memory-only replay is owed to the shared memory, which only a pairing names. For a conversation
-  // this recovery found unmirrored it needs one the mirror itself stored: an inherited pairing is an
-  // inference, and a webhook storing another one after this read would leave the words in the wrong
-  // memory. Refused before the claim, so it stays on the worklist with its attempts intact.
-  if (
-    !replayPosts &&
-    conv === null &&
-    (mirrorNow?.contactInboxId ?? null) == null
-  ) {
+  // A memory-only replay is owed to the shared memory, which only a pairing names, and it needs one
+  // the mirror itself stored: an inherited pairing is an inference, and a webhook storing another one
+  // after this read would leave the words in the wrong memory. A row is no stand-in, since one
+  // without a pairing is a row no webhook reached (often an earlier attempt's). Refused before the
+  // claim, so it stays on the worklist with its attempts intact.
+  if (!replayPosts && (mirrorNow?.contactInboxId ?? null) == null) {
     logger.warn(
       "chatwoot recovery: %s owes memory on conversation %d, which has no pairing the mirror stored; left DEAD",
       row.deliveryId,
@@ -1179,14 +1176,13 @@ async function runRecovery(params: {
   // nothing, `no-thread` has nowhere to hold it, `covered` is the responder already having it).
   // Silence is no route having asked, so the row goes back to DEAD for an inbox bound and switched
   // on again. Only for the replay that posts nothing; where a turn was owed, `TURN_SETTLED` answers.
-  // A reply replay the gate turned into memory (a person took the conversation before the replay)
-  // is held to the same rule as the memory-only one above: on a conversation this recovery found
-  // unmirrored, `no-thread` is the missing webhook speaking (the pairing only a webhook carries),
-  // not a contact with no memory, so the words are still owed and the row goes back to DEAD. On a
-  // row the mirror already had, `no-thread` is that row's own answer and settles as it always did.
   const memoryUnsettled =
     (!replayPosts && ingestOutcome === null) ||
-    (turnOutcome === null && ingestOutcome === "no-thread" && conv === null);
+    // A reply replay the gate turned into memory (a person holds the conversation) still owes the
+    // words to the shared memory, which `no-thread` says no pairing names. Every webhook carries the
+    // pairing, so a row without one is a row no webhook reached, often the one an earlier attempt
+    // created: whether the row exists says nothing, and the delivery goes back to DEAD.
+    (replayPosts && turnOutcome === null && ingestOutcome === "no-thread");
   if (turnThrew || turnUnsettled || memoryUnsettled) {
     // The row goes BACK to DEAD, the same repair as for a throw: it left the worklist at the
     // claim and the customer is still owed. The attempt stays spent, so `MAX_RECOVERY_ATTEMPTS`

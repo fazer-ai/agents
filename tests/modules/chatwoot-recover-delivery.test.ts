@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7333 },
+          chatwootConversationId: { gte: 7310, lte: 7334 },
         },
       });
       await dropContact(77);
@@ -1125,10 +1125,43 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
     });
 
-    test("settles the same takeover on a row the mirror already had without a pairing", async () => {
-      // There `no-thread` is the row's own answer, not a webhook this recovery never saw.
+    test("keeps it DEAD on the next attempt, when the row the first attempt created has no pairing", async () => {
+      // The first attempt mirrors the conversation; the second finds that row, which still names no
+      // memory, and the words are still owed.
       const convId = 7333;
       const messageId = 7833;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      const attempt = () =>
+        recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        });
+      expect(await attempt()).toBe("unreachable");
+      expect(
+        await suDb.conversation.findFirst({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { contactInboxId: true },
+        }),
+      ).toEqual({ contactInboxId: null });
+      // The first attempt left the row owing memory only, so the second is refused before its claim.
+      expect(await attempt()).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    });
+
+    test("puts it back to DEAD on a row that exists without a pairing, not only on the attempt that creates one", async () => {
+      const convId = 7334;
+      const messageId = 7834;
       await dropContact(77);
       // The mirror's row is the state the recovery reads, so the takeover is on it.
       const seeded = await seedConversation(convId);
@@ -1156,9 +1189,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           base: appDb,
           deps: depsWith(stub),
         }),
-      ).toBe("recovered");
+      ).toBe("unreachable");
       expect(stub.sent).toEqual([]);
-      expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
     });
 
     test("positions the contact it states at the live reading, even on a row a webhook created meanwhile", async () => {

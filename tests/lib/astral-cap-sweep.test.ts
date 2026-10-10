@@ -398,6 +398,7 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
+  "src/client/pages/agents/snoozedFollowUpFormState.ts": [1, "array"],
   "src/client/pages/approvals/ConversationApprovals.tsx": [1, "array"],
   // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
   // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.

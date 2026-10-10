@@ -32,11 +32,11 @@ fi
 if [ -n "$lint_all" ]; then
   echo "[check-staged] $(printf '%s' "$lint_all" | head -1) changes the lint rules: linting the whole tree"
   git checkout-index -a --prefix="$work/tree/"
-  (cd "$work/tree" && "$root/node_modules/.bin/biome" check --vcs-enabled=false --error-on-warnings)
+  (cd "$work/tree" && bun "$root/node_modules/.bin/biome" check --vcs-enabled=false --error-on-warnings)
 elif [ -s "$list" ]; then
   { cat "$list"; printf 'biome.jsonc\0'; git ls-files -z biome-plugins; } |
     git checkout-index -z --prefix="$work/tree/" --stdin
-  (cd "$work/tree" && xargs -0 "$root/node_modules/.bin/biome" check --vcs-enabled=false \
+  (cd "$work/tree" && xargs -0 bun "$root/node_modules/.bin/biome" check --vcs-enabled=false \
     --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true <"$list")
 fi
 [ -n "$CHECK_STAGED_LINT_ONLY" ] && exit 0

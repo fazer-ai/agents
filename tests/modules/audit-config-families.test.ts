@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { refForAudit } from "@/modules/audit/projection";
+import { createCodeTool, updateCodeTool } from "@/modules/code-tools/service";
 import {
   createDocumentTemplate,
+  type DocumentTemplateInput,
   deleteDocumentTemplate,
+  previewDocumentTemplate,
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
 import {
@@ -27,14 +31,19 @@ import { integrationCreate } from "@/modules/mcp/write-webhooks";
 import {
   createMcpConnection,
   deleteMcpConnection,
+  discoverMcpTools,
+  type McpConnectionUpdate,
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
 import {
   createToolDefinition,
   deleteToolDefinition,
+  type ToolDefinitionUpdate,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { createVaultEntry, updateVaultEntry } from "@/modules/vault/service";
 import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 
 // Five configuration families (tool definitions, MCP connections, integration instances,
 // experiments, document templates) recorded by the service, in the mutation's own transaction, so
@@ -229,6 +238,426 @@ const FAMILIES: Family[] = [
     movedField: "enabled",
     movedFrom: true,
     movedTo: false,
+  },
+];
+
+// The columns a projection answers for: every scalar the generated client declares for the model,
+// minus the four the audit row already holds in its own columns. Relations are not scalar fields.
+function mutableColumns(model: string): string[] {
+  const fields = (Prisma as unknown as Record<string, Record<string, string>>)[
+    `${model}ScalarFieldEnum`
+  ];
+  const skip = new Set(["id", "tenantId", "createdAt", "updatedAt"]);
+  return Object.keys(fields ?? {})
+    .filter((c) => !skip.has(c))
+    .sort();
+}
+
+// A vault entry the services below can name as a credential, filled and of a kind every one of them
+// accepts.
+async function vaultRef(): Promise<string> {
+  const v = await createVaultEntry(
+    ctx(),
+    { name: `v${uniq()}`, value: "s3cret", kind: "bearer_token" },
+    undefined,
+    undefined,
+    appDb,
+  );
+  return v.ref;
+}
+
+// Per model, the edit that moves each column on its own (a patch through the model's own update
+// path), or the reason a column has no such edit.
+const FENCED: {
+  model: string;
+  action: string;
+  create: () => Promise<bigint>;
+  columns: Record<string, ((id: bigint) => Promise<unknown>) | string>;
+}[] = [
+  {
+    model: "ToolDefinition",
+    action: "tool.update",
+    create: async () =>
+      BigInt(
+        (
+          await createToolDefinition(
+            ctx(),
+            {
+              name: `fence_${uniq()}`,
+              label: "before",
+              method: "POST",
+              urlTemplate: outboundUrl("/x"),
+              allowedHosts: ["203.0.113.10"],
+            },
+            appDb,
+          )
+        ).id,
+      ),
+    columns: Object.fromEntries(
+      (
+        [
+          ["name", () => ({ name: `fence_${uniq()}` })],
+          ["label", () => ({ label: "after" })],
+          ["description", () => ({ description: "what it does" })],
+          ["method", () => ({ method: "PUT" })],
+          ["urlTemplate", () => ({ urlTemplate: outboundUrl("/y") })],
+          [
+            "allowedHosts",
+            () => ({ allowedHosts: ["203.0.113.10", "203.0.113.11"] }),
+          ],
+          ["headers", () => ({ headers: { "X-Fence": "1" } })],
+          [
+            "inputSchema",
+            () => ({
+              inputSchema: {
+                type: "object",
+                properties: { a: { type: "string" } },
+              },
+            }),
+          ],
+          ["outputSchema", () => ({ outputSchema: { type: "object" } })],
+          ["query", () => ({ query: { q: "1" } })],
+          ["body", () => ({ body: { mode: "raw", raw: "x" } })],
+          ["credentialRef", async () => ({ credentialRef: await vaultRef() })],
+          ["enabled", () => ({ enabled: false })],
+          ["expectedStatuses", () => ({ expectedStatuses: [404] })],
+          ["ackEnabled", () => ({ ackEnabled: true })],
+          ["ackMessage", () => ({ ackMessage: "um momento" })],
+          [
+            "appointment",
+            () => ({ appointment: { action: "cancel", idPath: "data.id" } }),
+          ],
+          [
+            "conversationRefIntegrationId",
+            async () => ({
+              conversationRefIntegrationId: String(
+                (
+                  await createIntegrationInstance(
+                    ctx(),
+                    { catalogType: "GENERIC", name: `g${uniq()}` },
+                    appDb,
+                  )
+                ).id,
+              ),
+            }),
+          ],
+          ["maxResponseChars", () => ({ maxResponseChars: 5000 })],
+          ["silenceTruncationAlert", () => ({ silenceTruncationAlert: true })],
+        ] as const
+      ).map(([column, patch]) => [
+        column,
+        async (id: bigint) =>
+          updateToolDefinition(
+            ctx(),
+            id,
+            (await patch()) as ToolDefinitionUpdate,
+            appDb,
+          ),
+      ]),
+    ),
+  },
+  {
+    model: "CodeToolDefinition",
+    action: "code_tool.update",
+    create: async () =>
+      BigInt(
+        (
+          await createCodeTool(
+            ctx(),
+            {
+              name: `fence_${uniq()}`,
+              label: "before",
+              description: "before",
+              code: "return 1;",
+            },
+            appDb,
+          )
+        ).tool.id,
+      ),
+    columns: Object.fromEntries(
+      (
+        [
+          ["name", { name: `fence_${uniq()}` }],
+          ["label", { label: "after" }],
+          ["description", { description: "after" }],
+          [
+            "inputSchema",
+            {
+              inputSchema: {
+                type: "object",
+                properties: { a: { type: "string" } },
+              },
+            },
+          ],
+          ["code", { code: "return 2;" }],
+          ["enabled", { enabled: false }],
+          ["silenceTruncationAlert", { silenceTruncationAlert: true }],
+        ] as const
+      ).map(([column, patch]) => [
+        column,
+        (id: bigint) =>
+          updateCodeTool(
+            ctx(),
+            id,
+            {
+              ...patch,
+              ...(column === "name" ? { name: `fence_${uniq()}` } : {}),
+            },
+            appDb,
+          ),
+      ]),
+    ),
+  },
+  {
+    model: "McpServerConnection",
+    action: "mcp_connection.update",
+    create: async () =>
+      BigInt(
+        (
+          await createMcpConnection(
+            ctx(),
+            {
+              name: `m${uniq()}`,
+              transport: "streamableHttp",
+              url: outboundUrl("/mcp"),
+            },
+            appDb,
+          )
+        ).id,
+      ),
+    columns: {
+      ...Object.fromEntries(
+        (
+          [
+            ["name", () => ({ name: `m${uniq()}` })],
+            ["transport", () => ({ transport: "sse" })],
+            ["url", () => ({ url: outboundUrl("/mcp2") })],
+            [
+              "credentialRef",
+              async () => ({ credentialRef: await vaultRef() }),
+            ],
+            ["headers", () => ({ headers: { "X-Fence": "1" } })],
+            ["enabled", () => ({ enabled: false })],
+          ] as const
+        ).map(([column, patch]) => [
+          column,
+          async (id: bigint) =>
+            updateMcpConnection(
+              ctx(),
+              id,
+              (await patch()) as McpConnectionUpdate,
+              appDb,
+            ),
+        ]),
+      ),
+      // A stdio row is planted past the server switch that refuses the transport, and the switch is
+      // opened only for the edit: what is measured is the projection of a row that exists.
+      command: async (id: bigint) => {
+        await su?.$executeRawUnsafe(
+          `UPDATE mcp_server_connections SET transport = 'stdio', url = NULL, command = 'bunx before' WHERE id = ${id}`,
+        );
+        const stdioBefore = config.mcpStdioEnabled;
+        config.mcpStdioEnabled = true;
+        try {
+          await updateMcpConnection(
+            ctx(),
+            id,
+            { command: "bunx after" },
+            appDb,
+          );
+        } finally {
+          config.mcpStdioEnabled = stdioBefore;
+        }
+      },
+    },
+  },
+  {
+    model: "IntegrationInstance",
+    action: "integration.update",
+    create: async () =>
+      (
+        await createIntegrationInstance(
+          ctx(),
+          { catalogType: "ASAAS", name: `i${uniq()}` },
+          appDb,
+        )
+      ).id,
+    columns: {
+      ...Object.fromEntries(
+        (
+          [
+            ["name", () => ({ name: `i${uniq()}` })],
+            ["enabled", () => ({ enabled: false })],
+            ["config", () => ({ config: { timeoutMs: 5000 } })],
+            [
+              "credentialRef",
+              async () => ({ credentialRef: await vaultRef() }),
+            ],
+            [
+              "inboundAuthStrategy",
+              () => ({ inboundAuthStrategy: "HMAC_SHA256" }),
+            ],
+            [
+              "inboundSecretRef",
+              async () => ({ inboundSecretRef: await vaultRef() }),
+            ],
+          ] as const
+        ).map(([column, patch]) => [
+          column,
+          async (id: bigint) =>
+            updateIntegrationInstance(
+              ctx(),
+              id,
+              (await patch()) as Parameters<
+                typeof updateIntegrationInstance
+              >[2],
+              appDb,
+            ),
+        ]),
+      ),
+      catalogType:
+        "fixed at creation: the update path has no field for it, and the row names the type it was created as",
+      routeToken:
+        "the inbound credential itself: the route authenticates by nothing else, and the change that matters to it has an action of its own (integration.rotate_token)",
+      routeTokenHash: "the verifier for that same credential",
+    },
+  },
+  {
+    model: "Experiment",
+    action: "experiment.update",
+    create: async () =>
+      (
+        await createExperiment({
+          ctx: ctx(),
+          name: `e${uniq()}`,
+          agentId: experimentAgentId,
+          variants: [
+            { key: "a", systemPrompt: "A", weight: 1 },
+            { key: "b", systemPrompt: "B", weight: 1 },
+          ],
+          base: appDb,
+        })
+      ).id,
+    columns: {
+      name: (id) =>
+        updateExperiment({ ctx: ctx(), id, name: `e${uniq()}`, base: appDb }),
+      agentId: async (id) =>
+        updateExperiment({
+          ctx: ctx(),
+          id,
+          agentId: (
+            await su?.agent.create({
+              data: { tenantId, name: "AUD399 other", systemPrompt: "" },
+              select: { id: true },
+            })
+          )?.id as bigint,
+          base: appDb,
+        }),
+      variants: (id) =>
+        updateExperiment({
+          ctx: ctx(),
+          id,
+          variants: [
+            { key: "a", systemPrompt: "A2", weight: 1 },
+            { key: "b", systemPrompt: "B", weight: 1 },
+          ],
+          base: appDb,
+        }),
+      enabled: (id) =>
+        updateExperiment({ ctx: ctx(), id, enabled: false, base: appDb }),
+    },
+  },
+  {
+    model: "DocumentTemplate",
+    action: "document_template.update",
+    create: async () =>
+      BigInt(
+        (
+          await createDocumentTemplate(
+            ctx(),
+            {
+              name: `d${uniq()}`,
+              blocks: [{ id: "t", type: "text", text: "before" }],
+              fields: [],
+            },
+            appDb,
+          )
+        ).id,
+      ),
+    columns: {
+      ...Object.fromEntries(
+        (
+          [
+            ["name", () => ({ name: `d${uniq()}` })],
+            ["slug", () => ({ slug: `d_${uniq()}` })],
+            ["description", () => ({ description: "what it is" })],
+            [
+              "blocks",
+              () => ({ blocks: [{ id: "t", type: "text", text: "after" }] }),
+            ],
+            [
+              "fields",
+              () => ({
+                fields: [{ name: "cliente", label: "Cliente", type: "text" }],
+              }),
+            ],
+            ["style", () => ({ style: { accentColor: "#112233" } })],
+            ["numberPrefix", () => ({ numberPrefix: "ORC-" })],
+            ["enabled", () => ({ enabled: false })],
+            ["requiresApproval", () => ({ requiresApproval: true })],
+            ["approvalTtlHours", () => ({ approvalTtlHours: 48 })],
+          ] as const
+        ).map(([column, patch]) => [
+          column,
+          (id: bigint) =>
+            updateDocumentTemplate(
+              ctx(),
+              id,
+              patch() as Partial<DocumentTemplateInput>,
+              appDb,
+            ),
+        ]),
+      ),
+      lastNumber:
+        "the issuer's counter, advanced by issuing a document and not by editing the template",
+    },
+  },
+  // NOTE: not one of the five, and here because the invariant is about every audited family: this
+  // is the one where the projection sits one column away from the credential itself.
+  {
+    model: "VaultEntry",
+    action: "credential.update",
+    create: async () =>
+      (
+        await createVaultEntry(
+          ctx(),
+          {
+            name: `v${uniq()}`,
+            value: "s3cret",
+            kind: "header",
+            paramName: "X-Before",
+          },
+          undefined,
+          undefined,
+          appDb,
+        )
+      ).id,
+    columns: {
+      name: (id) => updateVaultEntry(ctx(), id, { name: `v${uniq()}` }, appDb),
+      secret: (id) => updateVaultEntry(ctx(), id, { value: "rotated" }, appDb),
+      baseUrl: (id) =>
+        updateVaultEntry(ctx(), id, { baseUrl: outboundUrl("/api") }, appDb),
+      paramName: (id) =>
+        updateVaultEntry(ctx(), id, { paramName: "X-After" }, appDb),
+      status: async (id) => {
+        // A pending entry is one whose secret was never filled; filling it is what moves the status.
+        await su?.$executeRawUnsafe(
+          `UPDATE vault_entries SET status = 'pending' WHERE id = ${id}`,
+        );
+        await updateVaultEntry(ctx(), id, { value: "filled" }, appDb);
+      },
+      kind: "fixed at creation: the update path refuses to change it, and the row names the kind it was created as",
+    },
   },
 ];
 
@@ -768,35 +1197,75 @@ describe.skipIf(!dbUp)(
 
     // ── the two routes that look like mutations and are not ──
     //
-    // Asserted on the SOURCE rather than by driving them: the discover opens a real MCP connection,
-    // so a behavioural probe spends the network timeout and proves nothing the text does not say.
     // The trail records changes, and these two change nothing (`docs/mcp.md` says the same of the
-    // MCP twin of the first).
+    // MCP twin of the first). Each is driven to a real answer, so an empty trail is the absence of a
+    // write and not a call that failed before reaching one.
 
-    test("discover and preview record nothing, and the predicate can tell", async () => {
-      const conns = await Bun.file(
-        "src/modules/mcp-connections/service.ts",
-      ).text();
-      const docs = await Bun.file("src/modules/documents/templates.ts").text();
-      const bodyOf = (src: string, fn: string) => {
-        const start = [`export async function ${fn}(`, `export function ${fn}(`]
-          .map((a) => src.indexOf(a))
-          .find((i) => i >= 0);
-        if (start === undefined) throw new Error(`${fn} not found`);
-        const next = src.indexOf("\nexport ", start + 1);
-        return src.slice(start, next < 0 ? undefined : next);
-      };
-      // Positive control, on this same file's own writers: the predicate finds the call where there
-      // IS one, so a green below is the absence of a write and not a broken matcher.
-      expect(bodyOf(conns, "createMcpConnection")).toContain("auditMutation(");
-      expect(bodyOf(docs, "createDocumentTemplate")).toContain(
-        "auditMutation(",
+    test("previewing a draft records nothing", async () => {
+      await clearAudit();
+      const bytes = await previewDocumentTemplate(
+        ctx(),
+        {
+          name: "Rascunho",
+          blocks: [{ id: "t", type: "text", text: "Olá {{cliente}}" }],
+          fields: [{ name: "cliente", label: "Cliente", type: "text" }],
+        },
+        appDb,
       );
+      expect(bytes.byteLength).toBeGreaterThan(0);
+      expect(await rows()).toEqual([]);
+    });
 
-      expect(bodyOf(conns, "discoverMcpTools")).not.toContain("auditMutation(");
-      expect(bodyOf(docs, "previewDocumentTemplate")).not.toContain(
-        "auditMutation(",
+    test("discovering a connection's tools records nothing", async () => {
+      // The transport needs a real socket, so the fixture server runs in its own process and
+      // the natives tests/dom-setup.ts kept stand in for the DOM preload's fetch while it is asked.
+      const NATIVE = ["fetch", "Headers", "AbortController", "AbortSignal"];
+      const g = globalThis as unknown as Record<string, unknown>;
+      const domGlobals = Object.fromEntries(NATIVE.map((k) => [k, g[k]]));
+      const privateBefore = config.ssrf.allowPrivateTargets;
+      const proc = Bun.spawn(
+        [
+          "bun",
+          new URL("../fixtures/mcp/header-echo-server.ts", import.meta.url)
+            .pathname,
+        ],
+        { stdout: "pipe", stderr: "inherit" },
       );
+      try {
+        config.ssrf.allowPrivateTargets = true;
+        for (const k of NATIVE) {
+          g[k] = g[`Bun${k[0]?.toUpperCase()}${k.slice(1)}`];
+        }
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+        let buf = "";
+        const port = await until(
+          "the MCP fixture to print its port",
+          async () => {
+            const { value } = await reader.read();
+            buf += new TextDecoder().decode(value ?? new Uint8Array());
+            return /"port":(\d+)/.exec(buf)?.[1];
+          },
+        );
+        reader.releaseLock();
+        const conn = await createMcpConnection(
+          ctx(),
+          {
+            name: `discover-${uniq()}`,
+            transport: "streamableHttp",
+            url: `http://127.0.0.1:${port}/mcp`,
+          },
+          appDb,
+        );
+        await clearAudit();
+        const found = await discoverMcpTools(ctx(), BigInt(conn.id), appDb);
+        expect(JSON.stringify(found)).toContain("whoami");
+        expect(await rows()).toEqual([]);
+        await deleteMcpConnection(ctx(), BigInt(conn.id), appDb);
+      } finally {
+        proc.kill();
+        config.ssrf.allowPrivateTargets = privateBefore;
+        for (const k of NATIVE) g[k] = domGlobals[k];
+      }
     });
 
     // The row says THAT the undisclosed half moved and nothing about what it holds: not the value
@@ -1101,262 +1570,33 @@ describe.skipIf(!dbUp)(
       ).not.toContain("sk-399-in-an-argument");
     });
 
-    // ── the fence: every mutable column is in one half or the other ──
+    // ── the fence: every mutable column, moved alone, writes a row ──
     //
-    // The cases above are instances of ONE mistake, a column in neither half, so the columns come
-    // out of `prisma/schema.prisma` and a column added to any of these models fails this test until
-    // its author decides which half it belongs in. Counting off the projections instead would only
-    // ever agree with itself: count the DECLARATION, not the projection of it.
+    // The cases above are instances of ONE mistake, a column in neither half (not projected, and not
+    // compared as undisclosed), whose edit then records nothing. So the columns come out of the
+    // generated client, and each one is moved ALONE through its own service: the edit has to leave
+    // exactly one update row. A column added to any of these models fails the census until its
+    // author gives it an edit or a reason, and an undisclosed name the service does not read
+    // compares `undefined` with `undefined` and fails its own edit.
 
-    test("every mutable column of the five models is projected, compared, or exempt with a reason", async () => {
-      const schema = await Bun.file("prisma/schema.prisma").text();
-      const missing: string[] = [];
-      for (const f of FENCED) {
-        const cols = mutableColumns(schema, f.model);
-        // A model whose columns cannot be read is a broken matcher, not a clean model.
-        expect(cols.length).toBeGreaterThan(2);
-        const src = await Bun.file(f.file).text();
-        const covered = coveredColumns(src);
-        for (const c of cols) {
-          if (c in f.exempt || c in (f.whole ?? {}) || covered.has(c)) continue;
-          missing.push(`${f.model}.${c}`);
+    for (const f of FENCED) {
+      describe(f.model, () => {
+        test("every mutable column has an edit that moves it, or a reason it has none", () => {
+          expect(mutableColumns(f.model)).toEqual(
+            Object.keys(f.columns).sort(),
+          );
+        });
+
+        for (const [column, edit] of Object.entries(f.columns)) {
+          if (typeof edit === "string") continue;
+          test(`${column}: an edit that moves only it writes a row`, async () => {
+            const id = await f.create();
+            await clearAudit();
+            await edit(id);
+            expect((await rows(f.action)).length).toBe(1);
+          });
         }
-      }
-      expect(missing).toEqual([]);
-    });
-
-    test("every undisclosed name is a column the service actually reads", async () => {
-      const unread: string[] = [];
-      for (const f of FENCED) {
-        const src = await Bun.file(f.file).text();
-        const selected = selectedColumns(src);
-        // A select that cannot be read is a broken matcher, not a module with no columns.
-        expect(selected.size).toBeGreaterThan(2);
-        for (const n of undisclosedNames(src)) {
-          if (!selected.has(n)) unread.push(`${f.model}.${n}`);
-        }
-      }
-      expect(unread).toEqual([]);
-    });
-
-    test("the fence's two halves catch what they are for, over bodies the tree does not hold", () => {
-      const schema = `
-enum Mood {
-  HAPPY
-  SAD
-}
-
-model Widget {
-  id        BigInt   @id
-  tenantId  BigInt
-  name      String
-  secretBag Json
-  count     Int      @default(0)
-  mood      Mood     @default(HAPPY)
-  owner     Tenant   @relation(fields: [tenantId], references: [id])
-  parts     Part[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-`;
-      // Relations and the four columns the row already holds in its own columns are not the
-      // projection's business; every scalar and every enum is — and `Tenant`/`Part` are recognised
-      // as relations WITHOUT either being declared in this fixture, which is what the allowlist
-      // buys over asking whether a type is a model here.
-      expect(mutableColumns(schema, "Widget")).toEqual([
-        "count",
-        "mood",
-        "name",
-        "secretBag",
-      ]);
-      // A model that is not there reads as no columns, which the test above turns into a failure
-      // rather than a silent pass.
-      expect(mutableColumns(schema, "Missing")).toEqual([]);
-
-      const complete = `function auditProjection(r: Row) {
-  return { name: r.name };
-}
-const UNDISCLOSED = ["secretBag", "count"] as const;`;
-      const leaky = `function auditProjection(r: Row) {
-  return { name: r.name };
-}
-const UNDISCLOSED = ["secretBag"] as const;`;
-      expect(coveredColumns(complete)).toEqual(
-        new Set(["name", "secretBag", "count"]),
-      );
-      // NOTE: a column read nowhere in the projection, so it moves and the row does not.
-      expect(coveredColumns(leaky).has("count")).toBe(false);
-      // NOTE: a pair that only OPENS as a whole-value pair does not count: a `.map(redact)` under the
-      // same key (as on `allowedHosts`) reports less than the column.
-      expect(
-        coveredColumns(`function auditProjection(r: Row) {
-  return { name: r.name.map(redact) };
-}
-const UNDISCLOSED = [] as const;`).has("name"),
-      ).toBe(false);
-      // And the extraction stops at the function, so a mention further down the file does not vouch
-      // for a projection that omits it.
-      expect(
-        coveredColumns(`${leaky}\nfunction other() { return r.count; }`).has(
-          "count",
-        ),
-      ).toBe(false);
-    });
+      });
+    }
   },
 );
-
-// The columns a projection answers for: every scalar the model declares, minus the four the audit
-// row already holds in its own columns and minus every relation. Enums count as scalars — an
-// inbound auth strategy is a policy an operator changes — so relations are told apart by being
-// declared as `model` in the same schema.
-export function mutableColumns(schema: string, model: string): string[] {
-  // An ALLOWLIST of what counts, not a denylist of what does not. Told the other way round ("a
-  // type that is a model in this schema is a relation"), the predicate quietly admits any type it
-  // does not recognise, and a relation to a model declared elsewhere, or a type this file has not
-  // heard of, becomes a column the fence then demands a projection for. Enums are on the list
-  // because an inbound auth strategy IS a policy an operator changes.
-  const SCALARS = new Set([
-    "String",
-    "Int",
-    "BigInt",
-    "Boolean",
-    "DateTime",
-    "Json",
-    "Float",
-    "Decimal",
-    "Bytes",
-  ]);
-  const enums = new Set(
-    [...schema.matchAll(/^enum\s+(\w+)/gm)].map((m) => m[1] as string),
-  );
-  const block = new RegExp(
-    `^model\\s+${model}\\s*\\{([\\s\\S]*?)^\\}`,
-    "m",
-  ).exec(schema);
-  if (!block?.[1]) return [];
-  const skip = new Set(["id", "tenantId", "createdAt", "updatedAt"]);
-  const out: string[] = [];
-  for (const line of block[1].split("\n")) {
-    const m = /^\s*(\w+)\s+(\w+)(\[\])?\??/.exec(line);
-    if (!m?.[1] || !m[2]) continue;
-    const [, name, type] = m;
-    if (skip.has(name)) continue;
-    if (!SCALARS.has(type) && !enums.has(type)) continue;
-    out.push(name);
-  }
-  return out.sort();
-}
-
-// Which columns a change to would MOVE the projection, not which ones it mentions:
-// `urlMasked: redactEndpoint(r.urlTemplate)` mentions `urlTemplate` while reporting only its origin,
-// so an edit of the path moves nothing. A column counts in exactly two shapes: named in the module's
-// `UNDISCLOSED` list, which the update path compares whole; or as a whole-value pair, `name: r.name`,
-// that ENDS there (`allowedHosts: r.allowedHosts.map(hostForAudit)` opens the same way and reports a
-// redacted list). A transformed projection has to be listed as well; the one lossless transform is
-// declared per family in `FENCED[].whole`, with its reason.
-export function coveredColumns(source: string): Set<string> {
-  const start = source.indexOf("function auditProjection(");
-  if (start < 0) return new Set();
-  // Bounded at the function, so a `r.column` anywhere else in the file cannot vouch for it.
-  const next = source.indexOf("\nfunction ", start + 1);
-  const body = source.slice(start, next < 0 ? undefined : next);
-  const out = new Set<string>();
-  // The undisclosed half is a DECLARATION rather than a call, so the fence reads the list itself.
-  // It is matched over the whole file: the list sits beside the projection, not inside it.
-  const listed = /const UNDISCLOSED = \[([\s\S]*?)\] as const;/.exec(source);
-  for (const m of (listed?.[1] ?? "").matchAll(/"(\w+)"/g)) {
-    out.add(m[1] as string);
-  }
-  for (const m of body.matchAll(/\b(\w+):\s*r\.\1\s*(?=[,\n}])/g)) {
-    out.add(m[1] as string);
-  }
-  return out;
-}
-
-// The names in `UNDISCLOSED` are compared against the ROWS the service read, so a name that is not
-// a key of those rows compares `undefined` to `undefined` on every save — always equal, forever
-// silent, and the column it was meant to cover is uncovered while the fence above reads as
-// satisfied. That is the same hole this whole PR exists to close, one level down, so the list is
-// checked against the module's own `select` rather than trusted.
-export function selectedColumns(source: string): Set<string> {
-  const block = /^const [A-Z_]*SELECT[A-Z_]* = \{([\s\S]*?)^\} as const;/m.exec(
-    source,
-  );
-  const out = new Set<string>();
-  for (const m of (block?.[1] ?? "").matchAll(/^\s*(\w+):\s*true,/gm)) {
-    out.add(m[1] as string);
-  }
-  return out;
-}
-
-export function undisclosedNames(source: string): string[] {
-  const listed = /const UNDISCLOSED = \[([\s\S]*?)\] as const;/.exec(source);
-  return [...(listed?.[1] ?? "").matchAll(/"(\w+)"/g)].map(
-    (m) => m[1] as string,
-  );
-}
-
-const FENCED: {
-  model: string;
-  file: string;
-  exempt: Record<string, string>;
-  // Carried in FULL by the projection, through a transform that loses nothing. Separate from
-  // `exempt`, which is the opposite claim: a column deliberately in neither half.
-  whole?: Record<string, string>;
-}[] = [
-  {
-    model: "ToolDefinition",
-    file: "src/modules/tool-definitions/service.ts",
-    exempt: {},
-    whole: {
-      conversationRefIntegrationId:
-        "projected whole, as a decimal string, because the audit columns are jsonb and JSON has no BigInt (issue #818)",
-    },
-  },
-  {
-    model: "CodeToolDefinition",
-    file: "src/modules/code-tools/service.ts",
-    exempt: {},
-  },
-  {
-    model: "McpServerConnection",
-    file: "src/modules/mcp-connections/service.ts",
-    exempt: {},
-  },
-  {
-    model: "IntegrationInstance",
-    file: "src/modules/integrations/service.ts",
-    exempt: {
-      routeToken:
-        "the inbound credential itself: the route authenticates by nothing else, and the change that matters to it has an action of its own (integration.rotate_token)",
-      routeTokenHash: "the verifier for that same credential",
-    },
-  },
-  {
-    model: "Experiment",
-    file: "src/modules/experiments/service.ts",
-    exempt: {},
-    whole: {
-      agentId:
-        "projected whole, as a decimal string, because the audit columns are jsonb and JSON has no BigInt",
-    },
-  },
-  {
-    model: "DocumentTemplate",
-    file: "src/modules/documents/templates.ts",
-    exempt: {
-      lastNumber:
-        "the issuer's counter, advanced by issuing a document and not by editing the template",
-    },
-  },
-  // NOTE: not one of the five, and here because the invariant is about every audited family: this
-  // is the one where the projection sits one column away from the credential itself.
-  {
-    model: "VaultEntry",
-    file: "src/modules/vault/service.ts",
-    exempt: {},
-    whole: {
-      id: "projected whole, as a decimal string, because the audit columns are jsonb and JSON has no BigInt",
-    },
-  },
-];

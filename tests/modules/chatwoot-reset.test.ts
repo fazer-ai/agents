@@ -7,7 +7,6 @@ import {
   test,
 } from "bun:test";
 import { createHmac } from "node:crypto";
-import { join } from "node:path";
 import { HumanMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -28,6 +27,7 @@ import {
 import { enqueueJob } from "@/modules/scheduler/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import { isOwnershipRead } from "../utils/ownership-read";
 
 // /reset drives real ChatwootClient calls (the command path builds its own client, and no
@@ -533,22 +533,41 @@ describe.skipIf(!dbUp)(
       expect(job?.status).toBe("DONE");
     });
 
-    // NOTE: o carimbo é escrito ANTES da limpeza, e o teste afirma isso pelo fonte porque o
-    // comportamento que a ordem protege não é montável aqui. `clearContactMemory` apaga o
-    // checkpoint por último, e ele vive em outro pool que nenhum rollback nosso alcança: um
-    // statement nosso depois dele, falhando, restauraria a thread e os resumos ao lado de um
-    // checkpoint que já foi. Escrito antes, uma limpeza que falha leva a fronteira junto. Nos dois
-    // casos a coluna termina como estava, então uma asserção sobre a ordem no arquivo é o que
-    // sobra.
+    // O carimbo é escrito ANTES da limpeza. `clearContactMemory` apaga o checkpoint por último, e
+    // ele vive em outro pool que nenhum rollback nosso alcança: um carimbo depois dele, falhando,
+    // restauraria a thread e os resumos ao lado de um checkpoint que já foi. Aqui o carimbo é recusado
+    // por uma trigger, e o checkpoint tem que sobreviver.
     test("the clear's own boundary is written before the memory is deleted", async () => {
-      const fonte = await Bun.file(
-        join(import.meta.dir, "../../src/modules/chatwoot/webhook.ts"),
-      ).text();
-      const carimbo = fonte.indexOf("SET memory_cleared_at_message_id");
-      const limpeza = fonte.indexOf("await clearContactMemory({");
-      expect(carimbo).toBeGreaterThan(0);
-      expect(limpeza).toBeGreaterThan(0);
-      expect(carimbo).toBeLessThan(limpeza);
+      const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      const cp = await getCheckpointer();
+      await buildThreadStateGraph(cp).updateState(
+        { configurable: { thread_id: threadId } },
+        { messages: [new HumanMessage("orçamento de R$ 250 aprovado")] },
+        THREAD_STATE_NODE,
+      );
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { id: true },
+      });
+      const fn = `refuse_cleared_stamp_${process.pid}`;
+      await suDb.$executeRawUnsafe(
+        `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'boundary refused'; END $$`,
+      );
+      await suDb.$executeRawUnsafe(
+        `CREATE TRIGGER ${fn} BEFORE UPDATE ON conversations FOR EACH ROW WHEN (NEW.id = ${conv.id} AND NEW.memory_cleared_at_message_id IS DISTINCT FROM OLD.memory_cleared_at_message_id) EXECUTE FUNCTION ${fn}()`,
+      );
+      try {
+        const cw = fakeChatwoot();
+        globalThis.fetch = cw.impl;
+        await sendReset();
+        expect(
+          await cp.get({ configurable: { thread_id: threadId } }),
+        ).toBeTruthy();
+      } finally {
+        await suDb.$executeRawUnsafe(`DROP TRIGGER ${fn} ON conversations`);
+        await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+        await cp.deleteThread(threadId);
+      }
     });
 
     // NOTE: o fato de que a limpeza aconteceu fica na conversa, escrito pela transação que apagou a
@@ -629,6 +648,19 @@ describe.skipIf(!dbUp)(
       expect(byKey.has(`ingest:${threadId}:901`)).toBe(false);
       expect(byKey.has(`ingest:${threadId}:903`)).toBe(false);
       expect(byKey.get(`ingest:${otherThread}:902`)).toBe("PENDING");
+      // The DEAD row was a death nobody had announced yet, and erasing it erases the only place
+      // it could be found, so the reset owes its line. The revoked live rows are cancelled work, not
+      // deaths, and write nothing.
+      const announced = await flowLogRows(suDb, {
+        // flowlog-scope: tenant-wide. A dead letter has no turn to read by; the lines name their jobs,
+        // and the keys below carry this test's thread.
+        where: { tenantId, stage: "dead_letter" },
+      });
+      expect(
+        announced
+          .map((l) => (l.detail as Record<string, unknown>).dedupeKey)
+          .filter((k) => String(k).startsWith(`ingest:${threadId}:`)),
+      ).toEqual([`ingest:${threadId}:903`]);
     });
 
     // NOTE: the revoke stops at the episode boundary. It runs early in the command, but the command
@@ -2529,6 +2561,32 @@ describe.skipIf(!dbUp)(
             ?.custom_attributes !== undefined,
       );
       expect(card?.body).toEqual({ task: { custom_attributes: {} } });
+    });
+
+    // NOTE: /teste opens a clean episode like /reset does, and the silence fence reads the LATER of the
+    // customer's word and ours, so both anchors have to clear: left standing, either one alone lets
+    // the sweep recreate the follow-up the command just ended.
+    test("/teste clears both anchors of the silence fence", async () => {
+      const where = {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: CONV_ID,
+        },
+      };
+      await suDb.conversation.update({
+        where,
+        data: { lastFollowUpAt: new Date(), lastRepliedAt: new Date() },
+      });
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset("/teste");
+      expect(
+        await suDb.conversation.findUniqueOrThrow({
+          where,
+          select: { lastFollowUpAt: true, lastRepliedAt: true },
+        }),
+      ).toEqual({ lastFollowUpAt: null, lastRepliedAt: null });
     });
 
     // NOTE: /teste lifts the test-mode silence and nothing else, so on a conversation a human is

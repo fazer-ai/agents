@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { HumanMessage } from "@langchain/core/messages";
 import {
   cleanTranscription,
   renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
+import { rebuildPlaygroundTurns } from "@/modules/playground/sessions";
 
 describe("cleanTranscription", () => {
   test("drops Whisper's Amara.org silence hallucination", () => {
@@ -54,24 +54,19 @@ describe("renderInboundMessage", () => {
     expect(out.toLowerCase()).toContain("não foi possível ler");
   });
 
-  // NOTE: `unwrapFileMarker` (src/modules/playground/sessions.ts) reconhece este marcador por
-  // `startsWith` para remontar o anexo na tela; reescrever a frase quebraria aquele lado em silêncio.
-  // A asserção lê o prefixo do fonte de lá, porque a função não é exportada e uma cópia do literal
-  // aqui só provaria que o render concorda consigo mesmo.
+  // A sessão do playground remonta o anexo a partir deste marcador ao reabrir; reescrever a frase
+  // quebraria aquele lado em silêncio. As duas pontas, de verdade: o render escreve, a remontagem lê.
   test("the marker keeps the prefix the playground matches on", () => {
-    const sessions = readFileSync(
-      join(import.meta.dir, "../../src/modules/playground/sessions.ts"),
-      "utf8",
-    );
-    const prefixos = [
-      ...sessions.matchAll(/raw\.startsWith\("(<usuário [^"]+)"\)/g),
-    ].map((m) => m[1] as string);
-    // NOTE: se o outro lado deixar de casar por prefixo, a cerca falha alto em vez de passar com
-    // uma lista vazia.
-    expect(prefixos.length).toBeGreaterThanOrEqual(2);
-    for (const tipo of ["image", "file"] as const) {
+    for (const [tipo, kind] of [
+      ["image", "image"],
+      ["file", "unsupported"],
+    ] as const) {
       const out = renderInboundMessage({ text: "", attachmentTypes: [tipo] });
-      expect(prefixos.some((pref) => out.startsWith(pref))).toBe(true);
+      const [turn] = rebuildPlaygroundTurns([
+        new HumanMessage({ content: out, id: `m-${tipo}` }),
+      ]);
+      expect(turn?.extractKind).toBe(kind);
+      expect(turn?.text).toBe("");
     }
   });
 

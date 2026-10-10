@@ -12,6 +12,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import config from "@/config";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import {
@@ -4019,23 +4020,46 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("a closing line that could not be written is not swallowed", async () => {
-    // The only trace of how the loss ended, written after the row has already left DEAD — so a
-    // failed write loses it for good and nothing retries it. The branch cannot be reached
-    // behaviourally: making `writeFlowEvent` fail against a real database means faking the client
-    // out from under `runScopedOn`, which proves nothing about the shipped code. Asserted where it
-    // is written instead, the same way tests/modules/delivery-sweep.test.ts asserts its two.
-    const src = await Bun.file(
-      new URL(
-        "../../src/modules/chatwoot/recover-delivery.ts",
-        import.meta.url,
-      ),
-    ).text();
-    const tail = src.slice(src.indexOf("const closed = await writeFlowEvent("));
-    expect(tail).toContain("if (!closed.delivered)");
-    // Error, not warn: the loss has left the worklist and the page an operator received stays open.
-    expect(tail.slice(tail.indexOf("if (!closed.delivered)"))).toContain(
-      "logger.error(",
+    // The only trace of how the loss ended, written after the row has already left DEAD, so a
+    // failed write loses it for good and nothing retries it. A trigger refuses that one line.
+    const convId = 8877;
+    const messageId = 9377;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "voltou?" }]),
+    });
+    const fn = `refuse_closing_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'closing line refused'; END $$`,
     );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON execution_logs FOR EACH ROW WHEN (NEW.tenant_id = ${tenantId} AND NEW.stage = 'delivery' AND NEW.detail->>'outcome' = 'recovered' AND NEW.detail->>'messageId' = '${messageId}') EXECUTE FUNCTION ${fn}()`,
+    );
+    const errors = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      // Error, not warn: the loss has left the worklist and the page an operator received stays open.
+      expect(
+        errors.mock.calls.some((c) =>
+          String(c[0]).includes("its closing line could not be written"),
+        ),
+      ).toBe(true);
+    } finally {
+      errors.mockRestore();
+      await suDb.$executeRawUnsafe(`DROP TRIGGER ${fn} ON execution_logs`);
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
   });
 
   test("a turn that starts while the recovery is reading is not raced", async () => {
@@ -4507,27 +4531,46 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
 
   test("a delivery path that throws puts the row back where it found it", async () => {
     // A throw escaping `processChatwootDelivery` after the claim would leave the row on
-    // PROCESSING, waiting for the sweep again, time it may not have against the age ceiling. Not
-    // reachable behaviourally: the path catches its turn, media pass, mirror write and client build;
-    // only a scoped query failing (pool timeout, deadlock) escapes. Asserted on the source, as
-    // tests/modules/delivery-sweep.test.ts does for its unreachable branch.
-    const src = await Bun.file(
-      new URL(
-        "../../src/modules/chatwoot/recover-delivery.ts",
-        import.meta.url,
-      ),
-    ).text();
-    const tail = src.slice(
-      src.indexOf("    outcome = await processChatwootDelivery("),
+    // PROCESSING, waiting for the sweep again, time it may not have against the age ceiling. The path
+    // catches its turn, media pass, mirror write and client build; what escapes is a scoped write
+    // failing, here the settle that marks the row processed, refused by a trigger.
+    const convId = 8878;
+    const messageId = 9378;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const fn = `refuse_settle_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'settle refused'; END $$`,
     );
-    const block = tail.slice(0, tail.indexOf("\n  const closed"));
-    // Guarded on the state this pass left it in, so a late tx2 that got through is never overwritten.
-    // The write itself is `putRowBack`, which has its own DB-backed tests below; what only the source
-    // can say is which state THIS branch names.
-    expect(block).toContain('from: "PROCESSING"');
-    // Never `unreachable`: the account was read before the claim. The two exits are covered
-    // behaviourally in the job tests below.
-    expect(block).not.toContain('return "unreachable"');
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE UPDATE ON chatwoot_webhook_deliveries FOR EACH ROW WHEN (NEW.id = ${rowId} AND NEW.status::text = 'PROCESSED') EXECUTE FUNCTION ${fn}()`,
+    );
+    const errors = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      // Never `unreachable`, since the account was read before the claim: the error reaches the job
+      // with its cause, and the row is back where the next recovery can claim it.
+      await expect(
+        recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).rejects.toThrow("recovery: the delivery path failed: ");
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    } finally {
+      errors.mockRestore();
+      await suDb.$executeRawUnsafe(
+        `DROP TRIGGER ${fn} ON chatwoot_webhook_deliveries`,
+      );
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
   });
 
   test("nothing awaits between the fence answering free and the mark that holds it", async () => {
@@ -4592,28 +4635,39 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   test("the turn's failure is reported by the turn, never by the block around it", async () => {
-    // `{ kind: "error" }` from `onDirectTurn` costs a SECOND TURN (answered twice, tools rerun).
-    // The direct-turn block also wraps the bookkeeping after the turn, so reported from the enclosing
-    // catch, "the turn ANSWERED and a later write failed" would read as a failure. Those writes
-    // swallow their own errors, which is not a contract. Structural: the PATH must not exist.
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
-    ).text();
-    const call = src.indexOf("const outcome = await runAgentTurn({");
-    expect(call).toBeGreaterThan(-1);
-    // The error report is inside the turn's own rejection handler, which starts at the `.then(`
-    // that settles it and ends before the bookkeeping does.
-    const settle = src.indexOf(").then(", call);
-    expect(settle).toBeGreaterThan(-1);
-    const handler = src.slice(settle, src.indexOf("\n          );", settle));
-    expect(handler).toContain('onDirectTurn?.({ kind: "error", error: err })');
-    expect(handler).toContain('onDirectTurn?.({ kind: "outcome"');
-    // And NOWHERE else in the file, which is what rules out the enclosing catch: the bookkeeping
-    // between the settlement and the catch may throw without this module hearing about it.
-    const reports = src.split('onDirectTurn?.({ kind: "error"').length - 1;
-    expect(reports).toBe(1);
-    const outcomes = src.split('onDirectTurn?.({ kind: "outcome"').length - 1;
-    expect(outcomes).toBe(1);
+    // `{ kind: "error" }` from `onDirectTurn` costs a SECOND TURN (answered twice, tools rerun). The
+    // direct-turn block also wraps the bookkeeping after the turn, so a step there that throws after
+    // the turn ANSWERED must not read as a failed turn. The first step after it, its log line, throws.
+    const convId = 8879;
+    const messageId = 9379;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const info = spyOn(logger, "info").mockImplementation(((msg: unknown) => {
+      if (String(msg).startsWith("chatwoot agent turn:")) {
+        throw new Error("bookkeeping after the turn failed");
+      }
+    }) as typeof logger.info);
+    const errors = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      expect(stub.sent).toHaveLength(1);
+    } finally {
+      info.mockRestore();
+      errors.mockRestore();
+    }
   });
 
   describe("putting the row back", () => {

@@ -12,7 +12,6 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { transcriptFromRows } from "@/modules/observe/job";
-import { codeOnly } from "@/tests/utils/source-text";
 
 // On an email inbox the request is often in the subject line and nowhere else (the body is empty,
 // or a client footer like "Enviado do meu iPhone"), so a message built from `content` alone reaches
@@ -326,6 +325,10 @@ describe("a subject-only email is a message everywhere, not just in the renderer
   });
 });
 
+// The other readers are driven with a subject-only email where they run: the direct turn and the
+// flush in nothing-to-answer.test.ts, the observer's burst in debounce-monitoring-flush.test.ts,
+// the spend-ceiling gate in spend-ceiling-gate-e2e.test.ts, and the fold of a message no turn covered
+// in email-subject-unhandled-ingest.test.ts.
 describe("every reader of a Chatwoot message asks the SAME mapping", () => {
   test("the observer's transcript carries the subject too", () => {
     // The observer classifies the conversation by label; reading a subject-only email as a
@@ -341,35 +344,5 @@ describe("every reader of a Chatwoot message asks the SAME mapping", () => {
 
   test("and it still drops what really is blank", () => {
     expect(transcriptFromRows([row({ id: 7021 })], 10)).toEqual([]);
-  });
-
-  test("FENCE: no call site builds the renderable by hand", async () => {
-    // NOTE: four readers build what the agent reads from two sources (`incomingRenderable` for a
-    // delivered event, `toRenderable` for a fetched row), and each hand-written copy is a place the
-    // NEXT field will not reach. Asserted on the source, since a behavioural test only catches the
-    // copy that exists today. `src/modules/playground/service.ts` is out: its input never came from
-    // Chatwoot and has no `content_attributes`.
-    for (const path of [
-      "src/modules/chatwoot/webhook.ts",
-      "src/modules/observe/job.ts",
-      "src/modules/debounce/handler.ts",
-      "src/graph/runtime.ts",
-    ]) {
-      // Comments and literals out through the shared scanner (`tests/utils/source-text.ts`),
-      // not a local regex: a `//` line between the call and its argument would trip the fence, and
-      // a `//` inside a string is not a comment at all.
-      const src = codeOnly(
-        await Bun.file(new URL(`../../${path}`, import.meta.url)).text(),
-      );
-      const calls = [
-        ...src.matchAll(/renderInboundMessage\(\s*([\s\S]{0,24})/g),
-      ]
-        .map((m) => m[1]?.trimStart() ?? "")
-        .filter(
-          (arg) =>
-            !/^(incomingRenderable\(|toRenderable\(|renderable\b)/.test(arg),
-        );
-      expect(`${path}: ${calls.join(" | ")}`).toBe(`${path}: `);
-    }
   });
 });

@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  spyOn,
+  test,
+} from "bun:test";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
@@ -8,6 +16,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
+import config from "@/config";
 import { DATA_FENCE, nudgeOccasionKey, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { recordAppointment } from "@/modules/appointments/record";
@@ -402,20 +411,6 @@ describe("the start a reminder is judged and worded by", () => {
       );
     });
   }
-
-  // The table proves the rule; this proves the handler obeys it, which is a separate claim: a pure
-  // unit can be correct and unused. Read from source because the only branch that separates the two
-  // starts needs a live Google lookup answering differently from the payload, and standing up an
-  // OAuth credential to assert one argument would test the harness instead of the rule.
-  test("the handler words the reminder with the authoritative start, not the payload's", async () => {
-    const src = await Bun.file("src/modules/appointments/reminders.ts").text();
-    // One consumer, so "the call site" is a thing that can be checked at all.
-    expect([...src.matchAll(/reminderNudge\(\{/g)]).toHaveLength(1);
-    const call = src.slice(src.indexOf("reminderNudge({"));
-    expect(call.slice(0, call.indexOf("})"))).toContain(
-      "startISO: authoritativeReminderStart(",
-    );
-  });
 });
 
 describe("computeReminderJobs and the record read one parser", () => {
@@ -622,6 +617,13 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         lastInboundAt: new Date(),
       },
     });
+  });
+
+  // Every test here messages the same conversation, so the deliveries one leaves behind count against
+  // the next one's proactive limit for the day.
+  beforeEach(async () => {
+    if (!dbUp) return;
+    await suDb.agentTurnDelivery.deleteMany({ where: { tenantId } });
   });
 
   afterAll(async () => {
@@ -1415,6 +1417,83 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     // The negative above is only worth something next to this: without it, a fence that suppressed
     // EVERY reminder would pass.
     expect(s.sent.map(([c]) => c)).toEqual([CONV_ID]);
+  });
+
+  // The table proves the rule; this proves the handler obeys it, which is a separate claim: a pure
+  // unit can be correct and unused. The calendar moved the event later, so the armed snapshot has
+  // passed while the live start is ahead, and the sentence the model words from must name the live one.
+  test("the handler words the reminder with the calendar's start, not the payload's", async () => {
+    const snapshot = new Date(Date.now() - 60_000).toISOString();
+    const liveStart = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    const google = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "google-moved",
+        kind: "google_oauth",
+        secret: encryptJson({
+          clientId: "c",
+          clientSecret: "s",
+          accessToken: "fresh",
+          refreshToken: "r",
+          expiresAt: Date.now() + 3_600_000,
+        }),
+      },
+      select: { id: true },
+    });
+    const job = await armed("reminder:evt-moved:60", {
+      isLast: true,
+      credentialRef: `vault:${google.id}`,
+      startISO: snapshot,
+    });
+    const s = stubClient();
+    const prompts: string[] = [];
+    class CapturingModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-fake";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        prompts.push(messages.map((m) => String(m.content)).join("\n"));
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    const realFetch = globalThis.fetch;
+    const privateBefore = config.ssrf.allowPrivateTargets;
+    // NOTE: the lookup goes to Google's fixed origin; skipping the resolver keeps the test offline.
+    config.ssrf.allowPrivateTargets = true;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (!String(input).startsWith("https://www.googleapis.com/")) {
+        throw new Error(`unexpected fetch ${String(input)}`);
+      }
+      return Response.json({
+        status: "confirmed",
+        summary: "Consulta",
+        start: { dateTime: liveStart },
+      });
+    }) as typeof fetch;
+    try {
+      await appointmentReminderHandler(job, appDb, {
+        makeModel: () => new CapturingModel(),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+      config.ssrf.allowPrivateTargets = privateBefore;
+    }
+
+    expect(s.sent.map(([c]) => c)).toEqual([CONV_ID]);
+    const prompt = prompts.join("\n");
+    expect(prompt).toContain(liveStart);
+    expect(prompt).not.toContain(snapshot);
   });
 });
 

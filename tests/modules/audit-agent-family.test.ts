@@ -16,6 +16,7 @@ import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsSet, promptSet } from "@/modules/mcp/write";
 import { agentUpdate } from "@/modules/mcp/write-agents";
+import { underConcurrentEdit } from "@/tests/utils/pg-waits";
 
 // The agent-configuration trail, recorded by the service, so every transport (console REST, MCP,
 // API key) leaves the same row.
@@ -97,91 +98,6 @@ async function seedAgent(over: Record<string, unknown> = {}) {
   );
 }
 
-// The snapshot a row is built from has to be read UNDER the lock that serializes the write. The
-// window otherwise needs two transactions to interleave at one instant, which no behavioural test
-// pins, so the rule is asserted on the source. `lockedBeforeSnapshot` is extracted so the fixtures
-// below prove it catches the wrong order, which a scan over a clean tree never would.
-export function lockedBeforeSnapshot(
-  body: string,
-  snapshot: string,
-): "locked" | "unlocked" | "not found" {
-  // Comment lines are dropped FIRST: `updateAgent` explains its lock in a NOTE above taking
-  // it, so a scan of the raw text finds "FOR UPDATE" in the prose and reports every order as locked.
-  const code = body
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("//"))
-    .join("\n");
-  // The UPDATE family, both spellings: the fence is about a lock that SERIALIZES the write,
-  // and `FOR NO KEY UPDATE` conflicts with itself like `FOR UPDATE` does. The SHARE family does NOT
-  // count: two writers can hold it at once, so a snapshot read under one is still a race.
-  const lock = code.search(/FOR (?:NO KEY )?UPDATE/);
-  const snap = code.indexOf(snapshot);
-  if (lock < 0 || snap < 0) return "not found";
-  return lock < snap ? "locked" : "unlocked";
-}
-
-function bodyOf(src: string, fn: string): string {
-  // Both spellings: the functions this file reads mix `export function` and
-  // `export async function`, and anchoring on one would throw rather than fail an assertion.
-  const start = [`export async function ${fn}(`, `export function ${fn}(`]
-    .map((a) => src.indexOf(a))
-    .find((i) => i >= 0);
-  if (start === undefined) throw new Error(`${fn} not found`);
-  const next = src.indexOf("\nexport ", start + 1);
-  return src.slice(start, next < 0 ? undefined : next);
-}
-
-describe("the audit snapshot is read under the write's lock", () => {
-  test("the predicate catches the order this PR was reviewed for", () => {
-    // Positive control: the snapshot read before the lock, and after it.
-    const wrong = "const before = read(SNAP);\nawait sql`… FOR UPDATE`;";
-    const right = "await sql`… FOR UPDATE`;\nconst before = read(SNAP);";
-    expect(lockedBeforeSnapshot(wrong, "SNAP")).toBe("unlocked");
-    expect(lockedBeforeSnapshot(right, "SNAP")).toBe("locked");
-    expect(lockedBeforeSnapshot("nothing here", "SNAP")).toBe("not found");
-    // NO KEY UPDATE serializes and counts; a share lock does not, and must read as no lock at all.
-    expect(
-      lockedBeforeSnapshot(
-        "await sql`… FOR NO KEY UPDATE`;\nconst before = read(SNAP);",
-        "SNAP",
-      ),
-    ).toBe("locked");
-    expect(
-      lockedBeforeSnapshot(
-        "await sql`… FOR KEY SHARE`;\nconst before = read(SNAP);",
-        "SNAP",
-      ),
-    ).toBe("not found");
-    // And prose that names the pattern, which a text-level fence would misread.
-    const commented = `// the FOR UPDATE below serializes it\n${wrong}`;
-    expect(lockedBeforeSnapshot(commented, "SNAP")).toBe("unlocked");
-  });
-
-  test("updateAgent locks the row before reading the row the trail compares", async () => {
-    const src = await Bun.file("src/modules/agents/service.ts").text();
-    expect(
-      lockedBeforeSnapshot(bodyOf(src, "updateAgent"), "select: AGENT_SELECT"),
-    ).toBe("locked");
-  });
-
-  test("deleteAgent locks the row before reading the name it records", async () => {
-    const src = await Bun.file("src/modules/agents/service.ts").text();
-    expect(
-      lockedBeforeSnapshot(bodyOf(src, "deleteAgent"), "doomedRows[0]"),
-    ).toBe("locked");
-  });
-
-  test("replaceAgentToolSelections locks the agent before reading the grants it records", async () => {
-    const src = await Bun.file("src/modules/agents/service.ts").text();
-    expect(
-      lockedBeforeSnapshot(
-        bodyOf(src, "replaceAgentToolSelections"),
-        "readGrantSet(db, agentId)",
-      ),
-    ).toBe("locked");
-  });
-});
-
 describe("the two snapshots are canonicalized at ONE instant", () => {
   // The phantom row this prevents is a race — the window is the gap between two synchronous calls —
   // so what is asserted here is the MECHANISM it rests on, deterministically: that the reader really
@@ -215,21 +131,30 @@ describe("the two snapshots are canonicalized at ONE instant", () => {
     }
   });
 
-  test("the clock is read ONCE for the whole comparison", async () => {
-    // Structural, like the lock ordering below: the race's window is the gap between two
-    // synchronous calls, so a behavioural test passes on the broken code every time.
-    const src = Bun.file("src/modules/agents/audit-projection.ts");
-    const body = bodyOf(await src.text(), "agentUpdateAudit");
-    const clockReads = (b: string) =>
-      b
-        .split("\n")
-        .filter((l) => !l.trim().startsWith("//"))
-        .join("\n")
-        .split("new Date()").length - 1;
-    expect(clockReads(body)).toBe(1);
-    // Positive control: the shape this rules out, and a comment that must not count as one.
-    expect(clockReads("const a = new Date(); const b = new Date();")).toBe(2);
-    expect(clockReads("// new Date() in prose\nconst a = new Date();")).toBe(1);
+  test("the clock is read ONCE for the whole comparison", () => {
+    // A clock that crosses the expiry between its first read and every later one: a comparison that
+    // read it per side would resolve the unchanged bag two ways and report a settings change.
+    const RealDate = globalThis.Date;
+    let reads = 0;
+    class SteppingDate extends RealDate {
+      constructor(value?: number | string | Date) {
+        if (value === undefined) {
+          super((reads++ === 0 ? open : closed).getTime());
+        } else {
+          super(value);
+        }
+      }
+    }
+    const row = { settings: bag } as Record<string, unknown>;
+    globalThis.Date = SteppingDate as DateConstructor;
+    let audit: ReturnType<typeof agentUpdateAudit>;
+    try {
+      audit = agentUpdateAudit(row, { settings: structuredClone(bag) });
+    } finally {
+      globalThis.Date = RealDate;
+    }
+    expect(reads).toBeGreaterThan(0);
+    expect(audit).toBeNull();
   });
 
   test("an unchanged bag yields no audit, whichever side of the expiry it is read on", () => {
@@ -307,6 +232,76 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     });
     expect(deleted?.before).toEqual({ id: clone.id, name: "the copy" });
     expect(deleted?.after).toBeNull();
+  });
+
+  // The snapshot a row is built from is read UNDER the lock that serializes the write. Each case
+  // changes the agent in a superuser transaction, starts the act, and commits only once the act is
+  // parked behind it: read under the lock, the row records the committed change; read first, it
+  // records the value the change replaced.
+  const underEdit = (
+    edit: Parameters<typeof underConcurrentEdit>[1],
+    act: () => Promise<unknown>,
+  ) => underConcurrentEdit(su as PrismaClient, edit, act);
+
+  test("updateAgent compares against the row a concurrent edit committed", async () => {
+    const agent = await seedAgent();
+    await clearAudit();
+    // Both set the same prompt: the second has nothing left to change, and records nothing.
+    await underEdit(
+      (tx) =>
+        tx.agent.update({
+          where: { id: BigInt(agent.id) },
+          data: { systemPrompt: "both wrote this" },
+        }),
+      () =>
+        updateAgent(
+          ctx(),
+          BigInt(agent.id),
+          { systemPrompt: "both wrote this" },
+          appDb,
+        ),
+    );
+    expect(await rows()).toEqual([]);
+  });
+
+  test("deleteAgent records the name the row had when it went", async () => {
+    const agent = await seedAgent();
+    await clearAudit();
+    await underEdit(
+      (tx) =>
+        tx.agent.update({
+          where: { id: BigInt(agent.id) },
+          data: { name: "renamed meanwhile" },
+        }),
+      () => deleteAgent(ctx(), BigInt(agent.id), appDb),
+    );
+    const [row] = await rows("agent.delete");
+    expect(row?.before).toEqual({ id: agent.id, name: "renamed meanwhile" });
+  });
+
+  test("replaceAgentToolSelections records the grants a concurrent change committed", async () => {
+    const agent = await seedAgent();
+    await clearAudit();
+    await underEdit(
+      async (tx) => {
+        await tx.agent.update({
+          where: { id: BigInt(agent.id) },
+          data: { updatedAt: new Date() },
+        });
+        await tx.agentToolSelection.create({
+          data: {
+            tenantId,
+            agentId: BigInt(agent.id),
+            source: "NATIVE",
+            knowledgeBaseIds: [],
+            enabledTools: ["handoff_to_human"],
+          },
+        });
+      },
+      () => replaceAgentToolSelections(ctx(), BigInt(agent.id), [], appDb),
+    );
+    const [row] = await rows("agent.tools_set");
+    expect(JSON.stringify(row?.before)).toContain("handoff_to_human");
   });
 
   test("replacing the tool grants through the service leaves the grants, before and after", async () => {

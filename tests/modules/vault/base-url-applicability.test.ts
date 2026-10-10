@@ -3,9 +3,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Glob } from "bun";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { loadToolSelections } from "@/graph/tools/assemble";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { credentialCreate } from "@/modules/mcp/write";
+import { runToolTest } from "@/modules/tool-definitions/test-run";
 import {
   BASE_URL_KIND_IDS,
   getSecretType,
@@ -181,19 +183,6 @@ describe("nothing reads a base URL past the gate", () => {
 
   test("every gated client file CALLS the gate", async () => {
     for (const [file, how] of Object.entries(CLIENT_LEDGER)) {
-      if (how !== "gated") continue;
-      const code = codeOnly(await Bun.file(file).text());
-      const calls = [...code.matchAll(/dialableBaseUrl\(/g)].length;
-      expect([file, calls > 0]).toEqual([file, true]);
-    }
-  });
-
-  test("every gated file CALLS the gate, not merely imports it", async () => {
-    // NOTE: the call and not the name: putting a raw `entry.baseUrl` back leaves the import in place,
-    // so a file-contains-the-word check would pass. This fences that the gate is in the file, not that
-    // it wraps the right read: placement is what the resolve-level tests above prove, since these
-    // readers build their own query and a behavioural test would need an agent, tool and grant apiece.
-    for (const [file, how] of Object.entries(LEDGER)) {
       if (how !== "gated") continue;
       const code = codeOnly(await Bun.file(file).text());
       const calls = [...code.matchAll(/dialableBaseUrl\(/g)].length;
@@ -550,5 +539,94 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
       select: { baseUrl: true },
     });
     expect(cleared?.baseUrl).toBeNull();
+  });
+
+  // The two readers that build their own vault query, driven: each hands the tool what the
+  // runtime will dial, so a relative template on a kind that cannot carry a base has no host at all.
+  // A public IP rather than a name, so the stray host never needs a DNS answer to be dialled.
+  const STRAY = "https://8.8.4.4";
+
+  async function strayRow(kind: string, name: string): Promise<string> {
+    const row = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name,
+        secret: encryptJson("sk-legacy"),
+        kind,
+        baseUrl: STRAY,
+      },
+      select: { id: true },
+    });
+    return `vault:${row.id}`;
+  }
+
+  test("an agent's HTTP tool is built with the dialable base, not the row's", async () => {
+    const dead = await strayRow("openai", "bu-assemble-dead");
+    const live = await strayRow("openai_compatible", "bu-assemble-live");
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "bu-assemble", systemPrompt: "x" },
+      select: { id: true },
+    });
+    for (const [name, credentialRef] of [
+      ["bu_dead", dead],
+      ["bu_live", live],
+    ] as const) {
+      const td = await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name,
+          label: name,
+          urlTemplate: "/v1/x",
+          allowedHosts: [],
+          credentialRef,
+        },
+        select: { id: true },
+      });
+      await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId: agent.id,
+          source: "HTTP",
+          toolDefinitionId: td.id,
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+      });
+    }
+    const loaded = await runScopedOn(appDb, ctx(), (db) =>
+      loadToolSelections(db, agent.id),
+    );
+    const base = Object.fromEntries(
+      loaded.httpToolDefs.map((d) => [d.name, d.credentialBaseUrl]),
+    );
+    expect(base).toEqual({ bu_dead: null, bu_live: STRAY });
+  });
+
+  test("the editor's test run never dials a base the kind cannot carry", async () => {
+    const dead = await strayRow("openai", "bu-testrun-dead");
+    const dialled: string[] = [];
+    const err = await runToolTest(
+      ctx(),
+      {
+        definition: {
+          method: "GET",
+          urlTemplate: "/v1/x",
+          allowedHosts: [],
+          inputSchema: {},
+          credentialRef: dead,
+        },
+      },
+      appDb,
+      {
+        resolveCredentialImpl: async () => "sk-legacy",
+        fetchImpl: (async (url: string) => {
+          dialled.push(url);
+          return new Response("{}", { status: 200 });
+        }) as unknown as typeof fetch,
+      },
+    ).catch((e: unknown) => e);
+    expect(dialled).toEqual([]);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).message).toContain("base URL");
   });
 });

@@ -1,72 +1,43 @@
-// EVERY STAGE IN THE CLOSED VOCABULARY HAS A LABEL, AND THE FENCE THAT KEEPS IT THAT WAY.
+// EVERY STAGE IN THE CLOSED VOCABULARY HAS A LABEL.
 //
 // `FLOW_STAGES` is read by five places, and four derive their list from it directly (the
 // alert-channel validator, the /stages endpoint, the MCP enums, the channel picker), so a new stage
 // reaches them for free. The fifth is `flowStageLabel`, a switch: a stage with no `case` falls through
-// to `default` and the Logs page renders the raw slug (`contact_auth`) with nothing red. Fixing only
-// the stage of the day leaves the next one unlabelled, so the criterion is the sweep.
+// to `default` and the Logs page renders the raw slug (`contact_auth`) with nothing red. So every
+// stage in the vocabulary is labelled through the function itself.
 import { describe, expect, test } from "bun:test";
+import type { TFunction } from "i18next";
+import { flowStageLabel } from "@/client/lib/flowLabels";
+import en from "@/client/locales/en.json";
+import ptBR from "@/client/locales/pt-BR.json";
 import { FLOW_STAGES } from "@/modules/flowlog/stages";
 
-const LABELS_FILE = "src/client/lib/flowLabels.ts";
+// Answers with the key it was asked for, so the label shows which catalog entry the stage reads.
+const keyOf = ((key: string) => key) as unknown as TFunction;
 
-// The `case` values of ONE function in the file. Sliced by function, not read whole: `flowLevelLabel`
-// lives in the same source and its cases would otherwise count as stages.
-export function labelledCases(source: string, fn: string): string[] {
-  const start = source.indexOf(`export function ${fn}(`);
-  if (start === -1) return [];
-  const rest = source.slice(start + 1);
-  const end = rest.indexOf("\nexport function ");
-  const body = end === -1 ? rest : rest.slice(0, end);
-  return [...body.matchAll(/\bcase\s+"([a-z_]+)"\s*:/g)].map(
-    (m) => m[1] as string,
-  );
-}
-
-describe("the stage label sweep", () => {
-  // Control positive: the predicate has to SEE a missing case, and has to stay inside its function.
-  test("the predicate reads cases from the function it was asked for", () => {
-    const fixture = `
-export function flowStageLabel(stage: string, t: TFunction): string {
-  switch (stage) {
-    case "route":
-      return t("logs.stage.route", "Routing");
-    case "stt":
-      return t("logs.stage.stt", "Transcription");
-    default:
-      return stage;
-  }
-}
-
-export function flowLevelLabel(level: string, t: TFunction): string {
-  switch (level) {
-    case "warn":
-      return t("logs.level.warn", "Warning");
-    default:
-      return level;
-  }
-}
-`;
-    expect(labelledCases(fixture, "flowStageLabel")).toEqual(["route", "stt"]);
-    expect(labelledCases(fixture, "flowLevelLabel")).toEqual(["warn"]);
-    expect(labelledCases(fixture, "nothingHere")).toEqual([]);
-  });
-
-  test("every stage in the vocabulary has a label case", async () => {
-    // Read at assertion time, never a snapshot: a fence generated from the source it fences goes
-    // green against its own copy of yesterday's file.
-    const source = await Bun.file(LABELS_FILE).text();
-    const labelled = new Set(labelledCases(source, "flowStageLabel"));
-    const missing = FLOW_STAGES.filter((s) => !labelled.has(s));
-    expect(missing).toEqual([]);
-  });
-
-  test("no label case names a stage the vocabulary dropped", async () => {
-    const source = await Bun.file(LABELS_FILE).text();
-    const known = new Set<string>(FLOW_STAGES);
-    const stale = labelledCases(source, "flowStageLabel").filter(
-      (s) => !known.has(s),
+describe("the stage labels", () => {
+  test("every stage in the vocabulary is labelled from its own catalog entry", () => {
+    const unlabelled = FLOW_STAGES.filter(
+      (stage) => flowStageLabel(stage, keyOf) !== `logs.stage.${stage}`,
     );
-    expect(stale).toEqual([]);
+    expect(unlabelled).toEqual([]);
+  });
+
+  // The other direction: a stage the vocabulary dropped keeps its label only while its copy stays in
+  // the catalogs, so every stage the catalogs carry copy for has to still be one.
+  test("no stage the catalogs carry copy for has left the vocabulary", () => {
+    const known = new Set<string>(FLOW_STAGES);
+    for (const catalog of [en, ptBR]) {
+      const stale = Object.keys(catalog.logs.stage).filter(
+        (stage) => !known.has(stage),
+      );
+      expect(stale).toEqual([]);
+    }
+  });
+
+  // The control: a slug outside the vocabulary is what `default` answers with, so the test above is
+  // measuring the cases and not a function that labels everything.
+  test("a stage outside the vocabulary comes back as its raw slug", () => {
+    expect(flowStageLabel("not_a_stage", keyOf)).toBe("not_a_stage");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { buildHttpTool } from "@/graph/tools/http";
+import { DEFAULT_HTTP_TOOL_TIMEOUT_MS } from "@/graph/tools/http";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { DEFAULT_HTTP_METHOD } from "@/modules/tool-definitions/service";
@@ -179,17 +179,34 @@ describe("runToolTest", () => {
   });
 
   test("no appointment side effect can fire, however the definition is written", async () => {
-    // Not a wiring assertion: `runToolTest` has no closure to pass, so a booking tool under test
-    // cannot reach `appointmentBooked` at all. The fence is that HttpToolDeps here names neither.
-    const src = await Bun.file(
-      "src/modules/tool-definitions/test-run.ts",
-    ).text();
-    const wired = src
-      .split("buildHttpTool(def, {")[1]
-      ?.split("});")[0] as string;
-    expect(wired).not.toContain("appointmentBooked");
-    expect(wired).not.toContain("cancelAppointment");
-    expect(wired).not.toContain("emitAck");
+    // A definition that declares a booking, answered by a booking: the run reports what the provider
+    // said and records nothing, so nothing fails to record either.
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          method: "POST",
+          urlTemplate: `https://${PUBLIC}/v1/appointments`,
+          inputSchema: {},
+          appointment: {
+            action: "book",
+            idPath: "data.id",
+            startPath: "data.start",
+          },
+        } as never,
+      },
+      noDb,
+      {
+        fetchImpl: stub(
+          {},
+          200,
+          '{"data":{"id":"ap_1","start":"2026-09-02T14:00:00-03:00"}}',
+        ),
+      },
+    );
+    expect(r.failed).toBe(false);
+    expect(r.notes).toEqual([]);
   });
 });
 
@@ -259,22 +276,32 @@ describe("runToolTest — the same request the saved tool would make", () => {
 
   test("waits no longer than a turn does, and keeps no clock of its own", async () => {
     // A test more patient than the runtime reports a clean 200 for an endpoint that aborts on every
-    // real call, which is the one number this screen exists to show. Proven at the source because
-    // the alternative is a test that sits for ten seconds: what has to hold is that the file names
-    // no timeout of its own.
-    const src = await Bun.file(
-      "src/modules/tool-definitions/test-run.ts",
-    ).text();
-    // The runtime's constant is what production passes; a test may hand a shorter one, and what
-    // must not exist is a number of this file's own.
-    expect(src).toMatch(
-      /timeoutMs:\s*(?:deps\.timeoutMs\s*\?\?\s*)?DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
-    );
-    // NOTE: AND NO DEADLINE AT ALL: the runtime's bound covers the whole exchange, so a timer here
-    // would be a second answer to the same question, a divergence between console and runtime.
-    expect(src).not.toMatch(/setTimeout\(/);
-    expect(src).not.toMatch(/timeoutMs:\s*\d/);
-    expect(src).not.toMatch(/TIMEOUT_MS\s*=\s*\d/);
+    // real call. The timers armed during a run are read off `setTimeout`: one, the runtime's bound.
+    const armed = async (deps: Parameters<typeof runToolTest>[3]) => {
+      const delays: number[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+        delays.push(ms ?? 0);
+        return realSetTimeout(fn, ms);
+      }) as typeof setTimeout;
+      try {
+        await runToolTest(
+          ctx,
+          { definition: base, args: { cnpj: "1" } },
+          noDb,
+          deps,
+        );
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+      }
+      return delays;
+    };
+    expect(await armed({ fetchImpl: stub({}, 200) })).toEqual([
+      DEFAULT_HTTP_TOOL_TIMEOUT_MS,
+    ]);
+    expect(await armed({ fetchImpl: stub({}, 200), timeoutMs: 150 })).toEqual([
+      150,
+    ]);
   });
 
   test("a required field left blank is refused as a bad request, naming the field", async () => {
@@ -415,76 +442,47 @@ describe("runToolTest — the same request the saved tool would make", () => {
 describe("runToolTest — the capture wrapper is invisible to the runtime", () => {
   test("a body that arrives after the bound ends the call, wrapper or no wrapper", async () => {
     // There is one bound, over the whole exchange (a bound on the HEADERS alone lets the runtime
-    // answer `HTTP 200` where the preview aborts), so both sides end together and the clone ends with
-    // them. A short timeout on `buildHttpTool`, not `runToolTest`: the real bound is ten seconds and
-    // the property is the ORDERING, not the number.
-    const provider = (async (_u: string, init: RequestInit) =>
-      new Response(
-        new ReadableStream({
-          start(c) {
-            c.enqueue(new TextEncoder().encode('{"a":'));
-            const t = setTimeout(() => {
-              c.enqueue(new TextEncoder().encode("1}"));
-              c.close();
-            }, 400);
-            init.signal?.addEventListener("abort", () => {
-              clearTimeout(t);
-              c.error(new Error("The operation was aborted."));
-            });
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      )) as unknown as typeof fetch;
-
-    // What `test-run.ts` hands `buildHttpTool`, read out of the file so this cannot pass against a
-    // wrapper the module no longer uses.
-    const src = await Bun.file(
-      "src/modules/tool-definitions/test-run.ts",
-    ).text();
-    expect(src).toContain(".clone()");
-    expect(src).not.toMatch(/const body = await res\.text\(\)/);
-    expect(src).not.toMatch(/return new Response\(body/);
-
-    let captured: Promise<string> | null = null;
-    const wrapper = (async (u: string, i: RequestInit) => {
-      const res = await provider(u, i);
-      captured = res
-        .clone()
-        .text()
-        .catch(() => "");
-      return res;
-    }) as unknown as typeof fetch;
-
-    const tool = buildHttpTool(
+    // answer `HTTP 200` where the preview aborts), so the provider's stream is cut at the bound and
+    // the run answers then, not when the body would have finished.
+    let aborted = false;
+    const t0 = Date.now();
+    const err = await runToolTest(
+      ctx,
       {
-        name: "t",
-        method: "GET",
-        urlTemplate: `https://${PUBLIC}/v1/x`,
-        allowedHosts: [PUBLIC],
-        headers: {},
-        inputSchema: {},
-        expectedStatuses: [],
-        credentialRef: null,
-        credentialKind: null,
-        credentialParamName: null,
-        credentialBaseUrl: null,
-        ackMessage: null,
-        outputSchema: undefined,
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        },
       },
+      noDb,
       {
-        resolveCredential: async () => null,
         timeoutMs: 150,
-        fetchImpl: wrapper,
+        fetchImpl: (async (_u: string, init: RequestInit) =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"a":'));
+                const t = setTimeout(() => {
+                  c.enqueue(new TextEncoder().encode("1}"));
+                  c.close();
+                }, 1_500);
+                init.signal?.addEventListener("abort", () => {
+                  aborted = true;
+                  clearTimeout(t);
+                  c.error(new Error("The operation was aborted."));
+                });
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
       },
-    );
-    // The body is 400ms behind a 150ms bound, so the bound is what answers.
-    const err = (await tool.invoke({}).catch((e: unknown) => e)) as Error;
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/did not answer within 0\.15s/);
-    // And the clone dies with it rather than outliving the call it was cloned from — which is what
-    // makes the capture invisible: it can no longer answer for a request the runtime refused.
-    expect(await (captured as unknown as Promise<string>)).toBe("");
-  });
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(504);
+    expect(aborted).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1_500);
+  }, 10_000);
 
   test("and the streamed body still reaches the operator whole", async () => {
     // The other half of the clone: not delaying the fetch must not cost the raw body, which is the

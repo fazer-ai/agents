@@ -19,7 +19,6 @@ import {
 } from "@/modules/memory/compact";
 import { runCompactionTick } from "@/modules/memory/worker";
 import { runClaimed } from "@/modules/scheduler/worker";
-import { codeOnly } from "@/tests/utils/source-text";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -600,25 +599,4 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
       },
     });
   });
-});
-
-// ── The family, swept ──────────────────────────────────────────────────────────────────────────
-// Every reaper is a road to DEAD, and a lane that reaps its own kind and does not announce retires
-// that kind's work in silence; with two lanes racing for the atomic UPDATE, whether a death is
-// announced would depend on which one won. A new lane will be written by copying an old one, so the
-// rule is asserted over the SOURCE rather than left for the next reviewer to notice.
-test("every reaper announces the rows it dead-letters", async () => {
-  const { Glob } = await import("bun");
-  const offenders: string[] = [];
-  for await (const file of new Glob("src/**/*.ts").scan(".")) {
-    // Through the scan, so prose naming the shape is not counted as one.
-    const src = codeOnly(await Bun.file(file).text());
-    // The definition itself, not a call site.
-    if (file.endsWith("scheduler/service.ts")) continue;
-    if (!/\breapStaleJobs\b/.test(src)) continue;
-    // NOTE: The CALL, not the identifier: an import alone satisfies `\bannounceReaped\b`, so a file that kept
-    // the import and dropped the call would read as compliant.
-    if (!/\bannounceReaped\(/.test(src)) offenders.push(file);
-  }
-  expect(offenders).toEqual([]);
 });

@@ -217,33 +217,96 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     expect(await suDb.user.count({ where: { id: keep } })).toBe(1);
   });
 
-  // The one property with no behavioural test, pinned on the source instead of left unsaid: the
-  // scope is locked BEFORE any row, in both writers. That order is what makes the family free of
-  // lock cycles, and losing it does not fail a test — it produces a deadlock under an interleaving
-  // no test can force (a target read as an AGENT while somebody promotes it).
-  test("both writers lock the scope before they lock a row", async () => {
-    const src = await Bun.file(
-      new URL("../../src/api/features/admin/admin.service.ts", import.meta.url),
-    ).text();
-    const code = src.replace(/^\s*\/\/.*$/gm, "");
-    // Every path through a writer is one scope-lock call followed by its row locks: S = the scope
-    // locks, R = a row lock (the membership for a tenant administrator, the person for the fleet).
-    // A row lock ahead of a scope lock, or a second scope lock after a row lock on the same path, is
-    // the shape that brings the cycle back.
-    for (const fn of ["setMembershipRole", "updateUserRole", "deleteUser"]) {
-      const start = code.search(new RegExp(`async function ${fn}\\(`));
-      expect(start).toBeGreaterThan(-1);
-      const rest = code.slice(start + 1);
-      const end = rest.search(/\n(export )?(async )?function /);
-      const body = end === -1 ? rest : rest.slice(0, end);
-      const locks = [
-        ...body.matchAll(/lockAdminScopes\(|lockMembership\(|lockPerson\(/g),
-      ]
-        .map((m) => (m[0].startsWith("lockAdminScopes") ? "S" : "R"))
-        .join("");
-      // updateUserRole's tenant path delegates to setMembershipRole; its fleet path locks on its own.
-      expect(locks).toMatch(/^(SR+)+$/);
+  // The scope is locked BEFORE any row, in both writers. That order is what makes the family free of
+  // lock cycles. Each writer is started while a third transaction holds the scope it needs: it has to
+  // park there, and while it waits the rows it is about to lock must still be free, which a
+  // `NOWAIT` probe from yet another transaction proves.
+  async function holdScope(tenantId: bigint | null): Promise<Holder> {
+    const conn = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl as string }),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let ready!: (pid: number) => void;
+    const got = new Promise<number>((r) => {
+      ready = r;
+    });
+    const key = `admin-scope:${tenantId === null ? "fleet" : tenantId}`;
+    const done = conn
+      .$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key})::bigint)`;
+          const [row] = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pg_backend_pid()::int AS pid`;
+          ready(row?.pid ?? 0);
+          await gate;
+        },
+        { timeout: 30_000, maxWait: 30_000 },
+      )
+      .then(() => conn.$disconnect());
+    return { pid: await got, release, done };
+  }
+
+  async function parksOnTheScopeFirst(
+    scopeOf: bigint | null,
+    userId: bigint,
+    write: () => Promise<unknown>,
+  ) {
+    const holder = await holdScope(scopeOf);
+    const writing = write();
+    writing.catch(() => {});
+    try {
+      expect(
+        await waitUntilBlocked(suDb, holder.pid, 1),
+      ).toBeGreaterThanOrEqual(0);
+      await suDb.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe(
+          `SELECT id FROM tenant_users WHERE user_id = ${userId} FOR UPDATE NOWAIT`,
+        );
+        await tx.$queryRawUnsafe(
+          `SELECT id FROM users WHERE id = ${userId} FOR UPDATE NOWAIT`,
+        );
+      });
+    } finally {
+      holder.release();
+      await holder.done;
+      await writing;
     }
+  }
+
+  test("both writers lock the scope before they lock a row", async () => {
+    const { tenantId, adminIds, agentIds } = await scope(1, 3);
+    const admin = adminIds[0] as bigint;
+    // updateUserRole's tenant path (setMembershipRole): the membership, after the tenant's scope.
+    await parksOnTheScopeFirst(tenantId, agentIds[0] as bigint, () =>
+      updateUserRole(
+        actor(tenantId, admin),
+        agentIds[0] as bigint,
+        { role: "TENANT_ADMIN" },
+        appDb,
+      ),
+    );
+    // deleteUser's tenant path: the membership and the person, after the tenant's scope.
+    await parksOnTheScopeFirst(tenantId, agentIds[1] as bigint, () =>
+      deleteUser(actor(tenantId, admin), agentIds[1] as bigint, appDb),
+    );
+    // deleteUser's fleet path: the person, after every scope it peeked.
+    await parksOnTheScopeFirst(tenantId, agentIds[2] as bigint, () =>
+      deleteUser(actor(null, 999_999n), agentIds[2] as bigint, appDb),
+    );
+    // updateUserRole's fleet path: the person, after the fleet's scope and the tenant it joins.
+    await fleetAdmin(90);
+    const demoted = await fleetAdmin(91);
+    await parksOnTheScopeFirst(null, demoted, () =>
+      updateUserRole(
+        actor(null, 999_999n),
+        demoted,
+        { role: "AGENT", tenantId, demoteFleet: true },
+        appDb,
+      ),
+    );
   });
 
   // Run two writers so they read the scope at the same instant, and PROVE they did: both are parked on

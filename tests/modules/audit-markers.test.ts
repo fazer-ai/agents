@@ -1,29 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { AUDIT_MARKER_KEYS, carriesAuditMarker } from "@/lib/audit/markers";
+import { carriesAuditMarker } from "@/lib/audit/markers";
+import { agentUpdateAudit } from "@/modules/agents/audit-projection";
+import { markUndisclosed } from "@/modules/audit/projection";
 
 // The console renders a row it did not write, so it has to know every marker a producer can put on
 // a projection, nested ones included; a marker it does not know renders an agent edit that moved only
 // unread configuration as "this action recorded no field values", the trail denying a mutation it
 // holds. This file keeps the list true when the next family adds a marker.
 describe("the audit markers a reader has to know", () => {
-  test("every marker a projection module writes is on the list", async () => {
-    const producers = [
-      "../../src/modules/audit/projection.ts",
-      "../../src/modules/agents/audit-projection.ts",
-    ];
-    const found = new Set<string>();
-    for (const rel of producers) {
-      const src = await Bun.file(new URL(rel, import.meta.url)).text();
-      // Comment lines stripped first: both modules DISCUSS the other's marker by name, and a fence
-      // that counts prose finds markers nobody writes.
-      const code = src.replace(/^\s*\/\/.*$/gm, "");
-      for (const m of code.matchAll(/(\w+Changed)\s*:\s*true/g)) {
-        found.add(m[1] as string);
-      }
-    }
-    // Worthless if it matched nothing, which is how a rename turns this green forever.
-    expect(found.size).toBeGreaterThanOrEqual(2);
-    expect([...found].sort()).toEqual([...AUDIT_MARKER_KEYS].sort());
+  // Each producer driven to the change it marks: a write that moved only what the row does not show.
+  test("every marker a projection module writes is one the reader finds", () => {
+    expect(carriesAuditMarker(markUndisclosed({ name: "x" }))).toBe(true);
+    const audit = agentUpdateAudit(
+      { settings: { notARealBlock: { a: 1 } } },
+      { settings: { notARealBlock: { a: 2 } } },
+    );
+    expect(audit).not.toBeNull();
+    expect(carriesAuditMarker(audit?.before)).toBe(true);
+    expect(carriesAuditMarker(audit?.after)).toBe(true);
   });
 
   test("a marker is found wherever a producer puts it, not only at the top", () => {

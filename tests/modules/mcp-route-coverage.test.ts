@@ -1,39 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import api from "@/api";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { ROUTE_COVERAGE } from "@/modules/mcp/route-coverage";
 import { buildMcpServer } from "@/modules/mcp/server";
 
-// Every REST route either has an MCP twin, or says why not, or is a named gap. The table is
-// `src/modules/mcp/route-coverage.ts`, and its header says what each answer means.
+// Every REST route either has an MCP twin, or says why not, or is a named gap. The table is the
+// route-coverage module, and its header says what each answer means.
 
-const CONTROLLERS = join(import.meta.dir, "../../src/api/v1");
-
-// The routes as the controllers spell them. A route is a chained `.get(`/`.post(`/... whose first
-// argument is a path literal, either at the start of a line or right after the constructor
-// (`}).post(`, which is how the two inbound receivers are written). The prefix is the one of the
-// nearest `new Elysia({ prefix })` above it, since two files declare two instances.
+// The routes the mounted API answers, read off the app itself rather than off the controllers' text.
+// The table covers the REST API v1 controllers; the branding feature mounts its console endpoints
+// under the same `/v1` prefix from outside them, so it is left out by name.
 function declaredRoutes(): string[] {
-  const out: string[] = [];
-  for (const file of readdirSync(CONTROLLERS)) {
-    if (!file.endsWith(".controller.ts")) continue;
-    const src = readFileSync(join(CONTROLLERS, file), "utf8");
-    const prefixes = [
-      ...src.matchAll(/new Elysia\(\{[^}]*?prefix:\s*"([^"]*)"/gs),
-    ].map((m) => ({ at: m.index ?? 0, prefix: m[1] ?? "" }));
-    for (const m of src.matchAll(
-      /(?:^\s*|\}\))\.(get|post|put|patch|delete)\(\s*"(\/[^"]*)"/gm,
-    )) {
-      const at = m.index ?? 0;
-      const prefix =
-        prefixes.filter((p) => p.at < at).at(-1)?.prefix ?? "(no prefix)";
-      out.push(`${(m[1] ?? "").toUpperCase()} ${prefix}${m[2]}`);
-    }
-  }
-  return out;
+  return (
+    api as unknown as { routes: { method: string; path: string }[] }
+  ).routes
+    .filter((r) => r.path.startsWith("/v1/"))
+    .filter((r) => !r.path.startsWith("/v1/branding"))
+    .map((r) => `${r.method} ${r.path}`);
 }
 
 async function registeredTools(): Promise<Set<string>> {
@@ -75,7 +60,7 @@ describe("REST routes and their MCP twins", () => {
   const routes = declaredRoutes();
 
   test("the scan finds the routes it is meant to find", () => {
-    // A regex that silently matched nothing would make every check below vacuous.
+    // An enumeration that found nothing would make every check below vacuous.
     expect(routes.length).toBeGreaterThan(200);
     expect(routes).toContain("PATCH /v1/knowledge/documents/:id");
     expect(routes).toContain("POST /v1/chatwoot/webhook/:routeToken");

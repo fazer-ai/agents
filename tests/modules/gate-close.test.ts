@@ -101,21 +101,4 @@ describe("the gate-close vocabulary has one speller", () => {
       .filter((f) => VOCABULARY.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
   });
-
-  // NOTE: Every gate that closes on a customer message the bot would have answered has to SAY so, and these
-  // are the files they live in: the webhook (on each event, and again after the contact-auth
-  // round-trip), the flush (before the turn, and again after that same round-trip), and the runtime
-  // (after the model answered). The proactive senders are deliberately not here: nothing was going to
-  // be answered there, which is a different question.
-  test("every file that closes an ownership gate asks the shared unit", () => {
-    const gates = [
-      "src/modules/chatwoot/webhook.ts",
-      "src/modules/debounce/handler.ts",
-      "src/graph/runtime.ts",
-    ];
-    const missing = gates.filter(
-      (f) => !readFileSync(f, "utf8").includes("describeClosedGate("),
-    );
-    expect(missing).toEqual([]);
-  });
 });

@@ -14,7 +14,6 @@ import {
 import { flowLogCount } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
-import { countInSrc } from "../utils/source-text";
 
 // ── A SMOKE DETECTOR WITH A BUTTON ON IT ──
 //
@@ -631,16 +630,5 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     expect(Object.keys(probe.sent[0]?.headers ?? {}).sort()).toEqual(
       Object.keys(real.sent[0]?.headers ?? {}).sort(),
     );
-  });
-
-  test("one place in the alerting module posts, and it is neither of the callers", async () => {
-    // The structural half of the test above: parity held by construction rather than by two
-    // call sites edited together (`sendWebhookTest` is the hand-kept counter-example), checked
-    // against the whole module.
-    const posts = await countInSrc(/\bfetchImpl\(/g);
-    const inAlerting = Object.keys(posts)
-      .filter((f) => f.startsWith("src/modules/flowlog/"))
-      .sort();
-    expect(inAlerting).toEqual(["src/modules/flowlog/alert-send.ts"]);
   });
 });

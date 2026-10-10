@@ -40,3 +40,69 @@ export async function waitUntilBlocked(
   }
   return -1;
 }
+
+type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
+// Runs `act` while a superuser transaction holds a change to the row it is about to read, and
+// commits that change only once `act` is parked behind it. An act that reads under the row's lock
+// sees the committed change; one that reads first sees the value the change replaced, which is the
+// difference an audit `before` or a guard re-read is asked about. Resolves with what `act` resolved.
+export async function underConcurrentEdit<T>(
+  su: PrismaClient,
+  edit: (tx: Tx) => Promise<unknown>,
+  act: () => Promise<T>,
+): Promise<T> {
+  let acting: Promise<T> | undefined;
+  await su.$transaction(
+    async (tx) => {
+      await edit(tx);
+      const [me] = await tx.$queryRaw<{ pid: number }[]>`
+        SELECT pg_backend_pid() AS pid`;
+      acting = act();
+      acting.catch(() => {});
+      if ((await waitUntilBlocked(su, me?.pid ?? -1, 1, 750)) < 0) {
+        throw new Error("the act never waited on the edited row");
+      }
+    },
+    { timeout: 30_000 },
+  );
+  return await (acting as Promise<T>);
+}
+
+const AUDIT_TRIGGER_FIXTURE_KEY = 546_999_999;
+
+// Runs `body` holding the lock every test that puts a trigger on `audit_logs` takes, across processes.
+// Trigger DDL queues behind any open insert on the table, and while queued it blocks every later
+// insert: under `--parallel`, a file that parks a writer at its audit insert would see another file's
+// CREATE or DROP TRIGGER stall audit writes that have nothing to do with either. The lock is held by
+// a transaction of its own, so `body` keeps the rest of the pool.
+export async function withAuditTriggerFixture<T>(
+  db: PrismaClient,
+  body: () => Promise<T>,
+): Promise<T> {
+  let release!: () => void;
+  const done = new Promise<void>((r) => {
+    release = r;
+  });
+  let acquired!: () => void;
+  const locked = new Promise<void>((r) => {
+    acquired = r;
+  });
+  const holding = db.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(${AUDIT_TRIGGER_FIXTURE_KEY})`,
+      );
+      acquired();
+      await done;
+    },
+    { maxWait: 30_000, timeout: 120_000 },
+  );
+  await Promise.race([locked, holding]);
+  try {
+    return await body();
+  } finally {
+    release();
+    await holding;
+  }
+}

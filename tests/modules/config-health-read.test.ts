@@ -691,13 +691,21 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
     // against the answer actually produced, rather than against a second list of field names that would
     // drift the same way.
     test("the tool's own description names the shape it returns", async () => {
-      const source = await Bun.file(
-        new URL("../../src/modules/mcp/server.ts", import.meta.url),
-      ).text();
-      const start = source.indexOf('"agent_config_health"');
-      expect(start).toBeGreaterThan(0);
-      // The registration block, up to the handler: description plus input schema.
-      const description = source.slice(start, start + 2000);
+      // The description as a client is handed it, from tools/list.
+      const server = buildMcpServer(principal(tenantId));
+      const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverT);
+      const client = new Client({ name: "config-health-shape", version: "0" });
+      await client.connect(clientT);
+      let description = "";
+      try {
+        description =
+          (await client.listTools()).tools.find(
+            (t) => t.name === "agent_config_health",
+          )?.description ?? "";
+      } finally {
+        await client.close();
+      }
       // A SET COMPARISON against the documented shape line, not "is each field mentioned somewhere":
       // the description names these fields more than once, so a presence check passes with one occurrence
       // wrong.

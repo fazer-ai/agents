@@ -795,18 +795,85 @@ export interface IssuedDocumentListItem {
   status: string;
   threadId: string | null;
   conversationId: string | null;
+  // The approval request the document was issued from, null when its template asks for none.
+  approvalRequestId: string | null;
   revoked: boolean;
   createdAt: string;
 }
 
+// LIKE's own wildcards, escaped, so a search for "10%" is the text and not a pattern.
+function likeContains(query: string): string {
+  return `%${query.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+interface IssuedDocumentListOptions {
+  limit?: number;
+  templateId?: bigint;
+  threadId?: string;
+  // Newest first, so the next page is the documents older than the last one shown.
+  before?: bigint;
+  // Part of the printed number (as the customer reads it, prefix and padded counter) or the title.
+  query?: string;
+}
+
+function listTake(limit: number | undefined): number {
+  return Math.min(Math.max(limit ?? 50, 1), 200);
+}
+
 export async function listIssuedDocuments(
   ctx: TenantContext,
-  opts: { limit?: number; templateId?: bigint; threadId?: string } = {},
+  opts: IssuedDocumentListOptions = {},
   base: PrismaClient = basePrisma,
 ): Promise<IssuedDocumentListItem[]> {
-  const take = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.issuedDocument.findMany({
+  return readIssuedDocuments(ctx, opts, listTake(opts.limit), base);
+}
+
+// One page and where the next one starts, null on the last page. Read one row past the page, so
+// "is there more" is the answer of the same query and not a guess from a full page.
+export async function pageIssuedDocuments(
+  ctx: TenantContext,
+  opts: IssuedDocumentListOptions = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ documents: IssuedDocumentListItem[]; nextBefore: string | null }> {
+  const take = listTake(opts.limit);
+  const rows = await readIssuedDocuments(ctx, opts, take + 1, base);
+  const documents = rows.slice(0, take);
+  return {
+    documents,
+    nextBefore:
+      rows.length > take ? (documents[documents.length - 1]?.id ?? null) : null,
+  };
+}
+
+async function readIssuedDocuments(
+  ctx: TenantContext,
+  opts: IssuedDocumentListOptions,
+  take: number,
+  base: PrismaClient,
+): Promise<IssuedDocumentListItem[]> {
+  const query = opts.query?.trim() ?? "";
+  const rows = await runScopedOn(base, ctx, async (db) => {
+    // The printed number is not a column, so a search runs as SQL for the ids and the page is read
+    // by them. Same filters and order either way.
+    let ids: bigint[] | undefined;
+    if (query !== "") {
+      const like = likeContains(query);
+      const found = await db.$queryRaw<{ id: bigint }[]>`
+        SELECT "id" FROM "issued_documents"
+        WHERE "tenant_id" = ${ctx.tenantId}
+          ${opts.templateId !== undefined ? Prisma.sql`AND "template_id" = ${opts.templateId}` : Prisma.empty}
+          ${opts.threadId !== undefined ? Prisma.sql`AND "thread_id" = ${opts.threadId}` : Prisma.empty}
+          ${opts.before !== undefined ? Prisma.sql`AND "id" < ${opts.before}` : Prisma.empty}
+          AND (
+            "title" ILIKE ${like}
+            OR ("number" IS NOT NULL AND COALESCE("number_prefix", '') || lpad("number"::text, GREATEST(4, length("number"::text)), '0') ILIKE ${like})
+          )
+        ORDER BY "id" DESC
+        LIMIT ${take}
+      `;
+      ids = found.map((r) => r.id);
+    }
+    return db.issuedDocument.findMany({
       // `!== undefined`, not truthiness: a caller filtering by template 0 or by the empty thread key
       // would otherwise have its filter dropped and receive the tenant's whole recent list — the
       // widest possible answer to the narrowest possible question.
@@ -815,6 +882,11 @@ export async function listIssuedDocuments(
           ? { templateId: opts.templateId }
           : {}),
         ...(opts.threadId !== undefined ? { threadId: opts.threadId } : {}),
+        ...(ids !== undefined
+          ? { id: { in: ids } }
+          : opts.before !== undefined
+            ? { id: { lt: opts.before } }
+            : {}),
       },
       orderBy: { id: "desc" },
       take,
@@ -829,9 +901,10 @@ export async function listIssuedDocuments(
         revoked: true,
         createdAt: true,
         numberPrefix: true,
+        approvalRequest: { select: { id: true } },
       },
-    }),
-  );
+    });
+  });
   return rows.map((r) => ({
     id: String(r.id),
     title: r.title,
@@ -840,6 +913,7 @@ export async function listIssuedDocuments(
     status: r.status,
     threadId: r.threadId,
     conversationId: r.conversationId ? String(r.conversationId) : null,
+    approvalRequestId: r.approvalRequest ? String(r.approvalRequest.id) : null,
     revoked: r.revoked,
     createdAt: r.createdAt.toISOString(),
   }));

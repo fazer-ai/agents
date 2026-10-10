@@ -9,7 +9,7 @@ import {
   // translate('errors.invalidId', 'Not a valid {{label}}')
   getIssuedDocumentPdf,
   issueDocument,
-  listIssuedDocuments,
+  pageIssuedDocuments,
   revokeIssuedDocument,
 } from "@/modules/documents/issue";
 
@@ -80,7 +80,7 @@ export const documentsController = new Elysia({
     "/",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      documents: await listIssuedDocuments(ctxOrThrow(tenantContext), {
+      ...(await pageIssuedDocuments(ctxOrThrow(tenantContext), {
         limit: query.limit ? Number(query.limit) : undefined,
         // `!== undefined` for the same reason the preview route uses it: `?templateId=0` is a
         // filter, and dropping it answers with EVERY document instead of none. (`limit` above can
@@ -90,7 +90,12 @@ export const documentsController = new Elysia({
             ? requireDbId(query.templateId, "template id")
             : undefined,
         threadId: query.threadId,
-      }),
+        before:
+          query.before !== undefined
+            ? requireDbId(query.before, "document id")
+            : undefined,
+        query: query.q,
+      })),
     }),
     {
       requireRole: "TENANT_ADMIN",
@@ -112,6 +117,20 @@ export const documentsController = new Elysia({
         ),
         threadId: t.Optional(
           t.String({ description: "Only documents issued on this thread." }),
+        ),
+        before: t.Optional(
+          t.String({
+            pattern: "^[0-9]+$",
+            description:
+              "Only documents older than this id: the next page after the last one read.",
+          }),
+        ),
+        q: t.Optional(
+          t.String({
+            maxLength: 200,
+            description:
+              "Part of the printed number (prefix and padded counter, e.g. ORC-0005) or of the title.",
+          }),
         ),
       }),
       detail: doc(

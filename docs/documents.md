@@ -393,11 +393,15 @@ take a whole agent down), and the names that lost are logged for the operator wh
   Adding, removing and reordering blocks is API/MCP only. The panel is split in two: **Templates**
   (the letterhead as a one-line summary that opens an editor, then the templates) and **Issued** (the
   documents that went out, with the template each came from — and the only place a document can be
-  revoked). The same modal opens
+  revoked). The Issued list is searched on the server by part of the printed number (prefix and padded
+  counter, as frozen on the document, so a renamed prefix still finds the old ones) or the title, pages
+  by id (`before`, with `nextBefore` on the REST answer read one row past the page), and links each row
+  to its conversation and, when it went through approval, to its approval request
+  (`approvalRequestId`). The same modal opens
   from the **agent's Tools tab**, on the document card being granted: it is the one grant whose target
   has a picture, and "what does this print?" is the question being answered at that moment.
 - **REST** — `/v1/document-templates` (CRUD, `POST /preview`, `/starters`), `/v1/documents` (issue,
-  list, PDF, revoke), `/v1/tenant-settings/company` (+ `/logo`).
+  list with `q` and `before`, PDF, revoke), `/v1/tenant-settings/company` (+ `/logo`).
 - **MCP** — `document_template_list/get/create/update/delete`, `document_template_schema`,
   `document_starters_list`, `issued_document_list`. `document_template_schema` serves the block
   vocabulary as JSON Schema generated from the validator; see `docs/mcp.md` for why it is not

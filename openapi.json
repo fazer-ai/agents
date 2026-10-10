@@ -41717,6 +41717,26 @@
             }
           },
           {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Only documents older than this id: the next page after the last one read.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "description": "Part of the printed number (prefix and padded counter, e.g. ORC-0005) or of the title.",
+              "type": "string"
+            }
+          },
+          {
             "name": "x-tenant-id",
             "in": "header",
             "required": true,

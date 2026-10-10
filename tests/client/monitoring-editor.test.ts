@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import en from "@/client/locales/en.json";
 import { MONITORING_SECTIONS } from "@/client/pages/agents/BehaviorTab";
 import { watcherTabKeys } from "@/client/pages/agents/editorTabs";
 
@@ -411,9 +412,6 @@ describe("the monitoring hint", () => {
     expect(flat).toContain('{watcher && tab === "general" && (');
   });
   test("does not send a language-model watcher to Observation for what it does", () => {
-    const en = JSON.parse(
-      readFileSync("src/client/locales/en.json", "utf8"),
-    ) as { editor: Record<string, string> };
     expect(en.editor.monitoringTabsHint).not.toContain("Observation");
     expect(en.editor.monitoringTabsHint).toContain("Tools");
   });

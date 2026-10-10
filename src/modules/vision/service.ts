@@ -221,7 +221,12 @@ export async function extractWithRetry(args: {
             return { level: "warn", detail: { unread: kind } };
           },
         },
-        () => args.provider.extract({ ...args.req, timeoutMs: budgetMs }),
+        () =>
+          args.provider.extract({
+            ...args.req,
+            timeoutMs: budgetMs,
+            signal: args.signal,
+          }),
       );
     } catch (err) {
       // NOTE: A permanent failure (a bad key, a model id that does not exist, a file the provider
@@ -519,6 +524,7 @@ async function extractInboundOnce(
     // retrying it would multiply whatever a crafted body asks for.
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: !params.bodyImage,
+      signal: params.signal,
     }));
   } catch (err) {
     if (params.flow) {

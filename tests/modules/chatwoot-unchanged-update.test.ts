@@ -338,6 +338,51 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
     expect(row?.labels).toEqual(["vip"]);
   });
 
+  // A delivery accepted and still waiting for its mirror will write when its turn comes, and at a
+  // tie on the activity clock its older labels win as the last writer.
+  test("a receipt is not dropped while an accepted delivery that would rewrite its conversation waits", async () => {
+    const s = { conv: 1016, msg: 91016, labels: ["vip"] };
+    await deliver(body("message_created", s));
+    const older = { conv: 1016, msg: 91116 };
+    const raw = body("message_created", older);
+    const waiting = await receiveChatwootWebhook({
+      routeToken: tokens[BOT] as string,
+      rawBody: raw,
+      getHeader: signed(raw, `uu-${process.pid}-waiting`),
+      nowSeconds: NOW,
+      base: appDb,
+      ackBase: appDb,
+    });
+    expect(waiting.dispatch).toBe(true);
+    expect((await deliver(body("message_updated", s))).rows).toBe(1);
+    await processRecordedChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: waiting.deliveryRowId as bigint,
+      agentBotId: BOT,
+      normalized: waiting.normalized as NonNullable<typeof waiting.normalized>,
+      receiptBindingGeneration: waiting.receiptBindingGeneration ?? null,
+      base: appDb,
+    });
+    // Mirrored now, and last: the row holds its labels, so a receipt of the first reply heals it.
+    expect((await deliver(body("message_updated", s))).rows).toBe(1);
+  });
+
+  // The inbox row is shared by every conversation of the inbox, and a tie goes to the last writer.
+  test("a receipt is compared with the inbox name the last mirror of the inbox wrote", async () => {
+    const renamed = { conv: 1017, msg: 91017, inboxName: "Novo" };
+    await deliver(body("message_created", renamed));
+    await deliver(
+      body("message_created", { conv: 1018, msg: 91018, inboxName: "Velho" }),
+    );
+    expect((await deliver(body("message_updated", renamed))).rows).toBe(1);
+    const inbox = await suDb.inbox.findFirst({
+      where: { tenantId, chatwootInboxId: 7 },
+      select: { name: true },
+    });
+    expect(inbox?.name).toBe("Novo");
+  });
+
   test("each bot route answers for its own deliveries", async () => {
     const s = { conv: 1009, msg: 91009 };
     await deliver(body("message_created", s));

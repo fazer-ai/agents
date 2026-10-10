@@ -241,7 +241,9 @@ import {
 import type { NormalizedChatwootEvent } from "./types";
 import {
   isUnchangedMessageUpdate,
+  markDeliveryPending,
   rememberOnSuccess,
+  settleDeliveryPending,
 } from "./unchanged-update";
 import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
@@ -1062,6 +1064,16 @@ export async function receiveChatwootWebhook(
       "the delivery could not be recorded; retry",
     );
   }
+  // Owed a first attempt here: until its mirror runs, the rows it would write are not settled, and a
+  // receipt of them is not dropped (./unchanged-update.ts).
+  if (recorded.status === "PENDING") {
+    markDeliveryPending(
+      recorded.rowId,
+      bot.tenantId,
+      bot.instanceId,
+      normalized,
+    );
+  }
   return {
     ack: true,
     outcome: "queued",
@@ -1139,6 +1151,8 @@ export async function handToRecovery(
       { label: `delivery row ${rowId} to recovery`, sleep },
     );
     if (!moved) return false;
+    // The recovery rebuilds the event from Chatwoot as it stands, so this body is never mirrored.
+    settleDeliveryPending(rowId);
   } catch (err) {
     logger.error(
       { err },
@@ -1254,6 +1268,19 @@ export async function processRecordedChatwootDelivery(
     params.agentBotId,
     params.normalized,
   );
+  const outcome = await processRecordedOnce(params, base, rowId, remember);
+  // Its mirror has run (or the recovery took it). A throw leaves it owed, and the rows it would write
+  // stay unsettled until its next attempt here.
+  settleDeliveryPending(rowId);
+  return outcome;
+}
+
+async function processRecordedOnce(
+  params: ProcessRecordedChatwootParams,
+  base: PrismaClient,
+  rowId: bigint,
+  remember: () => void,
+): Promise<"processed" | "skipped"> {
   try {
     const outcome = await processChatwootDelivery({
       tenantId: params.tenantId,

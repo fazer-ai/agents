@@ -8,8 +8,8 @@ import {
   rememberProcessedDelivery,
   resetUnchangedUpdateRecords,
   trackConversationMirror,
-  UNCHANGED_UPDATE_CONVERSATIONS_MAX,
   UNCHANGED_UPDATE_MESSAGES_MAX,
+  UNCHANGED_UPDATE_ROWS_MAX,
   unchangedUpdateRecordSizes,
 } from "@/modules/chatwoot/unchanged-update";
 
@@ -27,6 +27,7 @@ const event = (
   inboxId: 7,
   status: "pending",
   conversationUpdatedAt: 1_791_000_100.5,
+  lastActivityAt: 1_791_000_000,
   message: {
     id: msg,
     content: "resposta",
@@ -63,14 +64,14 @@ describe("unchanged-update records", () => {
   test("the records never exceed their bounds, and an evicted message is processed again", () => {
     const n = Math.max(
       UNCHANGED_UPDATE_MESSAGES_MAX,
-      UNCHANGED_UPDATE_CONVERSATIONS_MAX,
+      UNCHANGED_UPDATE_ROWS_MAX,
     );
     for (let i = 0; i <= n; i++) {
       rememberProcessedDelivery(1n, 1n, 9, event("message_created", i, i));
     }
     const sizes = unchangedUpdateRecordSizes();
     expect(sizes.messages).toBe(UNCHANGED_UPDATE_MESSAGES_MAX);
-    expect(sizes.conversations).toBe(UNCHANGED_UPDATE_CONVERSATIONS_MAX);
+    expect(sizes.rows).toBe(UNCHANGED_UPDATE_ROWS_MAX);
     // The oldest went first; the newest is still held.
     expect(
       isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 0, 0)),
@@ -101,30 +102,37 @@ describe("unchanged-update records", () => {
     ).toBe(false);
   });
 
-  // Two runs of one conversation in flight together commit in an order their completion does not
-  // show, so neither says what the row holds.
+  // Two runs of one conversation with different snapshots in flight together commit in an order their
+  // completion does not show, so neither says what the row holds.
   test("overlapping mirror runs of a conversation leave no record", () => {
     const created = event("message_created", 1, 1);
     rememberProcessedDelivery(1n, 1n, 9, created);
     const a = trackConversationMirror(1n, 1n, created);
-    const b = trackConversationMirror(1n, 1n, created);
-    a.done(true);
+    const b = trackConversationMirror(1n, 1n, { ...created, labels: ["vip"] });
     b.done(true);
+    a.done(true);
     expect(
       isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
     ).toBe(false);
   });
 
-  test("a receipt is not dropped while a mirror of its conversation is in flight", () => {
+  test("a receipt is not dropped while a mirror writing something else to its conversation is in flight", () => {
     const created = event("message_created", 1, 1);
     rememberProcessedDelivery(1n, 1n, 9, created);
-    const run = trackConversationMirror(1n, 1n, created);
+    const run = trackConversationMirror(1n, 1n, {
+      ...created,
+      labels: ["vip"],
+    });
     expect(
       isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
     ).toBe(false);
     run.done(true);
+    // That run wrote its own snapshot, at a tie: the row holds the labels now.
     expect(
-      isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
+      isUnchangedMessageUpdate(1n, 1n, 9, {
+        ...event("message_updated", 1, 1),
+        labels: ["vip"],
+      }),
     ).toBe(true);
   });
 
@@ -148,6 +156,35 @@ describe("unchanged-update records", () => {
     ).rejects.toThrow("the mirror failed");
     expect(
       isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
+    ).toBe(false);
+  });
+
+  const withContact = (msg: number, name: string, at: number) => ({
+    ...event("message_created", msg, msg),
+    lastActivityAt: at,
+    contact: { id: 501, name },
+  });
+
+  // Strictly behind on its clock, a run writes nothing to the row, so what the row holds stands.
+  test("an older snapshot of a shared row does not replace the record", () => {
+    rememberProcessedDelivery(1n, 1n, 9, withContact(1, "Ana", 2_000));
+    rememberProcessedDelivery(1n, 1n, 9, withContact(2, "Bia", 1_000));
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, {
+        ...withContact(1, "Ana", 2_000),
+        event: "message_updated",
+      }),
+    ).toBe(true);
+  });
+
+  test("a newer snapshot of a shared row replaces the record", () => {
+    rememberProcessedDelivery(1n, 1n, 9, withContact(1, "Ana", 1_000));
+    rememberProcessedDelivery(1n, 1n, 9, withContact(2, "Bia", 2_000));
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, {
+        ...withContact(1, "Ana", 1_000),
+        event: "message_updated",
+      }),
     ).toBe(false);
   });
 });

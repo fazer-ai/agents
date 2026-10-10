@@ -338,6 +338,8 @@ export async function drainStoredChatwootDeliveries(
           bindingGeneration: true,
           payload: true,
           receivedAt: true,
+          conversationId: true,
+          inboundMessageId: true,
         },
       }),
     );
@@ -365,6 +367,11 @@ export async function drainStoredChatwootDeliveries(
       );
       continue;
     }
+    // A stored customer message (a control command) may run a turn, so it takes the turn lane.
+    const lane: AdmissionLane =
+      row.conversationId !== null && row.inboundMessageId !== null
+        ? "turn"
+        : "meta";
     const ok = admitChatwootDelivery(
       row.id,
       () =>
@@ -378,11 +385,11 @@ export async function drainStoredChatwootDeliveries(
           base,
           deps: params.deps,
         }),
-      "meta",
+      lane,
       row.receivedAt.getTime(),
     );
     if (ok) admitted++;
-    else if (admissionLaneFull("meta")) break;
+    else if (admissionLaneFull("meta") && admissionLaneFull("turn")) break;
   }
 
   if (admitted > 0 || recovered > 0 || cleared > 0) {

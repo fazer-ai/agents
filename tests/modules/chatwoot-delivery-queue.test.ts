@@ -13,6 +13,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { drainInFlight, resetShutdownForTest } from "@/lib/shutdown";
 import {
   ADMISSION_MAX_WAITING,
+  admissionHolds,
   admitChatwootDelivery,
   chatwootAdmissionState,
   drainStoredChatwootDeliveries,
@@ -636,6 +637,41 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
   });
 
   // ...and is still retried, with the room the others leave, on the very next pass.
+  // A stored control command may run a turn (elsewhere than a test-mode agent it is text the turn
+  // answers), so a full meta lane, which carries the takeovers, neither holds it back nor shares it.
+  test("a stored control command is drained into the turn lane", async () => {
+    resetChatwootAdmissionForTest(1);
+    const body = customerMessage(618, 61_800).replace(
+      '"content":"oi"',
+      '"content":"/reset"',
+    );
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: headers(body, "queue-command"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    const command = r.deliveryRowId as bigint;
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate, "turn");
+    for (let i = 0; i <= ADMISSION_MAX_WAITING; i++)
+      admitChatwootDelivery(BigInt(-10 - i), () => g.gate, "meta");
+    const drained = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(drained.admitted).toBe(1);
+    expect(admissionHolds(command)).toBe(true);
+    resetChatwootAdmissionForTest();
+    g.release();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: command },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   test("a row that failed here is retried on the next pass when the batch has room", async () => {
     resetChatwootAdmissionForTest();
     const failing = await ackOnly("queue-fails-once", 614);

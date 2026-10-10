@@ -238,6 +238,8 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
       base: appDb,
     });
     expect(r.recoverable).toBe(false);
+    // Still a customer message for its lane: elsewhere than a test-mode agent it runs a turn.
+    expect(r.turnBearing).toBe(true);
     const row = (await rowOf("durable-command"))[0];
     expect(decryptJson<string>(row?.payload as string)).toBe(body);
     await suDb.chatwootWebhookDelivery.updateMany({

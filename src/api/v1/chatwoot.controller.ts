@@ -55,7 +55,7 @@ export const chatwootController = new Elysia({
         normalized,
         receivedAt = Date.now(),
       } = result;
-      const lane = result.recoverable === true ? "turn" : "meta";
+      const lane = result.turnBearing === true ? "turn" : "meta";
       // Held already (a redelivery of a row waiting here) is a duplicate, not a full lane.
       const duplicate = admissionHolds(deliveryRowId);
       const admitted = admitChatwootDelivery(
@@ -73,7 +73,8 @@ export const chatwootController = new Elysia({
         receivedAt,
       );
       // Not admitted and not a duplicate: the waiting bound turned it away.
-      if (!admitted && !duplicate && lane === "turn") {
+      // A control command in the turn lane stays PENDING with its body for the drain instead.
+      if (!admitted && !duplicate && result.recoverable === true) {
         // One handoff at a time, behind the others. Failures are logged inside, and a handoff refused
         // or failed leaves the row PENDING, which the next drain hands over.
         queueOverflowHandoff(() =>

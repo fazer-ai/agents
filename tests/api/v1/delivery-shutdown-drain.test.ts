@@ -171,6 +171,7 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
         deliveryRowId: 4n,
         dispatch: true,
         recoverable: true,
+        turnBearing: true,
         agentBotId: null,
         normalized: { event: "message_created" } as NormalizedChatwootEvent,
       }),
@@ -197,6 +198,50 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
     await sleep(5);
     expect(lanes).toEqual(["turn"]);
     expect(handed).toEqual([[4n, "PENDING", "waiting_bound"]]);
+  });
+
+  // A control command may run a turn, so it takes the turn lane; the recovery refuses one, so turned
+  // away it stays PENDING with its body for the drain instead of being handed over.
+  test("Chatwoot: a control command takes the turn lane and is not handed to the recovery", async () => {
+    const lanes: unknown[] = [];
+    const handed: unknown[] = [];
+    restore.push(
+      spyOn(chatwootWebhook, "receiveChatwootWebhook").mockResolvedValue({
+        ack: true,
+        outcome: "queued",
+        tenantId: 1n,
+        instanceId: 1n,
+        deliveryId: "drain-command",
+        deliveryRowId: 6n,
+        dispatch: true,
+        recoverable: false,
+        turnBearing: true,
+        agentBotId: null,
+        normalized: { event: "message_created" } as NormalizedChatwootEvent,
+      }),
+      spyOn(deliveryQueue, "admitChatwootDelivery").mockImplementation(
+        (_id, _run, lane) => {
+          lanes.push(lane);
+          return false;
+        },
+      ),
+      spyOn(chatwootWebhook, "handToRecovery").mockImplementation(
+        async (_base, row) => {
+          handed.push(row.rowId);
+          return true;
+        },
+      ),
+    );
+    const res = await chatwootController.handle(
+      new Request("http://localhost/v1/chatwoot/webhook/tok", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    expect(res.status).toBe(200);
+    await sleep(5);
+    expect(lanes).toEqual(["turn"]);
+    expect(handed).toEqual([]);
   });
 
   // Turned away because this process already holds the row (a redelivery), not because the lane is

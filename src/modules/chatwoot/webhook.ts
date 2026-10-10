@@ -946,9 +946,12 @@ export interface ReceiveChatwootResult {
   // Whether the row still owes its first attempt (PENDING). A redelivery of a settled row is acked
   // and not processed again; one of a row still PENDING is, and the CAS decides.
   dispatch?: boolean;
-  // Whether the delivery recovery can rebuild this delivery: its lane, and where it goes when it is
-  // not processed here (the recovery, rather than a stored body).
+  // Whether the delivery recovery can rebuild this delivery: where it goes when it is not processed
+  // here (the recovery, rather than a stored body).
   recoverable?: boolean;
+  // Whether it is a customer message, which may run a turn: its lane. A control command is one too,
+  // with a stored body, because elsewhere than a test-mode agent it is text a turn answers.
+  turnBearing?: boolean;
   // When the row was first received (epoch ms): a redelivery of an older PENDING row keeps its age.
   receivedAt?: number;
   agentBotId?: number | null;
@@ -1017,8 +1020,8 @@ export async function receiveChatwootWebhook(
   // stay out of the ledger. Encrypted like every other sensitive value at rest. A control command is
   // stored too: the recovery never replays one (`/reset` may already have deleted, ./recover-delivery.ts),
   // so a command no attempt has reached yet is run from its body by the drain, not refused there.
-  const recoverable =
-    isRecoverableStrand(facts) && controlCommand(normalized) === null;
+  const turnBearing = isRecoverableStrand(facts);
+  const recoverable = turnBearing && controlCommand(normalized) === null;
   let recorded: Awaited<ReturnType<typeof recordDeliveryOnAck>>;
   try {
     recorded = await recordDeliveryOnAck(
@@ -1052,6 +1055,7 @@ export async function receiveChatwootWebhook(
     receiptBindingGeneration: recorded.bindingGeneration,
     dispatch: recorded.status === "PENDING",
     recoverable,
+    turnBearing,
     receivedAt: recorded.receivedAt.getTime(),
     agentBotId: bot.agentBotId,
     normalized,

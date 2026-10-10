@@ -190,6 +190,7 @@ import {
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import {
   snoozedFollowUpBlocksSave,
+  snoozedFollowUpStoredIndices,
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "./snoozedFollowUpFormState";
@@ -1119,9 +1120,14 @@ function AgentEditor() {
     followUpSteps: followUp.steps.length,
     snoozedFollowUpEnabled:
       snoozedFollowUp.enabled && agentMode !== "monitoring",
-    snoozedFollowUpSteps: snoozedFollowUp.cadences.map((c) => c.steps.length),
+    // By the index the save writes, which is the one the server names (the screen shows the
+    // default first).
+    snoozedFollowUpSteps: snoozedFollowUpToStored(snoozedFollowUp).cadences.map(
+      (c) => c.steps.length,
+    ),
   };
   const refusalFields = editorRefusalFields(refusalView);
+  const snoozedStoredIndices = snoozedFollowUpStoredIndices(snoozedFollowUp);
 
   // ONE HELD REFUSAL PER FORM THAT WRITES (`capture` is also the clear, so a shared holder
   // lets a second refused save erase the first), as six fixed calls since hooks cannot run in a
@@ -4192,13 +4198,20 @@ function AgentEditor() {
                       currentRef.current[followUpStepField(i)],
                     ),
                   ),
-                  snoozedFollowUpSteps: snoozedFollowUp.cadences.map((c, ci) =>
-                    c.steps.map((_step, i) =>
-                      refusal.at(
-                        snoozedFollowUpStepField(ci, i),
-                        currentRef.current[snoozedFollowUpStepField(ci, i)],
-                      ),
-                    ),
+                  snoozedFollowUpSteps: snoozedFollowUp.cadences.map(
+                    (c, ci) => {
+                      const stored = snoozedStoredIndices[ci] ?? null;
+                      return c.steps.map((_step, i) =>
+                        stored === null
+                          ? null
+                          : refusal.at(
+                              snoozedFollowUpStepField(stored, i),
+                              currentRef.current[
+                                snoozedFollowUpStepField(stored, i)
+                              ],
+                            ),
+                      );
+                    },
                   ),
                 }}
                 dirty={dirty.behavior}

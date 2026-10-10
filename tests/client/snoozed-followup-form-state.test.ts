@@ -4,6 +4,7 @@ import {
   type SnoozedFollowUpState,
   snoozedFollowUpBlocksSave,
   snoozedFollowUpIssues,
+  snoozedFollowUpStoredIndices,
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "@/client/pages/agents/snoozedFollowUpFormState";
@@ -335,5 +336,31 @@ describe("the stored order survives the console showing the default first", () =
       null,
       "vip",
     ]);
+  });
+});
+
+describe("a refusal finds the cadence it names, not the one at that screen position", () => {
+  // The server names a refused note by the index the save wrote; the screen shows the default first.
+  test("each cadence on screen maps to its written index, and an unwritten one to none", () => {
+    const form = snoozedFollowUpToForm({
+      snoozedFollowUp: {
+        enabled: true,
+        cadences: [
+          { label: "vip", steps: [{ instructions: "a" }] },
+          { label: null, steps: [{ instructions: "b" }] },
+        ],
+      },
+    });
+    form.cadences.push({ label: "  ", steps: [newSnoozedStep()] });
+    const written = snoozedFollowUpToStored(form).cadences;
+    const indices = snoozedFollowUpStoredIndices(form);
+    expect(indices).toEqual([1, 0, null]);
+    form.cadences.forEach((c, i) => {
+      const at = indices[i];
+      if (at === null || at === undefined) return;
+      expect(written[at]?.label ?? null).toBe(
+        c.label === null ? null : c.label.trim(),
+      );
+    });
   });
 });

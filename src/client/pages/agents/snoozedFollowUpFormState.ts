@@ -102,6 +102,21 @@ function storedOrder(form: SnoozedFollowUpState): SnoozedCadenceState[] {
   return [...labeled.slice(0, at), ...defaults, ...labeled.slice(at)];
 }
 
+// For each cadence on screen, its index in what `snoozedFollowUpToStored` writes, or null when it is
+// not written (a label never picked). The server names a refused instruction by that index, so a
+// refusal is drawn, owned and cleared through this map, never through the screen position.
+export function snoozedFollowUpStoredIndices(
+  form: SnoozedFollowUpState,
+): (number | null)[] {
+  const written = storedOrder(form).filter(
+    (c) => c.label === null || c.label.trim() !== "",
+  );
+  return form.cadences.map((c) => {
+    const at = written.indexOf(c);
+    return at < 0 ? null : at;
+  });
+}
+
 // What is wrong with one cadence, in the reader's terms. Each one is a cadence the reader would drop
 // or misread.
 export interface SnoozedCadenceIssues {

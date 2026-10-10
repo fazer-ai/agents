@@ -1014,8 +1014,11 @@ export async function receiveChatwootWebhook(
   // The body is stored only for a delivery the delivery recovery cannot rebuild (a status or
   // assignment change, a colleague's reply): that is the one case with no other source if it is not
   // processed now. A customer message the recovery can rebuild is handed to it instead, and its words
-  // stay out of the ledger. Encrypted like every other sensitive value at rest.
-  const recoverable = isRecoverableStrand(facts);
+  // stay out of the ledger. Encrypted like every other sensitive value at rest. A control command is
+  // stored too: the recovery never replays one (`/reset` may already have deleted, ./recover-delivery.ts),
+  // so a command no attempt has reached yet is run from its body by the drain, not refused there.
+  const recoverable =
+    isRecoverableStrand(facts) && controlCommand(normalized) === null;
   let recorded: Awaited<ReturnType<typeof recordDeliveryOnAck>>;
   try {
     recorded = await recordDeliveryOnAck(

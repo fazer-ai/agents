@@ -222,6 +222,30 @@ describe.skipIf(!dbUp)("the Chatwoot ack is durable (issue #1121)", () => {
     });
   });
 
+  // The recovery never replays a control command, so one turned away before any attempt would be
+  // acked and never run. Its body is kept for the drain, which runs it as a first attempt.
+  test("a control command keeps its body, so a delivery not processed live still runs it", async () => {
+    invalidateRouteTokenCache();
+    const body = messageBody(5007, 507).replace(
+      '"content":"oi"',
+      '"content":"/reset"',
+    );
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, "durable-command"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    expect(r.recoverable).toBe(false);
+    const row = (await rowOf("durable-command"))[0];
+    expect(decryptJson<string>(row?.payload as string)).toBe(body);
+    await suDb.chatwootWebhookDelivery.updateMany({
+      where: { deliveryId: "durable-command" },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
   test("a write that fails is not acked: Chatwoot keeps the event and retries", async () => {
     warmCache();
     const body = messageBody(5002, 502);

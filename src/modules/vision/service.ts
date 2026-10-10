@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { recordDirectUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { shareInFlight } from "@/lib/locks";
+import { shareAbortableInFlight } from "@/lib/locks";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -221,7 +221,12 @@ export async function extractWithRetry(args: {
             return { level: "warn", detail: { unread: kind } };
           },
         },
-        () => args.provider.extract({ ...args.req, timeoutMs: budgetMs }),
+        () =>
+          args.provider.extract({
+            ...args.req,
+            timeoutMs: budgetMs,
+            signal: args.signal,
+          }),
       );
     } catch (err) {
       // NOTE: A permanent failure (a bad key, a model id that does not exist, a file the provider
@@ -440,11 +445,15 @@ function extractInbound(
         | typeof BODY_IMAGE_IGNORED
         | typeof BODY_IMAGE_OVER_CAP,
     );
-  return shareInFlight(key, async () => {
-    const value = await extractInboundOnce(params);
-    if (!isUnread(value)) rememberFileRead(key, value);
-    return value;
-  });
+  return shareAbortableInFlight(
+    key,
+    async (signal) => {
+      const value = await extractInboundOnce({ ...params, signal });
+      if (!isUnread(value)) rememberFileRead(key, value);
+      return value;
+    },
+    params.signal,
+  );
 }
 
 async function extractInboundOnce(
@@ -519,6 +528,7 @@ async function extractInboundOnce(
     // retrying it would multiply whatever a crafted body asks for.
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: !params.bodyImage,
+      signal: params.signal,
     }));
   } catch (err) {
     if (params.flow) {

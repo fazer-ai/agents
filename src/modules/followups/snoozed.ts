@@ -11,7 +11,12 @@ import {
   nextOpenAt,
   parseSchedule,
 } from "@/modules/business-hours/hours";
-import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
+import { resetAckSendId } from "@/modules/chatwoot/constants";
+import {
+  instanceAgentBotChatwootIds,
+  loadChatwootClient,
+} from "@/modules/chatwoot/instance";
 import {
   type ChatwootMessageRow,
   chatwootMessageListLength,
@@ -24,6 +29,12 @@ import {
   SESSION_SENDER_NAME,
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
+import { readContactAuthConfig } from "@/modules/contact-auth/settings";
+import {
+  fillMissingAudio,
+  fillMissingVisuals,
+} from "@/modules/debounce/handler";
+import { renderTranscript, transcriptFromRows } from "@/modules/observe/job";
 import {
   type ClaimedJob,
   enqueueJobUnlessClaimed,
@@ -61,6 +72,16 @@ export { snoozedDedupeKey } from "./snoozed-settings";
 // twenty messages; the ladder adds at most ten of its own, so three pages cover any ladder with room
 // for the activity lines automations write. Past that, the anchor is too old to chase anyway.
 const MAX_MESSAGE_PAGES = 3;
+// How many messages of the conversation the reminder reads, the newest ones: the agent's memory of a
+// conversation a person has been running is not a record of it (compaction folds it, a colleague's
+// reply can fail to be remembered, a test-mode agent keeps only its own turns), so the reminder is
+// written from the conversation itself, rendered as the observer renders it.
+const SNOOZED_WINDOW_MESSAGES = 20;
+// How long the window's media reads may take, of the job's deadline: one document's budget, so the
+// model call and the send keep the rest.
+const SNOOZED_MEDIA_BUDGET_MS = 60_000;
+// Chatwoot's message page, reactions aside (the observer's paging reads it the same way).
+const CHATWOOT_MESSAGES_PAGE = 20;
 // Same backoffs as the bot's ladder, for the same reasons (see ./handlers.ts).
 const IN_FLIGHT_FREE_BACKOFF_MS = 30_000;
 const LIVE_UNAVAILABLE_BACKOFF_MS = 60_000;
@@ -235,6 +256,48 @@ function customerWrote(r: ChatwootMessageRow): boolean {
   );
 }
 
+// The rows the reminder's window may show: what the observer's transcript renders (it drops notes,
+// reactions and activity lines itself), minus imported history, which is old words under new ids, and
+// minus everything at or below the `/reset` boundary, an episode the operator withdrew, and minus the
+// agent's own acknowledgement of that reset, which lands just above the boundary and narrates the
+// wipe rather than the conversation (named by its send id, as the observer finds it).
+function windowRows(
+  rows: readonly ChatwootMessageRow[],
+  resetAtMessageId: number | null,
+): ChatwootMessageRow[] {
+  // Sorted, since the pages arrive newest first and older ones are appended: the window is the
+  // newest of these, taken from the end.
+  return [...rows]
+    .sort((a, b) => a.id - b.id)
+    .filter(
+      (r) =>
+        !r.imported &&
+        !r.private &&
+        !r.isReaction &&
+        (r.messageType === "incoming" ||
+          r.messageType === "outgoing" ||
+          r.messageType === "template") &&
+        (resetAtMessageId === null ||
+          (r.id > resetAtMessageId &&
+            r.sendId !== resetAckSendId(resetAtMessageId))),
+    );
+}
+
+// Whether the pages read cover the window: enough eligible rows, and every quote a window row makes
+// already fetched, as the observer's `quotesResolved` asks, so a "sim" is not rendered without the
+// question it answers while a page within the limit still holds it.
+function windowCovered(
+  rows: readonly ChatwootMessageRow[],
+  resetAtMessageId: number | null,
+): boolean {
+  const eligible = windowRows(rows, resetAtMessageId);
+  if (eligible.length < SNOOZED_WINDOW_MESSAGES) return false;
+  const fetched = new Set(rows.map((r) => r.id));
+  return eligible
+    .slice(-SNOOZED_WINDOW_MESSAGES)
+    .every((r) => r.inReplyTo === null || fetched.has(r.inReplyTo));
+}
+
 export function findSnoozedAnchor(
   rows: readonly ChatwootMessageRow[],
   // The inbox's WhatsApp provider, REQUIRED for the reason `isDeviceAttendantMessage` gives.
@@ -308,6 +371,7 @@ export function snoozedNudge(params: {
   step: number;
   anchorMessageId: number;
   anchorText: string;
+  conversation: string;
 }): AgentNudge {
   return {
     source: "followup",
@@ -317,6 +381,7 @@ export function snoozedNudge(params: {
     summary: `a person asked the customer ${params.idleMin} minutes ago; no reply yet`,
     // The person's message in the fenced text block, which keeps it whole: the summary is capped.
     text: params.anchorText.trim() || undefined,
+    conversation: params.conversation.trim() || undefined,
     instructions: params.instructions || undefined,
     step: params.step,
     // One occasion per message of the person: a new message is a new ladder, and its refusals must
@@ -402,6 +467,8 @@ export async function snoozedFollowUpHandler(
       armedAt: agent.snoozedFollowUpArmedAt,
       hours,
       reply: { whatsappProvider: inbox.provider },
+      agentId: inbox.agentId,
+      settings: agent.settings,
     };
   });
   if (!ctx) return { outcome: "done" };
@@ -427,7 +494,14 @@ export async function snoozedFollowUpHandler(
         );
         if (got.length === 0) break;
         rows = rows.concat(got);
-        if (findSnoozedAnchor(rows, ctx.reply)) break;
+        // A page Chatwoot did not fill holds the conversation's first message: nothing older.
+        if (got.filter((r) => !r.isReaction).length < CHATWOOT_MESSAGES_PAGE)
+          break;
+        if (
+          findSnoozedAnchor(rows, ctx.reply) &&
+          windowCovered(rows, ctx.conv.resetAtMessageId)
+        )
+          break;
         before = Math.min(...got.map((r) => r.id));
       }
     }
@@ -455,6 +529,9 @@ export async function snoozedFollowUpHandler(
   }
   // Unsnoozed, given to the bot, unassigned, resolved, or snoozed with an end date: not this ladder's.
   if (!isSnoozedForAPerson(live)) return { outcome: "done" };
+  // An eager transcription or image description the fork could not write back lives only in this
+  // process's annotation store; overlaid as the observer and the flush do, before anything is read.
+  overlayMediaAnnotations(tenantId, instanceId, rows);
   const anchor = findSnoozedAnchor(rows, ctx.reply);
   if (!anchor || anchor.customerSpokeAfter) return { outcome: "done" };
   // The backlog fence: a person's message older than the switch-on is not chased. By the second:
@@ -521,6 +598,72 @@ export async function snoozedFollowUpHandler(
     return stamped > 0;
   };
 
+  // The conversation the model reads, only for a step that reaches the model: a closing step with no
+  // instructions labels and resolves without one, so it reads nothing and pays for nothing.
+  let conversation = "";
+  if (!closesWithoutModel(step, isLast)) {
+    // Every eligible row fetched goes to the renderer, which keeps the newest ones and resolves a quote
+    // against all of them (a "sim" keeps its question when the question is older than the window).
+    const eligible = windowRows(rows, ctx.conv.resetAtMessageId);
+    // Its images, documents and voice notes nobody read yet are read first, as the re-engage reads them
+    // (`all`): a person asked for this conversation, and the eager pass never runs on one a person
+    // holds. Never under a contact authorization gate: this path does not ask it, so it opens nothing
+    // there. Best-effort: what is left unread renders as unread.
+    if (!readContactAuthConfig(ctx.settings).enabled) {
+      // One budget for both, inside the job's: the reminder still has to be written and sent after it.
+      const signal = run?.signal
+        ? AbortSignal.any([
+            run.signal,
+            AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS),
+          ])
+        : AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS);
+      // A withdrawn reminder (a /reset retired the job) opens no further file.
+      const stillWanted = async () => !(await jobRetired(job, base));
+      const pending = eligible
+        .slice(-SNOOZED_WINDOW_MESSAGES)
+        .filter((r) => r.messageType === "incoming");
+      const fill = {
+        signal,
+        turnId: crypto.randomUUID(),
+        convDbId: ctx.conv.id,
+        agentId: ctx.agentId,
+        inboxDbId: ctx.conv.inboxId,
+        threadId,
+      };
+      await fillMissingVisuals({
+        stillWanted,
+        tenantId,
+        instanceId,
+        conversationId,
+        settings: ctx.settings,
+        messages: rows,
+        pending,
+        fill: { ...fill, mode: "all" },
+        base,
+        deps,
+      });
+      await fillMissingAudio({
+        stillWanted,
+        tenantId,
+        instanceId,
+        conversationId,
+        settings: ctx.settings,
+        pending,
+        fill,
+        base,
+        deps,
+      });
+    }
+    conversation = renderTranscript(
+      transcriptFromRows(eligible, SNOOZED_WINDOW_MESSAGES, {
+        ownBotIds: new Set(
+          await instanceAgentBotChatwootIds(tenantId, instanceId, base),
+        ),
+        trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
+      }),
+    );
+  }
+
   // A send-time message read that failed is not a withdrawal: the step is tried again, not dropped.
   let messageReadFailed = false;
   const outcome = await runAgentNudge({
@@ -533,6 +676,7 @@ export async function snoozedFollowUpHandler(
       step: stepIndex + 1,
       anchorMessageId: anchor.messageId,
       anchorText: anchor.text,
+      conversation,
     }),
     postActions: {
       assignLabels:

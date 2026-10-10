@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { shareInFlight } from "@/lib/locks";
+import { shareAbortableInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
@@ -86,6 +86,8 @@ export interface TranscribeInboundParams {
   deps?: { makeClient?: MakeClient; fetchImpl?: typeof fetch };
   // Optional execution-flow context: when present, the transcription is logged as an `stt` stage.
   flow?: FlowContext;
+  // The caller's deadline: it aborts the download and the provider call in flight.
+  signal?: AbortSignal;
 }
 
 // Downloads, transcribes, and writes the transcription back to Chatwoot. Returns the transcription
@@ -105,9 +107,10 @@ export async function transcribeInboundAudio(
   );
   if (stashed?.transcribedText) return stashed.transcribedText;
   if (stashed?.transcriptionEmpty) return null;
-  return shareInFlight(
+  return shareAbortableInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
-    () => transcribeOnce(params),
+    (signal) => transcribeOnce({ ...params, signal }),
+    params.signal,
   );
 }
 
@@ -181,6 +184,7 @@ async function transcribeOnce(
   try {
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
+      signal: params.signal,
     }));
   } catch (err) {
     if (params.flow) {
@@ -212,6 +216,7 @@ async function transcribeOnce(
         apiKey: entry.secret,
         baseURL: effectiveBaseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
+        signal: params.signal,
       }),
   );
   const text = cleanTranscription(result.text);

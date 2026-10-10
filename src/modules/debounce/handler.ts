@@ -95,6 +95,8 @@ import {
   SPEND_CEILING_BURST_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
+import { transcribeInboundAudio } from "@/modules/stt/service";
+import { readSttConfig } from "@/modules/stt/settings";
 import {
   extractMessageVisuals,
   hasUnextractedVisual,
@@ -488,8 +490,9 @@ export async function selectAnswerableBurst(
 
 // Extracts the burst's attachments nobody has read yet. Returns whether any extraction was attempted,
 // that is, whether the turn waited. Best-effort: a failure leaves the turn with what it had, and never
-// blocks the reply.
-async function fillMissingVisuals(args: {
+// blocks the reply. Shared with the snoozed reminder (../followups/snoozed.ts), which reads the window
+// a person asked about the way the re-engage does.
+export async function fillMissingVisuals(args: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -507,6 +510,9 @@ async function fillMissingVisuals(args: {
   };
   base: PrismaClient;
   deps?: RuntimeDeps;
+  // Asked before each paid read: a caller whose work can be withdrawn while it reads (a retired job)
+  // stops opening files there. Absent answers yes.
+  stillWanted?: () => Promise<boolean>;
 }): Promise<boolean> {
   // DAS SETTINGS QUE O TURNO JÁ CARREGOU, sem ir ao banco. `resolveVisionConfig` faz exatamente
   // isto depois de descobrir o agente pela inbox, e aqui o agente já está decidido: quem chegou até
@@ -544,6 +550,7 @@ async function fillMissingVisuals(args: {
     // NOTE: Each message can take a document's whole budget, so the job's deadline is asked before
     // every one; what is left renders as unread and the reply still goes out.
     if (args.fill.signal?.aborted) break;
+    if (args.stillWanted && !(await args.stillWanted())) break;
     // NOTE: A refusal can land while an earlier message is being read.
     if (i > 0) {
       const agora = await refusalMarkOrClosed(args);
@@ -559,6 +566,7 @@ async function fillMissingVisuals(args: {
         cfg,
         signal: args.fill.signal,
         stillAllowed: async () => {
+          if (args.stillWanted && !(await args.stillWanted())) return false;
           const agora = await refusalMarkOrClosed(args);
           return agora === null || m.id > agora;
         },
@@ -602,6 +610,77 @@ async function fillMissingVisuals(args: {
     }
   }
   return true;
+}
+
+// The voice notes nobody transcribed, transcribed now with the agent's STT, under the same fences as
+// `fillMissingVisuals`: the contact-authorization refusal mark, the deadline and the caller's
+// withdrawal, asked before each one. A transcription already stashed or on the attachment is reused
+// (`transcribeInboundAudio`), and the words land on the row. Best-effort: what fails stays unheard.
+export async function fillMissingAudio(args: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  settings: unknown;
+  pending: ChatwootMessageRow[];
+  fill: {
+    signal?: AbortSignal;
+    turnId: string;
+    convDbId: bigint;
+    agentId: bigint;
+    inboxDbId: bigint | null;
+    threadId: string;
+  };
+  base: PrismaClient;
+  deps?: RuntimeDeps;
+  stillWanted?: () => Promise<boolean>;
+}): Promise<void> {
+  const cfg = readSttConfig(args.settings);
+  if (!cfg.enabled) return;
+  const alvos = args.pending.filter((m) => m.audio && !m.transcribedText);
+  if (alvos.length === 0) return;
+  for (const m of alvos) {
+    if (args.fill.signal?.aborted) break;
+    if (args.stillWanted && !(await args.stillWanted())) break;
+    const recusadaAte = await refusalMarkOrClosed(args);
+    if (recusadaAte !== null && m.id <= recusadaAte) continue;
+    const audio = m.audio;
+    if (!audio) continue;
+    try {
+      const text = await transcribeInboundAudio({
+        tenantId: args.tenantId,
+        instanceId: args.instanceId,
+        conversationId: args.conversationId,
+        messageId: m.id,
+        attachmentId: audio.id,
+        dataUrl: audio.dataUrl,
+        cfg,
+        base: args.base,
+        signal: args.fill.signal,
+        flow: {
+          tenantId: args.tenantId,
+          turnId: args.fill.turnId,
+          source: "inbox",
+          conversationId: args.fill.convDbId,
+          agentId: args.fill.agentId,
+          inboxId: args.fill.inboxDbId,
+          threadId: args.fill.threadId,
+          base: args.base,
+        },
+        deps: {
+          makeClient: args.deps?.makeClient,
+          fetchImpl: args.deps?.sttFetch,
+        },
+      });
+      if (text) m.transcribedText = text;
+    } catch (err) {
+      logger.warn(
+        "stt fill failed (conv=%s msg=%s): %s",
+        String(args.conversationId),
+        String(m.id),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 }
 
 // The conversation's media refusal mark, or null without one. Unreadable closes everything.

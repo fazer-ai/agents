@@ -147,9 +147,18 @@ mock.module("@/client/contexts/ThemeContext", () => ({
   ThemeProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-const { KnowledgeSourceSection, parseExcludeIds } = await import(
-  "@/client/pages/resources/KnowledgeSourceSection"
-);
+const { KnowledgeSourceSection, parseExcludeIds, setSourcePollMsForTest } =
+  await import("@/client/pages/resources/KnowledgeSourceSection");
+
+/** The re-read interval under test: short, so a test follows several ticks in well under a second. */
+const POLL_MS = 20;
+/** Long enough that a tick the section should not have scheduled would have fired several times. */
+const PAST_TICKS_MS = POLL_MS * 10;
+
+/** Lets every answer already in flight land and every render it causes run, without a clock. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+}
 const { useKnowledgeManager } = await import(
   "@/client/pages/resources/useKnowledgeManager"
 );
@@ -218,11 +227,13 @@ beforeEach(() => {
   holdNextRead = null;
   i18n.changeLanguage("en");
   installFetchStub();
+  setSourcePollMsForTest(POLL_MS);
 });
 
 afterEach(() => {
   cleanup();
   globalThis.fetch = realFetch;
+  setSourcePollMsForTest(undefined);
 });
 
 describe("the help center source section", () => {
@@ -394,11 +405,11 @@ describe("the help center source section", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
     await waitFor(() => expect(sent("POST", "/source/sync").length).toBe(1));
     const readsBefore = sent("GET", "/knowledge/bases/b1").length;
-    // The first re-read still sees the old run: the scheduler has not got to it yet.
-    await waitFor(
-      () =>
-        expect(sent("GET", "/knowledge/bases/b1").length).toBe(readsBefore + 1),
-      { timeout: 5_000 },
+    // The first re-reads still see the old run: the scheduler has not got to it yet.
+    await waitFor(() =>
+      expect(sent("GET", "/knowledge/bases/b1").length).toBeGreaterThan(
+        readsBefore,
+      ),
     );
     // It lands a moment later, and only a second re-read can see it.
     source = {
@@ -407,12 +418,11 @@ describe("the help center source section", () => {
       lastStatus: "ok",
       lastMessage: "3 articles",
     };
-    await waitFor(
-      () => expect(document.querySelector('[data-status="ok"]')).not.toBeNull(),
-      { timeout: 5_000 },
+    await waitFor(() =>
+      expect(document.querySelector('[data-status="ok"]')).not.toBeNull(),
     );
     expect(shows("3 articles")).toBe(true);
-  }, 15_000);
+  });
 
   test("removing asks first, says the documents stay, and cancelling sends nothing", async () => {
     source = { ...FAILED_RUN };
@@ -453,7 +463,7 @@ describe("the help center source section", () => {
     );
     cleanup();
     open();
-    await new Promise((r) => setTimeout(r, 50));
+    await settle();
     expect(hasSource).toBeNull();
   });
 
@@ -477,9 +487,9 @@ describe("the help center source section", () => {
     baseGate = null;
     open();
     // Past the next tick: nothing is left to ask about.
-    await new Promise((r) => setTimeout(r, 4_000));
+    await new Promise((r) => setTimeout(r, PAST_TICKS_MS));
     expect(sent("GET", "/knowledge/bases/b1").length).toBe(before + 1);
-  }, 15_000);
+  });
 
   test("a sync answered after the section closed starts no polling", async () => {
     source = { ...FAILED_RUN };
@@ -494,9 +504,9 @@ describe("the help center source section", () => {
     const before = sent("GET", "/knowledge/bases/b1").length;
     cleanup();
     open();
-    await new Promise((r) => setTimeout(r, 4_000));
+    await new Promise((r) => setTimeout(r, PAST_TICKS_MS));
     expect(sent("GET", "/knowledge/bases/b1").length).toBe(before);
-  }, 15_000);
+  });
 
   test("a polling read that was out when the source was removed does not bring it back", async () => {
     source = { ...FAILED_RUN };
@@ -528,12 +538,12 @@ describe("the help center source section", () => {
     const afterRemoval = sent("GET", "/knowledge/bases/b1").length;
     release();
     // Past the next tick: the removal stopped the polling, so the held read schedules nothing.
-    await new Promise((r) => setTimeout(r, 3_500));
+    await new Promise((r) => setTimeout(r, PAST_TICKS_MS));
     expect(sent("GET", "/knowledge/bases/b1").length).toBe(afterRemoval);
     expect(shows(/does not mirror a help center/)).toBe(true);
     expect(shows("https://ajuda.example.com")).toBe(false);
     expect(hasSource).toBe(false);
-  }, 15_000);
+  });
 
   test("a read-only surface shows the source and offers no action", async () => {
     source = { ...FAILED_RUN };
@@ -707,7 +717,7 @@ describe("a synced document in the documents list", () => {
     const before = docReads();
     fireEvent.click(screen.getByRole("button", { name: "open", hidden: true }));
     await screen.findByText(/does not mirror a help center/);
-    await new Promise((r) => setTimeout(r, 200));
+    await settle();
     expect(docReads()).toBe(before + 1);
   });
 

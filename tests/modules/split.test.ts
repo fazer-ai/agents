@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import {
   ChatwootApiError,
   type ChatwootClient,
@@ -1823,8 +1823,8 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
 
   // A SPENT BUDGET IS UNKNOWN TOO, and this is the exit an overloaded Chatwoot actually takes: the
   // read does answer, just too slowly to walk far enough. Read as absence it resends, which is the
-  // duplicate reached through the clock instead of through an error. Ten seconds of real time,
-  // because the budget is a wall-clock constant and nothing in this path takes an injectable one.
+  // duplicate reached through the clock instead of through an error. The budget reads `Date.now()`,
+  // so the first page moves the system clock past it instead of waiting it out.
   test("a budget spent mid-walk is unknown, not proof that nothing landed", async () => {
     const attempted: string[] = [];
     let page = 0;
@@ -1836,7 +1836,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       getMessages: async (_c: number, q?: { before?: number }) => {
         page += 1;
         // The FIRST page eats the whole budget, so the second is entered with nothing left.
-        if (page === 1) await new Promise((r) => setTimeout(r, 10_050));
+        if (page === 1) setSystemTime(new Date(Date.now() + 10_050));
         const top = q?.before ?? 9000;
         return {
           payload: Array.from({ length: 20 }, (_v, k) => ({
@@ -1850,16 +1850,22 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       },
       toggleTyping: async () => ({}),
     } as unknown as ChatwootClient;
-    const out = await deliverReply(
-      client,
-      1,
-      ONE,
-      { ...SPLIT_DEFAULTS, enabled: true },
-      noSleep,
-    );
+    let out: Awaited<ReturnType<typeof deliverReply>>;
+    try {
+      out = await deliverReply(
+        client,
+        1,
+        ONE,
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+    } finally {
+      setSystemTime();
+    }
+    expect(page).toBe(1);
     expect(attempted).toEqual([ONE]);
     expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
-  }, 20_000);
+  });
 
   // THE READ-BACK'S BUDGET IS SHARED ACROSS ITS PAGES, so a conversation that needs three of them
   // is not three times the wait: each page is handed what is LEFT of one deadline, never a fresh

@@ -256,7 +256,6 @@
         "!tests/client/document-starters-race.test.tsx",
         "!tests/client/pages/AdminTenantsDelete.test.tsx",
         "!tests/client/pages/ConversationsDrillLive.test.tsx",
-        "!tests/client/pages/KnowledgeSource.test.tsx",
         "!tests/client/playground-resume-on-reload.test.tsx",
         "!tests/client/section-nav.test.tsx",
         "!tests/config.test.ts",

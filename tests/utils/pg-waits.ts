@@ -68,3 +68,41 @@ export async function underConcurrentEdit<T>(
   );
   return await (acting as Promise<T>);
 }
+
+const AUDIT_TRIGGER_FIXTURE_KEY = 546_999_999;
+
+// Runs `body` holding the lock every test that puts a trigger on `audit_logs` takes, across processes.
+// Trigger DDL queues behind any open insert on the table, and while queued it blocks every later
+// insert: under `--parallel`, a file that parks a writer at its audit insert would see another file's
+// CREATE or DROP TRIGGER stall audit writes that have nothing to do with either. The lock is held by
+// a transaction of its own, so `body` keeps the rest of the pool.
+export async function withAuditTriggerFixture<T>(
+  db: PrismaClient,
+  body: () => Promise<T>,
+): Promise<T> {
+  let release!: () => void;
+  const done = new Promise<void>((r) => {
+    release = r;
+  });
+  let acquired!: () => void;
+  const locked = new Promise<void>((r) => {
+    acquired = r;
+  });
+  const holding = db.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe(
+        `SELECT pg_advisory_xact_lock(${AUDIT_TRIGGER_FIXTURE_KEY})`,
+      );
+      acquired();
+      await done;
+    },
+    { maxWait: 30_000, timeout: 120_000 },
+  );
+  await Promise.race([locked, holding]);
+  try {
+    return await body();
+  } finally {
+    release();
+    await holding;
+  }
+}

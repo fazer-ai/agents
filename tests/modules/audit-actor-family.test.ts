@@ -18,7 +18,10 @@ import { disconnectClient } from "@/modules/mcp/oauth/connections";
 import { upsertApproval } from "@/modules/mcp/oauth/consent";
 import { issueAccessToken } from "@/modules/mcp/oauth/tokens";
 import { personData } from "@/tests/utils/person";
-import { underConcurrentEdit } from "@/tests/utils/pg-waits";
+import {
+  underConcurrentEdit,
+  withAuditTriggerFixture,
+} from "@/tests/utils/pg-waits";
 
 // THE ACTOR FAMILY: revoking a token, changing a role, inviting a user. The question this file holds
 // is WHICH TRAIL each row joins: `users`, `invitations` and `mcp_oauth_*` are global (no RLS), so the
@@ -645,6 +648,10 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
   // row that records it. The refusal is a trigger on this file's own actor and one action, so no other
   // writer in the database is touched.
   async function withAuditRefused(action: string, act: () => Promise<unknown>) {
+    await withAuditTriggerFixture(suDb, () => refusingAudit(action, act));
+  }
+
+  async function refusingAudit(action: string, act: () => Promise<unknown>) {
     const fn = `refuse_audit_${process.pid}`;
     await suDb.$executeRawUnsafe(
       `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit insert refused'; END $$`,

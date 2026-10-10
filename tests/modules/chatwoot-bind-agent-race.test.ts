@@ -12,6 +12,7 @@ import {
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { bindInbox } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { withAuditTriggerFixture } from "../utils/pg-waits";
 
 // `Inbox.agentId` is a plain column with no `@relation`, so no foreign key refuses a binding to an
 // agent that is gone; `persistBinding` has to lock the agent row itself. `deleteAgent` fits in the
@@ -384,6 +385,10 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
     agentId: bigint,
     write: () => Promise<unknown>,
   ) {
+    return withAuditTriggerFixture(suDb, () => parkedBind(agentId, write));
+  }
+
+  async function parkedBind(agentId: bigint, write: () => Promise<unknown>) {
     const key = 546_000_000 + Number(agentId);
     const fn = `park_agent_audit_${process.pid}`;
     await suDb.$executeRawUnsafe(

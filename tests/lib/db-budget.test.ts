@@ -90,4 +90,17 @@ describe("connection budget", () => {
     expect(err).toBeInstanceOf(ConnectionBudgetError);
     expect(err.message).toContain("DB_POOL_MAX=91");
   });
+
+  test("a URL that does not parse is never echoed into the log, password included", async () => {
+    const bad = "postgres://app:s3cret-pass@db.internal:54x2/agents";
+    const lines = await assertConnectionBudget(
+      [{ env: "DB_POOL_MAX", size: 10, url: bad }],
+      async () => {
+        throw new Error(`could not connect to ${bad}`);
+      },
+    );
+    const logged = lines.map((l) => `${l.server} ${l.line}`).join("\n");
+    expect(logged).not.toContain("s3cret-pass");
+    expect(lines[0]?.checked).toBe(false);
+  });
 });

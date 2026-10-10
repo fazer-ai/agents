@@ -43,14 +43,22 @@ export function poolShares(): PoolShare[] {
   ];
 }
 
-// host:port, which is what `max_connections` belongs to: two databases on one server share it.
+// host:port, which is what `max_connections` belongs to: two databases on one server share it. It
+// is logged, so a URL that does not parse is never echoed back: it carries the password.
+export const UNPARSEABLE_SERVER = "a database URL that does not parse";
+
 export function serverOf(url: string): string {
   try {
     const u = new URL(url);
     return `${u.hostname}:${u.port || "5432"}`;
   } catch {
-    return url;
+    return UNPARSEABLE_SERVER;
   }
+}
+
+// An error from connecting may quote the connection string it was given.
+function withoutUrl(message: string, url: string): string {
+  return url ? message.split(url).join("<database URL>") : message;
 }
 
 export function groupByServer(pools: PoolShare[]): Map<string, PoolShare[]> {
@@ -146,10 +154,11 @@ export async function assertConnectionBudget(
     try {
       limits = await read(group[0]?.url ?? "");
     } catch (error) {
+      const reason = withoutUrl((error as Error).message, group[0]?.url ?? "");
       lines.push({
         server,
         checked: false,
-        line: `${server}: ${total} connections (${describeShares(group)}), not checked: ${(error as Error).message}`,
+        line: `${server}: ${total} connections (${describeShares(group)}), not checked: ${reason}`,
       });
       continue;
     }

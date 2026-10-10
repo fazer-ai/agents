@@ -124,6 +124,36 @@ function sessionCookieOptions() {
   };
 }
 
+// The requests that reached a session gate, marked before their query and body are validated.
+// Elysia validates them before `beforeHandle`, where the gates answer, so a malformed input with no
+// session would be refused as a schema error and tell the caller what the route accepts before
+// telling them to sign in. The app's error handler reads this to answer that request as the gate
+// would (`src/app.ts`). Keyed by the request, so it lives exactly as long as the request does.
+const gatedSessions = new WeakMap<Request, () => Promise<AuthUser | null>>();
+
+const sessionReads = new WeakMap<Request, Promise<AuthUser | null>>();
+
+function markSessionGated({
+  request,
+  requestAuthUser,
+}: {
+  request: Request;
+  requestAuthUser: () => Promise<AuthUser | null>;
+}): void {
+  gatedSessions.set(request, requestAuthUser);
+}
+
+// Whether this request reached a session gate without a session. False for a route with no gate.
+export async function refusedForSession(request: Request): Promise<boolean> {
+  const readSession = gatedSessions.get(request);
+  if (!readSession) return false;
+  try {
+    return (await readSession()) === null;
+  } catch {
+    return false;
+  }
+}
+
 export const authPlugin = new Elysia({ name: "auth" })
   .use(
     jwt({
@@ -290,13 +320,27 @@ export const authPlugin = new Elysia({ name: "auth" })
       return { ...person, ...current, memberships };
     },
   }))
+  .derive({ as: "global" }, ({ request, getAuthUser }) => ({
+    // The session as this request read it, shared by the tenancy boundary, the gates and the
+    // refusal of a request without one. `getAuthUser` stays a fresh read on every call, since a
+    // socket re-checks its session through it long after the upgrade request was answered.
+    requestAuthUser(): Promise<AuthUser | null> {
+      let read = sessionReads.get(request);
+      if (!read) {
+        read = getAuthUser();
+        sessionReads.set(request, read);
+      }
+      return read;
+    },
+  }))
   .macro({
     requireAuth(enabled: boolean) {
       if (!enabled) return;
 
       return {
-        async beforeHandle({ getAuthUser, set }) {
-          const user = await getAuthUser();
+        transform: markSessionGated,
+        async beforeHandle({ requestAuthUser, set }) {
+          const user = await requestAuthUser();
           if (!user) {
             set.status = 401;
             return { error: translate("errors.unauthorized", "Unauthorized") };
@@ -310,8 +354,9 @@ export const authPlugin = new Elysia({ name: "auth" })
       if (!min) return;
 
       return {
-        async beforeHandle({ getAuthUser, set }) {
-          const user = await getAuthUser();
+        transform: markSessionGated,
+        async beforeHandle({ requestAuthUser, set }) {
+          const user = await requestAuthUser();
           if (!user) {
             set.status = 401;
             return { error: translate("errors.unauthorized", "Unauthorized") };
@@ -328,8 +373,9 @@ export const authPlugin = new Elysia({ name: "auth" })
       if (!enabled) return;
 
       return {
-        async beforeHandle({ getAuthUser, set }) {
-          const user = await getAuthUser();
+        transform: markSessionGated,
+        async beforeHandle({ requestAuthUser, set }) {
+          const user = await requestAuthUser();
           if (!user) {
             set.status = 401;
             return { error: translate("errors.unauthorized", "Unauthorized") };

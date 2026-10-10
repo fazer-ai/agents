@@ -6,11 +6,11 @@ import { resolveRequestTenantContext } from "@/lib/tenancy";
 
 // Elysia boundary that turns the authenticated user + X-Tenant-Id selector into a
 // TenantContext. Services/handlers then pass it to runScoped/asSuperAdmin — they never
-// read tenant from anywhere else. Depends on authPlugin for getAuthUser.
+// read tenant from anywhere else. Depends on authPlugin for requestAuthUser.
 export const tenancyPlugin = new Elysia({ name: "tenancy" })
   .use(authPlugin)
-  .derive({ as: "global" }, async ({ getAuthUser, headers }) => {
-    const user = await getAuthUser();
+  .derive({ as: "global" }, async ({ requestAuthUser, headers }) => {
+    const user = await requestAuthUser();
     const { context, anomaly, malformedSelector } = resolveRequestTenantContext(
       user,
       headers["x-tenant-id"],

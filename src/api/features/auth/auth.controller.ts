@@ -448,6 +448,7 @@ const baseAuthController = new Elysia({
       };
     },
     {
+      requireAuth: true,
       body: t.Object({
         name: t.String({
           maxLength: 100,
@@ -523,6 +524,7 @@ const baseAuthController = new Elysia({
       return { success: true };
     },
     {
+      requireAuth: true,
       body: t.Object({
         currentPassword: t.String({
           minLength: 1,

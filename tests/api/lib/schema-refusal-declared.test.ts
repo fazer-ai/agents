@@ -1,18 +1,56 @@
 import { describe, expect, test } from "bun:test";
-import { setupPrismaMock } from "@/tests/utils/prisma-mock";
+import type { TSchema } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import { Elysia } from "elysia";
+import { authPlugin } from "@/api/lib/auth";
+import {
+  type MockUserEntity,
+  mockFindUnique,
+  mockUser,
+  setupPrismaMock,
+} from "@/tests/utils/prisma-mock";
 
 // The schema boundary (src/api/lib/schema-refusal.ts) answers a TypeBox refusal with 422 BEFORE the
 // role guard, so a route that can be violated must declare 422: `openapi.json` and the console's Eden
 // types come from the same `response:` maps, and an undeclared status is one no client handles. The
 // fence PROBES rather than infers from "declares a body schema": a bare `t.String()` path param
 // refuses nothing a caller can send, and declaring 422 there publishes a status never returned.
-// No probe reaches a handler (each lands on the boundary, 422, or the role guard, 401), so nothing
-// here touches the database or any external system.
+// No probe reaches a handler (each lands on the boundary, 422, or on no route at all, 404), so
+// nothing here touches the database or any external system.
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
 
 setupPrismaMock();
 const app = (await import("@/app")).default;
+
+// The probes carry a session: without one, a gated route answers the gate's 401 before anything
+// about its input (src/app.ts). The lowest role, so a probe the boundary let through would stop at
+// an admin route's role guard rather than run it.
+const agent: MockUserEntity = { ...mockUser, role: "AGENT" };
+mockFindUnique.mockImplementation(() => Promise.resolve(agent));
+const session = await (async () => {
+  const minted = new Elysia()
+    .use(authPlugin)
+    .post("/mint", async ({ setAuthCookie }) => ({
+      token: await setAuthCookie(agent, agent.passwordHash),
+    }));
+  const { token } = (await (
+    await minted.handle(
+      new Request("http://localhost/mint", { method: "POST" }),
+    )
+  ).json()) as { token: string };
+  return `fazerai_auth_token=${token}`;
+})();
+
+async function withSession(request: Request): Promise<Request> {
+  // Copied entry by entry: `new Headers(request.headers)` drops the content-type of a BunRequest.
+  const headers: Record<string, string> = { cookie: session };
+  request.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+  const body = request.body ? await request.text() : undefined;
+  return new BunRequest(request.url, { method: request.method, headers, body });
+}
 
 type Schema = Record<string, unknown> | null | undefined;
 type Route = {
@@ -93,7 +131,20 @@ export function violation(
             !m.minLength &&
             !m.maxLength)),
     );
-    return permissive ? null : { path, bad: "zzz-not-a-member" };
+    if (permissive) return null;
+    // A string member bounded only by length takes short junk, so the junk has to outgrow it.
+    const longest = Math.max(
+      0,
+      ...anyOf.map((m) =>
+        m?.type === "string" && !m.pattern && !m.format
+          ? ((m.maxLength as number | undefined) ?? 0)
+          : 0,
+      ),
+    );
+    return {
+      path,
+      bad: longest > 0 ? "z".repeat(longest + 1) : "zzz-not-a-member",
+    };
   }
   if (s.const !== undefined) return { path, bad: "zzz-not-the-const" };
   if (Array.isArray(s.enum)) return { path, bad: "zzz-not-in-enum" };
@@ -189,6 +240,22 @@ function requiredQuery(query: Schema): Record<string, string> {
   );
 }
 
+// Whether Elysia lets a request with no body through this schema: one declared `t.Optional(...)` is
+// validated only when sent, and one carrying a `default` is filled in from its defaults first.
+function hasDefault(s: unknown): boolean {
+  if (!s || typeof s !== "object") return false;
+  if (Object.hasOwn(s, "default")) return true;
+  return Object.values(s).some(hasDefault);
+}
+
+function takesAbsentBody(body: NonNullable<Schema>): boolean {
+  if (Symbol.for("TypeBox.Optional") in body) return true;
+  return (
+    hasDefault(body) &&
+    Value.Check(body as TSchema, Value.Default(body as TSchema, {}))
+  );
+}
+
 type Probe = { kind: string; request: () => Request };
 
 // Every probe the shape of the declared schemas justifies, one per dimension. A route is refusable
@@ -254,16 +321,18 @@ function probesFor(route: Route): Probe[] {
   }
 
   if (body) {
-    out.push({
-      kind: "body absent",
-      request: () =>
-        new BunRequest(
-          url(fillPath(route.path, params), requiredQuery(query)),
-          {
-            method: route.method,
-          },
-        ),
-    });
+    if (!takesAbsentBody(body)) {
+      out.push({
+        kind: "body absent",
+        request: () =>
+          new BunRequest(
+            url(fillPath(route.path, params), requiredQuery(query)),
+            {
+              method: route.method,
+            },
+          ),
+      });
+    }
     const bad = bodyViolation(body);
     out.push({
       kind: `body.${bad.path.join(".") || "(root)"}`,
@@ -336,7 +405,7 @@ try {
     const probes = probesFor(route);
     const statuses: Array<{ kind: string; status: number }> = [];
     for (const probe of probes) {
-      const response = await app.handle(probe.request());
+      const response = await app.handle(await withSession(probe.request()));
       statuses.push({ kind: probe.kind, status: response.status });
     }
     measured.push({
@@ -385,11 +454,12 @@ describe("a route that can answer 422 declares it", () => {
     expect(measured.filter((r) => r.answers422).length).toBeGreaterThanOrEqual(
       90,
     );
-    // No probe reaches a handler: the boundary refuses (422) or the role guard does (401), and a
-    // path made unroutable by the violation answers 404. Anything else means a probe RAN something.
+    // No probe reaches a handler: the boundary refuses (422), or the violation made the path
+    // unroutable (404). Anything else, the role guard's 403 included, means a probe got past the
+    // boundary, which is a violation the generator thought it sent and did not.
     const unexpected = measured.flatMap((r) =>
       r.statuses
-        .filter((s) => ![422, 401, 404].includes(s.status))
+        .filter((s) => ![422, 404].includes(s.status))
         .map((s) => `${r.id} ${s.kind} -> ${s.status}`),
     );
     expect(unexpected).toEqual([]);

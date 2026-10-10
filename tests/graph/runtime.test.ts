@@ -1884,16 +1884,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
     });
-    // NOTE: Scoped, and polled: the row is written fire-and-forget, so a single read can run before
-    // it lands. Poll for the row this conversation owes.
-    for (let i = 0; i < 30; i++) {
-      const row = await flowLogRow(suDb, {
-        where: { tenantId, stage: "handoff", conversationId: conversation.id },
-        orderBy: { id: "desc" },
-      });
-      if (row) return row.detail;
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    // Scoped to the conversation; `flowLogRow` settles the fire-and-forget writes first, so one read
+    // answers whether the row exists.
+    const row = await flowLogRow(suDb, {
+      where: { tenantId, stage: "handoff", conversationId: conversation.id },
+      orderBy: { id: "desc" },
+    });
+    if (row) return row.detail;
     throw new Error(`no handoff flow line for conv ${convId}`);
   }
 
@@ -3815,7 +3812,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([["toggleStatus", 9773, "resolved"]]);
 
     // And no warning: there is nothing unexplained about this turn.
-    await new Promise((r) => setTimeout(r, 300));
     const rows = await flowLogRows(suDb, {
       where: {
         tenantId,
@@ -3879,7 +3875,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
 
     // And nobody is paged, because nothing here is unexplained.
-    await new Promise((r) => setTimeout(r, 300));
     const rows = await flowLogRows(suDb, {
       where: {
         tenantId,
@@ -3958,26 +3953,21 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // read the turn as an unexplained silence. `resolve_conversation` invites it: its result says the
   // close waits for "your final reply", and a model that already wrote it reads that as done.
   async function recoveredLine(threadConv: number) {
-    for (let i = 0; i < 30; i++) {
-      const rows = await flowLogRows(suDb, {
-        where: {
-          tenantId,
-          stage: "generate",
-          threadId: `${tenantId}:${instanceId}:${threadConv}`,
-        },
-        select: { detail: true, level: true },
-      });
-      const hit = rows.find(
-        (r) =>
-          (r.detail as Record<string, unknown> | null)?.replyRecovered === true,
-      );
-      if (hit) return hit;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return null;
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${threadConv}`,
+      },
+      select: { detail: true, level: true },
+    });
+    const hit = rows.find(
+      (r) =>
+        (r.detail as Record<string, unknown> | null)?.replyRecovered === true,
+    );
+    return hit ?? null;
   }
   async function unexplainedWarned(threadConv: number) {
-    await new Promise((r) => setTimeout(r, 300));
     const rows = await flowLogRows(suDb, {
       where: {
         tenantId,
@@ -4135,7 +4125,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    await new Promise((r) => setTimeout(r, 300));
     const rows = await flowLogRows(suDb, {
       where: {
         tenantId,
@@ -4227,41 +4216,33 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // but undeclared silences after a thank-you, a few are customers owed an answer; the retry recovers
   // both without making anyone answer a thank-you.
   async function silenceRetryLine(threadConv: number) {
-    for (let i = 0; i < 30; i++) {
-      const rows = await flowLogRows(suDb, {
-        where: {
-          tenantId,
-          stage: "generate",
-          threadId: `${tenantId}:${instanceId}:${threadConv}`,
-        },
-        select: { detail: true },
-      });
-      const hit = rows
-        .map((r) => r.detail as Record<string, unknown> | null)
-        .find((d) => d?.silenceRetry !== undefined);
-      if (hit) return hit;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return null;
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${threadConv}`,
+      },
+      select: { detail: true },
+    });
+    const hit = rows
+      .map((r) => r.detail as Record<string, unknown> | null)
+      .find((d) => d?.silenceRetry !== undefined);
+    return hit ?? null;
   }
   async function unexplainedDetail(threadConv: number) {
-    for (let i = 0; i < 30; i++) {
-      const rows = await flowLogRows(suDb, {
-        where: {
-          tenantId,
-          stage: "generate",
-          level: "warn",
-          threadId: `${tenantId}:${instanceId}:${threadConv}`,
-        },
-        select: { detail: true },
-      });
-      const hit = rows
-        .map((r) => r.detail as Record<string, unknown> | null)
-        .find((d) => d?.silenceUnexplained === true);
-      if (hit) return hit;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return null;
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        level: "warn",
+        threadId: `${tenantId}:${instanceId}:${threadConv}`,
+      },
+      select: { detail: true },
+    });
+    const hit = rows
+      .map((r) => r.detail as Record<string, unknown> | null)
+      .find((d) => d?.silenceUnexplained === true);
+    return hit ?? null;
   }
 
   test("an empty answer is asked again once, and the second answer reaches the customer", async () => {
@@ -7038,7 +7019,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
 
     // And nothing is reported: there is nothing unexplained about a turn that delivered.
-    await new Promise((r) => setTimeout(r, 300));
     const rows = await flowLogRows(suDb, {
       where: {
         tenantId,

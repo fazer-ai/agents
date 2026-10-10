@@ -37,6 +37,13 @@ export type KnowledgeSource = NonNullable<BaseDetail["source"]>;
 const POLL_MS = 3_000;
 const POLL_TRIES = 20;
 
+let pollMs = POLL_MS;
+
+/** Shortens the re-read interval so a test follows a run in milliseconds; `undefined` restores it. */
+export function setSourcePollMsForTest(ms: number | undefined): void {
+  pollMs = ms ?? POLL_MS;
+}
+
 interface Draft {
   baseUrl: string;
   slug: string;
@@ -183,9 +190,9 @@ export function KnowledgeSourceSection({
           stopPolling();
           return;
         }
-        pollTimer.current = setTimeout(tick, POLL_MS);
+        pollTimer.current = setTimeout(tick, pollMs);
       };
-      pollTimer.current = setTimeout(tick, POLL_MS);
+      pollTimer.current = setTimeout(tick, pollMs);
     },
     [load, stopPolling],
   );

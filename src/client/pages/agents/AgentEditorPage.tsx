@@ -3111,10 +3111,13 @@ function AgentEditor() {
     setServerSyncTick((n) => n + 1);
   }
 
+  // `retry` replaces what "save anyway" re-runs after a conflict, for a save that is one step of a
+  // longer one (General's identity, then its decision setup).
   async function saveAgent(
     patch: Record<string, unknown>,
     section: "general" | "behavior",
     force = false,
+    retry?: () => void,
   ): Promise<boolean> {
     savingRef.current += 1;
     setSavingAgent(true);
@@ -3128,7 +3131,12 @@ function AgentEditor() {
         ...(expected ? { expectedUpdatedAt: expected } : {}),
         ...replaceFor(force),
       });
-      if (handleConflict(err, () => void saveAgent(patch, section, true))) {
+      if (
+        handleConflict(
+          err,
+          retry ?? (() => void saveAgent(patch, section, true)),
+        )
+      ) {
         return false;
       }
       if (err || !data) throw err ?? new Error("no data");
@@ -3528,7 +3536,7 @@ function AgentEditor() {
 
   // General's save: identity, and the decision setup when it changed. Under questions and rules the
   // instructions and the chat model are not drawn, so they are not written either.
-  async function saveGeneral(): Promise<boolean> {
+  async function saveGeneral(force = false): Promise<boolean> {
     if (!decides && !guardModelBeforeSave()) return false;
     if (dirty.general) {
       // A refused or conflicting identity save stops here: running the setup's save next would
@@ -3544,10 +3552,13 @@ function AgentEditor() {
               modelConfig: buildModelConfig(),
             },
         "general",
+        force,
+        // NOTE: "Save anyway" re-runs the whole of this save, identity and setup alike.
+        () => void saveGeneral(true),
       );
       if (!ok) return false;
     }
-    return dirty.decisions ? saveDecisions() : true;
+    return dirty.decisions ? saveDecisions(force) : true;
   }
 
   // "Allow" on a rule whose tool the agent was not granted: the saved grant set with that one native

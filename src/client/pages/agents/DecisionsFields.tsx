@@ -1192,7 +1192,7 @@ export function DecisionsFields({
         )}
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div id="decisions-questions" className="flex scroll-mt-4 flex-col gap-3">
         <div>
           <h4 className="font-medium text-sm text-text-primary">
             {t("editor.decisionsQuestions", "Questions")}

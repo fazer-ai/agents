@@ -351,12 +351,22 @@ describe("General's save of identity and decision setup", () => {
   test("stops when the identity save is refused or conflicts", () => {
     const flat = EDITOR.replace(/\s+/g, " ");
     expect(flat).toContain(
-      'async function saveAgent( patch: Record<string, unknown>, section: "general" | "behavior", force = false, ): Promise<boolean>',
+      'section: "general" | "behavior", force = false, retry?: () => void, ): Promise<boolean>',
     );
     expect(flat).toContain(
-      "if (!ok) return false; } return dirty.decisions ? saveDecisions() : true;",
+      "if (!ok) return false; } return dirty.decisions ? saveDecisions(force) : true;",
     );
     expect(flat).toContain("if (!(await saveGeneral())) return false;");
+    // ...and "save anyway" after the identity's conflict re-runs the whole save, setup included.
+    expect(flat).toContain(
+      '"general", force, // NOTE: "Save anyway" re-runs the whole of this save, identity and setup alike. () => void saveGeneral(true), );',
+    );
+    expect(flat).toContain(
+      "return dirty.decisions ? saveDecisions(force) : true;",
+    );
+    expect(flat).toContain(
+      "retry ?? (() => void saveAgent(patch, section, true)),",
+    );
   });
 
   test("a saved setup answers every refusal about the block, the classifier's included", () => {

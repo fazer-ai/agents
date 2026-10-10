@@ -428,17 +428,18 @@ async function runRecovery(params: {
           base,
         })
       : null;
-    // NOTE: the channel's ceiling, on the row's receipt, read off the mirror's inbox. Only the
-    // mirror's: a refusal ends with the conversation handed to the team, and the hand-over reads the
-    // persona and the ownership off the mirror row, so a conversation the mirror never learned could
-    // not be handed over and keeps `MAX_RECOVERY_AGE_MS`, a late answer over none. Asked AFTER the
-    // reconcile for the same reason: a message that reopened a resolved conversation left the mirror
-    // saying `resolved`, and the hand-over would refuse that stale ownership. Not on a snapshot that
+    // NOTE: the channel's ceiling, on the row's receipt: the mirror's inbox, or the channel the live
+    // conversation names when the mirror has none. A refusal ends with the conversation handed to the
+    // team, which works without a mirror row too (`announceFailedTurn` takes the route's persona).
+    // Asked after the reconcile, so the mirror the hand-over reads is current. Not on a snapshot that
     // did not parse: nothing was reconciled, and the guard below retries it as `unreachable`.
     if (
       live !== null &&
       params.now.getTime() - row.receivedAt.getTime() >
-        recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
+        recoveryAgeCeilingMs(
+          row,
+          conv?.inbox?.channelType ?? liveChannelOf(liveRaw),
+        )
     ) {
       logger.warn(
         "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
@@ -980,13 +981,10 @@ async function runRecovery(params: {
     params.now.getTime() - sentAt * 1000 >
       recoveryAgeCeilingMs(
         row,
-        // Off the mirror as it stands now, which is what the hand-over reads: a null inbox was
-        // repaired above to the route's, and a webhook may have created the row during the REST
-        // reads. A conversation still not mirrored has nothing to hand over and keeps six hours. An
-        // inbox that never learned its channel takes the one the live conversation names.
-        mirrorNow?.inbox
-          ? (mirrorNow.inbox.channelType ?? liveChannelOf(liveRaw))
-          : null,
+        // Off the mirror as it stands now: a null inbox was repaired above to the route's, and a
+        // webhook may have created the row during the REST reads. A conversation still not mirrored,
+        // or an inbox that never learned its channel, takes the one the live conversation names.
+        mirrorNow?.inbox?.channelType ?? liveChannelOf(liveRaw),
       )
   ) {
     return "unrecoverable";
@@ -1937,6 +1935,9 @@ export async function announceUnanswered(
           };
         },
         aboutMessageId: row.inboundMessageId,
+        // For a conversation the mirror never learned. Only a reply-owing row gets here, so the route
+        // is the responder's, never an observer's.
+        routeAgentBotId: row.routeAgentBotId,
         error: new Error(RECOVERY_GAVE_UP),
         base,
         deps: opts.makeClient ? { makeClient: opts.makeClient } : undefined,

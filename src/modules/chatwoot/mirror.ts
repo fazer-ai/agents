@@ -8,7 +8,11 @@ import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origi
 import { retireJobsByDedupeKeyOn } from "@/modules/scheduler/service";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import { isNewIncomingMessage } from "./normalize";
-import { decideConversationWrites, type StatePayload } from "./state-order";
+import {
+  decideConversationWrites,
+  type FactWrite,
+  type StatePayload,
+} from "./state-order";
 import { announceStatusChange } from "./status-announce";
 import type { NormalizedChatwootEvent } from "./types";
 
@@ -135,6 +139,12 @@ export async function mirrorChatwootEvent(
     assigneeId: n.assigneeId ?? null,
     redirectOriginStated: n.redirectOriginDisplayId !== undefined,
     redirectOriginCleared: n.redirectOriginDisplayId === null,
+    factsStated: {
+      labels: n.labels !== undefined,
+      customAttributes: n.customAttributes !== undefined,
+      conversationType: n.conversationType !== undefined,
+      kanbanAttributes: n.kanbanAttributes !== undefined,
+    },
     kanbanCardId: n.kanbanCardId ?? null,
     kanbanCardAt: n.kanbanCardAt ?? null,
     // The event that exists only for a status transition says so by its name: the fork dispatches it
@@ -236,7 +246,10 @@ export async function mirrorChatwootEvent(
             chatwootCreatedAt: true,
             chatwootFirstReplyAt: true,
             chatwootRedirectOriginAt: true,
-            chatwootFactsAt: true,
+            chatwootLabelsAt: true,
+            chatwootCustomAttributesAt: true,
+            chatwootConversationTypeAt: true,
+            chatwootKanbanAttributesAt: true,
             chatwootKanbanCardId: true,
             chatwootKanbanCardAt: true,
             // Read for the stale branch, which advances this watermark only when the payload really is
@@ -280,7 +293,12 @@ export async function mirrorChatwootEvent(
                 statusClaimFrom: existing.statusClaimFrom,
                 statusClaimStampedAt: existing.statusClaimStampedAt,
                 statusClaimRefusedAt: existing.statusClaimRefusedAt,
-                factsAt: existing.chatwootFactsAt,
+                factMarks: {
+                  labels: existing.chatwootLabelsAt,
+                  customAttributes: existing.chatwootCustomAttributesAt,
+                  conversationType: existing.chatwootConversationTypeAt,
+                  kanbanAttributes: existing.chatwootKanbanAttributesAt,
+                },
                 kanbanCardId: existing.chatwootKanbanCardId,
                 kanbanCardAt: existing.chatwootKanbanCardAt,
               }
@@ -478,7 +496,10 @@ export async function mirrorChatwootEvent(
               chatwootOwnershipChangedAt: decision.ownershipChangedAt,
               chatwootAssigneeAt: decision.assigneeAt,
               chatwootRedirectOriginAt: decision.redirectOriginAt,
-              chatwootFactsAt: decision.factsAt,
+              chatwootLabelsAt: decision.facts.labels.at,
+              chatwootCustomAttributesAt: decision.facts.customAttributes.at,
+              chatwootConversationTypeAt: decision.facts.conversationType.at,
+              chatwootKanbanAttributesAt: decision.facts.kanbanAttributes.at,
               lastInboundAt: inboundAt,
               lastInboundMessageId: inboundId,
               // A row created mid-dialogue needs no special case here: what it stores is what
@@ -531,7 +552,8 @@ export async function mirrorChatwootEvent(
         }
 
         const effectiveLastEventAt = decision.activityAt;
-        const factsUpdate = decision.unversioned && !n.factsOnCreateOnly;
+        const factsUpdate = !n.factsOnCreateOnly;
+        const facts = decision.facts;
         const appliedStatus = decision.status;
         const nextStatus = appliedStatus ?? existing.status;
         const assigneeKnown = decision.assignee;
@@ -546,23 +568,15 @@ export async function mirrorChatwootEvent(
           data: {
             // A recovery's body (`factsOnCreateOnly`) carries an INHERITED pairing, an inference, so it
             // fills an empty one and never replaces the one a webhook stored.
-            // A payload refused for the facts still fills a relation that is NULL, as the stale
-            // branch does: a newer degraded event can create the row naming none, and the pre-turn
-            // gates fail closed on a row without them.
-            ...(n.contactInboxId != null &&
-            (decision.unversioned
-              ? !n.factsOnCreateOnly || existing.contactInboxId === null
-              : existing.contactInboxId === null)
+            ...(decision.unversioned &&
+            n.contactInboxId != null &&
+            (!n.factsOnCreateOnly || existing.contactInboxId === null)
               ? { contactInboxId: n.contactInboxId }
               : {}),
-            ...(inboxRowId != null &&
-            (decision.unversioned || existing.inboxId === null)
+            ...(decision.unversioned && inboxRowId != null
               ? { inboxId: inboxRowId }
               : {}),
-            ...(contactId != null &&
-            (decision.unversioned || existing.contactId === null)
-              ? { contactId }
-              : {}),
+            ...(decision.unversioned && contactId != null ? { contactId } : {}),
             ...(appliedStatus != null ? { status: appliedStatus } : {}),
             // NOTE: The same question the stale branch asked, and the same answer: see
             // `dropsResolutionOrigin` above.
@@ -598,29 +612,50 @@ export async function mirrorChatwootEvent(
             // event carried one: a payload without them must not wipe the stored snapshot.
             // A recovery's body states them for the row it CREATES only (`factsOnCreateOnly`): read
             // before a webhook that created the row since, they never update it.
-            ...(factsUpdate && n.customAttributes
+            ...(factsUpdate &&
+            facts.customAttributes.write &&
+            n.customAttributes
               ? {
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
+                  ...factMark(
+                    "chatwootCustomAttributesAt",
+                    facts.customAttributes,
+                  ),
                 }
-              : {}),
-            ...(factsUpdate && decision.factsAt != null
-              ? { chatwootFactsAt: decision.factsAt }
               : {}),
             // The card's id and clock travel with its attributes, so the clock stored always
             // describes the attributes stored.
-            ...(factsUpdate && decision.kanban && n.kanbanAttributes
+            ...(factsUpdate &&
+            facts.kanbanAttributes.write &&
+            n.kanbanAttributes
               ? {
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
+                  ...factMark(
+                    "chatwootKanbanAttributesAt",
+                    facts.kanbanAttributes,
+                  ),
                   chatwootKanbanCardId: n.kanbanCardId ?? null,
                   chatwootKanbanCardAt: n.kanbanCardAt ?? null,
                 }
               : {}),
-            ...(factsUpdate && n.conversationType
-              ? { conversationType: n.conversationType }
+            ...(factsUpdate &&
+            facts.conversationType.write &&
+            n.conversationType
+              ? {
+                  conversationType: n.conversationType,
+                  ...factMark(
+                    "chatwootConversationTypeAt",
+                    facts.conversationType,
+                  ),
+                }
               : {}),
-            // The label list, on the bags' terms: assigned whole, by recency, and only when carried.
-            ...(factsUpdate && n.labels !== undefined
-              ? { labels: n.labels }
+            // The label list, on the bags' terms: assigned whole, by recency and its own mark, and
+            // only when carried.
+            ...(factsUpdate && facts.labels.write && n.labels !== undefined
+              ? {
+                  labels: n.labels,
+                  ...factMark("chatwootLabelsAt", facts.labels),
+                }
               : {}),
             // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget
             // conversation can be re-entered from a second WhatsApp thread, and every payload carries
@@ -994,4 +1029,12 @@ function forwardInboundId(
   return inbound != null && (stored === null || inbound > stored)
     ? { lastInboundMessageId: inbound }
     : {};
+}
+
+// A fact's mark moves with the fact, and only when the decision gives it a version to move to.
+function factMark<K extends string>(
+  column: K,
+  fact: FactWrite,
+): Partial<Record<K, number>> {
+  return fact.at != null ? ({ [column]: fact.at } as Record<K, number>) : {};
 }

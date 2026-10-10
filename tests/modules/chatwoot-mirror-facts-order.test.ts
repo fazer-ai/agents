@@ -243,48 +243,22 @@ describe.skipIf(!dbUp)(
       expect((await row(8)).labels).toEqual(["x", "y"]);
     });
 
-    test("an older snapshot still fills the relations a newer degraded one could not name", async () => {
+    test("a newer payload that omits the labels does not shut out an older one that carries them", async () => {
       const degraded = reply("message_updated", 9, {
         updatedAt: T + 0.2,
-        labels: ["x", "y"],
+        customAttributes: { etapa: "b" },
       });
-      const {
-        meta: _meta,
-        contact_inbox: _pairing,
-        inbox_id: _inbox,
-        ...bare
-      } = degraded.conversation;
-      await mirror({ ...degraded, inbox: undefined, conversation: bare });
+      await mirror(degraded);
       await mirror(
-        reply("message_created", 9, { updatedAt: T + 0.1, labels: ["x"] }),
+        reply("message_created", 9, {
+          updatedAt: T + 0.1,
+          labels: ["vip"],
+          customAttributes: { etapa: "a" },
+        }),
       );
-      const r = await suDb.conversation.findFirstOrThrow({
-        where: { tenantId, chatwootConversationId: 9 },
-        select: {
-          contactId: true,
-          inboxId: true,
-          contactInboxId: true,
-          labels: true,
-        },
-      });
-      expect(r.contactId).not.toBeNull();
-      expect(r.inboxId).not.toBeNull();
-      expect(r.contactInboxId).toBe(89_009);
-      expect(r.labels).toEqual(["x", "y"]);
-    });
-
-    test("...and never replaces one the newer snapshot stored", async () => {
-      await mirror(reply("message_updated", 10, { updatedAt: T + 0.2 }));
-      const older = reply("message_created", 10, { updatedAt: T + 0.1 });
-      await mirror({
-        ...older,
-        conversation: { ...older.conversation, contact_inbox: { id: 99_999 } },
-      });
-      const r = await suDb.conversation.findFirstOrThrow({
-        where: { tenantId, chatwootConversationId: 10 },
-        select: { contactInboxId: true },
-      });
-      expect(r.contactInboxId).toBe(89_010);
+      const r = await row(9);
+      expect(r.labels).toEqual(["vip"]);
+      expect(r.customAttributes).toEqual({ etapa: "b" });
     });
 
     test("the newer snapshot arriving last still applies, in the same second", async () => {

@@ -57,6 +57,11 @@ export interface StatePayload {
    * `redirectOriginAnswers` below.
    */
   redirectOriginCleared: boolean;
+  /**
+   * Which of the facts with no version of their own the payload CARRIES. Each is ordered on its own
+   * mark, so a payload that omits one says nothing about it and moves nothing for it.
+   */
+  factsStated: Record<FactName, boolean>;
   /** The linked kanban card's id, null when the payload names no card. */
   kanbanCardId: number | null;
   /**
@@ -64,6 +69,21 @@ export interface StatePayload {
    * conversation, so this is the only clock that orders two states of one card under one version.
    */
   kanbanCardAt: number | null;
+}
+
+/** The conversation facts that carry no version of their own and are ordered by the conversation's. */
+export const FACT_NAMES = [
+  "labels",
+  "customAttributes",
+  "conversationType",
+  "kanbanAttributes",
+] as const;
+export type FactName = (typeof FACT_NAMES)[number];
+
+/** What to do with one fact: write it or not, and the version to stamp on its mark (null: leave). */
+export interface FactWrite {
+  write: boolean;
+  at: number | null;
 }
 
 /** The ordering state already stored for this conversation. Null when there is no row yet. */
@@ -95,8 +115,8 @@ export interface StateRow {
   statusClaimFrom: string | null;
   statusClaimStampedAt: number | null;
   statusClaimRefusedAt: number | null;
-  /** The facts mark (see `factsAt` on the decision). */
-  factsAt: number | null;
+  /** Each fact's mark (see `facts` on the decision). */
+  factMarks: Record<FactName, number | null>;
   /** The card whose attributes are stored, and its clock as of them. */
   kanbanCardId: number | null;
   kanbanCardAt: number | null;
@@ -120,22 +140,19 @@ export interface StateDecision {
    * inbox) and the attribute bags, which every payload carries. They need a recency fence: a
    * conversation event can win on version alone, and one with an older `last_activity_at` would roll
    * a bag back (a Kanban card jumping back a column) or restore a relation a contact merge moved (the
-   * graph's thread key is built from the contact inbox). Behind on this axis, or on the `factsAt`
-   * mark inside one second: state ruling kept, these fields silent.
+   * graph's thread key is built from the contact inbox). Behind on this axis: state ruling kept,
+   * these fields silent. The bags, the labels and the type are also held to `facts` below.
    */
   unversioned: boolean;
   /**
-   * Version to stamp on the FACTS mark, or null to leave it: the version of the newest payload whose
-   * unversioned fields were written. `last_activity_at` does not move on a label, attribute or
-   * `group_type` write while `updated_at` does, so a snapshot behind this mark is older than the facts
-   * stored even when it shares their second.
+   * Per fact: whether the payload's value may be written, and the version to stamp on that fact's
+   * mark. `last_activity_at` does not move on a label, attribute or `group_type` write while
+   * `updated_at` does, so a payload behind a fact's mark is older than the value stored even when it
+   * shares its second. One mark per fact, written with the fact, so a payload that omits one cannot
+   * advance a mark over a value it never stated. The kanban card is also held to its own clock (see
+   * `decideFact`).
    */
-  factsAt: number | null;
-  /**
-   * Whether the payload's kanban card attributes may be written: the facts rule, plus the card's own
-   * clock when the conversation version is the same and so is the card.
-   */
-  kanban: boolean;
+  facts: Record<FactName, FactWrite>;
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
   /**
@@ -205,6 +222,43 @@ export function firstOwnershipStamp(
   return Math.max(stamp, row.statusAt);
 }
 
+function mapFacts(
+  decide: (fact: FactName) => FactWrite,
+): Record<FactName, FactWrite> {
+  return Object.fromEntries(FACT_NAMES.map((f) => [f, decide(f)])) as Record<
+    FactName,
+    FactWrite
+  >;
+}
+
+// One fact on a payload that is not stale: carried, not behind on `last_activity_at`, and not at a
+// version older than the one that last wrote it. An equal version is the same row, so it writes again
+// and leaves the mark. The card is the one fact the conversation's version does not cover: its edits
+// move only its own clock, so under one version an older state of the SAME card is refused, and
+// linking a card moves neither clock, so a different card at the same version is written.
+function decideFact(
+  fact: FactName,
+  payload: StatePayload,
+  row: StateRow,
+  recent: boolean,
+): FactWrite {
+  const mark = row.factMarks[fact];
+  const behind =
+    payload.version != null && mark != null && payload.version < mark;
+  const olderCardState =
+    fact === "kanbanAttributes" &&
+    payload.version != null &&
+    payload.version === mark &&
+    payload.kanbanCardId != null &&
+    payload.kanbanCardId === row.kanbanCardId &&
+    payload.kanbanCardAt != null &&
+    row.kanbanCardAt != null &&
+    payload.kanbanCardAt < row.kanbanCardAt;
+  const write =
+    payload.factsStated[fact] && recent && !behind && !olderCardState;
+  return { write, at: write ? advancesFrom(mark, payload.version) : null };
+}
+
 export function decideConversationWrites(
   payload: StatePayload,
   row: StateRow | null,
@@ -241,8 +295,10 @@ export function decideConversationWrites(
           : null,
       statusClaimRefusedAt: null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
-      factsAt: payload.version,
-      kanban: true,
+      facts: mapFacts((f) => ({
+        write: payload.factsStated[f],
+        at: payload.factsStated[f] ? payload.version : null,
+      })),
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
       activityAt: eventAt,
@@ -302,8 +358,7 @@ export function decideConversationWrites(
       ownershipChangedAt: lateChangeAt,
       statusClaimRefusedAt: null,
       assigneeAt: null,
-      factsAt: null,
-      kanban: false,
+      facts: mapFacts(() => ({ write: false, at: null })),
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
         redirectOriginAnswers && !olderThanRedirectOrigin
@@ -386,32 +441,14 @@ export function decideConversationWrites(
   // stamps nothing: with no key to order by, the last write wins.
   const redirectOrigin = redirectOriginAnswers && !olderThanRedirectOrigin;
 
-  const unversioned =
-    (row.activityAt == null || eventAt >= row.activityAt) &&
-    !(
-      payload.version != null &&
-      row.factsAt != null &&
-      payload.version < row.factsAt
-    );
-  // At an equal version the facts on the conversation row agree by construction, the card does not:
-  // its edits move only its own clock, and linking a card moves neither, so a different card at the
-  // same version has nothing to be ordered by and is written.
-  const olderCardState =
-    payload.version != null &&
-    payload.version === row.factsAt &&
-    payload.kanbanCardId != null &&
-    payload.kanbanCardId === row.kanbanCardId &&
-    payload.kanbanCardAt != null &&
-    row.kanbanCardAt != null &&
-    payload.kanbanCardAt < row.kanbanCardAt;
+  const unversioned = row.activityAt == null || eventAt >= row.activityAt;
 
   return {
     stale: false,
     status,
     assignee,
     unversioned,
-    factsAt: unversioned ? advances(row.factsAt) : null,
-    kanban: unversioned && !olderCardState,
+    facts: mapFacts((f) => decideFact(f, payload, row, unversioned)),
     statusAt: status != null ? advances(row.statusAt) : null,
     ownershipChangedAt:
       (status != null &&

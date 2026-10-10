@@ -2,16 +2,18 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   awaitRouteTokenRefresh,
   invalidateRouteTokenCache,
-  noteRouteTokenLookup,
   ROUTE_TOKEN_CACHE_TTL_MS,
   ROUTE_TOKEN_NEGATIVE_MAX,
+  ROUTE_TOKEN_REFRESH_BACKOFF_MS,
   ROUTE_TOKEN_STALE_MS,
   readRouteTokenCache,
   routeTokenCacheGeneration,
+  routeTokenRefreshDue,
   routeTokenRefreshInFlight,
   trackRouteTokenRefresh,
   writeRouteTokenCache,
 } from "@/modules/chatwoot/route-token-cache";
+import { until } from "../utils/poll";
 
 const bot = {
   tenantId: 1n,
@@ -23,8 +25,7 @@ const T0 = 1_800_000_000_000;
 
 describe("route token cache", () => {
   beforeEach(() => {
-    invalidateRouteTokenCache();
-    noteRouteTokenLookup(true); // store-level and global: a prior test's failure would leak
+    invalidateRouteTokenCache(); // also clears every refresh backoff a prior test left
   });
 
   test("a fresh positive entry is served without being marked stale", () => {
@@ -115,31 +116,33 @@ describe("route token cache", () => {
     expect(readRouteTokenCache("h", past)).toBeUndefined(); // nothing older may surface behind it
   });
 
-  // THE RULE THAT KEEPS THE STALE SERVE HONEST. A 200 is a promise Chatwoot never revisits: it does
-  // not retry a 2xx, and the payload is not stored. Answering from a cached row while Postgres is
-  // unreachable does not save the event, it loses it in silence, which is worse than the escalation
-  // a blocked ack causes. So the moment a lookup cannot reach the database, the window shuts.
-  test("a failed lookup closes the stale window for every token", () => {
+  // A FAILED REFRESH DOES NOT CLOSE THE STALE WINDOW. The ack writes the ledger row before it answers,
+  // so refusing the stale entry while the shared pool is down would only turn every ack into a 500.
+  // What the failure decides is the NEXT refresh: held back for a while, per token, so an outage does
+  // not open one lookup per delivery.
+  test("a failed refresh keeps the stale entry served and backs off the next refresh", async () => {
     writeRouteTokenCache("a", bot, { now: T0 });
     writeRouteTokenCache("b", bot, { now: T0 });
     const past = T0 + ROUTE_TOKEN_CACHE_TTL_MS + 1;
+    expect(routeTokenRefreshDue("a")).toBe(true);
+
+    await expect(
+      trackRouteTokenRefresh("a", () => Promise.reject(new Error("down"))),
+    ).rejects.toThrow("down");
     expect(readRouteTokenCache("a", past)).toEqual({ bot, stale: true });
+    expect(routeTokenRefreshDue("a")).toBe(false);
+    expect(
+      routeTokenRefreshDue(
+        "a",
+        Date.now() + ROUTE_TOKEN_REFRESH_BACKOFF_MS + 1,
+      ),
+    ).toBe(true);
+    // Per token: another token's refresh is not held back by this one's outage.
+    expect(routeTokenRefreshDue("b")).toBe(true);
 
-    noteRouteTokenLookup(false);
-    expect(readRouteTokenCache("a", past)).toBeUndefined();
-    // Store-level on purpose: the first token to discover the outage protects the rest.
-    expect(readRouteTokenCache("b", past)).toBeUndefined();
-
-    noteRouteTokenLookup(true);
-    expect(readRouteTokenCache("a", past)).toEqual({ bot, stale: true });
-  });
-
-  // An unhealthy lookup never blocks a FRESH answer: inside the TTL the row was read recently enough
-  // that the detached half has the same chance it always had.
-  test("a failed lookup does not touch a fresh entry", () => {
-    writeRouteTokenCache("h", bot, { now: T0 });
-    noteRouteTokenLookup(false);
-    expect(readRouteTokenCache("h", T0 + 1)).toEqual({ bot, stale: false });
+    // A refresh that succeeds lifts the backoff.
+    await trackRouteTokenRefresh("a", () => Promise.resolve());
+    expect(routeTokenRefreshDue("a")).toBe(true);
   });
 
   // A lookup that started before an invalidation holds the row as it was BEFORE the writer's commit.
@@ -220,23 +223,33 @@ describe("route token cache", () => {
     expect(routeTokenRefreshInFlight("h")).toBeUndefined();
   });
 
-  // AND A TIMED-OUT REFRESH IS A FAILED LOOKUP, which is the whole of rule three. Dropping the hung
-  // refresh without saying so leaves the entry servable: the next delivery is answered from memory
-  // and acked 2xx while Postgres is exactly as unreachable as it was a moment ago, and Chatwoot never
-  // redelivers a 2xx. One event lost per timeout cycle, silently, which is the failure this module
-  // exists to refuse.
-  test("a refresh that timed out closes the stale window", () => {
+  // AND A TIMED-OUT REFRESH IS A FAILED ONE. Dropped without saying so, the next stale delivery
+  // would start another lookup that hangs the same way, one per delivery.
+  test("a refresh that timed out backs off like a failed one", async () => {
     writeRouteTokenCache("h", bot, { now: T0 });
     const past = T0 + ROUTE_TOKEN_CACHE_TTL_MS + 1;
     trackRouteTokenRefresh("h", () => new Promise<void>(() => {}));
-    return awaitRouteTokenRefresh("h", 20).then(
-      () => {
-        throw new Error("the bounded wait should have rejected");
-      },
-      () => {
-        expect(readRouteTokenCache("h", past)).toBeUndefined();
-      },
+    await expect(awaitRouteTokenRefresh("h", 20)).rejects.toThrow();
+    expect(routeTokenRefreshDue("h")).toBe(false);
+    expect(readRouteTokenCache("h", past)).toEqual({ bot, stale: true });
+  });
+
+  // A STALE HIT DOES NOT WAIT ON THE REFRESH, so the registration cannot rely on a waiter to drop it:
+  // it expires by itself, and the token can be refreshed again once the backoff passes.
+  test("a refresh that never settles expires with no one waiting on it", async () => {
+    trackRouteTokenRefresh("h", () => new Promise<void>(() => {}), 20);
+    expect(routeTokenRefreshInFlight("h")).toBeDefined();
+    await until(
+      "the stalled refresh to expire",
+      () => routeTokenRefreshInFlight("h") === undefined,
     );
+    expect(routeTokenRefreshDue("h")).toBe(false);
+    expect(
+      routeTokenRefreshDue(
+        "h",
+        Date.now() + ROUTE_TOKEN_REFRESH_BACKOFF_MS + 1,
+      ),
+    ).toBe(true);
   });
 
   // AND THE ONE THAT OVERRAN CANNOT EVICT ITS REPLACEMENT when it finally settles. `finally` deletes
@@ -275,22 +288,30 @@ describe("route token cache", () => {
     expect(routeTokenRefreshInFlight("other")).toBeUndefined();
   });
 
-  // AND A STALE ENTRY IS NOT SERVED BESIDE A REFRESH. The refresh exists because the answer is in
-  // doubt; handing the old one out next to it acks events the refresh may be about to prove
-  // unbackable, and a 2xx is never redelivered.
-  test("a refresh in flight makes a stale read a miss, not a stale hit", async () => {
+  // A refresh in flight does not withhold the stale entry (the ack's own write backs the 200); it only
+  // keeps a second refresh from starting beside it.
+  test("a refresh in flight leaves the stale entry served and holds back a second one", async () => {
     writeRouteTokenCache("h", bot, { now: T0 });
     const past = T0 + ROUTE_TOKEN_CACHE_TTL_MS + 1;
-    expect(readRouteTokenCache("h", past)).toEqual({ bot, stale: true });
-
     let release = () => {};
     const gate = new Promise<void>((r) => {
       release = r;
     });
     const p = trackRouteTokenRefresh("h", () => gate);
-    expect(readRouteTokenCache("h", past)).toBeUndefined();
+    expect(readRouteTokenCache("h", past)).toEqual({ bot, stale: true });
+    expect(routeTokenRefreshDue("h")).toBe(false);
     release();
     await p;
-    expect(readRouteTokenCache("h", past)).toEqual({ bot, stale: true });
+    expect(routeTokenRefreshDue("h")).toBe(true);
+  });
+
+  test("an invalidation lifts a refresh backoff with the entry", async () => {
+    writeRouteTokenCache("h", bot, { now: T0 });
+    await trackRouteTokenRefresh("h", () =>
+      Promise.reject(new Error("down")),
+    ).catch(() => {});
+    expect(routeTokenRefreshDue("h")).toBe(false);
+    invalidateRouteTokenCache("h");
+    expect(routeTokenRefreshDue("h")).toBe(true);
   });
 });

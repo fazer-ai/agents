@@ -5,6 +5,10 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  drainStoredChatwootDeliveries,
+  heldDeliveryRowIds,
+} from "./delivery-queue";
 import { TURN_BEARING_EVENT } from "./normalize";
 import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
 import {
@@ -31,7 +35,7 @@ import {
 // a timeout). Early costs one false alert, not a second turn: a turn still running has its row
 // marked DEAD and its loss dispatched, then tx2 writes PROCESSED over it by id. The alert cannot be
 // recalled; closing that properly needs a processor heartbeat.
-const STALE_AFTER_MS = 30 * 60 * 1000;
+export const STALE_AFTER_MS = 30 * 60 * 1000;
 // Cadence of the sweep. Recovery is not on the table, so what this buys is how fast an operator
 // learns; minutes rather than hours because the answer is "go read this conversation".
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
@@ -530,6 +534,7 @@ export async function sweepStrandedDeliveries(
   // reclaimed old rows would fill every slot and starve a real strand. Both arms are the
   // classifier's `claimedAt ?? receivedAt`, spelled for a nullable column.
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
+  const held = heldDeliveryRowIds();
   const rows = (await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findMany({
       where: {
@@ -537,6 +542,15 @@ export async function sweepStrandedDeliveries(
         OR: [
           { claimedAt: { not: null, lt: cutoff } },
           { claimedAt: null, receivedAt: { lt: cutoff } },
+        ],
+        // A PENDING row that still holds its body is the drain's (delivery-queue.ts), which the
+        // handler ran just before this pass and which drops the body of every row it gives up on;
+        // and one this process holds in its admission queue is waiting, not stranded.
+        AND: [
+          { NOT: { status: "PENDING", payload: { not: null } } },
+          ...(held.length > 0
+            ? [{ NOT: { status: "PENDING" as const, id: { in: held } } }]
+            : []),
         ],
       },
       // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
@@ -849,6 +863,16 @@ async function deliverySweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {
+  // NOTE: First the rows whose body the ack stored and nothing processes: processed from that body
+  // now, rather than called lost half an hour from now. Its failure must not cost the sweep.
+  await drainStoredChatwootDeliveries({ tenantId: job.tenantId, base }).catch(
+    (err) => {
+      logger.warn(
+        { err, tenantId: String(job.tenantId) },
+        "chatwoot delivery sweep: the stored-delivery drain failed; sweeping anyway",
+      );
+    },
+  );
   await sweepStrandedDeliveries({ tenantId: job.tenantId, base });
   return {
     outcome: "reschedule",

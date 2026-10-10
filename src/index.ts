@@ -10,6 +10,7 @@ import {
 import { installShutdownHandlers } from "@/lib/shutdown";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
+import { drainStoredChatwootDeliveries } from "@/modules/chatwoot/delivery-queue";
 import {
   ensureAllDeliverySweeps,
   registerDeliverySweepHandler,
@@ -17,6 +18,7 @@ import {
 import { registerDeliveryRecoveryHandler } from "@/modules/chatwoot/recover-delivery";
 import { registerHumanReplyRecoveryHandler } from "@/modules/chatwoot/recover-human-reply";
 import { registerTakeoverRecoveryHandler } from "@/modules/chatwoot/recover-takeover";
+import { enableRouteTokenRewarm } from "@/modules/chatwoot/webhook";
 import { registerDebounceHandler } from "@/modules/debounce/handler";
 import {
   startDebounceWorker,
@@ -238,6 +240,18 @@ if (config.compactionWorker.enabled) {
   registerMemoryHandlers();
   startCompactionWorker();
 }
+
+// NOTE: The Chatwoot deliveries a previous process acked and never got to: a customer message goes to
+// the delivery recovery now, any other event is processed from the body its row stored. Every replica
+// serves the webhook, so this runs whatever the worker flags; a row another live replica still holds
+// goes to whichever CAS lands first, and the loser skips.
+void drainStoredChatwootDeliveries({ minAgeMs: 0 }).catch((error) =>
+  logger.warn({ error }, "Failed to drain stored Chatwoot deliveries"),
+);
+
+// A full route-token cache invalidation looks the dropped tokens up again, so a bot nobody retired
+// keeps an entry to serve if the lookup starts failing (src/modules/chatwoot/route-token-cache.ts).
+enableRouteTokenRewarm();
 
 // SIGTERM/SIGINT stop the lanes, drain the work in flight up to SHUTDOWN_DRAIN_MS, then exit.
 installShutdownHandlers({

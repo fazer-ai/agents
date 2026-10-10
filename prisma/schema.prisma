@@ -539,6 +539,15 @@ model ChatwootWebhookDelivery {
   // cannot say" and falls back to deriving it now, which is what every delivery did before the
   // column.
   settleScopedToThisDelivery Boolean?              @map("settle_scoped_to_this_delivery")
+  // THE BODY CHATWOOT SENT, for an event the delivery recovery cannot rebuild (a status or assignment
+  // change, a colleague's reply), held only while it owes its first attempt (issues #1121, #1217). The
+  // ack writes it in the same INSERT as the row and answers only after that commits, so a process that
+  // dies after the 200 leaves a row a later pass can process from. A customer message stores none: the
+  // recovery rebuilds it from Chatwoot, so the exception to "nothing here holds what the customer
+  // wrote" (issue #228) stays as narrow as it can. The claim clears it in the same statement, the drain
+  // clears it on every row it gives up on (6 hours at most), and nothing reads it but the drain.
+  // Encrypted with `encryptJson`. Null on every row an older build wrote.
+  payload                    String?
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -560,6 +569,8 @@ model ChatwootWebhookDelivery {
   // `(chatwoot_instance_id, conversation_id, human_reply_message_id) WHERE human_reply_message_id IS NOT NULL`.
   // The inbound half is the named index above; see 20260908170004 for why the absence case is the
   // one that had to be indexed.
+  // NOTE: and so is the drain's, `(tenant_id, received_at) WHERE payload IS NOT NULL`: only the rows still
+  // holding a body (20261010120100).
   @@map("chatwoot_webhook_deliveries")
 }
 

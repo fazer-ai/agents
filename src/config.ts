@@ -70,6 +70,8 @@ const {
   AGENT_PROMPT_MAX_CHARS,
   HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
+  CHATWOOT_DELIVERY_CONCURRENCY,
+  CHATWOOT_ACK_POOL_MAX,
   TTS_CHECK_URL,
   TTS_CHECK_MODE,
   TTS_CHECK_TOKEN,
@@ -328,6 +330,28 @@ const config = {
     "It sizes both Postgres pools, and total connections per replica are about twice it.",
     MAX_COUNT,
   ),
+  // NOTE: The Chatwoot receiver's two budgets (docs/chatwoot.md "Webhook receiver").
+  // `deliveryConcurrency` is how many acked deliveries are processed at once in each of two lanes
+  // (customer messages, and every other event so a takeover never waits behind turns); the rest wait
+  // as ledger rows, so a burst costs latency rather than `maxWait` failures. Raise it with the pool.
+  // `ackPoolMax` sizes the small pool the ack writes through, so a drained main pool cannot turn the
+  // ack into a 500 (which Chatwoot answers by opening the conversation).
+  chatwoot: {
+    deliveryConcurrency: parseIntSetting(
+      CHATWOOT_DELIVERY_CONCURRENCY,
+      "CHATWOOT_DELIVERY_CONCURRENCY",
+      15,
+      "It caps how many Chatwoot deliveries are processed at once in each lane; the rest wait in the ledger.",
+      MAX_COUNT,
+    ),
+    ackPoolMax: parseIntSetting(
+      CHATWOOT_ACK_POOL_MAX,
+      "CHATWOOT_ACK_POOL_MAX",
+      4,
+      "It sizes the Postgres pool the Chatwoot webhook ack writes its ledger row through.",
+      MAX_COUNT,
+    ),
+  },
   cdnUrl: CDN_URL ?? "",
   googleClientId,
   googleOAuthEnabled: googleClientId.length > 0,

@@ -406,10 +406,10 @@ describe.skipIf(!dbUp)("memory compaction: arming from the webhook", () => {
         query: {
           conversation: {
             findUnique({ args, query }) {
-              if (
-                (args.select as { contactInboxId?: boolean } | undefined)
-                  ?.contactInboxId
-              ) {
+              // Only that lookup, the pairing with its inbox relation: the mirror's own read selects the
+              // pairing too, beside the inbox FK.
+              const select = args.select as Record<string, unknown> | undefined;
+              if (select?.contactInboxId && select.inbox) {
                 throw new Error("injected: mirror lookup unavailable");
               }
               return query(args);

@@ -38,13 +38,17 @@ export interface DecisionConditionForm {
 
 // One condition of a folded rule, in the terms the engine checks it. The confidence floor is part
 // of when the rule fires, so two rules that differ only in it must not read the same.
+const percent = (v: string): string =>
+  Number.isFinite(Number(v)) && v.trim() !== "" ? `${v}%` : v;
+
 export function conditionSummary(
   c: DecisionConditionForm,
   q: DecisionQuestionForm | undefined,
 ): string {
   const name = c.question;
-  const floor = c.minConfidence.trim() === "" ? "" : ` (≥ ${c.minConfidence})`;
-  if (q?.type === "yes_no") return `${name} ≥ ${c.minProbability}`;
+  const floor =
+    c.minConfidence.trim() === "" ? "" : ` (≥ ${percent(c.minConfidence)})`;
+  if (q?.type === "yes_no") return `${name} ≥ ${percent(c.minProbability)}`;
   if (q?.type === "choice") return `${name} = ${c.equals}${floor}`;
   if (q?.type === "score") {
     const level = (v: string) => q.levels[Number(v)]?.value.trim() || v;
@@ -107,6 +111,16 @@ const text = (v: unknown): string =>
   typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
+// A threshold as the operator reads and types it, a percentage, from the fraction the engine stores.
+// Text that is not a number stays as it was, so the server's refusal still names it.
+const percentText = (v: unknown): string => {
+  const raw = text(v);
+  const n = Number(raw);
+  return raw.trim() !== "" && Number.isFinite(n)
+    ? String(Number((n * 100).toFixed(4)))
+    : raw;
+};
+
 function optionsToForm(v: unknown): DecisionOptionForm[] {
   return list(v).map((o) => ({
     value: text(bag(o)?.value),
@@ -162,9 +176,9 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
           const cond = bag(c) ?? {};
           return {
             question: text(cond.question),
-            minProbability: text(cond.minProbability),
+            minProbability: percentText(cond.minProbability),
             equals: text(cond.equals),
-            minConfidence: text(cond.minConfidence),
+            minConfidence: percentText(cond.minConfidence),
             minLevel: text(cond.minLevel),
             maxLevel: text(cond.maxLevel),
           };
@@ -183,6 +197,12 @@ function num(v: string): number | string | undefined {
   if (t === "") return undefined;
   const n = Number(t);
   return Number.isFinite(n) ? n : t;
+}
+
+// The stored fraction of a percentage typed on screen, under the same rule as `num`.
+function fraction(v: string): number | string | undefined {
+  const n = num(v);
+  return typeof n === "number" ? Number((n / 100).toFixed(6)) : n;
 }
 
 function put(out: Record<string, unknown>, key: string, value: unknown): void {
@@ -243,14 +263,16 @@ export function decisionsToStored(
           // while the operator points it somewhere else.
           const type = questionTypeOf(form, name);
           if (type === "yes_no" || type === null) {
-            put(o, "minProbability", num(c.minProbability));
+            put(o, "minProbability", fraction(c.minProbability));
           }
           if (type === "choice" || type === null) put(o, "equals", c.equals);
           if (type === "score" || type === null) {
             put(o, "minLevel", num(c.minLevel));
             put(o, "maxLevel", num(c.maxLevel));
           }
-          if (type !== "yes_no") put(o, "minConfidence", num(c.minConfidence));
+          if (type !== "yes_no") {
+            put(o, "minConfidence", fraction(c.minConfidence));
+          }
           return o;
         }),
         action,
@@ -421,7 +443,7 @@ export function conditionFor(
   const q = form.questions.find((x) => x.name === question);
   const base = emptyCondition(question);
   if (!q) return base;
-  if (q.type === "yes_no") return { ...base, minProbability: "0.7" };
+  if (q.type === "yes_no") return { ...base, minProbability: "70" };
   if (q.type === "choice") {
     return { ...base, equals: q.options[0]?.value ?? "" };
   }

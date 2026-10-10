@@ -188,6 +188,7 @@ import {
   observationToForm,
   timingOf,
   withDecisionsOf,
+  withDraftEngine,
   withEngine,
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
@@ -816,6 +817,9 @@ function AgentEditor() {
   const [savingGrants, setSavingGrants] = useState(false);
   const [savingChannelRedirect, setSavingChannelRedirect] = useState(false);
   const [savingDecisions, setSavingDecisions] = useState(false);
+  // Whether the operator tried to save the questions and rules while something was missing: the
+  // tab says what is missing in a neutral tone until then, and as an error after.
+  const [decisionsAttempted, setDecisionsAttempted] = useState(false);
   const [savingGuardrails, setSavingGuardrails] = useState(false);
 
   // Agent fields
@@ -2264,7 +2268,13 @@ function AgentEditor() {
       "",
   );
   const allConfigIssues = computeConfigIssues({
-    settings: syncedAgentRef.current?.settings,
+    // NOTE: Saved, with the engine as the editor shows it: what depends on the engine (the chat
+    // model's warnings, the classifier's key) follows the card, like the "to save" line.
+    settings: withDraftEngine(
+      syncedAgentRef.current?.settings,
+      observation,
+      watcher,
+    ),
     // NOTE: Saved, like the settings above. Absent only before the first load lands, and nothing that
     // reads it can be non-empty that early.
     agentEnabled: syncedAgentRef.current?.enabled ?? true,
@@ -2396,6 +2406,7 @@ function AgentEditor() {
       guardrailWindowHours: guardrailHealth?.windowHours ?? 24,
       guardrailLastError: guardrailHealth?.lastError ?? "",
       formatWhen: (iso) => formatRelativeTime(iso, i18n.language),
+      watcher,
     });
   }
 
@@ -2990,6 +3001,7 @@ function AgentEditor() {
   const revertDecisions = () => {
     settleRefusalFor("decisions");
     setDecisionsRefused(null);
+    setDecisionsAttempted(false);
     const a = syncedAgentRef.current;
     if (!a) return;
     setObservation((prev) =>
@@ -3528,6 +3540,7 @@ function AgentEditor() {
       if (handleConflict(err, () => void saveDecisions(true))) return false;
       if (err || !data) throw err ?? new Error("no data");
       applyDecisions(data.agent);
+      setDecisionsAttempted(false);
       // NOTE: Keep the local bag's block in step so a later Behavior save, which spreads it, does
       // not put the previous one back.
       setSettings((cur) => ({ ...cur, ...merged }));
@@ -4028,7 +4041,7 @@ function AgentEditor() {
               onChange={(k) => openTab(k as TabKey)}
               aria-label={t("editor.tabs", "Agent settings")}
             />
-            {watcher && (
+            {watcher && tab === "general" && (
               <p className="text-text-muted text-xs">
                 {decides
                   ? t(
@@ -4037,7 +4050,7 @@ function AgentEditor() {
                     )
                   : t(
                       "editor.monitoringTabsHint",
-                      "This agent only observes: the tabs that configure how an agent answers are not shown while it is in monitoring mode. What it does with what it reads is under Behavior, in Observation.",
+                      "This agent only observes: the tabs that configure how an agent answers are not shown while it is in monitoring mode. What it does with what it reads comes from its instructions below and the tools it is allowed in Tools; when it looks is under Behavior.",
                     )}
               </p>
             )}
@@ -4441,13 +4454,19 @@ function AgentEditor() {
                   onGrantTool={(tool) => void grantNativeTool(tool)}
                   onOpenTools={() => openTab("tools")}
                   onOpenGeneral={() => openTab("general")}
+                  showErrors={decisionsAttempted}
                 />
                 <TabActionBar
                   dirty={dirty.decisions}
                   saving={savingDecisions}
-                  onSave={() => void saveDecisions()}
+                  onSave={() => {
+                    if (decisionsSetupIssues.size > 0) {
+                      setDecisionsAttempted(true);
+                      return;
+                    }
+                    void saveDecisions();
+                  }}
                   onDiscard={revertDecisions}
-                  saveDisabled={decisionsSetupIssues.size > 0}
                 />
               </div>
             )}

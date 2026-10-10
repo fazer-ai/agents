@@ -426,7 +426,7 @@ export const chatwootAdminController = new Elysia({
     },
   )
   // Live agents + teams for the handoff-targeting picker, scoped to the accounts the agent serves
-  // (via its bound inboxes). `accounts` lists those accounts: 0 ⇒ no inbox bound, 1 ⇒ agents/teams
+  // (via the inboxes it answers or observes). `accounts` lists those accounts: 0 ⇒ no inbox bound, 1 ⇒ agents/teams
   // populated from that account, ≥2 ⇒ ambiguous (pinned disabled in the editor). Agents/teams are
   // account-scoped, so a pinned target only makes sense within a single account.
   .get(

@@ -1621,9 +1621,11 @@ export async function listAgentsAndTeams(
 }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
+  // The inboxes it answers and the ones it observes, as for its labels (`agentInboxScope`): a
+  // watcher's rules and tools hand off too, to someone in the account it watches.
   const rows = await runScopedOn(base, ctx, (db) =>
     db.inbox.findMany({
-      where: { agentId },
+      where: { OR: [{ agentId }, { observers: { some: { agentId } } }] },
       select: {
         instance: {
           select: { id: true, accountId: true, accountName: true },

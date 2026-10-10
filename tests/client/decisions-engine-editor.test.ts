@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { credentialCompat } from "@/client/lib/credentialCompat";
 import {
   type DecisionRuleForm,
   decisionsToForm,
@@ -27,9 +28,11 @@ import {
   observationToStored,
   timingOf,
   withDecisionsOf,
+  withDraftEngine,
   withEngine,
 } from "@/client/pages/agents/observationFormState";
 import { decisionsIssues, RULES_MAX } from "@/modules/decisions/config";
+import { credentialServes } from "@/modules/vault/secret-types";
 
 // The monitoring agent's editor follows the engine (agents#1224): the decision setup (engine,
 // classifier, questions, rules, rehearsal or live) is one thing drawn on General and on its own tab,
@@ -305,5 +308,44 @@ describe("what a watcher on questions and rules does not draw", () => {
     }
     expect(watcherIssueUsed("decisions", "decisions")).toBe(true);
     expect(watcherIssueUsed("decisions", "stt")).toBe(true);
+  });
+});
+
+// The classifier's key list shows what can serve as that provider's API key, the same kinds the
+// server accepts for it, and nothing of another nature (tracing keys and the like).
+describe("the classifier's key list", () => {
+  test("offers the provider's own kind and a generic key, and never a tracing key", () => {
+    expect(credentialCompat.decisions("openai").sort()).toEqual([
+      "generic",
+      "openai",
+    ]);
+    expect(credentialCompat.decisions("typesafe")).toEqual(["generic"]);
+    for (const provider of ["openai", "typesafe"]) {
+      const kinds = credentialCompat.decisions(provider);
+      expect(kinds.includes("langfuse")).toBe(false);
+      for (const kind of kinds) {
+        expect(credentialServes({ kind, valueFitsKind: true }, "apiKey")).toBe(
+          true,
+        );
+      }
+    }
+  });
+});
+
+describe("the settings the warnings are computed from", () => {
+  test("carry the engine as edited for a watcher, and only the engine", () => {
+    const synced = {
+      monitoring: { engine: "llm", analysis: "incremental" },
+      stt: { enabled: true },
+    };
+    const form = withEngine(observationToForm(synced), "decisions");
+    const out = withDraftEngine(synced, form, true) as {
+      monitoring: { engine: string; analysis: string };
+      stt: unknown;
+    };
+    expect(out.monitoring.engine).toBe("decisions");
+    expect(out.monitoring.analysis).toBe("incremental");
+    expect(out.stt).toEqual({ enabled: true });
+    expect(withDraftEngine(synced, form, false)).toBe(synced);
   });
 });

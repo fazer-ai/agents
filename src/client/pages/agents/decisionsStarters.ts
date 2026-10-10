@@ -126,7 +126,7 @@ function starterOf(
       },
       rules: options.map((o) =>
         rule(
-          [{ ...emptyCondition(name), equals: o.value, minConfidence: "0.6" }],
+          [{ ...emptyCondition(name), equals: o.value, minConfidence: "60" }],
           "set_custom_attribute",
           { key: names.subjectAttribute, value: o.value },
         ),
@@ -140,7 +140,7 @@ function starterOf(
       instructions: names.humanQuestion,
     },
     rules: [
-      rule([{ ...emptyCondition(name), minProbability: "0.7" }], "set_labels", {
+      rule([{ ...emptyCondition(name), minProbability: "70" }], "set_labels", {
         add: [names.humanLabel],
       }),
     ],

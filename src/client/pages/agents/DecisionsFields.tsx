@@ -23,6 +23,7 @@ import {
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
+import { cn } from "@/client/lib/utils";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import {
   CHOICE_OPTIONS_MAX,
@@ -95,6 +96,12 @@ const PROVIDER_NAMES: Record<DecisionProvider, string> = {
   typesafe: "TypeSafe (Jev)",
 };
 
+// A threshold is typed as a percentage, so its limits are said as one.
+function isThreshold(issue: DecisionsIssue): boolean {
+  const last = issue.path[issue.path.length - 1];
+  return last === "minProbability" || last === "minConfidence";
+}
+
 function issueText(t: TFunction, issue: DecisionsIssue): string {
   const p = issue.params;
   switch (issue.code) {
@@ -133,7 +140,7 @@ function issueText(t: TFunction, issue: DecisionsIssue): string {
     case "needs_min_probability":
       return t(
         "editor.decisionsIssueNeedsProbability",
-        "Set the minimum probability, from 0 to 1.",
+        "Set the minimum probability, from 0% to 100%.",
       );
     case "needs_equals":
       return t("editor.decisionsIssueNeedsEquals", "Pick the option.");
@@ -146,12 +153,30 @@ function issueText(t: TFunction, issue: DecisionsIssue): string {
     case "score_needs_levels":
       return t("editor.decisionsIssueNeedsList", "Add at least 2.");
     case "too_small":
+      if (isThreshold(issue)) {
+        return t(
+          "editor.decisionsIssueTooSmallPercent",
+          "At least {{minimum}}%.",
+          {
+            minimum: Number(p.minimum) * 100,
+          },
+        );
+      }
       return p.origin === "string"
         ? t("editor.decisionsIssueRequired", "Required.")
         : t("editor.decisionsIssueTooSmall", "At least {{minimum}}.", {
             minimum: p.minimum,
           });
     case "too_big":
+      if (isThreshold(issue)) {
+        return t(
+          "editor.decisionsIssueTooBigPercent",
+          "At most {{maximum}}%.",
+          {
+            maximum: Number(p.maximum) * 100,
+          },
+        );
+      }
       return t("editor.decisionsIssueTooBig", "At most {{maximum}}.", {
         maximum: p.maximum,
       });
@@ -286,6 +311,7 @@ export function DecisionsFields({
   onGrantTool,
   onOpenTools,
   onOpenGeneral,
+  showErrors = true,
 }: {
   agentId: string;
   // When the agent was last saved: the activity is read again after every save.
@@ -308,6 +334,9 @@ export function DecisionsFields({
   onGrantTool: (tool: string) => void;
   onOpenTools: () => void;
   onOpenGeneral: () => void;
+  // Whether the operator has tried to save. Before that, what is missing is said in a neutral line,
+  // and the empty list is not an error: the first look at the tab is the starting points.
+  showErrors?: boolean;
 }) {
   const { t } = useTranslation();
   const starterNames = useStarterNames();
@@ -740,8 +769,8 @@ export function DecisionsFields({
         <Input
           type="number"
           min={0}
-          max={1}
-          step={0.05}
+          max={100}
+          step={5}
           value={cond.minConfidence}
           error={!!at(`${base}.minConfidence`)}
           onChange={(e) => set({ minConfidence: e.target.value })}
@@ -753,6 +782,7 @@ export function DecisionsFields({
           wrapperClassName="max-w-24"
           className="text-sm"
         />
+        <span aria-hidden="true">%</span>
       </span>
     );
     const options = q?.options.map((o) => o.value).filter(Boolean) ?? [];
@@ -831,8 +861,8 @@ export function DecisionsFields({
               <Input
                 type="number"
                 min={0}
-                max={1}
-                step={0.05}
+                max={100}
+                step={5}
                 value={cond.minProbability}
                 error={!!at(`${base}.minProbability`)}
                 onChange={(e) => set({ minProbability: e.target.value })}
@@ -843,6 +873,7 @@ export function DecisionsFields({
                 wrapperClassName="max-w-24"
                 className="text-sm"
               />
+              <span aria-hidden="true">%</span>
             </span>
           )}
           {q?.type === "choice" && (
@@ -1424,16 +1455,17 @@ export function DecisionsFields({
             </div>
           );
         })}
-        {field("questions") && (
-          <span role="alert" className="text-error text-xs">
-            {decisions.questions.length === 0
-              ? t(
-                  "editor.decisionsNeedsQuestion",
-                  "Add at least one question: the engine has nothing to ask.",
-                )
-              : at("questions")}
-          </span>
-        )}
+        {field("questions") &&
+          (showErrors || decisions.questions.length > 0) && (
+            <span role="alert" className="text-error text-xs">
+              {decisions.questions.length === 0
+                ? t(
+                    "editor.decisionsNeedsQuestion",
+                    "Add at least one question: the engine has nothing to ask.",
+                  )
+                : at("questions")}
+            </span>
+          )}
         <div>
           <Button
             size="sm"
@@ -1766,9 +1798,16 @@ export function DecisionsFields({
   const classifierIssue = [...issues.keys()].some((path) =>
     CLASSIFIER_PATHS.has(path),
   );
+  // Before a save was tried, an empty list is the starting point, said in its own neutral line;
+  // a server refusal or a save attempt turns the banner into an error.
+  const noQuestionYet =
+    !showErrors && decisions.questions.length === 0 && issues.has("questions");
   const hereCount = [...issues.keys()].filter(
-    (path) => !CLASSIFIER_PATHS.has(path),
+    (path) =>
+      !CLASSIFIER_PATHS.has(path) && !(noQuestionYet && path === "questions"),
   ).length;
+  const tone: "error" | "neutral" =
+    showErrors || serverRefusal ? "error" : "neutral";
   const undrawn = [...issues]
     .filter(([path]) => !drawnPaths.has(path) && !CLASSIFIER_PATHS.has(path))
     .map(([path, issue]) => `${path}: ${issueText(t, issue)}`);
@@ -1784,15 +1823,32 @@ export function DecisionsFields({
     <div className="flex flex-col gap-5" data-testid="decisions-fields">
       {(issues.size > 0 || serverUndrawn) && (
         <div
-          role="alert"
+          role={tone === "error" ? "alert" : "status"}
           data-testid="decisions-problems"
-          className="flex items-start gap-2 rounded-lg border border-error bg-error-soft px-3 py-2 text-text-primary text-xs"
+          data-tone={tone}
+          className={cn(
+            "flex items-start gap-2 rounded-lg border px-3 py-2 text-text-primary text-xs",
+            tone === "error"
+              ? "border-error bg-error-soft"
+              : "border-warning bg-warning-soft",
+          )}
         >
           <TriangleAlert
-            className="mt-0.5 h-4 w-4 shrink-0 text-error"
+            className={cn(
+              "mt-0.5 h-4 w-4 shrink-0",
+              tone === "error" ? "text-error" : "text-warning",
+            )}
             aria-hidden="true"
           />
           <div className="flex flex-col gap-1">
+            {noQuestionYet && (
+              <span>
+                {t(
+                  "editor.decisionsNeedsQuestionToSave",
+                  "To save, add at least one question: start from one of the points below or from a blank question.",
+                )}
+              </span>
+            )}
             {hereCount > 0 && (
               <span>
                 {t(

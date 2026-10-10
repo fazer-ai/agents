@@ -298,6 +298,7 @@ export async function readAgentConfigHealth(
         translate,
         guardrailWindowHours: GUARDRAIL_HEALTH_WINDOW_HOURS,
         guardrailLastError: guardrailHealth?.lastError ?? "",
+        watcher: agent.mode === "monitoring",
         ...(opts.formatWhen ? { formatWhen: opts.formatWhen } : {}),
       }),
       ...(issue.tab ? { tab: issue.tab } : {}),

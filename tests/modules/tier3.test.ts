@@ -676,6 +676,37 @@ describe.skipIf(!dbUp)("tier-3 chatwoot management + inbox binding", () => {
     expect(r2.accounts).toHaveLength(2);
     expect(r2.agents).toHaveLength(0);
     expect(r2.teams).toHaveLength(0);
+
+    // A watcher answers no inbox and OBSERVES one: its handoff target is picked from that inbox's
+    // account, the same scope its labels and attributes are listed from.
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "Watcher",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+    });
+    const watched = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 301,
+        name: "observed",
+      },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId: tenant, inboxId: watched.id, agentId: watcher.id },
+    });
+    const r3 = await listAgentsAndTeams(
+      ctx(tenant),
+      watcher.id,
+      { makeClient },
+      appDb,
+    );
+    expect(r3.accounts).toHaveLength(1);
+    expect(r3.agents.map((a) => a.name)).toEqual(["Maria"]);
+    expect(r3.teams.map((tm) => tm.name)).toEqual(["Suporte"]);
   });
 });
 

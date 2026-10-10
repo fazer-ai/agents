@@ -173,9 +173,9 @@ describe("the decisions block round trip", () => {
     const cond = form.rules[1]?.when[1];
     if (!cond) throw new Error("fixture");
     cond.question = "pede_reembolso";
-    cond.minProbability = "0.5";
+    cond.minProbability = "50";
     cond.equals = "reembolso";
-    cond.minConfidence = "0.9";
+    cond.minConfidence = "90";
     const out = decisionsToStored(form) as unknown as Block;
     expect(out.rules[1]?.when[1]).toEqual({
       question: "pede_reembolso",
@@ -194,7 +194,7 @@ describe("the decisions block round trip", () => {
       maxLevel: "0",
     });
     expect(conditionFor(form, "assunto").equals).toBe("reembolso");
-    expect(conditionFor(form, "pede_reembolso").minProbability).toBe("0.7");
+    expect(conditionFor(form, "pede_reembolso").minProbability).toBe("70");
   });
 
   test("text that is not a number travels as typed and is refused at its field", () => {
@@ -786,31 +786,31 @@ describe("a folded rule's condition", () => {
       "assunto = reembolso",
     );
     const low = conditionSummary(
-      cond({ equals: "reembolso", minConfidence: "0.1" }),
+      cond({ equals: "reembolso", minConfidence: "10" }),
       q,
     );
     const high = conditionSummary(
-      cond({ equals: "reembolso", minConfidence: "0.95" }),
+      cond({ equals: "reembolso", minConfidence: "95" }),
       q,
     );
-    expect(low).toBe("assunto = reembolso (≥ 0.1)");
-    expect(high).toBe("assunto = reembolso (≥ 0.95)");
+    expect(low).toBe("assunto = reembolso (≥ 10%)");
+    expect(high).toBe("assunto = reembolso (≥ 95%)");
   });
 
   test("names it on a score, for one level and for a range", () => {
     const q = question("score");
     expect(
       conditionSummary(
-        cond({ minLevel: "1", maxLevel: "1", minConfidence: "0.8" }),
+        cond({ minLevel: "1", maxLevel: "1", minConfidence: "80" }),
         q,
       ),
-    ).toBe("assunto = alto (≥ 0.8)");
+    ).toBe("assunto = alto (≥ 80%)");
     expect(
       conditionSummary(
-        cond({ minLevel: "0", maxLevel: "1", minConfidence: "0.8" }),
+        cond({ minLevel: "0", maxLevel: "1", minConfidence: "80" }),
         q,
       ),
-    ).toBe("assunto = baixo…alto (≥ 0.8)");
+    ).toBe("assunto = baixo…alto (≥ 80%)");
     expect(conditionSummary(cond({ minLevel: "0", maxLevel: "1" }), q)).toBe(
       "assunto = baixo…alto",
     );
@@ -818,8 +818,64 @@ describe("a folded rule's condition", () => {
 
   test("a yes or no condition reads by its probability", () => {
     expect(
-      conditionSummary(cond({ minProbability: "0.7" }), question("yes_no")),
-    ).toBe("assunto ≥ 0.7");
+      conditionSummary(cond({ minProbability: "70" }), question("yes_no")),
+    ).toBe("assunto ≥ 70%");
     expect(conditionSummary(cond({}), undefined)).toBe("assunto");
+  });
+});
+
+// Thresholds are read and typed as percentages and stored as the fraction the engine compares
+// with: an operator thinks "70%", not "0.7".
+describe("a threshold on screen", () => {
+  const stored = {
+    provider: "openai",
+    credentialRef: "vault:1",
+    questions: [
+      { name: "pede", type: "yes_no", instructions: "?" },
+      {
+        name: "assunto",
+        type: "choice",
+        instructions: "?",
+        options: [
+          { value: "a", description: "" },
+          { value: "b", description: "" },
+        ],
+      },
+    ],
+    rules: [
+      {
+        when: [{ question: "pede", minProbability: 0.7 }],
+        action: { tool: "set_labels", args: { add: ["x"] } },
+      },
+      {
+        when: [{ question: "assunto", equals: "a", minConfidence: 0.65 }],
+        action: { tool: "set_labels", args: { add: ["y"] } },
+      },
+    ],
+    apply: "shadow",
+  };
+  test("reads as a percentage and is written back as the fraction", () => {
+    const form = decisionsToForm(stored);
+    if (!form) throw new Error("fixture");
+    expect(form.rules[0]?.when[0]?.minProbability).toBe("70");
+    expect(form.rules[1]?.when[0]?.minConfidence).toBe("65");
+    const out = decisionsToStored(form) as unknown as typeof stored;
+    expect(out.rules[0]?.when[0]).toEqual({
+      question: "pede",
+      minProbability: 0.7,
+    });
+    expect(out.rules[1]?.when[0]).toEqual({
+      question: "assunto",
+      equals: "a",
+      minConfidence: 0.65,
+    });
+  });
+  test("a percentage past 100 is refused at its field", () => {
+    const form = decisionsToForm(stored);
+    if (!form?.rules[0]?.when[0]) throw new Error("fixture");
+    form.rules[0].when[0].minProbability = "150";
+    expect([...decisionsFormIssues(form).keys()]).toContain(
+      "rules.0.when.0.minProbability",
+    );
   });
 });

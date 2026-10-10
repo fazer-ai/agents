@@ -14,7 +14,11 @@ import {
   starterApplied,
   withStarter,
 } from "@/client/pages/agents/decisionsStarters";
-import { watcherTabKeys } from "@/client/pages/agents/editorTabs";
+import {
+  watcherIssueUsed,
+  watcherSectionUsed,
+  watcherTabKeys,
+} from "@/client/pages/agents/editorTabs";
 import {
   decisionsBodyOf,
   decisionsHeadOf,
@@ -252,5 +256,26 @@ describe("the native tools a grant set allows", () => {
     expect(next[1]?.enabledTools).toEqual(["private_note", "set_labels"]);
     expect(withNativeToolGranted(next, "set_labels")).toEqual(next);
     expect(withNativeToolGranted([], "set_labels")).toEqual([]);
+  });
+});
+
+describe("what a watcher on questions and rules does not draw", () => {
+  test("memory and the fallback provider, which only a chat model uses", () => {
+    for (const id of ["memory", "modelFallback"]) {
+      expect(watcherSectionUsed("decisions", id)).toBe(false);
+      expect(watcherSectionUsed("llm", id)).toBe(true);
+    }
+    for (const id of ["observation", "stt", "vision", "limits", undefined]) {
+      expect(watcherSectionUsed("decisions", id)).toBe(true);
+    }
+  });
+
+  test("warnings about knowledge bases, which it never searches", () => {
+    for (const key of ["knowledge", "embedding"]) {
+      expect(watcherIssueUsed("decisions", key)).toBe(false);
+      expect(watcherIssueUsed("llm", key)).toBe(true);
+    }
+    expect(watcherIssueUsed("decisions", "decisions")).toBe(true);
+    expect(watcherIssueUsed("decisions", "stt")).toBe(true);
   });
 });

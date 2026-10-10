@@ -805,6 +805,8 @@ describe("the editor follows the engine", () => {
     });
     expect(count("decisions-problems")).toBe(1);
     expect(visible().includes("credentialRef")).toBe(false);
+    // Nothing on this tab is wrong, so no count of problems "marked below".
+    expect(visible().includes("marked on its field below")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Open General" }));
     expect(opened).toEqual(["general"]);
   });

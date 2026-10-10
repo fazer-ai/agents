@@ -102,7 +102,10 @@ function droppableShape(n: NormalizedChatwootEvent): boolean {
     businessMessage(m) &&
     !m.externalError &&
     m.id !== null &&
-    n.conversationId !== null
+    n.conversationId !== null &&
+    // A Chatwoot before 4.0.2 sends no version, so two equal snapshots can be two transitions (open,
+    // resolved, open again): each one is mirrored, as `mirrorOncePerEvent` does.
+    n.conversationUpdatedAt != null
   );
 }
 

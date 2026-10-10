@@ -104,7 +104,7 @@ interface Shape {
   content?: string;
   externalError?: string;
   labels?: string[];
-  updatedAt?: number;
+  updatedAt?: number | null;
   inboxName?: string;
   contactName?: string;
 }
@@ -135,7 +135,7 @@ const conversation = (s: Shape) => ({
   status: "pending",
   channel: "Channel::Api",
   last_activity_at: 1_791_000_000,
-  updated_at: s.updatedAt ?? 1_791_000_100.5,
+  updated_at: "updatedAt" in s ? s.updatedAt : 1_791_000_100.5,
   labels: s.labels ?? [],
   custom_attributes: {},
   contact_inbox: { id: 77 },
@@ -375,6 +375,31 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
         base: appDb,
       }),
     ).toBe("skipped");
+    expect((await deliver(body("message_updated", s))).rows).toBe(1);
+  });
+
+  // A live status claim refuses the snapshot's status: the mirror held a write back, so the same
+  // snapshot is owed again and its receipt must reach the mirror.
+  test("a delivery whose mirror held a write back does not vouch for its repeat", async () => {
+    const s = { conv: 1013, msg: 91013 };
+    await deliver(body("message_created", s));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: s.conv },
+      data: {
+        statusClaimUntil: new Date(Date.now() + 10 * 60_000),
+        statusClaimFrom: "pending",
+        statusClaimStampedAt: null,
+      },
+    });
+    const later = { ...s, msg: 91113, updatedAt: 1_791_000_300.5 };
+    expect((await deliver(body("message_created", later))).rows).toBe(1);
+    expect((await deliver(body("message_updated", later))).rows).toBe(1);
+  });
+
+  // Before 4.0.2 Chatwoot sends no version: equal snapshots can be two transitions.
+  test("a receipt from a Chatwoot that sends no conversation version is recorded", async () => {
+    const s = { conv: 1014, msg: 91014, updatedAt: null };
+    await deliver(body("message_created", s));
     expect((await deliver(body("message_updated", s))).rows).toBe(1);
   });
 

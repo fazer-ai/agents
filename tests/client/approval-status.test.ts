@@ -40,7 +40,8 @@ test("an approval whose document was never issued is not on its way", () => {
       {
         status: "APPROVED",
         outcome: null,
-        decidedAt: new Date().toISOString(),
+        // Past the moment a document may still be issuing.
+        decidedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
         issuedDocumentId: null,
       },
       t,
@@ -58,4 +59,31 @@ test("an approval sent without its PDF and without a note does not claim a note"
   expect(
     approvalOutcomeLabel({ status: "APPROVED", outcome: "NOT_SENT" }, t),
   ).toBe("Not sent to the customer");
+});
+
+test("an approval with no document yet is issuing for a moment, then not issued", () => {
+  const recent = new Date(Date.now() - 20_000).toISOString();
+  const old = new Date(Date.now() - 3 * 60_000).toISOString();
+  expect(
+    approvalOutcomeLabel(
+      {
+        status: "APPROVED",
+        outcome: null,
+        decidedAt: recent,
+        issuedDocumentId: null,
+      },
+      t,
+    ),
+  ).toBe("On its way to the customer");
+  expect(
+    approvalOutcomeLabel(
+      {
+        status: "APPROVED",
+        outcome: null,
+        decidedAt: old,
+        issuedDocumentId: null,
+      },
+      t,
+    ),
+  ).toBe("Not issued: approve it again");
 });

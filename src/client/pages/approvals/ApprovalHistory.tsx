@@ -16,6 +16,7 @@ import {
   approvalDocumentTitle,
   approvalOutcomeLabel,
   approvalStatusLabel,
+  isIssuing,
   SENDING_FOR_MS,
 } from "@/client/lib/approval-status";
 import { serverNow } from "@/client/lib/serverClock";
@@ -36,7 +37,11 @@ function isUnresolved(r: DecidedRequest): boolean {
   return (
     (r.status === "APPROVED" || r.status === "REJECTED") &&
     r.outcome === null &&
-    !(r.status === "APPROVED" && r.issuedDocumentId === null) &&
+    !(
+      r.status === "APPROVED" &&
+      r.issuedDocumentId === null &&
+      !isIssuing(r)
+    ) &&
     r.decidedAt !== null &&
     serverNow() - new Date(r.decidedAt).getTime() < SENDING_FOR_MS
   );

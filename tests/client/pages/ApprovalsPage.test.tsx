@@ -455,6 +455,38 @@ test("the history reads again a decision whose outcome has not landed, until it 
   );
 }, 12_000);
 
+test("an approval still issuing its document is read again, not called not issued", async () => {
+  role = "AGENT";
+  let reads = 0;
+  extraDecided = () => {
+    reads += 1;
+    return [
+      {
+        ...DOCUMENT,
+        id: "46",
+        contactName: "Tiago Reis",
+        status: "APPROVED",
+        decidedAt: new Date().toISOString(),
+        reviewerName: null,
+        // Committed APPROVED, document not linked yet on the first read.
+        outcome: reads > 1 ? "DELIVERED" : null,
+        issuedDocumentId: reads > 1 ? "7" : null,
+      },
+    ];
+  };
+  mount(<ApprovalsPage />);
+  fireEvent.click(await screen.findByRole("tab", { name: "History" }));
+  const link = await screen.findByRole("link", { name: /for Tiago Reis/ });
+  expect(link.textContent).toContain("On its way to the customer");
+  await waitFor(
+    () =>
+      expect(
+        screen.getByRole("link", { name: /for Tiago Reis/ }).textContent,
+      ).toContain("Sent to the customer"),
+    { timeout: 8000 },
+  );
+}, 12_000);
+
 test("a decision taken while the history waits joins it, whatever order its request was asked in", async () => {
   role = "AGENT";
   let reads = 0;

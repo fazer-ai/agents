@@ -836,12 +836,12 @@ export async function pageIssuedDocuments(
   base: PrismaClient = basePrisma,
 ): Promise<{ documents: IssuedDocumentListItem[]; nextBefore: string | null }> {
   const take = listTake(opts.limit);
-  const rows = await readIssuedDocuments(ctx, opts, take + 1, base);
-  const documents = rows.slice(0, take);
+  const documents = await readIssuedDocuments(ctx, opts, take + 1, base);
+  const more = documents.length > take;
+  if (more) documents.pop();
   return {
     documents,
-    nextBefore:
-      rows.length > take ? (documents[documents.length - 1]?.id ?? null) : null,
+    nextBefore: more ? (documents[documents.length - 1]?.id ?? null) : null,
   };
 }
 

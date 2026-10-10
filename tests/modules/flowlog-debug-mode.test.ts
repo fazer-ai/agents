@@ -1,10 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
+import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { auditedPromptVar, buildPromptAudit } from "@/graph/prompt-audit";
 import { MAX_STRING, redactSecretsDeep } from "@/lib/redact";
-import { assertSettingsDebugWindow } from "@/modules/agents/service";
+import type { TenantContext } from "@/lib/tenancy";
+import {
+  assertAgentCreatable,
+  assertSettingsDebugWindow,
+  updateAgent,
+} from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { MAX_SCHEDULE_WINDOWS } from "@/modules/business-hours/hours";
 import {
   parseVariants,
@@ -19,6 +27,7 @@ import {
   parseIsoInstant,
   readObservabilityConfig,
 } from "@/modules/flowlog/settings";
+import { agentSettingsSet } from "@/modules/mcp/write";
 import {
   experimentCreate,
   experimentUpdate,
@@ -740,14 +749,6 @@ describe("every flow context that knows an agent carries the debug mode", () => 
     expect(carries("    fullDetail: false,")).toBe(false);
     expect(carries("    fullDetail: true,")).toBe(false);
   });
-
-  // And the deliberate exception says so in its own code rather than in this file.
-  test("the one context without an agent is the unrouted line", async () => {
-    const src = await Bun.file(
-      new URL("../../src/modules/flowlog/unrouted.ts", import.meta.url),
-    ).text();
-    expect(src).toContain("agentId: null");
-  });
 });
 
 // The ceiling is derived from "the largest operator-authored prompt this API accepts", which holds
@@ -1004,32 +1005,138 @@ describe("the MCP dry run answers the same as the apply", () => {
   });
 });
 
-// Proving the rule and proving its ADOPTION are two tests, and the second is the one that catches a
-// call site added later. `assertSettingsTextSizes` is the write boundary this rule joined, so the
-// check is that the two travel together: a transport that validates text sizes and not the window is
-// a transport that can store an over-horizon deadline.
-describe("every settings-write boundary charges the window too", () => {
-  const FILES = ["src/modules/agents/service.ts", "src/modules/mcp/write.ts"];
+// Proving the rule and proving its ADOPTION are two tests, and the second is driven through every
+// transport that writes a settings bag: the create check (shared by the console and the MCP dry run),
+// the service update, and the MCP settings write. A transport that skips the window can store an
+// over-horizon deadline.
+const WINDOW_REFUSAL = "errors.debugWindowTooLong";
+const overHorizon = () => ({
+  observability: {
+    fullDetailUntil: new Date(Date.now() + 48 * 3_600_000).toISOString(),
+  },
+});
 
-  test("the pairing holds at every call site", async () => {
-    let text = 0;
-    let window = 0;
-    for (const f of FILES) {
-      const src = await Bun.file(new URL(`../../${f}`, import.meta.url)).text();
-      // CALLS only: the declaration and the import name it too, and neither is a call site.
-      text += src.match(/^\s+assertSettingsTextSizes\(/gm)?.length ?? 0;
-      window += src.match(/^\s+assertSettingsDebugWindow\(/gm)?.length ?? 0;
-    }
-    // The control: a predicate that stopped matching would report 0 = 0 and pass.
-    expect(text).toBeGreaterThanOrEqual(2);
-    expect(window).toBe(text);
+describe("every settings-write boundary charges the window too", () => {
+  test("creating an agent refuses an over-horizon deadline", () => {
+    // The refusal NAMES the window: the settings reader also reads the value as invalid, and that
+    // answer tells the operator nothing about the 24h ceiling.
+    expect(() =>
+      assertAgentCreatable({
+        name: "janela",
+        systemPrompt: "x",
+        settings: overHorizon(),
+      } as Parameters<typeof assertAgentCreatable>[0]),
+    ).toThrow(expect.objectContaining({ translationKey: WINDOW_REFUSAL }));
+  });
+});
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+
+describe.skipIf(!dbUp)("the stored-agent boundaries", () => {
+  const suDb = su as PrismaClient;
+  const appDb = app as PrismaClient;
+  let tenantId = 0n;
+  const ctx = (): TenantContext => ({
+    tenantId,
+    userId: 9512n,
+    role: "TENANT_ADMIN",
   });
 
-  test("the counting predicate matches a call and not a declaration", () => {
-    const call = "    assertSettingsDebugWindow(a, b);";
-    const decl = "export function assertSettingsDebugWindow(";
-    expect(/^\s+assertSettingsDebugWindow\(/m.test(call)).toBe(true);
-    expect(/^\s+assertSettingsDebugWindow\(/m.test(decl)).toBe(false);
+  beforeAll(async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "DEBUGWIN", slug: `debugwin-${process.pid}` },
+    });
+    tenantId = t.id;
+  });
+
+  afterAll(async () => {
+    if (tenantId) {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  const seedAgent = async (settings: object = {}) =>
+    (
+      await suDb.agent.create({
+        data: {
+          tenantId,
+          name: `win-${Math.floor(Math.random() * 1e9)}`,
+          systemPrompt: "x",
+          settings,
+        },
+        select: { id: true },
+      })
+    ).id;
+
+  test("an agent update refuses an over-horizon deadline", async () => {
+    const id = await seedAgent();
+    await expect(
+      updateAgent(ctx(), id, { settings: overHorizon() }, appDb),
+    ).rejects.toMatchObject({ translationKey: WINDOW_REFUSAL });
+  });
+
+  test("the MCP settings write refuses it too, on the preview", async () => {
+    const id = await seedAgent();
+    const r = await agentSettingsSet(
+      {
+        userId: 9512n,
+        tenantId,
+        role: "TENANT_ADMIN",
+        scopes: ["mcp:read", "mcp:write"],
+        clientId: "c",
+        jti: "j",
+      },
+      { agent_id: String(id), ...overHorizon(), dry_run: true } as Parameters<
+        typeof agentSettingsSet
+      >[1],
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("24h");
+  });
+
+  // The import path: a bundle exported from an armed agent arrives disarmed, with the rest of the
+  // block intact.
+  test("an imported agent arrives with the mode off", async () => {
+    const id = await seedAgent({
+      observability: {
+        logToolValues: true,
+        fullDetailUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      },
+    });
+    const doc = await exportAgent(ctx(), id, appDb);
+    const { agent } = await importAgent(ctx(), doc, appDb);
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const obs = (stored.settings as Record<string, Record<string, unknown>>)
+      .observability;
+    expect(obs?.fullDetailUntil ?? null).toBeNull();
+    expect(obs?.logToolValues).toBe(true);
   });
 });
 
@@ -1059,13 +1166,6 @@ describe("an import never arrives with the mode already armed", () => {
   test("what it produces reads as off", () => {
     const out = disarmFullDetail({ observability: { fullDetailUntil: armed } });
     expect(readObservabilityConfig(out).fullDetail).toBe(false);
-  });
-
-  test("the import path calls it", async () => {
-    const src = await Bun.file(
-      new URL("../../src/modules/agents/transfer.ts", import.meta.url),
-    ).text();
-    expect(src).toContain("disarmFullDetail(");
   });
 });
 

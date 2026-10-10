@@ -79,8 +79,8 @@ describe("a test that drains the scheduler drains only its own tenant", () => {
       offenders.map((o) => `${o.file}:${o.line} ${o.fn}`),
       "A scheduler drain without `tenantId` claims rows belonging to other test files sharing this " +
         "database, and under `bun test --parallel` the failure surfaces in the file it robbed, not " +
-        "here. Pass the tenant the file seeded. See TickOptions.tenantId in " +
-        "src/modules/scheduler/worker.ts.",
+        "here. Pass the tenant the file seeded. See TickOptions.tenantId in the " +
+        "scheduler worker.",
     ).toEqual([]);
   });
 

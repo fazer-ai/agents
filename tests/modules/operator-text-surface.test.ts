@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import {
   collectOversizedTextChanges,
@@ -93,19 +95,25 @@ describe("the operator-text surface a rename has to follow", () => {
   });
 
   // NOTE: the second population is prose on the two tool definition tables. `text-caps.ts` cannot
-  // see it, so the scan is over the schema instead.
-  test("every STRING column of a tool definition is classified", async () => {
-    const schema = await Bun.file("prisma/schema.prisma").text();
+  // see it, so the inventory is the generated client's own data model, which is the schema as the
+  // runtime reads it.
+  test("every STRING column of a tool definition is classified", () => {
+    const client = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: "postgres://unused@localhost:1/unused",
+      }),
+    }) as unknown as {
+      _runtimeDataModel: {
+        models: Record<string, { fields: { name: string; type: string }[] }>;
+      };
+    };
     const found: string[] = [];
     for (const model of ["ToolDefinition", "CodeToolDefinition"]) {
-      const body = new RegExp(`^model ${model} \\{([\\s\\S]*?)^\\}`, "m").exec(
-        schema,
-      );
-      if (!body) throw new Error(`model ${model} not found in schema.prisma`);
-      for (const m of (body[1] as string).matchAll(
-        /^ {2}(\w+)\s+String\??(?:\[\])?\s/gm,
-      )) {
-        found.push(`${model}.${m[1]}`);
+      const fields = client._runtimeDataModel.models[model]?.fields;
+      if (!fields)
+        throw new Error(`model ${model} not in the generated client`);
+      for (const f of fields) {
+        if (f.type === "String") found.push(`${model}.${f.name}`);
       }
     }
     expect(found.sort()).toEqual(Object.keys(TOOL_COLUMNS).sort());

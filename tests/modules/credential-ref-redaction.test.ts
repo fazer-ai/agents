@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -26,7 +26,6 @@ import {
   listToolDefinitions,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
-import { codeOnly } from "@/tests/utils/source-text";
 import { outboundUrl } from "../utils/outbound";
 
 // FOUR REF COLUMNS HAND A READER ONLY A WELL-FORMED REFERENCE.
@@ -503,89 +502,24 @@ describe.skipIf(!dbUp)(
   },
 );
 
-// ── the family, counted from the schema rather than from a checklist ──
+// ── the family, counted from the generated client rather than from a checklist ──
 //
-// A checklist is satisfied halfway with nothing red. This reads the ref columns out of the Prisma
-// schema and requires each one's projection to pass through the same guard, so a SEVENTH column
-// added later arrives here as a failure rather than as an omission nobody sees.
-
-const REF_COLUMN = /(\w*(?:credentialRef|[sS]ecretRef))\s+String\?/g;
-
-export function refColumnsInSchema(schema: string): string[] {
-  const out: string[] = [];
-  let model = "";
-  for (const line of schema.split("\n")) {
-    const m = line.match(/^model\s+(\w+)/);
-    if (m?.[1]) model = m[1];
-    for (const c of line.matchAll(REF_COLUMN)) out.push(`${model}.${c[1]}`);
-  }
-  return out.sort();
-}
-
-export function guardedProjections(files: { rel: string; source: string }[]) {
-  return files
-    .filter(({ source }) => codeOnly(source).includes("readableVaultRef("))
-    .map((f) => f.rel)
-    .sort();
-}
-
-// The two decisions above, over inputs they are HANDED — because a sweep run only against a clean
-// tree reports nothing either way, and a mutation to it survives with the suite green. These are the
-// cases the tree does not contain, and the ones the sweep exists to catch.
-describe("the sweep's decisions, over what it is given", () => {
-  test("a comment that NAMES the guard does not count as calling it", () => {
-    const source = `
-      // Every ref here goes through readableVaultRef( before it is handed out.
-      function toDto(r: Row) {
-        return { credentialRef: r.credentialRef };
-      }`;
-    expect(guardedProjections([{ rel: "a.ts", source }])).toEqual([]);
-  });
-
-  test("and a call does count", () => {
-    const source = `function toDto(r: Row) {
-      return { credentialRef: readableVaultRef(r.credentialRef) };
-    }`;
-    expect(guardedProjections([{ rel: "a.ts", source }])).toEqual(["a.ts"]);
-  });
-
-  test("the schema reader finds both spellings, and only on a ref column", () => {
-    const schema = `
-model Thing {
-  id            BigInt   @id
-  name          String?  @map("name")
-  credentialRef String?  @map("credential_ref")
-  someSecretRef String?  @map("some_secret_ref")
-  secretRef     String?  @map("secret_ref")
-  note          String?
-}`;
-    expect(refColumnsInSchema(schema)).toEqual([
-      "Thing.credentialRef",
-      "Thing.secretRef",
-      "Thing.someSecretRef",
-    ]);
-  });
-
-  test("a column on a later model is named by THAT model", () => {
-    const schema = `
-model A {
-  secretRef String?
-}
-
-model B {
-  credentialRef String?
-}`;
-    expect(refColumnsInSchema(schema)).toEqual([
-      "A.secretRef",
-      "B.credentialRef",
-    ]);
-  });
-});
-
-describe("every ref column in the schema is projected through one guard", () => {
-  test("the schema still holds the six this issue is about", async () => {
-    const schema = await Bun.file("prisma/schema.prisma").text();
-    expect(refColumnsInSchema(schema)).toEqual([
+// Each ref column below has its redaction driven through its own service: the three above in this
+// file, and the alert channel's and the webhook subscription's in
+// tests/modules/alert-channel-secret-roundtrip.test.ts. A SEVENTH column arrives here as a failure,
+// which is the moment to give it a test of its own, rather than as an omission nobody sees.
+describe("every ref column the models declare has a redaction test", () => {
+  test("the models still hold exactly the six covered", () => {
+    const found: string[] = [];
+    for (const [name, fields] of Object.entries(Prisma)) {
+      if (!name.endsWith("ScalarFieldEnum")) continue;
+      for (const field of Object.keys(fields as object)) {
+        if (/(?:credentialRef|[sS]ecretRef)$/.test(field)) {
+          found.push(`${name.slice(0, -"ScalarFieldEnum".length)}.${field}`);
+        }
+      }
+    }
+    expect(found.sort()).toEqual([
       "AlertChannel.secretRef",
       "IntegrationInstance.credentialRef",
       "IntegrationInstance.inboundSecretRef",
@@ -593,19 +527,5 @@ describe("every ref column in the schema is projected through one guard", () => 
       "ToolDefinition.credentialRef",
       "WebhookSubscription.secretRef",
     ]);
-  });
-
-  test("and every service that owns one redacts it", async () => {
-    const owners = [
-      "src/modules/flowlog/channels.ts",
-      "src/modules/integrations/service.ts",
-      "src/modules/mcp-connections/service.ts",
-      "src/modules/tool-definitions/service.ts",
-      "src/modules/webhooks/outbound/subscriptions.ts",
-    ];
-    const files = await Promise.all(
-      owners.map(async (rel) => ({ rel, source: await Bun.file(rel).text() })),
-    );
-    expect(guardedProjections(files)).toEqual(owners);
   });
 });

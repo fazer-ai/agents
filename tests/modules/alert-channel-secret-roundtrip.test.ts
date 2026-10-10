@@ -10,13 +10,20 @@ import {
   listAlertChannels,
   updateAlertChannel,
 } from "@/modules/flowlog/channels";
+import {
+  createMcpConnection,
+  getMcpConnection,
+} from "@/modules/mcp-connections/service";
+import {
+  createToolDefinition,
+  getToolDefinition,
+} from "@/modules/tool-definitions/service";
 import { readableVaultRef } from "@/modules/vault/service";
 import {
   createWebhookSubscription,
   listWebhookSubscriptions,
   updateWebhookSubscription,
 } from "@/modules/webhooks/outbound/subscriptions";
-import { codeOnly } from "@/tests/utils/source-text";
 import { outboundUrl } from "../utils/outbound";
 
 // A whole-body client can only send back what the read gave it, and the service reads a null
@@ -101,6 +108,9 @@ describe.skipIf(!dbUp)(
         for (const table of [
           "audit_logs",
           "alert_channels",
+          "tool_definitions",
+          "integration_instances",
+          "mcp_server_connections",
           "webhook_subscriptions",
           "vault_entries",
         ]) {
@@ -408,68 +418,72 @@ describe.skipIf(!dbUp)(
       expect(opaque?.secretRef).toBe(null);
       expect(JSON.stringify(opaque).includes(planted)).toBe(false);
     });
+
+    // The same round trip one layer up: every service whose update reads a `.nullish()` field as
+    // three-valued hands that field back on its read, or a whole-body save erases it.
+    test("the other services with a three-valued field read every one of them back", async () => {
+      const ref = `vault:${secretId}`;
+      const mcp = await createMcpConnection(
+        ctx(),
+        {
+          name: "three-valued-mcp",
+          transport: "streamableHttp",
+          url: outboundUrl("/mcp"),
+          credentialRef: ref,
+        },
+        appDb,
+      );
+      const mcpRead = await getMcpConnection(ctx(), BigInt(mcp.id), appDb);
+      expect({
+        url: mcpRead.url,
+        credentialRef: mcpRead.credentialRef,
+      }).toEqual({ url: outboundUrl("/mcp"), credentialRef: ref });
+
+      const generic = await (su as PrismaClient).integrationInstance.create({
+        data: { tenantId, catalogType: "GENERIC", name: "three-valued" },
+        select: { id: true },
+      });
+      const appointment = {
+        action: "book",
+        idPath: "data.id",
+        startPath: "data.start",
+      };
+      const tool = await createToolDefinition(
+        ctx(),
+        {
+          name: "three_valued_tool",
+          label: "three valued",
+          description: "what it does",
+          method: "GET",
+          urlTemplate: "https://8.8.8.8/x?ref={{conversation_ref}}",
+          allowedHosts: ["8.8.8.8"],
+          credentialRef: ref,
+          ackMessage: "um momento",
+          appointment,
+          conversationRefIntegrationId: String(generic.id),
+          maxResponseChars: 5000,
+        },
+        appDb,
+      );
+      const toolRead = await getToolDefinition(ctx(), BigInt(tool.id), appDb);
+      expect({
+        description: toolRead.description,
+        credentialRef: toolRead.credentialRef,
+        ackMessage: toolRead.ackMessage,
+        appointment: toolRead.appointment,
+        conversationRefIntegrationId: toolRead.conversationRefIntegrationId,
+        maxResponseChars: toolRead.maxResponseChars,
+      }).toEqual({
+        description: "what it does",
+        credentialRef: ref,
+        ackMessage: "um momento",
+        appointment: { ...appointment, provider: "declared" },
+        conversationRefIntegrationId: String(generic.id),
+        maxResponseChars: 5000,
+      });
+    });
   },
 );
-
-// ── the invariant, one layer above the alert channel ──
-//
-// A write field declared `.nullish()` is THREE-valued (absent leaves it, null clears it, a value sets
-// it), and a whole-body form spells "leave it" by sending back what the read returned. A three-valued
-// field the read projection hides therefore gets cleared on every save.
-//
-// The rule is a PURE function over one file's text so it can be driven with source that is not in
-// the tree: a sweep over a clean tree reports nothing whether or not the rule works.
-interface ThreeValued {
-  // Every three-valued field this file declares…
-  declared: string[];
-  // …and the ones its own DTO does not hand back.
-  hidden: string[];
-}
-
-// An entity service is a module with both a Prisma `SELECT` and a `toDto`. That excludes an inbound
-// PARSER like `integrations/mappers.ts`, which declares five `.nullish()` fields because the vendor
-// sends null and not because anything round-trips through a form.
-function threeValuedFields(source: string): ThreeValued {
-  // Through the scanner, so a comment NAMING one of these shapes is not counted as one.
-  const src = codeOnly(source);
-  // Fresh literals rather than one shared `none`: the caller gets arrays it could sort in place.
-  const none = (): ThreeValued => ({ declared: [], hidden: [] });
-  if (!src.includes("const SELECT = {")) return none();
-  if (!src.includes("function toDto(")) return none();
-
-  // `.nullish()` binds to the field immediately before it, however many lines of chained validators
-  // sit in between (`appointment` on tool definitions spans nine).
-  const declared = new Set<string>();
-  for (const chunk of src.split(".nullish()").slice(0, -1)) {
-    const name = [...chunk.matchAll(/(\w+):\s*z\s*\./g)].at(-1)?.[1];
-    if (name) declared.add(name);
-  }
-  const dto = src.match(/export interface \w+Dto \{([\s\S]*?)\n\}/)?.[1];
-  return {
-    declared: [...declared],
-    hidden: [...declared].filter(
-      (f) => !dto || !new RegExp(`\\b${f}\\??:`).test(dto),
-    ),
-  };
-}
-
-// A service reduced to the four things the rule reads, written out rather than sliced from a real
-// file: no file in the tree has a hidden field, so the negative cases need source outside it.
-const service = (
-  dtoBody: string,
-  schema = "secretRef: z.string().nullish(),",
-) =>
-  `
-export interface ThingDto {
-  id: string;
-${dtoBody}
-}
-const SELECT = { id: true, secretRef: true } as const;
-function toDto(row: Row): ThingDto {
-  return { id: row.id };
-}
-const updateSchema = z.object({ name: z.string(), ${schema} }).strict();
-`;
 
 // What `readableVaultRef` can EMIT, which is the bound the redaction rests on. The output is never
 // the stored string: it is the prefix plus the decimal rendering of a parsed BigInt, so the widest
@@ -516,71 +530,5 @@ describe("what a redacted ref can carry", () => {
 
   test("and null is what a null column gives", () => {
     expect(readableVaultRef(null)).toBe(null);
-  });
-});
-
-describe("three-valued write fields", () => {
-  test("a field the DTO hides is reported", () => {
-    const found = threeValuedFields(service("  hasSecret: boolean;"));
-    expect(found.declared.join(",")).toBe("secretRef");
-    expect(found.hidden.join(",")).toBe("secretRef");
-  });
-
-  test("the same field projected is not", () => {
-    const found = threeValuedFields(service("  secretRef: string | null;"));
-    expect(found.declared.join(",")).toBe("secretRef");
-    expect(found.hidden.join(",")).toBe("");
-  });
-
-  test("a module with no read projection is not an entity service", () => {
-    const parser = `const SELECT = { id: true } as const;
-const inbound = z.object({ status: z.string().nullish() });`;
-    expect(threeValuedFields(parser).declared.join(",")).toBe("");
-  });
-
-  test("nor is one with no SELECT", () => {
-    const mapper = `function toDto(r: Row) { return { id: r.id }; }
-const inbound = z.object({ status: z.string().nullish() });`;
-    expect(threeValuedFields(mapper).declared.join(",")).toBe("");
-  });
-
-  test("a comment naming the shape is prose, not a declaration", () => {
-    // A comment warning against the shape must not be read as the shape.
-    const commented = service(
-      "  secretRef: string | null;",
-      "// NOTE: never add another `foo: z.string().nullish()` here\n  bar: z.string(),",
-    );
-    expect(threeValuedFields(commented).declared.join(",")).toBe("");
-  });
-
-  test("the last field before the chain is the one it binds to", () => {
-    // `appointment` on tool definitions puts nine lines of validators between the name and the call;
-    // reading the FIRST `x: z.` of the chunk would report `name` instead.
-    const chained = service(
-      "  appointment: Record<string, unknown> | null;",
-      `appointment: z
-    .record(z.string(), z.unknown())
-    .nullish()
-    .refine((v) => v == null),`,
-    );
-    expect(threeValuedFields(chained).declared.join(",")).toBe("appointment");
-  });
-
-  test("every one of them in src/modules is readable back from its own DTO", async () => {
-    const { Glob } = await import("bun");
-    const missing: string[] = [];
-    const seen: string[] = [];
-
-    for await (const rel of new Glob("**/*.ts").scan("src/modules")) {
-      const path = `src/modules/${rel}`;
-      const found = threeValuedFields(await Bun.file(path).text());
-      for (const field of found.declared) seen.push(`${path}:${field}`);
-      for (const field of found.hidden) missing.push(`${path}:${field}`);
-    }
-
-    // NOTE: anti-vacuity: a sweep that reaches nothing passes for the wrong reason, so it must see
-    // the alert channel service. A new service with such a field is checked without touching this file.
-    expect(seen).toContain("src/modules/flowlog/channels.ts:secretRef");
-    expect(missing.sort().join("\n")).toBe("");
   });
 });

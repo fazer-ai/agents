@@ -168,30 +168,6 @@ describe('mirrorHolder: "not-asked" — who may say it', () => {
   });
 });
 
-// O slate limpo dos comandos (`/reset` e `/teste`) encerra o episódio zerando as âncoras que a cerca
-// do silêncio lê. São DUAS (a fala do cliente e a nossa, e a cerca toma a mais recente), então
-// limpar uma só devolve a passagem pela outra: a varredura recria o follow-up que o comando acabou
-// de cancelar. Cerca por fonte porque o defeito é de OMISSÃO num `data: {}` novo; ela mede uma
-// GRAFIA, e quem zerar as âncoras por outro caminho (um `$executeRaw`, um spread) passa sem ser
-// visto, por isso o bloco vizinho, no `chatwoot-reset`, exerce o comportamento de verdade.
-describe("slate limpo: as duas âncoras do silêncio saem juntas", () => {
-  test("todo bloco que zera lastFollowUpAt também zera lastRepliedAt", () => {
-    const src = readFileSync("src/modules/chatwoot/webhook.ts", "utf8");
-    const blocos = [...src.matchAll(/lastFollowUpAt: null,/g)];
-    // Zero casamentos seria a cerca envelhecida (campo renomeado, bloco movido), não a regra valendo.
-    expect(blocos.length).toBeGreaterThanOrEqual(2);
-    for (const m of blocos) {
-      // A janela é generosa de propósito: o que importa é os dois estarem no MESMO `data`, e a ordem
-      // entre eles é de quem escreve.
-      const janela = src.slice(
-        Math.max(0, (m.index ?? 0) - 800),
-        (m.index ?? 0) + 800,
-      );
-      expect(janela).toContain("lastRepliedAt: null,");
-    }
-  });
-});
-
 // The predicate itself, one term at a time.
 describe("ourSideHasSpoken", () => {
   const none = {

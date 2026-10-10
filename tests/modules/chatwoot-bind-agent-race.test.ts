@@ -4,7 +4,11 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { deleteAgent } from "@/modules/agents/service";
+import {
+  deleteAgent,
+  replaceAgentToolSelections,
+  updateAgent,
+} from "@/modules/agents/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { bindInbox } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -358,26 +362,95 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
     await holder.done;
   });
 
-  // The test above proves the two modes are compatible; this one proves the agents module still
-  // SPEAKS the weak one. Only the second survives a writer being added: a new `FOR UPDATE` in another
-  // agent write would stall the bind while the test above, taking its own lock, kept passing. The
-  // delete is the single admissible strong lock, and it is the conflict the bind wants.
-  test("only the delete takes a lock on the agent strong enough to stall a bind", async () => {
-    const src = await Bun.file(
-      new URL("../../src/modules/agents/service.ts", import.meta.url),
-    ).text();
-    // Comments stripped first, for the reason the same fence in
-    // `audit-channel-family.test.ts` gives: NOTEs in service.ts can name `FOR UPDATE` while
-    // explaining why they do not take it.
-    const code = src.replace(/^\s*\/\/.*$/gm, "");
-    const strong = [...code.matchAll(/FOR UPDATE/g)].map((m) => m.index);
-    const del = code.indexOf("export async function deleteAgent(");
-    const next = code.indexOf("\nexport async function", del + 1);
-    expect(del).toBeGreaterThan(-1);
-    expect(next).toBeGreaterThan(del);
-    expect(strong).toHaveLength(1);
-    expect(strong[0]).toBeGreaterThan(del);
-    expect(strong[0]).toBeLessThan(next);
-    expect(code.match(/FOR NO KEY UPDATE/g) ?? []).not.toHaveLength(0);
+  // The test above proves the two modes are compatible; this one proves the agents module's own
+  // writers still TAKE the weak one. Each is parked inside its transaction, after its lock on the
+  // agent and at its audit insert, on an advisory lock this test holds; the bind must finish while it
+  // waits there. A writer that took `FOR UPDATE` would stall the bind behind it.
+  async function bindsWhileParked(
+    agentId: bigint,
+    write: () => Promise<unknown>,
+  ) {
+    const key = 546_000_000 + Number(agentId);
+    const fn = `park_agent_audit_${process.pid}`;
+    await suDb.$executeRawUnsafe(
+      `CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(${key}); RETURN NEW; END $$`,
+    );
+    await suDb.$executeRawUnsafe(
+      `CREATE TRIGGER ${fn} BEFORE INSERT ON audit_logs FOR EACH ROW WHEN (NEW.tenant_id = ${tenantId} AND NEW.action LIKE 'agent.%') EXECUTE FUNCTION ${fn}()`,
+    );
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let announce!: (pid: number) => void;
+    const gotIt = new Promise<number>((r) => {
+      announce = r;
+    });
+    const holding = suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${key})`);
+        const [me] = await tx.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_backend_pid()::int AS pid`;
+        announce(me?.pid as number);
+        await held;
+      },
+      { timeout: 30_000 },
+    );
+    try {
+      const holder = await gotIt;
+      const writing = write();
+      expect(await someoneBlockedBy(holder)).toBe(true);
+      const [writer] = await suDb.$queryRaw<Array<{ pid: number }>>`
+        SELECT pid FROM pg_stat_activity WHERE ${holder} = ANY(pg_blocking_pids(pid))`;
+      const binding = bindInbox(
+        ctx(),
+        (await pair(`parked-${agentId}`)).inboxId,
+        agentId,
+        { makeClient: stubClient().makeClient },
+        appDb,
+      );
+      const outcome = await Promise.race([
+        binding.then(() => "bound"),
+        someoneBlockedBy(writer?.pid ?? -1).then((b) =>
+          b ? "stalled" : "neither",
+        ),
+      ]);
+      release();
+      await holding;
+      await writing;
+      await binding;
+      return outcome;
+    } finally {
+      release();
+      await holding.catch(() => {});
+      await suDb.$executeRawUnsafe(`DROP TRIGGER ${fn} ON audit_logs`);
+      await suDb.$executeRawUnsafe(`DROP FUNCTION ${fn}()`);
+    }
+  }
+
+  test("an agent save and a grant replacement in flight do not stall a bind", async () => {
+    const saved = await pair("save-in-flight");
+    expect(
+      await bindsWhileParked(saved.agentId, () =>
+        updateAgent(
+          ctx(),
+          saved.agentId,
+          { systemPrompt: "edited while a bind runs" },
+          appDb,
+        ),
+      ),
+    ).toBe("bound");
+
+    const granted = await pair("grants-in-flight");
+    expect(
+      await bindsWhileParked(granted.agentId, () =>
+        replaceAgentToolSelections(
+          ctx(),
+          granted.agentId,
+          [{ source: "NATIVE", enabledTools: ["handoff_to_human"] }],
+          appDb,
+        ),
+      ),
+    ).toBe("bound");
   });
 });

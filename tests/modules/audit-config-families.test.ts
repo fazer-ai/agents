@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { refForAudit } from "@/modules/audit/projection";
 import {
   createDocumentTemplate,
   deleteDocumentTemplate,
+  previewDocumentTemplate,
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
 import {
@@ -27,6 +29,7 @@ import { integrationCreate } from "@/modules/mcp/write-webhooks";
 import {
   createMcpConnection,
   deleteMcpConnection,
+  discoverMcpTools,
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
 import {
@@ -35,6 +38,7 @@ import {
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
 import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 
 // Five configuration families (tool definitions, MCP connections, integration instances,
 // experiments, document templates) recorded by the service, in the mutation's own transaction, so
@@ -768,35 +772,75 @@ describe.skipIf(!dbUp)(
 
     // ── the two routes that look like mutations and are not ──
     //
-    // Asserted on the SOURCE rather than by driving them: the discover opens a real MCP connection,
-    // so a behavioural probe spends the network timeout and proves nothing the text does not say.
     // The trail records changes, and these two change nothing (`docs/mcp.md` says the same of the
-    // MCP twin of the first).
+    // MCP twin of the first). Each is driven to a real answer, so an empty trail is the absence of a
+    // write and not a call that failed before reaching one.
 
-    test("discover and preview record nothing, and the predicate can tell", async () => {
-      const conns = await Bun.file(
-        "src/modules/mcp-connections/service.ts",
-      ).text();
-      const docs = await Bun.file("src/modules/documents/templates.ts").text();
-      const bodyOf = (src: string, fn: string) => {
-        const start = [`export async function ${fn}(`, `export function ${fn}(`]
-          .map((a) => src.indexOf(a))
-          .find((i) => i >= 0);
-        if (start === undefined) throw new Error(`${fn} not found`);
-        const next = src.indexOf("\nexport ", start + 1);
-        return src.slice(start, next < 0 ? undefined : next);
-      };
-      // Positive control, on this same file's own writers: the predicate finds the call where there
-      // IS one, so a green below is the absence of a write and not a broken matcher.
-      expect(bodyOf(conns, "createMcpConnection")).toContain("auditMutation(");
-      expect(bodyOf(docs, "createDocumentTemplate")).toContain(
-        "auditMutation(",
+    test("previewing a draft records nothing", async () => {
+      await clearAudit();
+      const bytes = await previewDocumentTemplate(
+        ctx(),
+        {
+          name: "Rascunho",
+          blocks: [{ id: "t", type: "text", text: "Olá {{cliente}}" }],
+          fields: [{ name: "cliente", label: "Cliente", type: "text" }],
+        },
+        appDb,
       );
+      expect(bytes.byteLength).toBeGreaterThan(0);
+      expect(await rows()).toEqual([]);
+    });
 
-      expect(bodyOf(conns, "discoverMcpTools")).not.toContain("auditMutation(");
-      expect(bodyOf(docs, "previewDocumentTemplate")).not.toContain(
-        "auditMutation(",
+    test("discovering a connection's tools records nothing", async () => {
+      // The transport needs a real socket, so the fixture server runs in its own process and
+      // the natives tests/dom-setup.ts kept stand in for the DOM preload's fetch while it is asked.
+      const NATIVE = ["fetch", "Headers", "AbortController", "AbortSignal"];
+      const g = globalThis as unknown as Record<string, unknown>;
+      const domGlobals = Object.fromEntries(NATIVE.map((k) => [k, g[k]]));
+      const privateBefore = config.ssrf.allowPrivateTargets;
+      const proc = Bun.spawn(
+        [
+          "bun",
+          new URL("../fixtures/mcp/header-echo-server.ts", import.meta.url)
+            .pathname,
+        ],
+        { stdout: "pipe", stderr: "inherit" },
       );
+      try {
+        config.ssrf.allowPrivateTargets = true;
+        for (const k of NATIVE) {
+          g[k] = g[`Bun${k[0]?.toUpperCase()}${k.slice(1)}`];
+        }
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+        let buf = "";
+        const port = await until(
+          "the MCP fixture to print its port",
+          async () => {
+            const { value } = await reader.read();
+            buf += new TextDecoder().decode(value ?? new Uint8Array());
+            return /"port":(\d+)/.exec(buf)?.[1];
+          },
+        );
+        reader.releaseLock();
+        const conn = await createMcpConnection(
+          ctx(),
+          {
+            name: `discover-${uniq()}`,
+            transport: "streamableHttp",
+            url: `http://127.0.0.1:${port}/mcp`,
+          },
+          appDb,
+        );
+        await clearAudit();
+        const found = await discoverMcpTools(ctx(), BigInt(conn.id), appDb);
+        expect(JSON.stringify(found)).toContain("whoami");
+        expect(await rows()).toEqual([]);
+        await deleteMcpConnection(ctx(), BigInt(conn.id), appDb);
+      } finally {
+        proc.kill();
+        config.ssrf.allowPrivateTargets = privateBefore;
+        for (const k of NATIVE) g[k] = domGlobals[k];
+      }
     });
 
     // The row says THAT the undisclosed half moved and nothing about what it holds: not the value

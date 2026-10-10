@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { runScopedOn } from "@/lib/tenancy";
+import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import {
   codeToolReferences,
   createCodeTool,
@@ -21,6 +22,7 @@ import {
 } from "@/modules/documents/templates";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
+import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // The operator-authored code tool's service: the row is the operator's, invalid code SAVES with a
 // warning, one name namespace with HTTP tools and natives, and the audit trail carries the shape
@@ -319,11 +321,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
       })(),
     ]);
     expect(createMs).toBeGreaterThan(HELD_MS - 100);
-    // The import writes past both services, so it is asked the same question: it takes the lock
-    // before its own pre-check, and cannot be inside one while a create is.
-    const transferSrc = await Bun.file("src/modules/agents/transfer.ts").text();
-    expect(transferSrc).toContain("await lockToolNames(db);");
-    // ...and once it is the owner, the other table's write is refused on the name.
+    // Once it is the owner, the other table's write is refused on the name.
     const taken = await refusal(
       createToolDefinition(
         ctx(),
@@ -338,6 +336,43 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(taken?.translationKey).toBe("errors.toolNameTaken");
     await suDb.codeToolDefinition.deleteMany({ where: { tenantId } });
+  });
+
+  // The import writes past both services, so it is asked the same question: it takes the lock
+  // before its own pre-check, and cannot be inside one while a create is. Proved by holding the lock
+  // and asking Postgres whether the import is parked behind it.
+  test("an agent import queues behind the same tool-name lock", async () => {
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "Importada", systemPrompt: "x" },
+      select: { id: true },
+    });
+    const doc = await exportAgent(ctx(), agent.id, appDb, {
+      includeComponents: true,
+    });
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let announce!: (pid: number) => void;
+    const gotIt = new Promise<number>((r) => {
+      announce = r;
+    });
+    const holding = runScopedOn(suDb, ctx(), async (db) => {
+      await lockToolNames(db);
+      const [me] = await db.$queryRaw<Array<{ pid: number }>>`
+        SELECT pg_backend_pid()::int AS pid`;
+      announce(me?.pid as number);
+      await held;
+    });
+    const holder = await gotIt;
+    const importing = importAgent(ctx(), doc, appDb);
+    try {
+      expect(await waitUntilBlocked(suDb, holder, 1)).toBeGreaterThanOrEqual(0);
+    } finally {
+      release();
+      await holding;
+      await importing;
+    }
   });
 
   test("blank metadata and a reserved field name are refused where they are typed", async () => {

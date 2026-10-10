@@ -1,64 +1,105 @@
 import { describe, expect, test } from "bun:test";
 import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
+import type {
+  ConfigIssue,
+  ConfigIssueKey,
+} from "@/modules/agents/config-health";
+import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
-// Every ConfigIssueKey the editor can render needs copy under `editor.configIssue.*`, in every locale.
-// The lookup is dynamic (`t(\`editor.configIssue.${issue.key}\`)`), so a missing entry fails nothing:
-// it falls back to "This feature is enabled but has no credential set", untrue for the gate
-// contradictions and the missing-endpoint warning. The keys reach the extractor through magic
-// comments, so `bun i18n:extract` DELETES a forgotten one as orphaned while `bun check` stays green.
-// Keys with a branch of their own in `issueMessage` are listed rather than pattern-matched, so a key
-// that stops having one fails here until somebody writes its copy.
-const HANDLED_ELSEWHERE = new Set([
-  "textCap", // editor.configIssueTextCap / …NoField, interpolated
-  "knowledge", // editor.configIssueKnowledge, interpolated
-  "guardrailsFailing", // editor.configIssueGuardrailsFailing(Cause), interpolated
-  "outOfHoursBoth", // editor.configIssueOutOfHoursBoth, interpolated
-  "outOfHoursChatwoot", // editor.configIssueOutOfHoursChatwoot, interpolated
-]);
+// Every ConfigIssueKey the editor can render needs copy in every locale. Most lookups are dynamic
+// (`t(\`editor.configIssue.${issue.key}\`)`), so a missing entry fails nothing: it falls back to
+// "This feature is enabled but has no credential set", untrue for the gate contradictions and the
+// missing-endpoint warning. The keys reach the extractor through magic comments, so `bun
+// i18n:extract` DELETES a forgotten one as orphaned while `bun check` stays green. So each issue is
+// rendered through the real renderer with a translator that answers only from the catalog, and a
+// lookup the catalog cannot answer is reported instead of falling back.
 
-// Keys raised ONLY for a credential that is pending or gone, never for a missing one — the gate
-// runs fine without a credential, so `credIssue` is gated on the ref being present. Those two
-// states read from their own namespaces, which is what the last test here checks.
-const CREDENTIAL_STATES_ONLY = new Set(["contactAuth"]);
-
-const source = await Bun.file(
-  new URL("../../src/modules/agents/config-health.ts", import.meta.url),
-).text();
-const start = source.indexOf("export type ConfigIssueKey =");
-const union = source.slice(start, source.indexOf(";", start));
-const keys = [...union.matchAll(/\|\s*"([a-zA-Z]+)"/g)].map((m) => m[1] ?? "");
-
-const copy = (
-  locale: Record<string, unknown>,
-  key: string,
-): string | undefined => {
-  const editor = locale.editor as Record<string, unknown> | undefined;
-  const bag = editor?.configIssue as Record<string, unknown> | undefined;
-  const value = bag?.[key];
-  return typeof value === "string" ? value : undefined;
+// Every key of the union, typed as a Record so the compiler holds the list to the union in both
+// directions: a key added there is a missing property here, a key removed is an excess one.
+const ALL_KEYS: Record<ConfigIssueKey, true> = {
+  model: true,
+  modelNotRunnable: true,
+  modelNoEndpoint: true,
+  modelBadEndpoint: true,
+  stt: true,
+  tts: true,
+  ttsNormalize: true,
+  memoryModel: true,
+  suggestionReviewModel: true,
+  modelFallback: true,
+  vision: true,
+  decisions: true,
+  guardrails: true,
+  guardrailsFailing: true,
+  contactAuth: true,
+  contactAuthUnlockHandoff: true,
+  contactAuthSilentRefusal: true,
+  contactAuthNoUrl: true,
+  knowledge: true,
+  embedding: true,
+  redirect: true,
+  outOfHoursBoth: true,
+  outOfHoursChatwoot: true,
+  textCap: true,
 };
 
-describe("config issue copy", () => {
-  // The union is read out of the source, so the test is only honest while the regex still finds it.
-  test("the key list is read from the source, and it found something", () => {
-    expect(keys.length).toBeGreaterThan(10);
-    expect(keys).toContain("contactAuthNoUrl");
-    expect(keys).toContain("model");
-  });
+// Keys raised ONLY for a credential that is pending or gone, never for a missing one: the gate runs
+// fine without a credential, so `credIssue` is gated on the ref being present.
+const CREDENTIAL_STATES_ONLY = new Set<ConfigIssueKey>(["contactAuth"]);
 
+// Every shape an issue reaches the renderer in: one per key, the two credential states for the keys
+// that only have those, and both arms of each branch that picks between two sentences.
+function everyIssue(): ConfigIssue[] {
+  const out: ConfigIssue[] = [];
+  for (const key of Object.keys(ALL_KEYS) as ConfigIssueKey[]) {
+    if (CREDENTIAL_STATES_ONLY.has(key)) {
+      out.push({ key, pending: true }, { key, unresolved: true });
+    } else {
+      out.push({ key });
+    }
+  }
+  out.push({ key: "textCap", tab: "behavior" });
+  return out;
+}
+
+function lookup(bag: unknown, key: string): string | undefined {
+  let node: unknown = bag;
+  for (const segment of key.split(".")) {
+    if (!node || typeof node !== "object") return undefined;
+    node = (node as Record<string, unknown>)[segment];
+  }
+  return typeof node === "string" ? node : undefined;
+}
+
+// What the renderer asked for, and which of those the catalog could not answer.
+function render(bag: unknown, issue: ConfigIssue, guardrailLastError = "") {
+  const asked: string[] = [];
+  const missing: string[] = [];
+  const text = configIssueMessage(issue, {
+    translate: (key) => {
+      asked.push(key);
+      const found = lookup(bag, key);
+      if (found === undefined) missing.push(key);
+      return found ?? "";
+    },
+    guardrailLastError,
+  });
+  return { text, asked, missing };
+}
+
+describe("config issue copy", () => {
   for (const [name, bag] of [
     ["en", en],
     ["pt-BR", ptBR],
   ] as const) {
-    test(`${name} has copy for every issue key`, () => {
-      const missing = keys.filter(
-        (k) =>
-          !HANDLED_ELSEWHERE.has(k) &&
-          !CREDENTIAL_STATES_ONLY.has(k) &&
-          !copy(bag, k),
-      );
+    test(`${name} has copy for every issue the renderer can be handed`, () => {
+      const missing = [
+        ...everyIssue().flatMap((i) => render(bag, i).missing),
+        // The guardrails branch picks its sentence on whether the last error is known.
+        ...render(bag, { key: "guardrailsFailing" }, "timeout").missing,
+      ];
       expect(missing).toEqual([]);
     });
   }
@@ -66,87 +107,17 @@ describe("config issue copy", () => {
   // An entry identical to English is an untranslated placeholder, which is what `i18n:extract`
   // writes into every non-English file when a key is new.
   test("pt-BR is translated, not the English string copied over", () => {
-    const untranslated = keys.filter(
-      (k) =>
-        !HANDLED_ELSEWHERE.has(k) &&
-        !CREDENTIAL_STATES_ONLY.has(k) &&
-        copy(en, k) !== undefined &&
-        copy(en, k) === copy(ptBR, k),
-    );
+    const untranslated = everyIssue().flatMap((issue) => {
+      const a = render(en, issue);
+      const b = render(ptBR, issue);
+      return a.text !== "" && a.text === b.text ? a.asked : [];
+    });
     expect(untranslated).toEqual([]);
   });
 
-  // The other half of the same promise: a key excused from `configIssue.*` because it only ever
-  // appears as a credential state has to actually HAVE those two states, or it falls back to the
-  // generic sentence from a different direction.
-  test("credential-state-only keys have pending and unresolved copy", () => {
-    for (const key of CREDENTIAL_STATES_ONLY) {
-      for (const [name, bag] of [
-        ["en", en],
-        ["pt-BR", ptBR],
-      ] as const) {
-        const editor = (bag as Record<string, unknown>).editor as Record<
-          string,
-          unknown
-        >;
-        for (const ns of ["configIssuePending", "configIssueUnresolved"]) {
-          const entry = (editor[ns] as Record<string, unknown> | undefined)?.[
-            key
-          ];
-          expect(`${name}.${ns}.${key}=${typeof entry}`).toBe(
-            `${name}.${ns}.${key}=string`,
-          );
-        }
-      }
-    }
-  });
-
-  // NOTE: The keys the RENDERER names literally, read out of its source. The two lists above excuse a
-  // handful of issue keys from `editor.configIssue.*` because they read a key of their own, so those
-  // keys must exist. `i18next-parser` deletes as orphaned every key it cannot see a call for, and each
-  // falls back to the English default the call site passes, so a missing one leaves a pt-BR reader
-  // reading English with every other test here green.
-  test("every catalog key the renderer names exists in both locales", () => {
-    const renderer = Bun.file(
-      new URL(
-        "../../src/modules/agents/config-health-message.ts",
-        import.meta.url,
-      ),
-    );
-    const text = renderer.text();
-    return text.then((src) => {
-      const named = [
-        ...new Set(
-          [...src.matchAll(/"(editor\.configIssue[A-Za-z]*)"/g)].map(
-            (m) => m[1] ?? "",
-          ),
-        ),
-      ];
-      // The literal ones only: the three dynamic lookups (`editor.configIssue.${key}` and its two
-      // siblings) are what the rest of this file already covers, key by key.
-      expect(named.length).toBeGreaterThanOrEqual(5);
-      for (const [name, bag] of [
-        ["en", en],
-        ["pt-BR", ptBR],
-      ] as const) {
-        const missing = named.filter((key) => {
-          let node: unknown = bag;
-          for (const segment of key.split(".")) {
-            if (!node || typeof node !== "object") return true;
-            node = (node as Record<string, unknown>)[segment];
-          }
-          return typeof node !== "string";
-        });
-        expect(`${name}: ${missing.join(", ")}`).toBe(`${name}: `);
-      }
-    });
-  });
-
-  // NOTE: Both lists above are subtracted from a key set READ OUT OF `config-health.ts`, so appending to
-  // either one silences a key that has no copy, and nothing here would notice. Each is pinned at its
-  // size and may only shrink (tests/utils/ledger.ts).
-  test("the ledgers this file waives with may only shrink", () => {
-    expectWaiverLedger("HANDLED_ELSEWHERE", HANDLED_ELSEWHERE, 5);
+  // NOTE: a key moved into CREDENTIAL_STATES_ONLY stops being asked for its plain copy, so the list is
+  // pinned at its size and may only shrink (tests/utils/ledger.ts).
+  test("the ledger this file waives with may only shrink", () => {
     expectWaiverLedger("CREDENTIAL_STATES_ONLY", CREDENTIAL_STATES_ONLY, 1);
   });
 });

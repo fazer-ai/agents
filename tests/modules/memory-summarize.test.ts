@@ -328,19 +328,44 @@ describe("summarizeAttendance", () => {
     expect(seen[1]?.aborted).toBe(false);
   });
 
-  // NOTE: The WIRING of the line above, which no cheap test can drive: making the real timeout fire costs
-  // sixty seconds, and shortening it means a parameter that exists only for the test. So this half is
-  // asserted over the source, and it is worth asserting, because without the argument the summariser
-  // still fails safely and merely reports "provider error" for a timeout, which nothing would notice.
-  // Where the signal is CREATED has an observable form, asserted in the test above.
-  test("the summariser decides a timeout from its own signal, not from the error", async () => {
-    const src = await Bun.file("src/modules/memory/summarize.ts").text();
-    expect(src).toContain(
-      "providerFailure(err, attemptSignal?.aborted === true)",
-    );
-    // NOTE: And the signal read is the one `runModelCall` handed this attempt, not a variable left unset:
-    // unset, every timeout reads as "provider error" again.
-    expect(src).toContain("attemptSignal = signal;");
+  // A call that runs past the attempt's deadline is reported as a timeout, never as "provider
+  // error". Two things say so: the deadline rejects with a reason that names a timeout, and the
+  // summariser reads the attempt's own signal. The deadline is shortened for this one call, and the
+  // model fails with an error that names nothing, so the answer comes from those two alone.
+  test("a call past its deadline is reported as a timeout", async () => {
+    class HangsUntilAborted extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-hangs";
+      }
+      async _generate(
+        _messages: BaseMessage[],
+        options?: { signal?: AbortSignal },
+      ): Promise<ChatResult> {
+        await new Promise<void>((resolve) => {
+          if (options?.signal?.aborted) resolve();
+          options?.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        throw new Error("socket closed");
+      }
+    }
+    const timeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms: number) =>
+      timeout.call(AbortSignal, ms >= 60_000 ? 5 : ms);
+    let res: Awaited<ReturnType<typeof summarizeAttendance>>;
+    try {
+      res = await summarizeAttendance(new HangsUntilAborted(), [
+        new HumanMessage("oi"),
+      ]);
+    } finally {
+      AbortSignal.timeout = timeout;
+    }
+    expect(res.summary).toBe("");
+    expect(res.error).toBe("timeout");
   });
 
   test("a provider failure is reported, and never throws into the job", async () => {

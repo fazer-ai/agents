@@ -40,3 +40,31 @@ export async function waitUntilBlocked(
   }
   return -1;
 }
+
+type Tx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
+
+// Runs `act` while a superuser transaction holds a change to the row it is about to read, and
+// commits that change only once `act` is parked behind it. An act that reads under the row's lock
+// sees the committed change; one that reads first sees the value the change replaced, which is the
+// difference an audit `before` or a guard re-read is asked about. Resolves with what `act` resolved.
+export async function underConcurrentEdit<T>(
+  su: PrismaClient,
+  edit: (tx: Tx) => Promise<unknown>,
+  act: () => Promise<T>,
+): Promise<T> {
+  let acting: Promise<T> | undefined;
+  await su.$transaction(
+    async (tx) => {
+      await edit(tx);
+      const [me] = await tx.$queryRaw<{ pid: number }[]>`
+        SELECT pg_backend_pid() AS pid`;
+      acting = act();
+      acting.catch(() => {});
+      if ((await waitUntilBlocked(su, me?.pid ?? -1, 1, 750)) < 0) {
+        throw new Error("the act never waited on the edited row");
+      }
+    },
+    { timeout: 30_000 },
+  );
+  return await (acting as Promise<T>);
+}

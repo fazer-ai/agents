@@ -137,6 +137,7 @@ async function ownedBlocks(): Promise<{
   }
   const files = new Set<string>();
   for (const pattern of READER_GLOBS) {
+    // biome-ignore lint/plugin/no-test-reads-source: the readers are discovered to be imported and run, not read
     for await (const rel of new Glob(pattern).scan("src")) {
       if (!rel.includes(".test.")) files.add(rel);
     }
@@ -145,7 +146,7 @@ async function ownedBlocks(): Promise<{
     const mod: Record<string, unknown> = await import(`@/${rel}`);
     for (const [name, fn] of Object.entries(mod)) {
       if (typeof fn !== "function" || !/^read[A-Z]/.test(name)) continue;
-      const id = `src/${rel}::${name}`;
+      const id = `${rel}::${name}`;
       const seen = new Set<string>();
       const probe = new Proxy(
         {},

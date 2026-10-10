@@ -140,6 +140,32 @@ async function seedStrandedDelivery(over: {
   return row.id;
 }
 
+// A trigger for one test, dropped on the way out: `body` is the plpgsql the trigger runs, `when` the
+// condition that scopes it to the row or the line the test is about.
+async function withTrigger<T>(
+  spec: {
+    table: string;
+    event: "INSERT" | "UPDATE";
+    when: string;
+    body: string;
+  },
+  fn: () => Promise<T>,
+): Promise<T> {
+  const name = `sweep_probe_${process.pid}`;
+  await suDb.$executeRawUnsafe(
+    `CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ${spec.body} END $$`,
+  );
+  await suDb.$executeRawUnsafe(
+    `CREATE TRIGGER ${name} BEFORE ${spec.event} ON ${spec.table} FOR EACH ROW WHEN (${spec.when}) EXECUTE FUNCTION ${name}()`,
+  );
+  try {
+    return await fn();
+  } finally {
+    await suDb.$executeRawUnsafe(`DROP TRIGGER ${name} ON ${spec.table}`);
+    await suDb.$executeRawUnsafe(`DROP FUNCTION ${name}()`);
+  }
+}
+
 async function statusOf(rowId: bigint) {
   return suDb.chatwootWebhookDelivery.findUniqueOrThrow({
     where: { id: rowId },
@@ -1018,20 +1044,28 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   test("retires the row before writing the line that pages an operator", async () => {
     // ORDERING. `writeFlowEvent` DISPATCHES the alert as it writes (Discord, a webhook,
     // somebody's phone) and nothing can retract that. Written before the CAS, the sweep would page
-    // an operator every time a redelivery claimed the row in between, a designed path here. No seam
-    // makes the flow write fail against a real database without faking the client out from under
-    // `runScopedOn`, so the order is asserted where it is written.
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
-    ).text();
-    const body = src.slice(src.indexOf("async function record("));
-    const write = body.indexOf("await writeFlowEvent(");
-    const retire = body.indexOf("finishDead(row, tenantId, base");
-    expect(write).toBeGreaterThan(-1);
-    expect(retire).toBeGreaterThan(-1);
-    expect(retire).toBeLessThan(write);
-    // And losing the CAS has to stop, not fall through to the line.
-    expect(body.slice(retire, write)).toContain("counts.raced += 1");
+    // an operator every time a redelivery claimed the row in between, a designed path here. The CAS
+    // is made to lose (a trigger skips the row's move to DEAD), and no line may be written.
+    const convId = 8961;
+    const conv = await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: 9461,
+    });
+    const counts = await withTrigger(
+      {
+        table: "chatwoot_webhook_deliveries",
+        event: "UPDATE",
+        when: `NEW.id = ${rowId} AND NEW.status::text = 'DEAD'`,
+        body: "RETURN NULL;",
+      },
+      () => sweepStrandedDeliveries({ tenantId, base: appDb }),
+    );
+    expect(counts.raced).toBe(1);
+    expect(counts.lost).toBe(0);
+    expect(await deliveryLines(conv.id, 0)).toEqual([]);
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
   test("the receiver settles at the DECISION, not after its tail work", async () => {
@@ -1061,26 +1095,54 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
 
   test("a flow write that fails is never swallowed, on either line", async () => {
     // Both lines this file writes are the only trace of something an operator has to see, and both
-    // are written after the row has already moved — so a failed write loses the trace for good and
-    // nothing retries it. Neither branch can be reached behaviourally: making `writeFlowEvent` fail
-    // against a real database means faking the client out from under `runScopedOn`, which proves
-    // nothing about the shipped code. Asserted where it is written instead.
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
-    ).text();
-    // The loss line: the row is DEAD by then and stays in the list, so this degrades a notification.
-    const record = src.slice(src.indexOf("async function record("));
-    expect(record).toContain("if (!written.delivered)");
-    // The correction line: the row has LEFT the list, so this one is the only thing that could have
-    // closed the alert already dispatched. Error, not warn.
-    const retire = src.slice(
-      src.indexOf("export async function retireCoveredDeliveries("),
-      src.indexOf("async function record("),
-    );
-    expect(retire).toContain("if (!written.delivered)");
-    expect(retire.slice(retire.indexOf("if (!written.delivered)"))).toContain(
-      "logger.error(",
-    );
+    // are written after the row has already moved, so a failed write loses the trace for good and
+    // nothing retries it. Each line is refused by a trigger in turn, and the log has to say so.
+    const convId = 8962;
+    const conv = await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: 9462,
+    });
+    const refuse = (outcome: string) => ({
+      table: "execution_logs",
+      event: "INSERT" as const,
+      when: `NEW.tenant_id = ${tenantId} AND NEW.conversation_id = ${conv.id} AND NEW.detail->>'outcome' = '${outcome}'`,
+      body: "RAISE EXCEPTION 'line refused';",
+    });
+    const errors = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      // The loss line: the row is DEAD by then and stays in the list.
+      await withTrigger(refuse("stranded"), () =>
+        sweepStrandedDeliveries({ tenantId, base: appDb }),
+      );
+      expect((await statusOf(rowId)).status).toBe("DEAD");
+      const said = () => errors.mock.calls.map((c) => String(c[0]));
+      expect(
+        said().some((m) => m.includes("its loss line could not be written")),
+      ).toBe(true);
+      // The correction line: the row has LEFT the list, so this one is the only thing that could
+      // have closed the alert already dispatched. Error, not warn.
+      errors.mockClear();
+      await withTrigger(refuse("answered_late"), () =>
+        retireCoveredDeliveries({
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          conversationRowId: conv.id,
+          settlement: "answered",
+          deliveryRowId: rowId,
+          base: appDb,
+        }),
+      );
+      expect((await statusOf(rowId)).status).toBe("PROCESSED");
+      expect(
+        said().some((m) => m.includes("its closing line could not be written")),
+      ).toBe(true);
+    } finally {
+      errors.mockRestore();
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    }
   });
 
   test("is armed when a Chatwoot account is connected, not only at boot", async () => {
@@ -2982,30 +3044,41 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
-  // NOTE: AND THE LINE DOES NOT CLAIM AN ARMING THAT DID NOT HAPPEN. The row is PROCESSED by then
-  // and nothing revisits it, so this line is its only record, and it must not tell an operator a
-  // takeover was armed on the one reading where they have to act themselves. A SOURCE FENCE, for
-  // the reason the loss-line one above gives: making `enqueueJob` throw against a real database
-  // means faking the client out from under the code under test. What is asserted is the branch.
+  // AND THE LINE DOES NOT CLAIM AN ARMING THAT DID NOT HAPPEN. The row is PROCESSED by then and
+  // nothing revisits it, so this line is its only record, and it must not tell an operator a
+  // takeover was armed on the one reading where they have to act themselves. The arming is refused
+  // by a trigger on its scheduler row.
   test("the reply-stranded line says whether the takeover was actually armed", async () => {
-    const src = await Bun.file(
-      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
-    ).text();
-    const arm = src.slice(
-      src.indexOf('if (verdict === "role-unstated")'),
-      src.indexOf('if (verdict === "owed-takeover")'),
-    );
-    expect(arm.length).toBeGreaterThan(0);
-    // The catch records the failure...
-    expect(arm).toContain("armed = false;");
-    // ...and the line that follows reads it rather than asserting the happy path.
-    expect(arm).toContain("armed\n");
-    expect(arm).toContain("A takeover COULD NOT BE ARMED");
-    // NOTE: No unconditional claim of an arming: that sentence belongs only to the ternary's true
-    // arm.
-    expect(
-      arm.includes("route. A takeover is armed in case it was the responder's"),
-    ).toBe(false);
+    const convId = 8963;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 3,
+      status: "PENDING",
+      humanReplyShape: "composer",
+    });
+    const warnings = spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const counts = await withTrigger(
+        {
+          table: "scheduler_jobs",
+          event: "INSERT",
+          when: `NEW.tenant_id = ${tenantId} AND NEW.kind::text = 'TAKEOVER_RECOVERY'`,
+          body: "RAISE EXCEPTION 'takeover not armed';",
+        },
+        () => sweepStrandedDeliveries({ tenantId, base: appDb }),
+      );
+      expect(counts.roleUnstated).toBe(1);
+      expect((await statusOf(rowId)).status).toBe("PROCESSED");
+      const line = warnings.mock.calls
+        .map((c) => c.map(String).join(" "))
+        .find((m) => m.includes("BEFORE anything named its route"));
+      expect(line).toContain("A takeover COULD NOT BE ARMED");
+      expect(line).not.toContain("A takeover is armed");
+    } finally {
+      warnings.mockRestore();
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    }
   });
 
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {

@@ -110,14 +110,14 @@ export function CostSection({
     async () => {
       if (!prevQuery) return { data: null };
       const res = await api.api.v1.metrics.costs.get({ query: prevQuery });
-      return { data: res.data?.costs ?? null };
+      return { data: res.data?.costs ?? null, status: res.error?.status };
     },
   );
   const cache = useBlock(JSON.stringify(["cache", query]), async () => {
     const res = await api.api.v1.metrics.breakdown.get({
       query: { ...query, dimension: "agent" },
     });
-    return { data: res.data?.rows ?? null };
+    return { data: res.data?.rows ?? null, status: res.error?.status };
   });
   const ceiling = useBlock<Ceiling>(
     JSON.stringify(["ceiling", query.until]),
@@ -430,6 +430,7 @@ export function CostSection({
 
       <Block
         error={costs.error}
+        errorStatus={costs.status}
         loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={Coins}
@@ -472,6 +473,7 @@ export function CostSection({
 
       <Block
         error={costs.error}
+        errorStatus={costs.status}
         loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={LineIcon}
@@ -517,6 +519,7 @@ export function CostSection({
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
           error={cache.error}
+          errorStatus={cache.status}
           loading={cache.loading && !cache.data}
           onRetry={cache.reload}
           icon={Database}

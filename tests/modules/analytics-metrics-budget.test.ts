@@ -1,0 +1,132 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import config from "@/config";
+import { getDashboardCosts } from "@/modules/analytics/costs";
+import { getHealth } from "@/modules/analytics/health";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { metricsGet } from "@/modules/mcp/read";
+
+// A metrics read that does not fit its time budget is refused as too slow (503, a sentence the
+// console and the MCP tools show), and Postgres stops the statement, so the connection is back in
+// the pool when the request answers. `LOCK TABLE llm_usage` stands in for a window too long to
+// aggregate: the read waits exactly as long as the lock is held.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let app: PrismaClient | undefined;
+let su: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl, max: 3 }),
+    });
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    await su.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+afterAll(async () => {
+  await app?.$disconnect();
+  await su?.$disconnect();
+});
+
+const ctx = { tenantId: 1n, role: "TENANT_ADMIN" as const, userId: 1n };
+const principal: VerifiedToken = {
+  userId: 1n,
+  tenantId: 1n,
+  role: "TENANT_ADMIN",
+  scopes: ["mcp:read"],
+  clientId: "c",
+  jti: "j",
+};
+
+async function waitingOnUsage(): Promise<number> {
+  const [row] = await (su as PrismaClient).$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM pg_stat_activity
+     WHERE state = 'active' AND query ILIKE '%llm_usage%' AND pid <> pg_backend_pid()
+       AND usename <> current_user`;
+  return row?.n ?? -1;
+}
+
+// Runs `act` while llm_usage is locked, and releases the lock only once `act` has answered: an
+// unbounded read never answers, and the test times out.
+async function underUsageLock<T>(act: () => Promise<T>): Promise<{
+  result: T;
+  elapsed: number;
+  left: number;
+}> {
+  let out: { result: T; elapsed: number; left: number } | undefined;
+  await (su as PrismaClient).$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe(
+        "LOCK TABLE llm_usage IN ACCESS EXCLUSIVE MODE",
+      );
+      const t0 = Date.now();
+      const result = await act();
+      out = { result, elapsed: Date.now() - t0, left: await waitingOnUsage() };
+    },
+    { timeout: 20_000 },
+  );
+  return out as { result: T; elapsed: number; left: number };
+}
+
+function withMetricsTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  const metrics = config.metrics;
+  const saved = metrics.timeoutMs;
+  metrics.timeoutMs = ms;
+  return fn().finally(() => {
+    metrics.timeoutMs = saved;
+  });
+}
+
+describe.skipIf(!dbUp)("metrics time budget", () => {
+  test("a read past METRICS_TIMEOUT_MS answers 503 at the budget and leaves no statement running", async () => {
+    const { result, elapsed, left } = await withMetricsTimeout(500, () =>
+      underUsageLock(() =>
+        getDashboardCosts(ctx, {}, app as PrismaClient).catch((e) => e),
+      ),
+    );
+    expect((result as { statusCode?: number }).statusCode).toBe(503);
+    expect((result as Error).message).toContain("Try a shorter period");
+    expect(elapsed).toBeLessThan(2_000);
+    expect(left).toBe(0);
+  });
+
+  test("a read refused by the lock timeout is the same 503", async () => {
+    const locking = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl, lock_timeout: 300 }),
+    });
+    try {
+      const { result, elapsed } = await withMetricsTimeout(10_000, () =>
+        underUsageLock(() => getHealth(ctx, {}, locking).catch((e) => e)),
+      );
+      expect((result as { statusCode?: number }).statusCode).toBe(503);
+      expect(elapsed).toBeLessThan(2_000);
+    } finally {
+      await locking.$disconnect();
+    }
+  });
+
+  test("the MCP metrics tool returns the refusal as a tool error", async () => {
+    const { result } = await withMetricsTimeout(500, () =>
+      underUsageLock(() =>
+        metricsGet(principal, {}, { base: app as PrismaClient }),
+      ),
+    );
+    expect(JSON.stringify(result)).toContain("Try a shorter period");
+  });
+
+  test("a read inside the budget answers with its figures", async () => {
+    const costs = await withMetricsTimeout(5_000, () =>
+      getDashboardCosts(ctx, {}, app as PrismaClient),
+    );
+    expect(costs.requests).toBe(0);
+  });
+});

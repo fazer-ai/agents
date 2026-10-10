@@ -1,7 +1,8 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
-import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import { badQueryParam } from "@/lib/query-param";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 import {
   agentRanSql,
   cohortWhereSql,
@@ -89,7 +90,7 @@ export function normalizeTimeZone(tz: string | undefined): string {
 export async function getInstanceMetrics(
   ctx: TenantContext,
   filter: MetricsFilter = {},
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<InstanceMetrics> {
   const sinceWhere = {
     ...(filter.since || filter.until
@@ -108,7 +109,7 @@ export async function getInstanceMetrics(
     ...(filter.source ? { source: filter.source } : {}),
   };
 
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const sumSelect = {
       promptTokens: true,
       completionTokens: true,
@@ -327,9 +328,9 @@ export function toCounts(r: OutcomeRow | undefined): OutcomeCounts {
 export async function getKpis(
   ctx: TenantContext,
   filter: DashboardFilter = {},
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<DashboardKpis> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     // A billed call is not the same claim as "the agent took this conversation", and this is
     // the reader that makes the second one. Vision runs on the incoming attachment before the
     // bot-ownership gate decides anything, so an image sent into a conversation a human handled start
@@ -397,10 +398,10 @@ export interface TimeseriesPoint {
 export async function getTimeseries(
   ctx: TenantContext,
   filter: MetricsFilter = {},
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<TimeseriesPoint[]> {
   const tz = normalizeTimeZone(filter.tz);
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const rows = await db.$queryRaw<
       {
         bucket: string;

@@ -1041,6 +1041,7 @@
     },
     "title": "Painel",
     "tokens": "Tokens (entrada / saída)",
+    "tooSlow": "Este período demorou demais para ser calculado. Tente um período menor ou tente de novo em instantes.",
     "totalCost": "Custo de LLM",
     "trend": {
       "breakdown": "Dividir por",

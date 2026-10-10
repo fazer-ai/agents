@@ -24,6 +24,8 @@ import { getHealth } from "@/modules/analytics/health";
 import { getFilterOptions } from "@/modules/analytics/options";
 import { getOutcomeTrend } from "@/modules/analytics/trends";
 
+// translate('errors.metricsTooSlow', 'The metrics for this period took longer than {{seconds}}s to compute. Try a shorter period, or try again in a moment.')
+
 // The dashboard's blocks past the headline figures. Every route takes the page's one
 // filter (`dashboardFilterQuery`), so the blocks of a view always read the same rows; what each block
 // sums is mapped in docs/dashboard.md. RLS-scoped through the tenant context.

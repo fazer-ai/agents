@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { Download, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -17,6 +18,20 @@ export interface BlockTable {
   display?: string[][];
 }
 
+// What a failed metrics request says. A 503 is the server refusing a read that did not fit its time
+// budget, which a shorter period usually fixes; anything else stays the generic sentence.
+export function metricsErrorMessage(
+  t: TFunction,
+  status: number | null | undefined,
+): string {
+  return status === 503
+    ? t(
+        "dashboard.tooSlow",
+        "This period took too long to compute. Try a shorter period, or try again in a moment.",
+      )
+    : t("dashboard.error", "Could not load metrics.");
+}
+
 // A dashboard block: a titled card with its controls, a CSV export of exactly what it shows, and,
 // when its content is a chart, a table a screen reader reads in the chart's place (the chart itself
 // is hidden from the accessibility tree, since an SVG of bars says nothing).
@@ -29,6 +44,7 @@ export function Block({
   table,
   chart,
   error,
+  errorStatus,
   loading,
   onRetry,
   footer,
@@ -45,6 +61,8 @@ export function Block({
   // The block's request failed: it says so, with a retry, instead of rendering an empty result
   // that reads as "nothing happened". No CSV either, since there is nothing true to export.
   error?: boolean;
+  // The failed request's HTTP status, which picks the sentence (metricsErrorMessage).
+  errorStatus?: number | null;
   // The block's figures have not arrived: no CSV and no stand-in table yet, since whatever the
   // table holds now (zeros, an empty list) is not what the block is about to show.
   loading?: boolean;
@@ -90,7 +108,7 @@ export function Block({
       </div>
       {error ? (
         <p className="flex items-center gap-2 py-4 text-sm text-text-muted">
-          {t("dashboard.error", "Could not load metrics.")}
+          {metricsErrorMessage(t, errorStatus)}
           {onRetry && (
             <button
               type="button"

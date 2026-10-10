@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
-import basePrisma from "@/api/lib/prisma";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import metricsPrisma from "@/api/lib/prisma-metrics";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 import { type DashboardFilter, logWhereSql, usageWhereSql } from "./filter";
 
 // IS IT HEALTHY: how long the model calls take, and what went wrong where. Latency is the ledger's
@@ -33,9 +34,9 @@ export interface HealthReport {
 export async function getHealth(
   ctx: TenantContext,
   filter: DashboardFilter,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<HealthReport> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const latency = await db.$queryRaw<
       {
         model: string;

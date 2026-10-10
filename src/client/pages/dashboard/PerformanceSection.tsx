@@ -229,7 +229,7 @@ export function PerformanceSection({
     async () => {
       if (!prevQuery) return { data: null };
       const res = await api.api.v1.metrics.outcomes.get({ query: prevQuery });
-      return { data: res.data?.trend ?? null };
+      return { data: res.data?.trend ?? null, status: res.error?.status };
     },
   );
 
@@ -524,6 +524,7 @@ export function PerformanceSection({
 
       <Block
         error={trend.error}
+        errorStatus={trend.status}
         loading={trend.loading && !trend.data}
         onRetry={trend.reload}
         icon={TrendingUp}

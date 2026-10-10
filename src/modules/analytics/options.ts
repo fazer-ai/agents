@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import basePrisma from "@/api/lib/prisma";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import metricsPrisma from "@/api/lib/prisma-metrics";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 
 // WHAT THE DASHBOARD'S FILTER OFFERS: every agent and every inbox of the tenant, id and name only.
 // Whole, not paged, because the page checks a shared link's agent and inbox against this list and
@@ -14,9 +15,9 @@ export interface FilterOption {
 
 export async function getFilterOptions(
   ctx: TenantContext,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<{ agents: FilterOption[]; inboxes: FilterOption[] }> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const agents = await db.agent.findMany({
       select: { id: true, name: true },
       orderBy: [{ name: "asc" }, { id: "asc" }],

@@ -1,7 +1,8 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
-import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 import {
   agentRanSql,
   agentTurnSql,
@@ -119,10 +120,10 @@ export async function getOutcomeTrend(
   ctx: TenantContext,
   filter: DashboardFilter,
   breakdown?: OutcomeBreakdown,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<OutcomeTrend> {
   const tz = normalizeTimeZone(filter.tz);
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const [total] = await db.$queryRaw<OutcomeRow[]>(outcomeCountsSql(filter));
     const days = await daysFor(db, filter, tz);
     if (!breakdown) return { totals: toCounts(total), days };

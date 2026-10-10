@@ -21,6 +21,7 @@ import {
 import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
+import { metricsErrorMessage } from "./dashboard/Block";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
 import {
@@ -319,7 +320,7 @@ export function DashboardPage() {
             errorStatus={kpis.status ?? undefined}
             onRetry={kpis.reload}
             loadingLabel={t("dashboard.loading", "Loading metrics…")}
-            errorLabel={t("dashboard.error", "Could not load metrics.")}
+            errorLabel={metricsErrorMessage(t, kpis.status)}
             skeleton={<DashboardSkeleton />}
           >
             {kpis.data && (

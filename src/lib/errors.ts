@@ -138,3 +138,19 @@ export class ServiceUnavailableError extends AppError {
     super(message, 503);
   }
 }
+
+// A metrics read that did not finish inside `METRICS_TIMEOUT_MS` (src/modules/analytics/budget.ts):
+// it waited too long for a connection, ran too long, or waited on a lock. 503 rather than 500, with
+// a sentence the console and the MCP tools show as is: the usual cause is a period too long to
+// aggregate in time, and the same request a moment later may fit.
+export class MetricsTooSlowError extends AppError {
+  constructor(timeoutMs: number) {
+    const seconds = Math.round(timeoutMs / 1000);
+    super(
+      `The metrics for this period took longer than ${seconds}s to compute. Try a shorter period, or try again in a moment.`,
+      503,
+      "errors.metricsTooSlow",
+      { seconds },
+    );
+  }
+}

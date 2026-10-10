@@ -1,9 +1,10 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import { resolveLangfuseConfig } from "@/graph/observability";
 import { usageNode } from "@/graph/usage";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 import {
   type DashboardFilter,
   localDaySql,
@@ -99,7 +100,7 @@ async function langfuseLink(
   fetchFn: typeof fetch,
 ): Promise<DashboardCosts["langfuse"]> {
   try {
-    const cfg = await runScopedOn(base, ctx, (db) =>
+    const cfg = await runMetricsScoped(base, ctx, (db) =>
       resolveLangfuseConfig(db, tenantId),
     );
     if (!cfg) return null;
@@ -131,7 +132,7 @@ function usd(v: Prisma.Decimal | string | number | null): number {
 export async function getDashboardCosts(
   ctx: TenantContext,
   filter: CostsFilter,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
   fetchFn: typeof fetch = fetch,
 ): Promise<DashboardCosts> {
   const tenantId = ctx.tenantId;
@@ -139,7 +140,7 @@ export async function getDashboardCosts(
   const where = usageWhereSql("u", filter);
   const day = localDaySql(Prisma.sql`u.created_at`, tz);
   const [figures, langfuse] = await Promise.all([
-    runScopedOn(base, ctx, async (db) => {
+    runMetricsScoped(base, ctx, async (db) => {
       const days = await db.$queryRaw<
         {
           bucket: string;

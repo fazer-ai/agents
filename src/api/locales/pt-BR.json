@@ -191,6 +191,7 @@
     "mcpStdioDisabled": "O transporte stdio está desabilitado neste servidor.",
     "mcpTokenNotFound": "Token MCP não encontrado",
     "mcpUrlRequired": "O transporte http/sse exige uma URL.",
+    "metricsTooSlow": "As métricas deste período levaram mais de {{seconds}}s para serem calculadas. Tente um período menor ou tente de novo em instantes.",
     "noExtractableText": "Nenhum texto extraível encontrado neste arquivo {{kind}}",
     "noUpdatableFields": "Nenhum campo atualizável foi informado",
     "observeRacedAnother": "Outra observação desta caixa de entrada estava em andamento e não se completou. Tente de novo.",

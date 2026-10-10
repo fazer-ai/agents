@@ -38,11 +38,11 @@ export function ReasonsSection({
   const query = apiQuery(filters, win);
   const handoffs = useBlock(JSON.stringify(["handoffs", query]), async () => {
     const res = await api.api.v1.metrics.handoffs.get({ query });
-    return { data: res.data?.handoffs ?? null };
+    return { data: res.data?.handoffs ?? null, status: res.error?.status };
   });
   const labels = useBlock(JSON.stringify(["labels", query]), async () => {
     const res = await api.api.v1.metrics.labels.get({ query });
-    return { data: res.data?.labels ?? null };
+    return { data: res.data?.labels ?? null, status: res.error?.status };
   });
 
   const causeLabel: Record<string, string> = {
@@ -162,6 +162,7 @@ export function ReasonsSection({
       </SectionHeading>
       <Block
         error={handoffs.error}
+        errorStatus={handoffs.status}
         loading={handoffs.loading && !handoffs.data}
         onRetry={handoffs.reload}
         icon={ArrowRightLeft}
@@ -248,6 +249,7 @@ export function ReasonsSection({
 
       <Block
         error={handoffs.error}
+        errorStatus={handoffs.status}
         loading={handoffs.loading && !h}
         onRetry={handoffs.reload}
         icon={MessageSquareOff}
@@ -300,6 +302,7 @@ export function ReasonsSection({
 
       <Block
         error={labels.error}
+        errorStatus={labels.status}
         loading={labels.loading && !labels.data}
         onRetry={labels.reload}
         icon={Tags}

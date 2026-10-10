@@ -147,7 +147,11 @@ describe("numeric environment parsing", () => {
         admitZero.push(variable);
       }
     }
-    expect(admitZero).toEqual(["ALERT_COALESCE_WINDOW_MS"]);
+    // DB_LOCK_TIMEOUT_MS: Postgres reads lock_timeout 0 as no limit, which is the documented "off".
+    expect(admitZero.sort()).toEqual([
+      "ALERT_COALESCE_WINDOW_MS",
+      "DB_LOCK_TIMEOUT_MS",
+    ]);
   });
 });
 
@@ -295,6 +299,60 @@ describe("Chatwoot receiver settings in the deploy composes", () => {
       expect(compose).toMatch(
         /CHATWOOT_ACK_POOL_MAX=\$\{CHATWOOT_ACK_POOL_MAX:-4\}/,
       );
+    }
+  });
+});
+
+// Each pool has its own size and every budget its own knob; the checkpointer keeps following
+// DB_POOL_MAX until it is set, which is what an upgrade without new variables must open.
+describe("database pools and budgets", () => {
+  test("the checkpointer pool follows DB_POOL_MAX until set, and is its own when set", async () => {
+    const follows = await loadConfig({
+      DB_POOL_MAX: "7",
+      LANGGRAPH_POOL_MAX: undefined,
+    });
+    expect(follows.dbPoolMax).toBe(7);
+    expect(follows.langgraphPoolMax).toBe(7);
+    const own = await loadConfig({ DB_POOL_MAX: "7", LANGGRAPH_POOL_MAX: "2" });
+    expect(own.dbPoolMax).toBe(7);
+    expect(own.langgraphPoolMax).toBe(2);
+  });
+
+  test("a value that is not a whole number in range refuses by name, and a lock timeout of 0 is off", async () => {
+    for (const [env, raw] of [
+      ["METRICS_POOL_MAX", "0"],
+      ["LANGGRAPH_POOL_MAX", "abc"],
+      ["METRICS_TIMEOUT_MS", "15s"],
+      ["DB_TX_TIMEOUT_MS", "-1"],
+      ["DB_TX_MAX_WAIT_MS", "1e309"],
+      ["DB_LOCK_TIMEOUT_MS", "1.5"],
+    ] as const) {
+      const refusal = await refusalOf({ [env]: raw });
+      expect(refusal).toContain(`${env} must be`);
+      expect(refusal).toContain(`"${raw}"`);
+    }
+    const off = await loadConfig({ DB_LOCK_TIMEOUT_MS: "0" });
+    expect(off.dbLockTimeoutMs).toBe(0);
+  });
+
+  test("every deploy compose forwards the pool sizes and budgets, empty for the app default", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      for (const v of [
+        "DB_POOL_MAX",
+        "LANGGRAPH_POOL_MAX",
+        "METRICS_POOL_MAX",
+        "METRICS_TIMEOUT_MS",
+        "DB_TX_MAX_WAIT_MS",
+        "DB_TX_TIMEOUT_MS",
+        "DB_LOCK_TIMEOUT_MS",
+      ]) {
+        expect(compose).toContain(`${v}=\${${v}:-}`);
+      }
     }
   });
 });

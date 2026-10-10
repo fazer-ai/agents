@@ -4,7 +4,8 @@ import { Elysia } from "elysia";
 import type { UserRole } from "@/../generated/prisma/client";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
-import prisma from "@/api/lib/prisma";
+import mainPrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 import {
@@ -91,13 +92,21 @@ export interface AuthUser {
 // accordingly. Used only when no session cookie is present (the cookie path is unchanged).
 async function apiKeyAuthUser(
   authHeader: string | undefined,
+  db: typeof mainPrisma,
 ): Promise<AuthUser | null> {
   if (typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
     return null;
   }
   const token = authHeader.slice(7).trim();
   if (!token) return null;
-  const principal = await verifyApiKey(token);
+  let principal: Awaited<ReturnType<typeof verifyApiKey>>;
+  try {
+    principal = await verifyApiKey(token, db);
+  } catch (error) {
+    // NOTE: transient, as in the session lookups below: a full pool says nothing about the key.
+    logger.warn({ error }, "API key lookup failed; treating as transient");
+    throw new ServiceUnavailableError();
+  }
   if (!principal) return null;
   return {
     id: principal.userId,
@@ -124,6 +133,16 @@ function sessionCookieOptions() {
   };
 }
 
+// The pool a request authenticates through. The metrics routes read through a pool of their own
+// (./prisma-metrics.ts) so the screen still answers while turns hold every connection of the main
+// one, and that only holds if the session or key lookup in front of them does not need the main
+// pool either.
+export function authClientFor(path: string): typeof mainPrisma {
+  return path === "/api/v1/metrics" || path.startsWith("/api/v1/metrics/")
+    ? metricsPrisma
+    : mainPrisma;
+}
+
 export const authPlugin = new Elysia({ name: "auth" })
   .use(
     jwt({
@@ -132,7 +151,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       exp: TOKEN_EXPIRY,
     }),
   )
-  .derive({ as: "global" }, ({ jwt, cookie, headers }) => ({
+  .derive({ as: "global" }, ({ jwt, cookie, headers, path }) => ({
     // NOTE: `passwordHash` is the hash the caller authenticated against, not what the row holds by
     // the time the cookie is signed: a login that verified the OLD password while a change landed
     // must come out already revoked, not valid under the new one. Required so no call site omits it.
@@ -177,7 +196,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       // failure is transient, as in getAuthUser below, and never reads as signed out.
       let row: { passwordHash: string | null } | null;
       try {
-        row = await prisma.user.findUnique({
+        row = await authClientFor(path).user.findUnique({
           where: { id: userId },
           select: { passwordHash: true },
         });
@@ -210,7 +229,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       }
       if (!token || typeof token !== "string") {
         // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
-        return apiKeyAuthUser(headers.authorization);
+        return apiKeyAuthUser(headers.authorization, authClientFor(path));
       }
 
       let payload: JWTPayload | false;
@@ -249,7 +268,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         memberships: Membership[];
       } | null;
       try {
-        row = await prisma.user.findUnique({
+        row = await authClientFor(path).user.findUnique({
           where: { id: userId },
           select: {
             id: true,

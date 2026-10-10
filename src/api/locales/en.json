@@ -191,6 +191,7 @@
     "mcpStdioDisabled": "The stdio transport is disabled on this server.",
     "mcpTokenNotFound": "MCP token not found",
     "mcpUrlRequired": "The http/sse transport requires a URL.",
+    "metricsTooSlow": "The metrics for this period took longer than {{seconds}}s to compute. Try a shorter period, or try again in a moment.",
     "noExtractableText": "No extractable text found in this {{kind}} file",
     "noUpdatableFields": "No updatable fields provided",
     "observeRacedAnother": "Another observe of this inbox was in flight and did not complete. Try again.",

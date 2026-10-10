@@ -141,6 +141,7 @@ export function BreakdownSection({
     >
       <Block
         error={block.error}
+        errorStatus={block.status}
         loading={block.loading && !block.data}
         onRetry={block.reload}
         icon={Table2}

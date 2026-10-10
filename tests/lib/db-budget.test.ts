@@ -1,0 +1,80 @@
+import { describe, expect, test } from "bun:test";
+import {
+  assertConnectionBudget,
+  ConnectionBudgetError,
+  type PoolShare,
+} from "@/lib/db-budget";
+
+// The sum of a replica's pools against what each database server accepts from the runtime role.
+
+const MAIN = "postgres://app:x@db.internal:5432/agents";
+const OTHER = "postgres://app:x@checkpoints.internal:6543/langgraph";
+
+function shares(main: number, langgraph: number, url = MAIN): PoolShare[] {
+  return [
+    { env: "DB_POOL_MAX", size: main, url: MAIN },
+    { env: "LANGGRAPH_POOL_MAX", size: langgraph, url },
+    { env: "CHATWOOT_ACK_POOL_MAX", size: 4, url: MAIN },
+    { env: "METRICS_POOL_MAX", size: 3, url: MAIN },
+  ];
+}
+
+const limits = (byServer: Record<string, number>) => async (url: string) => {
+  const host = new URL(url).hostname;
+  return { maxConnections: byServer[host] ?? 0, reserved: 3 };
+};
+
+describe("connection budget", () => {
+  test("a sum equal to what the server accepts fits, one more is refused naming every pool", async () => {
+    // 45 + 45 + 4 + 3 = 97 = 100 - 3 reserved
+    const fit = await assertConnectionBudget(
+      shares(45, 45),
+      limits({ "db.internal": 100 }),
+    );
+    expect(fit).toEqual([
+      "db.internal:5432: 97 of 97 connections (DB_POOL_MAX=45, LANGGRAPH_POOL_MAX=45, CHATWOOT_ACK_POOL_MAX=4, METRICS_POOL_MAX=3)",
+    ]);
+
+    const err = await assertConnectionBudget(
+      shares(46, 45),
+      limits({ "db.internal": 100 }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ConnectionBudgetError);
+    expect(err.message).toContain("98 connections to db.internal:5432");
+    expect(err.message).toContain("accepts 97");
+    for (const v of [
+      "DB_POOL_MAX=46",
+      "LANGGRAPH_POOL_MAX=45",
+      "CHATWOOT_ACK_POOL_MAX=4",
+      "METRICS_POOL_MAX=3",
+    ]) {
+      expect(err.message).toContain(v);
+    }
+  });
+
+  test("each server is judged by its own pools: a checkpointer on another server leaves the main sum", async () => {
+    // Main: 90 + 4 + 3 = 97, fits 97. The checkpointer's 17 would push one global sum past it, and
+    // fits the 17 its own server accepts.
+    const fit = await assertConnectionBudget(
+      shares(90, 17, OTHER),
+      limits({ "db.internal": 100, "checkpoints.internal": 20 }),
+    );
+    expect(fit).toHaveLength(2);
+
+    const err = await assertConnectionBudget(
+      shares(10, 18, OTHER),
+      limits({ "db.internal": 100, "checkpoints.internal": 20 }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(ConnectionBudgetError);
+    expect(err.message).toContain("checkpoints.internal:6543");
+    expect(err.message).toContain("LANGGRAPH_POOL_MAX=18");
+    expect(err.message).not.toContain("DB_POOL_MAX=10");
+  });
+
+  test("a server that does not answer is not a refusal", async () => {
+    const err = await assertConnectionBudget(shares(10, 10), async () => {
+      throw new Error("connect ECONNREFUSED");
+    }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(ConnectionBudgetError);
+  });
+});

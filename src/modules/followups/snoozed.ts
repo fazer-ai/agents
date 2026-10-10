@@ -157,10 +157,12 @@ export async function sweepSnoozedFollowUps(
                 -- last_event_at (Chatwoot last_activity_at) does not move with; an edit of the agent
                 -- or of its schedule, and a new responder bound to the inbox, any of which can change
                 -- the cadence, the due time or whether one applies at all. The epoch is read as UTC, the zone the stored columns are in.
+                -- Chatwoot's two instants are whole seconds: an event stamped S may have happened up to
+                -- S + 1s, so a run that started inside that second has not seen it.
                 j.status = 'CLAIMED'
                 OR COALESCE(j.claimed_at, j.updated_at) >= GREATEST(
-                  c.last_event_at,
-                  to_timestamp(c.chatwoot_status_at) AT TIME ZONE 'UTC',
+                  c.last_event_at + interval '1 second',
+                  to_timestamp(c.chatwoot_status_at + 1) AT TIME ZONE 'UTC',
                   a.updated_at,
                   h.updated_at,
                   i.responder_bound_at
@@ -452,8 +454,11 @@ export async function snoozedFollowUpHandler(
   if (!isSnoozedForAPerson(live)) return { outcome: "done" };
   const anchor = findSnoozedAnchor(rows, ctx.reply);
   if (!anchor || anchor.customerSpokeAfter) return { outcome: "done" };
-  // The backlog fence: a person's message older than the switch-on is not chased.
-  if (anchor.at < ctx.armedAt) return { outcome: "done" };
+  // The backlog fence: a person's message older than the switch-on is not chased. By the second:
+  // Chatwoot's `created_at` is whole seconds, so a request later in the switch-on's own second reads
+  // as that second's start.
+  if (anchor.at.getTime() < Math.floor(ctx.armedAt.getTime() / 1000) * 1000)
+    return { outcome: "done" };
   // The /reset fence: a message of the person at or below the command is work the operator withdrew,
   // whatever re-armed this job since. Ordered by Chatwoot's ids, as every withdrawal fence is.
   if (resetLandedAfter(anchor.messageId, ctx.conv.resetAtMessageId)) {

@@ -916,6 +916,31 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("a request later in the switch-on's own second is chased", async () => {
+    // Chatwoot's created_at is whole seconds; the switch-on is not.
+    const second = Math.floor((Date.now() - 3 * 60_000) / 1000);
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { snoozedFollowUpArmedAt: new Date(second * 1000 + 900) },
+    });
+    try {
+      await setSettings(LADDER);
+      await seed(2080);
+      const s = stub({
+        messages: [{ ...personAsked(180, 3), created_at: second }],
+      });
+      await snoozedFollowUpHandler(jobFor(2080), appDb, s.deps);
+      expect(s.sent).toEqual([REPLY]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          snoozedFollowUpArmedAt: new Date(Date.now() - 30 * 86_400_000),
+        },
+      });
+    }
+  });
+
   test("the ladder switched off: nothing", async () => {
     await setSettings({
       snoozedFollowUp: { ...LADDER.snoozedFollowUp, enabled: false },
@@ -1107,6 +1132,39 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       select: { status: true },
     });
     expect(job.status).toBe("PENDING");
+  });
+
+  test("an event in the last run's own second is swept again: Chatwoot's instants are whole seconds", async () => {
+    await setSettings(LADDER);
+    // The run starts after every other watermark (the agent edit above), so only the event can re-arm.
+    const second = (Math.floor(Date.now() / 1000) + 1) * 1000;
+    // A message, then a status or holder change, each stamped in the run's second.
+    await seed(2081, { lastEventAt: new Date(second) });
+    await seed(2082, {
+      lastEventAt: new Date(second - 120_000),
+      statusAt: second / 1000,
+    });
+    for (const conv of [2081, 2082]) {
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "SNOOZED_FOLLOWUP",
+          dedupeKey: snoozedDedupeKey(threadOf(conv)),
+          runAt: new Date(second + 500),
+          claimedAt: new Date(second + 500),
+          status: "DONE",
+          payload: { threadId: threadOf(conv) },
+        },
+      });
+    }
+    await sweepSnoozedFollowUps(appDb, tenantId, [agentId]);
+    for (const conv of [2081, 2082]) {
+      const job = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: snoozedDedupeKey(threadOf(conv)) },
+        select: { status: true },
+      });
+      expect(job.status).toBe("PENDING");
+    }
   });
 
   // Both places the note is written: the thread keyed by conversation, and the one keyed by contact

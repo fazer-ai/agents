@@ -500,6 +500,83 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(row.payload).toBeNull();
   });
 
+  // The sweep runs the drain first, and skips a PENDING row that still holds a body: past the sweep's
+  // window it is still processed from that body, not reported lost.
+  test("a stored row past the sweep's window is drained, not swept", async () => {
+    const id = await ackOnly("queue-old", 607);
+    await pastWindow(id);
+    resetChatwootAdmissionForTest(1);
+    const g = held();
+    admitChatwootDelivery(-1n, () => g.gate, "meta");
+    registerDeliverySweepHandler();
+    await getJobHandler("DELIVERY_SWEEP")?.(
+      { tenantId } as unknown as ClaimedJob,
+      appDb,
+    );
+    // Admitted and waiting behind the busy slot, so the sweep that ran after it found it PENDING.
+    const waiting = await rowById(id);
+    expect(waiting.status).toBe("PENDING");
+    expect(waiting.payload).not.toBeNull();
+    g.release();
+    const row = await settled(id);
+    expect(row.status).toBe("PROCESSED");
+    expect(row.attempts).toBe(0);
+  });
+
+  test("the periodic pass leaves a fresh customer message to the process that holds it", async () => {
+    const id = await ackMessage("queue-fresh-message", 645);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 60_000,
+    });
+    expect(r.recovered).toBe(0);
+    expect((await rowById(id)).status).toBe("PENDING");
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
+  });
+
+  // Only a row the recovery can rebuild is handed to it: a bodyless status change (its body cleared)
+  // has nothing to rebuild from and stays the sweep's to report.
+  test("a bodyless event the recovery cannot rebuild is not handed to it", async () => {
+    const id = await ackOnly("queue-bodyless-status", 646);
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { payload: null },
+    });
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.recovered).toBe(0);
+    expect((await rowById(id)).status).toBe("PENDING");
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED" },
+    });
+  });
+
+  // ...and is still retried, with the room the others leave, on the very next pass.
+  test("a row that failed here is retried on the next pass when the batch has room", async () => {
+    resetChatwootAdmissionForTest();
+    const failing = await ackOnly("queue-fails-once", 614);
+    admitChatwootDelivery(failing, async () => {
+      throw new Error("fails before its claim");
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+    });
+    expect(r.admitted).toBe(1);
+    expect((await settled(failing)).status).toBe("PROCESSED");
+  });
+
   // A customer message the recovery can rebuild left PENDING with nothing here holding it (a restart's
   // leftover) is DEAD with its recovery armed at once, not after the stranded sweep's window, and
   // it is the recovery, not a stored body, that answers it.

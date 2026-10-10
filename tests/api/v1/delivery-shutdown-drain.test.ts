@@ -200,6 +200,43 @@ describe("a detached webhook delivery is waited for by the shutdown drain", () =
     expect(handed).toEqual([[4n, "PENDING", "waiting_bound"]]);
   });
 
+  // Turned away because this process already holds the row (a redelivery), not because the lane is
+  // full: the delivery is running here, so nothing is handed over.
+  test("Chatwoot: a redelivery of a row this process holds is not handed to the recovery", async () => {
+    const handed: unknown[] = [];
+    restore.push(
+      spyOn(chatwootWebhook, "receiveChatwootWebhook").mockResolvedValue({
+        ack: true,
+        outcome: "queued",
+        tenantId: 1n,
+        instanceId: 1n,
+        deliveryId: "drain-held",
+        deliveryRowId: 5n,
+        dispatch: true,
+        recoverable: true,
+        agentBotId: null,
+        normalized: { event: "message_created" } as NormalizedChatwootEvent,
+      }),
+      spyOn(deliveryQueue, "admitChatwootDelivery").mockReturnValue(false),
+      spyOn(deliveryQueue, "admissionLaneFull").mockReturnValue(false),
+      spyOn(chatwootWebhook, "handToRecovery").mockImplementation(
+        async (_base, row) => {
+          handed.push(row.rowId);
+          return true;
+        },
+      ),
+    );
+    const res = await chatwootController.handle(
+      new Request("http://localhost/v1/chatwoot/webhook/tok", {
+        method: "POST",
+        body: "{}",
+      }),
+    );
+    expect(res.status).toBe(200);
+    await sleep(5);
+    expect(handed).toEqual([]);
+  });
+
   test("generic inbound", async () => {
     const held = heldDelivery();
     restore.push(

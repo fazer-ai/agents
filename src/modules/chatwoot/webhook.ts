@@ -239,6 +239,10 @@ import {
   verifyChatwootSignature,
 } from "./signing";
 import type { NormalizedChatwootEvent } from "./types";
+import {
+  isUnchangedMessageUpdate,
+  rememberOnSuccess,
+} from "./unchanged-update";
 import { inboxWatchers, watcherMemoryOwner } from "./watchers";
 
 // Dedicated Chatwoot Agent Bot webhook receiver: resolve tenant and instance by the opaque routeToken
@@ -999,6 +1003,19 @@ export async function receiveChatwootWebhook(
 
   const normalized = normalizeChatwootEvent(parsed);
   if (!normalized) return { ack: true, outcome: "ignored" };
+  // A delivery receipt (`source_id`, delivered, read) re-sends the message unchanged: nothing it carries
+  // differs from what this process already processed for that message and mirrored for that
+  // conversation, so it is acked here with no ledger row and no transaction (./unchanged-update.ts).
+  if (
+    isUnchangedMessageUpdate(
+      bot.tenantId,
+      bot.instanceId,
+      bot.agentBotId,
+      normalized,
+    )
+  ) {
+    return { ack: true, outcome: "ignored" };
+  }
 
   // X-Chatwoot-Delivery is always present in the fork; fall back to a body digest so a
   // (theoretical) missing header still dedupes deterministically.
@@ -1230,8 +1247,15 @@ export async function processRecordedChatwootDelivery(
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
   const rowId = params.deliveryRowId;
+  // Taken on arrival, kept on success: see ./unchanged-update.ts.
+  const remember = rememberOnSuccess(
+    params.tenantId,
+    params.instanceId,
+    params.agentBotId,
+    params.normalized,
+  );
   try {
-    return await processChatwootDelivery({
+    const outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
       deliveryRowId: rowId,
@@ -1241,6 +1265,10 @@ export async function processRecordedChatwootDelivery(
       base,
       deps: params.deps,
     });
+    // Only a delivery this attempt processed vouches for its repeats: a lost claim ("skipped") ran
+    // nothing here, and a throw never reaches this line.
+    if (outcome === "processed") remember();
+    return outcome;
   } catch (err) {
     if (!(err instanceof TurnOwedToRecovery)) throw err;
     await handToRecovery(

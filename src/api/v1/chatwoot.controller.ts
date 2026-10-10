@@ -114,7 +114,7 @@ export const chatwootController = new Elysia({
               ],
               {
                 description:
-                  "queued = accepted for async handling; duplicate = replay of an already-recorded event; ignored = an event shape the receiver does not handle.",
+                  "queued = accepted for async handling; duplicate = replay of an already-recorded event; ignored = an event shape the receiver does not handle, or a message update that repeats what was already processed (a delivery receipt), acked with nothing recorded.",
               },
             ),
           }),

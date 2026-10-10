@@ -347,17 +347,51 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
     expect(ran.wantsPermit).toBe(false);
   });
 
-  test("a recovery is claimed before older ingestion, and ingestion before an older NOTHING_TO_ANSWER", async () => {
-    await arm("NOTHING_TO_ANSWER", "nta", 3_600_000);
-    await arm("INGEST_MESSAGE", "ingest", 1_800_000);
-    await arm("DELIVERY_RECOVERY", "recovery", 60_000);
-    const order: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      const jobs = await claimDueTrafficJobs(1, appDb, new Date(), tenantId);
-      abandonClaimed(jobs);
-      order.push(...jobs.map((job) => job.dedupeKey ?? ""));
-    }
-    expect(order).toEqual(["recovery", "ingest", "nta"]);
+  // Both statements: the shared tick's fallback claims without a permit cap, the drain with one.
+  test.each([
+    ["the tick's claim", undefined],
+    ["the drain's claim", 5],
+  ])(
+    "%s takes a recovery before older ingestion, and ingestion before an older NOTHING_TO_ANSWER",
+    async (_, spendCap) => {
+      await arm("NOTHING_TO_ANSWER", "nta", 3_600_000);
+      await arm("INGEST_MESSAGE", "ingest", 1_800_000);
+      await arm("DELIVERY_RECOVERY", "recovery", 60_000);
+      const order: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const jobs = await claimDueTrafficJobs(
+          1,
+          appDb,
+          new Date(),
+          tenantId,
+          spendCap,
+        );
+        abandonClaimed(jobs);
+        order.push(...jobs.map((job) => job.dedupeKey ?? ""));
+      }
+      expect(order).toEqual(["recovery", "ingest", "nta"]);
+      await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+    },
+  );
+
+  test("the permits no claimed row spends go back at once", async () => {
+    install();
+    await arm("DELIVERY_RECOVERY", "spends", 120_000);
+    await arm("INGEST_MESSAGE", "cheap-1");
+    await arm("INGEST_MESSAGE", "cheap-2");
+    const gate = new Semaphore(3);
+    const tick = await runTrafficTick(appDb, {
+      slots: 3,
+      window: new StartWindow(100),
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    });
+    expect(tick.claimed).toBe(3);
+    expect(gate.free).toBe(2);
+    h.release();
+    await tick.settled;
+    expect(gate.free).toBe(3);
   });
 
   test("the shared tick leaves traffic rows to the drain when told to", async () => {

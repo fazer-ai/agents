@@ -1,3 +1,4 @@
+import { QUESTIONS_MAX, RULES_MAX } from "@/modules/decisions/config";
 import {
   type DecisionQuestionForm,
   type DecisionRuleForm,
@@ -146,14 +147,30 @@ function starterOf(
   };
 }
 
+// Whether the starter's question and rules fit under the block's limits: a starter that would
+// pass them leaves a draft the server refuses, so it is not offered.
+export function starterFits(
+  form: DecisionsForm,
+  kind: DecisionsStarter,
+  names: StarterNames,
+): boolean {
+  return (
+    form.questions.length + 1 <= QUESTIONS_MAX &&
+    form.rules.length + starterOf(kind, names).rules.length <= RULES_MAX
+  );
+}
+
 // The form with the starter's question and rules added after what it already holds. Adding one the
-// form already has adds nothing: two questions under one name is a block the server refuses.
+// form already has, or one that does not fit, adds nothing: two questions under one name, or a block
+// past its limits, is a block the server refuses.
 export function withStarter(
   form: DecisionsForm,
   kind: DecisionsStarter,
   names: StarterNames,
 ): DecisionsForm {
-  if (starterApplied(form, kind, names)) return form;
+  if (starterApplied(form, kind, names) || !starterFits(form, kind, names)) {
+    return form;
+  }
   const s = starterOf(kind, names);
   return {
     ...form,

@@ -12,6 +12,7 @@ import {
   DECISIONS_STARTERS,
   type StarterNames,
   starterApplied,
+  starterFits,
   withStarter,
 } from "@/client/pages/agents/decisionsStarters";
 import {
@@ -28,7 +29,7 @@ import {
   withDecisionsOf,
   withEngine,
 } from "@/client/pages/agents/observationFormState";
-import { decisionsIssues } from "@/modules/decisions/config";
+import { decisionsIssues, RULES_MAX } from "@/modules/decisions/config";
 
 // The monitoring agent's editor follows the engine (agents#1224): the decision setup (engine,
 // classifier, questions, rules, rehearsal or live) is one thing drawn on General and on its own tab,
@@ -197,6 +198,25 @@ describe("the starting points of a decisions agent", () => {
     const first = labelRules[0]?.args as { add: string[]; remove: string[] };
     expect(first.add).toEqual(["sentimento-muito-negativo"]);
     expect(first.remove.length).toBe(4);
+  });
+
+  test("a starter whose rules would pass the limit is not offered and adds nothing", () => {
+    let form = keyed();
+    const filler = (n: number): DecisionRuleForm => ({
+      key: `f${n}`,
+      origin: null,
+      when: [],
+      tool: "set_labels",
+      args: {},
+    });
+    form = {
+      ...form,
+      rules: Array.from({ length: RULES_MAX - 4 }, (_, n) => filler(n)),
+    };
+    expect(starterFits(form, "sentiment", NAMES)).toBe(false);
+    expect(withStarter(form, "sentiment", NAMES)).toBe(form);
+    expect(starterFits(form, "human", NAMES)).toBe(true);
+    expect(withStarter(form, "human", NAMES).rules.length).toBe(RULES_MAX - 3);
   });
 
   test("a starter added to a stored block keeps the stored questions and rules", () => {

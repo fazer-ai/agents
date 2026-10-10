@@ -1739,7 +1739,14 @@ export function ToolGrantsEditor({
             onToggle={() => toggleNative(HANDOFF_TOOL)}
             icon={nativeToolMeta(HANDOFF_TOOL, t).icon}
             title={nativeToolMeta(HANDOFF_TOOL, t).label}
-            description={nativeToolMeta(HANDOFF_TOOL, t).description}
+            description={
+              decides
+                ? t(
+                    "editor.handoffDescDecisions",
+                    "Escalate the conversation to a human agent.",
+                  )
+                : nativeToolMeta(HANDOFF_TOOL, t).description
+            }
             configured={
               handoff.mode !== "route" ||
               (!decides &&
@@ -1815,8 +1822,9 @@ export function ToolGrantsEditor({
                     disabled: !pinnedOfferable && !pinnedKept,
                     disabledHint: pinnedHint,
                   },
-                  // Not offered where no model chooses; a stored one is the warning above.
-                  ...(decides
+                  // Not offered where no model chooses. A stored one stays visible, disabled, so the
+                  // select names it while the warning above says what to pick instead.
+                  ...(decides && handoff.mode !== "agent_choice"
                     ? []
                     : [
                         {
@@ -1825,6 +1833,7 @@ export function ToolGrantsEditor({
                             "editor.handoffAgentChoice",
                             "Let the AI choose",
                           ),
+                          disabled: decides,
                         },
                       ]),
                 ]}

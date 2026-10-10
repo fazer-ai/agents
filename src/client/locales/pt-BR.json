@@ -1879,6 +1879,7 @@
     "handoffAgentChoiceDecisions": "Esta transferência está em “A IA escolhe”, e perguntas e regras não têm modelo para escolher: troque para o roteamento do Chatwoot ou para um agente ou time específico.",
     "handoffAgentChoiceHint": "A IA enxerga automaticamente seus agentes e times do Chatwoot e escolhe um ao transferir. Opcionalmente, oriente pela instrução (ex.: mande cobrança para o Financeiro).",
     "handoffAgents": "Agentes",
+    "handoffDescDecisions": "Encaminha a conversa para um atendente humano.",
     "handoffInstructions": "Instruções de transferência",
     "handoffInstructionsHint": "Opcional. Centraliza a lógica de transferência (quando e para quem escalar). Anexado à descrição da ferramenta de transferência que a IA lê.",
     "handoffInstructionsPlaceholder": "ex.: Só escale após duas tentativas frustradas. Encaminhe questões de cobrança para o time Financeiro.",

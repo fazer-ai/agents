@@ -1834,6 +1834,7 @@
     "handoffAgentChoiceDecisions": "This handoff is set to let the AI choose, and questions and rules have no model to choose: pick Chatwoot routing or a specific agent or team.",
     "handoffAgentChoiceHint": "The AI automatically sees your Chatwoot agents and teams and picks one when handing off. Optionally steer it from the instructions (e.g. send billing questions to Finance).",
     "handoffAgents": "Agents",
+    "handoffDescDecisions": "Escalate the conversation to a human agent.",
     "handoffInstructions": "Transfer instructions",
     "handoffInstructionsHint": "Optional. Centralizes the transfer logic (when and to whom to escalate). Appended to the handoff tool description the AI reads.",
     "handoffInstructionsPlaceholder": "e.g. Only escalate after two failed attempts. Send billing issues to the Finance team.",

@@ -230,6 +230,7 @@ test("on questions and rules, only what a rule can run is listed", async () => {
   expect(text.includes("provided automatically")).toBe(false);
   // No summary written before the handoff: that is a model's.
   expect(text.includes("private summary before handing off")).toBe(false);
+  expect(text.includes("optionally with a summary")).toBe(false);
 });
 
 test("on the language model, the catalog and the summary switch are there", async () => {

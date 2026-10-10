@@ -154,7 +154,7 @@ describe("the lint step", () => {
     expect(hook().code).not.toBe(0);
   });
 
-  test("lints the whole index when the rules change, and still not the disk", () => {
+  test("lints the whole index and the disk when the rules change", () => {
     // A comment the formatter keeps as it is: the change has to be valid for the clean case to pass.
     write(
       "biome.jsonc",
@@ -164,15 +164,22 @@ describe("the lint step", () => {
       ),
     );
     git("add", "biome.jsonc");
-    write("tests/untracked.ts", BAD);
     expect(hook().code).toBe(0);
 
+    // A finding the commit carries, fixed only on disk: the index lint sees it.
     write("tests/fixed-on-disk.ts", BAD);
     git("add", "tests/fixed-on-disk.ts");
     write("tests/fixed-on-disk.ts", GOOD);
-    const refused = hook();
-    expect(refused.code).not.toBe(0);
-    expect(refused.output).toContain("fixed-on-disk.ts");
+    const staged = hook();
+    expect(staged.code).not.toBe(0);
+    expect(staged.output).toContain("fixed-on-disk.ts");
+
+    // A finding the commit does not carry: the disk lint sees it, as the whole-tree lint always did.
+    git("reset", "-q", "--", "tests/fixed-on-disk.ts");
+    write("tests/elsewhere.ts", BAD);
+    const elsewhere = hook();
+    expect(elsewhere.code).not.toBe(0);
+    expect(elsewhere.output).toContain("elsewhere.ts");
   });
 
   test("refuses a staged deletion of a plugin the config still names", () => {

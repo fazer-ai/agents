@@ -8,7 +8,7 @@
 # What is linted is the index, not the disk: a file staged in part is judged on the hunks the commit
 # carries. The staged files, biome.jsonc and the plugins (the whole index, when the rules change) are
 # checked out into a scratch directory and linted there, so the hook never touches the index or the
-# working tree.
+# working tree. A rule change also lints the disk, as the whole-tree lint did.
 #
 # CHECK_STAGED_LIST prints what would be linted; CHECK_STAGED_LINT_ONLY runs the lint step alone.
 set -e
@@ -33,6 +33,9 @@ if [ -n "$lint_all" ]; then
   echo "[check-staged] $(printf '%s' "$lint_all" | head -1) changes the lint rules: linting the whole tree"
   git checkout-index -a --prefix="$work/tree/"
   (cd "$work/tree" && bun "$root/node_modules/.bin/biome" check --vcs-enabled=false --error-on-warnings)
+  # And the disk, as the whole-tree lint always did: a rule change is where a finding in a file the
+  # commit does not carry first shows up, and it is cheaper to see it here than on the next commit.
+  bun "$root/node_modules/.bin/biome" check --error-on-warnings
 elif [ -s "$list" ]; then
   { cat "$list"; printf 'biome.jsonc\0'; git ls-files -z biome-plugins; } |
     git checkout-index -z --prefix="$work/tree/" --stdin

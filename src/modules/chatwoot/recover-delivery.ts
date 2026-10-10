@@ -380,8 +380,10 @@ async function runRecovery(params: {
       },
     }),
   );
-  // NOTE: the channel's ceiling, on the row's receipt and before any network, where the mirror knows
-  // the inbox. A conversation it does not know is asked again once the live read names the inbox.
+  // NOTE: the channel's ceiling, on the row's receipt and before any network, read off the mirror's
+  // inbox. Only the mirror's: a refusal ends with the conversation handed to the team, and the hand-over
+  // reads the conversation's persona and ownership off the mirror row, so a conversation the mirror
+  // never learned could not be handed over and keeps `MAX_RECOVERY_AGE_MS`, a late answer over none.
   if (
     params.now.getTime() - row.receivedAt.getTime() >
     recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
@@ -655,7 +657,6 @@ async function runRecovery(params: {
         chatwootInboxId: true,
         name: true,
         agentId: true,
-        channelType: true,
         // When THIS binding was made. A role the row never stated cannot be read off a binding
         // younger than the delivery; see the refusal below.
         responderBoundAt: true,
@@ -971,7 +972,7 @@ async function runRecovery(params: {
   if (
     row.event === TURN_BEARING_EVENT &&
     params.now.getTime() - sentAt * 1000 >
-      recoveryAgeCeilingMs(row, inbox?.channelType ?? liveChannelOf(liveRaw))
+      recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
   ) {
     return "unrecoverable";
   }
@@ -1630,13 +1631,6 @@ async function schedulerGaveUp(
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a
 // transcription write-back (`message_updated`) and a row marked `owesMemoryOnly` replay into memory and
 // post nothing.
-// The channel the live conversation names (`meta.channel`, the inbox's channel type), for an inbox the
-// mirror has no row for.
-function liveChannelOf(raw: unknown): string | null {
-  const meta = isRecord(raw) && isRecord(raw.meta) ? raw.meta : null;
-  return typeof meta?.channel === "string" ? meta.channel : null;
-}
-
 function owesAReply(row: {
   routeObserved: boolean | null;
   event: string;

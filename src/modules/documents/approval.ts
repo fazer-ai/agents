@@ -6,7 +6,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText, makeStorable } from "@/lib/text";
 import { auditMutation } from "@/modules/audit/service";
-import { upsertJobRow } from "@/modules/scheduler/service";
+import { upsertJobRow, upsertJobRows } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type DocumentStyle, parseDocumentStyle } from "./blocks";
 import { formatDate } from "./format";
@@ -99,6 +99,29 @@ function toDto(r: Row): ApprovalRequestDto {
       r.issuedDocumentId === null ? null : String(r.issuedDocumentId),
     createdAt: r.createdAt,
   };
+}
+
+// What a decided or expired request says in its conversation is a job armed by the transition
+// itself, one per request: only the call that moved the status (or linked the approved document)
+// arms it, so a repeated decision answers nothing twice.
+export function outcomeJobKey(requestId: bigint): string {
+  return `doc-approval-outcome:${requestId}`;
+}
+
+async function armApprovalOutcome(
+  db: ScopedDb,
+  tenantId: bigint,
+  requestId: bigint,
+  now: Date,
+): Promise<void> {
+  await upsertJobRow(db, {
+    tenantId,
+    kind: "DOCUMENT_APPROVAL_OUTCOME",
+    dedupeKey: outcomeJobKey(requestId),
+    runAt: now,
+    rearm: "new-work",
+    payload: { requestId: String(requestId) },
+  });
 }
 
 function notFound(): NotFoundError {
@@ -409,22 +432,30 @@ export async function approveDocumentRequest(params: {
     chatwootInstanceId: row.chatwootInstanceId,
     conversationId: row.conversationId,
   });
-  const linked = await runScopedOn(base, ctx, (db) =>
-    db.documentApprovalRequest.update({
-      where: { id: requestId },
-      data: {
-        issuedDocument: {
-          connect: {
-            tenantId_idempotencyKey: {
-              tenantId: ctx.tenantId as bigint,
-              idempotencyKey,
-            },
-          },
+  // The call that LINKS the document is the one that arms its delivery, in the same
+  // transaction: approving again, in parallel or later, finds it linked and delivers nothing twice.
+  const linked = await runScopedOn(base, ctx, async (db) => {
+    const issued = await db.issuedDocument.findUniqueOrThrow({
+      where: {
+        tenantId_idempotencyKey: {
+          tenantId: ctx.tenantId as bigint,
+          idempotencyKey,
         },
       },
+      select: { id: true },
+    });
+    const link = await db.documentApprovalRequest.updateMany({
+      where: { id: requestId, issuedDocumentId: null },
+      data: { issuedDocumentId: issued.id },
+    });
+    if (link.count === 1) {
+      await armApprovalOutcome(db, ctx.tenantId as bigint, requestId, now);
+    }
+    return db.documentApprovalRequest.findUniqueOrThrow({
+      where: { id: requestId },
       select: SELECT,
-    }),
-  );
+    });
+  });
   return { request: toDto(linked), document };
 }
 
@@ -452,7 +483,10 @@ export async function rejectDocumentRequest(params: {
         decidedAt: now,
       },
     });
-    if (r.count === 1) await auditDecision(db, ctx, requestId, "REJECTED");
+    if (r.count === 1) {
+      await auditDecision(db, ctx, requestId, "REJECTED");
+      await armApprovalOutcome(db, ctx.tenantId as bigint, requestId, now);
+    }
     return r;
   });
   const row = await loadRequest(ctx, requestId, base);
@@ -473,19 +507,29 @@ export async function expireDueApprovalRequests(
   now: Date = new Date(),
   base: PrismaClient = basePrisma,
 ): Promise<bigint[]> {
-  const rows = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    (db) =>
-      db.$queryRaw<{ id: bigint }[]>`
+  const rows = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const expired = await db.$queryRaw<{ id: bigint }[]>`
       UPDATE "document_approval_requests"
          SET "status" = 'EXPIRED', "decided_at" = ${now}, "updated_at" = ${now}
        WHERE "tenant_id" = ${tenantId}
          AND "status" = 'PENDING'
          AND "expires_at" <= ${now}
       RETURNING "id"
-    `,
-  );
+    `;
+    // One statement for the whole backlog: a row per request would be N round trips inside the
+    // five-second transaction, and running past it rolls back the expiry along with every outcome.
+    await upsertJobRows(db, {
+      tenantId,
+      kind: "DOCUMENT_APPROVAL_OUTCOME",
+      rearm: "new-work",
+      runAt: now,
+      rows: expired.map((r) => ({
+        dedupeKey: outcomeJobKey(r.id),
+        payload: { requestId: String(r.id) },
+      })),
+    });
+    return expired;
+  });
   return rows.map((r) => r.id);
 }
 

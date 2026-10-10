@@ -82,6 +82,7 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   SUGGESTION_REVIEW: "shared",
   // One UPDATE over the tenant's overdue requests, at a cadence of hours by design.
   DOCUMENT_APPROVAL_EXPIRY: "shared",
+  DOCUMENT_APPROVAL_OUTCOME: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -135,6 +136,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: false,
   SUGGESTION_REVIEW: true,
   DOCUMENT_APPROVAL_EXPIRY: false,
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 // How many OBSERVE rows one SHARED tick claims, when it is the one draining the lane (a caller of
@@ -218,6 +220,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: false,
   // One row per request, and a finished expiry is never read again: the request row is the record.
   DOCUMENT_APPROVAL_EXPIRY: true,
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the
@@ -282,6 +285,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: true,
   // One per request, and requests follow the conversations the agent answers.
   DOCUMENT_APPROVAL_EXPIRY: true,
+  // One per decided or expired request, and an expiry arms a whole overdue backlog at once.
+  DOCUMENT_APPROVAL_OUTCOME: true,
 };
 
 // The order the traffic drain claims in, lowest first and oldest by created_at within a rank. It only
@@ -300,6 +305,9 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   NOTHING_TO_ANSWER: 2,
   // The expiry only moves a status the approval already enforces by `expiresAt`.
   DOCUMENT_APPROVAL_EXPIRY: 1,
+  // A decided document is a customer waiting for it, and a person watching for the note: with the
+  // recoveries.
+  DOCUMENT_APPROVAL_OUTCOME: 0,
   FOLLOWUP: 1,
   FOLLOWUP_SWEEP: 1,
   WEBHOOK_RETRY: 1,
@@ -401,6 +409,7 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // `warn`: approval refuses an overdue request by its expiresAt whatever its status says, so what
   // died is the status label, not the rule.
   DOCUMENT_APPROVAL_EXPIRY: "warn",
+  DOCUMENT_APPROVAL_OUTCOME: "error",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -439,6 +448,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   NOTHING_TO_ANSWER: 60_000,
   SUGGESTION_REVIEW: 2_000,
   DOCUMENT_APPROVAL_EXPIRY: 2_000,
+  DOCUMENT_APPROVAL_OUTCOME: 2_000,
 };
 
 export function kindsInLane(

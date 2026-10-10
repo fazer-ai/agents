@@ -411,6 +411,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
     expect(kinds.sort()).toEqual([
       "APPOINTMENT_REMINDER",
       "DEBOUNCE",
+      "DOCUMENT_APPROVAL_OUTCOME",
       "FOLLOWUP",
       "REDIRECT_FOLLOWUP",
     ]);

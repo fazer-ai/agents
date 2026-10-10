@@ -14,6 +14,12 @@ import {
   priceOverridesSchema,
   readPriceOverrides,
 } from "@/modules/pricing/overrides";
+import { clearTripForOff } from "@/modules/proactive-breaker/service";
+import {
+  type ProactiveBreakerConfig,
+  proactiveBreakerSettingsSchema,
+  readProactiveBreakerConfig,
+} from "@/modules/proactive-breaker/settings";
 import { syncTenantSpendPoll } from "@/modules/spend-ceiling/arm";
 import {
   readSpendCeilingConfig,
@@ -226,11 +232,18 @@ async function patchBlock<
     | CompanySettings
     | SpendCeilingStored
     | SpendCeilingLegacyStored
-    | PriceOverridesBlock,
+    | PriceOverridesBlock
+    | ProactiveBreakerConfig,
 >(
   ctx: TenantContext,
   base: PrismaClient,
-  key: "embedding" | "langfuse" | "company" | "spendCeiling" | "priceOverrides",
+  key:
+    | "embedding"
+    | "langfuse"
+    | "company"
+    | "spendCeiling"
+    | "priceOverrides"
+    | "proactiveBreaker",
   // Handed both states, so a block can report what moved without carrying what it holds (the
   // company profile needs the difference; see `sides` for the shape the others use).
   audit: {
@@ -545,6 +558,39 @@ export async function setCompanyLogoKey(
       });
     },
   );
+}
+
+// Updates the account-wide proactive breaker's configuration (docs/proactive-breaker.md). Validated on
+// the way in, so a limit typed as -5 or 1.5 is a 422 rather than a guard silently read as the default.
+// A fixed mode needs a number, and the number is kept when switching away so switching back restores
+// it. Changing the limit never reopens a tripped breaker: only a resume does.
+export async function updateProactiveBreakerSettings(
+  ctx: TenantContext,
+  patch: Partial<ProactiveBreakerConfig>,
+  base: PrismaClient = basePrisma,
+): Promise<ProactiveBreakerConfig> {
+  const next = await patchBlock(
+    ctx,
+    base,
+    "proactiveBreaker",
+    {
+      action: "tenant_settings.proactive_breaker_set",
+      target: "tenant_settings:proactiveBreaker",
+      project: sides(readProactiveBreakerConfig),
+    },
+    (raw) => {
+      const merged = { ...readProactiveBreakerConfig(raw), ...patch };
+      const parsed = proactiveBreakerSettingsSchema.safeParse(merged);
+      if (!parsed.success)
+        throw new AppError(
+          `proactive breaker: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+          422,
+        );
+      return parsed.data;
+    },
+  );
+  if (next.mode === "off") await clearTripForOff(ctx, base);
+  return next;
 }
 
 export type SpendCeilingUpdateInput = Partial<SpendCeilingConfig>;

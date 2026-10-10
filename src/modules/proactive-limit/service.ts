@@ -4,6 +4,11 @@ import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import {
+  breakerLockKey,
+  checkBreakerLocked,
+  refreshAutoPeak,
+} from "@/modules/proactive-breaker/service";
 
 // THE PER-CONVERSATION PROACTIVE LIMIT. An inbound integration that fires events with fresh ids in a
 // loop sends one proactive message per event to the same contact, each billed by Meta outside the
@@ -25,7 +30,17 @@ export type ProactiveLimitVerdict =
   // Under the limit: a pending row is reserved for this nudge, confirmed when its send reaches the
   // customer and released otherwise.
   | { over: false; reservationId: bigint | null }
-  | { over: true; count: number; limit: number };
+  | { over: true; reason: "conversation"; count: number; limit: number }
+  // The account-wide breaker is tripped (docs/proactive-breaker.md). `trippedNow` is the send that
+  // tripped it, whose line is the one that alerts.
+  | {
+      over: true;
+      reason: "breaker";
+      trippedNow: boolean;
+      trippedAt: Date;
+      count: number;
+      limit: number;
+    };
 
 // Over when the proactive messages already delivered in the window reach the limit: the one about
 // to run would be one past it.
@@ -34,7 +49,8 @@ export function proactiveLimitReached(count: number, limit: number): boolean {
 }
 
 // An unreadable count ALLOWS the send, with no reservation: the limit guards against a runaway, and
-// dropping a legitimate follow-up because a read failed is the worse failure.
+// dropping a legitimate follow-up because a read failed is the worse failure. The account's breaker
+// is asked first, under the tenant's lock, then the conversation's limit (0 = none) under its own.
 export async function reserveProactiveSend(params: {
   tenantId: bigint;
   conversationDbId: bigint;
@@ -43,41 +59,65 @@ export async function reserveProactiveSend(params: {
   now?: Date;
 }): Promise<ProactiveLimitVerdict> {
   const now = params.now ?? new Date();
+  await refreshAutoPeak(params.tenantId, params.base ?? basePrisma, now);
   try {
     return await runScopedOn(
       params.base ?? basePrisma,
       sysCtx(params.tenantId),
       (db) =>
-        withEntityLock(
-          db,
-          `proactive-limit:${params.conversationDbId}`,
-          async () => {
-            const windowStart = new Date(
-              now.getTime() - PROACTIVE_LIMIT_WINDOW_MS,
-            );
-            const count = await db.agentTurnDelivery.count({
-              where: {
-                conversationId: params.conversationDbId,
-                proactive: true,
-                deliveredAt: { gt: windowStart },
-              },
-            });
-            if (!proactiveLimitReached(count, params.limit)) {
-              const row = await db.agentTurnDelivery.create({
-                data: {
-                  tenantId: params.tenantId,
-                  conversationId: params.conversationDbId,
-                  proactive: true,
-                  pending: true,
-                  deliveredAt: now,
-                },
-                select: { id: true },
-              });
-              return { over: false as const, reservationId: row.id };
-            }
-            return { over: true as const, count, limit: params.limit };
-          },
-        ),
+        withEntityLock(db, breakerLockKey(params.tenantId), async () => {
+          const breaker = await checkBreakerLocked(db, params.tenantId, now);
+          if (!breaker.open)
+            return {
+              over: true as const,
+              reason: "breaker" as const,
+              trippedNow: breaker.trippedNow,
+              trippedAt: breaker.trippedAt,
+              count: breaker.count,
+              limit: breaker.limit,
+            };
+          return withEntityLock(
+            db,
+            `proactive-limit:${params.conversationDbId}`,
+            async () => {
+              const windowStart = new Date(
+                now.getTime() - PROACTIVE_LIMIT_WINDOW_MS,
+              );
+              const count =
+                params.limit > 0
+                  ? await db.agentTurnDelivery.count({
+                      where: {
+                        conversationId: params.conversationDbId,
+                        proactive: true,
+                        deliveredAt: { gt: windowStart },
+                      },
+                    })
+                  : 0;
+              if (
+                params.limit <= 0 ||
+                !proactiveLimitReached(count, params.limit)
+              ) {
+                const row = await db.agentTurnDelivery.create({
+                  data: {
+                    tenantId: params.tenantId,
+                    conversationId: params.conversationDbId,
+                    proactive: true,
+                    pending: true,
+                    deliveredAt: now,
+                  },
+                  select: { id: true },
+                });
+                return { over: false as const, reservationId: row.id };
+              }
+              return {
+                over: true as const,
+                reason: "conversation" as const,
+                count,
+                limit: params.limit,
+              };
+            },
+          );
+        }),
     );
   } catch (err) {
     logger.warn(
@@ -268,10 +308,64 @@ export async function releaseProactiveAlert(params: {
   }
 }
 
+// The account breaker's line. The send that tripped it writes `error`, which the alert channels
+// deliver with a link to the card where an admin resumes; every refusal while it stays tripped is
+// `info`, so the Logs say why each message did not go without paging anyone again.
+export function emitProactiveBreakerRefusal(
+  flow: FlowContext,
+  p: {
+    trippedNow: boolean;
+    trippedAt: Date;
+    count: number;
+    limit: number;
+    // What fired, as the operator recognizes it (proactiveSourceLabel).
+    source: string;
+    detail: Record<string, unknown>;
+  },
+): void {
+  emitFlowEvent(flow, {
+    stage: "proactive_breaker",
+    level: p.trippedNow ? "error" : "info",
+    status: p.trippedNow ? "error" : "skipped",
+    detail: {
+      outcome: "not_sent",
+      limit: p.limit,
+      count: p.count,
+      trippedAt: p.trippedAt.toISOString(),
+      ...p.detail,
+    },
+    errorMessage: p.trippedNow
+      ? `Proactive messages paused for the whole account: ${p.count} proactive messages were delivered in the last 24 hours (limit ${p.limit}). No agent sends a proactive message until an admin resumes them in Components > Advanced, where the limit can also be raised or turned off. The ${p.source} message was not sent. Replies to customers are not affected.`
+      : `Proactive messages are paused for the whole account since ${p.trippedAt.toISOString()} (${p.count} in 24 hours, limit ${p.limit}). The ${p.source} message was not sent. An admin resumes them in Components > Advanced.`,
+  });
+}
+
+function refusalFlow(
+  p: {
+    tenantId: bigint;
+    instanceId: bigint;
+    chatwootConversationId: number;
+    agentId: bigint;
+  },
+  row: { id: bigint; inboxId: bigint | null },
+  base: PrismaClient,
+): FlowContext {
+  return {
+    tenantId: p.tenantId,
+    turnId: crypto.randomUUID(),
+    source: "inbox",
+    conversationId: row.id,
+    agentId: p.agentId,
+    inboxId: row.inboxId,
+    threadId: `${p.tenantId}:${p.instanceId}:${p.chatwootConversationId}`,
+    base,
+  };
+}
+
 // A FIXED proactive send (no model turn): the redirect ladder's link and its goodbye. Counted and
 // refused like a nudge, against the conversation it goes to. `send` runs only under the limit; a send
-// that throws gives the reservation back and rethrows. A conversation with no mirror row, or a limit
-// of 0, sends without counting. `stillWanted` is the last await before the send or the refusal on
+// that throws gives the reservation back and rethrows. A conversation with no mirror row sends
+// without counting; a limit of 0 skips the conversation's check, never the account's breaker. `stillWanted` is the last await before the send or the refusal on
 // every path that did I/O here, since that I/O is what the caller's own fences did not cover: a false
 // answer gives back the reservation and the alert window and writes no line.
 export async function sendWithinProactiveLimit(p: {
@@ -288,10 +382,6 @@ export async function sendWithinProactiveLimit(p: {
 }): Promise<"sent" | "over" | "stood-down"> {
   const base = p.base ?? basePrisma;
   const wanted = async () => !p.stillWanted || (await p.stillWanted());
-  if (p.limit <= 0) {
-    await p.send();
-    return "sent";
-  }
   const row = await runScopedOn(base, sysCtx(p.tenantId), (db) =>
     db.conversation.findFirst({
       where: {
@@ -312,6 +402,16 @@ export async function sendWithinProactiveLimit(p: {
     limit: p.limit,
     base,
   });
+  if (verdict.over && verdict.reason === "breaker") {
+    const stillWanted = await wanted();
+    if (verdict.trippedNow || stillWanted)
+      emitProactiveBreakerRefusal(refusalFlow(p, row, base), {
+        ...verdict,
+        source: proactiveSourceLabel(p.source, null),
+        detail: { trigger: p.source },
+      });
+    return stillWanted ? "over" : "stood-down";
+  }
   if (verdict.over) {
     const claimedAt = new Date();
     const alert = await claimProactiveAlert({
@@ -330,25 +430,13 @@ export async function sendWithinProactiveLimit(p: {
         });
       return "stood-down";
     }
-    emitProactiveLimitRefusal(
-      {
-        tenantId: p.tenantId,
-        turnId: crypto.randomUUID(),
-        source: "inbox",
-        conversationId: row.id,
-        agentId: p.agentId,
-        inboxId: row.inboxId,
-        threadId: `${p.tenantId}:${p.instanceId}:${p.chatwootConversationId}`,
-        base,
-      },
-      {
-        count: verdict.count,
-        limit: verdict.limit,
-        alert,
-        source: proactiveSourceLabel(p.source, null),
-        detail: { trigger: p.source },
-      },
-    );
+    emitProactiveLimitRefusal(refusalFlow(p, row, base), {
+      count: verdict.count,
+      limit: verdict.limit,
+      alert,
+      source: proactiveSourceLabel(p.source, null),
+      detail: { trigger: p.source },
+    });
     return "over";
   }
   const release = async () => {

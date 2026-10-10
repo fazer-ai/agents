@@ -6,6 +6,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { consoleUrl } from "@/modules/mcp/console-links";
+import { proactiveBreakerSettingsUrl } from "@/modules/proactive-breaker/service";
 import { turnLimitSettingsUrl } from "@/modules/turn-limit/service";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
@@ -246,6 +247,14 @@ export function alertLinks(
     links.push({
       label: "Change the limit",
       url: turnLimitSettingsUrl(a.tenantId, a.agentId),
+    });
+  }
+  // NOTE: A tripped account breaker stops every agent's proactive messages until someone acts, so
+  // the alert goes straight to the card that resumes it.
+  if (a.stage === "proactive_breaker") {
+    links.push({
+      label: "Resume or change the limit",
+      url: proactiveBreakerSettingsUrl(a.tenantId),
     });
   }
   return links;

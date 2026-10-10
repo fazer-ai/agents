@@ -26,6 +26,15 @@ import {
   variantWriteSchema,
 } from "@/modules/experiments/service";
 import {
+  getProactiveBreakerStatus,
+  resumeProactiveBreaker,
+} from "@/modules/proactive-breaker/service";
+import {
+  type ProactiveBreakerConfig,
+  proactiveBreakerSettingsSchema,
+  readProactiveBreakerConfig,
+} from "@/modules/proactive-breaker/settings";
+import {
   assertEmbeddingCredentialUsable,
   assertLangfuseCredentialUsable,
   getTenantSettings,
@@ -33,6 +42,7 @@ import {
   updateEmbeddingSettings,
   updateLangfuse,
   updatePriceOverrides,
+  updateProactiveBreakerSettings,
 } from "@/modules/tenant-settings/service";
 import {
   assertVaultEntryCreatable,
@@ -732,6 +742,92 @@ export async function apiKeyRevoke(
     }
     await revokeApiKey(ctx, id, base);
     return ok({ dryRun: false, applied: true, target });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// ── Proactive breaker (docs/proactive-breaker.md) ──
+
+export interface ProactiveBreakerSetArgs {
+  mode?: ProactiveBreakerConfig["mode"];
+  limit?: number | null;
+  dry_run?: boolean;
+}
+
+// Changes the account breaker's mode or fixed limit. The preview validates the merged block exactly
+// as the write will, so a refused value is refused in both.
+export async function proactiveBreakerSet(
+  principal: VerifiedToken,
+  args: ProactiveBreakerSetArgs,
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  if (args.mode === undefined && args.limit === undefined)
+    return err("nothing to change: pass mode and/or limit");
+  try {
+    const patch: Partial<ProactiveBreakerConfig> = {
+      ...(args.mode !== undefined ? { mode: args.mode } : {}),
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    };
+    if (args.dry_run !== false) {
+      const current = await getProactiveBreakerStatus(ctx, base);
+      const proposed = proactiveBreakerSettingsSchema.safeParse({
+        ...readProactiveBreakerConfig({
+          proactiveBreaker: { mode: current.mode, limit: current.fixedLimit },
+        }),
+        ...patch,
+      });
+      if (!proposed.success)
+        return err(
+          `proactive breaker: ${proposed.error.issues[0]?.message ?? "invalid"}`,
+        );
+      return ok({
+        dryRun: true,
+        target: "proactive_breaker",
+        current: { mode: current.mode, limit: current.fixedLimit },
+        proposed: proposed.data,
+      });
+    }
+    await updateProactiveBreakerSettings(ctx, patch, base);
+    return ok({
+      dryRun: false,
+      applied: true,
+      target: "proactive_breaker",
+      proactiveBreaker: await getProactiveBreakerStatus(ctx, base),
+    });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Reopens a tripped breaker; the count toward the limit starts again from zero.
+export async function proactiveBreakerResume(
+  principal: VerifiedToken,
+  args: { dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    if (args.dry_run !== false) {
+      const current = await getProactiveBreakerStatus(ctx, base);
+      return ok({
+        dryRun: true,
+        target: "proactive_breaker",
+        tripped: current.tripped,
+        wouldChange: current.tripped !== null,
+      });
+    }
+    return ok({
+      dryRun: false,
+      applied: true,
+      target: "proactive_breaker",
+      proactiveBreaker: await resumeProactiveBreaker(ctx, base),
+    });
   } catch (e) {
     return failOf(e);
   }

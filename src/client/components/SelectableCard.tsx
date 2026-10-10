@@ -13,6 +13,8 @@ interface SelectableCardProps {
   badge?: ReactNode;
   disabled?: boolean;
   className?: string;
+  // An anchor a link can land on; the card is then the control the focus goes to.
+  id?: string;
 }
 
 // A toggleable selection card (icon + title + description + badge), used across the agent editor
@@ -27,12 +29,15 @@ export function SelectableCard({
   badge,
   disabled,
   className,
+  id,
 }: SelectableCardProps) {
   return (
     // biome-ignore lint/a11y/useSemanticElements: a styled selection card needs a button with the checkbox role, not a bare <input>.
     <button
       type="button"
       role="checkbox"
+      id={id}
+      data-focus-control={id ? "" : undefined}
       aria-checked={selected}
       disabled={disabled}
       onClick={onToggle}

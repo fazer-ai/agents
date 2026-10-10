@@ -325,7 +325,8 @@ export function DecisionsFields({
   // would write it beside a selection nobody has confirmed, so the rule sends the operator there.
   grantsPending: boolean;
   onGrantTool: (tool: string) => void;
-  onOpenTools: () => void;
+  // Opens Tools on that tool's card.
+  onOpenTools: (tool: string) => void;
   onOpenGeneral: () => void;
   // Whether the operator has tried to save. Before that, what is missing is said in a neutral line,
   // and the empty list is not an error: the first look at the tab is the starting points.
@@ -554,7 +555,11 @@ export function DecisionsFields({
         )}
       </span>
       {grantsPending ? (
-        <Button size="sm" variant="secondary" onClick={onOpenTools}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => onOpenTools(rule.tool)}
+        >
           {t("editor.decisionsOpenTools", "Open Tools")}
         </Button>
       ) : (

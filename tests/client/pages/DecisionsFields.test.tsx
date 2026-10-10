@@ -210,7 +210,7 @@ function renderSection(
               }
               grantsPending={opts.grantsPending ?? false}
               onGrantTool={(tool) => grantedTools.push(tool)}
-              onOpenTools={() => opened.push("tools")}
+              onOpenTools={(tool) => opened.push(`tools:${tool}`)}
               onOpenGeneral={() => opened.push("general")}
               showErrors={opts.showErrors ?? false}
             />
@@ -788,7 +788,8 @@ describe("the editor follows the engine", () => {
     );
     expect(count("decisions-rule-grant")).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Open Tools" }));
-    expect(opened).toEqual(["tools"]);
+    // Named, so the Tools tab can take the operator to that tool's card.
+    expect(opened).toEqual(["tools:private_note"]);
   });
 
   test("every rule allowed, or grants not read yet, shows no warning", () => {

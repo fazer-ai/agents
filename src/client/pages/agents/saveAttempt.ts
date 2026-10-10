@@ -43,3 +43,10 @@ export function setupSaveBlocked(
 ): boolean {
   return problems > 0 && (setupEdited || !otherEdited);
 }
+
+// The control a section reached by link takes the focus on: the element itself when it is one, else
+// the first control inside it. For an anchor marked `data-focus-control`.
+export function focusableIn(el: HTMLElement | null): HTMLElement | null {
+  if (!el) return null;
+  return el.matches(CONTROL) ? el : el.querySelector<HTMLElement>(CONTROL);
+}

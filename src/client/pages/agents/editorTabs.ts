@@ -59,3 +59,9 @@ export function watcherIssueUsed(
 ): boolean {
   return engine !== "decisions" || !KNOWLEDGE_ISSUE_KEYS.has(key);
 }
+
+// The anchor of a native tool's card on the Tools tab, so a link from elsewhere (a rule's "Open
+// Tools") lands on that tool rather than on the top of the tab.
+export function nativeToolAnchor(name: string): string {
+  return `tools-native-${name}`;
+}

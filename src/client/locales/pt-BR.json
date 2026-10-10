@@ -781,14 +781,14 @@
     "new": "Nova credencial",
     "none": "Nenhuma",
     "pendingUnfilled": "Esta credencial ainda não tem valor, então nada que a usa consegue rodar.",
-    "requiredMissing": "Este recurso está ativo mas sem credencial — selecione uma.",
+    "requiredMissing": "Este recurso está ativo, mas sem credencial. Selecione uma.",
     "select": "Selecionar credencial",
     "showAll_one": "Mostrar todas ({{count}})",
     "showAll_many": "Mostrar todas ({{count}})",
     "showAll_other": "Mostrar todas ({{count}})",
     "showCompatible": "Mostrar só compatíveis",
     "unavailable": "Credencial indisponível",
-    "unresolvedMissing": "A credencial selecionada foi excluída — escolha outra."
+    "unresolvedMissing": "A credencial selecionada foi excluída. Escolha outra."
   },
   "dashboard": {
     "absolute": "#",

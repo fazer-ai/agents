@@ -763,13 +763,13 @@
     "new": "New credential",
     "none": "None",
     "pendingUnfilled": "This credential has no value yet, so anything using it cannot run.",
-    "requiredMissing": "This feature is enabled but has no credential — select one.",
+    "requiredMissing": "This feature is enabled but has no credential. Select one.",
     "select": "Select a credential",
     "showAll_one": "Show all ({{count}})",
     "showAll_other": "Show all ({{count}})",
     "showCompatible": "Show compatible only",
     "unavailable": "Credential unavailable",
-    "unresolvedMissing": "The selected credential was deleted — pick another."
+    "unresolvedMissing": "The selected credential was deleted. Pick another."
   },
   "dashboard": {
     "absolute": "#",

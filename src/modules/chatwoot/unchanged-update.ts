@@ -84,13 +84,22 @@ function conversationKey(
   return `${tenantId}:${instanceId}:${conversationId}`;
 }
 
+// The business's own message: the only kind a repeat is dropped for, and so the only kind recorded.
+function businessMessage(
+  m: NormalizedChatwootEvent["message"],
+): m is NonNullable<NormalizedChatwootEvent["message"]> {
+  return (
+    m !== undefined &&
+    (m.messageType === "outgoing" || m.messageType === "template")
+  );
+}
+
 // The class the drop may apply to at all, before any record is consulted.
 function droppableShape(n: NormalizedChatwootEvent): boolean {
   const m = n.message;
   return (
     n.event === "message_updated" &&
-    m !== undefined &&
-    (m.messageType === "outgoing" || m.messageType === "template") &&
+    businessMessage(m) &&
     !m.externalError &&
     m.id !== null &&
     n.conversationId !== null
@@ -151,12 +160,8 @@ export function rememberOnSuccess(
           },
         };
   const m = n.message;
-  // Only the messages a repeat could be dropped for: the business's own.
   const message =
-    agentBotId !== null &&
-    m !== undefined &&
-    m.id !== null &&
-    (m.messageType === "outgoing" || m.messageType === "template")
+    agentBotId !== null && businessMessage(m) && m.id !== null
       ? {
           key: messageKey(tenantId, instanceId, agentBotId, m.id),
           digest: messageDigest(n),

@@ -347,6 +347,37 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
     expect((await deliver(body("message_updated", s))).rows).toBe(1);
   });
 
+  // A lost claim ran nothing here: the attempt holding the row may still fail.
+  test("a delivery whose claim another attempt holds does not vouch for its repeat", async () => {
+    const s = { conv: 1012, msg: 91012 };
+    const raw = body("message_created", s);
+    const delivery = `uu-${process.pid}-held`;
+    const r = await receiveChatwootWebhook({
+      routeToken: tokens[BOT] as string,
+      rawBody: raw,
+      getHeader: signed(raw, delivery),
+      nowSeconds: NOW,
+      base: appDb,
+      ackBase: appDb,
+    });
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: r.deliveryRowId as bigint },
+      data: { status: "PROCESSING", claimedAt: new Date() },
+    });
+    expect(
+      await processRecordedChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: r.deliveryRowId as bigint,
+        agentBotId: BOT,
+        normalized: r.normalized as NonNullable<typeof r.normalized>,
+        receiptBindingGeneration: r.receiptBindingGeneration ?? null,
+        base: appDb,
+      }),
+    ).toBe("skipped");
+    expect((await deliver(body("message_updated", s))).rows).toBe(1);
+  });
+
   test("an unchanged update of an event other than message_updated is recorded", async () => {
     const s = { conv: 1011, msg: 91011 };
     await deliver(body("message_created", s));

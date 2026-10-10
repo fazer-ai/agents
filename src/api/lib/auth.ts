@@ -12,8 +12,9 @@ import {
   ServiceUnavailableError,
   TenantSelectorRefusedError,
 } from "@/lib/errors";
-import { roleAtLeast } from "@/lib/tenancy";
+import { roleAtLeast, type TxBudget } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
+import { metricsBudget } from "@/modules/analytics/budget";
 import { verifyApiKey } from "@/modules/api-keys/verify";
 
 const COOKIE_NAME = "fazerai_auth_token";
@@ -92,7 +93,7 @@ export interface AuthUser {
 // accordingly. Used only when no session cookie is present (the cookie path is unchanged).
 async function apiKeyAuthUser(
   authHeader: string | undefined,
-  db: typeof mainPrisma,
+  pool: { db: typeof mainPrisma; budget?: TxBudget },
 ): Promise<AuthUser | null> {
   if (typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
     return null;
@@ -101,7 +102,7 @@ async function apiKeyAuthUser(
   if (!token) return null;
   let principal: Awaited<ReturnType<typeof verifyApiKey>>;
   try {
-    principal = await verifyApiKey(token, db);
+    principal = await verifyApiKey(token, pool.db, pool.budget);
   } catch (error) {
     // NOTE: transient, as in the session lookups below: a full pool says nothing about the key.
     logger.warn({ error }, "API key lookup failed; treating as transient");
@@ -133,14 +134,17 @@ function sessionCookieOptions() {
   };
 }
 
-// The pool a request authenticates through. The metrics routes read through a pool of their own
-// (./prisma-metrics.ts) so the screen still answers while turns hold every connection of the main
-// one, and that only holds if the session or key lookup in front of them does not need the main
-// pool either.
-export function authClientFor(path: string): typeof mainPrisma {
+// The pool a request authenticates through, with that pool's transaction budget. The metrics routes
+// read through a pool of their own (./prisma-metrics.ts) so the screen still answers while turns hold
+// every connection of the main one, and that only holds if the session or key lookup in front of them
+// does not need the main pool either; on it, the lookup keeps to the metrics budget.
+export function authPoolFor(path: string): {
+  db: typeof mainPrisma;
+  budget?: TxBudget;
+} {
   return path === "/api/v1/metrics" || path.startsWith("/api/v1/metrics/")
-    ? metricsPrisma
-    : mainPrisma;
+    ? { db: metricsPrisma, budget: metricsBudget() }
+    : { db: mainPrisma };
 }
 
 export const authPlugin = new Elysia({ name: "auth" })
@@ -196,7 +200,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       // failure is transient, as in getAuthUser below, and never reads as signed out.
       let row: { passwordHash: string | null } | null;
       try {
-        row = await authClientFor(path).user.findUnique({
+        row = await authPoolFor(path).db.user.findUnique({
           where: { id: userId },
           select: { passwordHash: true },
         });
@@ -229,7 +233,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       }
       if (!token || typeof token !== "string") {
         // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
-        return apiKeyAuthUser(headers.authorization, authClientFor(path));
+        return apiKeyAuthUser(headers.authorization, authPoolFor(path));
       }
 
       let payload: JWTPayload | false;
@@ -268,7 +272,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         memberships: Membership[];
       } | null;
       try {
-        row = await authClientFor(path).user.findUnique({
+        row = await authPoolFor(path).db.user.findUnique({
           where: { id: userId },
           select: {
             id: true,

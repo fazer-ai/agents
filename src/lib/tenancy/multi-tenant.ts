@@ -162,6 +162,9 @@ export async function runScopedOn<T>(
   ctx: TenantContext,
   fn: (db: ScopedDb) => Promise<T>,
   budget: TxBudget = SCOPED_TX_OPTIONS,
+  // Called when the transaction has its connection, before any statement: where a caller's own
+  // deadline for the transaction starts.
+  opened?: () => void,
 ): Promise<T> {
   if (ctx.tenantId === null) {
     throw new TenantTargetRequiredError();
@@ -169,6 +172,7 @@ export async function runScopedOn<T>(
   const tenantId = ctx.tenantId;
   const extended = base.$extends(makeScopedExtension(tenantId));
   return extended.$transaction(async (tx) => {
+    opened?.();
     // transaction-local GUC: RLS policies scope every statement to this tenant; resets
     // on commit/rollback so it cannot leak to the next request on a pooled connection.
     await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true), ${budgetSql(budget)}`;
@@ -197,11 +201,12 @@ export async function runScoped<T>(
 export async function asSuperAdminOn<T>(
   base: TransactionCapable,
   fn: (db: ScopedDb) => Promise<T>,
+  budget: TxBudget = SCOPED_TX_OPTIONS,
 ): Promise<T> {
   return base.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(SCOPED_TX_OPTIONS)}`;
+    await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(budget)}`;
     return fn(tx as unknown as ScopedDb);
-  }, SCOPED_TX_OPTIONS);
+  }, budget);
 }
 
 export async function asSuperAdmin<T>(

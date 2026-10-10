@@ -70,11 +70,17 @@ export async function runMetricsScoped<T>(
 ): Promise<T> {
   const budget = metricsBudget();
   try {
+    // The deadline starts with the transaction, so the scope's own statements (a SUPER_ADMIN's
+    // tenant check) spend the same budget the aggregates do.
+    let deadline = Number.POSITIVE_INFINITY;
     return await runScopedOn(
       base,
       ctx,
-      (db) => fn(untilDeadline(db, Date.now() + budget.timeout)),
+      (db) => fn(untilDeadline(db, deadline)),
       budget,
+      () => {
+        deadline = Date.now() + budget.timeout;
+      },
     );
   } catch (error) {
     if (isOverMetricsBudget(error))

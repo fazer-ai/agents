@@ -7,8 +7,10 @@ import { postgresCodeOf } from "@/lib/pg-error";
 import { runMetricsScoped } from "@/modules/analytics/budget";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { getHealth } from "@/modules/analytics/health";
+import { verifyApiKey } from "@/modules/api-keys/verify";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { metricsGet } from "@/modules/mcp/read";
+import { until } from "@/tests/utils/poll";
 
 // A metrics read that does not fit its time budget is refused as too slow (503, a sentence the
 // console and the MCP tools show), and Postgres stops the statement, so the connection is back in
@@ -194,6 +196,66 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
     } finally {
       await pool.$disconnect();
     }
+  });
+
+  test("a SUPER_ADMIN's tenant check spends the same budget the aggregates do", async () => {
+    const tenant = await (su as PrismaClient).tenant.create({
+      data: { name: "mb", slug: `mb-${process.pid}-${Date.now()}` },
+    });
+    try {
+      // The tenant check waits 0.8 s on a lock, then the aggregate would take 0.8 s more.
+      const holder = (su as PrismaClient).$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            "LOCK TABLE tenants IN ACCESS EXCLUSIVE MODE",
+          );
+          await tx.$queryRawUnsafe("SELECT pg_sleep(0.8)::text");
+        },
+        { timeout: 10_000 },
+      );
+      await until("tenants locked", async () => {
+        const [row] = await (app as PrismaClient).$queryRaw<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+           WHERE c.relname = 'tenants' AND l.mode = 'AccessExclusiveLock' AND l.granted`;
+        return (row?.n ?? 0) > 0 ? true : null;
+      });
+      const t0 = Date.now();
+      const result = await withMetricsTimeout(1_000, () =>
+        runMetricsScoped(
+          app as PrismaClient,
+          { tenantId: tenant.id, role: "SUPER_ADMIN" as const, userId: 1n },
+          async (db) => {
+            await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text");
+            return "answered";
+          },
+        ).catch((e) => e),
+      );
+      const elapsed = Date.now() - t0;
+      await holder;
+      expect((result as { statusCode?: number }).statusCode).toBe(503);
+      expect(elapsed).toBeLessThan(1_400);
+    } finally {
+      await (su as PrismaClient).tenant.delete({ where: { id: tenant.id } });
+    }
+  });
+
+  test("an API key lookup keeps to the budget it is given", async () => {
+    let waitedMs = -1;
+    await (su as PrismaClient).$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          "LOCK TABLE api_keys IN ACCESS EXCLUSIVE MODE",
+        );
+        const t0 = Date.now();
+        await verifyApiKey("fazerai_mb_lookup", app as PrismaClient, {
+          maxWait: 1_000,
+          timeout: 400,
+        }).catch(() => null);
+        waitedMs = Date.now() - t0;
+      },
+      { timeout: 20_000 },
+    );
+    expect(waitedMs).toBeLessThan(1_200);
   });
 
   test("a read inside the budget answers with its figures", async () => {

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Elysia } from "elysia";
 
-import { authPlugin } from "@/api/lib/auth";
+import { authPlugin, authPoolFor } from "@/api/lib/auth";
+import config from "@/config";
 
 // happy-dom's Request drops `Cookie` (a forbidden request header), so a cookie built with the
 // global constructor never reaches the route. Bun's native Request is captured in tests/dom-setup.ts
@@ -237,6 +238,17 @@ describe("authPlugin", () => {
         );
         mockMetricsPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
         expect((await (await ask("/api/v1/agents")).json()).id).toBeNull();
+      });
+
+      test("a metrics route's key lookup keeps to the metrics budget, any other to the main one", () => {
+        expect(authPoolFor("/api/v1/metrics/costs").budget?.timeout).toBe(
+          config.metrics.timeoutMs,
+        );
+        expect(authPoolFor("/api/v1/metrics").budget?.maxWait).toBe(
+          config.metrics.timeoutMs,
+        );
+        expect(authPoolFor("/api/v1/metricsx").budget).toBeUndefined();
+        expect(authPoolFor("/api/v1/agents").budget).toBeUndefined();
       });
 
       test("an API key whose lookup fails is a transient 503, not a 500", async () => {

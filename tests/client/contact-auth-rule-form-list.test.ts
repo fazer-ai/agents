@@ -94,7 +94,9 @@ describe("an enabled gate with nothing to decide", () => {
       "if (dirty.behavior && contactAuthGateEmpty(contactAuth))",
     );
     expect(guard > 0).toBe(true);
-    expect(guard < body.indexOf("if (dirty.general)")).toBe(true);
+    expect(guard < body.indexOf("if (dirty.general || dirty.decisions)")).toBe(
+      true,
+    );
     expect(src).toContain("if (saveFirst && !(await saveAllDirty())) return;");
   });
 });

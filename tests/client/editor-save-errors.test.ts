@@ -88,6 +88,8 @@ describe("agent editor save errors", () => {
       "behavior",
       "channelRedirect",
       "channelRedirect",
+      "decisions",
+      "decisions",
       "general",
       "guardrails",
       "guardrails",
@@ -288,6 +290,7 @@ describe("agent editor save errors", () => {
       "doClone",
       "saveAgent",
       "saveChannelRedirect",
+      "saveDecisions",
       "saveGrants",
       "saveGuardrails",
       "saveTools",
@@ -333,6 +336,7 @@ describe("one refusal per form that writes", () => {
       "toolsRefusal",
       "guardrailsRefusal",
       "channelRedirectRefusal",
+      "decisionsRefusal",
       "cloneRefusal",
     ]);
     // The SAME drawn/owned lists, because a refusal does not stay inside the section that produced
@@ -344,7 +348,7 @@ describe("one refusal per form that writes", () => {
         /useFieldRefusal\(\s*refusalFields\.drawn,\s*refusalFields\.owned,?\s*\)/g,
       ),
     ];
-    expect(shared).toHaveLength(6);
+    expect(shared).toHaveLength(7);
   });
 
   test("the section a refusal is filed under is the form that wrote, not the tab it lands on", () => {

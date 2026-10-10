@@ -462,3 +462,42 @@ export function decisionsRefusalStanding(
   if (!held || JSON.stringify(blockNow ?? null) !== held.sent) return null;
   return { path: held.path, message: held.message };
 }
+
+// Whether a rule names a tool the agent was not granted, so it never runs (`not_granted` on every
+// decision). Asked of the grants AS SAVED: that is what the engine checks. A rule with no tool yet
+// is incomplete, which the schema already reports, not ungranted.
+export function ruleToolNotGranted(
+  rule: DecisionRuleForm,
+  granted: ReadonlySet<string>,
+): boolean {
+  return rule.tool !== "" && !granted.has(rule.tool);
+}
+
+// The shape of a grant row this needs: the Tools tab's own (./types GrantState).
+interface NativeGrantRow {
+  source: string;
+  enabledTools?: string[];
+}
+
+// The native tools a grant set allows, as the runtime reads it: no NATIVE row is every native tool
+// (the permissive default of a new agent), a row is its allowlist, an empty one is none.
+export function nativeToolsGranted(
+  grants: readonly NativeGrantRow[],
+  allNative: readonly string[],
+): Set<string> {
+  const row = grants.find((g) => g.source === "NATIVE");
+  return new Set(row ? (row.enabledTools ?? []) : allNative);
+}
+
+// The grant set with one native tool allowed and everything else as it was: the one write a
+// rule's "Allow" makes. With no NATIVE row the tool is already allowed, so nothing changes.
+export function withNativeToolGranted<G extends NativeGrantRow>(
+  grants: readonly G[],
+  tool: string,
+): G[] {
+  const row = grants.find((g) => g.source === "NATIVE");
+  if (!row || (row.enabledTools ?? []).includes(tool)) return [...grants];
+  return grants.map((g) =>
+    g === row ? { ...g, enabledTools: [...(g.enabledTools ?? []), tool] } : g,
+  );
+}

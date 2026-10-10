@@ -380,21 +380,6 @@ async function runRecovery(params: {
       },
     }),
   );
-  // NOTE: the channel's ceiling, on the row's receipt and before any network, read off the mirror's
-  // inbox. Only the mirror's: a refusal ends with the conversation handed to the team, and the hand-over
-  // reads the conversation's persona and ownership off the mirror row, so a conversation the mirror
-  // never learned could not be handed over and keeps `MAX_RECOVERY_AGE_MS`, a late answer over none.
-  if (
-    params.now.getTime() - row.receivedAt.getTime() >
-    recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
-  ) {
-    logger.warn(
-      "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
-      row.deliveryId,
-      conversationId,
-    );
-    return "unrecoverable";
-  }
   // NOTE: a conversation with no mirror row is still recovered. The mirror failing is how a first
   // message strands, so those are exactly the customers this exists for. Everything below reads the
   // conversation from Chatwoot; the mirror row is created by the delivery path from the rebuilt body,
@@ -443,6 +428,23 @@ async function runRecovery(params: {
           base,
         })
       : null;
+    // NOTE: the channel's ceiling, on the row's receipt, read off the mirror's inbox. Only the
+    // mirror's: a refusal ends with the conversation handed to the team, and the hand-over reads the
+    // persona and the ownership off the mirror row, so a conversation the mirror never learned could
+    // not be handed over and keeps `MAX_RECOVERY_AGE_MS`, a late answer over none. Asked AFTER the
+    // reconcile for the same reason: a message that reopened a resolved conversation left the mirror
+    // saying `resolved`, and the hand-over would refuse that stale ownership.
+    if (
+      params.now.getTime() - row.receivedAt.getTime() >
+      recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
+    ) {
+      logger.warn(
+        "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unrecoverable";
+    }
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
     // NOTE: a reaction the anchored page cannot carry. The fork pages by the messages that are not
     // reactions and keeps a reaction only when its target is in the same page of the same

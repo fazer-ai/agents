@@ -1291,10 +1291,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         },
         select: { id: true },
       });
-      const conv = await seedConversation(convId);
-      await suDb.conversation.update({
-        where: { id: conv.id },
-        data: { inboxId: waInbox.id },
+      // The stranded message reopened it in Chatwoot; the mirror never heard.
+      const conv = await seedConversation(convId, {
+        inboxId: waInbox.id,
+        status: "resolved",
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
       });
       const rowId = await seedDeadDelivery({
         conversationId: convId,
@@ -1315,6 +1316,16 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(stub.asked).toEqual([]);
       expect(stub.sent).toEqual([]);
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+      // Refused after the live state was reconciled, so the hand-over below does not read a stale
+      // `resolved` as somebody else's decision.
+      expect(
+        (
+          await suDb.conversation.findUniqueOrThrow({
+            where: { id: conv.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("pending");
       // The job is still what says so: refused, the conversation goes to the team as unanswered
       // instead of sitting with the bot.
       const result = await runRecoveryJob(

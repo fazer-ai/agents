@@ -1419,10 +1419,16 @@ function SnoozedFollowUpEditor({
                 </div>
                 {isDefault ? (
                   <p className="text-text-muted text-xs">
-                    {t(
-                      "editor.snoozedFollowUpDefaultHint",
-                      "For a snoozed conversation that carries none of the labels below.",
-                    )}
+                    {/* With no labeled cadence there is no "below" to point at. */}
+                    {labeledCount === 0
+                      ? t(
+                          "editor.snoozedFollowUpDefaultHintAlone",
+                          "Applies to every snoozed conversation.",
+                        )
+                      : t(
+                          "editor.snoozedFollowUpDefaultHint",
+                          "For a snoozed conversation that carries none of the labels below.",
+                        )}
                   </p>
                 ) : (
                   <FormField

@@ -47,6 +47,8 @@ const saveDisabled = () =>
 const DUPLICATE = /already uses this label|já usa esta etiqueta/i;
 const NO_STEPS = /reminds nobody|não lembra ninguém/i;
 const NO_DEFAULT = /No default cadence|Sem cadência padrão/i;
+const EVERY = /every snoozed conversation|toda conversa adiada/i;
+const BELOW = /none of the labels below|nenhuma das etiquetas abaixo/i;
 
 const cadence = (label: string | null, steps = [newSnoozedStep()]) => ({
   label,
@@ -60,6 +62,23 @@ describe("snoozed follow-up section", () => {
   afterEach(() => cleanup());
   afterAll(() => {
     globalThis.fetch = realFetch;
+  });
+
+  // With no labeled cadence on screen, the default's hint cannot point at "the labels below".
+  test("the default alone says it covers every snoozed conversation", () => {
+    renderWith({ enabled: true, signature: false, cadences: [cadence(null)] });
+    expect(count(EVERY)).toBe(1);
+    expect(count(BELOW)).toBe(0);
+  });
+
+  test("next to labeled cadences the default points at their labels", () => {
+    renderWith({
+      enabled: true,
+      signature: false,
+      cadences: [cadence(null), cadence("adiar")],
+    });
+    expect(count(EVERY)).toBe(0);
+    expect(count(BELOW)).toBe(1);
   });
 
   test("a label taken twice is said on the cadence and holds Save", () => {

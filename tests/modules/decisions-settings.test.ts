@@ -58,13 +58,24 @@ describe("the decisions block at the write boundary", () => {
       credentialRef: "vault:1",
       questions: QUESTIONS,
       rules: RULES,
-      apply: "shadow",
     },
   };
 
   test("a valid block is accepted", () => {
     expect(refusal(valid)).toBeNull();
   });
+
+  // Every rule that fires runs, so `apply` is not a field: it is refused by name rather than kept and
+  // ignored, whichever value it carries.
+  test.each(["shadow", "enforce"])(
+    "a block that still carries apply (%s) is refused, naming the field",
+    (apply) => {
+      const r = refusal({ ...valid, decisions: { ...valid.decisions, apply } });
+      expect(r?.statusCode).toBe(400);
+      expect(r?.field).toBe("monitoring.decisions.apply");
+      expect(r?.message).toContain("Unknown field");
+    },
+  );
 
   test.each([
     [
@@ -299,11 +310,8 @@ describe("the decisions block at the write boundary", () => {
       ok: false,
       problem: expect.stringContaining("monitoring.decisions.provider"),
     });
-    // Defaults the block may omit: the provider's model, and shadow, never enforce.
-    const read = readDecisionsConfig({
-      decisions: { ...valid.decisions, apply: undefined },
-    });
-    expect(read.ok && read.config.apply).toBe("shadow");
+    // A default the block may omit: the provider's model.
+    const read = readDecisionsConfig({ decisions: valid.decisions });
     expect(read.ok && read.config.model).toBe("jev-latest");
   });
 
@@ -442,7 +450,6 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
       credentialRef: keyName,
       questions: QUESTIONS,
       rules: RULES,
-      apply: "shadow",
     },
   };
 
@@ -468,7 +475,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
     expect(dec.credentialRef).toBe(`vault:${keyId}`);
     expect(dec.questions).toEqual(QUESTIONS);
     expect(dec.rules).toEqual(RULES);
-    expect(dec.apply).toBe("shadow");
+    expect("apply" in dec).toBe(false);
     expect(JSON.stringify(r)).not.toContain("ts-secret-value");
   });
 
@@ -496,7 +503,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
     const args = {
       agent_id: String(agentId),
       dry_run: false,
-      monitoring: { decisions: { apply: "enforce" } },
+      monitoring: { decisions: { model: "gpt-6-sol" } },
     };
     // What the SDK asks of the arguments before the tool runs.
     expect(
@@ -513,7 +520,7 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
     });
     expect(r.ok).toBe(true);
     const dec = (await stored())?.decisions as Record<string, unknown>;
-    expect(dec.apply).toBe("enforce");
+    expect(dec.model).toBe("gpt-6-sol");
     expect(dec.questions).toEqual(QUESTIONS);
     expect(dec.credentialRef).toBe(`vault:${keyId}`);
   });
@@ -528,12 +535,28 @@ describe.skipIf(!dbUp)("the decisions block through MCP", () => {
       principal(),
       {
         agent_id: String(bare),
-        monitoring: { decisions: { apply: "enforce" } },
+        monitoring: { decisions: { model: "gpt-6-sol" } },
       } as never,
       { base: appDb },
     );
     expect(r.ok).toBe(false);
     expect(JSON.stringify(r)).toContain("monitoring.decisions");
+  });
+
+  test("a patch that carries the removed apply is refused, naming the field", async () => {
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        monitoring: { decisions: { apply: "shadow" } },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain("monitoring.decisions.apply");
+    const dec = (await stored())?.decisions as Record<string, unknown>;
+    expect(dec.apply).toBeUndefined();
   });
 
   test("a later MCP write to another monitoring field keeps the engine and the block", async () => {

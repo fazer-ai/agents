@@ -11,11 +11,10 @@ export interface DecisionLine {
 export interface RuleActivity {
   // Decisions in which every condition of the rule held.
   fired: number;
-  // ...and of those: the tool ran, was only logged (shadow), could not run (not granted, over the
-  // tool budget, failed), or was the same call an earlier rule had already fired (`merged`: two
-  // rules firing the same tool with the same arguments run it once, under the first one's index).
+  // ...and of those: the tool ran, could not run (not granted, over the tool budget, failed), or was
+  // the same call an earlier rule had already fired (`merged`: two rules firing the same tool with
+  // the same arguments run it once, under the first one's index).
   ran: number;
-  shadow: number;
   blocked: number;
   merged: number;
 }
@@ -37,7 +36,6 @@ export interface DecisionsActivity {
 const NONE: RuleActivity = {
   fired: 0,
   ran: 0,
-  shadow: 0,
   blocked: 0,
   merged: 0,
 };
@@ -103,8 +101,9 @@ export function summarizeDecisions(
       const cur = rules.get(rule) ?? { ...NONE };
       cur.fired += 1;
       if (a.outcome === "ran") cur.ran += 1;
-      else if (a.outcome === "shadow") cur.shadow += 1;
-      else cur.blocked += 1;
+      // `shadow` is an outcome only old lines carry, an action recorded and not run: it counts as
+      // fired, and neither as run nor as unable to run.
+      else if (a.outcome !== "shadow") cur.blocked += 1;
       rules.set(rule, cur);
     }
     const accounted = new Set<number>();

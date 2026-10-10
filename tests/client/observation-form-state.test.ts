@@ -42,7 +42,9 @@ describe("agent editor observation round-trip", () => {
   test("a stored decisions block is written back with every reader key", () => {
     const written = Object.keys(
       observationToStored(
-        observationToForm({ monitoring: { decisions: { apply: "shadow" } } }),
+        observationToForm({
+          monitoring: { decisions: { provider: "openai" } },
+        }),
       ),
     ).sort();
     expect(written).toEqual(monitoringReaderKeys());

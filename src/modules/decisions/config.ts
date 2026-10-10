@@ -25,9 +25,6 @@ export const DECISION_ACTION_TOOLS = [
 ] as const;
 export type DecisionActionTool = (typeof DECISION_ACTION_TOOLS)[number];
 
-export const DECISION_APPLY = ["shadow", "enforce"] as const;
-export type DecisionApply = (typeof DECISION_APPLY)[number];
-
 export const DEFAULT_DECISION_MODEL: Record<DecisionProvider, string> = {
   openai: "gpt-6-luna",
   typesafe: "jev-latest",
@@ -83,7 +80,6 @@ export interface DecisionsConfig {
   credentialRef: string;
   questions: DecisionQuestion[];
   rules: DecisionRule[];
-  apply: DecisionApply;
 }
 
 // THE WRITE BOUNDARY. Loose objects so a key added later round-trips; cross-field checks in one
@@ -125,16 +121,33 @@ const rule = z.looseObject({
     .optional(),
 });
 
+// Keys the block no longer has, refused by name rather than kept and ignored like any other unknown
+// key, so a client written against the old shape learns why. `apply` (rehearsal or live) went with
+// the simulation mode: every rule that fires runs. An import drops it instead (withoutRemovedDecisionFields).
+const REMOVED_FIELDS = ["apply"] as const;
+
 // THE MCP PATCH: the same fields without the cross-field refinement, since a patch is merged into
 // the stored block before it is whole. The merged block is then asked `decisionsSchema`.
-export const decisionsPatchSchema = z.looseObject({
-  provider: z.enum(DECISION_PROVIDERS).optional(),
-  model: z.string().min(1).optional(),
-  credentialRef: z.string().min(1).optional(),
-  questions: z.array(question).min(1).max(QUESTIONS_MAX).optional(),
-  rules: z.array(rule).max(RULES_MAX).optional(),
-  apply: z.enum(DECISION_APPLY).optional(),
-});
+export const decisionsPatchSchema = z
+  .looseObject({
+    provider: z.enum(DECISION_PROVIDERS).optional(),
+    model: z.string().min(1).optional(),
+    credentialRef: z.string().min(1).optional(),
+    questions: z.array(question).min(1).max(QUESTIONS_MAX).optional(),
+    rules: z.array(rule).max(RULES_MAX).optional(),
+  })
+  .superRefine((v, ctx) => {
+    for (const key of REMOVED_FIELDS) {
+      if (key in v) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `Unknown field "${key}": the simulation mode was removed, and every rule that fires runs. Remove the field.`,
+          params: { problem: "unknown_field" },
+        });
+      }
+    }
+  });
 
 export const decisionsSchema = decisionsPatchSchema.superRefine((v, ctx) => {
   for (const p of crossFieldProblems(v as unknown as RawDecisions)) {
@@ -425,7 +438,6 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
       credentialRef: v.credentialRef ?? "",
       questions,
       rules,
-      apply: v.apply === "enforce" ? "enforce" : "shadow",
     },
   };
 }
@@ -435,7 +447,7 @@ export function readDecisionsConfig(monitoring: unknown): DecisionsReading {
 // indexes: a tick that was in flight while the rules were reordered finishes after the save and
 // would otherwise be read against the new order. Whoever counts lines (the console's "what it has
 // been doing") compares this mark with the block it is showing and counts only the lines that ran
-// it. Over the questions and rules alone, so flipping `apply` or the credential keeps the history.
+// it. Over the questions and rules alone, so changing the classifier or its key keeps the history.
 // Keys are sorted at every level: the stored block comes back from `jsonb` in its own key order.
 export function decisionsFingerprint(
   config: Pick<DecisionsConfig, "questions" | "rules">,
@@ -539,7 +551,6 @@ export function projectDecisionsBlock(
     "credentialRef",
     "questions",
     "rules",
-    "apply",
   ]);
   if (top === null) return null;
   if (top.questions !== undefined) {
@@ -580,4 +591,27 @@ export function projectDecisionsBlock(
     });
   }
   return structuredClone(top);
+}
+
+// A settings bag with the removed decisions keys taken out of `monitoring.decisions`, for a bundle
+// exported under an older release: the write boundary refuses them by name, but a restore that fails
+// over a key that governs nothing gives the operator nothing to act on. Returns the same bag when
+// there is nothing to drop.
+export function withoutRemovedDecisionFields(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return settings;
+  }
+  const mon = (settings as Record<string, unknown>).monitoring;
+  if (!mon || typeof mon !== "object" || Array.isArray(mon)) return settings;
+  const block = (mon as Record<string, unknown>).decisions;
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    return settings;
+  }
+  if (!REMOVED_FIELDS.some((k) => k in block)) return settings;
+  const kept = { ...(block as Record<string, unknown>) };
+  for (const k of REMOVED_FIELDS) delete kept[k];
+  return {
+    ...(settings as Record<string, unknown>),
+    monitoring: { ...(mon as Record<string, unknown>), decisions: kept },
+  };
 }

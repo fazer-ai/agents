@@ -271,13 +271,6 @@ function ruleActivityText(
   if (a.ran > 0) {
     parts.push(t("editor.decisionsRuleRan", "ran {{n}}", { n: a.ran }));
   }
-  if (a.shadow > 0) {
-    parts.push(
-      t("editor.decisionsRuleShadow", "would have run {{n}} (rehearsal)", {
-        n: a.shadow,
-      }),
-    );
-  }
   if (a.merged > 0) {
     parts.push(
       t("editor.decisionsRuleMerged", "same action as an earlier rule {{n}}", {
@@ -443,10 +436,7 @@ export function DecisionsFields({
     );
   }, [forcedKey]);
 
-  const patch = (p: Partial<DecisionsForm>) =>
-    setDecisions((prev) => ({ ...prev, ...p }));
   const _provider = (decisions.provider || "openai") as DecisionProvider;
-  const apply = decisions.apply || "shadow";
   const questionNames = decisions.questions.map((q) => q.name).filter(Boolean);
 
   // The message at a field: the form's own problem first, then what the server last said about it.
@@ -1156,73 +1146,18 @@ export function DecisionsFields({
 
   const body = (
     <>
-      <div
-        id="decisions-apply"
-        className="flex scroll-mt-4 flex-col gap-3 rounded-lg border border-border p-3"
-        data-testid="decisions-apply"
-      >
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="font-medium text-sm text-text-primary">
-            {t("editor.decisionsApplyTitle", "What it does with the answers")}
-          </span>
-          <div
-            role="radiogroup"
-            aria-label={t(
-              "editor.decisionsApplyTitle",
-              "What it does with the answers",
-            )}
-            className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
-          >
-            {(["shadow", "enforce"] as const).map((value) => (
-              // biome-ignore lint/a11y/useSemanticElements: a segmented choice drawn like the Mode selector, not a bare radio input.
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={apply === value}
-                onClick={() => patch({ apply: value })}
-                className={
-                  apply === value
-                    ? "rounded-md bg-accent-solid px-4 py-1.5 font-medium text-accent-foreground text-sm"
-                    : "rounded-md px-4 py-1.5 font-medium text-sm text-text-secondary hover:text-text-primary"
-                }
-              >
-                {value === "shadow"
-                  ? t("editor.decisionsApplyRehearsal", "Rehearsal")
-                  : t("editor.decisionsApplyLive", "Live")}
-              </button>
-            ))}
-          </div>
-        </div>
-        <p className="text-text-secondary text-xs">
-          {apply === "enforce"
-            ? t(
-                "editor.decisionsApplyLiveHint",
-                "Runs each rule that fires: labels, notes, attributes and handoffs are written to the conversation.",
-              )
-            : t(
-                "editor.decisionsApplyRehearsalHint",
-                "Decides and records what each rule would have done, and writes nothing to the conversation. The classifier call is still paid for. Switch to Live once the counts below show what you expect.",
-              )}
+      {activity && (
+        <p
+          className="text-text-muted text-xs"
+          data-testid="decisions-activity-total"
+        >
+          {t(
+            "editor.decisionsActivityTotal",
+            "{{count}} of this agent's latest decisions ran these questions and rules as saved. The numbers beside each question and rule count those.",
+            { count: activity.decisions },
+          )}
         </p>
-        {field("apply") && (
-          <span role="alert" className="text-error text-xs">
-            {at("apply")}
-          </span>
-        )}
-        {activity && (
-          <p
-            className="text-text-muted text-xs"
-            data-testid="decisions-activity-total"
-          >
-            {t(
-              "editor.decisionsActivityTotal",
-              "{{count}} of this agent's latest decisions ran these questions and rules as saved. The numbers beside each question and rule count those.",
-              { count: activity.decisions },
-            )}
-          </p>
-        )}
-      </div>
+      )}
 
       <div id="decisions-questions" className="flex scroll-mt-4 flex-col gap-3">
         <div>

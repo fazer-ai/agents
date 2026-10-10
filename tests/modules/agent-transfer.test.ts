@@ -7,6 +7,7 @@ import { normalizeToolName } from "@/graph/tools/toolName";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   assertSettingsProtectedLabels,
+  assertSettingsRemovedFields,
   assertSettingsRetiredLabelKeys,
 } from "@/modules/agents/service";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
@@ -1883,6 +1884,37 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ).toBe(20);
     // And the agent it produced saves again, which is the whole point of dropping instead of storing.
     expect(() => assertSettingsRetiredLabelKeys(stored)).not.toThrow();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A bundle exported before the decisions engine's simulation mode was removed carries
+  // `monitoring.decisions.apply`, which the write boundary now refuses by name. The import drops it,
+  // like the retired taxonomy above, and the agent it produces saves again.
+  test("a bundle carrying the removed decisions apply imports, without it", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Exportada com ensaio";
+    const decisions = {
+      provider: "openai",
+      questions: [{ name: "q", type: "yes_no", instructions: "q" }],
+      rules: [],
+    };
+    (bundle.agent.settings as Record<string, unknown>).monitoring = {
+      engine: "decisions",
+      decisions: { ...decisions, apply: "shadow" },
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    // Dropped quietly: a field that no longer exists is not a value the operator has to re-enter.
+    expect(JSON.stringify(warnings)).not.toContain("apply");
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = row.settings as Record<string, Record<string, unknown>>;
+    expect(stored.monitoring?.decisions).toEqual(decisions);
+    expect(() => assertSettingsRemovedFields(stored)).not.toThrow();
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 

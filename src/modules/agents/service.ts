@@ -684,6 +684,21 @@ export class InvalidSettingsValueError extends AppError {
   }
 }
 
+// A key a block's schema refuses by name because it no longer exists (`params.problem:
+// "unknown_field"`), such as `monitoring.decisions.apply` after the simulation mode was removed.
+// Its own error, since "expects a valid value" would send the caller looking for one.
+export class UnknownSettingsFieldError extends AppError {
+  constructor(path: string, detail: string) {
+    super(
+      `settings.${path}: ${detail}`,
+      400,
+      "errors.unknownSettingsField",
+      { field: path },
+      path,
+    );
+  }
+}
+
 function plainObject(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -730,6 +745,8 @@ interface ClosedValueIssue {
   // Where the write boundary asks "did this write change it?" when that is not `path` itself: a
   // refinement over a whole object (`params.wholeBlock`) is changed by any edit to that object.
   changedAt?: PropertyKey[];
+  // A key that no longer exists, refused by name with the schema's own sentence.
+  unknownField?: string;
 }
 
 // Every closed value in `bag` the schema MCP asks would refuse, block by block. Shared by the write
@@ -774,6 +791,9 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
         ...(issue.code === "too_small" && typeof next === "number"
           ? { got: String(next) }
           : {}),
+        ...(issue.code === "custom" && issue.params?.problem === "unknown_field"
+          ? { unknownField: issue.message }
+          : {}),
         changedAt:
           typeof whole === "number"
             ? // `filter`, not a cut: a path is not text (tests/lib/astral-cap-sweep.test.ts).
@@ -783,6 +803,22 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
     }
   }
   return out;
+}
+
+// A removed key in a PATCH, asked before the merge: the merge reads each block through its reader,
+// which no longer knows the key, so after it the key is gone and the write would answer ok for a
+// field that does nothing (the MCP partial patch).
+export function assertSettingsRemovedFields(patch: unknown): void {
+  const bag = plainObject(patch);
+  if (!bag) return;
+  for (const { block, path, unknownField } of closedValueIssues(bag)) {
+    if (unknownField) {
+      throw new UnknownSettingsFieldError(
+        [block, ...path.map(String)].join("."),
+        unknownField,
+      );
+    }
+  }
 }
 
 export function assertSettingsClosedValues(
@@ -799,6 +835,7 @@ export function assertSettingsClosedValues(
     expected,
     got,
     changedAt,
+    unknownField,
   } of closedValueIssues(bag)) {
     if (
       changedAt &&
@@ -816,6 +853,12 @@ export function assertSettingsClosedValues(
       isDeepStrictEqual(next, valueAt(storedBag?.[block], path))
     )
       continue;
+    if (unknownField) {
+      throw new UnknownSettingsFieldError(
+        [block, ...path.map(String)].join("."),
+        unknownField,
+      );
+    }
     throw new InvalidSettingsValueError(
       [block, ...path.map(String)].join("."),
       expected,

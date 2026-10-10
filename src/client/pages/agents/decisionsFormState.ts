@@ -78,7 +78,6 @@ export interface DecisionsForm {
   provider: string;
   model: string;
   credentialRef: string;
-  apply: string;
   questions: DecisionQuestionForm[];
   rules: DecisionRuleForm[];
 }
@@ -133,16 +132,14 @@ export function emptyDecisionsForm(): DecisionsForm {
     provider: "",
     model: "",
     credentialRef: "",
-    apply: "",
     questions: [],
     rules: [],
   };
 }
 
-// Where an agent with no block starts: OpenAI Decisions in shadow, so nothing is written before
-// the operator has read what it would do.
+// Where an agent with no block starts: OpenAI Decisions.
 export function startingDecisionsForm(): DecisionsForm {
-  return { ...emptyDecisionsForm(), provider: "openai", apply: "shadow" };
+  return { ...emptyDecisionsForm(), provider: "openai" };
 }
 
 export function decisionsToForm(raw: unknown): DecisionsForm | null {
@@ -152,7 +149,6 @@ export function decisionsToForm(raw: unknown): DecisionsForm | null {
     provider: text(b.provider),
     model: text(b.model),
     credentialRef: text(b.credentialRef),
-    apply: text(b.apply),
     questions: list(b.questions).map((q, i) => {
       const o = bag(q) ?? {};
       return {
@@ -279,7 +275,6 @@ export function decisionsToStored(
       };
     });
   }
-  put(out, "apply", form.apply);
   return out;
 }
 

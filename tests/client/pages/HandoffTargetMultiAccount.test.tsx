@@ -199,6 +199,7 @@ function renderContactAuth(
         maxHistoryTokens: "",
         retrySilence: true,
         maxTurnsPerHour: "60",
+        maxProactivePerDay: "10",
       },
       setLimits: noop,
       memory: {

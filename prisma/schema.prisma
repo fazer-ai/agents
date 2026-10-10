@@ -962,6 +962,9 @@ model Conversation {
   // The mirror's `chatwootOwnershipChangedAt` as the trip read it, before its own transfer. A
   // hand-back is the mark moving past it: source versions only, never our clock against Chatwoot's.
   turnLimitTripMark            Float?    @map("turn_limit_trip_mark")
+  // The last `error` line of the proactive limit (src/modules/proactive-limit): a refusal within a
+  // day of it is logged below `error`, so the alert channels hear about a loop once.
+  proactiveLimitAlertedAt      DateTime? @map("proactive_limit_alerted_at")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.
@@ -2191,6 +2194,9 @@ model AgentTurnDelivery {
   tenantId       BigInt   @map("tenant_id")
   conversationId BigInt   @map("conversation_id")
   proactive      Boolean  @default(false)
+  // The proactive limit's reservation, taken before the nudge runs and cleared when its send reaches
+  // the customer: counted by the proactive limit, never by the turn limit.
+  pending        Boolean  @default(false)
   deliveredAt    DateTime @default(now()) @map("delivered_at")
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)

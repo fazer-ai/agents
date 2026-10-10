@@ -51,6 +51,15 @@ import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
 import { GENERIC_TEXT_MAX_CHARS } from "@/modules/integrations/types";
 import { armCompaction } from "@/modules/memory/compact";
 import {
+  claimProactiveAlert,
+  confirmProactiveReservation,
+  emitProactiveLimitRefusal,
+  proactiveSourceLabel,
+  releaseProactiveAlert,
+  releaseProactiveReservation,
+  reserveProactiveSend,
+} from "@/modules/proactive-limit/service";
+import {
   buildTemplatePayload,
   proactiveSendMode,
 } from "@/modules/service-window/service";
@@ -447,6 +456,9 @@ interface NudgeClosing {
   generating: boolean;
   // Records a turn whose only customer-facing send was a tool's (an ack, a file), once, at the end.
   recordToolSpeech: () => Promise<void>;
+  // Gives back the proactive limit's reservation when nothing reached the customer, after the tool
+  // speech above has had its chance to claim it.
+  releaseReservation: () => Promise<void>;
 }
 
 // EVERY PROACTIVE TURN CLOSES ON ONE LINE. The outcome line carries the messages the turn created
@@ -464,11 +476,13 @@ export async function runAgentNudge(
     written: false,
     generating: false,
     recordToolSpeech: async () => {},
+    releaseReservation: async () => {},
   };
   try {
     return await runAgentNudgeBody(params, closing, turnStartedAt);
   } finally {
     await closing.recordToolSpeech();
+    await closing.releaseReservation();
     const sentMessageIds = closing.sentIds();
     if (
       closing.flow &&
@@ -668,8 +682,17 @@ async function runAgentNudgeBody(
   // stamp only costs the answer "nobody spoke".
   let deliveryCounted = false;
   let toolSpoke = false;
+  // The proactive limit's row, taken before the model runs. A send that reaches the customer keeps it
+  // as this turn's delivery instead of writing a second one; a turn that sends nothing gives it back.
+  let reservation: bigint | null = null;
   closing.recordToolSpeech = async () => {
     if (toolSpoke && !deliveryCounted) await recordProactiveSpeech();
+  };
+  closing.releaseReservation = async () => {
+    if (reservation === null || deliveryCounted) return;
+    const id = reservation;
+    reservation = null;
+    await releaseProactiveReservation({ tenantId, reservationId: id, base });
   };
   const recordProactiveSpeech = async (): Promise<void> => {
     try {
@@ -690,7 +713,14 @@ async function runAgentNudgeBody(
       // The proactive message counts toward the per-conversation turn limit like a reply does, once
       // per turn: a tool's send and the reply after it are one turn, while the stamp above moves on
       // every send.
-      if (row && !deliveryCounted) {
+      if (row && !deliveryCounted && reservation !== null) {
+        deliveryCounted = true;
+        await confirmProactiveReservation({
+          tenantId,
+          reservationId: reservation,
+          base,
+        });
+      } else if (row && !deliveryCounted) {
         deliveryCounted = true;
         await recordTurnDelivery({
           tenantId,
@@ -1371,6 +1401,99 @@ async function runAgentNudgeBody(
     // turn benefits from them the same way a reactive one does, and the check that produced them is
     // the one that just allowed this send.
     cfg = withAuthContextSection(cfg, auth.context ?? null);
+  }
+
+  const integrationNameOf = async (raw: string): Promise<string | null> => {
+    const id = parseDbId(raw);
+    if (id === null) return null;
+    return runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.integrationInstance.findUnique({
+        where: { id },
+        select: { name: true },
+      }),
+    )
+      .then((r) => r?.name ?? null)
+      .catch(() => null);
+  };
+  // THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the model. Every run
+  // is gated, the note-only ones included (a person holds it, or the window closed with no template):
+  // their reply is a note, but a tool's own send (an ack) can still reach the customer, and only a
+  // run that never starts cannot. A note-only run under the limit counts nothing unless a tool spoke.
+  // Over the limit the occasion is spent, not retried (an operator event for a person who holds the
+  // conversation became their note before this), and a window run ends as the `noted-window` it would
+  // have been. The labels still land, as on the refused contact; no resolve, since nothing was said.
+  const windowNoteOnly =
+    proactiveSendMode(
+      cfg.serviceWindowConfig,
+      loaded.lastInboundAt,
+      params.deps?.now?.() ?? new Date(),
+      { channelType: loaded.channelType, provider: loaded.provider },
+    ) === "note";
+  if (cfg.maxProactivePerDay > 0 && cfg.conversationDbId !== null) {
+    const verdict = await reserveProactiveSend({
+      tenantId,
+      conversationDbId: cfg.conversationDbId,
+      limit: cfg.maxProactivePerDay,
+      base,
+    });
+    if (!verdict.over) {
+      reservation = verdict.reservationId;
+    } else {
+      const integrationName = params.nudge.integrationInstanceId
+        ? await integrationNameOf(params.nudge.integrationInstanceId)
+        : null;
+      const claimedAt = new Date();
+      const alert = await claimProactiveAlert({
+        tenantId,
+        conversationDbId: cfg.conversationDbId,
+        base,
+        now: claimedAt,
+      });
+      // NOTE: Asked after every read of the refusal, the count, the name and the claim: a retired
+      // occasion writes no line and gives back the day's alert, which the next real refusal needs.
+      if (!(await stillWanted())) {
+        if (alert)
+          await releaseProactiveAlert({
+            tenantId,
+            conversationDbId: cfg.conversationDbId,
+            claimedAt,
+            base,
+          });
+        return standDown();
+      }
+      emitProactiveLimitRefusal(flow, {
+        count: verdict.count,
+        limit: verdict.limit,
+        alert,
+        source: proactiveSourceLabel(params.nudge.source, integrationName),
+        detail: {
+          trigger: params.nudge.source,
+          ...(params.nudge.step != null ? { step: params.nudge.step } : {}),
+          ...(params.nudge.integrationInstanceId
+            ? { integrationInstanceId: params.nudge.integrationInstanceId }
+            : {}),
+        },
+      });
+      logger.info(
+        "agentNudge: proactive limit reached (conv=%s count=%d limit=%d source=%s), nothing sent",
+        String(conversationId),
+        verdict.count,
+        verdict.limit,
+        params.nudge.source,
+      );
+      // Ownership asked again, as on the refused contact: the reads above were waits, and a
+      // person who took the conversation meanwhile does not get the step's labels.
+      const stillOurs = await botStillOwnsIt().catch(() => "unavailable");
+      const applied = await applyPostActions({
+        canMessage: stillOurs === "ours",
+        allowResolve: false,
+      });
+      if (applied === "stale") return standDown();
+      // NOTE: A person who took the conversation during the reads above is still owed the operator's
+      // event, as on the refused contact: the note is for them, and it is no proactive message.
+      if (operatorEvent && stillOurs === "not-ours") return noteOperatorEvent();
+      return windowNoteOnly ? "noted-window" : "silent";
+    }
   }
 
   // A follow-up must ALWAYS have a way to say nothing, so `skip_reply` is not operator-revocable

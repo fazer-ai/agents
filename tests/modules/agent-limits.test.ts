@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_MAX_PROACTIVE_PER_DAY,
   DEFAULT_MAX_TOOL_CALLS,
   DEFAULT_MAX_TURNS_PER_HOUR,
+  MAX_PROACTIVE_PER_DAY,
   MAX_TURNS_PER_HOUR,
   readLimitsConfig,
 } from "@/modules/agents/limits";
@@ -50,6 +52,7 @@ describe("readLimitsConfig — maxHistoryTokens", () => {
       maxHistoryTokens: 12_000,
       retrySilence: true,
       maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
+      maxProactivePerDay: DEFAULT_MAX_PROACTIVE_PER_DAY,
     });
     // A bag that only carries the new knob must not silently reset the old one, and vice versa.
     expect(read({ maxToolCalls: 99 })).toEqual({
@@ -57,6 +60,7 @@ describe("readLimitsConfig — maxHistoryTokens", () => {
       maxHistoryTokens: null,
       retrySilence: true,
       maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
+      maxProactivePerDay: DEFAULT_MAX_PROACTIVE_PER_DAY,
     });
   });
 });
@@ -102,6 +106,34 @@ describe("readLimitsConfig — maxTurnsPerHour", () => {
     expect(read({ maxTurnsPerHour: 0.2 }).maxTurnsPerHour).toBe(1);
     expect(read({ maxTurnsPerHour: 5000 }).maxTurnsPerHour).toBe(
       MAX_TURNS_PER_HOUR,
+    );
+  });
+});
+
+describe("readLimitsConfig — maxProactivePerDay", () => {
+  const read = (limits: unknown) => readLimitsConfig({ limits });
+
+  test("absent, null or non-numeric reads as the default of 10", () => {
+    expect(DEFAULT_MAX_PROACTIVE_PER_DAY).toBe(10);
+    expect(readLimitsConfig(undefined).maxProactivePerDay).toBe(10);
+    expect(read({ maxTurnsPerHour: 4 }).maxProactivePerDay).toBe(10);
+    expect(read({ maxProactivePerDay: null }).maxProactivePerDay).toBe(10);
+    expect(read({ maxProactivePerDay: "dez" }).maxProactivePerDay).toBe(10);
+  });
+
+  test("0 or below turns it off, without touching the turn limit", () => {
+    expect(read({ maxProactivePerDay: 0 })).toMatchObject({
+      maxProactivePerDay: 0,
+      maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
+    });
+    expect(read({ maxProactivePerDay: -1 }).maxProactivePerDay).toBe(0);
+  });
+
+  test("a positive value is rounded and clamped to 1..1000", () => {
+    expect(read({ maxProactivePerDay: 4 }).maxProactivePerDay).toBe(4);
+    expect(read({ maxProactivePerDay: 0.3 }).maxProactivePerDay).toBe(1);
+    expect(read({ maxProactivePerDay: 9999 }).maxProactivePerDay).toBe(
+      MAX_PROACTIVE_PER_DAY,
     );
   });
 });

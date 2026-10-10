@@ -173,6 +173,7 @@ describe("behavior-settings — observability", () => {
       maxHistoryTokens: null,
       retrySilence: true,
       maxTurnsPerHour: 60,
+      maxProactivePerDay: 10,
     });
   });
 });

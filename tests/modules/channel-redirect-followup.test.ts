@@ -770,7 +770,8 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       query: {
         conversation: {
           async findFirst({ args, query }) {
-            if (!cleared) {
+            // NOTE: After the chat goodbye, so the reset lands on the sibling lookup.
+            if (!cleared && s.sent.length > 0) {
               cleared = true;
               await restoreAnchor();
             }
@@ -797,6 +798,82 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       // Both channels, not just the one that went out before the command landed.
       expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV, ENTRY_CONV]);
       expect(s.resolved).toContain(ENTRY_CONV);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  // The limit's count is a read between the closing's fences and its first goodbye, so a reset landing
+  // there is caught by asking again after it, before anything has left.
+  test("a scheduled closing reset during the limit's count sends nothing", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let cleared = false;
+    const resetOnCount = suDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            if (!cleared) {
+              cleared = true;
+              await restoreAnchor();
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: true,
+        base: resetOnCount,
+        deps: { makeClient: s.makeClient },
+      });
+      expect(cleared).toBe(true);
+      expect(outcome).toBe("already-closed");
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).toEqual([]);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  test("a resolve-path closing reset during the limit's count sends nothing", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let cleared = false;
+    const resetOnCount = suDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            if (!cleared) {
+              cleared = true;
+              await restoreAnchor();
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: false,
+        base: resetOnCount,
+        deps: { makeClient: s.makeClient },
+      });
+      expect(cleared).toBe(true);
+      expect(outcome).toBe("already-closed");
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).toEqual([]);
     } finally {
       await restoreAnchor();
     }
@@ -1125,6 +1202,152 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
 
       expect(outcome).toBe("delivered");
       expect(s.sent.length).toBeGreaterThan(0);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  // The ladder's fixed sends count toward the agent's proactive limit like a nudge does, against the
+  // conversation they go to: past it the link is not sent and the goodbye stays a private note.
+  const withProactiveLimitReached = async (
+    run: () => Promise<void>,
+    chatwootConversationId = ENTRY_CONV,
+  ) => {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    const entry = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          limits: { maxProactivePerDay: 1 },
+        },
+      },
+    });
+    await suDb.agentTurnDelivery.create({
+      data: { tenantId, conversationId: entry.id, proactive: true },
+    });
+    try {
+      await run();
+    } finally {
+      await suDb.agentTurnDelivery.deleteMany({
+        where: { conversationId: entry.id },
+      });
+      await suDb.conversation.update({
+        where: { id: entry.id },
+        data: { proactiveLimitAlertedAt: null },
+      });
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings ?? {} },
+      });
+    }
+  };
+
+  test("past the proactive limit the WhatsApp link is not sent", async () => {
+    await withProactiveLimitReached(async () => {
+      const job = await claimed("whatsapp");
+      wire.length = 0;
+      globalThis.fetch = httpDouble;
+      try {
+        await redirectFollowUpHandler(job, appDb, deps());
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      expect(wire.some((u) => u.includes("/redirect_tokens"))).toBe(true);
+      expect(wire.some((u) => u.includes("/messages"))).toBe(false);
+    });
+  });
+
+  test("past the proactive limit the goodbye is a private note, and the conversation still closes", async () => {
+    await restoreAnchor();
+    const sent: Array<[number, string, boolean]> = [];
+    const resolved: number[] = [];
+    const client = {
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "pending",
+        meta: {},
+      }),
+      sendMessage: async (
+        c: number,
+        t: string,
+        opts?: { private?: boolean },
+      ) => {
+        sent.push([c, t, opts?.private === true]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleStatus: async (c: number) => {
+        resolved.push(c);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    try {
+      await withProactiveLimitReached(async () => {
+        const outcome = await deliverRedirectClosing({
+          tenantId,
+          instanceId,
+          widgetConversationId: WIDGET_CONV,
+          entryInboxId: 110,
+          closingMessage: "Vamos encerrar por aqui.",
+          closeChat: false,
+          base: suDb,
+          deps: { makeClient: async () => client },
+        });
+        expect(outcome).toBe("delivered");
+      });
+      expect(sent).toEqual([[ENTRY_CONV, "Vamos encerrar por aqui.", true]]);
+      expect(resolved).toContain(ENTRY_CONV);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  test("past the proactive limit on the chat, its goodbye is a private note and the WhatsApp goodbye still goes", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    const sent: Array<[number, boolean]> = [];
+    const noting = {
+      makeClient: async () => {
+        const inner = await s.makeClient();
+        return {
+          ...inner,
+          sendMessage: async (
+            c: number,
+            t: string,
+            opts?: { private?: boolean },
+          ) => {
+            sent.push([c, opts?.private === true]);
+            return inner.sendMessage(c, t);
+          },
+        } as unknown as Awaited<ReturnType<typeof s.makeClient>>;
+      },
+    };
+    try {
+      await withProactiveLimitReached(async () => {
+        await deliverRedirectClosing({
+          tenantId,
+          instanceId,
+          widgetConversationId: WIDGET_CONV,
+          entryInboxId: 110,
+          closingMessage: "Vamos encerrar por aqui.",
+          closeChat: true,
+          base: appDb,
+          deps: { makeClient: noting.makeClient },
+        });
+      }, WIDGET_CONV);
+      expect(sent).toEqual([
+        [WIDGET_CONV, true],
+        [ENTRY_CONV, false],
+      ]);
+      expect(s.resolved).toEqual([WIDGET_CONV, ENTRY_CONV]);
     } finally {
       await restoreAnchor();
     }
@@ -1517,6 +1740,41 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
     // The mint may have happened; the message must not have.
     expect(wire.some((u) => u.includes("/messages"))).toBe(false);
+  });
+
+  // Deeper still: the proactive limit's count is a read between the send routine's fence and the
+  // send, so the routine asks once more after it.
+  test("a retire during the proactive limit's count stops the WhatsApp send", async () => {
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    let retired = false;
+    const retireOnCount = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            const res = await query(args);
+            if (!retired) {
+              retired = true;
+              await retireNow();
+            }
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    try {
+      await redirectFollowUpHandler(job, retireOnCount, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(retired).toBe(true);
+    expect(wire.some((u) => u.includes("/messages"))).toBe(false);
+    expect(s.sent).toEqual([]);
   });
 
   // And the closing, which is the one that resolves both conversations. Its fence sits with the

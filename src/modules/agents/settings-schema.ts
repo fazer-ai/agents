@@ -362,6 +362,10 @@ const limits = z.looseObject({
     .number()
     .optional()
     .describe("per conversation per hour; 0 = off"),
+  maxProactivePerDay: z
+    .number()
+    .optional()
+    .describe("per conversation per 24h; 0 = off"),
 });
 
 const availability = z.looseObject({

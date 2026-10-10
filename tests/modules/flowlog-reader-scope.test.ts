@@ -149,6 +149,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/nudge.test.ts": 7,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // NOTE: A withdrawn turn closes on no line.
+  "tests/graph/proactive-limit.test.ts": 1,
   "tests/graph/read-receipt-turn.test.ts": 1,
   // NOTE: Scoped by thread or conversation: the provisional stamp of the `skip_reply` line, the turn fact
   // absent from a turn that did not decide silence, the `tts` line of a reply sent as text, every line

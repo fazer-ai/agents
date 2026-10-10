@@ -14,7 +14,7 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
 const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const BATCH = 5000;
-const TURN_DELIVERY_RETENTION_MS = 24 * 60 * 60 * 1000;
+const TURN_DELIVERY_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -44,8 +44,8 @@ async function flowlogSweepHandler(
     await db.$executeRaw(Prisma.sql`
       DELETE FROM alert_deliveries
       WHERE status IN ('DELIVERED', 'DEAD') AND created_at < ${cutoff}`);
-    // NOTE: The turn limit only ever counts the last hour, so its rows go once a day has passed,
-    // whatever the log retention is.
+    // NOTE: The turn limit counts the last hour and the proactive limit the last day, so the rows go
+    // once two days have passed, whatever the log retention is.
     await db.$executeRaw(Prisma.sql`
       DELETE FROM agent_turn_deliveries
       WHERE delivered_at < ${new Date(Date.now() - TURN_DELIVERY_RETENTION_MS)}`);

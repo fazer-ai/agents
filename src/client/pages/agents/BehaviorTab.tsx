@@ -309,6 +309,8 @@ export interface LimitsState {
   // Empty string = no limit, stored as 0 so it is told apart from a key never set (which reads as
   // the default).
   maxTurnsPerHour: string;
+  // Same reading as maxTurnsPerHour.
+  maxProactivePerDay: string;
 }
 
 // The summarizer's block. The four model fields are an OVERRIDE of the agent's model: all blank is
@@ -3615,6 +3617,36 @@ export function BehaviorTab({
                     value={limits.maxTurnsPerHour}
                     onChange={(e) =>
                       setLimits({ ...limits, maxTurnsPerHour: e.target.value })
+                    }
+                  />
+                </FormField>
+              )}
+              {!watcher && (
+                <FormField
+                  label={t(
+                    "editor.limitsMaxProactivePerDay",
+                    "Max proactive / conversation / 24h",
+                  )}
+                  description={t(
+                    "editor.limitsMaxProactivePerDayHint",
+                    "Past this, follow-ups and integration events stop reaching that customer for the day. Empty means no limit. 1-1000.",
+                  )}
+                  help={t(
+                    "editor.limitsMaxProactivePerDayHelp",
+                    "Counts the messages the agent starts on its own in one conversation over the last 24 hours: follow-up steps, appointment reminders, integration events and templates. Replies to the customer and private notes do not count.\n\nAn integration that keeps firing events can otherwise message the same customer every few minutes, and each message is billed.\n\nPast the limit the message is not sent and the Logs say why. The conversation stays with the agent, which still answers when the customer writes.",
+                  )}
+                >
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    placeholder={t("editor.limitsNoLimit", "No limit")}
+                    value={limits.maxProactivePerDay}
+                    onChange={(e) =>
+                      setLimits({
+                        ...limits,
+                        maxProactivePerDay: e.target.value,
+                      })
                     }
                   />
                 </FormField>

@@ -19,6 +19,8 @@ export function limitsToForm(settings: unknown): LimitsState {
     // NOTE: Empty means no limit, as with the history ceiling; a key never set shows the default.
     maxTurnsPerHour:
       read.maxTurnsPerHour === 0 ? "" : String(read.maxTurnsPerHour),
+    maxProactivePerDay:
+      read.maxProactivePerDay === 0 ? "" : String(read.maxProactivePerDay),
   };
 }
 
@@ -27,6 +29,7 @@ export function limitsToStored(form: LimitsState): {
   maxHistoryTokens: number | null;
   retrySilence: boolean;
   maxTurnsPerHour: number;
+  maxProactivePerDay: number;
 } {
   return {
     maxToolCalls: Number(form.maxToolCalls) || 10,
@@ -38,5 +41,6 @@ export function limitsToStored(form: LimitsState): {
     // NOTE: An emptied field is "no limit", which has to be stored as 0: null and absent both read as
     // the default, so they would silently turn the limit back on.
     maxTurnsPerHour: Number(form.maxTurnsPerHour) || 0,
+    maxProactivePerDay: Number(form.maxProactivePerDay) || 0,
   };
 }

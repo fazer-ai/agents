@@ -108,6 +108,7 @@ export function makeConfig(
     maxHistoryTokens: null,
     retrySilence: true,
     maxTurnsPerHour: 0,
+    maxProactivePerDay: 0,
     memoryCompaction: true,
     historyDates: true,
     memoryCompactionOverride: {},

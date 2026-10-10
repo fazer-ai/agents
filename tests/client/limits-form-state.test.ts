@@ -17,6 +17,7 @@ describe("limits form ↔ stored round trip", () => {
         maxHistoryTokens: 12_000,
         retrySilence: false,
         maxTurnsPerHour: 7,
+        maxProactivePerDay: 4,
       },
     };
     expect(limitsToStored(limitsToForm(stored))).toEqual({
@@ -24,6 +25,7 @@ describe("limits form ↔ stored round trip", () => {
       maxHistoryTokens: 12_000,
       retrySilence: false,
       maxTurnsPerHour: 7,
+      maxProactivePerDay: 4,
     });
   });
 
@@ -39,6 +41,7 @@ describe("limits form ↔ stored round trip", () => {
       maxHistoryTokens: null,
       retrySilence: true,
       maxTurnsPerHour: 60,
+      maxProactivePerDay: 10,
     });
   });
 
@@ -52,5 +55,14 @@ describe("limits form ↔ stored round trip", () => {
     expect(stored.maxTurnsPerHour).toBe(0);
     expect(readLimitsConfig({ limits: stored }).maxTurnsPerHour).toBe(0);
     expect(limitsToForm({ limits: stored }).maxTurnsPerHour).toBe("");
+  });
+
+  test("an emptied proactive limit is stored as 0, which reads back as no limit", () => {
+    expect(limitsToForm({}).maxProactivePerDay).toBe("10");
+    const form = { ...limitsToForm({}), maxProactivePerDay: "" };
+    const stored = limitsToStored(form);
+    expect(stored.maxProactivePerDay).toBe(0);
+    expect(readLimitsConfig({ limits: stored }).maxProactivePerDay).toBe(0);
+    expect(limitsToForm({ limits: stored }).maxProactivePerDay).toBe("");
   });
 });

@@ -2143,6 +2143,7 @@
     "snoozedFollowUpNoSteps": "Uma cadência sem etapa não lembra ninguém. Adicione uma etapa ou remova a cadência.",
     "snoozedFollowUpRemoveCadence": "Remover cadência",
     "snoozedFollowUpRemoveDefault": "Remover a cadência padrão",
+    "snoozedFollowUpScheduleHint": "O mesmo horário do follow-up acima. Os lembretes só disparam dentro dele.",
     "snoozedFollowUpSectionHint": "Lembra o cliente em nome de uma pessoa quando a conversa que ela adiou até a próxima resposta fica sem resposta, e depois encerra a conversa.",
     "snoozedFollowUpSignature": "Assinar os lembretes com a assinatura do agente",
     "snoozedFollowUpSignatureHint": "Desligado por padrão: o lembrete fala por quem pediu, então a assinatura do agente costuma ficar errada ali.",

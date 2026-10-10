@@ -367,6 +367,78 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       },
     });
 
+  // A stored customer message can be replayed after a takeover whose own webhooks never reached the
+  // mirror while the process was down: the live conversation is reconciled before the replay.
+  test("a stored customer message is replayed against the live conversation, not the stale mirror", async () => {
+    await mirror(615);
+    const body = JSON.stringify({
+      event: "message_created",
+      id: 61_500,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: 615,
+        inbox_id: 7,
+        status: "pending",
+        meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+      },
+    });
+    const r0 = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: headers(body, "queue-replay-live"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    const id = r0.deliveryRowId as bigint;
+    const calls: string[] = [];
+    const fake = new Proxy(
+      {
+        getConversation: async () => {
+          calls.push("getConversation");
+          return {
+            id: 615,
+            status: "open",
+            inbox_id: 7,
+            last_activity_at: Math.floor(Date.now() / 1000),
+            meta: {
+              assignee_type: "User",
+              assignee: { id: 55, name: "Ana" },
+            },
+          };
+        },
+      } as Record<string, unknown>,
+      {
+        get: (t, prop) =>
+          prop === "then"
+            ? undefined
+            : prop in t
+              ? t[prop as string]
+              : async () => {
+                  calls.push(String(prop));
+                  return {};
+                },
+      },
+    );
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: { makeClient: async () => fake as never },
+    });
+    expect(r.admitted).toBe(1);
+    await settled(id);
+    expect(calls[0]).toBe("getConversation");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 615 },
+    });
+    // The person who took over holds it, so the gate went silent instead of running a turn.
+    expect(conv.assigneeType).toBe("User");
+    expect(conv.assigneeId).toBe(55);
+    expect(calls).not.toContain("sendMessage");
+  });
+
   // Past the sweep's window a stored row is still the drain's, and the sweep leaves it alone: the
   // recovery would rebuild it from Chatwoot only for some rows (a mirrored conversation, a stated
   // route), and the body answers all of them.

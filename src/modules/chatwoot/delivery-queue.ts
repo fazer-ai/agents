@@ -3,9 +3,12 @@ import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import type { RuntimeDeps } from "@/graph/runtime";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { normalizeChatwootEvent } from "./normalize";
+import { loadChatwootClient } from "./instance";
+import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
+import { reconcileMirrorFromLive } from "./reconcile";
 import type { NormalizedChatwootEvent } from "./types";
 import { processRecordedChatwootDelivery } from "./webhook";
 
@@ -211,6 +214,8 @@ export interface DrainStoredParams {
   now?: number;
   // Rows read per pass; tests shrink it to reach the paging past held rows.
   batch?: number;
+  // Tests: the Chatwoot client and the turn's seams.
+  deps?: RuntimeDeps;
 }
 
 // Admits the stored rows nothing here holds, and clears the body of those past the sweep's window.
@@ -311,6 +316,35 @@ export async function drainStoredChatwootDeliveries(
           );
           return "skipped";
         }
+        // A stored customer message can be replayed long after it arrived, past a takeover whose
+        // own webhooks never reached the mirror while this process was down. The live conversation is
+        // read and reconciled first, as the delivery recovery does, so the gate sees who holds it now;
+        // a read that fails throws, and the row waits for the next pass with its body.
+        const conversationId = normalized.conversationId;
+        if (admissionLaneOf(normalized) === "turn" && conversationId !== null) {
+          const client = await loadChatwootClient(
+            row.tenantId,
+            row.chatwootInstanceId,
+            {
+              base,
+              ...(params.deps?.makeClient
+                ? { makeClient: params.deps.makeClient }
+                : {}),
+            },
+          );
+          const live = parseLiveConversation(
+            await client.getConversation(conversationId),
+          );
+          if (live) {
+            await reconcileMirrorFromLive({
+              tenantId: row.tenantId,
+              instanceId: row.chatwootInstanceId,
+              conversationId,
+              live,
+              base,
+            });
+          }
+        }
         return processRecordedChatwootDelivery({
           tenantId: row.tenantId,
           instanceId: row.chatwootInstanceId,
@@ -319,6 +353,7 @@ export async function drainStoredChatwootDeliveries(
           normalized,
           receiptBindingGeneration: row.bindingGeneration,
           base,
+          deps: params.deps,
         });
       },
       admissionLaneOf(normalized),

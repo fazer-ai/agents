@@ -235,7 +235,9 @@ export function timingOf(form: ObservationState): string {
 }
 
 export function decisionsHeadOf(form: ObservationState): string {
-  const d = form.decisions;
+  // NOTE: Of the block the save would WRITE, not of the form: a draft left behind the language
+  // model that could not run is not written, so switching back leaves nothing unsaved.
+  const d = decisionsBlockToStore(form);
   return JSON.stringify({
     engine: form.engine,
     provider: d?.provider ?? null,
@@ -245,14 +247,9 @@ export function decisionsHeadOf(form: ObservationState): string {
 }
 
 export function decisionsBodyOf(form: ObservationState): string {
-  const d = form.decisions;
+  const d = decisionsBlockToStore(form);
   if (!d) return "null";
-  const {
-    provider: _p,
-    model: _m,
-    credentialRef: _c,
-    ...body
-  } = decisionsToStored(d);
+  const { provider: _p, model: _m, credentialRef: _c, ...body } = d;
   return JSON.stringify(body);
 }
 

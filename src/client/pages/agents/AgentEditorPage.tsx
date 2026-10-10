@@ -954,7 +954,10 @@ function AgentEditor() {
   const engine: MonitoringEngine = observation.engine;
   const switchEngine = (next: MonitoringEngine) =>
     setObservation((prev) => withEngine(prev, next));
+  // NOTE: Not before the agent is read: until then the mode and the engine are the form's defaults,
+  // and a link straight to Questions and rules would be sent to General before it could exist.
   useEffect(() => {
+    if (loading) return;
     const hidden = watcher
       ? !watcherTabKeys(engine).has(tab)
       : tab === "decisions";
@@ -966,7 +969,7 @@ function AgentEditor() {
         { replace: true },
       );
     }
-  }, [watcher, engine, tab, id, navigate, backToConversation]);
+  }, [loading, watcher, engine, tab, id, navigate, backToConversation]);
   const [modelFallback, setModelFallback] = useState<ModelFallbackState>(() =>
     modelFallbackToForm({}),
   );

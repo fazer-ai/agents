@@ -22,6 +22,7 @@ import {
   observationToStored,
   timingOf,
   withDecisionsOf,
+  withEngine,
 } from "@/client/pages/agents/observationFormState";
 import { decisionsIssues } from "@/modules/decisions/config";
 
@@ -99,6 +100,20 @@ describe("the Behavior save and the decision setup are written apart", () => {
     d.decisions = { ...d.decisions, apply: "enforce" };
     expect(decisionsHeadOf(a)).toBe(decisionsHeadOf(d));
     expect(decisionsBodyOf(a)).not.toBe(decisionsBodyOf(d));
+  });
+});
+
+describe("switching to questions and rules and back", () => {
+  test("leaves nothing unsaved when the draft could not run", () => {
+    const stored = observationToForm({});
+    const there = withEngine(stored, "decisions");
+    expect(decisionsHeadOf(there)).not.toBe(decisionsHeadOf(stored));
+    const back = withEngine(
+      { ...there, decisionsEdited: true } as typeof there,
+      "llm",
+    );
+    expect(decisionsHeadOf(back)).toBe(decisionsHeadOf(stored));
+    expect(decisionsBodyOf(back)).toBe(decisionsBodyOf(stored));
   });
 });
 

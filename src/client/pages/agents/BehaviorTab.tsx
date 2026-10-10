@@ -3534,7 +3534,10 @@ export function BehaviorTab({
                 />
               </FormField>
               <FormField
-                label={t("editor.limitsMaxHistoryTokens", "History ceiling")}
+                label={t(
+                  "editor.limitsMaxHistoryTokens",
+                  "History ceiling (tokens)",
+                )}
                 description={t(
                   "editor.limitsMaxHistoryTokensHint",
                   "Empty means no ceiling. Between 2,000 and 1,000,000.",
@@ -3546,11 +3549,11 @@ export function BehaviorTab({
                   watcher
                     ? t(
                         "editor.limitsMaxHistoryTokensHelpObserving",
-                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions.",
+                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions.",
                       )
                     : t(
                         "editor.limitsMaxHistoryTokensHelp",
-                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
+                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is in tokens, about 4 characters of text each, and an estimate: it runs low on tool-heavy threads and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
                       )
                 }
               >

@@ -619,6 +619,34 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect(r.labelSets).toEqual([]);
   });
 
+  test("an occasion retired during the alert claim gives the alert back and writes no line", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5190);
+    await seedDeliveries(conv, true, 60_000);
+    let wanted = true;
+    const base = appDb.$extends({
+      query: {
+        conversation: {
+          async updateMany({ args, query }) {
+            const res = await query(args);
+            if ("proactiveLimitAlertedAt" in (args.data ?? {})) wanted = false;
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const { r, run } = nudge(5190, { base, stillWanted: async () => wanted });
+    expect(await run).toBe("stale");
+    expect(wanted).toBe(false);
+    expect(r.messages).toEqual([]);
+    expect(await limitLines(conv)).toEqual([]);
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv },
+      select: { proactiveLimitAlertedAt: true },
+    });
+    expect(row.proactiveLimitAlertedAt).toBeNull();
+  });
+
   test("an occasion retired during the count takes no alert and writes no line", async () => {
     await setLimit(1);
     const conv = await seedConv(5113);

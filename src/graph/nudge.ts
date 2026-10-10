@@ -55,6 +55,7 @@ import {
   confirmProactiveReservation,
   emitProactiveLimitRefusal,
   proactiveSourceLabel,
+  releaseProactiveAlert,
   releaseProactiveReservation,
   reserveProactiveSend,
 } from "@/modules/proactive-limit/service";
@@ -1435,17 +1436,28 @@ async function runAgentNudgeBody(
     if (!verdict.over) {
       reservation = verdict.reservationId;
     } else {
-      // NOTE: Asked again, because the count was a locked transaction deep: a retired occasion must
-      // not take the day's alert, which the next real refusal needs.
-      if (!(await stillWanted())) return standDown();
+      const integrationName = params.nudge.integrationInstanceId
+        ? await integrationNameOf(params.nudge.integrationInstanceId)
+        : null;
+      const claimedAt = new Date();
       const alert = await claimProactiveAlert({
         tenantId,
         conversationDbId: cfg.conversationDbId,
         base,
+        now: claimedAt,
       });
-      const integrationName = params.nudge.integrationInstanceId
-        ? await integrationNameOf(params.nudge.integrationInstanceId)
-        : null;
+      // NOTE: Asked after every read of the refusal, the count, the name and the claim: a retired
+      // occasion writes no line and gives back the day's alert, which the next real refusal needs.
+      if (!(await stillWanted())) {
+        if (alert)
+          await releaseProactiveAlert({
+            tenantId,
+            conversationDbId: cfg.conversationDbId,
+            claimedAt,
+            base,
+          });
+        return standDown();
+      }
       emitProactiveLimitRefusal(flow, {
         count: verdict.count,
         limit: verdict.limit,

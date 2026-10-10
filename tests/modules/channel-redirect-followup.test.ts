@@ -770,7 +770,8 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       query: {
         conversation: {
           async findFirst({ args, query }) {
-            if (!cleared) {
+            // NOTE: After the chat goodbye, so the reset lands on the sibling lookup.
+            if (!cleared && s.sent.length > 0) {
               cleared = true;
               await restoreAnchor();
             }
@@ -797,6 +798,82 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       // Both channels, not just the one that went out before the command landed.
       expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV, ENTRY_CONV]);
       expect(s.resolved).toContain(ENTRY_CONV);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  // The limit's count is a read between the closing's fences and its first goodbye, so a reset landing
+  // there is caught by asking again after it, before anything has left.
+  test("a scheduled closing reset during the limit's count sends nothing", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let cleared = false;
+    const resetOnCount = suDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            if (!cleared) {
+              cleared = true;
+              await restoreAnchor();
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: true,
+        base: resetOnCount,
+        deps: { makeClient: s.makeClient },
+      });
+      expect(cleared).toBe(true);
+      expect(outcome).toBe("already-closed");
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).toEqual([]);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  test("a resolve-path closing reset during the limit's count sends nothing", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let cleared = false;
+    const resetOnCount = suDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            if (!cleared) {
+              cleared = true;
+              await restoreAnchor();
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: false,
+        base: resetOnCount,
+        deps: { makeClient: s.makeClient },
+      });
+      expect(cleared).toBe(true);
+      expect(outcome).toBe("already-closed");
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).toEqual([]);
     } finally {
       await restoreAnchor();
     }
@@ -1663,6 +1740,41 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
     // The mint may have happened; the message must not have.
     expect(wire.some((u) => u.includes("/messages"))).toBe(false);
+  });
+
+  // Deeper still: the proactive limit's count is a read between the send routine's fence and the
+  // send, so the routine asks once more after it.
+  test("a retire during the proactive limit's count stops the WhatsApp send", async () => {
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    let retired = false;
+    const retireOnCount = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            const res = await query(args);
+            if (!retired) {
+              retired = true;
+              await retireNow();
+            }
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    try {
+      await redirectFollowUpHandler(job, retireOnCount, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(retired).toBe(true);
+    expect(wire.some((u) => u.includes("/messages"))).toBe(false);
+    expect(s.sent).toEqual([]);
   });
 
   // And the closing, which is the one that resolves both conversations. Its fence sits with the

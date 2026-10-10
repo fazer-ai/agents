@@ -242,7 +242,8 @@ export function emitProactiveLimitRefusal(
 // A FIXED proactive send (no model turn): the redirect ladder's link and its goodbye. Counted and
 // refused like a nudge, against the conversation it goes to. `send` runs only under the limit; a send
 // that throws gives the reservation back and rethrows. A conversation with no mirror row, or a limit
-// of 0, sends without counting.
+// of 0, sends without counting. `stillWanted` is asked after the count, which is I/O the caller's own
+// fences did not cover: a false answer gives the reservation back and writes no line.
 export async function sendWithinProactiveLimit(p: {
   tenantId: bigint;
   instanceId: bigint;
@@ -252,8 +253,9 @@ export async function sendWithinProactiveLimit(p: {
   // proactiveSourceLabel's input, and the `trigger` the line carries.
   source: string;
   base?: PrismaClient;
+  stillWanted?: () => Promise<boolean>;
   send: () => Promise<void>;
-}): Promise<"sent" | "over"> {
+}): Promise<"sent" | "over" | "stood-down"> {
   const base = p.base ?? basePrisma;
   const row =
     p.limit > 0
@@ -277,6 +279,15 @@ export async function sendWithinProactiveLimit(p: {
     limit: p.limit,
     base,
   });
+  if (p.stillWanted && !(await p.stillWanted())) {
+    if (!verdict.over && verdict.reservationId !== null)
+      await releaseProactiveReservation({
+        tenantId: p.tenantId,
+        reservationId: verdict.reservationId,
+        base,
+      });
+    return "stood-down";
+  }
   if (verdict.over) {
     const alert = await claimProactiveAlert({
       tenantId: p.tenantId,

@@ -431,6 +431,7 @@ export async function sendWhatsAppFollowUp(
     channelType: sibling.channelType,
     provider: sibling.provider,
   });
+  let lateVerdict: LadderVerdict = "go";
   const withinLimit = (send: () => Promise<void>) =>
     sendWithinProactiveLimit({
       tenantId: p.tenantId,
@@ -440,15 +441,26 @@ export async function sendWhatsAppFollowUp(
       limit: readLimitsConfig(p.settings).maxProactivePerDay,
       source: "channel-redirect-link",
       base: p.base,
+      stillWanted: async () => {
+        lateVerdict = p.fence ? await p.fence() : "go";
+        return lateVerdict === "go";
+      },
       send,
     });
+  const outcomeOf = (
+    sent: "sent" | "over" | "stood-down",
+  ): WhatsAppFollowUpOutcome => {
+    if (sent === "sent") return "sent";
+    if (sent === "over") return "over-limit";
+    return lateVerdict === "retired" ? "retired" : "stood-down";
+  };
   if (mode === "template") {
     const payload = buildTemplatePayload(sw, null);
     if (payload) {
       const sent = await withinLimit(async () => {
         await client.sendTemplate(sibling.chatwootConversationId, payload);
       });
-      return sent === "sent" ? "sent" : "over-limit";
+      return outcomeOf(sent);
     }
     // No template configured → fall through to a private note (never a rejected free-form send).
   }
@@ -463,7 +475,7 @@ export async function sendWhatsAppFollowUp(
       private: false,
     });
   });
-  return sent === "sent" ? "sent" : "over-limit";
+  return outcomeOf(sent);
 }
 
 export async function redirectFollowUpHandler(
@@ -859,8 +871,10 @@ async function deliverClosing(
     // The agent's maxProactivePerDay: a goodbye past it is left as a private note, and the
     // conversation is still resolved.
     proactiveLimit: number;
+    // Asked after the limit's count, for the first half only: false sends and resolves nothing.
+    stillWanted?: () => Promise<boolean>;
   },
-): Promise<void> {
+): Promise<"delivered" | "stood-down"> {
   const sent =
     sendMode === "freeform"
       ? await sendWithinProactiveLimit({
@@ -871,6 +885,7 @@ async function deliverClosing(
           limit: origin.proactiveLimit,
           source: "channel-redirect-closing",
           base: origin.base,
+          stillWanted: origin.stillWanted,
           send: async () => {
             await client.sendMessage(conversationId, closingMessage, {
               private: false,
@@ -878,6 +893,7 @@ async function deliverClosing(
           },
         })
       : "over";
+  if (sent === "stood-down") return "stood-down";
   if (sent === "over")
     await client.sendMessage(conversationId, closingMessage, {
       private: true,
@@ -895,6 +911,7 @@ async function deliverClosing(
     observed: origin.observed,
     base: origin.base,
   });
+  return "delivered";
 }
 
 export interface DeliverRedirectClosingParams {
@@ -1102,6 +1119,23 @@ export async function deliverRedirectClosing(
     return beforeSends === "retired" ? "already-closed" : "stood-down";
   }
 
+  // The limit's count is I/O between the fences above and the first send, so that send asks both
+  // again once it is done. Nothing asks before the second: by then the first goodbye has left.
+  let lateVerdict: LadderVerdict | "lost" = "go";
+  const fenceFirstSend = async (): Promise<boolean> => {
+    if (!(await stillDelivering())) {
+      lateVerdict = "lost";
+      return false;
+    }
+    lateVerdict = await ask();
+    return lateVerdict === "go";
+  };
+  const standDownLate = async (): Promise<DeliverRedirectClosingOutcome> => {
+    if (lateVerdict === "lost") return "already-closed";
+    await releaseClaim();
+    return lateVerdict === "retired" ? "already-closed" : "stood-down";
+  };
+
   // Chat (website widget): post the goodbye + resolve. Skipped on the resolve-path, where the chat is
   // already being resolved by the trigger. A web widget has no 24h window → proactiveSendMode → freeform.
   if (p.closeChat) {
@@ -1109,7 +1143,7 @@ export async function deliverRedirectClosing(
       channelType: cx.widget.inbox?.channelType ?? null,
       provider: cx.widget.inbox?.provider ?? null,
     });
-    await deliverClosing(
+    const chat = await deliverClosing(
       client,
       p.widgetConversationId,
       p.closingMessage,
@@ -1121,12 +1155,14 @@ export async function deliverRedirectClosing(
         base,
         agentId: cx.agentId,
         proactiveLimit: readLimitsConfig(cx.settings).maxProactivePerDay,
+        stillWanted: fenceFirstSend,
         observed: {
           status: cx.widget.status,
           statusAt: cx.widget.chatwootStatusAt,
         },
       },
     );
+    if (chat === "stood-down") return standDownLate();
   }
 
   // WhatsApp channel: the sibling conversation (same contact, the entry inbox). Post the goodbye + resolve.
@@ -1168,7 +1204,7 @@ export async function deliverRedirectClosing(
       channelType: sibling.channelType,
       provider: sibling.provider,
     });
-    await deliverClosing(
+    const wa = await deliverClosing(
       client,
       sibling.chatwootConversationId,
       p.closingMessage,
@@ -1180,12 +1216,14 @@ export async function deliverRedirectClosing(
         base,
         agentId: cx.agentId,
         proactiveLimit: readLimitsConfig(cx.settings).maxProactivePerDay,
+        stillWanted: p.closeChat ? undefined : fenceFirstSend,
         observed: {
           status: sibling.status,
           statusAt: sibling.chatwootStatusAt,
         },
       },
     );
+    if (wa === "stood-down") return standDownLate();
   }
   return "delivered";
 }

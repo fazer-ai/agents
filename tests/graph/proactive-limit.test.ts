@@ -504,6 +504,38 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect(rows).toEqual([{ pending: false }]);
   });
 
+  test("a fixed send no longer wanted after the count sends nothing, under the limit or past it", async () => {
+    const under = await seedConv(5198);
+    const over = await seedConv(5197);
+    await seedDeliveries(over, true, 60_000);
+    let sends = 0;
+    const fixed = (chatwootConversationId: number) =>
+      sendWithinProactiveLimit({
+        tenantId,
+        instanceId,
+        chatwootConversationId,
+        agentId,
+        limit: 1,
+        source: "channel-redirect-closing",
+        base: appDb,
+        stillWanted: async () => false,
+        send: async () => {
+          sends++;
+        },
+      });
+    expect(await fixed(5198)).toBe("stood-down");
+    expect(await fixed(5197)).toBe("stood-down");
+    expect(sends).toBe(0);
+    expect(await proactiveRows(under)).toBe(0);
+    expect(await proactiveRows(over)).toBe(1);
+    expect(await limitLines(over)).toEqual([]);
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: over },
+      select: { proactiveLimitAlertedAt: true },
+    });
+    expect(row.proactiveLimitAlertedAt).toBeNull();
+  });
+
   test("outside the window with no template, under the limit the note is left and nothing counts", async () => {
     await setLimit(5);
     const conv = await seedConv(5111, null, {

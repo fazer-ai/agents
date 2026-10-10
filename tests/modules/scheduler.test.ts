@@ -362,6 +362,31 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // would leave an APPOINTMENT_REMINDER unclaimed however overdue, a kind whose purpose is to
   // arrive BEFORE something. Staged at the boundary that matters: the batch is smaller than the
   // ingestion backlog.
+  test("the fixed-rate claim still takes the row due first, not the row created first", async () => {
+    const createdFirst = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      dedupeKey: "dk-fixed-created-first",
+      runAt: new Date(Date.now() - 60_000),
+      base: appDb,
+    });
+    const dueFirst = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      dedupeKey: "dk-fixed-due-first",
+      runAt: new Date(Date.now() - 600_000),
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({
+      where: { id: createdFirst },
+      data: { createdAt: new Date(Date.now() - 3_600_000) },
+    });
+    const [first] = await claimDueJobs(1, appDb, new Date(), tenantId);
+    expect(first?.id).toBe(dueFirst);
+  });
+
   test("a batch full of ingestion still leaves room for a due reminder", async () => {
     const reminder = await enqueueJob({
       rearm: "same-work",
@@ -375,16 +400,21 @@ describe.skipIf(!dbUp)("scheduler", () => {
     });
     const ingest: bigint[] = [];
     for (let i = 0; i < 8; i++) {
-      ingest.push(
-        await enqueueJob({
-          rearm: "same-work",
-          tenantId,
-          kind: "INGEST_MESSAGE",
-          dedupeKey: `dk-share-ingest-${i}`,
-          runAt: new Date(Date.now() - 600_000 - i * 1000),
-          base: appDb,
-        }),
-      );
+      const at = new Date(Date.now() - 600_000 - i * 1000);
+      const id = await enqueueJob({
+        rearm: "same-work",
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: `dk-share-ingest-${i}`,
+        runAt: at,
+        base: appDb,
+      });
+      // A traffic row is armed for the moment it is created, and the traffic claim orders by age.
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: { createdAt: at },
+      });
+      ingest.push(id);
     }
 
     // A batch of four: smaller than the ingestion backlog, so a single claim ordered by run_at would

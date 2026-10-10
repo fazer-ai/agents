@@ -863,9 +863,12 @@ export async function revokeJobsByKeyPrefixOn(
 // a test of tenants sharing one cannot fence to a single tenant). Unset in production.
 export type TenantFence = bigint | readonly bigint[];
 
-// A claim ordered by kind before run_at (`trafficOrder`). With `spendCap`, at most that many of the
-// rows taken may be of a kind `spends` marks: the caller holds that many provider permits, so no row
-// it claims waits for one, and the due rows past the cap are left for the next claim.
+// A claim ordered by kind, then by the row's age (`trafficOrder`). Age is `created_at`, not `run_at`:
+// a row rescheduled into the future (a recovery whose conversation was busy) keeps its place once it
+// is due again, instead of going behind every row armed before its new `run_at`, which under a
+// backlog is a whole lap of the queue; `run_at` stays the "not before". With `spendCap`, at most that
+// many of the rows taken may be of a kind `spends` marks: the caller holds that many provider
+// permits, so no row it claims waits for one, and the due rows past the cap are left for the next.
 export interface ClaimOrder {
   rank: Prisma.Sql;
   spends: Prisma.Sql;
@@ -945,9 +948,9 @@ export function claimSql(
     : order?.spendCap !== undefined
       ? Prisma.sql`
     ranked AS (
-      SELECT id AS ranked_id, run_at AS ranked_run_at, ${order.rank} AS ranked_rank,
+      SELECT id AS ranked_id, created_at AS ranked_created_at, ${order.rank} AS ranked_rank,
         ${order.spends} AS ranked_spends,
-        SUM(${order.spends}) OVER (ORDER BY ${order.rank}, run_at, id) AS spent
+        SUM(${order.spends}) OVER (ORDER BY ${order.rank}, created_at, id) AS spent
       FROM scheduler_jobs
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
@@ -957,7 +960,7 @@ export function claimSql(
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
         AND (r.ranked_spends = 0 OR r.spent <= ${order.spendCap})
-      ORDER BY r.ranked_rank, r.ranked_run_at, r.ranked_id
+      ORDER BY r.ranked_rank, r.ranked_created_at, r.ranked_id
       FOR UPDATE OF s SKIP LOCKED
       LIMIT ${lim}
     )`
@@ -966,7 +969,7 @@ export function claimSql(
       SELECT id FROM scheduler_jobs
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
-      ORDER BY ${order ? Prisma.sql`${order.rank}, ` : Prisma.empty}run_at
+      ORDER BY ${order ? Prisma.sql`${order.rank}, created_at, id` : Prisma.sql`run_at`}
       FOR UPDATE SKIP LOCKED
       LIMIT ${lim}
     )`;

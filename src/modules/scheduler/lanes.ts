@@ -277,7 +277,7 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: true,
 };
 
-// The order the traffic drain claims in, lowest first and FIFO by run_at within a rank. It only
+// The order the traffic drain claims in, lowest first and oldest by created_at within a rank. It only
 // shows under a backlog, which is when it matters: a customer's lost message or a conversation held
 // by the wrong side outranks memory ingestion (every turn drains its own thread first), and both
 // outrank a delayed judgement of a blank message. Read only for JOB_TRAFFIC_PROPORTIONAL kinds;

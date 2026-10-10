@@ -134,6 +134,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "POST /v1/document-templates/": { tool: "document_template_create" },
   "POST /v1/document-templates/preview": { none: BINARY },
   "GET /v1/document-templates/:id": { tool: "document_template_get" },
+  "GET /v1/document-templates/:id/next-number": {
+    gap: "where a template's numbering would continue under another prefix",
+  },
   "GET /v1/document-templates/:id/references": {
     gap: "which agents use this document template",
   },

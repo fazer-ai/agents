@@ -30,7 +30,10 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
-import { fillMissingVisuals } from "@/modules/debounce/handler";
+import {
+  fillMissingAudio,
+  fillMissingVisuals,
+} from "@/modules/debounce/handler";
 import { renderTranscript, transcriptFromRows } from "@/modules/observe/job";
 import {
   type ClaimedJob,
@@ -602,38 +605,51 @@ export async function snoozedFollowUpHandler(
     // Every eligible row fetched goes to the renderer, which keeps the newest ones and resolves a quote
     // against all of them (a "sim" keeps its question when the question is older than the window).
     const eligible = windowRows(rows, ctx.conv.resetAtMessageId);
-    // Its images and documents nobody read yet are read first, as the re-engage reads them (`all`): a
-    // person asked for this conversation, and the eager pass never runs on one a person holds. Never
-    // under a contact authorization gate: this path does not ask it, so it opens nothing there.
-    // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here, as there.
+    // Its images, documents and voice notes nobody read yet are read first, as the re-engage reads them
+    // (`all`): a person asked for this conversation, and the eager pass never runs on one a person
+    // holds. Never under a contact authorization gate: this path does not ask it, so it opens nothing
+    // there. Best-effort: what is left unread renders as unread.
     if (!readContactAuthConfig(ctx.settings).enabled) {
+      // One budget for both, inside the job's: the reminder still has to be written and sent after it.
+      const signal = run?.signal
+        ? AbortSignal.any([
+            run.signal,
+            AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS),
+          ])
+        : AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS);
+      // A withdrawn reminder (a /reset retired the job) opens no further file.
+      const stillWanted = async () => !(await jobRetired(job, base));
+      const pending = eligible
+        .slice(-SNOOZED_WINDOW_MESSAGES)
+        .filter((r) => r.messageType === "incoming");
+      const fill = {
+        signal,
+        turnId: crypto.randomUUID(),
+        convDbId: ctx.conv.id,
+        agentId: ctx.agentId,
+        inboxDbId: ctx.conv.inboxId,
+        threadId,
+      };
       await fillMissingVisuals({
-        // A withdrawn reminder (a /reset retired the job) opens no further file.
-        stillWanted: async () => !(await jobRetired(job, base)),
+        stillWanted,
         tenantId,
         instanceId,
         conversationId,
         settings: ctx.settings,
         messages: rows,
-        pending: eligible
-          .slice(-SNOOZED_WINDOW_MESSAGES)
-          .filter((r) => r.messageType === "incoming"),
-        fill: {
-          mode: "all",
-          // Its own budget, inside the job's: the reminder still has to be written and sent after it,
-          // and what the budget cuts renders as unread.
-          signal: run?.signal
-            ? AbortSignal.any([
-                run.signal,
-                AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS),
-              ])
-            : AbortSignal.timeout(SNOOZED_MEDIA_BUDGET_MS),
-          turnId: crypto.randomUUID(),
-          convDbId: ctx.conv.id,
-          agentId: ctx.agentId,
-          inboxDbId: ctx.conv.inboxId,
-          threadId,
-        },
+        pending,
+        fill: { ...fill, mode: "all" },
+        base,
+        deps,
+      });
+      await fillMissingAudio({
+        stillWanted,
+        tenantId,
+        instanceId,
+        conversationId,
+        settings: ctx.settings,
+        pending,
+        fill,
         base,
         deps,
       });

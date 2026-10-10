@@ -58,6 +58,9 @@ export interface ChatwootMessageRow {
   // can open an attachment whose meta was never written (a conversation that arrived before the
   // agent observed the inbox never went through the eager path).
   visuals: VisualAttachment[];
+  // The first voice note's id and url, for a transcription the eager pass never made (a person held
+  // the conversation when it arrived). Optional because a hand-built row carries none.
+  audio?: { id: number; dataUrl: string } | null;
   // How many of `visuals` are images the mailbox kept in the email body. They carry no attachment
   // type, so this is what makes a message whose only content is one of them answerable.
   bodyImages?: number;
@@ -266,6 +269,19 @@ function visualsWithBody(
     : { visuals: anexos };
 }
 
+function audioFrom(
+  attachments: unknown,
+): { id: number; dataUrl: string } | null {
+  if (!Array.isArray(attachments)) return null;
+  for (const a of attachments) {
+    if (!isRecord(a) || a.file_type !== "audio") continue;
+    const id = num(a.id);
+    if (id !== null && typeof a.data_url === "string" && a.data_url)
+      return { id, dataUrl: a.data_url };
+  }
+  return null;
+}
+
 function attachmentTypesFrom(attachments: unknown): string[] {
   if (!Array.isArray(attachments)) return [];
   const out: string[] = [];
@@ -315,6 +331,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       extractedText: metaJoinedFrom(item.attachments, "extracted_text"),
       attachmentName: fileNameFrom(item.attachments),
       ...visualsWithBody(item.attachments, ca),
+      audio: audioFrom(item.attachments),
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,

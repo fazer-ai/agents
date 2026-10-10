@@ -95,6 +95,8 @@ import {
   SPEND_CEILING_BURST_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
+import { transcribeInboundAudio } from "@/modules/stt/service";
+import { readSttConfig } from "@/modules/stt/settings";
 import {
   extractMessageVisuals,
   hasUnextractedVisual,
@@ -608,6 +610,76 @@ export async function fillMissingVisuals(args: {
     }
   }
   return true;
+}
+
+// The voice notes nobody transcribed, transcribed now with the agent's STT, under the same fences as
+// `fillMissingVisuals`: the contact-authorization refusal mark, the deadline and the caller's
+// withdrawal, asked before each one. A transcription already stashed or on the attachment is reused
+// (`transcribeInboundAudio`), and the words land on the row. Best-effort: what fails stays unheard.
+export async function fillMissingAudio(args: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  settings: unknown;
+  pending: ChatwootMessageRow[];
+  fill: {
+    signal?: AbortSignal;
+    turnId: string;
+    convDbId: bigint;
+    agentId: bigint;
+    inboxDbId: bigint | null;
+    threadId: string;
+  };
+  base: PrismaClient;
+  deps?: RuntimeDeps;
+  stillWanted?: () => Promise<boolean>;
+}): Promise<void> {
+  const cfg = readSttConfig(args.settings);
+  if (!cfg.enabled) return;
+  const alvos = args.pending.filter((m) => m.audio && !m.transcribedText);
+  if (alvos.length === 0) return;
+  for (const m of alvos) {
+    if (args.fill.signal?.aborted) break;
+    if (args.stillWanted && !(await args.stillWanted())) break;
+    const recusadaAte = await refusalMarkOrClosed(args);
+    if (recusadaAte !== null && m.id <= recusadaAte) continue;
+    const audio = m.audio;
+    if (!audio) continue;
+    try {
+      const text = await transcribeInboundAudio({
+        tenantId: args.tenantId,
+        instanceId: args.instanceId,
+        conversationId: args.conversationId,
+        messageId: m.id,
+        attachmentId: audio.id,
+        dataUrl: audio.dataUrl,
+        cfg,
+        base: args.base,
+        flow: {
+          tenantId: args.tenantId,
+          turnId: args.fill.turnId,
+          source: "inbox",
+          conversationId: args.fill.convDbId,
+          agentId: args.fill.agentId,
+          inboxId: args.fill.inboxDbId,
+          threadId: args.fill.threadId,
+          base: args.base,
+        },
+        deps: {
+          makeClient: args.deps?.makeClient,
+          fetchImpl: args.deps?.sttFetch,
+        },
+      });
+      if (text) m.transcribedText = text;
+    } catch (err) {
+      logger.warn(
+        "stt fill failed (conv=%s msg=%s): %s",
+        String(args.conversationId),
+        String(m.id),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 }
 
 // The conversation's media refusal mark, or null without one. Unreadable closes everything.

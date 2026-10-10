@@ -543,6 +543,8 @@ function stub(over: {
   unsnoozeOnLabelRead?: boolean;
   // The vision provider's answer, for a window image nobody read yet.
   visionFetch?: typeof fetch;
+  // The STT provider's answer, for a window voice note nobody transcribed.
+  sttFetch?: typeof fetch;
   // The page Chatwoot answers when the handler walks back past the newest one.
   olderPage?: Msg[];
   model?: (cfg: {
@@ -658,6 +660,7 @@ function stub(over: {
       checkpointer: new MemorySaver(),
       persistUsage: async () => {},
       ...(over.visionFetch ? { visionFetch: over.visionFetch } : {}),
+      ...(over.sttFetch ? { sttFetch: over.sttFetch } : {}),
     },
   };
 }
@@ -1047,6 +1050,71 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("a voice note in the window nobody transcribed is transcribed and reaches the model", async () => {
+    await setSettings({
+      ...LADDER,
+      stt: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${llmKeyId}`,
+      },
+    });
+    try {
+      await seed(2070);
+      const model = new InputCapturingModel(REPLY);
+      let providerCalls = 0;
+      const s = stub({
+        messages: [
+          {
+            id: 429,
+            message_type: 0,
+            created_at: minutesAgo(11),
+            sender: { type: "contact", id: 1 },
+            content: "",
+            attachments: [
+              {
+                id: 60,
+                file_type: "audio",
+                data_url: "https://chat.example.com/a/60.ogg",
+                meta: { transcribed_text: "já tinha sido ouvido" },
+              },
+            ],
+          },
+          {
+            id: 430,
+            message_type: 0,
+            created_at: minutesAgo(10),
+            sender: { type: "contact", id: 1 },
+            content: "",
+            attachments: [
+              {
+                id: 61,
+                file_type: "audio",
+                data_url: "https://chat.example.com/a/61.ogg",
+              },
+            ],
+          },
+          personAsked(431, 3),
+        ],
+        model: () => model,
+        sttFetch: (async () => {
+          providerCalls++;
+          return new Response(
+            JSON.stringify({ text: "o número do pedido é 4471" }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2070), appDb, s.deps);
+      // The note already transcribed is reused, not paid for again.
+      expect(providerCalls).toBe(1);
+      expect(model.inputs.join("\n")).toContain("o número do pedido é 4471");
+      expect(model.inputs.join("\n")).toContain("já tinha sido ouvido");
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
   test("a paged window keeps the newest messages and a quote older than the window", async () => {
     // The newest page is full (twenty rows, one a private note), so the handler walks back one page.
     const contact = (
@@ -1166,14 +1234,12 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
   });
 
   test("a reminder withdrawn while its window is read opens no further file", async () => {
-    await setSettings({
-      ...LADDER,
-      vision: {
-        enabled: true,
-        provider: "openai",
-        credentialRef: `vault:${llmKeyId}`,
-      },
-    });
+    const provider = {
+      enabled: true,
+      provider: "openai",
+      credentialRef: `vault:${llmKeyId}`,
+    };
+    await setSettings({ ...LADDER, vision: provider, stt: provider });
     try {
       await seed(2066);
       const row = await suDb.schedulerJob.create({
@@ -1202,8 +1268,34 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         ],
       });
       let providerCalls = 0;
+      let sttCalls = 0;
       const s = stub({
-        messages: [image(450, 12), image(451, 11), personAsked(452, 3)],
+        messages: [
+          image(450, 12),
+          image(451, 11),
+          {
+            id: 449,
+            message_type: 0,
+            created_at: minutesAgo(13),
+            sender: { type: "contact", id: 1 },
+            content: "",
+            attachments: [
+              {
+                id: 1449,
+                file_type: "audio",
+                data_url: "https://chat.example.com/a/449.ogg",
+              },
+            ],
+          },
+          personAsked(452, 3),
+        ],
+        sttFetch: (async () => {
+          sttCalls++;
+          return new Response(JSON.stringify({ text: "ouvida" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }) as unknown as typeof fetch,
         // The /reset lands while the first image is being read.
         visionFetch: (async () => {
           providerCalls++;
@@ -1223,6 +1315,8 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         s.deps,
       );
       expect(providerCalls).toBe(1);
+      // Nor is the voice note transcribed after it.
+      expect(sttCalls).toBe(0);
       expect(s.sent).toEqual([]);
     } finally {
       await setSettings(LADDER);
@@ -1252,28 +1346,66 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }) as unknown as typeof fetch;
+    const voice = (id: number): Msg => ({
+      id,
+      message_type: 0,
+      created_at: minutesAgo(9),
+      sender: { type: "contact", id: 1 },
+      content: "",
+      attachments: [
+        {
+          id: id + 1000,
+          file_type: "audio",
+          data_url: `https://chat.example.com/a/${id}.ogg`,
+        },
+      ],
+    });
+    const sttFetch = (async () => {
+      providerCalls++;
+      return new Response(JSON.stringify({ text: "ouvida" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
     const vision = {
       enabled: true,
       provider: "openai",
       credentialRef: `vault:${llmKeyId}`,
     };
+    const stt = vision;
     try {
-      await setSettings({ ...LADDER, vision, contactAuth: { enabled: true } });
+      await setSettings({
+        ...LADDER,
+        vision,
+        stt,
+        contactAuth: { enabled: true },
+      });
       await seed(2063);
       const gated = stub({
-        messages: [image(430), personAsked(431, 3)],
+        messages: [voice(428), image(430), personAsked(431, 3)],
         visionFetch,
+        sttFetch,
       });
       await snoozedFollowUpHandler(jobFor(2063), appDb, gated.deps);
-      await setSettings({ ...LADDER, vision });
+      // STT switched off: the voice note stays unheard.
+      await setSettings({ ...LADDER, stt: { ...stt, enabled: false } });
+      await seed(2071);
+      const sttOff = stub({
+        messages: [voice(452), personAsked(453, 3)],
+        sttFetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2071), appDb, sttOff.deps);
+      expect(sttOff.sent).toHaveLength(1);
+      await setSettings({ ...LADDER, vision, stt });
       await seed(2064, {
         anchorId: 441,
         step: 2,
         at: new Date(Date.now() - 3 * 60_000),
       });
       const closing = stub({
-        messages: [image(440), personAsked(441, 10)],
+        messages: [voice(438), image(440), personAsked(441, 10)],
         visionFetch,
+        sttFetch,
       });
       await snoozedFollowUpHandler(jobFor(2064), appDb, closing.deps);
       expect(closing.toggles).toEqual(["resolved"]);

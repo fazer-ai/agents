@@ -653,6 +653,32 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     });
   });
 
+  // A message deleted in Chatwoot while it waited is not answered: no read finds it.
+  test("a stored message Chatwoot no longer has is not answered", async () => {
+    await mirror(639);
+    const id = await ackMessage("queue-replay-deleted", 639);
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            {
+              ...heldByPerson(639),
+              status: "pending",
+              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+            },
+            calls,
+          ) as never,
+      },
+    });
+    const row = await settled(id);
+    expect(row.owesMemoryOnly).toBe(true);
+    expect(calls).not.toContain("sendMessage");
+  });
+
   // A reaction to an older message is on no anchored page and can leave the newest page empty; the
   // catch-up read carries it, as it does for the delivery recovery, so the replay is not deferred.
   test("a stored message only the catch-up read carries is processed, not deferred", async () => {

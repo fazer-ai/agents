@@ -468,7 +468,7 @@ async function runRecovery(params: {
       base,
       client,
       live,
-      pages: { recent, caughtUp },
+      pages: { raw, recent, caughtUp },
     });
     if (verdict.verdict === "degraded") {
       logger.warn(
@@ -1425,7 +1425,11 @@ export async function storedTurnVerdict(params: {
   client: Awaited<ReturnType<typeof loadChatwootClient>>;
   live: LiveConversationState | null;
   // The reads of `readStoredMessagePages`, when the caller already made them.
-  pages?: { recent: ChatwootMessageRow[]; caughtUp: ChatwootMessageRow[] };
+  pages?: {
+    raw: unknown;
+    recent: ChatwootMessageRow[];
+    caughtUp: ChatwootMessageRow[];
+  };
 }): Promise<StoredTurnVerdict> {
   const { conversationId, messageId, live } = params;
   const degraded = (why: string) => ({ verdict: "degraded" as const, why });
@@ -1437,7 +1441,7 @@ export async function storedTurnVerdict(params: {
   if (live === null || !live.assigneeStated) {
     return degraded("the live conversation does not say who holds it");
   }
-  const { recent, caughtUp } =
+  const { raw, recent, caughtUp } =
     params.pages ??
     (await readStoredMessagePages(
       params.client,
@@ -1445,6 +1449,10 @@ export async function storedTurnVerdict(params: {
       messageId,
       true,
     ));
+  // Chatwoot no longer has the message (deleted, or the conversation was): nothing to answer.
+  if (findRawMessage(raw, messageId) === null) {
+    return notOwed("the message is gone from Chatwoot");
+  }
   // A FULL catch-up read stops short of the newest page and cannot say what sits in the gap.
   if (caughtUp.length >= CATCH_UP_PAGE) {
     return notOwed("a full catch-up read is behind it");

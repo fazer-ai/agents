@@ -188,6 +188,54 @@ test("a load of the previous request that lands after the next one changes nothi
   expect(frameSrc()).toBe("blob:new");
 });
 
+test("a draft preview that answers after the issued document never takes the frame", async () => {
+  let approved = false;
+  let draftsAsked = 0;
+  const lateDraft = gate();
+  handler = async (url, init) => {
+    if (url.includes("/preview")) {
+      draftsAsked += 1;
+      await lateDraft.shut;
+      return pdf("draft");
+    }
+    if (url.includes("/documents/9/pdf")) return pdf("issued");
+    if (url.includes("/context")) return context();
+    if (
+      url.endsWith("/document-approvals/23/approve") &&
+      init?.method === "POST"
+    ) {
+      approved = true;
+      return json({ request: {}, document: { number: "ORC-9" } });
+    }
+    if (url.includes("/document-approvals/23")) {
+      return json({
+        request: request(
+          "23",
+          approved
+            ? {
+                status: "APPROVED",
+                decidedAt: new Date().toISOString(),
+                issuedDocumentId: "9",
+                outcome: "DELIVERED",
+                outcomeAt: new Date().toISOString(),
+              }
+            : {},
+        ),
+      });
+    }
+    return json({});
+  };
+  mount("/document-approvals/23");
+  await waitFor(() => expect(draftsAsked).toBe(1));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Approve and send" }),
+  );
+  await waitFor(() => expect(frameSrc()).toBe("blob:issued"));
+  lateDraft.open();
+  await fetches.settled();
+  expect(frameSrc()).toBe("blob:issued");
+});
+
 test("an approval that never issued its document can be approved again", async () => {
   handler = async (url, init) => {
     if (url.includes("/preview")) return pdf("p");

@@ -504,7 +504,7 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect(rows).toEqual([{ pending: false }]);
   });
 
-  test("a fixed send no longer wanted after the count sends nothing, under the limit or past it", async () => {
+  test("a fixed send no longer wanted after the count sends nothing, under the limit, past it, or with no row", async () => {
     const under = await seedConv(5198);
     const over = await seedConv(5197);
     await seedDeliveries(over, true, 60_000);
@@ -525,6 +525,8 @@ describe.skipIf(!dbUp)("proactive limit", () => {
       });
     expect(await fixed(5198)).toBe("stood-down");
     expect(await fixed(5197)).toBe("stood-down");
+    // No mirror row: nothing counted, and the lookup is still I/O the caller's fence did not cover.
+    expect(await fixed(5196)).toBe("stood-down");
     expect(sends).toBe(0);
     expect(await proactiveRows(under)).toBe(0);
     expect(await proactiveRows(over)).toBe(1);

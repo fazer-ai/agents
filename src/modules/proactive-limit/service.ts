@@ -239,11 +239,41 @@ export function emitProactiveLimitRefusal(
   });
 }
 
+// Gives back an alert window claimed by a refusal that then stood down, so the next real refusal still
+// pages. CAS'd on the instant the claim wrote; null reads the same as an alert a day old.
+export async function releaseProactiveAlert(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  claimedAt: Date;
+  base?: PrismaClient;
+}): Promise<void> {
+  try {
+    await runScopedOn(
+      params.base ?? basePrisma,
+      sysCtx(params.tenantId),
+      (db) =>
+        db.conversation.updateMany({
+          where: {
+            id: params.conversationDbId,
+            proactiveLimitAlertedAt: params.claimedAt,
+          },
+          data: { proactiveLimitAlertedAt: null },
+        }),
+    );
+  } catch (err) {
+    logger.warn(
+      { err, conversationDbId: String(params.conversationDbId) },
+      "proactive limit: could not release an alert window",
+    );
+  }
+}
+
 // A FIXED proactive send (no model turn): the redirect ladder's link and its goodbye. Counted and
 // refused like a nudge, against the conversation it goes to. `send` runs only under the limit; a send
 // that throws gives the reservation back and rethrows. A conversation with no mirror row, or a limit
-// of 0, sends without counting. `stillWanted` is asked after the count, which is I/O the caller's own
-// fences did not cover: a false answer gives the reservation back and writes no line.
+// of 0, sends without counting. `stillWanted` is the last await before the send or the refusal on
+// every path that did I/O here, since that I/O is what the caller's own fences did not cover: a false
+// answer gives back the reservation and the alert window and writes no line.
 export async function sendWithinProactiveLimit(p: {
   tenantId: bigint;
   instanceId: bigint;
@@ -257,19 +287,22 @@ export async function sendWithinProactiveLimit(p: {
   send: () => Promise<void>;
 }): Promise<"sent" | "over" | "stood-down"> {
   const base = p.base ?? basePrisma;
-  const row =
-    p.limit > 0
-      ? await runScopedOn(base, sysCtx(p.tenantId), (db) =>
-          db.conversation.findFirst({
-            where: {
-              chatwootInstanceId: p.instanceId,
-              chatwootConversationId: p.chatwootConversationId,
-            },
-            select: { id: true, inboxId: true },
-          }),
-        ).catch(() => null)
-      : null;
+  const wanted = async () => !p.stillWanted || (await p.stillWanted());
+  if (p.limit <= 0) {
+    await p.send();
+    return "sent";
+  }
+  const row = await runScopedOn(base, sysCtx(p.tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        chatwootInstanceId: p.instanceId,
+        chatwootConversationId: p.chatwootConversationId,
+      },
+      select: { id: true, inboxId: true },
+    }),
+  ).catch(() => null);
   if (!row) {
+    if (!(await wanted())) return "stood-down";
     await p.send();
     return "sent";
   }
@@ -279,21 +312,24 @@ export async function sendWithinProactiveLimit(p: {
     limit: p.limit,
     base,
   });
-  if (p.stillWanted && !(await p.stillWanted())) {
-    if (!verdict.over && verdict.reservationId !== null)
-      await releaseProactiveReservation({
-        tenantId: p.tenantId,
-        reservationId: verdict.reservationId,
-        base,
-      });
-    return "stood-down";
-  }
   if (verdict.over) {
+    const claimedAt = new Date();
     const alert = await claimProactiveAlert({
       tenantId: p.tenantId,
       conversationDbId: row.id,
       base,
+      now: claimedAt,
     });
+    if (!(await wanted())) {
+      if (alert)
+        await releaseProactiveAlert({
+          tenantId: p.tenantId,
+          conversationDbId: row.id,
+          claimedAt,
+          base,
+        });
+      return "stood-down";
+    }
     emitProactiveLimitRefusal(
       {
         tenantId: p.tenantId,
@@ -315,15 +351,22 @@ export async function sendWithinProactiveLimit(p: {
     );
     return "over";
   }
-  try {
-    await p.send();
-  } catch (err) {
+  const release = async () => {
     if (verdict.reservationId !== null)
       await releaseProactiveReservation({
         tenantId: p.tenantId,
         reservationId: verdict.reservationId,
         base,
       });
+  };
+  if (!(await wanted())) {
+    await release();
+    return "stood-down";
+  }
+  try {
+    await p.send();
+  } catch (err) {
+    await release();
     throw err;
   }
   if (verdict.reservationId !== null)

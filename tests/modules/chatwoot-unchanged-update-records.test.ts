@@ -4,11 +4,14 @@ import { mirrorOncePerEvent } from "@/modules/chatwoot/mirror-once";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import {
   isUnchangedMessageUpdate,
+  markDeliveryPending,
   rememberOnSuccess,
   rememberProcessedDelivery,
   resetUnchangedUpdateRecords,
   trackConversationMirror,
   UNCHANGED_UPDATE_MESSAGES_MAX,
+  UNCHANGED_UPDATE_PENDING_MAX,
+  UNCHANGED_UPDATE_PENDING_TTL_MS,
   UNCHANGED_UPDATE_ROWS_MAX,
   unchangedUpdateRecordSizes,
 } from "@/modules/chatwoot/unchanged-update";
@@ -165,8 +168,9 @@ describe("unchanged-update records", () => {
     contact: { id: 501, name },
   });
 
-  // Strictly behind on its clock, a run writes nothing to the row, so what the row holds stands.
-  test("an older snapshot of a shared row does not replace the record", () => {
+  // An older event still writes what its own clock lets it (the redirect pairing has a mark of its
+  // own), so the last run, not the newest, is what the row holds.
+  test("the last snapshot a run applied is the record, older or not", () => {
     rememberProcessedDelivery(1n, 1n, 9, withContact(1, "Ana", 2_000));
     rememberProcessedDelivery(1n, 1n, 9, withContact(2, "Bia", 1_000));
     expect(
@@ -174,7 +178,7 @@ describe("unchanged-update records", () => {
         ...withContact(1, "Ana", 2_000),
         event: "message_updated",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("a newer snapshot of a shared row replaces the record", () => {
@@ -186,5 +190,54 @@ describe("unchanged-update records", () => {
         event: "message_updated",
       }),
     ).toBe(false);
+  });
+
+  // A marker nothing releases (the sweep settled the row) cannot fence the conversation forever.
+  test("a pending marker nobody releases expires after the drain's longest wait", () => {
+    const created = event("message_created", 1, 1);
+    rememberProcessedDelivery(1n, 1n, 9, created);
+    markDeliveryPending(77n, 1n, 1n, { ...created, labels: ["vip"] }, 0);
+    const receipt = event("message_updated", 1, 1);
+    expect(isUnchangedMessageUpdate(1n, 1n, 9, receipt, 1_000)).toBe(false);
+    expect(
+      isUnchangedMessageUpdate(
+        1n,
+        1n,
+        9,
+        receipt,
+        UNCHANGED_UPDATE_PENDING_TTL_MS + 1,
+      ),
+    ).toBe(true);
+    expect(unchangedUpdateRecordSizes().pending).toBe(0);
+  });
+
+  // Past the bound the oldest marker goes, and with it what it fenced: nothing is dropped until it
+  // would have expired.
+  test("past its bound the pending bookkeeping stops dropping instead of growing", () => {
+    const created = event("message_created", 1, 1);
+    rememberProcessedDelivery(1n, 1n, 9, created);
+    for (let i = 0; i <= UNCHANGED_UPDATE_PENDING_MAX; i++) {
+      markDeliveryPending(
+        BigInt(i + 1),
+        1n,
+        1n,
+        event("message_created", 2, 2),
+        0,
+      );
+    }
+    expect(unchangedUpdateRecordSizes().pending).toBe(
+      UNCHANGED_UPDATE_PENDING_MAX,
+    );
+    const receipt = event("message_updated", 1, 1);
+    expect(isUnchangedMessageUpdate(1n, 1n, 9, receipt, 1_000)).toBe(false);
+    expect(
+      isUnchangedMessageUpdate(
+        1n,
+        1n,
+        9,
+        receipt,
+        UNCHANGED_UPDATE_PENDING_TTL_MS + 1,
+      ),
+    ).toBe(true);
   });
 });

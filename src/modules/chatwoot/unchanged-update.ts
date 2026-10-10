@@ -18,14 +18,6 @@ export const UNCHANGED_UPDATE_ROWS_MAX = 20_000;
 interface Part {
   key: string;
   digest: string;
-  // The row's own ordering clocks, as the mirror compares them: a strictly older position writes
-  // nothing, a tie goes to the last writer (or empties a contact field), a newer one wins.
-  pos: number[];
-}
-
-interface RowRecord {
-  digest: string;
-  pos: number[];
 }
 
 interface InFlight {
@@ -37,15 +29,20 @@ interface InFlight {
 
 interface Store {
   messages: Map<string, string>;
-  rows: Map<string, RowRecord>;
+  // Per row, the snapshot the last mirror run of it applied whole.
+  rows: Map<string, string>;
   mirroring: Map<string, InFlight>;
   // Deliveries this process accepted and has not mirrored yet, per row: they will write when their
   // turn comes, so a row they would change is not known until then.
   pending: Map<string, Map<string, number>>;
-  pendingByDelivery: Map<string, Part[]>;
+  // In acceptance order, so the oldest expire first.
+  pendingByDelivery: Map<string, { parts: Part[]; at: number }>;
+  // Until when no receipt is dropped, because the pending bookkeeping hit its bound and let go of
+  // deliveries it could no longer follow.
+  saturatedUntil: number;
 }
 
-const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates.v2");
+const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates.v3");
 
 function store(): Store {
   const g = globalThis as unknown as Record<symbol, Store | undefined>;
@@ -64,6 +61,7 @@ function store(): Store {
       mirroring: new Map(),
       pending: new Map(),
       pendingByDelivery: new Map(),
+      saturatedUntil: 0,
     };
   }
   return g[KEY] as Store;
@@ -81,9 +79,6 @@ function messageDigest(n: NormalizedChatwootEvent): string {
   return digest(n.message);
 }
 
-const clock = (v: number | null | undefined): number =>
-  typeof v === "number" && Number.isFinite(v) ? v : Number.NaN;
-
 // What a payload states for each row the mirror writes from it. The conversation row leaves out the
 // event's own name and `changed_attributes`, the message, and what belongs to the shared rows. The
 // inbox part exists only where the payload names the inbox (a message event); a conversation event
@@ -94,8 +89,6 @@ function partsOf(
   n: NormalizedChatwootEvent,
 ): Part[] {
   const parts: Part[] = [];
-  const version = clock(n.conversationUpdatedAt);
-  const activity = clock(n.lastActivityAt);
   if (n.conversationId !== null) {
     const {
       event: _event,
@@ -108,21 +101,18 @@ function partsOf(
     parts.push({
       key: `c:${tenantId}:${instanceId}:${n.conversationId}`,
       digest: digest(snapshot),
-      pos: [version, activity],
     });
   }
   if (n.contact != null && n.contact.id != null) {
     parts.push({
       key: `k:${tenantId}:${instanceId}:${n.contact.id}`,
       digest: digest(n.contact),
-      pos: [activity],
     });
   }
   if (n.inboxId != null && n.inboxName != null) {
     parts.push({
       key: `b:${tenantId}:${instanceId}:${n.inboxId}`,
       digest: digest(n.inboxName),
-      pos: [Math.max(version, activity)],
     });
   }
   return parts;
@@ -179,16 +169,18 @@ export function isUnchangedMessageUpdate(
   instanceId: bigint,
   agentBotId: number | null,
   n: NormalizedChatwootEvent,
+  now: number = Date.now(),
 ): boolean {
   if (agentBotId === null || !droppableShape(n)) return false;
   const s = store();
+  if (now < s.saturatedUntil) return false;
+  expirePending(s, now);
   const seen = s.messages.get(
     messageKey(tenantId, instanceId, agentBotId, n.message?.id as number),
   );
   if (seen === undefined || seen !== messageDigest(n)) return false;
   return partsOf(tenantId, instanceId, n).every(
-    (part) =>
-      s.rows.get(part.key)?.digest === part.digest && !rowUnsettled(s, part),
+    (part) => s.rows.get(part.key) === part.digest && !rowUnsettled(s, part),
   );
 }
 
@@ -215,17 +207,52 @@ const bump = (m: Map<string, number>, k: string, by: number) => {
 
 // A delivery this process accepted and will process: until its mirror runs (or it leaves for the
 // delivery recovery, which rebuilds from Chatwoot as it stands), the rows it would write are unsettled.
+// A marker the processing never releases (a throw, then the sweep settling the row, or a recovery
+// that is not this path) expires after the longest a stored body waits for the drain
+// (`STORED_DELIVERY_MAX_AGE_MS`, ./delivery-queue.ts); a body drained after that is a mirror run like
+// any other, and the record follows it. Past the bound, the oldest marker goes and no receipt is
+// dropped until it would have expired.
+export const UNCHANGED_UPDATE_PENDING_MAX = 20_000;
+export const UNCHANGED_UPDATE_PENDING_TTL_MS = 6 * 60 * 60 * 1000;
+
+function releasePending(s: Store, id: string): void {
+  const held = s.pendingByDelivery.get(id);
+  if (held === undefined) return;
+  s.pendingByDelivery.delete(id);
+  for (const part of held.parts) {
+    const m = s.pending.get(part.key);
+    if (m === undefined) continue;
+    bump(m, part.digest, -1);
+    if (m.size === 0) s.pending.delete(part.key);
+  }
+}
+
+function expirePending(s: Store, now: number): void {
+  for (const [id, held] of s.pendingByDelivery) {
+    if (held.at > now - UNCHANGED_UPDATE_PENDING_TTL_MS) break;
+    releasePending(s, id);
+  }
+}
+
 export function markDeliveryPending(
   deliveryRowId: bigint,
   tenantId: bigint,
   instanceId: bigint,
   n: NormalizedChatwootEvent,
+  now: number = Date.now(),
 ): void {
   const s = store();
   const id = String(deliveryRowId);
   if (s.pendingByDelivery.has(id)) return;
+  expirePending(s, now);
+  while (s.pendingByDelivery.size >= UNCHANGED_UPDATE_PENDING_MAX) {
+    const oldest = s.pendingByDelivery.keys().next().value;
+    if (oldest === undefined) break;
+    releasePending(s, oldest);
+    s.saturatedUntil = now + UNCHANGED_UPDATE_PENDING_TTL_MS;
+  }
   const parts = partsOf(tenantId, instanceId, n);
-  s.pendingByDelivery.set(id, parts);
+  s.pendingByDelivery.set(id, { parts, at: now });
   for (const part of parts) {
     const m = s.pending.get(part.key) ?? new Map<string, number>();
     bump(m, part.digest, 1);
@@ -234,41 +261,16 @@ export function markDeliveryPending(
 }
 
 export function settleDeliveryPending(deliveryRowId: bigint): void {
-  const s = store();
-  const id = String(deliveryRowId);
-  const parts = s.pendingByDelivery.get(id);
-  if (parts === undefined) return;
-  s.pendingByDelivery.delete(id);
-  for (const part of parts) {
-    const m = s.pending.get(part.key);
-    if (m === undefined) continue;
-    bump(m, part.digest, -1);
-    if (m.size === 0) s.pending.delete(part.key);
-  }
-}
-
-type Order = "ahead" | "behind" | "mixed";
-
-function orderOf(run: number[], held: number[]): Order {
-  let ahead = true;
-  let behind = true;
-  for (let i = 0; i < run.length; i++) {
-    const a = run[i] as number;
-    const b = held[i] as number;
-    if (Number.isNaN(a) || Number.isNaN(b)) return "mixed";
-    if (!(a >= b)) ahead = false;
-    if (!(a < b)) behind = false;
-  }
-  return ahead ? "ahead" : behind ? "behind" : "mixed";
+  releasePending(store(), String(deliveryRowId));
 }
 
 // Around every mirror run (`mirrorOncePerEvent`, the one path every delivery, drain and recovery
 // mirrors through), per row it writes. The record is a snapshot whose re-application writes nothing:
-// the last one a run applied whole, since the row has seen no other write from this process after it.
-// A run strictly behind the record on every clock of the row writes nothing there (each of them
-// refuses an older position), so the record stands. Any other ending (a write held back, a throw, runs
-// with different snapshots overlapping, whose commit order nobody knows) forgets the record, so the
-// next receipt reaches the mirror.
+// the last one a run applied whole, since this process has written nothing else to the row after
+// it. Last, not newest: the rows order their fields by several clocks (version, activity, the
+// pairing's own mark), and an older event still writes what its own clock lets it. Any other ending
+// (a write held back, a throw, runs with different snapshots overlapping, whose commit order nobody
+// knows) forgets the record, so the next receipt reaches the mirror.
 export function trackConversationMirror(
   tenantId: bigint,
   instanceId: bigint,
@@ -295,25 +297,10 @@ export function trackConversationMirror(
       settled = true;
       parts.forEach((part, i) => {
         const flight = flights[i] as InFlight;
-        const held = s.rows.get(part.key);
-        if (!whole || flight.conflicted) {
+        if (whole && !flight.conflicted) {
+          setBounded(s.rows, part.key, part.digest, UNCHANGED_UPDATE_ROWS_MAX);
+        } else {
           s.rows.delete(part.key);
-        } else if (held !== undefined && held.digest === part.digest) {
-          // The same snapshot again writes nothing new; the record stands.
-        } else if (held === undefined) {
-          setBounded(
-            s.rows,
-            part.key,
-            { digest: part.digest, pos: part.pos },
-            UNCHANGED_UPDATE_ROWS_MAX,
-          );
-        } else if (orderOf(part.pos, held.pos) !== "behind") {
-          setBounded(
-            s.rows,
-            part.key,
-            { digest: part.digest, pos: part.pos },
-            UNCHANGED_UPDATE_ROWS_MAX,
-          );
         }
         bump(flight.digests, part.digest, -1);
         if (flight.digests.size === 0 && s.mirroring.get(part.key) === flight) {
@@ -366,9 +353,14 @@ export function rememberProcessedDelivery(
 export function unchangedUpdateRecordSizes(): {
   messages: number;
   rows: number;
+  pending: number;
 } {
   const s = store();
-  return { messages: s.messages.size, rows: s.rows.size };
+  return {
+    messages: s.messages.size,
+    rows: s.rows.size,
+    pending: s.pendingByDelivery.size,
+  };
 }
 
 export function resetUnchangedUpdateRecords(): void {
@@ -378,4 +370,5 @@ export function resetUnchangedUpdateRecords(): void {
   s.mirroring.clear();
   s.pending.clear();
   s.pendingByDelivery.clear();
+  s.saturatedUntil = 0;
 }

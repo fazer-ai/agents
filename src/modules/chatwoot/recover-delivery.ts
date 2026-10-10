@@ -433,10 +433,12 @@ async function runRecovery(params: {
     // persona and the ownership off the mirror row, so a conversation the mirror never learned could
     // not be handed over and keeps `MAX_RECOVERY_AGE_MS`, a late answer over none. Asked AFTER the
     // reconcile for the same reason: a message that reopened a resolved conversation left the mirror
-    // saying `resolved`, and the hand-over would refuse that stale ownership.
+    // saying `resolved`, and the hand-over would refuse that stale ownership. Not on a snapshot that
+    // did not parse: nothing was reconciled, and the guard below retries it as `unreachable`.
     if (
+      live !== null &&
       params.now.getTime() - row.receivedAt.getTime() >
-      recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
+        recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
     ) {
       logger.warn(
         "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",

@@ -680,7 +680,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7339 },
+          chatwootConversationId: { gte: 7310, lte: 7340 },
         },
       });
       await dropContact(77);
@@ -1415,6 +1415,56 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       } finally {
         await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
       }
+    });
+
+    test("retries a WhatsApp delivery past ninety minutes whose live snapshot did not parse", async () => {
+      // Nothing was reconciled, so a terminal refusal would hand the stale mirror to the hand-over.
+      const convId = 7340;
+      const messageId = 7840;
+      const waInbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: 7340,
+          name: "WhatsApp unparsed",
+          channelType: "Channel::Whatsapp",
+        },
+        select: { id: true },
+      });
+      await seedConversation(convId, { inboxId: waInbox.id });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        receivedAgoMs: 2 * 60 * 60 * 1000,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      const inner = stub.makeClient;
+      const deps: RuntimeDeps = {
+        ...depsWith(stub),
+        makeClient: async (...a: Parameters<Stub["makeClient"]>) => {
+          const c = (await inner(...a)) as unknown as Record<string, unknown>;
+          const orig = c.getConversation as (
+            id: number,
+          ) => Promise<Record<string, unknown>>;
+          c.getConversation = async (id: number) => {
+            const r = await orig(id);
+            delete r.status;
+            return r;
+          };
+          return c as never;
+        },
+      };
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps,
+        }),
+      ).toBe("unreachable");
+      expect(stub.sent).toEqual([]);
     });
 
     test("a WhatsApp delivery that owes only memory keeps six hours", () => {

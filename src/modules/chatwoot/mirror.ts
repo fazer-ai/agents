@@ -241,6 +241,8 @@ export async function mirrorChatwootEvent(
             // Read for the stale branch, which fills a missing route and contact. See the write there.
             inboxId: true,
             contactId: true,
+            // Read so a recovery's inherited pairing fills an empty one and never replaces a stored one.
+            contactInboxId: true,
             // NOTE: the local claim, the one ordering input that does not come from the source.
             // See ./status-claim.ts.
             statusClaimUntil: true,
@@ -525,7 +527,11 @@ export async function mirrorChatwootEvent(
         await db.conversation.update({
           where: { id: existing.id },
           data: {
-            ...(decision.unversioned && n.contactInboxId != null
+            // A recovery's body (`factsOnCreateOnly`) carries an INHERITED pairing, an inference, so it
+            // fills an empty one and never replaces the one a webhook stored.
+            ...(decision.unversioned &&
+            n.contactInboxId != null &&
+            (!n.factsOnCreateOnly || existing.contactInboxId === null)
               ? { contactInboxId: n.contactInboxId }
               : {}),
             ...(decision.unversioned && inboxRowId != null

@@ -275,4 +275,35 @@ describe.skipIf(!dbUp)("mirror: the conversation's labels", () => {
     });
     expect(contact.phone).toBe("+5511900000001");
   });
+
+  test("a recovery's inherited pairing fills an empty one and never replaces a stored one", async () => {
+    const pairingOf = async (convId: number) =>
+      (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { contactInboxId: true },
+        })
+      ).contactInboxId;
+    const inherited = (convId: number) => ({
+      ...convEvent("conversation_updated", convId, {
+        lastActivityAt: T + 20,
+      }),
+      contact_inbox: { id: 99_999 },
+      fazer_facts_on_create_only: true,
+    });
+    await mirror(
+      convEvent("conversation_created", 9, { lastActivityAt: T + 10 }),
+    );
+    await mirror(inherited(9));
+    expect(await pairingOf(9)).toBe(88_009);
+    await mirror(
+      convEvent("conversation_created", 10, { lastActivityAt: T + 10 }),
+    );
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 10 },
+      data: { contactInboxId: null },
+    });
+    await mirror(inherited(10));
+    expect(await pairingOf(10)).toBe(99_999);
+  });
 });

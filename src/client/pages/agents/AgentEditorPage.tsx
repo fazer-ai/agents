@@ -146,6 +146,7 @@ import {
   decisionsFormIssues,
   decisionsRefusalFrom,
   decisionsRefusalStanding,
+  grantsAfterAllow,
   nativeToolsGranted,
   withNativeToolGranted,
 } from "./decisionsFormState";
@@ -3604,6 +3605,7 @@ function AgentEditor() {
   // tool added, written at once. It only adds, so nothing the operator decided is lost; with grant
   // changes pending on the Tools tab the rule sends the operator there instead (see DecisionsFields).
   async function grantNativeTool(tool: string, force = false) {
+    const pressed = canonicalGrants(grants.filter((g) => g.source !== "RAG"));
     savingRef.current += 1;
     setSavingGrants(true);
     try {
@@ -3620,12 +3622,14 @@ function AgentEditor() {
       if (handleConflict(err, () => void grantNativeTool(tool, true))) return;
       if (err || !data) throw err ?? new Error("no data");
       syncedGrantsRef.current = data.grants;
-      // NOTE: The Knowledge tab's pending RAG grants stay as edited; the rest is what was written,
-      // which is what the Tools tab held (it had nothing pending, or the rule would not offer this).
-      setGrants((cur) => [
-        ...cur.filter((g) => g.source === "RAG"),
-        ...mapGrants(data.grants).filter((g) => g.source !== "RAG"),
-      ]);
+      setGrants((cur) =>
+        grantsAfterAllow(
+          cur,
+          canonicalGrants(cur.filter((g) => g.source !== "RAG")) !== pressed,
+          mapGrants(data.grants),
+          tool,
+        ),
+      );
       setCatalog(data.catalog);
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
       toolGrantsOnlyRef.current = true;

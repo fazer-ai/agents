@@ -296,8 +296,29 @@ export interface RunAgentNudgeParams {
   // ask opens its own short scope. `strict` selects which question is asked; see
   // RunAgentTurnParams.stillWanted.
   stillWanted?: (opts: { strict: boolean }) => Promise<boolean>;
+  // A document the team approved: its PDF rides on the agent's message as the attachment. Where the
+  // customer cannot be messaged, the operator's note is left instead of the agent's text, and no
+  // approved template is sent in its place (docs/documents.md, Approval).
+  approvedDocument?: ApprovedDocumentDelivery;
   base?: PrismaClient;
   deps?: RuntimeDeps;
+}
+
+export interface ApprovedDocumentDelivery {
+  bytes: ArrayBuffer;
+  fileName: string;
+  // Left when a person holds the conversation, and when the 24h window is closed.
+  heldNote: string;
+  windowNote: string;
+  // Sent as the caption when the agent wrote nothing for it.
+  caption: string;
+  // Asked immediately before the send, since the team can revoke the document while the agent
+  // writes; `revokedNote` is left instead when it did.
+  stillValid: () => Promise<boolean>;
+  revokedNote: string;
+  // Left when the output guardrail replaced the agent's line: a trip drops every attachment of the
+  // turn (docs/documents.md), so the document is a person's to send.
+  blockedNote: string;
 }
 
 export function parseThreadId(
@@ -1008,6 +1029,51 @@ async function runAgentNudgeBody(
         },
       );
 
+  // An approved document over a person or outside the window is the operator's to send, and saying
+  // so takes no model: decided here, before the spend ceiling, the way an operator's event is.
+  const approved = params.approvedDocument;
+  const noteApproved = async (
+    text: string,
+    outcome: "noted" | "noted-window",
+  ): Promise<RunAgentNudgeOutcome> => {
+    if (!(await stillWanted())) return standDown();
+    delivered = true;
+    await client.sendPrivateNote(conversationId, text);
+    markFollowUp(outcome);
+    return outcome;
+  };
+  // After a message already reached the customer, the document's note is best-effort: a throw would
+  // fail the job, and its retry would run the whole turn and message the customer again.
+  const noteApprovedAfterSend = async (
+    text: string,
+  ): Promise<RunAgentNudgeOutcome> => {
+    try {
+      const outcome = await noteApproved(text, "noted");
+      // A refusal (the agent switched off meanwhile) is no retry either: the message went out.
+      return outcome === "noted" ? outcome : "messaged";
+    } catch (err) {
+      logger.error(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: the approved document's note could not be posted after the message went out",
+      );
+      return "messaged";
+    }
+  };
+  if (approved && !canMessagePre) {
+    return noteApproved(approved.heldNote, "noted");
+  }
+  if (
+    approved &&
+    proactiveSendMode(
+      cfg.serviceWindowConfig,
+      loaded.lastInboundAt,
+      params.deps?.now?.() ?? new Date(),
+      { channelType: loaded.channelType, provider: loaded.provider },
+    ) !== "freeform"
+  ) {
+    return noteApproved(approved.windowNote, "noted-window");
+  }
+
   // The contact-authorization gate in two stages (docs/contact-auth.md): the RULE first, before the
   // spend ceiling, since it costs nothing and a follow-up to a conversation this agent does not serve
   // should not page the alert channels as a refused spend; the ENDPOINT where the gate always stood,
@@ -1517,68 +1583,73 @@ async function runAgentNudgeBody(
   // sources yielded nothing is tool-less in practice, and binding one no-op tool at a provider that
   // refuses schemas costs the entire follow-up. `followupSilenceChannel` then reads `sentinel` off
   // this same list, so the directive and the binding cannot disagree.
-  const tools = withoutLoneSilenceTool(
-    nudgeCfg,
-    await buildToolset(
-      nudgeCfg,
-      {
-        tenantId,
-        instanceId,
-        base,
-        client,
-        conversationId,
-        threadId: params.threadId,
-        checkpointer: params.deps?.checkpointer,
-        // NOTE: the slow-tool ack's own ask, after its send.
-        stillWanted: toolFence,
-        onCustomerSend: () => {
-          toolSpoke = true;
-        },
-        // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
-        // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
-        // one that had already happened — but only as a FALLBACK: this snapshot is taken before
-        // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
-        // tool re-reads the live state itself and falls back here only when that read fails.
-        observed: { status: loaded.status, statusAt: loaded.statusAt },
-        handoffState,
-        // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
-        // verdict takes the transfer this path's own trip takes.
-        screenCustomerText: async (text) => {
-          const d = await screenOutput(text);
-          if (!guardrailTripped(d)) return "send";
-          if (d.kind !== "handed-off") return "drop";
-          // Asked after the screening and before the transfer: the screening was a wait, and inside
-          // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
-          if (!(await toolFence())) return "drop";
-          const handed = await ownTransfer(
+  // A turn that delivers an approved document binds NO tool: its one job is the line the PDF rides
+  // on, and with tools bound a real model tried to attach the file itself, wrote notes and handed
+  // the conversation over (docs/documents.md, Approval).
+  const tools = approved
+    ? []
+    : withoutLoneSilenceTool(
+        nudgeCfg,
+        await buildToolset(
+          nudgeCfg,
+          {
+            tenantId,
+            instanceId,
+            base,
+            client,
+            conversationId,
+            threadId: params.threadId,
+            checkpointer: params.deps?.checkpointer,
+            // NOTE: the slow-tool ack's own ask, after its send.
+            stillWanted: toolFence,
+            onCustomerSend: () => {
+              toolSpoke = true;
+            },
+            // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+            // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
+            // one that had already happened — but only as a FALLBACK: this snapshot is taken before
+            // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
+            // tool re-reads the live state itself and falls back here only when that read fails.
+            observed: { status: loaded.status, statusAt: loaded.statusAt },
             handoffState,
-            () =>
-              applyGuardrailHandoff({
-                client,
-                conversationId,
-                instanceId,
-                handoff: nudgeCfg.handoffConfig,
-                direction: "output",
-                flow,
-                stillWanted: toolFence,
-              }),
-            (r) => r,
-          );
-          handoffState.completed = handed;
-          if (handed) {
-            handoffState.customerMessage = d.reply;
-            handoffState.lineByOperator = true;
-            // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
-            // the model's own next reply could still reach the customer before the mirror catches up.
-            handoffState.declinedToSpeak = d.reply === null;
-          }
-          // Not landing is a failed transfer, not a dropped line (see the reactive binding).
-          return handed ? "handed" : "failed";
-        },
-      },
-      { buildNativeTools, mcp: params.deps?.mcp, flow },
-    ),
-  );
+            // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
+            // verdict takes the transfer this path's own trip takes.
+            screenCustomerText: async (text) => {
+              const d = await screenOutput(text);
+              if (!guardrailTripped(d)) return "send";
+              if (d.kind !== "handed-off") return "drop";
+              // Asked after the screening and before the transfer: the screening was a wait, and inside
+              // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
+              if (!(await toolFence())) return "drop";
+              const handed = await ownTransfer(
+                handoffState,
+                () =>
+                  applyGuardrailHandoff({
+                    client,
+                    conversationId,
+                    instanceId,
+                    handoff: nudgeCfg.handoffConfig,
+                    direction: "output",
+                    flow,
+                    stillWanted: toolFence,
+                  }),
+                (r) => r,
+              );
+              handoffState.completed = handed;
+              if (handed) {
+                handoffState.customerMessage = d.reply;
+                handoffState.lineByOperator = true;
+                // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
+                // the model's own next reply could still reach the customer before the mirror catches up.
+                handoffState.declinedToSpeak = d.reply === null;
+              }
+              // Not landing is a failed transfer, not a dropped line (see the reactive binding).
+              return handed ? "handed" : "failed";
+            },
+          },
+          { buildNativeTools, mcp: params.deps?.mcp, flow },
+        ),
+      );
 
   // 3. Model + graph + callbacks (node="nudge").
   // The SAME checkpointer the graph is built on, so the divider written below and the invoke's own
@@ -2410,8 +2481,10 @@ async function runAgentNudgeBody(
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const drafted = proactiveReply(lastAssistantText(result.messages));
-  const silent = drafted.silent;
-  const reply = drafted.text;
+  // An approved document is owed to the customer whatever the agent wrote: a silence there would
+  // keep the PDF the team just released.
+  const silent = drafted.silent && !approved;
+  const reply = drafted.text || (approved ? approved.caption : "");
 
   // 5. Re-check ownership at post time (a human may have taken over during the model call), for
   // BOTH the customer message and the post-actions. The live-gated path re-probes Chatwoot (the
@@ -2485,6 +2558,9 @@ async function runAgentNudgeBody(
     if (promised === "silent" && applied === "stale") {
       return refuse(standDown());
     }
+    // NOTE: the transfer spoke for this turn and carried no file, so the approved document is now the
+    // person's to send, and saying so is the note a held conversation gets.
+    if (approved) return noteApprovedAfterSend(approved.heldNote);
     return promised;
   }
 
@@ -2650,6 +2726,12 @@ async function runAgentNudgeBody(
           conversationId,
           `${OUTSIDE_WINDOW_NOTE_PREFIX}${screenedIsOperator ? screened : literalForChatwoot(screened)}`,
         );
+        // The transfer carried no file, so the approved document is the person's to send, said
+        // beside the line as on the in-window transfer.
+        if (approved) {
+          delivered = true;
+          await client.sendPrivateNote(conversationId, approved.heldNote);
+        }
         markFollowUp("noted-window");
         await applyPostActions({
           canMessage: canMessagePost,
@@ -2670,17 +2752,62 @@ async function runAgentNudgeBody(
     // where the reply can still fall through to the template/note branch below instead of being
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
+      // A transfer the judge made carries its line and no file: the conversation is a person's now,
+      // so the approved document is theirs to send, as after the agent's own transfer. Any other
+      // trip drops the file as well, as a trip drops every attachment of a turn.
+      const attach =
+        approved && !handoffState.completed && !guardrailTripped(decision)
+          ? approved
+          : null;
+      // NOTE: the live ownership probe waits on Chatwoot, so the revocation is read after it, and the
+      // ask after both: a document revoked while the probe was pending is not sent, and nothing is
+      // awaited between the last of these and the send.
+      if (attach) {
+        const owned = await botStillOwnsIt();
+        const valid = await attach.stillValid();
+        if (!(await stillWanted())) return refuse(standDown());
+        if (owned === "unavailable") return refuse("live-unavailable");
+        if (owned === "not-ours") {
+          return refuse(await noteApproved(attach.heldNote, "noted"));
+        }
+        if (!valid) {
+          return refuse(await noteApproved(attach.revokedNote, "noted"));
+        }
+        if (sendModeNow() !== "freeform") {
+          return refuse(await noteApproved(attach.windowNote, "noted-window"));
+        }
+      }
       const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;
-      keepSentId(await client.sendMessage(conversationId, signedReply));
+      keepSentId(
+        await (attach
+          ? client.sendFileAttachment(
+              conversationId,
+              attach.bytes,
+              attach.fileName,
+              "application/pdf",
+              { caption: signedReply },
+            )
+          : client.sendMessage(conversationId, signedReply)),
+      );
       await recordProactiveSpeech();
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
         String(conversationId),
         params.nudge.source,
       );
+      // NOTE: a silence the caption stood in for is a sentence nobody read; it leaves the thread,
+      // whether the caption went with the PDF or the guardrail replaced it.
+      if (approved && drafted.silent) {
+        await takeBackUndeliveredSilence(drafted.wroteText);
+      }
       markFollowUp("messaged");
       await applyPostActions({ canMessage: canMessagePost });
+      if (approved && !attach) {
+        return noteApprovedAfterSend(
+          handoffState.completed ? approved.heldNote : approved.blockedNote,
+        );
+      }
       return "messaged";
     }
     // A human arrived while the judge was reading, or the window closed while it did. Everything
@@ -2688,6 +2815,18 @@ async function runAgentNudgeBody(
     // second is answered by asking again.
   }
 
+  // NOTE: through `refuse`, because the agent's reply is in the thread and was never sent: left
+  // there, the next turn would read "segue em anexo" as said.
+  if (approved) {
+    return refuse(
+      await noteApproved(
+        canMessagePre && canMessagePost
+          ? approved.windowNote
+          : approved.heldNote,
+        canMessagePre && canMessagePost ? "noted-window" : "noted",
+      ),
+    );
+  }
   if (canMessagePre && canMessagePost) {
     if (sendModeNow() === "template") {
       const payload = buildTemplatePayload(

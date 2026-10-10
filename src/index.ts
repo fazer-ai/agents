@@ -25,6 +25,7 @@ import {
   stopDebounceWorker,
 } from "@/modules/debounce/worker";
 import { registerDocumentApprovalExpiryHandler } from "@/modules/documents/approval";
+import { registerDocumentApprovalOutcomeHandler } from "@/modules/documents/approval-outcome";
 import {
   startAlertWorker,
   stopAlertWorker,
@@ -179,6 +180,7 @@ if (config.schedulerWorker.enabled) {
   registerObserveHandler();
   registerSuggestionReviewHandler();
   registerDocumentApprovalExpiryHandler();
+  registerDocumentApprovalOutcomeHandler();
   registerDeliverySweepHandler();
   registerDeliveryRecoveryHandler();
   registerTakeoverRecoveryHandler();

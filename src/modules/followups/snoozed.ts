@@ -29,6 +29,7 @@ import {
   SESSION_SENDER_NAME,
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
+import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import { fillMissingVisuals } from "@/modules/debounce/handler";
 import { renderTranscript, transcriptFromRows } from "@/modules/observe/job";
 import {
@@ -258,18 +259,22 @@ function windowRows(
   rows: readonly ChatwootMessageRow[],
   resetAtMessageId: number | null,
 ): ChatwootMessageRow[] {
-  return rows.filter(
-    (r) =>
-      !r.imported &&
-      !r.private &&
-      !r.isReaction &&
-      (r.messageType === "incoming" ||
-        r.messageType === "outgoing" ||
-        r.messageType === "template") &&
-      (resetAtMessageId === null ||
-        (r.id > resetAtMessageId &&
-          r.sendId !== resetAckSendId(resetAtMessageId))),
-  );
+  // Sorted, since the pages arrive newest first and older ones are appended: the window is the
+  // newest of these, taken from the end.
+  return [...rows]
+    .sort((a, b) => a.id - b.id)
+    .filter(
+      (r) =>
+        !r.imported &&
+        !r.private &&
+        !r.isReaction &&
+        (r.messageType === "incoming" ||
+          r.messageType === "outgoing" ||
+          r.messageType === "template") &&
+        (resetAtMessageId === null ||
+          (r.id > resetAtMessageId &&
+            r.sendId !== resetAckSendId(resetAtMessageId))),
+    );
 }
 
 export function findSnoozedAnchor(
@@ -573,39 +578,49 @@ export async function snoozedFollowUpHandler(
     return stamped > 0;
   };
 
-  // The window's images and documents nobody read yet are read first, as the re-engage reads them
-  // (`all`): a person asked for this conversation, and the eager pass never runs on one a person holds.
-  // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here, as there.
-  const window = windowRows(rows, ctx.conv.resetAtMessageId).slice(
-    -SNOOZED_WINDOW_MESSAGES,
-  );
-  await fillMissingVisuals({
-    tenantId,
-    instanceId,
-    conversationId,
-    settings: ctx.settings,
-    messages: rows,
-    pending: window.filter((r) => r.messageType === "incoming"),
-    fill: {
-      mode: "all",
-      signal: run?.signal,
-      turnId: crypto.randomUUID(),
-      convDbId: ctx.conv.id,
-      agentId: ctx.agentId,
-      inboxDbId: ctx.conv.inboxId,
-      threadId,
-    },
-    base,
-    deps,
-  });
-  const conversation = renderTranscript(
-    transcriptFromRows(window, SNOOZED_WINDOW_MESSAGES, {
-      ownBotIds: new Set(
-        await instanceAgentBotChatwootIds(tenantId, instanceId, base),
-      ),
-      trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
-    }),
-  );
+  // The conversation the model reads, only for a step that reaches the model: a closing step with no
+  // instructions labels and resolves without one, so it reads nothing and pays for nothing.
+  let conversation = "";
+  if (!closesWithoutModel(step, isLast)) {
+    // Every eligible row fetched goes to the renderer, which keeps the newest ones and resolves a quote
+    // against all of them (a "sim" keeps its question when the question is older than the window).
+    const eligible = windowRows(rows, ctx.conv.resetAtMessageId);
+    // Its images and documents nobody read yet are read first, as the re-engage reads them (`all`): a
+    // person asked for this conversation, and the eager pass never runs on one a person holds. Never
+    // under a contact authorization gate: this path does not ask it, so it opens nothing there.
+    // Best-effort: what is left unread renders as unread. Voice notes are not transcribed here (#1240).
+    if (!readContactAuthConfig(ctx.settings).enabled) {
+      await fillMissingVisuals({
+        tenantId,
+        instanceId,
+        conversationId,
+        settings: ctx.settings,
+        messages: rows,
+        pending: eligible
+          .slice(-SNOOZED_WINDOW_MESSAGES)
+          .filter((r) => r.messageType === "incoming"),
+        fill: {
+          mode: "all",
+          signal: run?.signal,
+          turnId: crypto.randomUUID(),
+          convDbId: ctx.conv.id,
+          agentId: ctx.agentId,
+          inboxDbId: ctx.conv.inboxId,
+          threadId,
+        },
+        base,
+        deps,
+      });
+    }
+    conversation = renderTranscript(
+      transcriptFromRows(eligible, SNOOZED_WINDOW_MESSAGES, {
+        ownBotIds: new Set(
+          await instanceAgentBotChatwootIds(tenantId, instanceId, base),
+        ),
+        trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
+      }),
+    );
+  }
 
   // A send-time message read that failed is not a withdrawal: the step is tried again, not dropped.
   let messageReadFailed = false;

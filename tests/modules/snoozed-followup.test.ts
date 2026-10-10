@@ -543,6 +543,8 @@ function stub(over: {
   unsnoozeOnLabelRead?: boolean;
   // The vision provider's answer, for a window image nobody read yet.
   visionFetch?: typeof fetch;
+  // The page Chatwoot answers when the handler walks back past the newest one.
+  olderPage?: Msg[];
   model?: (cfg: {
     model: string;
   }) => import("@langchain/core/language_models/chat_models").BaseChatModel;
@@ -608,7 +610,7 @@ function stub(over: {
         };
       }
       if (over.degradedPage) return { error: "upstream" };
-      if (opts?.before !== undefined) return { payload: [] };
+      if (opts?.before !== undefined) return { payload: over.olderPage ?? [] };
       return { payload: over.messages };
     },
     sendMessage: async (_c: number, t: string) => {
@@ -1040,6 +1042,143 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       await snoozedFollowUpHandler(jobFor(2061), appDb, s.deps);
       expect(providerCalls).toBe(1);
       expect(model.inputs.join("\n")).toContain("comprovante de PIX de R$ 120");
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
+  test("a paged window keeps the newest messages and a quote older than the window", async () => {
+    // The newest page is full (twenty rows, one a private note), so the handler walks back one page.
+    const contact = (
+      id: number,
+      content: string,
+      extra: Partial<Msg> = {},
+    ): Msg => ({
+      id,
+      message_type: 0,
+      created_at: minutesAgo(200 - (id - 400)),
+      sender: { type: "contact", id: 1 },
+      content,
+      ...extra,
+    });
+    const newest: Msg[] = [
+      contact(501, "", {
+        attachments: [
+          {
+            id: 61,
+            file_type: "image",
+            data_url: "https://chat.example.com/a/61.png",
+          },
+        ],
+      }),
+      contact(502, "sim", { content_attributes: { in_reply_to: 480 } }),
+      ...Array.from({ length: 16 }, (_, i) =>
+        contact(503 + i, `linha ${503 + i}`),
+      ),
+      {
+        id: 519,
+        message_type: 1,
+        private: true,
+        created_at: minutesAgo(5),
+        sender: { type: "user", id: PERSON },
+        content: "nota",
+      },
+      personAsked(520, 3),
+    ];
+    const older: Msg[] = [
+      contact(480, "Qual o tamanho da camiseta, P ou M?"),
+      ...Array.from({ length: 9 }, (_, i) =>
+        contact(481 + i, `antiga ${481 + i}`),
+      ),
+    ];
+    await setSettings({
+      ...LADDER,
+      vision: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${llmKeyId}`,
+      },
+    });
+    try {
+      await seed(2062);
+      const model = new InputCapturingModel(REPLY);
+      let providerCalls = 0;
+      const s = stub({
+        messages: newest,
+        olderPage: older,
+        model: () => model,
+        visionFetch: (async () => {
+          providerCalls++;
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "foto da camiseta" } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2062), appDb, s.deps);
+      const seen = model.inputs.join("\n");
+      // The newest page's image is in the window and read; the older page fills only what is left.
+      expect(providerCalls).toBe(1);
+      expect(seen).toContain("foto da camiseta");
+      // The "sim" keeps the question it answers, fetched on the older page and outside the window.
+      expect(seen).toContain("Qual o tamanho da camiseta");
+      expect(seen).not.toContain("antiga 481");
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
+  test("no media is opened under a contact gate, nor for a closing step that reaches no model", async () => {
+    const image = (id: number): Msg => ({
+      id,
+      message_type: 0,
+      created_at: minutesAgo(10),
+      sender: { type: "contact", id: 1 },
+      content: "",
+      attachments: [
+        {
+          id: id + 1000,
+          file_type: "image",
+          data_url: `https://chat.example.com/a/${id}.png`,
+        },
+      ],
+    });
+    let providerCalls = 0;
+    const visionFetch = (async () => {
+      providerCalls++;
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "lida" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const vision = {
+      enabled: true,
+      provider: "openai",
+      credentialRef: `vault:${llmKeyId}`,
+    };
+    try {
+      await setSettings({ ...LADDER, vision, contactAuth: { enabled: true } });
+      await seed(2063);
+      const gated = stub({
+        messages: [image(430), personAsked(431, 3)],
+        visionFetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2063), appDb, gated.deps);
+      await setSettings({ ...LADDER, vision });
+      await seed(2064, {
+        anchorId: 441,
+        step: 2,
+        at: new Date(Date.now() - 3 * 60_000),
+      });
+      const closing = stub({
+        messages: [image(440), personAsked(441, 10)],
+        visionFetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2064), appDb, closing.deps);
+      expect(closing.toggles).toEqual(["resolved"]);
+      expect(providerCalls).toBe(0);
     } finally {
       await setSettings(LADDER);
     }

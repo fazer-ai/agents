@@ -7,6 +7,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "./instance";
+import { mirrorChatwootEvent } from "./mirror";
 import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import type { NormalizedChatwootEvent } from "./types";
@@ -415,14 +416,15 @@ async function replayStored(
       return "skipped";
     }
   }
-  let event = normalized;
   const conversationId = normalized.conversationId;
   // NOTE: A stored customer message can be replayed long after it arrived, past a takeover whose own
   // webhooks never reached the mirror while this process was down. The live conversation is read
-  // first, as the delivery recovery does: it repairs the mirror, and its ownership replaces the stored
-  // snapshot's in the event, which is what creates the mirror when there was none yet. A read that
-  // fails, or that cannot say who holds the conversation, throws, and the row waits for the next pass
-  // with its body.
+  // first and reconciled into the mirror, as the delivery recovery does, and the stored event is then
+  // processed as it arrived: the mirror's ordering keeps what is newer, so ownership comes from the
+  // live read while the message's own clock and pairing keep theirs. A conversation not mirrored yet
+  // is mirrored from the stored event's conversation alone (no message) first, so there is a row for
+  // the live state to land on. A read that fails, or that does not say who holds the conversation,
+  // throws, and the row waits for the next pass with its body.
   if (admissionLaneOf(normalized) === "turn" && conversationId !== null) {
     const client = await loadChatwootClient(
       row.tenantId,
@@ -432,9 +434,27 @@ async function replayStored(
     const live = parseLiveConversation(
       await client.getConversation(conversationId),
     );
-    if (live === null) {
+    if (live === null || !live.assigneeStated) {
       throw new Error(
         `the live conversation ${conversationId} does not say who holds it; replay deferred`,
+      );
+    }
+    const mirrored = await run((db) =>
+      db.conversation.findFirst({
+        where: {
+          tenantId: row.tenantId,
+          chatwootInstanceId: row.chatwootInstanceId,
+          chatwootConversationId: conversationId,
+        },
+        select: { id: true },
+      }),
+    );
+    if (mirrored === null) {
+      await mirrorChatwootEvent(
+        row.tenantId,
+        row.chatwootInstanceId,
+        { ...normalized, event: "conversation_updated", message: undefined },
+        base,
       );
     }
     await reconcileMirrorFromLive({
@@ -444,35 +464,13 @@ async function replayStored(
       live,
       base,
     });
-    event = {
-      ...normalized,
-      status: live.status,
-      // The live read's own version, so a mirror this event creates is stamped with the state it holds,
-      // and an older status or assignment arriving late cannot overwrite it.
-      conversationUpdatedAt: live.updatedAt ?? normalized.conversationUpdatedAt,
-      lastActivityAt:
-        live.lastActivityAt !== null
-          ? Math.floor(live.lastActivityAt.getTime() / 1000)
-          : normalized.lastActivityAt,
-      ...(live.assigneeStated
-        ? {
-            assigneeType: live.assigneeType,
-            assigneeId: live.assigneeId,
-            assigneeName: live.assigneeName,
-          }
-        : {
-            assigneeType: undefined,
-            assigneeId: undefined,
-            assigneeName: undefined,
-          }),
-    };
   }
   return processRecordedChatwootDelivery({
     tenantId: row.tenantId,
     instanceId: row.chatwootInstanceId,
     deliveryRowId: row.id,
     agentBotId: row.routeAgentBotId,
-    normalized: event,
+    normalized,
     receiptBindingGeneration: row.bindingGeneration,
     base,
     deps,

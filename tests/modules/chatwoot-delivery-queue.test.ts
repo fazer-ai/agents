@@ -394,6 +394,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
         id: conversationId,
         inbox_id: 7,
         status: "pending",
+        updated_at: Math.floor(Date.now() / 1000) - 600,
         meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
       },
     });
@@ -419,10 +420,12 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
               return prop === "getConversation" ? live : {};
             },
     });
+  // The live read is newer than any stored event: its version is now.
   const heldByPerson = (conversationId: number) => ({
     id: conversationId,
     status: "open",
     inbox_id: 7,
+    updated_at: Math.floor(Date.now() / 1000),
     last_activity_at: Math.floor(Date.now() / 1000),
     meta: { assignee_type: "User", assignee: { id: 55, name: "Ana" } },
   });
@@ -475,6 +478,33 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     const row = await rowById(id);
     expect(row.status).toBe("PENDING");
     expect(row.attempts).toBe(0);
+    expect(row.payload).not.toBeNull();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
+  // A live read with no ownership in it is not a statement that nobody holds the conversation.
+  test("a live read that states no ownership defers the replay", async () => {
+    const id = await ackMessage("queue-replay-unstated", 622);
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            { id: 622, status: "pending", inbox_id: 7 },
+            calls,
+          ) as never,
+      },
+    });
+    for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+      await sleep(5);
+    const row = await rowById(id);
+    expect(row.status).toBe("PENDING");
     expect(row.payload).not.toBeNull();
     await suDb.chatwootWebhookDelivery.update({
       where: { id },

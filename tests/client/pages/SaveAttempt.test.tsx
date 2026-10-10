@@ -60,6 +60,24 @@ describe("revealing the first problem", () => {
     expect(focusedMark()).toBe("rule-question");
   });
 
+  test("a control that draws its own warning is reached by its problem mark", () => {
+    const { container } = render(
+      <div>
+        <div data-problems-summary role="alert" data-mark="summary">
+          <button type="button">Open</button>
+        </div>
+        <div data-problem data-mark="key">
+          <button type="button" data-mark="key-picker">
+            None
+          </button>
+        </div>
+      </div>,
+    );
+    expect(revealFirstProblem(container)).toBe(true);
+    expect(scrolled).toEqual(["key"]);
+    expect(focusedMark()).toBe("key-picker");
+  });
+
   test("with nothing here to fix, the summary's way out takes the focus", () => {
     const { container } = render(
       <div>

@@ -1964,14 +1964,18 @@ export function ClassifierFields({
         group
         className="sm:col-span-2"
       >
-        <CredentialPicker
-          value={decisions.credentialRef}
-          onChange={(v) => patch({ credentialRef: v })}
-          required
-          compatibleTypes={credentialCompat.decisions(provider)}
-          defaultCreateType={credentialCompat.decisions(provider)[0]}
-          ariaLabel={t("editor.decisionsCredential", "API key")}
-        />
+        {/* The picker draws its own "required" line and no invalid mark; `data-problem` is what a Save
+            pressed with the key missing goes to (saveAttempt.ts). */}
+        <div data-problem={issues.has("credentialRef") || undefined}>
+          <CredentialPicker
+            value={decisions.credentialRef}
+            onChange={(v) => patch({ credentialRef: v })}
+            required
+            compatibleTypes={credentialCompat.decisions(provider)}
+            defaultCreateType={credentialCompat.decisions(provider)[0]}
+            ariaLabel={t("editor.decisionsCredential", "API key")}
+          />
+        </div>
       </FormField>
     </div>
   );

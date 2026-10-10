@@ -365,3 +365,22 @@ describe("General's save of identity and decision setup", () => {
     );
   });
 });
+
+// What a watcher on questions and rules does not draw (instructions, chat model, memory, fallback)
+// is neither written by its saves nor thrown away by them: the forms keep the edits, the dots
+// leave them out, and leaving the editor still asks about them.
+describe("the drafts a decisions watcher does not draw", () => {
+  const flat = EDITOR.replace(/\s+/g, " ");
+  test("survive a Behavior save and a General save", () => {
+    expect(flat).toContain("} else applyBehavior(data.agent, !decides);");
+    expect(flat).toContain("if (chat) setMemory(b.memory);");
+    expect(flat).toContain("if (chat) setModelFallback(b.modelFallback);");
+    expect(flat).toContain(
+      'applyGeneral(data.agent, "systemPrompt" in patch);',
+    );
+  });
+  test("keep the navigation guard up", () => {
+    expect(flat).toContain("const anyDirty = hiddenDraftsPending ||");
+    expect(flat).toContain("useNavGuard(anyDirty);");
+  });
+});

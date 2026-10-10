@@ -1535,7 +1535,9 @@ function AgentEditor() {
   }, []);
 
   // Reset ONLY the behavior section from a synced agent — the post-save sync for the Behavior tab.
-  const applyBehavior = useCallback((a: Agent) => {
+  // `chat` false is a save that did not write memory and the fallback (a watcher on questions and
+  // rules does not draw them): they stay as the form holds them, pending for a switch back.
+  const applyBehavior = useCallback((a: Agent, chat = true) => {
     syncedAgentRef.current = a;
     const b = readBehaviorState(a);
     setBusinessHoursId(b.businessHoursId);
@@ -1555,11 +1557,11 @@ function AgentEditor() {
     setLimits(b.limits);
     setObservability(b.observability);
     setSavedObservability(b.observability);
-    setMemory(b.memory);
+    if (chat) setMemory(b.memory);
     // NOTE: The timing only: the decision setup is its own section (General and Questions and
     // rules), and a Behavior save writes it back as stored, so its pending edits stay.
     setObservation((prev) => withDecisionsOf(b.observation, prev));
-    setModelFallback(b.modelFallback);
+    if (chat) setModelFallback(b.modelFallback);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
     setContactFields(b.contactFields);
@@ -1902,6 +1904,20 @@ function AgentEditor() {
           model: readModelState(syncedForChat),
         }
       : { systemPrompt, model };
+  // Memory and the fallback as Behavior's save would write them, by the same rule.
+  const hiddenSnap =
+    decides && syncedForChat
+      ? {
+          memory: memoryToForm(syncedForChat.settings),
+          modelFallback: modelFallbackToForm(syncedForChat.settings),
+        }
+      : { memory, modelFallback };
+  // The edits no save of this engine writes: they are still the operator's, so leaving the editor
+  // asks about them even with every Save done.
+  const hiddenDraftsPending =
+    decides &&
+    JSON.stringify({ systemPrompt, model, memory, modelFallback }) !==
+      JSON.stringify({ ...chatSnap, ...hiddenSnap });
   const sectionSnap = {
     // NOTE: General covers identity + model (the tabs merged). Track the raw model
     // form state, not buildModelConfig() — the latter collapses to {} until
@@ -1935,8 +1951,8 @@ function AgentEditor() {
       contactFields,
       takeover,
       observability,
-      memory,
-      modelFallback,
+      memory: hiddenSnap.memory,
+      modelFallback: hiddenSnap.modelFallback,
       // NOTE: Named after the block the save writes (`monitoring`), which is what the dirty-snapshot
       // fence reads off the writer; the form state behind it is `observation`. Its timing only: the
       // decision setup is the `decisions` section's.
@@ -2034,6 +2050,7 @@ function AgentEditor() {
       mapGrants(syncedGrantsRef.current).filter((g) => g.source !== "RAG"),
     );
   const anyDirty =
+    hiddenDraftsPending ||
     dirty.general ||
     dirty.decisions ||
     dirty.behavior ||
@@ -3118,7 +3135,7 @@ function AgentEditor() {
       // NOTE: Re-sync ONLY the saved section so the other tabs' unsaved edits are never clobbered.
       if (section === "general") {
         applyGeneral(data.agent, "systemPrompt" in patch);
-      } else applyBehavior(data.agent);
+      } else applyBehavior(data.agent, !decides);
       markSynced(String(data.agent.updatedAt));
       bumpSync(section);
       // NOTE: Only for the section this holder DRAWS. One function writes both, and a Behavior save

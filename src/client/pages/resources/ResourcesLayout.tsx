@@ -60,10 +60,12 @@ const TABS: { to: string; labelKey: string; icon: LucideIcon; badge?: true }[] =
 
 export function ResourcesLayout() {
   const { t } = useTranslation();
-  // The pending-approvals count is owned by the shared ApprovalsProvider (it also drives the sidebar
+  // The pending-suggestions count is owned by the shared ApprovalsProvider (it also feeds the sidebar
   // badge), so the Knowledge tab badge and the approval queue stay in sync with it.
-  const { count: approvalsCount, setCount: setApprovalsCount } =
-    usePendingApprovals();
+  const {
+    knowledgeCount: approvalsCount,
+    setKnowledgeCount: setApprovalsCount,
+  } = usePendingApprovals();
 
   return (
     <ResourcesContext.Provider value={{ approvalsCount, setApprovalsCount }}>

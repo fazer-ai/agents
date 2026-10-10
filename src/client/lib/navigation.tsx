@@ -1,5 +1,6 @@
 import {
   Bot,
+  ClipboardCheck,
   ClipboardList,
   Gauge,
   Globe,
@@ -32,8 +33,9 @@ export interface NavItem {
   icon: NavItemIcon;
   // NOTE: bump to requiredRole if more roles are added
   requireAdmin?: boolean;
-  // Optional count badge driven by a named source. "approvals" => pending KB suggestions
-  // (usePendingApprovals). The sidebar renders a numeric pill (expanded) or a dot (collapsed).
+  // Optional count badge driven by a named source. "approvals" => everything waiting on this person
+  // (usePendingApprovals): document approvals, plus pending KB suggestions for an admin. The sidebar
+  // renders a numeric pill (expanded) or a dot (collapsed).
   badge?: "approvals";
   // Optional heading the sidebar groups this item under. Consecutive items with the same
   // `labelKey` form one group; a run without a section renders with no heading. Add the key's magic
@@ -75,6 +77,7 @@ const SYSTEM = { labelKey: "nav.section.system", defaultLabel: "System" };
 
 // t('nav.dashboard', 'Dashboard')
 // t('nav.conversations', 'Conversations')
+// t('nav.approvals', 'Approvals')
 // t('nav.agents', 'Agents')
 // t('nav.resources', 'Components')
 // t('nav.channels', 'Channels')
@@ -106,12 +109,18 @@ export const NAV_ITEMS: NavItem[] = [
     requireAdmin: true,
   },
   {
+    to: "/approvals",
+    labelKey: "nav.approvals",
+    defaultLabel: "Approvals",
+    icon: ClipboardCheck,
+    badge: "approvals",
+  },
+  {
     to: "/resources",
     labelKey: "nav.resources",
     defaultLabel: "Components",
     icon: LibraryBig,
     requireAdmin: true,
-    badge: "approvals",
   },
   {
     to: "/channels",

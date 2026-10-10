@@ -5,8 +5,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import {
+  countPendingApprovals,
   getApprovalRequest,
   issueOrRequestApproval,
+  listPendingApprovals,
   requestApprovalAgain,
 } from "@/modules/documents/approval";
 import { getApprovalContext } from "@/modules/documents/approval-context";
@@ -660,6 +662,52 @@ describe.skipIf(!dbUp)(
       expect(context.contact?.name).toBe("Ana Ribeiro");
       expect(context.messages).toEqual([]);
       expect(context.messagesUnavailable).toBe(true);
+    });
+
+    test("the queue lists what waits on the team now, oldest first, with the customer's name", async () => {
+      const before = (await listPendingApprovals(ctx(), appDb)).map(
+        (r) => r.id,
+      );
+      const countBefore = await countPendingApprovals(ctx(), appDb);
+      const a = await newRequest();
+      const b = await newRequest();
+      const lapsed = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: lapsed.requestId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const decided = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: decided.requestId },
+        data: { status: "APPROVED" },
+      });
+      const listed = (await listPendingApprovals(ctx(), appDb)).filter(
+        (r) => !before.includes(r.id),
+      );
+      expect(listed.map((r) => r.id)).toEqual([
+        String(a.requestId),
+        String(b.requestId),
+      ]);
+      expect(listed[0]?.contactName).toBe("Ana Ribeiro");
+      expect(listed[0]?.conversationId).toBe(String(a.conversationId));
+      expect(listed[0]?.chatwootConversationId).toEqual(expect.any(Number));
+      const foreign: TenantContext = {
+        tenantId: otherTenantId,
+        userId: null,
+        role: "TENANT_ADMIN",
+      };
+      expect(await listPendingApprovals(foreign, appDb)).toEqual([]);
+      // A page starts after the last id of the one before, and the count covers every page.
+      const firstPage = await listPendingApprovals(ctx(), appDb, new Date(), {
+        limit: 1,
+      });
+      const nextPage = await listPendingApprovals(ctx(), appDb, new Date(), {
+        after: BigInt(firstPage[0]?.id as string),
+        limit: 1,
+      });
+      expect(nextPage[0]?.id).not.toBe(firstPage[0]?.id);
+      expect(Number(nextPage[0]?.id)).toBeGreaterThan(Number(firstPage[0]?.id));
+      expect(await countPendingApprovals(ctx(), appDb)).toBe(countBefore + 2);
     });
 
     test("another tenant reads nothing of the request, its page or its context", async () => {

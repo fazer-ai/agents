@@ -373,6 +373,7 @@ const BARE_SLICES: Record<
   "src/api/features/auth/auth.service.ts": [1, "ascii"],
   "src/api/lib/auth.ts": [1, "ascii"],
   "src/api/middlewares/rateLimit.ts": [1, "index"],
+  "src/api/v1/document-approvals.controller.ts": [1, "array"],
   "src/client/components/Modal.tsx": [1, "array"],
   "src/client/contexts/ThemeContext.tsx": [1, "index"],
   "src/client/lib/breadcrumbs.ts": [1, "array"],

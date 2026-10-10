@@ -219,6 +219,22 @@
     "title": "API keys",
     "tokenWarning": "Copy this key now. For security it is shown only once and cannot be retrieved again."
   },
+  "approvalQueue": {
+    "conversation": "conversation #{{number}}",
+    "documentFor": "{{title}} for {{customer}}",
+    "documentMeta": "Requested {{at}} · expires {{expires}}",
+    "documents": "Documents",
+    "knowledge": "Knowledge suggestions",
+    "loadError": "Could not load the documents waiting for approval.",
+    "more": "Show more",
+    "moreFailed": "Could not load more documents.",
+    "noDocuments": "No document is waiting for approval.",
+    "noKnowledge": "No knowledge suggestion is waiting for review.",
+    "review": "Review",
+    "subtitle": "Documents waiting for the team.",
+    "subtitleAdmin": "Documents waiting for the team, and knowledge suggestions the agents made.",
+    "title": "Approvals"
+  },
   "approvals": {
     "actionError": "Action failed.",
     "approve": "Approve",
@@ -611,6 +627,7 @@
     },
     "attachment": "Attachment",
     "back": "Back to conversations",
+    "backToApproval": "Back to the approval",
     "configureAgent": "Configure agent",
     "configureObserver": "Configure {{name}}",
     "error": "Could not load the conversation.",
@@ -2822,6 +2839,7 @@
     "admin": "Admin",
     "agents": "Agents",
     "apiKeys": "API keys",
+    "approvals": "Approvals",
     "audit": "Audit",
     "breadcrumbs": "Breadcrumbs",
     "channels": "Channels",

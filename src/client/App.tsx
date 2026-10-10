@@ -20,6 +20,7 @@ import { UpdatesProvider } from "@/client/contexts/UpdatesContext";
 import { AcceptInvitePage } from "@/client/pages/AcceptInvitePage";
 import { AgentsPage } from "@/client/pages/AgentsPage";
 import { ApiKeysPage } from "@/client/pages/ApiKeysPage";
+import { ApprovalsPage } from "@/client/pages/ApprovalsPage";
 // NOTE: SettingsAboutPage removed (item 13); /settings/about now redirects to profile.
 import { AuditPage } from "@/client/pages/AuditPage";
 import { AdminBrandingPage } from "@/client/pages/admin/AdminBrandingPage";
@@ -183,14 +184,12 @@ export function App() {
                                     </ProtectedRoute>
                                   }
                                 />
-                                {/* Approvals moved into Components → Knowledge; keep the old link working. */}
                                 <Route
                                   path="/approvals"
                                   element={
-                                    <Navigate
-                                      to="/resources/knowledge"
-                                      replace
-                                    />
+                                    <ProtectedRoute>
+                                      <ApprovalsPage />
+                                    </ProtectedRoute>
                                   }
                                 />
                                 <Route

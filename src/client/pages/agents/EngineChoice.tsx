@@ -108,14 +108,16 @@ export function EngineCards({
 }
 
 // The line under the cards that says what is still missing for the decision setup to be saved,
-// with the way to each place it is fixed. General's Save stays off while it shows: a Save that
-// looks on and is then refused leaves the operator unsure whether the name was saved.
+// with the way to each place it is fixed. Neutral until a Save is pressed; the press saves nothing
+// (not the name either), turns the line into an error and goes to the first problem (saveAttempt.ts).
 export function DecisionsSetupMissing({
   issues,
   onOpenDecisions,
+  showErrors = false,
 }: {
   issues: DecisionsIssueMap;
   onOpenDecisions: () => void;
+  showErrors?: boolean;
 }) {
   const { t } = useTranslation();
   if (issues.size === 0) return null;
@@ -156,12 +158,22 @@ export function DecisionsSetupMissing({
   }
   return (
     <div
-      role="status"
+      role={showErrors ? "alert" : "status"}
       data-testid="engine-missing"
-      className="flex flex-wrap items-center gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs"
+      data-tone={showErrors ? "error" : "neutral"}
+      data-problems-summary
+      className={cn(
+        "flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-text-primary text-xs",
+        showErrors
+          ? "border-error bg-error-soft"
+          : "border-warning bg-warning-soft",
+      )}
     >
       <TriangleAlert
-        className="h-4 w-4 shrink-0 text-warning"
+        className={cn(
+          "h-4 w-4 shrink-0",
+          showErrors ? "text-error" : "text-warning",
+        )}
         aria-hidden="true"
       />
       <span className="flex-1">

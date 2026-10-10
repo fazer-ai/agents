@@ -84,15 +84,14 @@ interface GeneralTabProps {
   // Resolved tool set, for the read-only capability map / agent graph shown at the bottom of this tab.
   catalog?: ToolCatalog;
   grants?: GrantState[];
-  // A monitoring agent's choice of engine (agents#1224), drawn under Identity. With `decides` the
-  // agent decides with questions and rules: the instructions and the Model card are not drawn, the
-  // `classifier` card takes the Model card's place, and `saveBlocked` keeps the Save off while the
-  // decision setup cannot be written (the cards say why).
+  // A monitoring agent's choice of engine (agents#1224), drawn right under Mode, ahead of what it
+  // decides. With `decides` the agent decides with questions and rules: the instructions and the
+  // Model card are not drawn and the `classifier` card takes the Model card's place. A Save pressed
+  // while the setup cannot be written is the page's to answer (saveAttempt.ts).
   watcher?: {
     engineCards: React.ReactNode;
     decides: boolean;
     classifier: React.ReactNode;
-    saveBlocked: boolean;
   };
 }
 
@@ -134,15 +133,32 @@ export function GeneralTab({
     !modelCredBaseUrl &&
     !isValidHttpUrl(model.baseURL);
 
+  // The instructions sit in Identity for an agent that answers; a watcher's come after the engine
+  // cards, since the engine decides whether it has any.
+  const instructions = decides ? null : (
+    <FormField label={t("editor.systemPrompt", "Agent instructions")} group>
+      <PromptPanel
+        value={systemPrompt}
+        onChange={setSystemPrompt}
+        previewVars={previewVars}
+        availability={availability}
+        companyFallback={tenantName}
+        agentFallback={name}
+        onExpand={() => promptModal.open()}
+      />
+      {promptError && <p className="mt-1 text-error text-xs">{promptError}</p>}
+    </FormField>
+  );
+
   return (
-    <div className="flex grow flex-col gap-4">
+    <div className="flex grow flex-col gap-4" data-problems-root="general">
       <Card className="flex flex-col gap-4">
         <div>
           <h3 className="font-medium text-sm text-text-primary">
             {t("editor.identitySection", "Identity")}
           </h3>
           <p className="text-text-muted text-xs">
-            {decides
+            {watcher
               ? t(
                   "editor.identitySectionHintDecisions",
                   "Name, mode and whether the agent is active.",
@@ -200,28 +216,13 @@ export function GeneralTab({
             ))}
           </div>
         </FormField>
-        {!decides && (
-          <FormField
-            label={t("editor.systemPrompt", "Agent instructions")}
-            group
-          >
-            <PromptPanel
-              value={systemPrompt}
-              onChange={setSystemPrompt}
-              previewVars={previewVars}
-              availability={availability}
-              companyFallback={tenantName}
-              agentFallback={name}
-              onExpand={() => promptModal.open()}
-            />
-            {promptError && (
-              <p className="mt-1 text-error text-xs">{promptError}</p>
-            )}
-          </FormField>
-        )}
+        {!watcher && instructions}
       </Card>
 
       {watcher?.engineCards}
+      {watcher && instructions && (
+        <Card className="flex flex-col gap-4">{instructions}</Card>
+      )}
 
       {decides ? (
         watcher?.classifier
@@ -465,9 +466,7 @@ export function GeneralTab({
         saving={saving}
         onSave={onSave}
         onDiscard={onDiscard}
-        saveDisabled={
-          !name.trim() || modelBaseUrlInvalid || Boolean(watcher?.saveBlocked)
-        }
+        saveDisabled={!name.trim() || modelBaseUrlInvalid}
         onOpenPlayground={onOpenPlayground}
       />
 

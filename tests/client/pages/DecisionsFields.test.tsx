@@ -28,6 +28,7 @@ import {
   observationToStored,
   withEngine,
 } from "@/client/pages/agents/observationFormState";
+import { revealFirstProblem } from "@/client/pages/agents/saveAttempt";
 import {
   decisionsBlockFingerprint,
   decisionsIssues,
@@ -848,6 +849,45 @@ describe("a new agent's first look at its questions", () => {
       screen.getByTestId("decisions-problems").getAttribute("data-tone"),
     ).toBe("error");
     expect(screen.queryAllByRole("alert").length).toBeGreaterThan(0);
+  });
+});
+
+// A Save pressed on this tab with something missing goes to the problem (agents#1224): the reveal
+// starts at the tab's fields, so it lands on the broken rule, and with the problem on General it
+// lands on the way there.
+describe("a Save pressed with the setup incomplete", () => {
+  const focusedText = () => document.activeElement?.textContent ?? "";
+  const inRule = () =>
+    Boolean(document.activeElement?.closest('[data-testid="decisions-rule"]'));
+
+  test("with only the classifier's key missing, goes to the way to General", () => {
+    stubApi();
+    renderSection(
+      {
+        monitoring: {
+          engine: "decisions",
+          decisions: { ...BLOCK, credentialRef: "" },
+        },
+      },
+      { showErrors: true },
+    );
+    const tab = screen.getByTestId("decisions-fields");
+    expect(revealFirstProblem(tab)).toBe(true);
+    expect(focusedText()).toBe("Open General");
+  });
+
+  test("with a broken rule, goes to that rule", () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { showErrors: true },
+    );
+    const remove = screen.getAllByRole("button", { name: "Remove question" });
+    fireEvent.click(remove[0] as HTMLElement);
+    expect(revealFirstProblem(screen.getByTestId("decisions-fields"))).toBe(
+      true,
+    );
+    expect(inRule()).toBe(true);
   });
 });
 

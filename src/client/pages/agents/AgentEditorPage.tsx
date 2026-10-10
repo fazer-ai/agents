@@ -208,6 +208,7 @@ import {
   StaleNoticeContext,
   staleNoticeOf,
 } from "./StaleNotice";
+import { revealFirstProblem } from "./saveAttempt";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import { TabActionBar } from "./TabActionBar";
 import {
@@ -812,6 +813,12 @@ function AgentEditor() {
   // Whether the operator tried to save the questions and rules while something was missing: the
   // tab says what is missing in a neutral tone until then, and as an error after.
   const [decisionsAttempted, setDecisionsAttempted] = useState(false);
+  // Which tab's first problem to go to after a Save that could not write; `n` makes a second press
+  // go there again. Read after the render that lit the problems, so the marks are on the page.
+  const [revealOn, setRevealOn] = useState<{
+    tab: "general" | "decisions";
+    n: number;
+  } | null>(null);
   const [savingGuardrails, setSavingGuardrails] = useState(false);
 
   // Agent fields
@@ -948,6 +955,25 @@ function AgentEditor() {
         : new Map(),
     [decides, observation],
   );
+  // A Save on either tab of the setup is never a silent click and never off for it: pressed with
+  // something missing, it writes nothing, turns the "to save" lines into errors and goes to the first
+  // problem on the tab (saveAttempt.ts). `touched` is whether this save would write the setup.
+  function decisionsBlocked(
+    on: "general" | "decisions",
+    touched: boolean,
+  ): boolean {
+    if (!touched || decisionsSetupIssues.size === 0) return false;
+    setDecisionsAttempted(true);
+    setRevealOn((prev) => ({ tab: on, n: (prev?.n ?? 0) + 1 }));
+    return true;
+  }
+  useEffect(() => {
+    if (revealOn) {
+      revealFirstProblem(
+        document.querySelector(`[data-problems-root="${revealOn.tab}"]`),
+      );
+    }
+  }, [revealOn]);
   // A URL naming a tab this editor does not draw lands on General, CARRYING the origin:
   // dropping the query string would make `backToConversation` null and take away the way back on
   // the one navigation the operator did not ask for. Every tab link here preserves it. Asked of the
@@ -4008,11 +4034,11 @@ function AgentEditor() {
                 {decides
                   ? t(
                       "editor.monitoringTabsHintDecisions",
-                      "This agent only observes: the tabs that configure how an agent answers are not shown while it is in monitoring mode. What it asks and what each answer does is under Questions and rules; when it looks is under Behavior.",
+                      "This agent only observes, so the tabs for answering are hidden. What it asks and what each answer does is under Questions and rules; when it looks is under Behavior.",
                     )
                   : t(
                       "editor.monitoringTabsHint",
-                      "This agent only observes: the tabs that configure how an agent answers are not shown while it is in monitoring mode. What it does with what it reads comes from its instructions below and the tools it is allowed in Tools; when it looks is under Behavior.",
+                      "This agent only observes, so the tabs for answering are hidden. What it does comes from its instructions and the tools allowed in Tools; when it looks is under Behavior.",
                     )}
               </p>
             )}
@@ -4187,7 +4213,10 @@ function AgentEditor() {
                 modelCredBaseUrl={modelCredBaseUrl}
                 dirty={dirty.general || decisionsHeadDirty}
                 saving={savingAgent || savingDecisions}
-                onSave={() => void saveGeneral()}
+                onSave={() => {
+                  if (decisionsBlocked("general", dirty.decisions)) return;
+                  void saveGeneral();
+                }}
                 onDiscard={revertGeneral}
                 watcher={
                   watcher
@@ -4201,6 +4230,7 @@ function AgentEditor() {
                                 <DecisionsSetupMissing
                                   issues={decisionsSetupIssues}
                                   onOpenDecisions={() => openTab("decisions")}
+                                  showErrors={decisionsAttempted}
                                 />
                               ) : null
                             }
@@ -4245,8 +4275,6 @@ function AgentEditor() {
                               />
                             </Card>
                           ) : null,
-                        saveBlocked:
-                          dirty.decisions && decisionsSetupIssues.size > 0,
                       }
                     : undefined
                 }
@@ -4383,7 +4411,10 @@ function AgentEditor() {
             )}
 
             {tab === "decisions" && decides && observation.decisions && (
-              <div className="flex grow flex-col gap-4">
+              <div
+                className="flex grow flex-col gap-4"
+                data-problems-root="decisions"
+              >
                 <DecisionsFields
                   agentId={id}
                   savedAt={loadedUpdatedAtRef.current}
@@ -4422,10 +4453,7 @@ function AgentEditor() {
                   dirty={dirty.decisions}
                   saving={savingDecisions}
                   onSave={() => {
-                    if (decisionsSetupIssues.size > 0) {
-                      setDecisionsAttempted(true);
-                      return;
-                    }
+                    if (decisionsBlocked("decisions", true)) return;
                     void saveDecisions();
                   }}
                   onDiscard={revertDecisions}

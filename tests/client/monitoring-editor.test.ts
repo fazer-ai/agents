@@ -427,12 +427,19 @@ describe("the configuration warnings of a watcher", () => {
   });
 });
 
-describe("the Questions and rules tab's Save", () => {
-  test("stays clickable and turns what is missing into an error when pressed", () => {
+// Both tabs of the setup answer a Save pressed with something missing the same way: nothing is
+// written, the lines turn into errors and the first problem is revealed (saveAttempt.ts, whose
+// reveal is tested in tests/client/pages/SaveAttempt.test.tsx).
+describe("a Save on the setup's tabs", () => {
+  test("is never off for the setup and never a silent click", () => {
     const flat = EDITOR.replace(/\s+/g, " ");
     expect(flat).toContain(
-      "if (decisionsSetupIssues.size > 0) { setDecisionsAttempted(true); return; } void saveDecisions();",
+      'if (decisionsBlocked("decisions", true)) return; void saveDecisions();',
+    );
+    expect(flat).toContain(
+      'if (decisionsBlocked("general", dirty.decisions)) return; void saveGeneral();',
     );
     expect(flat).toContain("showErrors={decisionsAttempted}");
+    expect(flat).not.toContain("saveBlocked");
   });
 });

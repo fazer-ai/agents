@@ -223,6 +223,19 @@ export function withDecisionsOf(
   };
 }
 
+// The form after the decision setup was saved: that setup as synced, the timing as edited, and the
+// block now stored, so a later Behavior save of an agent flipped back to answering still writes it
+// (`monitoringPatch` skips a block that was never stored).
+export function withSavedDecisions(
+  form: ObservationState,
+  synced: ObservationState,
+): ObservationState {
+  return {
+    ...withDecisionsOf(form, synced),
+    storedPresent: synced.storedPresent,
+  };
+}
+
 // The halves as text, for the unsaved marks. The setup is split once more by where it is drawn: the
 // head (engine and Classifier) on General, the body (questions, rules, rehearsal or live) on its tab.
 export function timingOf(form: ObservationState): string {

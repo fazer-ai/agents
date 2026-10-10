@@ -190,6 +190,7 @@ import {
   withDecisionsOf,
   withDraftEngine,
   withEngine,
+  withSavedDecisions,
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
@@ -1603,7 +1604,7 @@ function AgentEditor() {
   const applyDecisions = useCallback((a: Agent) => {
     syncedAgentRef.current = a;
     setObservation((prev) =>
-      withDecisionsOf(prev, observationToForm(a.settings)),
+      withSavedDecisions(prev, observationToForm(a.settings)),
     );
   }, []);
 

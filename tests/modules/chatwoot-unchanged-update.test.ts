@@ -314,16 +314,28 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
     ).toBe(1);
   });
 
-  test("the newest mirrored snapshot is the one a receipt is compared against", async () => {
+  test("a receipt carrying the snapshot the conversation's own event just mirrored is dropped", async () => {
     const s = { conv: 1008, msg: 91008 };
     await deliver(body("message_created", s));
-    const newer = { ...s, labels: ["vip"], updatedAt: 1_791_000_200.25 };
-    await deliver(conversationUpdated(newer));
-    // An event about an older version, processed after the newer one, does not replace it.
-    await deliver(body("message_created", { ...s, msg: 91108 }));
-    expect((await deliver(body("message_updated", newer))).rows).toBe(0);
-    // The snapshot the reply was created with is older than what is mirrored now.
-    expect((await deliver(body("message_updated", s))).rows).toBe(1);
+    const moved = { ...s, labels: ["vip"], updatedAt: 1_791_000_200.25 };
+    await deliver(conversationUpdated(moved));
+    expect((await deliver(body("message_updated", moved))).rows).toBe(0);
+  });
+
+  // The unversioned fields (labels, bags, contact) are ordered by the coarse activity clock, so an
+  // older event processed after a newer one still writes them: the row holds the last run's labels.
+  test("the snapshot compared against is the last one mirrored, not the newest by version", async () => {
+    const s = { conv: 1015, msg: 91015 };
+    await deliver(body("message_created", s));
+    const moved = { ...s, labels: ["vip"], updatedAt: 1_791_000_200.25 };
+    await deliver(conversationUpdated(moved));
+    await deliver(body("message_created", { ...s, msg: 91115 }));
+    expect((await deliver(body("message_updated", moved))).rows).toBe(1);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: s.conv },
+      select: { labels: true },
+    });
+    expect(row?.labels).toEqual(["vip"]);
   });
 
   test("each bot route answers for its own deliveries", async () => {
@@ -350,6 +362,8 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
   // A lost claim ran nothing here: the attempt holding the row may still fail.
   test("a delivery whose claim another attempt holds does not vouch for its repeat", async () => {
     const s = { conv: 1012, msg: 91012 };
+    // The conversation's snapshot is mirrored, so only the message half is in question.
+    await deliver(conversationUpdated(s));
     const raw = body("message_created", s);
     const delivery = `uu-${process.pid}-held`;
     const r = await receiveChatwootWebhook({

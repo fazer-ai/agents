@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type MirrorResult, mirrorChatwootEvent } from "./mirror";
 import type { NormalizedChatwootEvent } from "./types";
+import { trackConversationMirror } from "./unchanged-update";
 
 // ONE MIRROR PER EVENT, NOT PER ROUTE. Chatwoot delivers an event once per bot route, so an inbox with
 // an observer beside its responder gets every event twice. While one delivery of a payload runs the
@@ -76,6 +77,25 @@ async function asFollower(
   };
 }
 
+// Every run, so the receipt drop knows what the row holds (./unchanged-update.ts): a run that held
+// a write back, or threw, applied this snapshot partially or not at all.
+async function tracked(
+  tenantId: bigint,
+  instanceId: bigint,
+  n: NormalizedChatwootEvent,
+  run: () => Promise<MirrorResult>,
+): Promise<MirrorResult> {
+  const flight = trackConversationMirror(tenantId, instanceId, n);
+  try {
+    const result = await run();
+    flight.done(result.heldBack !== true);
+    return result;
+  } catch (err) {
+    flight.done(false);
+    throw err;
+  }
+}
+
 export async function mirrorOncePerEvent(
   tenantId: bigint,
   instanceId: bigint,
@@ -88,7 +108,9 @@ export async function mirrorOncePerEvent(
   // one version of the conversation: open, resolved and open again serialize alike, so two equal
   // payloads can be two transitions, and each runs.
   if (n.conversationUpdatedAt == null) {
-    return mirror(tenantId, instanceId, n, base, opts);
+    return tracked(tenantId, instanceId, n, () =>
+      mirror(tenantId, instanceId, n, base, opts),
+    );
   }
   const key = mirrorEventKey(tenantId, instanceId, n, opts);
   const running = inFlight.get(key);
@@ -101,7 +123,9 @@ export async function mirrorOncePerEvent(
     }
     return mirrorOncePerEvent(tenantId, instanceId, n, base, opts, mirror);
   }
-  const run = mirror(tenantId, instanceId, n, base, opts);
+  const run = tracked(tenantId, instanceId, n, () =>
+    mirror(tenantId, instanceId, n, base, opts),
+  );
   inFlight.set(key, run);
   try {
     return await run;

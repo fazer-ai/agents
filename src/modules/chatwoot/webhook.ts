@@ -198,7 +198,6 @@ import {
   loadChatwootClient,
 } from "./instance";
 import { withConversationLabels } from "./labels";
-import type { MirrorResult } from "./mirror";
 import { mirrorOncePerEvent } from "./mirror-once";
 import {
   type ControlCommand,
@@ -1255,8 +1254,6 @@ export async function processRecordedChatwootDelivery(
     params.agentBotId,
     params.normalized,
   );
-  // Whether the mirror applied all this event owed; unset when no mirror ran.
-  let mirroredWhole: boolean | null = null;
   try {
     const outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -1267,14 +1264,11 @@ export async function processRecordedChatwootDelivery(
       receiptBindingGeneration: params.receiptBindingGeneration,
       base,
       deps: params.deps,
-      onMirror: (m) => {
-        mirroredWhole = m.heldBack !== true;
-      },
     });
-    // Only a delivery this attempt processed, with its mirror applied whole, vouches for its repeats:
-    // a lost claim ("skipped") ran nothing here, a held-back write is owed again, and a throw never
-    // reaches this line.
-    if (outcome === "processed" && mirroredWhole === true) remember();
+    // Only a delivery this attempt processed vouches for its message's repeats: a lost claim
+    // ("skipped") ran nothing here, and a throw never reaches this line. The conversation half is the
+    // mirror's own (`trackConversationMirror`).
+    if (outcome === "processed") remember();
     return outcome;
   } catch (err) {
     if (!(err instanceof TurnOwedToRecovery)) throw err;
@@ -1657,9 +1651,6 @@ export interface ProcessChatwootParams {
   // consume it as a command: a decision, not silence, or a replay would requeue a settled row.
   // "no-reader" is a switched-on observer on an inbox with no responder of ours: nothing would read it.
   onIngest?: (outcome: IngestOutcome | "covered" | "no-reader") => void;
-  // What the mirror did with this event, opt-in like `onDirectTurn`: a run that held a write back
-  // (`heldBack`) did not mirror the event whole, so its snapshot vouches for nothing.
-  onMirror?: (r: MirrorResult) => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -4545,7 +4536,6 @@ export async function processChatwootDelivery(
         : {}),
     },
   );
-  params.onMirror?.(mirror);
 
   // A reply the channel refused, reported on a `message_updated` for the route's own outgoing
   // message. Below the mirror so the line hangs off the conversation row; it runs no turn, no debounce,

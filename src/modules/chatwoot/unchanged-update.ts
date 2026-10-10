@@ -12,16 +12,18 @@ import type { NormalizedChatwootEvent } from "./types";
 export const UNCHANGED_UPDATE_MESSAGES_MAX = 20_000;
 export const UNCHANGED_UPDATE_CONVERSATIONS_MAX = 20_000;
 
-interface ConversationRecord {
-  digest: string;
-  // `conversation.updated_at`, the source's own version: the record keeps the NEWEST snapshot mirrored,
-  // so a slower processing of an older event cannot make an older snapshot the one compared against.
-  version: number | null;
+interface MirrorsInFlight {
+  count: number;
+  // Another mirror run of the conversation started while one was in flight: their commit order is
+  // not their completion order, so neither can say what the row holds.
+  overlapped: boolean;
 }
 
 interface Store {
   messages: Map<string, string>;
-  conversations: Map<string, ConversationRecord>;
+  // The snapshot the LAST mirror run of the conversation in this process applied whole.
+  conversations: Map<string, string>;
+  mirroring: Map<string, MirrorsInFlight>;
 }
 
 const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates");
@@ -32,9 +34,14 @@ function store(): Store {
   if (
     !held ||
     !(held.messages instanceof Map) ||
-    !(held.conversations instanceof Map)
+    !(held.conversations instanceof Map) ||
+    !(held.mirroring instanceof Map)
   ) {
-    g[KEY] = { messages: new Map(), conversations: new Map() };
+    g[KEY] = {
+      messages: new Map(),
+      conversations: new Map(),
+      mirroring: new Map(),
+    };
   }
   return g[KEY] as Store;
 }
@@ -122,10 +129,10 @@ export function isUnchangedMessageUpdate(
     messageKey(tenantId, instanceId, agentBotId, n.message?.id as number),
   );
   if (seen === undefined || seen !== messageDigest(n)) return false;
-  const conv = s.conversations.get(
-    conversationKey(tenantId, instanceId, n.conversationId as number),
-  );
-  return conv !== undefined && conv.digest === conversationDigest(n);
+  const key = conversationKey(tenantId, instanceId, n.conversationId as number);
+  // A mirror of this conversation in flight has not said yet what the row will hold.
+  if (s.mirroring.has(key)) return false;
+  return s.conversations.get(key) === conversationDigest(n);
 }
 
 function setBounded<V>(
@@ -143,25 +150,56 @@ function setBounded<V>(
   }
 }
 
-// What a delivery's message and conversation looked like ON ARRIVAL, taken before it is processed (the
-// processing may enrich the normalized event, and a repeat is compared against the wire), and kept
-// only once that processing succeeded on this route: call the returned function then.
+// Around every mirror run (`mirrorOncePerEvent`, the one path every delivery, drain and recovery
+// mirrors through). The record is what the row holds only when the run applied the snapshot whole
+// and no other run of the conversation overlapped it; any other ending forgets the record, so the
+// next receipt reaches the mirror. "Newest by version" is not the rule: the unversioned fields
+// (contact, bags, labels) are ordered by the coarse activity clock, so an older event can still
+// write them, and what the row holds is what the last run wrote.
+export function trackConversationMirror(
+  tenantId: bigint,
+  instanceId: bigint,
+  n: NormalizedChatwootEvent,
+): { done: (whole: boolean) => void } {
+  if (n.conversationId === null) return { done: () => {} };
+  const key = conversationKey(tenantId, instanceId, n.conversationId);
+  const snapshot = conversationDigest(n);
+  const s = store();
+  const flight = s.mirroring.get(key) ?? { count: 0, overlapped: false };
+  if (flight.count > 0) flight.overlapped = true;
+  flight.count++;
+  s.mirroring.set(key, flight);
+  let settled = false;
+  return {
+    done: (whole) => {
+      if (settled) return;
+      settled = true;
+      if (whole && !flight.overlapped) {
+        setBounded(
+          s.conversations,
+          key,
+          snapshot,
+          UNCHANGED_UPDATE_CONVERSATIONS_MAX,
+        );
+      } else {
+        s.conversations.delete(key);
+      }
+      flight.count--;
+      if (flight.count === 0 && s.mirroring.get(key) === flight) {
+        s.mirroring.delete(key);
+      }
+    },
+  };
+}
+
+// The message half, taken on arrival and kept only once the delivery was processed on this route:
+// call the returned function then.
 export function rememberOnSuccess(
   tenantId: bigint,
   instanceId: bigint,
   agentBotId: number | null,
   n: NormalizedChatwootEvent,
 ): () => void {
-  const conversation =
-    n.conversationId === null
-      ? null
-      : {
-          key: conversationKey(tenantId, instanceId, n.conversationId),
-          record: {
-            digest: conversationDigest(n),
-            version: n.conversationUpdatedAt ?? null,
-          },
-        };
   const m = n.message;
   const message =
     agentBotId !== null && businessMessage(m) && m.id !== null
@@ -171,42 +209,24 @@ export function rememberOnSuccess(
         }
       : null;
   return () => {
-    const s = store();
-    if (conversation !== null) {
-      const held = s.conversations.get(conversation.key);
-      const version = conversation.record.version;
-      // Older than the snapshot already held: that one stays the newest mirrored.
-      const older =
-        held !== undefined &&
-        held.version !== null &&
-        (version === null || version < held.version);
-      if (!older) {
-        setBounded(
-          s.conversations,
-          conversation.key,
-          conversation.record,
-          UNCHANGED_UPDATE_CONVERSATIONS_MAX,
-        );
-      }
-    }
-    if (message !== null) {
-      setBounded(
-        s.messages,
-        message.key,
-        message.digest,
-        UNCHANGED_UPDATE_MESSAGES_MAX,
-      );
-    }
+    if (message === null) return;
+    setBounded(
+      store().messages,
+      message.key,
+      message.digest,
+      UNCHANGED_UPDATE_MESSAGES_MAX,
+    );
   };
 }
 
-// Records a delivery as processed, for a caller that already knows it was.
+// Both halves at once, as a whole mirror run and a processed delivery would leave them.
 export function rememberProcessedDelivery(
   tenantId: bigint,
   instanceId: bigint,
   agentBotId: number | null,
   n: NormalizedChatwootEvent,
 ): void {
+  trackConversationMirror(tenantId, instanceId, n).done(true);
   rememberOnSuccess(tenantId, instanceId, agentBotId, n)();
 }
 
@@ -223,4 +243,5 @@ export function resetUnchangedUpdateRecords(): void {
   const s = store();
   s.messages.clear();
   s.conversations.clear();
+  s.mirroring.clear();
 }

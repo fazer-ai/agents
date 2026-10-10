@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import type { PrismaClient } from "@/../generated/prisma/client";
+import { mirrorOncePerEvent } from "@/modules/chatwoot/mirror-once";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import {
   isUnchangedMessageUpdate,
+  rememberOnSuccess,
   rememberProcessedDelivery,
   resetUnchangedUpdateRecords,
+  trackConversationMirror,
   UNCHANGED_UPDATE_CONVERSATIONS_MAX,
   UNCHANGED_UPDATE_MESSAGES_MAX,
   unchangedUpdateRecordSizes,
@@ -94,6 +98,56 @@ describe("unchanged-update records", () => {
     ).toBe(true);
     expect(
       isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 0)),
+    ).toBe(false);
+  });
+
+  // Two runs of one conversation in flight together commit in an order their completion does not
+  // show, so neither says what the row holds.
+  test("overlapping mirror runs of a conversation leave no record", () => {
+    const created = event("message_created", 1, 1);
+    rememberProcessedDelivery(1n, 1n, 9, created);
+    const a = trackConversationMirror(1n, 1n, created);
+    const b = trackConversationMirror(1n, 1n, created);
+    a.done(true);
+    b.done(true);
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
+    ).toBe(false);
+  });
+
+  test("a receipt is not dropped while a mirror of its conversation is in flight", () => {
+    const created = event("message_created", 1, 1);
+    rememberProcessedDelivery(1n, 1n, 9, created);
+    const run = trackConversationMirror(1n, 1n, created);
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
+    ).toBe(false);
+    run.done(true);
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
+    ).toBe(true);
+  });
+
+  test("a mirror run that did not apply its snapshot whole forgets the record", () => {
+    const created = event("message_created", 1, 1);
+    rememberProcessedDelivery(1n, 1n, 9, created);
+    trackConversationMirror(1n, 1n, created).done(false);
+    rememberOnSuccess(1n, 1n, 9, created)();
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
+    ).toBe(false);
+  });
+
+  test("a mirror run that throws forgets the record", async () => {
+    const created = event("message_created", 1, 1);
+    rememberProcessedDelivery(1n, 1n, 9, created);
+    await expect(
+      mirrorOncePerEvent(1n, 1n, created, {} as PrismaClient, {}, async () => {
+        throw new Error("the mirror failed");
+      }),
+    ).rejects.toThrow("the mirror failed");
+    expect(
+      isUnchangedMessageUpdate(1n, 1n, 9, event("message_updated", 1, 1)),
     ).toBe(false);
   });
 });

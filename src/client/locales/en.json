@@ -2079,6 +2079,7 @@
     "snoozedFollowUpLabelHint": "A snoozed conversation with this label follows this cadence.",
     "snoozedFollowUpLabelMissing": "Pick a label. Without one, this cadence would be read as a second default.",
     "snoozedFollowUpLabelPlaceholder": "Pick a label…",
+    "snoozedFollowUpLabelTooLong": "This label is longer than the reminder reads ({{max}} characters). Use a shorter label.",
     "snoozedFollowUpNoDefault": "No default cadence: only conversations carrying one of the labels below are chased. A plain snooze, with none of them, gets no reminder.",
     "snoozedFollowUpNoSteps": "A cadence with no step reminds nobody. Add a step or remove the cadence.",
     "snoozedFollowUpRemoveCadence": "Remove cadence",

@@ -71,6 +71,7 @@ import {
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
   SIGNATURE_MAX,
+  SNOOZED_CADENCE_LABEL_MAX,
   TEMPLATE_MESSAGE_MAX,
 } from "@/modules/agents/text-caps";
 import { formatWindowsSummary } from "@/modules/business-hours/announce";
@@ -1441,7 +1442,13 @@ function SnoozedFollowUpEditor({
                               "editor.snoozedFollowUpLabelDuplicate",
                               "Another cadence above already uses this label (case is ignored). Only the first one would ever be picked.",
                             )
-                          : null
+                          : issue?.label === "tooLong"
+                            ? t(
+                                "editor.snoozedFollowUpLabelTooLong",
+                                "This label is longer than the reminder reads ({{max}} characters). Use a shorter label.",
+                                { max: SNOOZED_CADENCE_LABEL_MAX },
+                              )
+                            : null
                     }
                   >
                     <LabelPicker

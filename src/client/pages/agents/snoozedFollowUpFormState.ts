@@ -1,4 +1,8 @@
-import { SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES } from "@/modules/agents/text-caps";
+import {
+  FOLLOW_UP_DEFAULT_DELAY_VALUE,
+  SNOOZED_CADENCE_LABEL_MAX,
+  SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES,
+} from "@/modules/agents/text-caps";
 import type { FollowUpStepState } from "./BehaviorTab";
 import { stepsToForm, stepsToStored } from "./followUpFormState";
 
@@ -46,7 +50,10 @@ export function snoozedFollowUpToForm(settings: unknown): SnoozedFollowUpState {
           typeof cb.label === "string" && cb.label.trim()
             ? cb.label.trim()
             : null,
-        steps: stepsToForm(Array.isArray(cb.steps) ? cb.steps : []),
+        steps: stepsToForm(
+          Array.isArray(cb.steps) ? cb.steps : [],
+          String(FOLLOW_UP_DEFAULT_DELAY_VALUE),
+        ),
       };
     },
   );
@@ -84,7 +91,8 @@ export interface SnoozedCadenceIssues {
   // "missing": a labeled cadence with no label picked would be read as a second DEFAULT.
   // "duplicate": an earlier cadence already has this label (ignoring case), or this is a second
   // default; only the first could ever be picked.
-  label: "missing" | "duplicate" | null;
+  // "tooLong": longer than the reader keeps; it would be clipped, and could collide with another.
+  label: "missing" | "duplicate" | "tooLong" | null;
   // A cadence with no step reminds nobody and is dropped.
   noSteps: boolean;
 }
@@ -104,6 +112,11 @@ export function snoozedFollowUpIssues(
     let label: SnoozedCadenceIssues["label"] = null;
     if (c.label !== null && !c.label.trim()) {
       label = "missing";
+    } else if (
+      c.label !== null &&
+      c.label.trim().length > SNOOZED_CADENCE_LABEL_MAX
+    ) {
+      label = "tooLong";
     } else {
       // Same key as the reader: labels compare ignoring case, and the default has its own slot.
       const key =

@@ -16,6 +16,7 @@ import {
   issueOrRequestApproval,
   KeyAnswered,
   listApprovalRequests,
+  pendingApprovalNotice,
   rejectDocumentRequest,
   renderApprovalPreview,
 } from "@/modules/documents/approval";
@@ -244,6 +245,10 @@ describe.skipIf(!dbUp)("document approval", () => {
     const again = String(await tool(newTurnState()).invoke(ARGS));
     const after = await counts();
     expect(out).toContain("revisão");
+    expect(out).toContain("a equipe está preparando");
+    expect(out).toContain("NÃO foi enviado");
+    expect(out).toContain('"em breve"');
+    expect(out).not.toMatch(/ORC-\d|\d{1,2}h|\d{4}-\d{2}-\d{2}/);
     expect(again).toBe(out);
     expect(turnState.pendingAttachments).toHaveLength(0);
     expect(after.requests - before.requests).toBe(1);
@@ -732,6 +737,64 @@ describe.skipIf(!dbUp)("document approval", () => {
     } finally {
       await espiao.$disconnect();
     }
+  });
+
+  test("off a conversation row the pending line is read by thread, and only that thread's", async () => {
+    const mine = `${tenantA}:pending:1`;
+    const other = `${tenantA}:pending:2`;
+    for (const [threadId, title] of [
+      [mine, "Orçamento do meu fio"],
+      [other, "Orçamento de outro fio"],
+    ] as const) {
+      await suDb.documentApprovalRequest.create({
+        data: {
+          tenantId: tenantA,
+          title,
+          threadId,
+          idempotencyKey: `thread-notice-${threadId}`,
+          snapshot: {},
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+    }
+    const line = await pendingApprovalNotice(
+      tenantA,
+      { conversationId: null, threadId: mine },
+      appDb,
+    );
+    expect(line).toContain("Orçamento do meu fio");
+    expect(line).not.toContain("Orçamento de outro fio");
+    expect(
+      await pendingApprovalNotice(
+        tenantA,
+        { conversationId: null, threadId: `${tenantA}:pending:3` },
+        appDb,
+      ),
+    ).toBeNull();
+  });
+
+  test("repeated titles cannot crowd another pending document out of the line", async () => {
+    const thread = `${tenantA}:pending:crowd`;
+    const titles = [...Array(5).fill("Orçamento"), "Contrato"];
+    for (const [i, title] of titles.entries()) {
+      await suDb.documentApprovalRequest.create({
+        data: {
+          tenantId: tenantA,
+          title,
+          threadId: thread,
+          idempotencyKey: `crowd-${i}`,
+          snapshot: {},
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+    }
+    const line = await pendingApprovalNotice(
+      tenantA,
+      { conversationId: null, threadId: thread },
+      appDb,
+    );
+    expect(line).toContain("Contrato");
+    expect(line?.split("Orçamento")).toHaveLength(2);
   });
 
   test("expiry moves only overdue pending requests, and approval refuses one even before it runs", async () => {

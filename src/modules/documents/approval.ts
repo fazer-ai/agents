@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
@@ -486,6 +487,65 @@ export async function expireDueApprovalRequests(
     `,
   );
   return rows.map((r) => r.id);
+}
+
+// The line every turn of a conversation carries while one of its documents waits on the team. The
+// tool result says it once, and it scrolls out of the history window, so this is what keeps the agent
+// from offering the document again or promising it. It names the documents and never a time: the
+// validity is how long the TEAM may take, not when the customer will receive anything.
+const PENDING_NOTICE_LIMIT = 5;
+
+export async function pendingApprovalNotice(
+  tenantId: bigint,
+  conversation: { conversationId: bigint | null; threadId: string },
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+): Promise<string | null> {
+  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.documentApprovalRequest.groupBy({
+      by: ["title"],
+      where: {
+        status: "PENDING",
+        expiresAt: { gt: now },
+        ...(conversation.conversationId === null
+          ? { threadId: conversation.threadId }
+          : { conversationId: conversation.conversationId }),
+      },
+      _min: { id: true },
+      orderBy: { _min: { id: "asc" } },
+      take: PENDING_NOTICE_LIMIT,
+    }),
+  );
+  const titles = [
+    ...new Set(
+      rows.map((r) => clipText(r.title.replace(/\s+/g, " ").trim(), 80)),
+    ),
+  ].filter(Boolean);
+  if (titles.length === 0) return null;
+  const which =
+    titles.length === 1
+      ? `um documento aguardando a aprovação da equipe: ${titles[0]}`
+      : `documentos aguardando a aprovação da equipe: ${titles.join("; ")}`;
+  return `[Sistema] Nesta conversa há ${which}. Ainda não foi enviado ao cliente. Só fale disso se o cliente perguntar por esse documento: nesse caso, diga que a equipe está preparando, sem dizer quando fica pronto ou chega (nada de prazo, data, "hoje", "em breve", "logo" ou "em instantes"), e não diga que já foi enviado. Não chame a ferramenta do documento de novo para isso.`;
+}
+
+// What a turn hands the graph. A failed read costs the line, never the turn: the customer is still
+// answered, and the tool's own answer still refuses to issue twice.
+export async function approvalNoticesForTurn(
+  tenantId: bigint,
+  conversation: { conversationId: bigint | null; threadId: string },
+  base: PrismaClient = basePrisma,
+): Promise<string[]> {
+  try {
+    const line = await pendingApprovalNotice(tenantId, conversation, base);
+    return line ? [line] : [];
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: String(tenantId), threadId: conversation.threadId },
+      "document approval: pending notice unreadable, turn runs without it",
+    );
+    return [];
+  }
 }
 
 async function runExpiry(

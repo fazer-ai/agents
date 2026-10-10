@@ -55,6 +55,7 @@ import {
   readSelectionState,
   selectOpenMessages,
 } from "@/modules/debounce/watermark";
+import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import {
   emitFlowEvent,
@@ -1079,7 +1080,13 @@ async function runTurnBody(
   // the second answer said nothing too.
   let silenceRetried = false;
   let silenceRetryOutcome: SilenceRetryOutcome | null = null;
+  const standingNotices = await approvalNoticesForTurn(
+    tenantId,
+    { conversationId: loaded.conversationDbId, threadId },
+    base,
+  );
   const graph = await buildModelAndGraph(loaded, tools, {
+    standingNotices,
     // NOTE: Asked by the graph when the silence retry would run. A completed transfer or something
     // already delivered is not a silence: the same facts `silenceIsUnexplained` reads at the end.
     retrySilence: () =>

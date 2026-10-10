@@ -27,7 +27,6 @@ import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import {
   CHOICE_OPTIONS_MAX,
   DECISION_ACTION_TOOLS,
-  DECISION_APPLY,
   DECISION_PROVIDERS,
   DECISION_QUESTION_TYPES,
   DEFAULT_DECISION_MODEL,
@@ -61,8 +60,16 @@ import {
   issuesUnder,
   moveItem,
   ruleIsBroken,
+  ruleToolNotGranted,
   withActionScope,
 } from "./decisionsFormState";
+import {
+  DECISIONS_STARTERS,
+  type DecisionsStarter,
+  type StarterNames,
+  starterApplied,
+  withStarter,
+} from "./decisionsStarters";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 
 // The decisions engine's block in the agent editor (docs/decisions.md, "The console"): which
@@ -240,7 +247,7 @@ function ruleActivityText(
   }
   if (a.shadow > 0) {
     parts.push(
-      t("editor.decisionsRuleShadow", "would have run {{n}} (shadow)", {
+      t("editor.decisionsRuleShadow", "would have run {{n}} (rehearsal)", {
         n: a.shadow,
       }),
     );
@@ -272,8 +279,12 @@ export function DecisionsFields({
   storedDecisions,
   decisions,
   setDecisions,
-  credentialError,
   serverRefusal,
+  granted,
+  grantsPending,
+  onGrantTool,
+  onOpenTools,
+  onOpenGeneral,
 }: {
   agentId: string;
   // When the agent was last saved: the activity is read again after every save.
@@ -287,10 +298,18 @@ export function DecisionsFields({
   storedDecisions: Record<string, unknown> | null;
   decisions: DecisionsForm;
   setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
-  credentialError: string | null;
   serverRefusal: DecisionsServerRefusal | null;
+  // The native tools the agent has AS SAVED (what the engine checks), or null until they are read.
+  granted: ReadonlySet<string> | null;
+  // Whether the Tools tab holds grant changes not saved yet: then granting one tool from a rule
+  // would write it beside a selection nobody has confirmed, so the rule sends the operator there.
+  grantsPending: boolean;
+  onGrantTool: (tool: string) => void;
+  onOpenTools: () => void;
+  onOpenGeneral: () => void;
 }) {
   const { t } = useTranslation();
+  const starterNames = useStarterNames();
   const issues = useMemo(
     () => decisionsFormIssues(decisions, storedDecisions),
     [decisions, storedDecisions],
@@ -396,7 +415,7 @@ export function DecisionsFields({
 
   const patch = (p: Partial<DecisionsForm>) =>
     setDecisions((prev) => ({ ...prev, ...p }));
-  const provider = (decisions.provider || "openai") as DecisionProvider;
+  const _provider = (decisions.provider || "openai") as DecisionProvider;
   const apply = decisions.apply || "shadow";
   const questionNames = decisions.questions.map((q) => q.name).filter(Boolean);
 
@@ -462,6 +481,74 @@ export function DecisionsFields({
         return { ...rule, args };
       }),
     }));
+
+  const addStarter = (kind: DecisionsStarter) =>
+    setDecisions((prev) => withStarter(prev, kind, starterNames));
+  const starterTitle = (kind: DecisionsStarter): string => {
+    switch (kind) {
+      case "sentiment":
+        return t("editor.decisionsStarterSentiment", "Customer sentiment");
+      case "subject":
+        return t("editor.decisionsStarterSubject", "Main subject");
+      default:
+        return t("editor.decisionsStarterHuman", "Asks for a person");
+    }
+  };
+  const starterHint = (kind: DecisionsStarter): string => {
+    switch (kind) {
+      case "sentiment":
+        return t(
+          "editor.decisionsStarterSentimentHint",
+          "Five levels, from very negative to very positive. Each one puts its own label on the conversation and takes the other four off.",
+        );
+      case "subject":
+        return t(
+          "editor.decisionsStarterSubjectHint",
+          'A list of subjects you can edit. The answer is written to the conversation\'s "{{attribute}}" attribute.',
+          { attribute: starterNames.subjectAttribute },
+        );
+      default:
+        return t(
+          "editor.decisionsStarterHumanHint",
+          'Yes or no. When the customer asks to talk to someone, the conversation gets the "{{label}}" label.',
+          { label: starterNames.humanLabel },
+        );
+    }
+  };
+  const notGranted = (rule: DecisionRuleForm): boolean =>
+    granted !== null && ruleToolNotGranted(rule, granted);
+  const grantWarning = (rule: DecisionRuleForm) => (
+    <div
+      data-testid="decisions-rule-not-granted"
+      className="flex flex-wrap items-center gap-2 rounded-md border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs"
+    >
+      <TriangleAlert
+        className="h-4 w-4 shrink-0 text-warning"
+        aria-hidden="true"
+      />
+      <span className="flex-1">
+        {t(
+          "editor.decisionsRuleNotGranted",
+          "This agent is not allowed to {{action}}, so this rule does not run.",
+          { action: toolLabel(rule.tool).toLowerCase() },
+        )}
+      </span>
+      {grantsPending ? (
+        <Button size="sm" variant="secondary" onClick={onOpenTools}>
+          {t("editor.decisionsOpenTools", "Open Tools")}
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="secondary"
+          data-testid="decisions-rule-grant"
+          onClick={() => onGrantTool(rule.tool)}
+        >
+          {t("editor.decisionsGrantTool", "Allow")}
+        </Button>
+      )}
+    </div>
+  );
 
   const toolLabel = (tool: string): string => {
     switch (tool) {
@@ -1037,107 +1124,73 @@ export function DecisionsFields({
 
   const body = (
     <>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FormField
-          label={t("editor.decisionsProvider", "Classification API")}
-          error={field("provider")}
-        >
-          <Select
-            value={decisions.provider}
-            onChange={(e) => patch({ provider: e.target.value, model: "" })}
-          >
-            {!DECISION_PROVIDERS.includes(
-              decisions.provider as DecisionProvider,
-            ) && (
-              <option value={decisions.provider}>
-                {decisions.provider === ""
-                  ? t("editor.decisionsPick", "Pick…")
-                  : decisions.provider}
-              </option>
+      <div
+        id="decisions-apply"
+        className="flex scroll-mt-4 flex-col gap-3 rounded-lg border border-border p-3"
+        data-testid="decisions-apply"
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-medium text-sm text-text-primary">
+            {t("editor.decisionsApplyTitle", "What it does with the answers")}
+          </span>
+          <div
+            role="radiogroup"
+            aria-label={t(
+              "editor.decisionsApplyTitle",
+              "What it does with the answers",
             )}
-            <option value="openai">{PROVIDER_NAMES.openai}</option>
-            <option value="typesafe">{PROVIDER_NAMES.typesafe}</option>
-          </Select>
-        </FormField>
-        <FormField
-          label={t("editor.decisionsModel", "Model")}
-          description={t(
-            "editor.decisionsModelHint",
-            "Empty uses the default, {{model}}.",
-            {
-              model:
-                DEFAULT_DECISION_MODEL[provider] ??
-                DEFAULT_DECISION_MODEL.openai,
-            },
-          )}
-          error={field("model")}
-        >
-          <Input
-            value={decisions.model}
-            onChange={(e) => patch({ model: e.target.value })}
-            placeholder={
-              DEFAULT_DECISION_MODEL[provider] ?? DEFAULT_DECISION_MODEL.openai
-            }
-          />
-        </FormField>
-        <FormField
-          label={t("editor.decisionsCredential", "API key")}
-          error={credentialError ?? field("credentialRef")}
-          group
-        >
-          <CredentialPicker
-            value={decisions.credentialRef}
-            onChange={(v) => patch({ credentialRef: v })}
-            required
-            compatibleTypes={credentialCompat.decisions(provider)}
-            defaultCreateType={credentialCompat.decisions(provider)[0]}
-            ariaLabel={t("editor.decisionsCredential", "API key")}
-          />
-        </FormField>
-        <FormField
-          label={t("editor.decisionsApply", "What it does with the answers")}
-          description={
-            apply === "enforce"
-              ? t(
-                  "editor.decisionsApplyEnforceHint",
-                  "Runs each rule that fires: labels, notes, attributes and handoffs are written to the conversation.",
-                )
-              : t(
-                  "editor.decisionsApplyShadowHint",
-                  "Decides and logs what each rule would have done. Nothing is written to the conversation. The classification call is still paid for.",
-                )
-          }
-          error={field("apply")}
-        >
-          <Select
-            value={apply}
-            onChange={(e) => patch({ apply: e.target.value })}
+            className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
           >
-            {!DECISION_APPLY.includes(apply as "shadow") && (
-              <option value={apply}>{apply}</option>
-            )}
-            <option value="shadow">
-              {t("editor.decisionsApplyShadow", "Shadow: only log")}
-            </option>
-            <option value="enforce">
-              {t("editor.decisionsApplyEnforce", "Enforce: run the rules")}
-            </option>
-          </Select>
-        </FormField>
-      </div>
-
-      {activity && (
-        <p
-          className="text-text-muted text-xs"
-          data-testid="decisions-activity-total"
-        >
-          {t(
-            "editor.decisionsActivityTotal",
-            "{{count}} of this agent's latest decisions ran these questions and rules as saved. The numbers beside each question and rule count those.",
-            { count: activity.decisions },
-          )}
+            {(["shadow", "enforce"] as const).map((value) => (
+              // biome-ignore lint/a11y/useSemanticElements: a segmented choice drawn like the Mode selector, not a bare radio input.
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={apply === value}
+                onClick={() => patch({ apply: value })}
+                className={
+                  apply === value
+                    ? "rounded-md bg-accent-solid px-4 py-1.5 font-medium text-accent-foreground text-sm"
+                    : "rounded-md px-4 py-1.5 font-medium text-sm text-text-secondary hover:text-text-primary"
+                }
+              >
+                {value === "shadow"
+                  ? t("editor.decisionsApplyRehearsal", "Rehearsal")
+                  : t("editor.decisionsApplyLive", "Live")}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-text-secondary text-xs">
+          {apply === "enforce"
+            ? t(
+                "editor.decisionsApplyLiveHint",
+                "Runs each rule that fires: labels, notes, attributes and handoffs are written to the conversation.",
+              )
+            : t(
+                "editor.decisionsApplyRehearsalHint",
+                "Decides and records what each rule would have done, and writes nothing to the conversation. The classifier call is still paid for. Switch to Live once the counts below show what you expect.",
+              )}
         </p>
-      )}
+        {field("apply") && (
+          <span role="alert" className="text-error text-xs">
+            {at("apply")}
+          </span>
+        )}
+        {activity && (
+          <p
+            className="text-text-muted text-xs"
+            data-testid="decisions-activity-total"
+          >
+            {t(
+              "editor.decisionsActivityTotal",
+              "{{count}} of this agent's latest decisions ran these questions and rules as saved. The numbers beside each question and rule count those.",
+              { count: activity.decisions },
+            )}
+          </p>
+        )}
+      </div>
 
       <div className="flex flex-col gap-3">
         <div>
@@ -1152,6 +1205,34 @@ export function DecisionsFields({
             )}
           </p>
         </div>
+        {decisions.questions.length === 0 && (
+          <div className="flex flex-col gap-2" data-testid="decisions-starters">
+            <p className="text-text-secondary text-xs">
+              {t(
+                "editor.decisionsStartersHint",
+                "Start from a ready question. It comes with its rules, and you can change any of it before saving.",
+              )}
+            </p>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {DECISIONS_STARTERS.map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  data-testid={`decisions-starter-${kind}`}
+                  onClick={() => addStarter(kind)}
+                  className="flex flex-col gap-1 rounded-lg border border-border bg-bg-secondary p-3 text-left transition-colors hover:bg-bg-hover"
+                >
+                  <span className="font-medium text-sm text-text-primary">
+                    {starterTitle(kind)}
+                  </span>
+                  <span className="text-text-muted text-xs">
+                    {starterHint(kind)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {decisions.questions.map((q, qi) => {
           const samples = activity?.answers.get(q.name) ?? [];
           const qOpen = open.has(q.key) || forced.includes(q.key);
@@ -1382,8 +1463,26 @@ export function DecisionsFields({
             }}
           >
             <Plus aria-hidden="true" />
-            {t("editor.decisionsAddQuestion", "Add question")}
+            {decisions.questions.length === 0
+              ? t("editor.decisionsStartBlank", "Start with a blank question")
+              : t("editor.decisionsAddQuestion", "Add question")}
           </Button>
+          {decisions.questions.length > 0 &&
+            DECISIONS_STARTERS.filter(
+              (kind) => !starterApplied(decisions, kind, starterNames),
+            ).map((kind) => (
+              <Button
+                key={kind}
+                size="sm"
+                variant="ghost"
+                className="ml-2"
+                disabled={decisions.questions.length >= QUESTIONS_MAX}
+                onClick={() => addStarter(kind)}
+              >
+                <Plus aria-hidden="true" />
+                {starterTitle(kind)}
+              </Button>
+            ))}
         </div>
       </div>
 
@@ -1579,6 +1678,7 @@ export function DecisionsFields({
                       </Select>
                     </FormField>
                     {actionFields(ri, rule)}
+                    {notGranted(rule) && grantWarning(rule)}
                     {gap && (
                       <span className="flex items-start gap-1.5 text-warning text-xs">
                         <TriangleAlert
@@ -1599,6 +1699,7 @@ export function DecisionsFields({
                   {ruleSummary(rule)}
                 </p>
               )}
+              {!rOpen && notGranted(rule) && grantWarning(rule)}
               {activity && activity.decisions > 0 && (
                 <p
                   className="text-text-muted text-xs"
@@ -1659,12 +1760,20 @@ export function DecisionsFields({
 
   // Whatever the fields above did not draw is said here, so no problem that blocks the save is
   // silent: a problem at a path this screen has no input for, and a server refusal about one.
+  // The Classifier's fields live on General, so a problem there is one line with the way to it.
+  const classifierIssue = [...issues.keys()].some((path) =>
+    CLASSIFIER_PATHS.has(path),
+  );
+  const hereCount = [...issues.keys()].filter(
+    (path) => !CLASSIFIER_PATHS.has(path),
+  ).length;
   const undrawn = [...issues]
-    .filter(([path]) => !drawnPaths.has(path))
+    .filter(([path]) => !drawnPaths.has(path) && !CLASSIFIER_PATHS.has(path))
     .map(([path, issue]) => `${path}: ${issueText(t, issue)}`);
   const serverUndrawn =
     serverRefusal &&
     !drawnPaths.has(serverRefusal.path) &&
+    !CLASSIFIER_PATHS.has(serverRefusal.path) &&
     !issues.has(serverRefusal.path)
       ? serverRefusal.message
       : null;
@@ -1682,13 +1791,24 @@ export function DecisionsFields({
             aria-hidden="true"
           />
           <div className="flex flex-col gap-1">
-            {issues.size > 0 && (
+            {hereCount > 0 && (
               <span>
                 {t(
                   "editor.decisionsProblems",
-                  "{{count}} problems in the decisions engine keep this tab from being saved. Each is marked on its field below.",
-                  { count: issues.size },
+                  "{{count}} problems keep the questions and rules from being saved. Each is marked on its field below.",
+                  { count: hereCount },
                 )}
+              </span>
+            )}
+            {classifierIssue && (
+              <span className="flex flex-wrap items-center gap-2">
+                {t(
+                  "editor.decisionsClassifierProblem",
+                  "The classifier on the General tab is not complete.",
+                )}
+                <Button size="sm" variant="secondary" onClick={onOpenGeneral}>
+                  {t("editor.decisionsOpenGeneral", "Open General")}
+                </Button>
               </span>
             )}
             {undrawn.map((line) => (
@@ -1701,4 +1821,144 @@ export function DecisionsFields({
       {body}
     </div>
   );
+}
+
+// The Classifier: which classification API a decisions agent calls, with which model and key. Drawn
+// on General where the chat model's fields would be (agents#1224), since it is the same question
+// ("what thinks for this agent"); the problems it marks are the write boundary's, at its own paths.
+export function ClassifierFields({
+  decisions,
+  storedDecisions,
+  setDecisions,
+  credentialError,
+  serverRefusal,
+}: {
+  decisions: DecisionsForm;
+  storedDecisions: Record<string, unknown> | null;
+  setDecisions: (next: (prev: DecisionsForm) => DecisionsForm) => void;
+  credentialError: string | null;
+  serverRefusal: DecisionsServerRefusal | null;
+}) {
+  const { t } = useTranslation();
+  const issues = useMemo(
+    () => decisionsFormIssues(decisions, storedDecisions),
+    [decisions, storedDecisions],
+  );
+  const at = (path: string): string | null => {
+    const issue = issues.get(path);
+    if (issue) return issueText(t, issue);
+    return serverRefusal && serverRefusal.path === path
+      ? serverRefusal.message
+      : null;
+  };
+  const patch = (p: Partial<DecisionsForm>) =>
+    setDecisions((prev) => ({ ...prev, ...p }));
+  const provider = (decisions.provider || "openai") as DecisionProvider;
+  const fallbackModel =
+    DEFAULT_DECISION_MODEL[provider] ?? DEFAULT_DECISION_MODEL.openai;
+  return (
+    <div className="grid gap-4 sm:grid-cols-2" data-testid="classifier-fields">
+      <FormField
+        label={t("editor.decisionsProvider", "Classification API")}
+        error={at("provider")}
+      >
+        <Select
+          value={decisions.provider}
+          onChange={(e) => patch({ provider: e.target.value, model: "" })}
+        >
+          {!DECISION_PROVIDERS.includes(
+            decisions.provider as DecisionProvider,
+          ) && (
+            <option value={decisions.provider}>
+              {decisions.provider === ""
+                ? t("editor.decisionsPick", "Pick…")
+                : decisions.provider}
+            </option>
+          )}
+          <option value="openai">{PROVIDER_NAMES.openai}</option>
+          <option value="typesafe">{PROVIDER_NAMES.typesafe}</option>
+        </Select>
+      </FormField>
+      <FormField
+        label={t("editor.decisionsModel", "Model")}
+        description={t(
+          "editor.decisionsModelHint",
+          "Empty uses the default, {{model}}.",
+          { model: fallbackModel },
+        )}
+        error={at("model")}
+      >
+        <Input
+          value={decisions.model}
+          onChange={(e) => patch({ model: e.target.value })}
+          placeholder={fallbackModel}
+        />
+      </FormField>
+      <FormField
+        label={t("editor.decisionsCredential", "API key")}
+        error={credentialError ?? at("credentialRef")}
+        group
+        className="sm:col-span-2"
+      >
+        <CredentialPicker
+          value={decisions.credentialRef}
+          onChange={(v) => patch({ credentialRef: v })}
+          required
+          compatibleTypes={credentialCompat.decisions(provider)}
+          defaultCreateType={credentialCompat.decisions(provider)[0]}
+          ariaLabel={t("editor.decisionsCredential", "API key")}
+        />
+      </FormField>
+    </div>
+  );
+}
+
+// The paths the Classifier draws on General, so the questions tab names them as "on General" rather
+// than as a path.
+export const CLASSIFIER_PATHS: ReadonlySet<string> = new Set([
+  "provider",
+  "model",
+  "credentialRef",
+]);
+
+// The words a starting point writes (labels, levels, options, the questions), in the console's
+// language, so what lands in the conversation reads like the rest of the account.
+function useStarterNames(): StarterNames {
+  const { t } = useTranslation();
+  return {
+    sentimentLevels: [
+      t("editor.starterSentimentVeryNegative", "very negative"),
+      t("editor.starterSentimentNegative", "negative"),
+      t("editor.starterSentimentNeutral", "neutral"),
+      t("editor.starterSentimentPositive", "positive"),
+      t("editor.starterSentimentVeryPositive", "very positive"),
+    ],
+    sentimentLabels: [
+      t("editor.starterSentimentLabelVeryNegative", "sentiment-very-negative"),
+      t("editor.starterSentimentLabelNegative", "sentiment-negative"),
+      t("editor.starterSentimentLabelNeutral", "sentiment-neutral"),
+      t("editor.starterSentimentLabelPositive", "sentiment-positive"),
+      t("editor.starterSentimentLabelVeryPositive", "sentiment-very-positive"),
+    ],
+    subjectOptions: [
+      t("editor.starterSubjectQuestionOption", "question"),
+      t("editor.starterSubjectComplaint", "complaint"),
+      t("editor.starterSubjectCancellation", "cancellation"),
+      t("editor.starterSubjectOther", "other"),
+    ],
+    subjectAttribute: t("editor.starterSubjectAttribute", "subject"),
+    humanLabel: t("editor.starterHumanLabel", "wants-a-person"),
+    sentimentQuestion: t(
+      "editor.starterSentimentQuestion",
+      "How does the customer feel in this conversation?",
+    ),
+    subjectQuestion: t(
+      "editor.starterSubjectQuestion",
+      "What is the conversation mainly about?",
+    ),
+    humanQuestion: t(
+      "editor.starterHumanQuestion",
+      "Does the customer ask to talk to a person?",
+    ),
+  };
 }

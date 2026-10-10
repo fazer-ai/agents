@@ -1,0 +1,60 @@
+import type { MonitoringEngine } from "@/modules/observe/settings";
+
+// The tabs a monitoring agent's editor draws, by engine (agents#1224). A watcher never speaks, so
+// GUARDRAILS (screen a reply), the CHANNEL REDIRECT (messages on another channel) and the PLAYGROUND
+// (a conversation with the agent) are never drawn. TOOLS stays on both engines: its grants, handoff
+// target, label permissions and preconditions fence a rule's action exactly as they fence the
+// model's call. KNOWLEDGE is the model's (the decisions engine searches no base), and QUESTIONS AND
+// RULES is the decisions engine's. Nothing is deleted when a tab is not drawn: switch back and it
+// returns as it was.
+const LLM_WATCHER_TABS: ReadonlySet<string> = new Set([
+  "general",
+  "channels",
+  "tools",
+  "knowledge",
+  "behavior",
+]);
+const DECISIONS_WATCHER_TABS: ReadonlySet<string> = new Set([
+  "general",
+  "channels",
+  "decisions",
+  "tools",
+  "behavior",
+]);
+
+export function watcherTabKeys(engine: MonitoringEngine): ReadonlySet<string> {
+  return engine === "decisions" ? DECISIONS_WATCHER_TABS : LLM_WATCHER_TABS;
+}
+
+// The Behavior sections only the language model uses: conversation memory is compacted by a chat
+// model, and the backup provider stands in for one. A decisions watcher has neither, so neither is
+// drawn for it, and their warnings point nowhere.
+const CHAT_MODEL_SECTIONS: ReadonlySet<string> = new Set([
+  "memory",
+  "modelFallback",
+]);
+
+export function watcherSectionUsed(
+  engine: MonitoringEngine,
+  sectionId: string | undefined,
+): boolean {
+  return (
+    engine !== "decisions" ||
+    sectionId === undefined ||
+    !CHAT_MODEL_SECTIONS.has(sectionId)
+  );
+}
+
+// The warnings with no tab of their own that are about knowledge bases (a base to index, the
+// embedding key): the decisions engine searches none.
+const KNOWLEDGE_ISSUE_KEYS: ReadonlySet<string> = new Set([
+  "knowledge",
+  "embedding",
+]);
+
+export function watcherIssueUsed(
+  engine: MonitoringEngine,
+  key: string,
+): boolean {
+  return engine !== "decisions" || !KNOWLEDGE_ISSUE_KEYS.has(key);
+}

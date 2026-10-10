@@ -13,20 +13,29 @@ import { useState } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components/Toast";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
-import type { DecisionsServerRefusal } from "@/client/pages/agents/DecisionsFields";
+import {
+  ClassifierFields,
+  DecisionsFields,
+  type DecisionsServerRefusal,
+} from "@/client/pages/agents/DecisionsFields";
+import { EngineCards } from "@/client/pages/agents/EngineChoice";
 import { ObservationSection } from "@/client/pages/agents/ObservationSection";
 import {
+  decisionsBaseline,
+  editDecisions,
   type ObservationState,
   observationToForm,
   observationToStored,
+  withEngine,
 } from "@/client/pages/agents/observationFormState";
 import {
   decisionsBlockFingerprint,
   decisionsIssues,
 } from "@/modules/decisions/config";
 
-// THE DECISIONS ENGINE IN THE AGENT EDITOR, drawn. The engine choice, the questions and the rules
-// are on screen for a monitoring agent; a rule that names a question that is gone is shown broken;
+// THE DECISIONS ENGINE IN THE AGENT EDITOR, drawn as the page draws it (agents#1224): the engine
+// cards and the classifier on General, the questions and rules on their own tab, the timing alone in
+// Behavior's Observation. The questions and the rules are on screen for a watcher on that engine; a rule that names a question that is gone is shown broken;
 // what the engine has been doing is read from its own log lines. Every assertion reduces to a number,
 // a string or a boolean BEFORE expect: a failing expectation holding a DOM node serializes a cyclic
 // happy-dom tree and stalls the runner.
@@ -134,25 +143,78 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+const opened: string[] = [];
+const grantedTools: string[] = [];
+
 function renderSection(
   settings: unknown,
-  opts: { refusal?: DecisionsServerRefusal | null } = {},
+  opts: {
+    refusal?: DecisionsServerRefusal | null;
+    granted?: string[] | null;
+    grantsPending?: boolean;
+  } = {},
 ): { state: () => ObservationState } {
   let latest = observationToForm(settings);
+  opened.length = 0;
+  grantedTools.length = 0;
   function Harness() {
     const [observation, setObservation] = useState<ObservationState>(() =>
       observationToForm(settings),
     );
     latest = observation;
+    const setDecisions = (next: Parameters<typeof editDecisions>[1]) =>
+      setObservation((prev) => editDecisions(prev, next));
     return (
-      <ObservationSection
-        agentId="7"
-        savedAt="2026-10-08T11:00:00.000Z"
-        observation={observation}
-        setObservation={setObservation}
-        decisionsCredentialError={null}
-        decisionsRefusal={opts.refusal ?? null}
-      />
+      <>
+        <EngineCards
+          engine={observation.engine}
+          onChange={(engine) =>
+            setObservation((prev) => withEngine(prev, engine))
+          }
+        />
+        <ObservationSection
+          observation={observation}
+          setObservation={setObservation}
+        />
+        {observation.engine === "decisions" && observation.decisions && (
+          <>
+            <ClassifierFields
+              decisions={observation.decisions}
+              storedDecisions={decisionsBaseline(observation)}
+              setDecisions={setDecisions}
+              credentialError={null}
+              serverRefusal={opts.refusal ?? null}
+            />
+            <DecisionsFields
+              agentId="7"
+              savedAt="2026-10-08T11:00:00.000Z"
+              storedBlock={decisionsBlockFingerprint(
+                observation.storedDecisions,
+              )}
+              storedDecisions={decisionsBaseline(observation)}
+              storedRuleCount={
+                Array.isArray(observation.storedDecisions?.rules)
+                  ? observation.storedDecisions.rules.length
+                  : 0
+              }
+              decisions={observation.decisions}
+              setDecisions={setDecisions}
+              serverRefusal={opts.refusal ?? null}
+              granted={
+                opts.granted === undefined
+                  ? null
+                  : opts.granted === null
+                    ? null
+                    : new Set(opts.granted)
+              }
+              grantsPending={opts.grantsPending ?? false}
+              onGrantTool={(tool) => grantedTools.push(tool)}
+              onOpenTools={() => opened.push("tools")}
+              onOpenGeneral={() => opened.push("general")}
+            />
+          </>
+        )}
+      </>
     );
   }
   render(
@@ -174,21 +236,29 @@ const brokenRules = () =>
   screen
     .queryAllByTestId("decisions-rule")
     .map((el) => el.getAttribute("data-broken"));
-const engineSelect = () =>
-  screen.getByRole("combobox", { name: /What decides/ }) as HTMLSelectElement;
+// The engine card that is on, by its stored value.
+const engineOn = () =>
+  screen.getByTestId("engine-llm").getAttribute("aria-checked") === "true"
+    ? "llm"
+    : screen.getByTestId("engine-decisions").getAttribute("aria-checked") ===
+        "true"
+      ? "decisions"
+      : "none";
+const pickEngine = (engine: "llm" | "decisions") =>
+  fireEvent.click(screen.getByTestId(`engine-${engine}`));
 
 describe("the decisions engine in the agent editor", () => {
   test("an agent on the model engine shows the choice and none of the engine's fields", () => {
     stubApi();
     renderSection({});
-    expect(engineSelect().value).toBe("llm");
+    expect(engineOn()).toBe("llm");
     expect(count("decisions-fields")).toBe(0);
   });
 
   test("choosing the decisions engine opens an empty block in shadow, and says what is missing", () => {
     stubApi();
     const { state } = renderSection({});
-    fireEvent.change(engineSelect(), { target: { value: "decisions" } });
+    pickEngine("decisions");
     expect(count("decisions-fields")).toBe(1);
     expect(state().engine).toBe("decisions");
     expect(state().decisions?.apply).toBe("shadow");
@@ -201,7 +271,7 @@ describe("the decisions engine in the agent editor", () => {
   test("an agent stored on the decisions engine with no block shows the fields and what is missing", () => {
     stubApi();
     renderSection({ monitoring: { engine: "decisions" } });
-    expect(engineSelect().value).toBe("decisions");
+    expect(engineOn()).toBe("decisions");
     expect(count("decisions-fields")).toBe(1);
     expect(count("decisions-problems")).toBe(1);
     expect(
@@ -212,7 +282,7 @@ describe("the decisions engine in the agent editor", () => {
   test("an agent on the decisions engine shows its provider, questions and rules", () => {
     stubApi();
     renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
-    expect(engineSelect().value).toBe("decisions");
+    expect(engineOn()).toBe("decisions");
     expect(count("decisions-question")).toBe(2);
     expect(count("decisions-rule")).toBe(2);
     expect(count("decisions-problems")).toBe(0);
@@ -244,7 +314,7 @@ describe("the decisions engine in the agent editor", () => {
     const { state } = renderSection({
       monitoring: { engine: "decisions", decisions: BLOCK },
     });
-    fireEvent.change(engineSelect(), { target: { value: "llm" } });
+    pickEngine("llm");
     expect(count("decisions-fields")).toBe(0);
     const stored = observationToStored(state());
     expect(stored.engine).toBe("llm");
@@ -259,7 +329,7 @@ describe("the decisions engine in the agent editor", () => {
       screen.queryAllByTestId(testId).map((el) => el.textContent ?? "");
     expect(text("decisions-activity-total")[0]).toContain("2 of");
     expect(text("decisions-rule-activity")).toEqual([
-      "Fired in 1 of 2 decisions, would have run 1 (shadow).",
+      "Fired in 1 of 2 decisions, would have run 1 (rehearsal).",
       "Fired in 0 of 2 decisions.",
     ]);
     expect(text("decisions-question-answers")).toEqual([
@@ -299,7 +369,7 @@ describe("the decisions engine in the agent editor", () => {
         .map((el) => el.textContent ?? ""),
     ).toEqual([
       "Fired in 0 of 2 decisions.",
-      "Fired in 1 of 2 decisions, would have run 1 (shadow).",
+      "Fired in 1 of 2 decisions, would have run 1 (rehearsal).",
       "Not saved yet, so it has not decided anything.",
     ]);
   });
@@ -606,5 +676,136 @@ describe("a question or a note longer than the typing bound", () => {
     // A text within the bound still declares the bound itself.
     const short = areas.filter((a) => a.value === "Assunto");
     expect(short.map((a) => a.maxLength)).toEqual([2000]);
+  });
+});
+
+// agents#1224: the editor follows the engine. What the engine does not use is replaced, never
+// shown disabled; a new agent starts from ready questions; a rule says when its tool is not
+// allowed; and no stored value (`shadow`, `enforce`, `decisions`) is on screen.
+describe("the editor follows the engine", () => {
+  const visible = () => document.body.textContent ?? "";
+
+  test("the timing stays in Observation and the engine is chosen by its cards", () => {
+    stubApi();
+    renderSection({});
+    expect(engineOn()).toBe("llm");
+    expect(
+      screen.queryAllByRole("combobox", { name: /What decides/ }).length,
+    ).toBe(0);
+    expect(count("classifier-fields")).toBe(0);
+    pickEngine("decisions");
+    expect(count("classifier-fields")).toBe(1);
+    expect(count("decisions-fields")).toBe(1);
+    pickEngine("llm");
+    expect(count("classifier-fields")).toBe(0);
+    expect(count("decisions-fields")).toBe(0);
+  });
+
+  test("a new agent opens on starting points, and one adds its question and rules to the draft", () => {
+    stubApi();
+    const { state } = renderSection({});
+    pickEngine("decisions");
+    expect(count("decisions-starters")).toBe(1);
+    expect(count("decisions-question")).toBe(0);
+    fireEvent.click(screen.getByTestId("decisions-starter-sentiment"));
+    expect(count("decisions-starters")).toBe(0);
+    expect(count("decisions-question")).toBe(1);
+    expect(count("decisions-rule")).toBe(5);
+    expect(state().decisions?.questions[0]?.type).toBe("score");
+    // The other two are still offered, and one already added is not.
+    expect(
+      screen.queryAllByRole("button", { name: "Customer sentiment" }).length,
+    ).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Asks for a person" }));
+    expect(count("decisions-question")).toBe(2);
+    expect(count("decisions-rule")).toBe(6);
+  });
+
+  test("removing the last question brings the starting points back", () => {
+    stubApi();
+    renderSection({});
+    pickEngine("decisions");
+    fireEvent.click(screen.getByTestId("decisions-starter-human"));
+    fireEvent.click(screen.getByRole("button", { name: "Remove question" }));
+    expect(count("decisions-starters")).toBe(1);
+  });
+
+  test("a blank question is still one click away", () => {
+    stubApi();
+    renderSection({});
+    pickEngine("decisions");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start with a blank question" }),
+    );
+    expect(count("decisions-question")).toBe(1);
+    expect(count("decisions-rule")).toBe(0);
+  });
+
+  test("rehearsal and live are chosen side by side, by their names", () => {
+    stubApi();
+    const { state } = renderSection({
+      monitoring: { engine: "decisions", decisions: BLOCK },
+    });
+    const live = screen.getByRole("radio", { name: /Live/ });
+    expect(
+      screen
+        .getByRole("radio", { name: /Rehearsal/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(live);
+    expect(state().decisions?.apply).toBe("enforce");
+    const text = visible();
+    for (const jargon of ["shadow", "enforce", "Shadow", "Enforce"]) {
+      expect(text.includes(jargon), jargon).toBe(false);
+    }
+  });
+
+  test("a rule whose tool is not allowed says so, and Allow grants it", () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: ["set_labels"] },
+    );
+    expect(count("decisions-rule-not-granted")).toBe(1);
+    fireEvent.click(screen.getByTestId("decisions-rule-grant"));
+    expect(grantedTools).toEqual(["private_note"]);
+  });
+
+  test("with grant changes pending on Tools, the rule sends the operator there instead", () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: ["set_labels"], grantsPending: true },
+    );
+    expect(count("decisions-rule-grant")).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Open Tools" }));
+    expect(opened).toEqual(["tools"]);
+  });
+
+  test("every rule allowed, or grants not read yet, shows no warning", () => {
+    stubApi();
+    renderSection(
+      { monitoring: { engine: "decisions", decisions: BLOCK } },
+      { granted: ["set_labels", "private_note"] },
+    );
+    expect(count("decisions-rule-not-granted")).toBe(0);
+    cleanup();
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    expect(count("decisions-rule-not-granted")).toBe(0);
+  });
+
+  test("a classifier problem is a line with the way to General, not a path", () => {
+    stubApi();
+    renderSection({
+      monitoring: {
+        engine: "decisions",
+        decisions: { ...BLOCK, credentialRef: "" },
+      },
+    });
+    expect(count("decisions-problems")).toBe(1);
+    expect(visible().includes("credentialRef")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Open General" }));
+    expect(opened).toEqual(["general"]);
   });
 });

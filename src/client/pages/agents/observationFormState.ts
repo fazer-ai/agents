@@ -201,3 +201,74 @@ export function monitoringReaderKeys(): string[] {
   const c: MonitoringConfig = readMonitoringConfig({});
   return Object.keys(c).sort();
 }
+
+// THE TWO HALVES OF THE BLOCK, saved by different tabs (agents#1224). The decision setup (engine and
+// decisions block) is edited on General and on the Questions and rules tab and saved by either; the
+// timing (when the agent looks) is the Behavior tab's. Each save writes its own half from the form
+// and the other half AS SYNCED, so neither carries the other's pending edits.
+
+// `base` with the decision setup of `from`: `withDecisionsOf(synced, form)` is what the decisions
+// save writes, `withDecisionsOf(form, synced)` what the Behavior save writes.
+export function withDecisionsOf(
+  base: ObservationState,
+  from: ObservationState,
+): ObservationState {
+  return {
+    ...base,
+    engine: from.engine,
+    storedEngine: from.storedEngine,
+    decisions: from.decisions,
+    storedDecisions: from.storedDecisions,
+    decisionsEdited: from.decisionsEdited,
+  };
+}
+
+// The halves as text, for the unsaved marks. The setup is split once more by where it is drawn: the
+// head (engine and Classifier) on General, the body (questions, rules, rehearsal or live) on its tab.
+export function timingOf(form: ObservationState): string {
+  return JSON.stringify({
+    analysis: form.analysis,
+    windowMessages: form.windowMessages,
+    windowSeconds: form.windowSeconds,
+    maxWindowSeconds: form.maxWindowSeconds,
+  });
+}
+
+export function decisionsHeadOf(form: ObservationState): string {
+  const d = form.decisions;
+  return JSON.stringify({
+    engine: form.engine,
+    provider: d?.provider ?? null,
+    model: d?.model ?? null,
+    credentialRef: d?.credentialRef ?? null,
+  });
+}
+
+export function decisionsBodyOf(form: ObservationState): string {
+  const d = form.decisions;
+  if (!d) return "null";
+  const {
+    provider: _p,
+    model: _m,
+    credentialRef: _c,
+    ...body
+  } = decisionsToStored(d);
+  return JSON.stringify(body);
+}
+
+// The engine cards' one move. A first switch to questions and rules starts from an empty draft in
+// rehearsal, so nothing is written before the operator has read what it would do; switching back
+// keeps the draft (and a stored block) for the next time.
+export function withEngine(
+  prev: ObservationState,
+  engine: MonitoringEngine,
+): ObservationState {
+  return {
+    ...prev,
+    engine,
+    decisions:
+      engine === "decisions" && prev.decisions === null
+        ? startingDecisionsForm()
+        : prev.decisions,
+  };
+}

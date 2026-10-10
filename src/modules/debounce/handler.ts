@@ -508,6 +508,9 @@ export async function fillMissingVisuals(args: {
   };
   base: PrismaClient;
   deps?: RuntimeDeps;
+  // Asked before each paid read: a caller whose work can be withdrawn while it reads (a retired job)
+  // stops opening files there. Absent answers yes.
+  stillWanted?: () => Promise<boolean>;
 }): Promise<boolean> {
   // DAS SETTINGS QUE O TURNO JÁ CARREGOU, sem ir ao banco. `resolveVisionConfig` faz exatamente
   // isto depois de descobrir o agente pela inbox, e aqui o agente já está decidido: quem chegou até
@@ -545,6 +548,7 @@ export async function fillMissingVisuals(args: {
     // NOTE: Each message can take a document's whole budget, so the job's deadline is asked before
     // every one; what is left renders as unread and the reply still goes out.
     if (args.fill.signal?.aborted) break;
+    if (args.stillWanted && !(await args.stillWanted())) break;
     // NOTE: A refusal can land while an earlier message is being read.
     if (i > 0) {
       const agora = await refusalMarkOrClosed(args);
@@ -560,6 +564,7 @@ export async function fillMissingVisuals(args: {
         cfg,
         signal: args.fill.signal,
         stillAllowed: async () => {
+          if (args.stillWanted && !(await args.stillWanted())) return false;
           const agora = await refusalMarkOrClosed(args);
           return agora === null || m.id > agora;
         },

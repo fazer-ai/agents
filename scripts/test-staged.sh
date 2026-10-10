@@ -7,7 +7,7 @@
 #
 # `bun test --changed` follows the whole import graph instead, and src/ is coupled enough that it
 # picks most of the suite for a central module: 547 of about 950 files for
-# src/modules/split/service.ts, where this picks 79 (76 of them the sweeps).
+# src/modules/split/service.ts, where this picks 97, most of them the sweeps.
 #
 # What no test file imports runs everything: the preloads, bunfig.toml, the dependencies and the
 # Prisma schema change every test file at once.
@@ -89,11 +89,11 @@ for file in $staged; do
   esac
 done
 
-# A sweep reads whole trees (src/, tests/, scripts/, workers/) without naming the file it trips on,
-# so any staged change other than prose runs every test that walks one, itself or through a helper
-# under tests/.
+# A sweep reads whole trees (src/, tests/, scripts/, workers/) without naming the file it trips on:
+# a Glob or readdir, or a read by a computed path (an import-graph walk). Any staged change other than
+# prose runs every test that does either, itself or through a helper under tests/.
 if printf '%s\n' "$staged" | grep -qvE '\.md$'; then
-  walks='Glob\(|readdirSync|readdir\('
+  walks='Glob\(|readdirSync|readdir\(|Bun\.file\([a-z]|readFileSync\([a-z]|readFile\([a-z]'
   # shellcheck disable=SC2046
   add $(grep_tests -E "$walks")
   for helper in $(grep -rlE --exclude='*.test.ts' --exclude='*.test.tsx' "$walks" tests 2>/dev/null || true); do

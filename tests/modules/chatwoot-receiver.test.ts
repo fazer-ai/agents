@@ -16,7 +16,6 @@ import {
 import { ensureAgentBot } from "@/modules/chatwoot/provisioning";
 import {
   invalidateRouteTokenCache,
-  noteRouteTokenLookup,
   ROUTE_TOKEN_CACHE_TTL_MS,
   ROUTE_TOKEN_REFRESH_WAIT_MS,
   writeRouteTokenCache,
@@ -533,11 +532,13 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       nowSeconds: NOW,
       base: appDb,
     });
-    // The ack writes nothing now, so BOTH deliveries are simply "received". Idempotency is asserted
-    // where it actually lives: on the detached path, which every redelivery runs.
+    // BOTH deliveries are "received", and the second found the row the first wrote: one row, and
+    // since it still owes its attempt, the redelivery is dispatched too and the CAS decides.
     expect(first.outcome).toBe("queued");
     expect(second.outcome).toBe("queued");
     expect(second.deliveryId).toBe(first.deliveryId as string);
+    expect(second.deliveryRowId).toBe(first.deliveryRowId as bigint);
+    expect(second.dispatch).toBe(true);
 
     expect(
       await recordAndProcessChatwootDelivery({
@@ -565,7 +566,7 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
 
   // NOTE: ── the ack's own budget ──
 
-  test("the ack asks Postgres nothing once the route token is resolved", async () => {
+  test("the ack asks the shared pool nothing once the route token is resolved", async () => {
     const body = JSON.stringify({
       event: "conversation_updated",
       id: 47,
@@ -582,10 +583,11 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       base: appDb,
     });
 
-    // Chatwoot escalates the conversation when the ack is slow, and every query on this path is an
-    // interactive transaction competing for a pool shared with turns, ingest and compaction. A base
-    // that refuses to open one is the only assertion that actually pins "the ack does not wait on
-    // the database": counting queries would still pass if they merely got faster.
+    // Chatwoot escalates the conversation when the ack is slow, and every query on the shared pool is
+    // an interactive transaction competing with turns, ingest and compaction. A base that refuses to
+    // open one is the only assertion that actually pins "the ack does not wait on that pool": counting
+    // queries would still pass if they merely got faster. Its one write, the ledger row, goes through
+    // its own client.
     const refuses = {
       $transaction: () => {
         throw new Error("the ack path opened a transaction");
@@ -599,6 +601,7 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       getHeader: signedHeaders(body, NOW, "uuid-nodb"),
       nowSeconds: NOW,
       base: refuses,
+      ackBase: appDb,
     });
     expect(r.outcome).toBe("queued");
     expect(r.deliveryId).toBe("uuid-nodb");
@@ -711,64 +714,30 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       getHeader: signedHeaders(body, NOW, "uuid-cold"),
       nowSeconds: NOW,
       base: refuses,
+      ackBase: appDb,
     });
     expect(r.outcome).toBe("queued");
     expect(r.normalized?.conversationId).toBe(51);
 
-    // THE REFRESH IT FIRED BEHIND THE ACK FAILED, AND THAT CHANGES THE NEXT ANSWER. A 200 is a
-    // promise: Chatwoot does not retry a 2xx and the payload is not stored, so answering out of a
-    // cache the database can no longer back loses the event in silence. The failed refresh has
-    // already marked lookups unhealthy, so the next request takes the blocking path and fails
-    // honestly, which is what puts the event back on Chatwoot's retry ladder.
-    await expect(
-      receiveChatwootWebhook({
-        routeToken,
-        rawBody: body,
-        getHeader: signedHeaders(body, NOW, "uuid-cold-2"),
-        nowSeconds: NOW,
-        base: refuses,
-      }),
-    ).rejects.toThrow();
-
-    // AND IT HAS TO COME BACK. `lookupHealthy` only ever flips false on its own, so without a
-    // successful lookup restoring it, one transient blip would disable the shield for the lifetime
-    // of the process and every cold ack after it would pay for a transaction again.
-    invalidateRouteTokenCache();
-    await receiveChatwootWebhook({
+    // THE REFRESH IT FIRED BEHIND THE ACK FAILED, AND THE NEXT ANSWER IS STILL THE CACHE'S. The ack's
+    // own write is what backs a 200, so the shared pool being unreachable must not turn every ack into
+    // a 500.
+    const next = await receiveChatwootWebhook({
       routeToken,
       rawBody: body,
-      getHeader: signedHeaders(body, NOW, "uuid-cold-heal"),
-      nowSeconds: NOW,
-      base: appDb,
-    });
-    writeRouteTokenCache(
-      hashRouteToken(routeToken),
-      {
-        tenantId,
-        instanceId,
-        agentBotId: 9,
-        webhookSecret: encryptJson(SECRET),
-      },
-      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
-    );
-    const healed = await receiveChatwootWebhook({
-      routeToken,
-      rawBody: body,
-      getHeader: signedHeaders(body, NOW, "uuid-cold-3"),
+      getHeader: signedHeaders(body, NOW, "uuid-cold-2"),
       nowSeconds: NOW,
       base: refuses,
+      ackBase: appDb,
     });
-    expect(healed.outcome).toBe("queued");
+    expect(next.outcome).toBe("queued");
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
   });
 
-  // Q: what happens to the requests that arrive WHILE the refresh is deciding? They wait on it. On a
-  // healthy database that costs a millisecond and saves a lookup, which is the burst the cache exists
-  // to keep off Postgres; on a dead one it is the difference between one acked-and-lost event and all
-  // of them, since Chatwoot never redelivers a 2xx.
-  test("a request arriving during the refresh waits for it instead of looking up again", async () => {
+  // Q: what happens to the requests that arrive WHILE the refresh is deciding? They are answered from
+  // the stale entry and start no lookup of their own: the burst the cache exists to keep off Postgres.
+  test("a request arriving during the refresh is served without looking up again", async () => {
     const body = JSON.stringify({
       event: "conversation_updated",
       id: 53,
@@ -778,7 +747,6 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     });
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
     writeRouteTokenCache(
       hashRouteToken(routeToken),
       {
@@ -827,27 +795,24 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
         getHeader: signedHeaders(body, NOW, uuid),
         nowSeconds: NOW,
         base,
+        ackBase: appDb,
       });
 
     // The first is served stale and starts the one refresh.
     expect((await send("uuid-race-1", held)).outcome).toBe("queued");
-    const second = send("uuid-race-2", held);
+    // The second is answered while that refresh is still held open.
+    expect((await send("uuid-race-2", held)).outcome).toBe("queued");
     release();
-    expect((await second).outcome).toBe("queued");
-    // ONE lookup between them. Without the wait the second would find the entry withheld (a refresh
-    // is deciding) and open its own, which is the burst, at the moment the pool can least afford it.
+    // ONE lookup between them.
     expect(lookups).toBe(1);
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
   });
 
-  // AND WHEN THAT REFRESH FAILS, THE WAIT MUST NOT READ AS A GREEN LIGHT. The waiters resume into a
-  // cache the failure just closed, so each one would take the blocking path and open its OWN
-  // transaction — a burst against the pool at the exact moment the pool is what is broken, which is
-  // the amplification this whole module exists to prevent. They inherit the failure instead: one
-  // lookup for all of them, and every one of them fails honestly onto Chatwoot's retry ladder.
-  test("a failed refresh is inherited by the requests waiting on it", async () => {
+  // AND WHEN THAT REFRESH FAILS, nobody opens a lookup of their own against the pool that is the broken
+  // thing: the requests around it are answered from the stale entry (the ack's write backs their 200),
+  // and the next refresh waits out the backoff.
+  test("a failed refresh costs one lookup, not one per request around it", async () => {
     const body = JSON.stringify({
       event: "conversation_updated",
       id: 54,
@@ -857,7 +822,6 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     });
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
     writeRouteTokenCache(
       hashRouteToken(routeToken),
       {
@@ -904,19 +868,19 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
         getHeader: signedHeaders(body, NOW, uuid),
         nowSeconds: NOW,
         base,
+        ackBase: appDb,
       });
 
-    // NOTE: The first is served stale and starts the one refresh; it is already acked when the
-    // refresh fails, so that one event is a known residual loss.
+    // The first is served stale and starts the one refresh.
     expect((await send("uuid-fail-1", failing)).outcome).toBe("queued");
-    const second = send("uuid-fail-2", failing);
+    expect((await send("uuid-fail-2", failing)).outcome).toBe("queued");
     release();
-    await expect(second).rejects.toThrow();
-    // ONE lookup, the refresh's. The waiter did not add a second one to a pool that just refused.
+    await new Promise((r) => setTimeout(r, 5));
+    // After the failure: still served, and no new lookup inside the backoff.
+    expect((await send("uuid-fail-3", failing)).outcome).toBe("queued");
     expect(lookups).toBe(1);
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
   });
 
   // THE BURST AT TTL EXPIRY, which is the case the coalescing exists for and the one the wait alone
@@ -934,7 +898,6 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     });
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
     writeRouteTokenCache(
       hashRouteToken(routeToken),
       {
@@ -978,6 +941,7 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
           getHeader: signedHeaders(body, NOW, `uuid-burst-${uuid}`),
           nowSeconds: NOW,
           base: counted,
+          ackBase: appDb,
         }),
       ),
     );
@@ -987,7 +951,6 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     expect(lookups).toBe(1);
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
   });
 
   // AND THE BOUND IS THE RECEIVER'S, not merely the cache module's. A unit test of
@@ -1004,7 +967,6 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     });
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
     writeRouteTokenCache(
       hashRouteToken(routeToken),
       {
@@ -1039,6 +1001,7 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
         getHeader: signedHeaders(body, NOW, uuid),
         nowSeconds: NOW,
         base: hanging,
+        ackBase: appDb,
       });
 
     // The first is served stale and starts the refresh that will never answer.
@@ -1061,7 +1024,6 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     );
 
     invalidateRouteTokenCache();
-    noteRouteTokenLookup(true);
   }, 15_000);
 
   test("a delivery stranded on PENDING is recovered by the redelivery", async () => {
@@ -1080,18 +1042,17 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       base: appDb,
     });
 
-    // The shape of a process that died after acking: the ledger row exists, nothing ran. Every
-    // redelivery from here on reads as a duplicate, so dropping duplicates would lose this message
-    // for good, since Chatwoot already has its 200 and will not send it again.
-    await suDb.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: "uuid-stranded",
-        event: "conversation_updated",
-        status: "PENDING",
-      },
+    // The shape of a process that died after acking: the ledger row the ack wrote exists, nothing ran.
+    // A redelivery finds it still owing its attempt and is dispatched; dropping it on the strength of
+    // the row would lose the message for good when nothing else drains it.
+    const again = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-stranded"),
+      nowSeconds: NOW,
+      base: appDb,
     });
+    expect(again.dispatch).toBe(true);
 
     expect(
       await recordAndProcessChatwootDelivery({

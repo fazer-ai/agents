@@ -1,0 +1,11 @@
+-- THE ACK WRITES THE ROW BEFORE IT ANSWERS (issues #1121, #1217). The receiver used to answer
+-- Chatwoot's webhook with a 200 before anything durable existed, so a process that died after the 200
+-- lost the event with no ledger row the sweep could see. The row is now written by the ack, and for an
+-- event the delivery recovery cannot rebuild (a status or assignment change) with its body, which a
+-- later pass processes from; a customer message goes to the recovery instead and stores no body.
+--
+-- Nullable with no default, so this is a catalog change and does not rewrite the table. The previous
+-- release keeps writing rows without it during a rolling deploy, which is the shape every row an
+-- older build wrote has: nothing to drain, the sweep's as before. The index the drain reads by is
+-- the next migration's, built concurrently.
+ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "payload" TEXT;

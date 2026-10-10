@@ -1,17 +1,22 @@
-// In-process cache for the receiver's route-token resolution. Chatwoot gives the ack ~5s
-// (`WEBHOOK_TIMEOUT`) before escalating the conversation `pending -> open`, and resolving the bot is
-// an interactive transaction (RLS needs `set_config`) that pool pressure can stretch past that. But
-// a 2xx is never retried and the payload is not stored, so it serves only what the process can still
-// back: inside the TTL; past it while the last lookup succeeded (refreshed behind the ack); after a
-// FAILED lookup never, so the ack fails onto Chatwoot's retry ladder (docs/chatwoot.md, "Webhook
-// receiver"). Its own module because the receiver imports the writers that invalidate it.
+// In-process cache for the receiver's route-token resolution: Chatwoot escalates the conversation
+// on an ack slower than ~5s, and the lookup is an interactive transaction pool pressure can stretch
+// past that. Served inside the TTL, and past it (refreshed behind the ack) up to the stale backstop,
+// also while that refresh fails: the ledger row the ack writes before answering is what backs a 200.
+// Only an invalidated or never-seen token goes to Postgres on the ack path (docs/chatwoot.md,
+// "Webhook receiver"). Its own module because the receiver imports the writers that invalidate it.
 // How long a resolution is served without questioning it.
 export const ROUTE_TOKEN_CACHE_TTL_MS = 30_000;
 
-// Backstop on the stale window. The health gate above is what actually ends a stale serve, so this
-// only bites if a lookup somehow never reports either way. Short enough that a bug there costs
-// minutes of blocked acks rather than a day of lost events.
+// Backstop on the stale window: how long past the TTL an entry is served while its refresh keeps
+// failing. Invalidation is per process, so on another replica this is also how long a retired token
+// can still be answered from memory; past it the ack goes to Postgres and fails honestly if Postgres
+// cannot answer.
 export const ROUTE_TOKEN_STALE_MS = 10 * 60_000;
+
+// After a refresh fails, how long before the next delivery may start another. Without it every
+// delivery in an outage would open its own lookup against the pool that just refused, which is the
+// burst the cache exists to keep off Postgres.
+export const ROUTE_TOKEN_REFRESH_BACKOFF_MS = 5_000;
 
 // How long a request will wait on somebody else's refresh before giving up on it. Chatwoot allows the
 // whole receiver ~5s, so a wait longer than this has already lost: what remains would not cover the
@@ -36,8 +41,8 @@ export interface CachedRouteTokenBot {
 export interface RouteTokenCacheHit {
   // `null` is a real answer (this token resolves to nothing), distinct from a miss.
   bot: CachedRouteTokenBot | null;
-  // Past the TTL and still servable: answer from here, and refresh behind the ack. Only ever true
-  // for a positive entry, and only while the last lookup succeeded.
+  // Past the TTL and still servable: answer from here, and refresh behind the ack when one is due
+  // (`routeTokenRefreshDue`). Only ever true for a positive entry.
   stale: boolean;
 }
 
@@ -53,18 +58,20 @@ interface Store {
   // handful of real bots, which is the eviction an attacker would pick.
   positive: Map<string, Entry>;
   negative: Map<string, Entry>;
-  // The refresh in flight per token, not merely the fact of one. A second request arriving mid-refresh
-  // AWAITS it instead of being served stale: on a healthy database that costs a millisecond, and when
-  // the database is gone it is the difference between one acked-and-lost event and every event that
-  // arrives before the refresh reports back.
+  // The refresh in flight per token, so a burst at expiry starts one between all of its deliveries,
+  // and a miss can wait on the one deciding it instead of opening its own.
   refreshing: Map<string, Promise<void>>;
-  // Did the last lookup reach Postgres? Store-level rather than per key, so the first token to
-  // discover an outage protects every other token from promising a 200 it cannot honour.
-  lookupHealthy: boolean;
+  // Per token, until when a failed refresh holds the next one back (`ROUTE_TOKEN_REFRESH_BACKOFF_MS`).
+  refreshFailedUntil: Map<string, number>;
   // Bumped by every invalidation. A lookup that started before the bump must not write its result
   // afterwards: the writer already committed and cleared the cache, and the in-flight read holds the
   // row as it was BEFORE that commit, so landing it would resurrect exactly what was retired.
   generation: number;
+  // What a full invalidation asks of the receiver: look the tokens it dropped up again right away.
+  rewarm?: ((routeTokenHashes: string[]) => void) | null;
+  // Tokens a full invalidation asked to look up again and that no lookup has written since: the next
+  // full invalidation asks for them too, since its generation bump refuses the earlier lookups' writes.
+  rewarming?: Set<string>;
 }
 
 function store(): Store {
@@ -78,27 +85,31 @@ function store(): Store {
     !held ||
     !(held.positive instanceof Map) ||
     !(held.negative instanceof Map) ||
-    !(held.refreshing instanceof Map)
+    !(held.refreshing instanceof Map) ||
+    !(held.refreshFailedUntil instanceof Map)
   ) {
     g[KEY] = {
       positive: new Map(),
       negative: new Map(),
       refreshing: new Map(),
-      lookupHealthy: true,
+      refreshFailedUntil: new Map(),
       generation: 0,
     };
   }
   return g[KEY] as Store;
 }
 
+// Installed once by the server at boot (`enableRouteTokenRewarm` in ./webhook.ts); tests that do not
+// install it get the plain clear.
+export function setRouteTokenRewarm(
+  fn: ((routeTokenHashes: string[]) => void) | null,
+): void {
+  store().rewarm = fn;
+}
+
 // Snapshot to pass back to `writeRouteTokenCache` after the lookup returns.
 export function routeTokenCacheGeneration(): number {
   return store().generation;
-}
-
-// Reports whether a lookup reached Postgres. A failure is what closes the stale window.
-export function noteRouteTokenLookup(ok: boolean): void {
-  store().lookupHealthy = ok;
 }
 
 // Returns the cached resolution, or undefined when there is none to trust.
@@ -120,11 +131,26 @@ export function readRouteTokenCache(
     s.positive.delete(routeTokenHash);
     return undefined;
   }
-  if (!s.lookupHealthy) return undefined;
-  // A refresh already in flight means the answer is being questioned right now. Serving stale beside
-  // it would ack events the refresh is about to prove unbackable; the caller waits on it instead.
-  if (s.refreshing.has(routeTokenHash)) return undefined;
   return { bot: pos.bot, stale: true };
+}
+
+// Whether a stale hit should start a refresh: none in flight for this token, and none failed within
+// the backoff. The stale entry is answered either way.
+export function routeTokenRefreshDue(
+  routeTokenHash: string,
+  now: number = Date.now(),
+): boolean {
+  const s = store();
+  if (s.refreshing.has(routeTokenHash)) return false;
+  const until = s.refreshFailedUntil.get(routeTokenHash);
+  return until === undefined || until <= now;
+}
+
+function noteRefreshFailed(routeTokenHash: string): void {
+  store().refreshFailedUntil.set(
+    routeTokenHash,
+    Date.now() + ROUTE_TOKEN_REFRESH_BACKOFF_MS,
+  );
 }
 
 export interface WriteRouteTokenOptions {
@@ -141,6 +167,7 @@ export function writeRouteTokenCache(
 ): void {
   const s = store();
   if (opts.generation !== undefined && opts.generation !== s.generation) return;
+  s.rewarming?.delete(routeTokenHash);
   const now = opts.now ?? Date.now();
   const entry: Entry = { bot, freshUntil: now + ROUTE_TOKEN_CACHE_TTL_MS };
   if (bot === null) {
@@ -169,11 +196,12 @@ export function routeTokenRefreshInFlight(
   return store().refreshing.get(routeTokenHash);
 }
 
-// Wait on the refresh in flight, if any, for at most `timeoutMs`. Rejects on the refresh's own
-// failure (see trackRouteTokenRefresh) and rejects on the bound, which are the same answer to the
-// caller: this ack cannot be honoured, so let Chatwoot redeliver. The overrunning refresh is detached
-// on the way out: a hang that stayed registered would put every later delivery for this token behind
-// a promise that never answers.
+// Wait on the refresh in flight, if any, for at most `timeoutMs`. Only a MISS waits (a hit is served,
+// stale or not): with nothing to answer from, the refresh is the answer. Rejects on the refresh's own
+// failure (see trackRouteTokenRefresh) and on the bound, which are the same answer to the caller:
+// this token cannot be resolved now, so the ack fails and Chatwoot redelivers. The overrunning refresh
+// is detached on the way out: a hang that stayed registered would put every later delivery for this
+// token behind a promise that never answers.
 export async function awaitRouteTokenRefresh(
   routeTokenHash: string,
   timeoutMs: number = ROUTE_TOKEN_REFRESH_WAIT_MS,
@@ -187,13 +215,9 @@ export async function awaitRouteTokenRefresh(
       inFlight,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          // A REFRESH THAT OVERRAN IS A FAILED LOOKUP, and rule three is about failed lookups, not
-          // about which shape the failure took. Dropping it quietly would leave the entry servable:
-          // the next delivery is answered from memory and acked 2xx while Postgres is exactly as
-          // unreachable as it was a moment ago, and a 2xx is never redelivered. That is one event
-          // lost per timeout cycle, in silence, which is strictly worse than the escalation a
-          // blocked ack causes.
-          noteRouteTokenLookup(false);
+          // A REFRESH THAT OVERRAN IS A FAILED LOOKUP, and backs off like one: otherwise the next
+          // stale delivery starts another lookup that hangs the same way, one per delivery.
+          noteRefreshFailed(routeTokenHash);
           if (s.refreshing.get(routeTokenHash) === inFlight) {
             s.refreshing.delete(routeTokenHash);
           }
@@ -208,27 +232,50 @@ export async function awaitRouteTokenRefresh(
 
 // Registers `run` as THE refresh for this token and returns it, or returns the one already running.
 // Registering and starting are one step, or a second caller could see no refresh and start one.
-// The returned promise REJECTS when the refresh fails: every waiter resumes into a cache the failure
-// just closed, and a resolved promise would send each down the blocking path to open its own
-// transaction, a burst against the pool exactly when the pool is broken. The caller that STARTS a
-// refresh is detached, so it attaches the log; nothing else may swallow it.
+// The returned promise REJECTS when the refresh fails, and the failure starts the backoff: a waiter
+// (a miss) has nothing to answer from, and a resolved promise would send each down the blocking path
+// to open its own transaction, a burst against the pool exactly when the pool is broken. The caller
+// that STARTS a refresh is detached, so it attaches the log; nothing else may swallow it.
 export function trackRouteTokenRefresh(
   routeTokenHash: string,
   run: () => Promise<void>,
+  expireAfterMs: number = ROUTE_TOKEN_REFRESH_WAIT_MS,
 ): Promise<void> {
   const s = store();
   const existing = s.refreshing.get(routeTokenHash);
   if (existing) return existing;
   let p: Promise<void>;
-  p = run().finally(() => {
-    // BY IDENTITY, not by key. This refresh can be detached before it settles (an invalidation
-    // retires it, or a waiter's bound drops it), and a later request registers its own under the same
-    // key. Deleting by key here would remove THAT one while its lookup is still running, leaving the
-    // map empty and the request after it opening a third.
-    if (s.refreshing.get(routeTokenHash) === p) {
-      s.refreshing.delete(routeTokenHash);
-    }
-  });
+  // The registration expires on its own, as a failed lookup: a stale hit does not wait on it, so a
+  // refresh that never settles would otherwise hold later ones off until the stale entry ran out.
+  const expiry = setTimeout(() => {
+    if (s.refreshing.get(routeTokenHash) !== p) return;
+    s.refreshing.delete(routeTokenHash);
+    s.refreshFailedUntil.set(
+      routeTokenHash,
+      Date.now() + ROUTE_TOKEN_REFRESH_BACKOFF_MS,
+    );
+  }, expireAfterMs);
+  expiry.unref?.();
+  p = run()
+    .then(
+      () => {
+        s.refreshFailedUntil.delete(routeTokenHash);
+      },
+      (err: unknown) => {
+        noteRefreshFailed(routeTokenHash);
+        throw err;
+      },
+    )
+    .finally(() => {
+      clearTimeout(expiry);
+      // BY IDENTITY, not by key. This refresh can be detached before it settles (an invalidation
+      // retires it, or a waiter's bound drops it), and a later request registers its own under the same
+      // key. Deleting by key here would remove THAT one while its lookup is still running, leaving the
+      // map empty and the request after it opening a third.
+      if (s.refreshing.get(routeTokenHash) === p) {
+        s.refreshing.delete(routeTokenHash);
+      }
+    });
   s.refreshing.set(routeTokenHash, p);
   return p;
 }
@@ -245,12 +292,23 @@ export function invalidateRouteTokenCache(routeTokenHash?: string): void {
   // any more. Detached, not cancelled: the lookup runs to completion and its write is refused by the
   // generation guard.
   if (routeTokenHash === undefined) {
+    // The writers that retire a token (an agent deleted, an instance disconnected) do not name
+    // it, so they clear everything, and a full clear would leave every other bot with nothing to
+    // serve if the lookup fails next. The dropped tokens are looked up again at once, while the
+    // database that just took the writer's commit is answering; each lookup writes only what it finds
+    // (a retired token comes back as nothing), under the generation guard.
+    const dropped = new Set([...s.positive.keys(), ...(s.rewarming ?? [])]);
     s.positive.clear();
     s.negative.clear();
     s.refreshing.clear();
+    s.refreshFailedUntil.clear();
+    s.rewarming = s.rewarm ? dropped : new Set();
+    if (s.rewarm && dropped.size > 0) s.rewarm([...dropped]);
     return;
   }
+  s.rewarming?.delete(routeTokenHash);
   s.positive.delete(routeTokenHash);
   s.negative.delete(routeTokenHash);
   s.refreshing.delete(routeTokenHash);
+  s.refreshFailedUntil.delete(routeTokenHash);
 }

@@ -59,6 +59,15 @@ importers() {
 }
 
 for file in $staged; do
+  # A file under tests/ that is not a test is a helper or a fixture, and a fixture is often loaded by
+  # its bare name (`fixture("worker-hangs.ts")`), so the quoted name selects too.
+  case "$file" in
+    tests/*.test.ts | tests/*.test.tsx) ;;
+    tests/*)
+      # shellcheck disable=SC2046
+      add $(grep_tests -E "['\"\`/]$(basename "$file" | sed 's/[.[\*^$]/\\&/g')['\"\`]")
+      ;;
+  esac
   case "$file" in
     tests/*.test.ts | tests/*.test.tsx) add "$file" ;;
     *.ts | *.tsx)

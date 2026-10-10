@@ -350,6 +350,33 @@ describe.skipIf(!dbUp)("issued document list", () => {
     expect(
       numbers((older.data as { documents: { number: string }[] }).documents),
     ).toEqual(["ORC-0002", "ORC-0001"]);
+    // Where the next page starts, as the REST list answers it: null exactly on the last page.
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await issuedDocumentList(
+        principal,
+        { limit: 7, ...(cursor ? { before: cursor } : {}) },
+        { base: appDb },
+      );
+      if (!page.ok) throw new Error("the read was refused");
+      const data = page.data as {
+        documents: { number: string }[];
+        nextBefore: string | null;
+      };
+      walked.push(...numbers(data.documents));
+      if (!data.nextBefore) break;
+      cursor = data.nextBefore;
+    }
+    expect(walked).toHaveLength(28);
+    expect(new Set(walked).size).toBe(28);
+    const full = await issuedDocumentList(
+      principal,
+      { q: "recibo", limit: 3 },
+      { base: appDb },
+    );
+    if (!full.ok) throw new Error("the read was refused");
+    expect((full.data as { nextBefore: string | null }).nextBefore).toBeNull();
     const bad = await issuedDocumentList(
       principal,
       { before: "abc" },

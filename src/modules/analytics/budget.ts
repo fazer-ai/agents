@@ -32,19 +32,33 @@ export function isOverMetricsBudget(error: unknown): boolean {
 
 // A metrics read is several aggregates in one transaction, and `statement_timeout` restarts with each
 // of them: a first query of 14 s and a second of 14 s under a 15 s budget held the connection 28 s.
-// So each raw query first sets the time left until the transaction's deadline, which costs one round
-// trip per aggregate and bounds the whole read at the budget. Only the raw queries: the reads here
-// are aggregates, and a model call (the Langfuse link's vault read) keeps the per-statement bound.
+// So every statement the read issues, raw or through a model, first sets the time left until the
+// transaction's deadline: one round trip per aggregate, and the whole read bounded at the budget.
 function untilDeadline(db: ScopedDb, deadline: number): ScopedDb {
+  const bounded =
+    (call: (...a: unknown[]) => unknown, self: unknown) =>
+    async (...args: unknown[]) => {
+      const left = Math.max(1, Math.ceil(deadline - Date.now()));
+      await db.$executeRaw`SELECT set_config('statement_timeout', ${String(left)}, true)`;
+      return call.apply(self, args);
+    };
   return new Proxy(db, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
-      if (prop !== "$queryRaw" && prop !== "$queryRawUnsafe") return value;
-      return async (...args: unknown[]) => {
-        const left = Math.max(1, Math.ceil(deadline - Date.now()));
-        await target.$executeRaw`SELECT set_config('statement_timeout', ${String(left)}, true)`;
-        return (value as (...a: unknown[]) => unknown).apply(target, args);
-      };
+      if (typeof prop !== "string") return value;
+      if (prop === "$queryRaw" || prop === "$queryRawUnsafe") {
+        return bounded(value as (...a: unknown[]) => unknown, target);
+      }
+      // A model delegate (`db.llmUsage`): each of its operations is a statement.
+      if (!prop.startsWith("$") && value && typeof value === "object") {
+        return new Proxy(value, {
+          get(delegate, op, r) {
+            const fn = Reflect.get(delegate, op, r);
+            return typeof fn === "function" ? bounded(fn, delegate) : fn;
+          },
+        });
+      }
+      return value;
     },
   });
 }

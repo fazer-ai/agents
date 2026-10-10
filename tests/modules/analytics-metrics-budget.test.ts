@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { metricsPoolOptions } from "@/api/lib/prisma-metrics";
 import config from "@/config";
+import { postgresCodeOf } from "@/lib/pg-error";
 import { runMetricsScoped } from "@/modules/analytics/budget";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { getHealth } from "@/modules/analytics/health";
@@ -143,6 +145,55 @@ describe.skipIf(!dbUp)("metrics time budget", () => {
       SELECT count(*)::int AS n FROM pg_stat_activity
        WHERE state = 'active' AND query LIKE '%mb_two%' AND pid <> pg_backend_pid()`;
     expect(row?.n).toBe(0);
+  });
+
+  test("a model aggregate gets only the time left too", async () => {
+    // The raw query spends 0.8 s of the 1 s budget; the model count then waits on the lock. Bounded,
+    // it is cancelled at the deadline; per statement it would wait a full second more.
+    const { result, elapsed } = await withMetricsTimeout(1_000, () =>
+      underUsageLock(() =>
+        runMetricsScoped(app as PrismaClient, ctx, async (db) => {
+          await db.$queryRawUnsafe("SELECT pg_sleep(0.8)::text");
+          return db.llmUsage.count();
+        }).catch((e) => e),
+      ),
+    );
+    expect((result as { statusCode?: number }).statusCode).toBe(503);
+    expect(elapsed).toBeLessThan(1_400);
+  });
+
+  test("a statement on the metrics pool outside a read, like the session lookup, is bounded too", async () => {
+    const pool = await withMetricsTimeout(
+      500,
+      async () =>
+        new PrismaClient({
+          adapter: new PrismaPg(metricsPoolOptions(appUrl)),
+        }),
+    );
+    try {
+      let code: unknown;
+      let waitedMs = -1;
+      await (su as PrismaClient).$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            "LOCK TABLE users IN ACCESS EXCLUSIVE MODE",
+          );
+          const t0 = Date.now();
+          code = await pool.user
+            .findUnique({ where: { id: 1n }, select: { id: true } })
+            .then(
+              () => "answered",
+              (e) => postgresCodeOf(e),
+            );
+          waitedMs = Date.now() - t0;
+        },
+        { timeout: 20_000 },
+      );
+      expect(code === "57014" || code === "55P03").toBe(true);
+      expect(waitedMs).toBeLessThan(1_500);
+    } finally {
+      await pool.$disconnect();
+    }
   });
 
   test("a read inside the budget answers with its figures", async () => {

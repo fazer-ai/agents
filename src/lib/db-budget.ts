@@ -99,13 +99,18 @@ export class ConnectionBudgetError extends Error {
   }
 }
 
+// Bounded in both phases, because boot waits on it before binding the port: connecting, and the
+// settings query itself (`query_timeout` rejects on the client even when the server stops
+// answering). The client is not awaited on the way out, since closing a connection whose server
+// went silent can wait as long as the query would have.
 export async function readServerLimits(url: string): Promise<ServerLimits> {
   const client = new Client({
     connectionString: url,
     connectionTimeoutMillis: 5_000,
+    query_timeout: 5_000,
   });
-  await client.connect();
   try {
+    await client.connect();
     const { rows } = await client.query<{ m: number; s: number; r: number }>(
       `SELECT current_setting('max_connections')::int AS m,
               current_setting('superuser_reserved_connections')::int AS s,
@@ -115,7 +120,7 @@ export async function readServerLimits(url: string): Promise<ServerLimits> {
     if (!row) throw new Error("no settings row");
     return { maxConnections: row.m, reserved: row.s + row.r };
   } finally {
-    await client.end().catch(() => {});
+    void client.end().catch(() => {});
   }
 }
 

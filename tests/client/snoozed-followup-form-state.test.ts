@@ -224,4 +224,29 @@ describe("snoozed follow-up form: validation mirrors the reader", () => {
     const f = { ...form([cadence("a"), cadence("A")]), enabled: false };
     expect(snoozedFollowUpIssues(f).any).toBe(true);
   });
+  test("a step stored without a delay loads with the runtime's default, so a save keeps it", () => {
+    const bag = {
+      snoozedFollowUp: {
+        enabled: true,
+        signature: false,
+        cadences: [{ label: null, steps: [{ instructions: "lembrar" }] }],
+      },
+    };
+    const saved = {
+      snoozedFollowUp: snoozedFollowUpToStored(snoozedFollowUpToForm(bag)),
+    };
+    expect(shown(saved).cadences[0]?.steps[0]?.delayValue).toBe(
+      shown(bag).cadences[0]?.steps[0]?.delayValue,
+    );
+  });
+
+  test("a label longer than the reader keeps is flagged, so two sharing that prefix cannot both save", () => {
+    const prefix = "x".repeat(100);
+    const issues = snoozedFollowUpIssues(
+      form([cadence(`${prefix}a`), cadence(`${prefix}b`)]),
+    );
+    expect(issues.cadences.map((c) => c.label)).toEqual(["tooLong", "tooLong"]);
+    expect(issues.any).toBe(true);
+    expect(snoozedFollowUpIssues(form([cadence(prefix)])).any).toBe(false);
+  });
 });

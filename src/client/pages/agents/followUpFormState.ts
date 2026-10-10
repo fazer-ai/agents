@@ -32,14 +32,19 @@ function readSteps(fu: Record<string, unknown>): FollowUpStepState[] {
 // One stored step list into the editor's rows, kept to FOLLOW_UP_MAX_STEPS like the reader. Shared with
 // the snoozed ladder (./snoozedFollowUpFormState), whose steps are the same shape: one step mapper, so
 // a field added to a step is carried by both editors or by neither. An empty list stays empty.
-export function stepsToForm(rawSteps: readonly unknown[]): FollowUpStepState[] {
+export function stepsToForm(
+  rawSteps: readonly unknown[],
+  // The delay a step with none stored loads with. The snoozed ladder passes the runtime reader's
+  // default, so a save that rewrites the block does not change a delay the operator never set.
+  defaultDelayValue = "30",
+): FollowUpStepState[] {
   return rawSteps.slice(0, FOLLOW_UP_MAX_STEPS).map((raw) => {
     const st = (raw && typeof raw === "object" ? raw : {}) as Record<
       string,
       unknown
     >;
     return {
-      delayValue: num(st.delayValue) || "30",
+      delayValue: num(st.delayValue) || defaultDelayValue,
       delayUnit: str(st.delayUnit) || "minutes",
       instructions: str(st.instructions),
       assignLabels: stepLabels(st),

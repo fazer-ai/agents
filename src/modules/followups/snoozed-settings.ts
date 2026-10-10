@@ -11,6 +11,7 @@
 import { clipText } from "@/lib/text";
 import {
   FOLLOW_UP_MAX_STEPS,
+  SNOOZED_CADENCE_LABEL_MAX,
   SNOOZED_FOLLOW_UP_MAX_CADENCES,
   SNOOZED_FOLLOW_UP_MAX_LABELED_CADENCES,
 } from "@/modules/agents/text-caps";
@@ -55,7 +56,7 @@ function readCadence(raw: unknown): SnoozedFollowUpCadence | null {
   const bag = raw as Record<string, unknown>;
   const label =
     typeof bag.label === "string" && bag.label.trim()
-      ? clipText(bag.label.trim(), 100)
+      ? clipText(bag.label.trim(), SNOOZED_CADENCE_LABEL_MAX)
       : null;
   const steps = (Array.isArray(bag.steps) ? bag.steps : [])
     .slice(0, FOLLOW_UP_MAX_STEPS)

@@ -2138,6 +2138,7 @@
     "snoozedFollowUpLabelHint": "A conversa adiada com esta etiqueta segue esta cadência.",
     "snoozedFollowUpLabelMissing": "Escolha uma etiqueta. Sem ela, esta cadência seria lida como uma segunda cadência padrão.",
     "snoozedFollowUpLabelPlaceholder": "Escolher uma etiqueta…",
+    "snoozedFollowUpLabelTooLong": "Esta etiqueta passa do tamanho que o lembrete lê ({{max}} caracteres). Use uma etiqueta mais curta.",
     "snoozedFollowUpNoDefault": "Sem cadência padrão: só as conversas com uma das etiquetas abaixo recebem lembrete. Uma conversa adiada sem nenhuma delas fica sem lembrete.",
     "snoozedFollowUpNoSteps": "Uma cadência sem etapa não lembra ninguém. Adicione uma etapa ou remova a cadência.",
     "snoozedFollowUpRemoveCadence": "Remover cadência",

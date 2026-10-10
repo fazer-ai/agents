@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { recordDirectUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { shareInFlight } from "@/lib/locks";
+import { shareAbortableInFlight } from "@/lib/locks";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -445,11 +445,15 @@ function extractInbound(
         | typeof BODY_IMAGE_IGNORED
         | typeof BODY_IMAGE_OVER_CAP,
     );
-  return shareInFlight(key, async () => {
-    const value = await extractInboundOnce(params);
-    if (!isUnread(value)) rememberFileRead(key, value);
-    return value;
-  });
+  return shareAbortableInFlight(
+    key,
+    async (signal) => {
+      const value = await extractInboundOnce({ ...params, signal });
+      if (!isUnread(value)) rememberFileRead(key, value);
+      return value;
+    },
+    params.signal,
+  );
 }
 
 async function extractInboundOnce(

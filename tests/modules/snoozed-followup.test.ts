@@ -1172,6 +1172,59 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("an image read in flight is cut when the reminder's media budget runs out", async () => {
+    await setSettings({
+      ...LADDER,
+      vision: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${llmKeyId}`,
+      },
+    });
+    try {
+      await seed(2073);
+      const deadline = new AbortController();
+      let cut = false;
+      const s = stub({
+        messages: [
+          {
+            id: 470,
+            message_type: 0,
+            created_at: minutesAgo(10),
+            sender: { type: "contact", id: 1 },
+            content: "",
+            attachments: [
+              {
+                id: 1470,
+                file_type: "image",
+                data_url: "https://chat.example.com/a/470.png",
+              },
+            ],
+          },
+          personAsked(471, 3),
+        ],
+        // The deadline fires while the provider is answering.
+        visionFetch: (async (_url: string, init?: RequestInit) => {
+          deadline.abort();
+          cut = init?.signal?.aborted === true;
+          if (cut) throw init?.signal?.reason;
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content: "lida" } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }) as unknown as typeof fetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2073), appDb, s.deps, {
+        signal: deadline.signal,
+        commit: () => {},
+      });
+      expect(cut).toBe(true);
+      expect(s.downloadSignals[0]?.aborted).toBe(true);
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
   test("a paged window keeps the newest messages and a quote older than the window", async () => {
     // The newest page is full (twenty rows, one a private note), so the handler walks back one page.
     const contact = (

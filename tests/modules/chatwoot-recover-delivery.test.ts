@@ -679,7 +679,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7337 },
+          chatwootConversationId: { gte: 7310, lte: 7338 },
         },
       });
       await dropContact(77);
@@ -1196,38 +1196,75 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
     });
 
-    test.each([
-      [
-        "refuses a reply the live read says is WhatsApp, past ninety minutes",
-        7335,
-        "Channel::Whatsapp",
-        "unrecoverable",
-      ],
-      [
-        "still recovers another channel at the same age",
-        7336,
-        "Channel::Api",
-        "recovered",
-      ],
-    ] as const)("%s", async (_, convId, channel, outcome) => {
-      // No mirror row: only the live read names the channel, so the check on the customer's clock
-      // is the one that decides.
-      await dropContact(77);
-      const messageId = convId + 500;
+    test.each([7335, 7336] as const)(
+      "keeps six hours for a conversation the mirror never learned, WhatsApp or not (%i)",
+      async (convId) => {
+        // A refusal hands the conversation to the team, and the hand-over reads the mirror row: with
+        // none, a WhatsApp conversation is still answered late rather than left with the bot.
+        await dropContact(77);
+        const messageId = convId + 500;
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          receivedAgoMs: 2 * 60 * 60 * 1000,
+        });
+        const stub = stubChatwoot({
+          page: pageWith([
+            {
+              id: messageId,
+              content: "oi, alguém aí?",
+              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+            },
+          ]),
+          conv: {
+            channel: convId === 7335 ? "Channel::Whatsapp" : "Channel::Api",
+          },
+        });
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("recovered");
+        expect(stub.sent).toEqual([[convId, REPLY]]);
+      },
+    );
+
+    test("refuses a WhatsApp reply the customer wrote ninety minutes ago, though its webhook arrived late", async () => {
+      // The receipt is recent, so the check before the network lets it through; the live read
+      // carries the customer's own clock, and the mirror names the channel.
+      const convId = 7338;
+      const messageId = 7838;
+      const waInbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: 7338,
+          name: "WhatsApp late",
+          channelType: "Channel::Whatsapp",
+        },
+        select: { id: true },
+      });
+      const conv = await seedConversation(convId);
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { inboxId: waInbox.id },
+      });
       const rowId = await seedDeadDelivery({
         conversationId: convId,
         inboundMessageId: messageId,
-        receivedAgoMs: 2 * 60 * 60 * 1000,
+        receivedAgoMs: 10 * 60 * 1000,
       });
       const stub = stubChatwoot({
         page: pageWith([
           {
             id: messageId,
-            content: "oi, alguém aí?",
+            content: "oi",
             createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
           },
         ]),
-        conv: { channel },
       });
       expect(
         await recoverStrandedDelivery({
@@ -1236,13 +1273,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           base: appDb,
           deps: depsWith(stub),
         }),
-      ).toBe(outcome);
-      if (outcome === "unrecoverable") {
-        expect(stub.sent).toEqual([]);
-        expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
-      } else {
-        expect(stub.sent).toEqual([[convId, REPLY]]);
-      }
+      ).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     });
 
     test("refuses a WhatsApp reply past ninety minutes from the mirror, and hands the conversation over", async () => {

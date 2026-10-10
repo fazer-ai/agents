@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   newSnoozedStep,
   type SnoozedFollowUpState,
+  snoozedFollowUpBlocksSave,
   snoozedFollowUpIssues,
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
@@ -248,5 +249,31 @@ describe("snoozed follow-up form: validation mirrors the reader", () => {
     expect(issues.cadences.map((c) => c.label)).toEqual(["tooLong", "tooLong"]);
     expect(issues.any).toBe(true);
     expect(snoozedFollowUpIssues(form([cadence(prefix)])).any).toBe(false);
+  });
+  test("a step stored as a non-object is dropped, as the reader drops it, not built into a reminder", () => {
+    const bag = {
+      snoozedFollowUp: {
+        enabled: true,
+        signature: false,
+        cadences: [
+          { label: null, steps: [null, { delayValue: 2, delayUnit: "hours" }] },
+          { label: "so-nulo", steps: [null] },
+        ],
+      },
+    };
+    const f = snoozedFollowUpToForm(bag);
+    expect(f.cadences.map((c) => c.steps.length)).toEqual([1, 0]);
+    // The cadence the reader drops is flagged, so a save cannot quietly turn it into a reminder.
+    expect(snoozedFollowUpIssues(f).cadences[1]?.noSteps).toBe(true);
+  });
+
+  test("every save path asks one predicate: blocked while on with an issue, never while off or monitoring", () => {
+    const bad = form([cadence("a"), cadence("A")]);
+    expect([
+      snoozedFollowUpBlocksSave(bad, "production"),
+      snoozedFollowUpBlocksSave({ ...bad, enabled: false }, "production"),
+      snoozedFollowUpBlocksSave(bad, "monitoring"),
+      snoozedFollowUpBlocksSave(form([cadence("a")]), "production"),
+    ]).toEqual([true, false, false, false]);
   });
 });

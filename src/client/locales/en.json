@@ -2073,6 +2073,7 @@
     "snoozedFollowUpEnabled": "Remind the customer when a person snoozed the conversation and got no reply",
     "snoozedFollowUpFirstDelay": "Wait after the person's message",
     "snoozedFollowUpHelp": "A person on the team asks the customer for something, such as an order number or a document, and snoozes the conversation in Chatwoot until the next reply. If the customer never answers, nothing else reminds them or closes it.\n\nEach step is a reminder the agent writes on that person's behalf, with no tools; the last step can add labels and resolve. The customer answering ends the reminders.\n\nSteps fire inside the follow-up's allowed schedule. To pick the pace in one click, create a Chatwoot macro that snoozes and adds a cadence's label.",
+    "snoozedFollowUpInvalidToast": "Fix the snoozed follow-up's cadences before saving.",
     "snoozedFollowUpLabel": "Label",
     "snoozedFollowUpLabelDuplicate": "Another cadence above already uses this label (case is ignored). Only the first one would ever be picked.",
     "snoozedFollowUpLabeledCadence": "Cadence by label",

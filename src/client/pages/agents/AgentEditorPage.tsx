@@ -189,6 +189,7 @@ import {
 } from "./StaleNotice";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import {
+  snoozedFollowUpBlocksSave,
   snoozedFollowUpToForm,
   snoozedFollowUpToStored,
 } from "./snoozedFollowUpFormState";
@@ -3457,6 +3458,20 @@ function AgentEditor() {
         t(
           "editor.contactAuthEmpty",
           "Add at least one condition or turn on the external endpoint, or turn the gate off.",
+        ),
+        "error",
+      );
+      return false;
+    }
+    // NOTE: Same reason: the snoozed ladder's cadence issues hold the Behavior Save, not this path.
+    if (
+      dirty.behavior &&
+      snoozedFollowUpBlocksSave(snoozedFollowUp, agentMode)
+    ) {
+      showToast(
+        t(
+          "editor.snoozedFollowUpInvalidToast",
+          "Fix the snoozed follow-up's cadences before saving.",
         ),
         "error",
       );

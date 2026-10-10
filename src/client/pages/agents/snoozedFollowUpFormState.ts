@@ -134,6 +134,17 @@ export function snoozedFollowUpIssues(
   };
 }
 
+// Whether the block may not be saved: its issues, while its fields are drawn (a monitoring agent hides
+// the section and the switch hides the cadences). Asked by every path that writes the block.
+export function snoozedFollowUpBlocksSave(
+  form: SnoozedFollowUpState,
+  mode: string,
+): boolean {
+  return (
+    mode !== "monitoring" && form.enabled && snoozedFollowUpIssues(form).any
+  );
+}
+
 // A new step of this ladder. A day is the pace of a person waiting on a document or an order number;
 // the follow-up's 30 minutes is the pace of a chat that just went quiet.
 export function newSnoozedStep(): FollowUpStepState {

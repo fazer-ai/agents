@@ -132,6 +132,7 @@ import {
   type SnoozedCadenceState,
   type SnoozedFollowUpIssues,
   type SnoozedFollowUpState,
+  snoozedFollowUpBlocksSave,
   snoozedFollowUpIssues,
 } from "./snoozedFollowUpFormState";
 import { TabActionBar } from "./TabActionBar";
@@ -1897,8 +1898,10 @@ export function BehaviorTab({
     () => snoozedFollowUpIssues(snoozedFollowUp),
     [snoozedFollowUp],
   );
-  const snoozedFollowUpInvalid =
-    mode !== "monitoring" && snoozedFollowUp.enabled && snoozedIssues.any;
+  const snoozedFollowUpInvalid = snoozedFollowUpBlocksSave(
+    snoozedFollowUp,
+    mode,
+  );
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,

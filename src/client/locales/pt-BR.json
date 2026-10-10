@@ -2132,6 +2132,7 @@
     "snoozedFollowUpEnabled": "Lembrar o cliente quando uma pessoa adiou a conversa e ficou sem resposta",
     "snoozedFollowUpFirstDelay": "Esperar depois da mensagem da pessoa",
     "snoozedFollowUpHelp": "Alguém do time pede algo ao cliente, como o número do pedido ou um documento, e adia a conversa no Chatwoot até a próxima resposta. Se o cliente nunca responde, nada mais o lembra nem encerra a conversa.\n\nCada etapa é um lembrete que o agente escreve em nome dessa pessoa, sem ferramentas; a última etapa pode adicionar etiquetas e resolver. A resposta do cliente encerra os lembretes.\n\nAs etapas disparam dentro do horário permitido do follow-up. Para escolher o ritmo com um clique, crie uma macro no Chatwoot que adia a conversa e adiciona a etiqueta de uma cadência.",
+    "snoozedFollowUpInvalidToast": "Corrija as cadências do lembrete de conversa adiada antes de salvar.",
     "snoozedFollowUpLabel": "Etiqueta",
     "snoozedFollowUpLabelDuplicate": "Outra cadência acima já usa esta etiqueta (maiúsculas e minúsculas não contam). Só a primeira seria escolhida.",
     "snoozedFollowUpLabeledCadence": "Cadência por etiqueta",

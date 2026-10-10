@@ -50,6 +50,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "UnpricedModelAnnouncement",
   "DocumentTemplate",
   "IssuedDocument",
+  "DocumentApprovalRequest",
   "Experiment",
   "PromptVariantAssignment",
   "LlmUsage",

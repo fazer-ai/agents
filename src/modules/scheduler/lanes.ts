@@ -80,6 +80,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // reads the queue in minutes, not seconds. Budget: one model call per proposal, under the shared
   // lane's provider concurrency like any other recovery-shaped call.
   SUGGESTION_REVIEW: "shared",
+  // One UPDATE over the tenant's overdue requests, at a cadence of hours by design.
+  DOCUMENT_APPROVAL_EXPIRY: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider the rest of the product also
@@ -132,6 +134,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   INBOUND_REDISPATCH: true,
   NOTHING_TO_ANSWER: false,
   SUGGESTION_REVIEW: true,
+  DOCUMENT_APPROVAL_EXPIRY: false,
 };
 
 // How many OBSERVE rows one SHARED tick claims, when it is the one draining the lane (a caller of
@@ -213,6 +216,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // revoke's generic death line is reserved for kinds without one. One row per proposal the agent
   // made, which is far below traffic.
   SUGGESTION_REVIEW: false,
+  // One row per request, and a finished expiry is never read again: the request row is the record.
+  DOCUMENT_APPROVAL_EXPIRY: true,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic rather than a population the
@@ -275,6 +280,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   NOTHING_TO_ANSWER: true,
   // One per proposal, and proposals follow the conversations the agent and the observer read.
   SUGGESTION_REVIEW: true,
+  // One per request, and requests follow the conversations the agent answers.
+  DOCUMENT_APPROVAL_EXPIRY: true,
 };
 
 // The order the traffic drain claims in, lowest first and oldest by created_at within a rank. It only
@@ -291,6 +298,8 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   INGEST_MESSAGE: 1,
   SUGGESTION_REVIEW: 1,
   NOTHING_TO_ANSWER: 2,
+  // The expiry only moves a status the approval already enforces by `expiresAt`.
+  DOCUMENT_APPROVAL_EXPIRY: 1,
   FOLLOWUP: 1,
   FOLLOWUP_SWEEP: 1,
   WEBHOOK_RETRY: 1,
@@ -389,6 +398,9 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // `warn`: the dead-letter hook releases the item to the pending list unreviewed, so nothing is
   // lost; what died is the dedup a person now does by eye.
   SUGGESTION_REVIEW: "warn",
+  // `warn`: approval refuses an overdue request by its expiresAt whatever its status says, so what
+  // died is the status label, not the rule.
+  DOCUMENT_APPROVAL_EXPIRY: "warn",
 };
 
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
@@ -426,6 +438,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   // The judgement is already half an hour late by design; a minute between retries changes nothing.
   NOTHING_TO_ANSWER: 60_000,
   SUGGESTION_REVIEW: 2_000,
+  DOCUMENT_APPROVAL_EXPIRY: 2_000,
 };
 
 export function kindsInLane(

@@ -139,6 +139,15 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   },
   "PATCH /v1/document-templates/:id": { tool: "document_template_update" },
   "DELETE /v1/document-templates/:id": { tool: "document_template_delete" },
+  "GET /v1/document-approvals/": { gap: "list document approval requests" },
+  "GET /v1/document-approvals/:id": { gap: "read a document approval request" },
+  "GET /v1/document-approvals/:id/preview": { none: BINARY },
+  "POST /v1/document-approvals/:id/approve": {
+    gap: "approve a document approval request",
+  },
+  "POST /v1/document-approvals/:id/reject": {
+    gap: "reject a document approval request",
+  },
   "GET /v1/documents/": { tool: "issued_document_list" },
   "POST /v1/documents/": { gap: "issue a document outside a conversation" },
   "POST /v1/documents/:id/revoke": { gap: "revoke an issued document" },

@@ -46,6 +46,9 @@ export interface TemplateModalPayload {
 const FONTS = ["sans", "serif", "mono"] as const;
 const MARGINS = ["narrow", "normal", "wide"] as const;
 const PAGE_SIZES = ["A4", "LETTER"] as const;
+// The validities offered in the console, in hours; the API takes any whole number from 1 to 168, and
+// a stored value outside this list is offered too, so opening the modal never rewrites it.
+const APPROVAL_TTL_PRESETS = [1, 4, 12, 24, 48, 72, 168] as const;
 
 // Where an operator connects the AI assistant that builds a template: blocks and fields are authored
 // over MCP, and this screen only edits wording. Opened in a new tab so the editor keeps its edits.
@@ -79,6 +82,8 @@ export function DocumentTemplateModal({
   const [description, setDescription] = useState("");
   const [numberPrefix, setNumberPrefix] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [requiresApproval, setRequiresApproval] = useState(false);
+  const [approvalTtlHours, setApprovalTtlHours] = useState(24);
   const [style, setStyle] = useState<Style | null>(null);
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -111,6 +116,8 @@ export function DocumentTemplateModal({
     setDescription(tpl.description ?? "");
     setNumberPrefix(tpl.numberPrefix ?? "");
     setEnabled(tpl.enabled);
+    setRequiresApproval(tpl.requiresApproval);
+    setApprovalTtlHours(tpl.approvalTtlHours);
     setStyle({ ...tpl.style });
     setTexts(initialTexts);
     baselineRef.current = JSON.stringify({
@@ -119,6 +126,8 @@ export function DocumentTemplateModal({
       description: tpl.description ?? "",
       numberPrefix: tpl.numberPrefix ?? "",
       enabled: tpl.enabled,
+      requiresApproval: tpl.requiresApproval,
+      approvalTtlHours: tpl.approvalTtlHours,
       style: { ...tpl.style },
       texts: initialTexts,
     });
@@ -133,6 +142,8 @@ export function DocumentTemplateModal({
       description,
       numberPrefix,
       enabled,
+      requiresApproval,
+      approvalTtlHours,
       style,
       texts,
     }) !== baselineRef.current;
@@ -178,6 +189,12 @@ export function DocumentTemplateModal({
       patch.numberPrefix = numberPrefix || null;
     }
     if (enabled !== template.enabled) patch.enabled = enabled;
+    if (requiresApproval !== template.requiresApproval) {
+      patch.requiresApproval = requiresApproval;
+    }
+    if (approvalTtlHours !== template.approvalTtlHours) {
+      patch.approvalTtlHours = approvalTtlHours;
+    }
     if (Object.keys(blockText).length > 0) patch.blockText = blockText;
     const changedStyle = Object.fromEntries(
       Object.entries(style as unknown as Record<string, unknown>).filter(
@@ -195,8 +212,18 @@ export function DocumentTemplateModal({
     description,
     numberPrefix,
     enabled,
+    requiresApproval,
+    approvalTtlHours,
     blockText,
   ]);
+
+  const ttlOptions = useMemo(
+    () =>
+      [...new Set<number>([...APPROVAL_TTL_PRESETS, approvalTtlHours])].sort(
+        (a, b) => a - b,
+      ),
+    [approvalTtlHours],
+  );
 
   const draft = useMemo(() => {
     if (!template || !changes) return null;
@@ -517,6 +544,43 @@ export function DocumentTemplateModal({
             checked={enabled}
             onCheckedChange={setEnabled}
           />
+
+          <div className="flex flex-col gap-2">
+            <SwitchField
+              label={t(
+                "documents.requiresApproval",
+                "A person approves each document before the customer gets it",
+              )}
+              checked={requiresApproval}
+              onCheckedChange={setRequiresApproval}
+            />
+            {requiresApproval && (
+              <FormField
+                label={t("documents.approvalTtl", "The request waits for")}
+                hint={t(
+                  "documents.approvalTtlHint",
+                  "If nobody decides by then, the request expires and nothing is sent.",
+                )}
+              >
+                <Select
+                  value={String(approvalTtlHours)}
+                  onChange={(e) => setApprovalTtlHours(Number(e.target.value))}
+                >
+                  {ttlOptions.map((h) => (
+                    <option key={h} value={h}>
+                      {h % 24 === 0
+                        ? t("documents.approvalTtlDays", "{{count}} days", {
+                            count: h / 24,
+                          })
+                        : t("documents.approvalTtlHours", "{{count}} hours", {
+                            count: h,
+                          })}
+                    </option>
+                  ))}
+                </Select>
+              </FormField>
+            )}
+          </div>
 
           <div className="flex flex-col gap-2">
             <p className="font-medium text-sm text-text-primary">

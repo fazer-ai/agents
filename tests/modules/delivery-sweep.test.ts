@@ -626,6 +626,92 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).toBe(String(rowId));
   });
 
+  describe("the recovery's ceiling follows the inbox's channel", () => {
+    let whatsappInboxId = 0n;
+    beforeAll(async () => {
+      whatsappInboxId = (
+        await suDb.inbox.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootInboxId: 662,
+            name: "WhatsApp",
+            channelType: "Channel::Whatsapp",
+            agentId: agentDbId,
+          },
+        })
+      ).id;
+    });
+
+    async function strandOn(
+      convId: number,
+      inboxId: bigint,
+      ageMs: number,
+    ): Promise<{ rowId: bigint; convDbId: bigint }> {
+      const conv = await seedConversation(convId);
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { inboxId },
+      });
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs,
+        inboundMessageId: convId + 1000,
+      });
+      return { rowId, convDbId: conv.id };
+    }
+
+    const armed = async (rowId: bigint) =>
+      (await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+        },
+      })) === 1;
+
+    test("a WhatsApp message past ninety minutes is a loss now, with no recovery armed", async () => {
+      const { rowId, convDbId } = await strandOn(
+        8981,
+        whatsappInboxId,
+        2 * 60 * 60 * 1000,
+      );
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect((await statusOf(rowId)).status).toBe("DEAD");
+      expect(await armed(rowId)).toBe(false);
+      const [line] = await deliveryLines(convDbId);
+      if (line === undefined) throw new Error("no delivery line was written");
+      expect(line.level).toBe("error");
+      expect((line.detail as Record<string, unknown>).willRetry).toBe(false);
+    });
+
+    test("a WhatsApp message inside ninety minutes is still recovered", async () => {
+      const { rowId } = await strandOn(8982, whatsappInboxId, 60 * 60 * 1000);
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect(await armed(rowId)).toBe(true);
+    });
+
+    test("another channel keeps six hours", async () => {
+      const { rowId } = await strandOn(8983, inboxDbId, 3 * 60 * 60 * 1000);
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect(await armed(rowId)).toBe(true);
+    });
+
+    test("a WhatsApp delivery that owes only memory keeps six hours", async () => {
+      const { rowId } = await strandOn(
+        8984,
+        whatsappInboxId,
+        2 * 60 * 60 * 1000,
+      );
+      await suDb.chatwootWebhookDelivery.update({
+        where: { id: rowId },
+        data: { owesMemoryOnly: true },
+      });
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect(await armed(rowId)).toBe(true);
+    });
+  });
+
   test("declares a loss DEAD only together with its recovery", async () => {
     // A DEAD row with no job is invisible to every later sweep: the arm failing has to leave the row
     // where the next sweep finds it, not on the worklist with nothing retrying it.
@@ -1002,6 +1088,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       routeObserved: false,
       routeAgentBotId: null,
       routeRemembers: null,
+      owesMemoryOnly: null,
     };
     // Somebody else claimed it.
     await suDb.chatwootWebhookDelivery.update({

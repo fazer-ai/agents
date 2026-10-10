@@ -230,6 +230,11 @@ import {
   serializeToolPreconditions,
 } from "./ToolPreconditionsEditor";
 import { ToolsTab } from "./ToolsTab";
+import {
+  guidanceDraftHidden,
+  guidanceToSave,
+  type ToolGuidance,
+} from "./toolGuidance";
 import { rebaseToolGrants, rebaseToolGrantsOnto } from "./toolsBaseline";
 import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
 import type {
@@ -453,6 +458,17 @@ function readModelState(a: Agent) {
     promptCache: str(mc.promptCache),
     promptCacheTtl: str(mc.promptCacheTtl),
     promptCacheConversationTtl: str(mc.promptCacheConversationTtl),
+  };
+}
+
+// The guidance half of the tool config read from a synced agent (./toolGuidance).
+function guidanceOf(b: ReturnType<typeof readBehaviorState>): ToolGuidance {
+  return {
+    handoffInstructions: b.handoff.instructions,
+    kanbanInstructions: b.kanbanInstructions,
+    customAttributeInstructions: b.customAttributeInstructions,
+    labelInstructions: b.labelInstructions,
+    updateKanbanTaskInstructions: b.updateKanbanTaskInstructions,
   };
 }
 
@@ -1519,17 +1535,25 @@ function AgentEditor() {
   // They are synced from the server here (load / discard-all / Tools save / Tools revert) and
   // deliberately NOT reset by applyAgent — otherwise a General/Behavior save (which calls applyAgent)
   // would wipe a pending, unsaved Tools edit.
-  const syncToolConfig = useCallback((a: Agent) => {
+  // `keepGuidance`: a Tools save on questions and rules, which wrote the guidance as stored, leaves the
+  // form's guidance as edited (./toolGuidance).
+  const syncToolConfig = useCallback((a: Agent, keepGuidance = false) => {
     const b = readBehaviorState(a);
     setTransferWithSummary(b.transferWithSummary);
-    setHandoff(b.handoff);
-    setKanbanInstructions(b.kanbanInstructions);
-    setCustomAttributeInstructions(b.customAttributeInstructions);
-    setLabelInstructions(b.labelInstructions);
+    setHandoff((prev) =>
+      keepGuidance
+        ? { ...b.handoff, instructions: prev.instructions }
+        : b.handoff,
+    );
+    if (!keepGuidance) {
+      setKanbanInstructions(b.kanbanInstructions);
+      setCustomAttributeInstructions(b.customAttributeInstructions);
+      setLabelInstructions(b.labelInstructions);
+      setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
+    }
     setProtectedLabels(b.protectedLabels);
     setAllowedLabels(b.allowedLabels);
     setOutsideAllowedLabels(b.outsideAllowedLabels);
-    setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
     setToolPreconditions(b.toolPreconditions);
     setCrossInboxCase(b.crossInboxCase);
     setSendImage(b.sendImage);
@@ -1973,12 +1997,26 @@ function AgentEditor() {
           modelFallback: modelFallbackToForm(syncedForChat.settings),
         }
       : { memory, modelFallback };
+  // The text the Tools tab writes for a model, as its save would write it (./toolGuidance).
+  const formGuidance: ToolGuidance = {
+    handoffInstructions: handoff.instructions,
+    kanbanInstructions,
+    customAttributeInstructions,
+    labelInstructions,
+    updateKanbanTaskInstructions,
+  };
+  const storedGuidance: ToolGuidance | null =
+    decides && syncedForChat
+      ? guidanceOf(readBehaviorState(syncedForChat))
+      : null;
+  const savedGuidance = guidanceToSave(formGuidance, storedGuidance);
   // The edits no save of this engine writes: they are still the operator's, so leaving the editor
   // asks about them even with every Save done.
   const hiddenDraftsPending =
-    decides &&
-    JSON.stringify({ systemPrompt, model, memory, modelFallback }) !==
-      JSON.stringify({ ...chatSnap, ...hiddenSnap });
+    (decides &&
+      JSON.stringify({ systemPrompt, model, memory, modelFallback }) !==
+        JSON.stringify({ ...chatSnap, ...hiddenSnap })) ||
+    guidanceDraftHidden(formGuidance, storedGuidance);
   const sectionSnap = {
     // NOTE: General covers identity + model (the tabs merged). Track the raw model
     // form state, not buildModelConfig() — the latter collapses to {} until
@@ -2034,14 +2072,14 @@ function AgentEditor() {
     tools: JSON.stringify({
       grants: canonicalGrants(grants.filter((g) => g.source !== "RAG")),
       transferWithSummary,
-      handoff,
-      kanbanInstructions,
-      customAttributeInstructions,
-      labelInstructions,
+      handoff: { ...handoff, instructions: savedGuidance.handoffInstructions },
+      kanbanInstructions: savedGuidance.kanbanInstructions,
+      customAttributeInstructions: savedGuidance.customAttributeInstructions,
+      labelInstructions: savedGuidance.labelInstructions,
       protectedLabels,
       allowedLabels,
       outsideAllowedLabels,
-      updateKanbanTaskInstructions,
+      updateKanbanTaskInstructions: savedGuidance.updateKanbanTaskInstructions,
       toolPreconditions,
       crossInboxCase,
       sendImage,
@@ -3336,8 +3374,13 @@ function AgentEditor() {
         string,
         unknown
       >;
-      const handoffJson = serializeHandoff(handoff);
-      const kanbanJson = { instructions: kanbanInstructions.trim() || null };
+      const handoffJson = serializeHandoff({
+        ...handoff,
+        instructions: savedGuidance.handoffInstructions,
+      });
+      const kanbanJson = {
+        instructions: savedGuidance.kanbanInstructions.trim() || null,
+      };
       const crossInboxCaseJson = serializeCrossInboxCase(crossInboxCase);
       const sendImageJson = serializeSendImage(sendImage);
       const resolveConversationJson =
@@ -3348,9 +3391,10 @@ function AgentEditor() {
         unknown
       >;
       const toolGuidanceJson: Record<string, unknown> = { ...existingGuidance };
-      const attrNote = customAttributeInstructions.trim();
-      const labelNote = labelInstructions.trim();
-      const updateKanbanNote = updateKanbanTaskInstructions.trim();
+      const attrNote = savedGuidance.customAttributeInstructions.trim();
+      const labelNote = savedGuidance.labelInstructions.trim();
+      const updateKanbanNote =
+        savedGuidance.updateKanbanTaskInstructions.trim();
       if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
       else delete toolGuidanceJson.set_custom_attribute;
       if (labelNote) toolGuidanceJson.set_labels = labelNote;
@@ -3462,7 +3506,7 @@ function AgentEditor() {
       setGrants(mapGrants(grantsRes.data.grants));
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
-      syncToolConfig(agentRes.data.agent);
+      syncToolConfig(agentRes.data.agent, decides);
       setSettings((s) => ({
         ...s,
         handoff: handoffJson,

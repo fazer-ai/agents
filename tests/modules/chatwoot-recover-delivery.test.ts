@@ -679,7 +679,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7338 },
+          chatwootConversationId: { gte: 7310, lte: 7339 },
         },
       });
       await dropContact(77);
@@ -1201,34 +1201,48 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       async (convId) => {
         // A refusal hands the conversation to the team, and the hand-over reads the mirror row: with
         // none, a WhatsApp conversation is still answered late rather than left with the bot.
-        await dropContact(77);
-        const messageId = convId + 500;
-        const rowId = await seedDeadDelivery({
-          conversationId: convId,
-          inboundMessageId: messageId,
-          receivedAgoMs: 2 * 60 * 60 * 1000,
+        // The route's inbox says WhatsApp too: the hand-over still has no mirror row to read.
+        const before = await suDb.inbox.findUniqueOrThrow({
+          where: { id: inboxDbId },
+          select: { channelType: true },
         });
-        const stub = stubChatwoot({
-          page: pageWith([
-            {
-              id: messageId,
-              content: "oi, alguém aí?",
-              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+        if (convId === 7335)
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { channelType: "Channel::Whatsapp" },
+          });
+        try {
+          await dropContact(77);
+          const messageId = convId + 500;
+          const rowId = await seedDeadDelivery({
+            conversationId: convId,
+            inboundMessageId: messageId,
+            receivedAgoMs: 2 * 60 * 60 * 1000,
+          });
+          const stub = stubChatwoot({
+            page: pageWith([
+              {
+                id: messageId,
+                content: "oi, alguém aí?",
+                createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+              },
+            ]),
+            conv: {
+              channel: convId === 7335 ? "Channel::Whatsapp" : "Channel::Api",
             },
-          ]),
-          conv: {
-            channel: convId === 7335 ? "Channel::Whatsapp" : "Channel::Api",
-          },
-        });
-        expect(
-          await recoverStrandedDelivery({
-            tenantId,
-            deliveryRowId: rowId,
-            base: appDb,
-            deps: depsWith(stub),
-          }),
-        ).toBe("recovered");
-        expect(stub.sent).toEqual([[convId, REPLY]]);
+          });
+          expect(
+            await recoverStrandedDelivery({
+              tenantId,
+              deliveryRowId: rowId,
+              base: appDb,
+              deps: depsWith(stub),
+            }),
+          ).toBe("recovered");
+          expect(stub.sent).toEqual([[convId, REPLY]]);
+        } finally {
+          await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+        }
       },
     );
 
@@ -1348,6 +1362,58 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
           (l.detail as Record<string, unknown> | null)?.outcome,
         ]),
       ).toEqual([["error", "unanswered"]]);
+    });
+
+    test("refuses on the route's WhatsApp inbox when the mirror row named no inbox", async () => {
+      // The recovery fills the mirror's null inbox from the route, so that is the channel the
+      // hand-over reads, and the check on the customer's clock reads it too.
+      const convId = 7339;
+      const messageId = 7839;
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { channelType: "Channel::Whatsapp" },
+      });
+      try {
+        const conv = await seedConversation(convId, { inboxId: null });
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          receivedAgoMs: 2 * 60 * 60 * 1000,
+        });
+        const stub = stubChatwoot({
+          page: pageWith([
+            {
+              id: messageId,
+              content: "oi",
+              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+            },
+          ]),
+          conv: { channel: "Channel::Whatsapp" },
+        });
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("unrecoverable");
+        expect(stub.sent).toEqual([]);
+        expect(
+          (
+            await suDb.conversation.findUniqueOrThrow({
+              where: { id: conv.id },
+              select: { inboxId: true },
+            })
+          ).inboxId,
+        ).toBe(inboxDbId);
+      } finally {
+        await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+      }
     });
 
     test("a WhatsApp delivery that owes only memory keeps six hours", () => {

@@ -1130,6 +1130,152 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
+  // The ladder's fixed sends count toward the agent's proactive limit like a nudge does, against the
+  // conversation they go to: past it the link is not sent and the goodbye stays a private note.
+  const withProactiveLimitReached = async (
+    run: () => Promise<void>,
+    chatwootConversationId = ENTRY_CONV,
+  ) => {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    const entry = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          limits: { maxProactivePerDay: 1 },
+        },
+      },
+    });
+    await suDb.agentTurnDelivery.create({
+      data: { tenantId, conversationId: entry.id, proactive: true },
+    });
+    try {
+      await run();
+    } finally {
+      await suDb.agentTurnDelivery.deleteMany({
+        where: { conversationId: entry.id },
+      });
+      await suDb.conversation.update({
+        where: { id: entry.id },
+        data: { proactiveLimitAlertedAt: null },
+      });
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings ?? {} },
+      });
+    }
+  };
+
+  test("past the proactive limit the WhatsApp link is not sent", async () => {
+    await withProactiveLimitReached(async () => {
+      const job = await claimed("whatsapp");
+      wire.length = 0;
+      globalThis.fetch = httpDouble;
+      try {
+        await redirectFollowUpHandler(job, appDb, deps());
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      expect(wire.some((u) => u.includes("/redirect_tokens"))).toBe(true);
+      expect(wire.some((u) => u.includes("/messages"))).toBe(false);
+    });
+  });
+
+  test("past the proactive limit the goodbye is a private note, and the conversation still closes", async () => {
+    await restoreAnchor();
+    const sent: Array<[number, string, boolean]> = [];
+    const resolved: number[] = [];
+    const client = {
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "pending",
+        meta: {},
+      }),
+      sendMessage: async (
+        c: number,
+        t: string,
+        opts?: { private?: boolean },
+      ) => {
+        sent.push([c, t, opts?.private === true]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleStatus: async (c: number) => {
+        resolved.push(c);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    try {
+      await withProactiveLimitReached(async () => {
+        const outcome = await deliverRedirectClosing({
+          tenantId,
+          instanceId,
+          widgetConversationId: WIDGET_CONV,
+          entryInboxId: 110,
+          closingMessage: "Vamos encerrar por aqui.",
+          closeChat: false,
+          base: suDb,
+          deps: { makeClient: async () => client },
+        });
+        expect(outcome).toBe("delivered");
+      });
+      expect(sent).toEqual([[ENTRY_CONV, "Vamos encerrar por aqui.", true]]);
+      expect(resolved).toContain(ENTRY_CONV);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
+  test("past the proactive limit on the chat, its goodbye is a private note and the WhatsApp goodbye still goes", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    const sent: Array<[number, boolean]> = [];
+    const noting = {
+      makeClient: async () => {
+        const inner = await s.makeClient();
+        return {
+          ...inner,
+          sendMessage: async (
+            c: number,
+            t: string,
+            opts?: { private?: boolean },
+          ) => {
+            sent.push([c, opts?.private === true]);
+            return inner.sendMessage(c, t);
+          },
+        } as unknown as Awaited<ReturnType<typeof s.makeClient>>;
+      },
+    };
+    try {
+      await withProactiveLimitReached(async () => {
+        await deliverRedirectClosing({
+          tenantId,
+          instanceId,
+          widgetConversationId: WIDGET_CONV,
+          entryInboxId: 110,
+          closingMessage: "Vamos encerrar por aqui.",
+          closeChat: true,
+          base: appDb,
+          deps: { makeClient: noting.makeClient },
+        });
+      }, WIDGET_CONV);
+      expect(sent).toEqual([
+        [WIDGET_CONV, true],
+        [ENTRY_CONV, false],
+      ]);
+      expect(s.resolved).toEqual([WIDGET_CONV, ENTRY_CONV]);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
   const claimed = async (
     stage: "chat" | "whatsapp" | "closing" = "chat",
     originDisplayId?: number | null,

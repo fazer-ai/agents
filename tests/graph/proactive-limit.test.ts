@@ -10,6 +10,7 @@ import {
   confirmProactiveReservation,
   PROACTIVE_LIMIT_WINDOW_MS,
   reserveProactiveSend,
+  sendWithinProactiveLimit,
 } from "@/modules/proactive-limit/service";
 import { turnLimitVerdict } from "@/modules/turn-limit/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -474,6 +475,33 @@ describe.skipIf(!dbUp)("proactive limit", () => {
       base: appDb,
     });
     expect((await reactive()).over).toBe(true);
+  });
+
+  test("a fixed send under the limit becomes a delivery, and one that throws gives its row back", async () => {
+    const conv = await seedConv(5199);
+    const fixed = (send: () => Promise<void>) =>
+      sendWithinProactiveLimit({
+        tenantId,
+        instanceId,
+        chatwootConversationId: 5199,
+        agentId,
+        limit: 5,
+        source: "channel-redirect-link",
+        base: appDb,
+        send,
+      });
+    await expect(
+      fixed(async () => {
+        throw new Error("chatwoot down");
+      }),
+    ).rejects.toThrow("chatwoot down");
+    expect(await proactiveRows(conv)).toBe(0);
+    expect(await fixed(async () => {})).toBe("sent");
+    const rows = await suDb.agentTurnDelivery.findMany({
+      where: { conversationId: conv },
+      select: { pending: true },
+    });
+    expect(rows).toEqual([{ pending: false }]);
   });
 
   test("outside the window with no template, under the limit the note is left and nothing counts", async () => {

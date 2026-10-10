@@ -9,6 +9,7 @@ import {
 } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -16,6 +17,7 @@ import {
   type ObservedConversation,
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
+import { sendWithinProactiveLimit } from "@/modules/proactive-limit/service";
 import {
   type ClaimedJob,
   enqueueJob,
@@ -354,7 +356,9 @@ export type WhatsAppFollowUpOutcome =
   | "stood-down"
   | "sent"
   | "no-sibling"
-  | "misconfigured";
+  | "misconfigured"
+  // The sibling already received the agent's proactive limit for the day: the link is not sent.
+  | "over-limit";
 
 // Whether a stage that is about to say something to the customer may still say it. ONE ask covering
 // BOTH reasons it may not — the ladder was retired (/reset, a new inbound), or the agent stopped
@@ -427,18 +431,39 @@ export async function sendWhatsAppFollowUp(
     channelType: sibling.channelType,
     provider: sibling.provider,
   });
+  const withinLimit = (send: () => Promise<void>) =>
+    sendWithinProactiveLimit({
+      tenantId: p.tenantId,
+      instanceId: p.instanceId,
+      chatwootConversationId: sibling.chatwootConversationId,
+      agentId: p.agentId,
+      limit: readLimitsConfig(p.settings).maxProactivePerDay,
+      source: "channel-redirect-link",
+      base: p.base,
+      send,
+    });
   if (mode === "template") {
     const payload = buildTemplatePayload(sw, null);
     if (payload) {
-      await client.sendTemplate(sibling.chatwootConversationId, payload);
-      return "sent";
+      const sent = await withinLimit(async () => {
+        await client.sendTemplate(sibling.chatwootConversationId, payload);
+      });
+      return sent === "sent" ? "sent" : "over-limit";
     }
     // No template configured → fall through to a private note (never a rejected free-form send).
   }
-  await client.sendMessage(sibling.chatwootConversationId, text, {
-    private: mode === "note",
+  if (mode === "note") {
+    await client.sendMessage(sibling.chatwootConversationId, text, {
+      private: true,
+    });
+    return "sent";
+  }
+  const sent = await withinLimit(async () => {
+    await client.sendMessage(sibling.chatwootConversationId, text, {
+      private: false,
+    });
   });
-  return "sent";
+  return sent === "sent" ? "sent" : "over-limit";
 }
 
 export async function redirectFollowUpHandler(
@@ -830,11 +855,33 @@ async function deliverClosing(
     base: PrismaClient;
     // The conversation as the caller loaded it, before this function's own toggle.
     observed: ObservedConversation;
+    agentId: bigint;
+    // The agent's maxProactivePerDay: a goodbye past it is left as a private note, and the
+    // conversation is still resolved.
+    proactiveLimit: number;
   },
 ): Promise<void> {
-  await client.sendMessage(conversationId, closingMessage, {
-    private: sendMode !== "freeform",
-  });
+  const sent =
+    sendMode === "freeform"
+      ? await sendWithinProactiveLimit({
+          tenantId: origin.tenantId,
+          instanceId: origin.instanceId,
+          chatwootConversationId: conversationId,
+          agentId: origin.agentId,
+          limit: origin.proactiveLimit,
+          source: "channel-redirect-closing",
+          base: origin.base,
+          send: async () => {
+            await client.sendMessage(conversationId, closingMessage, {
+              private: false,
+            });
+          },
+        })
+      : "over";
+  if (sent === "over")
+    await client.sendMessage(conversationId, closingMessage, {
+      private: true,
+    });
   await client.toggleStatus(conversationId, "resolved");
   // NOTE: Tidying up the channel the episode moved AWAY from. Whatever the outcome was, it was not decided
   // here, so this closing is not a resolution the agent can be credited with.
@@ -1072,6 +1119,8 @@ export async function deliverRedirectClosing(
         tenantId: p.tenantId,
         instanceId: p.instanceId,
         base,
+        agentId: cx.agentId,
+        proactiveLimit: readLimitsConfig(cx.settings).maxProactivePerDay,
         observed: {
           status: cx.widget.status,
           statusAt: cx.widget.chatwootStatusAt,
@@ -1129,6 +1178,8 @@ export async function deliverRedirectClosing(
         tenantId: p.tenantId,
         instanceId: p.instanceId,
         base,
+        agentId: cx.agentId,
+        proactiveLimit: readLimitsConfig(cx.settings).maxProactivePerDay,
         observed: {
           status: sibling.status,
           statusAt: sibling.chatwootStatusAt,

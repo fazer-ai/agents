@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 
 // THE PER-CONVERSATION PROACTIVE LIMIT. An inbound integration that fires events with fresh ids in a
 // loop sends one proactive message per event to the same contact, each billed by Meta outside the
@@ -187,7 +188,10 @@ export function proactiveSourceLabel(
     case "appointment_reminder":
       return "appointment reminder";
     case "channel-redirect":
+    case "channel-redirect-link":
       return "channel redirect";
+    case "channel-redirect-closing":
+      return "channel redirect goodbye";
     default:
       return `"${source}"`;
   }
@@ -202,4 +206,120 @@ export function proactiveLimitLogMessage(params: {
   source: string;
 }): string {
   return `Proactive limit reached: ${params.count} proactive messages were delivered in this conversation in the last 24 hours (limit ${params.limit}). The ${params.source} message was not sent. The conversation stays with the agent, which still answers the customer.`;
+}
+
+// The refusal line, one shape for every proactive sender: the nudge and the fixed sends of the
+// redirect ladder. `alert` is the answer of `claimProactiveAlert`.
+export function emitProactiveLimitRefusal(
+  flow: FlowContext,
+  p: {
+    count: number;
+    limit: number;
+    alert: boolean;
+    // What fired, as the operator recognizes it (proactiveSourceLabel).
+    source: string;
+    detail: Record<string, unknown>;
+  },
+): void {
+  emitFlowEvent(flow, {
+    stage: "proactive_limit",
+    level: p.alert ? "error" : "info",
+    status: p.alert ? "error" : "skipped",
+    detail: {
+      outcome: "not_sent",
+      limit: p.limit,
+      count: p.count,
+      ...p.detail,
+    },
+    errorMessage: proactiveLimitLogMessage({
+      count: p.count,
+      limit: p.limit,
+      source: p.source,
+    }),
+  });
+}
+
+// A FIXED proactive send (no model turn): the redirect ladder's link and its goodbye. Counted and
+// refused like a nudge, against the conversation it goes to. `send` runs only under the limit; a send
+// that throws gives the reservation back and rethrows. A conversation with no mirror row, or a limit
+// of 0, sends without counting.
+export async function sendWithinProactiveLimit(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  chatwootConversationId: number;
+  agentId: bigint;
+  limit: number;
+  // proactiveSourceLabel's input, and the `trigger` the line carries.
+  source: string;
+  base?: PrismaClient;
+  send: () => Promise<void>;
+}): Promise<"sent" | "over"> {
+  const base = p.base ?? basePrisma;
+  const row =
+    p.limit > 0
+      ? await runScopedOn(base, sysCtx(p.tenantId), (db) =>
+          db.conversation.findFirst({
+            where: {
+              chatwootInstanceId: p.instanceId,
+              chatwootConversationId: p.chatwootConversationId,
+            },
+            select: { id: true, inboxId: true },
+          }),
+        ).catch(() => null)
+      : null;
+  if (!row) {
+    await p.send();
+    return "sent";
+  }
+  const verdict = await reserveProactiveSend({
+    tenantId: p.tenantId,
+    conversationDbId: row.id,
+    limit: p.limit,
+    base,
+  });
+  if (verdict.over) {
+    const alert = await claimProactiveAlert({
+      tenantId: p.tenantId,
+      conversationDbId: row.id,
+      base,
+    });
+    emitProactiveLimitRefusal(
+      {
+        tenantId: p.tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: row.id,
+        agentId: p.agentId,
+        inboxId: row.inboxId,
+        threadId: `${p.tenantId}:${p.instanceId}:${p.chatwootConversationId}`,
+        base,
+      },
+      {
+        count: verdict.count,
+        limit: verdict.limit,
+        alert,
+        source: proactiveSourceLabel(p.source, null),
+        detail: { trigger: p.source },
+      },
+    );
+    return "over";
+  }
+  try {
+    await p.send();
+  } catch (err) {
+    if (verdict.reservationId !== null)
+      await releaseProactiveReservation({
+        tenantId: p.tenantId,
+        reservationId: verdict.reservationId,
+        base,
+      });
+    throw err;
+  }
+  if (verdict.reservationId !== null)
+    await confirmProactiveReservation({
+      tenantId: p.tenantId,
+      reservationId: verdict.reservationId,
+      base,
+    });
+  return "sent";
 }

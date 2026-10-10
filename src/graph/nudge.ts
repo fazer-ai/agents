@@ -53,7 +53,7 @@ import { armCompaction } from "@/modules/memory/compact";
 import {
   claimProactiveAlert,
   confirmProactiveReservation,
-  proactiveLimitLogMessage,
+  emitProactiveLimitRefusal,
   proactiveSourceLabel,
   releaseProactiveReservation,
   reserveProactiveSend,
@@ -1446,27 +1446,18 @@ async function runAgentNudgeBody(
       const integrationName = params.nudge.integrationInstanceId
         ? await integrationNameOf(params.nudge.integrationInstanceId)
         : null;
-      const source = proactiveSourceLabel(params.nudge.source, integrationName);
-      const message = proactiveLimitLogMessage({
+      emitProactiveLimitRefusal(flow, {
         count: verdict.count,
         limit: verdict.limit,
-        source,
-      });
-      emitFlowEvent(flow, {
-        stage: "proactive_limit",
-        level: alert ? "error" : "info",
-        status: alert ? "error" : "skipped",
+        alert,
+        source: proactiveSourceLabel(params.nudge.source, integrationName),
         detail: {
-          outcome: "not_sent",
-          limit: verdict.limit,
-          count: verdict.count,
           trigger: params.nudge.source,
           ...(params.nudge.step != null ? { step: params.nudge.step } : {}),
           ...(params.nudge.integrationInstanceId
             ? { integrationInstanceId: params.nudge.integrationInstanceId }
             : {}),
         },
-        errorMessage: message,
       });
       logger.info(
         "agentNudge: proactive limit reached (conv=%s count=%d limit=%d source=%s), nothing sent",

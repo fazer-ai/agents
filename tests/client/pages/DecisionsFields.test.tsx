@@ -795,6 +795,12 @@ describe("the editor follows the engine", () => {
     expect(count("decisions-rule-not-granted")).toBe(0);
   });
 
+  test("the questions carry the anchor a refusal about them scrolls to", () => {
+    stubApi();
+    renderSection({ monitoring: { engine: "decisions", decisions: BLOCK } });
+    expect(document.getElementById("decisions-questions") === null).toBe(false);
+  });
+
   test("a classifier problem is a line with the way to General, not a path", () => {
     stubApi();
     renderSection({

@@ -32,6 +32,7 @@ import {
   reclaimAfterDeadline,
   rescheduleJob,
 } from "./service";
+import { StartWindow } from "./start-window";
 
 // Single-replica worker that drains the scheduler. The handler registry decouples the scheduler
 // from feature logic; a job kind with no handler fails (and eventually goes DEAD) rather than
@@ -527,6 +528,9 @@ export interface TickOptions {
   // False when a fast drain owns the observe lane (`startScheduler`), so the tick leaves OBSERVE
   // rows to it. Absent, the tick claims them itself, with `observeClaimLimit`.
   claimObserve?: boolean;
+  // False when the traffic drain owns the traffic-proportional kinds (`startScheduler`). Absent,
+  // the tick claims a quarter of its batch of them.
+  claimTraffic?: boolean;
 }
 
 export async function runSchedulerTick(
@@ -559,14 +563,16 @@ export async function runSchedulerTick(
     jobs.push(
       ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
     );
-    jobs.push(
-      ...(await claimDueTrafficJobs(
-        trafficShare,
-        base,
-        new Date(),
-        opts.tenantId,
-      )),
-    );
+    if (opts.claimTraffic !== false) {
+      jobs.push(
+        ...(await claimDueTrafficJobs(
+          trafficShare,
+          base,
+          new Date(),
+          opts.tenantId,
+        )),
+      );
+    }
     if (opts.claimObserve !== false) {
       jobs.push(
         ...(await claimDueObserveJobs(
@@ -688,6 +694,76 @@ export async function runObserveTick(
   return { claimed: jobs.length, settled };
 }
 
+// How many traffic-proportional jobs the drain is running RIGHT NOW. Per process, as observeRunning.
+let trafficRunning = 0;
+
+export interface TrafficTickOptions {
+  // How many may run at once (config.schedulerWorker.trafficConcurrency).
+  slots: number;
+  // How many may start in any minute (config.schedulerWorker.trafficPerMinute).
+  window: StartWindow;
+  // The bound the shared tick's provider-spending jobs also run under.
+  gate: Semaphore;
+  staleMs: number;
+  // NOTE: test-only isolation, as on TickOptions. Unset in production.
+  tenantId?: bigint;
+  // Called each time a row finishes, so the caller can fill the freed slot at once.
+  onFreed?: () => void;
+}
+
+// The drain of the traffic-proportional kinds (./lanes.ts, JOB_TRAFFIC_PROPORTIONAL). SLOTS, NOT
+// BATCHES, as the observe drain: a tick claims into the free slots, as many as the start window
+// still allows, and returns once its rows have STARTED, so a slow recovery holds one slot and not
+// the lane. Concurrency bounds what runs at once and the window bounds the sustained rate, which is
+// the CPU a backlog takes from live traffic. Provider-spending rows run under the shared gate after
+// the claim, as on the shared tick: the kinds are mixed, so a permit cannot be taken per row before
+// it is known. `waitMs` is how long until the window admits another start when it is what stopped
+// the claim, else null.
+export async function runTrafficTick(
+  base: PrismaClient,
+  opts: TrafficTickOptions,
+): Promise<{ claimed: number; waitMs: number | null; settled: Promise<void> }> {
+  const free = opts.slots - trafficRunning;
+  const now = Date.now();
+  const allowed = Math.min(free, opts.window.available(now));
+  if (allowed <= 0) {
+    return {
+      claimed: 0,
+      waitMs: free > 0 ? opts.window.nextFreeAt(now) - now : null,
+      settled: Promise.resolve(),
+    };
+  }
+  const jobs = await claimDueTrafficJobs(
+    allowed,
+    base,
+    new Date(),
+    opts.tenantId,
+  );
+  opts.window.record(Date.now(), jobs.length);
+  trafficRunning += jobs.length;
+  const deadlineMs = jobDeadlineMs(opts.staleMs);
+  // allSettled: runClaimed never re-throws, but a stray throw must not strand a slot.
+  const settled = Promise.allSettled(
+    jobs.map((job) =>
+      (async () =>
+        JOB_SPENDS_PROVIDER[job.kind]
+          ? opts.gate.run(() => runClaimed(job, base, { deadlineMs }))
+          : runClaimed(job, base, { deadlineMs }))()
+        .catch((err) =>
+          logger.error(
+            { err, kind: job.kind, jobId: String(job.id) },
+            "scheduler: job left unfinished by a failed write",
+          ),
+        )
+        .finally(() => {
+          trafficRunning -= 1;
+          opts.onFreed?.();
+        }),
+    ),
+  ).then(() => {});
+  return { claimed: jobs.length, waitMs: null, settled };
+}
+
 interface Holder {
   timer?: ReturnType<typeof setInterval>;
   running: boolean;
@@ -698,6 +774,12 @@ interface Holder {
   observeAgain: boolean;
   // Set while the drain runs: asks for a drain at a given instant (`wakeObserveDrainAt`).
   wakeObserve?: (atMs: number) => void;
+  trafficTimer?: ReturnType<typeof setInterval>;
+  // As `observing` and `observeAgain`, for the traffic drain.
+  draining: boolean;
+  drainAgain: boolean;
+  // The one wake-up armed for when the start window admits again.
+  trafficWake?: ReturnType<typeof setTimeout>;
   // The wake-ups not fired yet, by the instant they are for, so stopping clears them.
   observeWakes: Map<number, ReturnType<typeof setTimeout>>;
 }
@@ -722,6 +804,8 @@ function holder(): Holder {
     observing: false,
     observeAgain: false,
     observeWakes: new Map(),
+    draining: false,
+    drainAgain: false,
   };
   return g[KEY];
 }
@@ -736,6 +820,9 @@ export interface StartOptions {
   // NOTE: test-only, as on TickOptions: the fence and the bound a test needs to own.
   tenantId?: bigint;
   providerConcurrency?: number;
+  // The traffic drain's bounds; production reads config.schedulerWorker.
+  trafficConcurrency?: number;
+  trafficPerMinute?: number;
 }
 
 // Idempotent singleton (survives `bun --hot` reloads via globalThis, so no ghost timers). The tick
@@ -765,6 +852,7 @@ export function startScheduler(opts: StartOptions = {}): () => void {
       gate,
       providerConcurrency,
       claimObserve: false,
+      claimTraffic: false,
       ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
     })
       .catch((err) => logger.error({ err }, "scheduler tick failed"))
@@ -795,6 +883,43 @@ export function startScheduler(opts: StartOptions = {}): () => void {
       });
   };
   h.observeTimer = setInterval(drainObserve, observeIntervalMs);
+  const trafficSlots =
+    opts.trafficConcurrency ?? config.schedulerWorker.trafficConcurrency;
+  const window = new StartWindow(
+    opts.trafficPerMinute ?? config.schedulerWorker.trafficPerMinute,
+  );
+  const drainTraffic = () => {
+    if (!h.trafficTimer) return;
+    if (h.draining) {
+      h.drainAgain = true;
+      return;
+    }
+    h.draining = true;
+    h.drainAgain = false;
+    void runTrafficTick(base, {
+      slots: trafficSlots,
+      window,
+      gate,
+      staleMs,
+      onFreed: drainTraffic,
+      ...(opts.tenantId === undefined ? {} : { tenantId: opts.tenantId }),
+    })
+      .then(({ waitMs }) => {
+        // The window stopped the claim: wake when it admits again rather than at the next interval.
+        if (waitMs !== null && !h.trafficWake) {
+          h.trafficWake = setTimeout(() => {
+            h.trafficWake = undefined;
+            drainTraffic();
+          }, waitMs);
+        }
+      })
+      .catch((err) => logger.error({ err }, "traffic tick failed"))
+      .finally(() => {
+        h.draining = false;
+        if (h.drainAgain) drainTraffic();
+      });
+  };
+  h.trafficTimer = setInterval(drainTraffic, intervalMs);
   h.wakeObserve = (atMs) => {
     const slot =
       Math.ceil(atMs / OBSERVE_WAKE_GRAIN_MS) * OBSERVE_WAKE_GRAIN_MS;
@@ -828,6 +953,14 @@ export function stopScheduler(): void {
   if (h.observeTimer) {
     clearInterval(h.observeTimer);
     h.observeTimer = undefined;
+  }
+  if (h.trafficTimer) {
+    clearInterval(h.trafficTimer);
+    h.trafficTimer = undefined;
+  }
+  if (h.trafficWake) {
+    clearTimeout(h.trafficWake);
+    h.trafficWake = undefined;
   }
   h.wakeObserve = undefined;
   for (const timer of h.observeWakes.values()) clearTimeout(timer);

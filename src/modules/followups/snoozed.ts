@@ -12,6 +12,7 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
+import { resetAckSendId } from "@/modules/chatwoot/constants";
 import {
   instanceAgentBotChatwootIds,
   loadChatwootClient,
@@ -249,7 +250,9 @@ function customerWrote(r: ChatwootMessageRow): boolean {
 
 // The rows the reminder's window may show: what the observer's transcript renders (it drops notes,
 // reactions and activity lines itself), minus imported history, which is old words under new ids, and
-// minus everything at or below the `/reset` boundary, an episode the operator withdrew.
+// minus everything at or below the `/reset` boundary, an episode the operator withdrew, and minus the
+// agent's own acknowledgement of that reset, which lands just above the boundary and narrates the
+// wipe rather than the conversation (named by its send id, as the observer finds it).
 function windowRows(
   rows: readonly ChatwootMessageRow[],
   resetAtMessageId: number | null,
@@ -262,7 +265,9 @@ function windowRows(
       (r.messageType === "incoming" ||
         r.messageType === "outgoing" ||
         r.messageType === "template") &&
-      (resetAtMessageId === null || r.id > resetAtMessageId),
+      (resetAtMessageId === null ||
+        (r.id > resetAtMessageId &&
+          r.sendId !== resetAckSendId(resetAtMessageId))),
   );
 }
 

@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7330 },
+          chatwootConversationId: { gte: 7310, lte: 7331 },
         },
       });
       await dropContact(77);
@@ -1097,6 +1097,51 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         }),
       ).toBe("unrecoverable");
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("positions the contact it states at the live reading, even on a row a webhook created meanwhile", async () => {
+      const convId = 7331;
+      const messageId = 7831;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { lastActivityAt: SENT_AT + 900 },
+        // A conversation event that named no contact.
+        onAnchoredRead: async () => {
+          await suDb.conversation.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: convId,
+              status: "pending",
+              inboxId: inboxDbId,
+              threadId: threadOf(convId),
+              lastEventAt: new Date(),
+            },
+          });
+        },
+      });
+      const real = webhookModule.processChatwootDelivery;
+      const path = spyOn(webhookModule, "processChatwootDelivery");
+      path.mockImplementation((p) => real(p));
+      let handed: Parameters<typeof real>[0] | undefined;
+      try {
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        });
+        handed = path.mock.calls[0]?.[0];
+      } finally {
+        path.mockRestore();
+      }
+      expect(handed?.normalized.contact?.id).toBe(77);
+      expect(handed?.normalized.createActivityAt).toBe(SENT_AT + 900);
     });
 
     test("leaves a mirrored conversation's attributes to the events that stored them", async () => {

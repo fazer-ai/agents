@@ -853,7 +853,9 @@ async function runRecovery(params: {
         ...(!mirrorNow && live.updatedAt !== null
           ? { stateVersion: live.updatedAt }
           : {}),
-        ...(!mirrorNow && live.lastActivityAt !== null
+        // Wherever the live identity is stated too: a row a webhook created meanwhile without a
+        // contact still gets it, and its fields must be positioned at the reading they came from.
+        ...((!mirrorNow || sender !== undefined) && live.lastActivityAt !== null
           ? {
               liveActivityAt: Math.floor(live.lastActivityAt.getTime() / 1000),
             }

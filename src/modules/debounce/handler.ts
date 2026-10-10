@@ -488,8 +488,9 @@ export async function selectAnswerableBurst(
 
 // Extracts the burst's attachments nobody has read yet. Returns whether any extraction was attempted,
 // that is, whether the turn waited. Best-effort: a failure leaves the turn with what it had, and never
-// blocks the reply.
-async function fillMissingVisuals(args: {
+// blocks the reply. Shared with the snoozed reminder (../followups/snoozed.ts), which reads the window
+// a person asked about the way the re-engage does.
+export async function fillMissingVisuals(args: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;

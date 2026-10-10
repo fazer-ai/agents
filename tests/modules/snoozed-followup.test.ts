@@ -459,6 +459,8 @@ function stub(over: {
   statusLater?: string;
   // The send-time read answers a body that is not a message list.
   degradedAfter?: boolean;
+  // The send-time read answers a full page of private notes, which may hide more behind it.
+  fullAfter?: boolean;
   // The handler's own page read answers a body that is not a message list.
   degradedPage?: boolean;
   // The conversation payload carries no `snoozed_until` key at all.
@@ -515,6 +517,17 @@ function stub(over: {
     ) => {
       if (opts?.after !== undefined) {
         if (over.degradedAfter) return { error: "upstream" };
+        if (over.fullAfter)
+          return {
+            payload: Array.from({ length: 100 }, (_, i) => ({
+              id: (opts.after as number) + 1 + i,
+              message_type: 1,
+              private: true,
+              created_at: minutesAgo(1),
+              sender: { type: "user", id: PERSON },
+              content: `nota ${i}`,
+            })),
+          };
         const late = lateVisible && over.lateMessage ? [over.lateMessage] : [];
         return {
           payload: [...over.messages, ...late].filter(
@@ -1243,6 +1256,15 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const r = await snoozedFollowUpHandler(jobFor(2025), appDb, s.deps);
     expect(s.sent).toEqual([]);
     // Tried again, not dropped.
+    expect(r.outcome).toBe("reschedule");
+  });
+
+  test("a full catch-up page is not proof of silence: tried again, nothing sent", async () => {
+    await setSettings(LADDER);
+    await seed(2083);
+    const s = stub({ messages: [personAsked(265, 3)], fullAfter: true });
+    const r = await snoozedFollowUpHandler(jobFor(2083), appDb, s.deps);
+    expect(s.sent).toEqual([]);
     expect(r.outcome).toBe("reschedule");
   });
 

@@ -78,6 +78,7 @@ enum SchedulerJobKind {
   INBOUND_REDISPATCH
   NOTHING_TO_ANSWER
   SUGGESTION_REVIEW
+  DOCUMENT_APPROVAL_EXPIRY
 }
 
 enum SchedulerJobStatus {
@@ -160,6 +161,7 @@ model Tenant {
   schedulerJobs                 SchedulerJob[]
   documentTemplates             DocumentTemplate[]
   issuedDocuments               IssuedDocument[]
+  documentApprovalRequests      DocumentApprovalRequest[]
   experiments                   Experiment[]
   promptVariantAssignments      PromptVariantAssignment[]
   llmUsages                     LlmUsage[]
@@ -2069,32 +2071,39 @@ model SchedulerJob {
 // are validated by modules/documents/blocks.ts, not by Prisma — the shapes are unions, and a JSON
 // column is what lets the vocabulary grow without a migration per block type.
 model DocumentTemplate {
-  id           BigInt   @id @default(autoincrement())
-  tenantId     BigInt   @map("tenant_id")
+  id               BigInt   @id @default(autoincrement())
+  tenantId         BigInt   @map("tenant_id")
   // UNIQUE per tenant, and not for tidiness: the name is what the MODEL reads to choose between the
   // document tools an agent was granted. Two templates called "Orçamento" publish two tools with the
   // same description and nothing to pick between them, so the agent sends whichever it happens to
   // choose. Enforced separately from the slug because a caller can supply its own slug, which would
   // otherwise let the same name through twice.
-  name         String
+  name             String
   // Tool-name-safe identifier. UNIQUE per tenant because it becomes the agent's tool name
   // (send_<slug>) and two tools with one name is a grant the operator cannot tell apart.
-  slug         String
-  description  String?
-  blocks       Json     @default("[]")
-  fields       Json     @default("[]")
-  style        Json     @default("{}")
+  slug             String
+  description      String?
+  blocks           Json     @default("[]")
+  fields           Json     @default("[]")
+  style            Json     @default("{}")
   // Per-template document counter, bumped once per issued row. Monotonic, not gapless: a crash
   // between the insert and the bump leaves the row unnumbered and the heal takes the next value.
-  lastNumber   Int      @default(0) @map("last_number")
-  numberPrefix String?  @map("number_prefix")
-  enabled      Boolean  @default(true)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  lastNumber       Int      @default(0) @map("last_number")
+  numberPrefix     String?  @map("number_prefix")
+  enabled          Boolean  @default(true)
+  // A person approves every document this template issues before it reaches the customer. On the
+  // TEMPLATE, not on the grant: what the reviewer protects is the price and the wording, whichever
+  // agent emits it (docs/documents.md, Approval).
+  requiresApproval Boolean  @default(false) @map("requires_approval")
+  // How long a request waits for a person, in whole hours, 1 to 168 (a CHECK in the migration).
+  approvalTtlHours Int      @default(24) @map("approval_ttl_hours")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
-  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  issuedDocuments IssuedDocument[]
-  toolSelections  AgentToolSelection[]
+  tenant           Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issuedDocuments  IssuedDocument[]
+  toolSelections   AgentToolSelection[]
+  approvalRequests DocumentApprovalRequest[]
 
   @@unique([tenantId, slug])
   @@unique([tenantId, name])
@@ -2135,13 +2144,52 @@ model IssuedDocument {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template DocumentTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  tenant          Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template        DocumentTemplate?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  approvalRequest DocumentApprovalRequest?
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId, threadId])
   @@index([tenantId, templateId])
   @@map("issued_documents")
+}
+
+// A document waiting for a person before it is issued. `snapshot` is frozen when the agent asks,
+// with the date, so what the reviewer previews is what approval issues; only the NUMBER is taken at
+// approval, so a rejected or expired request burns none. The issued row keys on this id, not on
+// the calendar day the tool's key carries.
+model DocumentApprovalRequest {
+  id                 BigInt    @id @default(autoincrement())
+  tenantId           BigInt    @map("tenant_id")
+  templateId         BigInt?   @map("template_id")
+  title              String
+  numberPrefix       String?   @map("number_prefix")
+  threadId           String?   @map("thread_id")
+  chatwootInstanceId BigInt?   @map("chatwoot_instance_id")
+  conversationId     BigInt?   @map("conversation_id")
+  // The tool's own key (template, thread, day, values), so a retried turn lands on the request it
+  // already made instead of asking a second time.
+  idempotencyKey     String    @map("idempotency_key")
+  // "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "CANCELLED". A String for the reason
+  // IssuedDocument.status is one.
+  status             String    @default("PENDING")
+  snapshot           Json      @default("{}")
+  expiresAt          DateTime  @map("expires_at")
+  reviewerUserId     BigInt?   @map("reviewer_user_id")
+  note               String?
+  decidedAt          DateTime? @map("decided_at")
+  issuedDocumentId   BigInt?   @unique @map("issued_document_id")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template       DocumentTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  issuedDocument IssuedDocument?   @relation(fields: [issuedDocumentId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status, expiresAt])
+  @@index([tenantId, templateId])
+  @@map("document_approval_requests")
 }
 
 // ───────────────────────────────────────────────── A/B testing ──

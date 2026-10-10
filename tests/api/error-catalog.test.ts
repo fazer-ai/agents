@@ -809,6 +809,7 @@ describe("both languages answer, and answer differently", () => {
     // NOTE: A MESSAGE BUILT FROM A VARIABLE: invisible to the say-less reader, which needs a
     // literal, and covered instead by the computed-message rule, which requires a placeholder.
     "invalidCompanyField",
+    "invalidDocumentApprovalTtl",
     "invalidDocumentNumberPrefix",
     "invalidDocumentTemplateDescription",
     "invalidDocumentTemplateName",

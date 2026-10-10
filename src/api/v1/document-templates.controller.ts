@@ -80,6 +80,18 @@ export const writeBody = t.Object({
   enabled: t.Optional(
     t.Boolean({ description: "Whether agents may issue this document." }),
   ),
+  requiresApproval: t.Optional(
+    t.Boolean({
+      description:
+        "Whether a person approves each document an agent issues from this template before the customer receives it. Off by default.",
+    }),
+  ),
+  approvalTtlHours: t.Optional(
+    t.Number({
+      description:
+        "How long an approval request waits, in whole hours from 1 to 168. Defaults to 24.",
+    }),
+  ),
 });
 
 export const documentTemplatesController = new Elysia({

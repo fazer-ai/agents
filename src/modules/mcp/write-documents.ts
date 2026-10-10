@@ -48,6 +48,8 @@ function projection(t: {
   style: Record<string, unknown>;
   numberPrefix: string | null;
   enabled: boolean;
+  requiresApproval: boolean;
+  approvalTtlHours: number;
 }) {
   return {
     name: t.name,
@@ -58,6 +60,8 @@ function projection(t: {
     style: t.style,
     numberPrefix: t.numberPrefix,
     enabled: t.enabled,
+    requiresApproval: t.requiresApproval,
+    approvalTtlHours: t.approvalTtlHours,
   };
 }
 
@@ -70,6 +74,8 @@ export interface DocumentTemplateWriteArgs {
   style?: unknown;
   number_prefix?: string | null;
   enabled?: boolean;
+  requires_approval?: boolean;
+  approval_ttl_hours?: number;
   starter?: string;
   locale?: string;
   dry_run?: boolean;
@@ -116,6 +122,8 @@ export async function documentTemplateCreate(
         ? args.number_prefix
         : (starter?.numberPrefix ?? null),
     enabled: args.enabled,
+    requiresApproval: args.requires_approval,
+    approvalTtlHours: args.approval_ttl_hours,
   };
   if (!input.name) return err("name is required");
   try {
@@ -130,6 +138,7 @@ export async function documentTemplateCreate(
           slug: input.slug,
           description: input.description,
           numberPrefix: input.numberPrefix,
+          approvalTtlHours: input.approvalTtlHours,
         },
         base,
       );
@@ -194,9 +203,15 @@ export async function documentTemplateUpdate(
   if (args.style !== undefined) patch.style = args.style;
   if (args.number_prefix !== undefined) patch.numberPrefix = args.number_prefix;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
+  if (args.requires_approval !== undefined) {
+    patch.requiresApproval = args.requires_approval;
+  }
+  if (args.approval_ttl_hours !== undefined) {
+    patch.approvalTtlHours = args.approval_ttl_hours;
+  }
   if (Object.keys(patch).length === 0) {
     return err(
-      "no updatable fields provided (name, slug, description, blocks, fields, style, number_prefix, enabled)",
+      "no updatable fields provided (name, slug, description, blocks, fields, style, number_prefix, enabled, requires_approval, approval_ttl_hours)",
     );
   }
   try {
@@ -236,6 +251,12 @@ export async function documentTemplateUpdate(
           ? { numberPrefix: patch.numberPrefix }
           : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+        ...(patch.requiresApproval !== undefined
+          ? { requiresApproval: patch.requiresApproval }
+          : {}),
+        ...(patch.approvalTtlHours !== undefined
+          ? { approvalTtlHours: patch.approvalTtlHours }
+          : {}),
         // Every property the patch can carry, and for the same reason each one is here: the diff is
         // the client's only picture of what applying would do. A projection that takes the patch for
         // some properties and the stored value for others answers "nothing changes" to a write that

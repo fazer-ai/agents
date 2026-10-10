@@ -42,6 +42,8 @@ export const AUDIT_ACTIONS = [
   "deployment.disconnect",
   "deployment.rotate_token",
   "deployment.set_accounts",
+  "document_approval.approve",
+  "document_approval.reject",
   "document_template.create",
   "document_template.delete",
   "document_template.update",

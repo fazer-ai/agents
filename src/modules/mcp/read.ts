@@ -325,6 +325,8 @@ export async function documentTemplateList(
         numberPrefix: t.numberPrefix,
         lastNumber: t.lastNumber,
         enabled: t.enabled,
+        requiresApproval: t.requiresApproval,
+        approvalTtlHours: t.approvalTtlHours,
       })),
     });
   } catch (e) {

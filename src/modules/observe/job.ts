@@ -1094,7 +1094,13 @@ export async function runObserve(
     const cfg = await loadAgentConfig(
       db,
       { tenantId, instanceId, conversationId, agentId, threadId },
-      { skipExperiment: true, ignoreMode: true },
+      {
+        skipExperiment: true,
+        ignoreMode: true,
+        // The decisions engine asks its classification API and never builds the chat model, so an
+        // agent configured only for it observes (agents#1224).
+        chatModelUnused: mon.engine === "decisions",
+      },
     );
     // NOTE: A CONFIG THAT DOES NOT BUILD IS NOT AN AGENT THAT STOPPED OBSERVING: the checks above
     // are operator states and end the job; this is a credential the vault cannot hand over, and it

@@ -20,7 +20,9 @@ import { turnOwnsThread } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { isMonitoring } from "@/modules/agents/mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import {
   type JobResult,
@@ -182,11 +184,19 @@ export async function runCompaction(
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const agent = await db.agent.findUnique({
       where: { id: agentId },
-      select: { settings: true },
+      select: { settings: true, mode: true },
     });
     // NOTE: The switch is re-read at execution, not trusted from arming time: a job can sit in the
     // queue past the moment an operator turns compaction off, and the operator's last word wins.
     if (!agent || !readMemoryConfig(agent.settings).compaction.enabled) {
+      return "off" as const;
+    }
+    // A monitoring agent on the decisions engine summarizes nothing: it has no chat model to do it
+    // with (it needs none, agents#1224), and nothing it decides reads the thread's memory.
+    if (
+      isMonitoring(agent.mode) &&
+      readMonitoringConfig(agent.settings).engine === "decisions"
+    ) {
       return "off" as const;
     }
     // A conversation reopened inside the grace window is not a closed attendance; the

@@ -471,6 +471,9 @@ function guidanceOf(b: ReturnType<typeof readBehaviorState>): ToolGuidance {
     labelInstructions: b.labelInstructions,
     updateKanbanTaskInstructions: b.updateKanbanTaskInstructions,
     transferWithSummary: b.transferWithSummary,
+    resolveConversation: b.resolveConversation,
+    crossInboxCase: b.crossInboxCase,
+    sendImage: b.sendImage,
   };
 }
 
@@ -1557,9 +1560,11 @@ function AgentEditor() {
     setAllowedLabels(b.allowedLabels);
     setOutsideAllowedLabels(b.outsideAllowedLabels);
     setToolPreconditions(b.toolPreconditions);
-    setCrossInboxCase(b.crossInboxCase);
-    setSendImage(b.sendImage);
-    setResolveConversation(b.resolveConversation);
+    if (!keepGuidance) {
+      setCrossInboxCase(b.crossInboxCase);
+      setSendImage(b.sendImage);
+      setResolveConversation(b.resolveConversation);
+    }
   }, []);
 
   // Full reset of the general + behavior form state from a synced agent. Used on load and discard-all
@@ -2007,6 +2012,9 @@ function AgentEditor() {
     labelInstructions,
     updateKanbanTaskInstructions,
     transferWithSummary,
+    resolveConversation,
+    crossInboxCase,
+    sendImage,
   };
   const storedGuidance: ToolGuidance | null =
     decides && syncedForChat
@@ -2084,9 +2092,9 @@ function AgentEditor() {
       outsideAllowedLabels,
       updateKanbanTaskInstructions: savedGuidance.updateKanbanTaskInstructions,
       toolPreconditions,
-      crossInboxCase,
-      sendImage,
-      resolveConversation,
+      crossInboxCase: savedGuidance.crossInboxCase,
+      sendImage: savedGuidance.sendImage,
+      resolveConversation: savedGuidance.resolveConversation,
     }),
     // NOTE: The grant set and the reviewer model, the two halves the Knowledge save writes.
     knowledge: JSON.stringify({
@@ -3384,10 +3392,13 @@ function AgentEditor() {
       const kanbanJson = {
         instructions: savedGuidance.kanbanInstructions.trim() || null,
       };
-      const crossInboxCaseJson = serializeCrossInboxCase(crossInboxCase);
-      const sendImageJson = serializeSendImage(sendImage);
-      const resolveConversationJson =
-        serializeResolveConversation(resolveConversation);
+      const crossInboxCaseJson = serializeCrossInboxCase(
+        savedGuidance.crossInboxCase,
+      );
+      const sendImageJson = serializeSendImage(savedGuidance.sendImage);
+      const resolveConversationJson = serializeResolveConversation(
+        savedGuidance.resolveConversation,
+      );
       // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
       const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
         string,
@@ -3464,7 +3475,7 @@ function AgentEditor() {
         // NOTE: the case attribute key is checked here, before the grants PUT.
         // Refused by the PATCH, which goes out after that PUT, so a bad key would otherwise leave new
         // grants written beside the old settings.
-        (invalidCaseAttributeKey(crossInboxCase)
+        (invalidCaseAttributeKey(savedGuidance.crossInboxCase)
           ? t(
               "editor.crossInboxCase.attributeKeyInvalid",
               "Use lowercase letters, digits and _, starting with a letter.",

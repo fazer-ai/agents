@@ -14,6 +14,23 @@ const STORED: ToolGuidance = {
   labelInstructions: "uma etiqueta por assunto",
   updateKanbanTaskInstructions: "",
   transferWithSummary: true,
+  resolveConversation: { assignLabels: ["vip"] },
+  crossInboxCase: {
+    targetInboxId: "",
+    targetInstanceId: "",
+    originLabel: "",
+    caseLabels: [],
+    caseAttributeKey: "",
+    mergeContacts: false,
+    resolveOrigin: false,
+    subjectTemplate: "",
+    openingTemplate: "",
+    noteTemplate: "",
+    carryMode: "off",
+    carryFileTypes: ["image", "file"],
+    carryMaxFiles: 10,
+  },
+  sendImage: { allowedHosts: "" },
 };
 const EDITED: ToolGuidance = {
   ...STORED,

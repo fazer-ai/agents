@@ -1163,6 +1163,7 @@
     "nextNumber": "Next number",
     "nextNumberHint": "The next document prints {{number}}. It cannot go back to a number already issued under this prefix; a new prefix starts a new sequence.",
     "nextNumberInvalid": "Enter a whole number from 1.",
+    "nextNumberPending": "Reading where the new prefix continues…",
     "nextNumberShort": "next {{number}}",
     "noFields": "No fields yet.",
     "noTextBlocks": "This template has no text block.",

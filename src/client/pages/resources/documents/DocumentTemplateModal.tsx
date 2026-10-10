@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -83,6 +83,12 @@ export function DocumentTemplateModal({
   const [numberPrefix, setNumberPrefix] = useState("");
   // Where numbering continues, as the operator types it. A string so a cleared field is not 0.
   const [nextNumber, setNextNumber] = useState("");
+  // Whether the operator typed it. Untouched, the field follows the prefix being typed (the server
+  // recomputes it for the destination prefix on save) and nothing about it is sent.
+  const [nextTouched, setNextTouched] = useState(false);
+  // Where numbering would continue under the prefix as typed, read from the server once it differs
+  // from the stored one; null while it matches or the answer has not come back.
+  const [prefixNext, setPrefixNext] = useState<number | null>(null);
   const [enabled, setEnabled] = useState(true);
   const [requiresApproval, setRequiresApproval] = useState(false);
   const [approvalTtlHours, setApprovalTtlHours] = useState(24);
@@ -118,6 +124,8 @@ export function DocumentTemplateModal({
     setDescription(tpl.description ?? "");
     setNumberPrefix(tpl.numberPrefix ?? "");
     setNextNumber(String(tpl.nextNumber));
+    setNextTouched(false);
+    setPrefixNext(null);
     setEnabled(tpl.enabled);
     setRequiresApproval(tpl.requiresApproval);
     setApprovalTtlHours(tpl.approvalTtlHours);
@@ -195,9 +203,7 @@ export function DocumentTemplateModal({
     }
     // Sent only when the operator moved it: the template's next number also moves on its own as
     // documents are issued, and restating the one this modal opened on would be refused once one was.
-    if (nextNumber !== String(template.nextNumber)) {
-      patch.nextNumber = Number(nextNumber);
-    }
+    if (nextTouched) patch.nextNumber = Number(nextNumber);
     if (enabled !== template.enabled) patch.enabled = enabled;
     if (requiresApproval !== template.requiresApproval) {
       patch.requiresApproval = requiresApproval;
@@ -222,6 +228,7 @@ export function DocumentTemplateModal({
     description,
     numberPrefix,
     nextNumber,
+    nextTouched,
     enabled,
     requiresApproval,
     approvalTtlHours,
@@ -312,13 +319,40 @@ export function DocumentTemplateModal({
   // Guarded on `template`, not on the slug being non-empty. An operator who CLEARS the field has to
   // be told something, and the modal keeps its payload after closing (Radix needs it for the exit
   // animation), so this never flashes a refusal at a form nobody has opened.
+  // A prefix being typed moves where an untouched number continues; asked of the server, which alone
+  // knows what the tenant issued under it, after the typing settles. Answers for an older prefix or
+  // another open are dropped.
+  const templateId = template?.id ?? null;
+  const storedPrefix = template?.numberPrefix ?? "";
+  const prefixReads = useRef(0);
+  useEffect(() => {
+    const read = ++prefixReads.current;
+    setPrefixNext(null);
+    if (!templateId || nextTouched || numberPrefix === storedPrefix) return;
+    const timer = setTimeout(async () => {
+      const { data } = await api.api.v1["document-templates"]({
+        id: templateId,
+      })
+        ["next-number"].get({ query: { prefix: numberPrefix } })
+        .catch(() => ({ data: null }));
+      if (read === prefixReads.current && data) setPrefixNext(data.nextNumber);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [templateId, storedPrefix, numberPrefix, nextTouched]);
+  // Between a prefix change and its answer the stored number belongs to the OLD prefix, so nothing
+  // is shown rather than a number the save would not print.
+  const nextPending =
+    !nextTouched && numberPrefix !== storedPrefix && prefixNext === null;
+  const shownNext = nextTouched
+    ? nextNumber
+    : nextPending
+      ? ""
+      : String(prefixNext ?? template?.nextNumber ?? "");
   const slugIssue = template ? slugProblem(slug) : null;
   // The shape only, and only once the operator moved it; whether a number was already used is the
   // server's to say, on save.
   const nextNumberIssue =
-    template &&
-    nextNumber !== String(template.nextNumber) &&
-    !/^[1-9][0-9]{0,9}$/.test(nextNumber)
+    template && nextTouched && !/^[1-9][0-9]{0,9}$/.test(nextNumber)
       ? t("documents.nextNumberInvalid", "Enter a whole number from 1.")
       : null;
   // The tool name the current template name would derive, offered when it differs from the one the
@@ -465,21 +499,29 @@ export function DocumentTemplateModal({
             hint={
               nextNumberIssue
                 ? undefined
-                : t(
-                    "documents.nextNumberHint",
-                    "The next document prints {{number}}. It cannot go back to a number already issued under this prefix; a new prefix starts a new sequence.",
-                    {
-                      number: `${numberPrefix}${nextNumber.padStart(4, "0")}`,
-                    },
-                  )
+                : nextPending
+                  ? t(
+                      "documents.nextNumberPending",
+                      "Reading where the new prefix continues…",
+                    )
+                  : t(
+                      "documents.nextNumberHint",
+                      "The next document prints {{number}}. It cannot go back to a number already issued under this prefix; a new prefix starts a new sequence.",
+                      {
+                        number: `${numberPrefix}${shownNext.padStart(4, "0")}`,
+                      },
+                    )
             }
             error={nextNumberIssue}
           >
             <Input
               inputMode="numeric"
               className="sm:max-w-48"
-              value={nextNumber}
-              onChange={(e) => setNextNumber(e.target.value.trim())}
+              value={shownNext}
+              onChange={(e) => {
+                setNextTouched(true);
+                setNextNumber(e.target.value.trim());
+              }}
             />
           </FormField>
 

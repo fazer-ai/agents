@@ -7,6 +7,7 @@ import {
   deleteDocumentTemplate,
   documentTemplateWriteProblem,
   getDocumentTemplate,
+  nextNumberUnderPrefix,
   normalizeTemplateName,
   previewDocumentTemplate,
   updateDocumentTemplate,
@@ -256,9 +257,20 @@ export async function documentTemplateUpdate(
         ...(patch.numberPrefix !== undefined
           ? { numberPrefix: patch.numberPrefix }
           : {}),
+        // The apply recomputes it against the destination prefix even when the patch does not set it,
+        // so a prefix move shows its number moving too.
         ...(patch.nextNumber !== undefined
           ? { nextNumber: patch.nextNumber }
-          : {}),
+          : patch.numberPrefix !== undefined
+            ? {
+                nextNumber: await nextNumberUnderPrefix(
+                  ctx,
+                  id,
+                  patch.numberPrefix,
+                  base,
+                ),
+              }
+            : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
         ...(patch.requiresApproval !== undefined
           ? { requiresApproval: patch.requiresApproval }

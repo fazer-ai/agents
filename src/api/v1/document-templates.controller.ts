@@ -13,6 +13,7 @@ import {
   documentTemplateReferences,
   getDocumentTemplate,
   listDocumentTemplates,
+  nextNumberUnderPrefix,
   previewDocumentTemplate,
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
@@ -260,6 +261,38 @@ export const documentTemplatesController = new Elysia({
         }),
       }),
       detail: doc("Get document template", "Returns one document template."),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  .get(
+    "/:id/next-number",
+    async ({ tenantContext, params, query }) => ({
+      instance: instanceIdentity,
+      nextNumber: await nextNumberUnderPrefix(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        query.prefix,
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Template id (BigInt string).",
+        }),
+      }),
+      query: t.Object({
+        prefix: t.Optional(
+          t.String({
+            description:
+              "The prefix to ask about; the template's own when omitted, no prefix when empty.",
+          }),
+        ),
+      }),
+      detail: doc(
+        "Next number under a prefix",
+        "Where this template's numbering would continue if its prefix were `prefix`: the larger of its counter and the highest number the workspace issued under that prefix, plus one. For an editor or a preview that moves the prefix before saving.",
+      ),
       response: errors(400, 401, 403, 404),
     },
   )

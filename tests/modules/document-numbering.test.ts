@@ -10,8 +10,10 @@ import {
   documentTemplateWriteProblem,
   getDocumentTemplate,
   listDocumentTemplates,
+  nextNumberUnderPrefix,
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
+import { documentTemplateUpdate } from "@/modules/mcp/write-documents";
 
 // A printed number (prefix and counter, within a tenant) names one document and is never issued twice
 // (docs/documents.md, Numbering): the template shows where numbering continues, an operator can move
@@ -253,5 +255,45 @@ describe.skipIf(!dbUp)("document numbering", () => {
       );
       expect(refused.statusCode).toBe(400);
     }
+  });
+
+  test("where numbering would continue under another prefix, read and previewed before the save", async () => {
+    const used = await template(tenantA, "VIA-");
+    for (let i = 0; i < 3; i++) await issue(tenantA, used);
+    const moving = await template(tenantA, "LIVRE-");
+    // The counter stays with the template; the destination prefix's highest number decides.
+    expect(
+      await nextNumberUnderPrefix(ctx(tenantA), moving, "VIA-", appDb),
+    ).toBe(4);
+    expect(
+      await nextNumberUnderPrefix(ctx(tenantA), moving, undefined, appDb),
+    ).toBe(1);
+    expect(
+      await nextNumberUnderPrefix(ctx(tenantA), used, "NOVO-", appDb),
+    ).toBe(4);
+    // The MCP dry run of a prefix move shows the number it moves to, as the apply will.
+    const dry = await documentTemplateUpdate(
+      {
+        userId: 1n,
+        tenantId: tenantA,
+        role: "TENANT_ADMIN",
+        scopes: ["mcp:read", "mcp:write"],
+        clientId: "c",
+        jti: "j",
+      },
+      { document_template_id: String(moving), number_prefix: "VIA-" },
+      { base: appDb },
+    );
+    expect(dry.ok).toBe(true);
+    const diff = JSON.stringify((dry as { data: { diff: unknown } }).data.diff);
+    expect(diff).toContain("nextNumber");
+    expect(diff).toContain("4");
+    const applied = await updateDocumentTemplate(
+      ctx(tenantA),
+      moving,
+      { numberPrefix: "VIA-" },
+      appDb,
+    );
+    expect(applied.nextNumber).toBe(4);
   });
 });

@@ -746,6 +746,38 @@ export async function getDocumentTemplate(
   });
 }
 
+// Where this template's numbering would continue under `prefix` (its own when undefined): what an
+// editor moving the prefix, and a dry run that moves it, show before the save. The counter stays with
+// the template across a prefix change, so it is the larger of that counter and the highest number the
+// tenant issued under the destination prefix, plus one.
+export async function nextNumberUnderPrefix(
+  ctx: TenantContext,
+  id: bigint,
+  prefix: string | null | undefined,
+  base: PrismaClient = basePrisma,
+): Promise<number> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+  return runScopedOn(base, ctx, async (db) => {
+    const row = await db.documentTemplate.findUnique({
+      where: { id },
+      select: { lastNumber: true, numberPrefix: true },
+    });
+    if (!row) {
+      throw new NotFoundError(
+        "document template not found",
+        "errors.documentTemplateNotFound",
+      );
+    }
+    const target =
+      prefix === undefined ? row.numberPrefix : parseNumberPrefix(prefix);
+    return nextNumberOf(
+      row.lastNumber,
+      await highestIssuedNumber(db, tenantId, target),
+    );
+  });
+}
+
 // The stored row as it IS, not as this version reads it. The preview needs this: `toDto` drops a
 // block a newer build wrote, and a preview built on that promises a save the apply will refuse.
 async function rawTemplateRow(

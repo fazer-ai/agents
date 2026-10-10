@@ -25,11 +25,13 @@ const { ToastProvider, useModalController } = await import(
 const realFetch = globalThis.fetch;
 const patches: Record<string, unknown>[] = [];
 let refusal: string | null = null;
+const prefixAsked: string[] = [];
 
 afterEach(() => {
   cleanup();
   globalThis.fetch = realFetch;
   patches.length = 0;
+  prefixAsked.length = 0;
   refusal = null;
 });
 
@@ -82,6 +84,13 @@ function mount() {
       return new Response(new Blob(["%PDF-1.7"]), {
         status: 200,
         headers: { "Content-Type": "application/pdf" },
+      });
+    }
+    if (url.pathname.endsWith("/next-number")) {
+      prefixAsked.push(url.searchParams.get("prefix") ?? "");
+      return new Response(JSON.stringify({ nextNumber: 41 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
       });
     }
     if ((init?.method ?? "GET").toUpperCase() === "PATCH") {
@@ -183,4 +192,18 @@ test("the template list says where each template's numbering continues", async (
     </MemoryRouter>,
   );
   await screen.findByText(/(next|próximo) ORC-1501/);
+});
+
+test("a prefix being typed moves the untouched number to where the new prefix continues", async () => {
+  mount();
+  await screen.findByText(/ORC-0008/);
+  const prefix = screen.getByDisplayValue("ORC-");
+  fireEvent.change(prefix, { target: { value: "VIA-" } });
+  await screen.findByText(/VIA-0041/, undefined, { timeout: 3000 });
+  expect(prefixAsked).toContain("VIA-");
+  fireEvent.click(saveButton());
+  await waitFor(() => expect(patches).toHaveLength(1));
+  // Untouched, it is the server's to recompute; only the prefix goes.
+  expect(patches[0]?.numberPrefix).toBe("VIA-");
+  expect("nextNumber" in (patches[0] ?? {})).toBe(false);
 });

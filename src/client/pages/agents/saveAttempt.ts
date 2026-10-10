@@ -31,3 +31,15 @@ export function revealFirstProblem(root: ParentNode | null): boolean {
   control?.focus({ preventScroll: true });
   return true;
 }
+
+// Whether a Save on a tab of the setup goes to the problems instead of writing. Always when the save
+// would write the setup; and when it would write nothing at all, since a press that does nothing is
+// the silent click this exists against (a stored setup that is incomplete, nothing edited). A save
+// of something else on the tab (General's name) goes through with the setup left as stored.
+export function setupSaveBlocked(
+  problems: number,
+  setupEdited: boolean,
+  otherEdited: boolean,
+): boolean {
+  return problems > 0 && (setupEdited || !otherEdited);
+}

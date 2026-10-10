@@ -210,7 +210,7 @@ import {
   StaleNoticeContext,
   staleNoticeOf,
 } from "./StaleNotice";
-import { revealFirstProblem } from "./saveAttempt";
+import { revealFirstProblem, setupSaveBlocked } from "./saveAttempt";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import { TabActionBar } from "./TabActionBar";
 import {
@@ -959,12 +959,14 @@ function AgentEditor() {
   );
   // A Save on either tab of the setup is never a silent click and never off for it: pressed with
   // something missing, it writes nothing, turns the "to save" lines into errors and goes to the first
-  // problem on the tab (saveAttempt.ts). `touched` is whether this save would write the setup.
+  // problem on the tab (saveAttempt.ts). `other` is whether it would write anything besides the setup.
   function decisionsBlocked(
     on: "general" | "decisions",
-    touched: boolean,
+    other: boolean,
   ): boolean {
-    if (!touched || decisionsSetupIssues.size === 0) return false;
+    if (!setupSaveBlocked(decisionsSetupIssues.size, dirty.decisions, other)) {
+      return false;
+    }
     setDecisionsAttempted(true);
     setRevealOn((prev) => ({ tab: on, n: (prev?.n ?? 0) + 1 }));
     return true;
@@ -4230,7 +4232,7 @@ function AgentEditor() {
                 dirty={dirty.general || decisionsHeadDirty}
                 saving={savingAgent || savingDecisions}
                 onSave={() => {
-                  if (decisionsBlocked("general", dirty.decisions)) return;
+                  if (decisionsBlocked("general", dirty.general)) return;
                   void saveGeneral();
                 }}
                 onDiscard={revertGeneral}
@@ -4469,7 +4471,7 @@ function AgentEditor() {
                   dirty={dirty.decisions}
                   saving={savingDecisions}
                   onSave={() => {
-                    if (decisionsBlocked("decisions", true)) return;
+                    if (decisionsBlocked("decisions", false)) return;
                     void saveDecisions();
                   }}
                   onDiscard={revertDecisions}

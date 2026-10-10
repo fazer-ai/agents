@@ -434,10 +434,10 @@ describe("a Save on the setup's tabs", () => {
   test("is never off for the setup and never a silent click", () => {
     const flat = EDITOR.replace(/\s+/g, " ");
     expect(flat).toContain(
-      'if (decisionsBlocked("decisions", true)) return; void saveDecisions();',
+      'if (decisionsBlocked("decisions", false)) return; void saveDecisions();',
     );
     expect(flat).toContain(
-      'if (decisionsBlocked("general", dirty.decisions)) return; void saveGeneral();',
+      'if (decisionsBlocked("general", dirty.general)) return; void saveGeneral();',
     );
     expect(flat).toContain("showErrors={decisionsAttempted}");
     expect(flat).not.toContain("saveBlocked");

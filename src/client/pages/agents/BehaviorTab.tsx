@@ -3625,7 +3625,7 @@ export function BehaviorTab({
                 <FormField
                   label={t(
                     "editor.limitsMaxProactivePerDay",
-                    "Max proactive messages / conversation / 24h",
+                    "Max proactive / conversation / 24h",
                   )}
                   description={t(
                     "editor.limitsMaxProactivePerDayHint",

@@ -308,7 +308,7 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect(fourth.r.messages).toEqual([]);
 
     const lines = await limitLines(conv);
-    expect(lines.map((l) => l.level)).toEqual(["error", "warn"]);
+    expect(lines.map((l) => l.level)).toEqual(["error", "info"]);
     expect(lines[0]?.detail).toMatchObject({
       outcome: "not_sent",
       limit: 2,
@@ -461,20 +461,55 @@ describe.skipIf(!dbUp)("proactive limit", () => {
     expect((await reactive()).over).toBe(true);
   });
 
-  test("outside the window with no template the event is still left as a note, whatever the count", async () => {
-    await setLimit(1);
+  test("outside the window with no template, under the limit the note is left and nothing counts", async () => {
+    await setLimit(5);
     const conv = await seedConv(5111, null, {
       id: whatsappInboxDbId,
       lastInboundAt: new Date(Date.now() - 2 * PROACTIVE_LIMIT_WINDOW_MS),
     });
-    await seedDeliveries(conv, true, 60_000);
-    const { r, run } = nudge(5111, {
-      nudge: { source: "followup", step: 2 },
-    });
+    const { r, run } = nudge(5111, { nudge: { source: "followup", step: 2 } });
     expect(await run).toBe("noted-window");
     expect(r.messages).toEqual([]);
     expect(r.notes).toHaveLength(1);
-    expect(await limitLines(conv)).toEqual([]);
+    expect(await proactiveRows(conv)).toBe(0);
+  });
+
+  test("outside the window with no template, over the limit the run ends as the window note would, with nothing written", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5114, null, {
+      id: whatsappInboxDbId,
+      lastInboundAt: new Date(Date.now() - 2 * PROACTIVE_LIMIT_WINDOW_MS),
+    });
+    await seedDeliveries(conv, true, 60_000);
+    const { r, run } = nudge(5114, { nudge: { source: "followup", step: 2 } });
+    expect(await run).toBe("noted-window");
+    expect(r.messages).toEqual([]);
+    expect(r.notes).toEqual([]);
+    expect((await limitLines(conv)).map((l) => l.level)).toEqual(["error"]);
+  });
+
+  test("an operator event whose conversation a person takes during the count is left as their note", async () => {
+    await setLimit(1);
+    const conv = await seedConv(5115);
+    await seedDeliveries(conv, true, 60_000);
+    const base = appDb.$extends({
+      query: {
+        agentTurnDelivery: {
+          async count({ args, query }) {
+            await suDb.conversation.update({
+              where: { id: conv },
+              data: { status: "open", assigneeType: "User", assigneeId: 5 },
+            });
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const { r, run } = nudge(5115, { base });
+    expect(await run).toBe("noted");
+    expect(r.messages).toEqual([]);
+    expect(r.notes).toHaveLength(1);
+    expect(r.notes[0]?.[1]).toContain("Pedido 42 saiu para entrega.");
   });
 
   test("a person who takes the conversation during the count does not get the refused step's labels", async () => {

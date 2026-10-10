@@ -1412,20 +1412,21 @@ async function runAgentNudgeBody(
       .then((r) => r?.name ?? null)
       .catch(() => null);
   // THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the customer, and
-  // only when it could reach them: a note for the person who holds the conversation, or the note an
-  // official channel leaves outside its window with no template, reaches nobody. Over the limit the
-  // occasion is spent, not retried, and the conversation stays the agent's. The labels still land, as
-  // on the refused contact; no resolve, since nothing was said.
-  const reachesCustomer =
-    canMessagePre &&
+  // only when it could reach them: the note for the person who holds the conversation reaches nobody.
+  // Outside an official channel's window with no template the reply is a note, but a tool's own send
+  // (an ack) can still reach the customer, so the run is gated too; refused, it ends as the
+  // `noted-window` it would have been, so a follow-up stops there. Over the limit the occasion is
+  // spent, not retried, and the conversation stays the agent's. The labels still land, as on the
+  // refused contact; no resolve, since nothing was said.
+  const windowNoteOnly =
     proactiveSendMode(
       cfg.serviceWindowConfig,
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
-    ) !== "note";
+    ) === "note";
   if (
-    reachesCustomer &&
+    canMessagePre &&
     cfg.maxProactivePerDay > 0 &&
     cfg.conversationDbId !== null
   ) {
@@ -1457,7 +1458,7 @@ async function runAgentNudgeBody(
       });
       emitFlowEvent(flow, {
         stage: "proactive_limit",
-        level: alert ? "error" : "warn",
+        level: alert ? "error" : "info",
         status: alert ? "error" : "skipped",
         detail: {
           outcome: "not_sent",
@@ -1486,7 +1487,10 @@ async function runAgentNudgeBody(
         allowResolve: false,
       });
       if (applied === "stale") return standDown();
-      return "silent";
+      // NOTE: A confirmed takeover still owes the person the operator's event, as on the refused
+      // contact: the note is for them, and the limit counts only what reaches the customer.
+      if (operatorEvent && stillOurs === "not-ours") return noteOperatorEvent();
+      return windowNoteOnly ? "noted-window" : "silent";
     }
   }
 

@@ -17,30 +17,27 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { createTestI18n } from "@/tests/utils/i18n";
 
 const mockLogout = mock(async () => true);
 const mockSetTheme = mock((_: string) => {});
 
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: { email: "admin@fazer.ai" },
     logout: mockLogout,
   }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
-mock.module("@/client/contexts/ThemeContext", () => ({
+stubExports(ThemeModule, {
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: mockSetTheme,
   }),
   useThemedAsset: (path: string) => ({ src: path }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 // A REAL i18next instance, held here so the language radio's effect can be read off it. Not a
 // registry stub of `react-i18next`: that leaks into every file the worker runs afterwards (see
@@ -51,7 +48,9 @@ const changeLanguage = spyOn(i18n, "changeLanguage");
 import { I18nextProvider } from "react-i18next";
 import { ToastProvider } from "@/client/components/Toast";
 import { UserMenu } from "@/client/components/UserMenu";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 function renderMenu() {
   return render(

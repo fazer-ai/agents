@@ -6,15 +6,14 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 const logins: unknown[] = [];
 
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({ login: (user: unknown) => logins.push(user) }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { useGoogleSignIn } = await import("@/client/hooks/useGoogleSignIn");

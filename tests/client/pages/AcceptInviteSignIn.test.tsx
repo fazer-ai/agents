@@ -9,8 +9,9 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // An invitation to an account that signs in with Google has no password to enter on the accept
 // page. It offers signing in instead, and the invitation waits in the tab (never back on a URL)
@@ -58,7 +59,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 let signedInAs: { email: string } | null = null;
 let logoutAnswer = true;
 let logouts = 0;
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: signedInAs,
     login: () => {},

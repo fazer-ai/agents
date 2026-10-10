@@ -17,9 +17,9 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // "Add super admin" on the users tab: shown only to a fleet administrator, in two steps. The email
 // first; then a confirmation that says what will happen (promote now, or a one-time link) and takes
@@ -28,13 +28,12 @@ import { mockAuthContext } from "@/tests/utils/auth-mock";
 // Every assertion reduces to a string, number or boolean BEFORE expect: a failing expectation
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 let role = "SUPER_ADMIN";
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: { id: "1", email: "admin@fazer.ai", role },
     loading: false,
     logout: async () => {},
   }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { ToastProvider } = await import("@/client/components/Toast");

@@ -17,9 +17,9 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // Demoting a FLEET administrator from the console. Their row has no tenant, and the row that would
 // replace it cannot exist without one, so the click is a question and not a write: the page asks
@@ -28,13 +28,12 @@ import { mockAuthContext } from "@/tests/utils/auth-mock";
 //
 // Every assertion reduces to a string, number or boolean BEFORE expect: a failing expectation
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: { id: "1", email: "admin@fazer.ai", role: "SUPER_ADMIN" },
     loading: false,
     logout: async () => {},
   }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { ToastProvider } = await import("@/client/components/Toast");

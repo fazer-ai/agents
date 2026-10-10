@@ -6,16 +6,15 @@
 
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // The page reads the principal's role to decide whether to offer the scope selector. These files
-// are not about that, so the mock hands it an ordinary TENANT_ADMIN.
-await mockAuthContext({
+// are not about that, so the stub hands it an ordinary TENANT_ADMIN.
+stubExports(AuthModule, {
   useAuth: () => ({ user: { role: "TENANT_ADMIN" } }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { AuditPage } = await import("@/client/pages/AuditPage");

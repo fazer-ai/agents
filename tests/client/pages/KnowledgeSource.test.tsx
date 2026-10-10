@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   cleanup,
@@ -12,9 +12,12 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { ToastProvider } from "@/client/components";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
+import * as TenantEventsModule from "@/client/hooks/useTenantEvents";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import { createTestI18n, withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // A knowledge base's help center source, in the console: the operator sees that a base mirrors a
 // portal, when it last ran and whether the run failed, can set one up, and meets a synced
@@ -134,18 +137,17 @@ const i18n = createTestI18n("en", {
   "pt-BR": { translation: clientPt },
 });
 
-mock.module("@/client/hooks/useTenantEvents", () => ({
+stubExports(TenantEventsModule, {
   useTenantEvents: () => {},
-}));
-mock.module("@/client/contexts/ThemeContext", () => ({
+});
+stubExports(ThemeModule, {
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: () => {},
   }),
   useThemedAsset: (path: string) => ({ src: path }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { KnowledgeSourceSection, parseExcludeIds, setSourcePollMsForTest } =
   await import("@/client/pages/resources/KnowledgeSourceSection");

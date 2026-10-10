@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import {
   act,
@@ -9,29 +9,28 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
 const mockUser = { role: "AGENT" as string };
 
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({ user: mockUser }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
-mock.module("@/client/contexts/ThemeContext", () => ({
+stubExports(ThemeModule, {
   useThemedAsset: (path: string) => ({ src: path }),
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: () => {},
   }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 import { Sidebar } from "@/client/components/Sidebar";
+import * as AuthModule from "@/client/contexts/AuthContext";
 import { SidebarProvider, useSidebar } from "@/client/contexts/SidebarContext";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 let hook: ReturnType<typeof useSidebar> | null = null;
 function Probe() {

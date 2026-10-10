@@ -9,16 +9,15 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { cleanup, render, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 const mockUser = { role: "SUPER_ADMIN" as string };
 
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({ user: mockUser }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { AuditPage } = await import("@/client/pages/AuditPage");

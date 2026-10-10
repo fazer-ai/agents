@@ -10,26 +10,24 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // The API keys page shows the FLEET list to a SUPER_ADMIN and to nobody else, and minting a fleet
 // key sends the password the route demands. The role decides on the client before any request: a
 // TENANT_ADMIN never asks for `/api-keys/fleet`, which would answer 403 into an error box.
 //
-// `mock.module` is global to the worker, so the auth stub is declared here with the role the page
-// reads, swapped per test through `currentRole`. Dynamic imports below for the same reason: a
-// static import evaluates before the mock.
+// The auth stub hands the page the role it reads, swapped per test through `currentRole`. It is a
+// `spyOn` on the module object (`stubExports`), so it lasts for this file only.
 
 let currentRole = "SUPER_ADMIN";
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => ({
     user: { id: "1", email: "admin@fazer.ai", role: currentRole },
     loading: false,
     logout: async () => {},
   }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { ToastProvider } = await import("@/client/components/Toast");

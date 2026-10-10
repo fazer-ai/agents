@@ -8,10 +8,11 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import * as ThemeModule from "@/client/contexts/ThemeContext";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 const mockLogin = mock((_: unknown) => {});
 const mockRefresh = mock(async () => {});
@@ -23,23 +24,21 @@ let authState: {
   refresh: typeof mockRefresh;
 };
 
-await mockAuthContext({
+stubExports(AuthModule, {
   useAuth: () => authState,
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
-mock.module("@/client/contexts/ThemeContext", () => ({
+stubExports(ThemeModule, {
   useThemedAsset: (path: string) => ({ src: path }),
   // NOTE: `useTheme` is consumed transitively by the components barrel
-  // (`@/client/components`) that SetupPage imports from, so the mock must
-  // surface it even if SetupPage itself never reads the hook.
+  // (`@/client/components`) that SetupPage imports from, so the stub must
+  // cover it even if SetupPage itself never reads the hook.
   useTheme: () => ({
     theme: "dark",
     resolvedTheme: "dark",
     setTheme: () => {},
   }),
-  ThemeProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { SetupPage } = await import("@/client/pages/SetupPage");
 const { ToastProvider } = await import("@/client/components/Toast");

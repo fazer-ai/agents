@@ -1,12 +1,13 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ToastProvider } from "@/client/components";
-import { mockAuthContext } from "@/tests/utils/auth-mock";
+import * as AuthModule from "@/client/contexts/AuthContext";
+import * as TenantEventsModule from "@/client/hooks/useTenantEvents";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // What a conversation's page shows of its document approvals: opened from an approval's page it
 // offers the way back next to the way back to the conversations, the private note an approval posts
@@ -17,12 +18,11 @@ import { withI18n } from "@/tests/utils/i18n";
 // Absence is asserted as a boolean: a failing expectation holding a DOM node pretty-prints the whole
 // happy-dom tree and stalls the runner.
 
-mock.module("@/client/hooks/useTenantEvents", () => ({
+stubExports(TenantEventsModule, {
   useTenantEvents: () => {},
-}));
-await mockAuthContext({
+});
+stubExports(AuthModule, {
   useAuth: () => ({ user: { role: "TENANT_ADMIN" } }),
-  AuthProvider: ({ children }: { children: ReactNode }) => children,
 });
 
 const { ConversationDetailPage } = await import(

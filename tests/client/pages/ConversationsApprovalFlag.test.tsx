@@ -1,12 +1,14 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import * as TenantEventsModule from "@/client/hooks/useTenantEvents";
 import { fetchTracker } from "@/tests/utils/fetch-settle";
 import { withI18n } from "@/tests/utils/i18n";
+import { stubExports } from "@/tests/utils/module-stub";
 
 // The conversations list flags a conversation whose document waits on the team. A live event does
 // not carry the flag, so the list asks again for that conversation alone, and the flag follows a
@@ -25,11 +27,11 @@ type Handlers = {
 // failing try pretty-prints the whole element, which takes seconds under happy-dom and starves the
 // short clocks these tests drive (measured on CI: a 100ms clock taking 9s to fire).
 let handlers: Handlers = {};
-mock.module("@/client/hooks/useTenantEvents", () => ({
+stubExports(TenantEventsModule, {
   useTenantEvents: (h: Handlers) => {
     handlers = h;
   },
-}));
+});
 
 const { ConversationsPage, flagRefresh } = await import(
   "@/client/pages/ConversationsPage"

@@ -3559,7 +3559,12 @@ function AgentEditor() {
       const reviewPending =
         JSON.stringify(review) !==
         JSON.stringify(suggestionReviewToForm(agentRes.data.agent.settings));
-      if (reviewPending) bumpSync("tools");
+      // Knowledge grants this engine does not draw were written as stored, so a draft of them keeps
+      // Knowledge unsaved.
+      const ragDraftHidden =
+        canonicalGrants(grants.filter((g) => g.source === "RAG")) !==
+        canonicalGrants(savedGrants.filter((g) => g.source === "RAG"));
+      if (reviewPending || ragDraftHidden) bumpSync("tools");
       else bumpSync("tools", "knowledge");
       settleRefusalFor("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
@@ -3755,10 +3760,13 @@ function AgentEditor() {
       if (handleConflict(err, () => void grantNativeTool(tool, true))) return;
       if (err || !data) throw err ?? new Error("no data");
       syncedGrantsRef.current = data.grants;
+      // On questions and rules the form may hold grant drafts it does not draw, so the tool is added
+      // to the form as it stands rather than the form taking the written set.
       setGrants((cur) =>
         grantsAfterAllow(
           cur,
-          canonicalGrants(cur.filter((g) => g.source !== "RAG")) !== pressed,
+          decides ||
+            canonicalGrants(cur.filter((g) => g.source !== "RAG")) !== pressed,
           mapGrants(data.grants),
           tool,
         ),

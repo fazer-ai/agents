@@ -9,7 +9,6 @@ import {
   rememberProcessedDelivery,
   resetUnchangedUpdateRecords,
   trackConversationMirror,
-  trackInboxSync,
   UNCHANGED_UPDATE_MESSAGES_MAX,
   UNCHANGED_UPDATE_PENDING_MAX,
   UNCHANGED_UPDATE_PENDING_TTL_MS,
@@ -261,17 +260,5 @@ describe("unchanged-update records", () => {
       inboxName: "WhatsApp",
     });
     expect(unchangedUpdateRecordSizes().rows).toBe(0);
-  });
-
-  // An inbox sync writes the names from Chatwoot's list, outside the mirror.
-  test("an inbox sync fences its account's inbox names and forgets them", () => {
-    const named = { ...event("message_created", 1, 1), inboxName: "WhatsApp" };
-    rememberProcessedDelivery(1n, 1n, 9, named);
-    const receipt = { ...named, event: "message_updated" };
-    expect(isUnchangedMessageUpdate(1n, 1n, 9, receipt)).toBe(true);
-    const sync = trackInboxSync(1n, 1n);
-    expect(isUnchangedMessageUpdate(1n, 1n, 9, receipt)).toBe(false);
-    sync.done();
-    expect(isUnchangedMessageUpdate(1n, 1n, 9, receipt)).toBe(false);
   });
 });

@@ -12,14 +12,12 @@ import type { NormalizedChatwootEvent } from "./types";
 export const UNCHANGED_UPDATE_MESSAGES_MAX = 20_000;
 export const UNCHANGED_UPDATE_ROWS_MAX = 20_000;
 
-// One row the mirror writes from a payload, and what the payload states for it. The conversation row,
-// the contact and the inbox are separate because the contact and the inbox are shared by other
-// conversations, whose deliveries write them too.
+// One row the mirror writes from a payload, and what the payload states for it. The conversation row
+// and the contact are separate because the contact is shared by other conversations, whose
+// deliveries write it too. The inbox name is not compared: see the known limit in docs/chatwoot.md.
 interface Part {
   key: string;
   digest: string;
-  // The inbox's account, for an inbox row: an inbox sync writes every inbox of the account.
-  account?: string;
 }
 
 interface InFlight {
@@ -42,11 +40,9 @@ interface Store {
   // Until when no receipt is dropped, because the pending bookkeeping hit its bound and let go of
   // deliveries it could no longer follow.
   saturatedUntil: number;
-  // Inbox syncs in flight per account (`syncInboxes`, the other writer of inbox names).
-  inboxSyncs: Map<string, number>;
 }
 
-const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates.v4");
+const KEY = Symbol.for("fazerai.chatwoot.unchangedUpdates.v5");
 
 function store(): Store {
   const g = globalThis as unknown as Record<symbol, Store | undefined>;
@@ -57,8 +53,7 @@ function store(): Store {
     !(held.rows instanceof Map) ||
     !(held.mirroring instanceof Map) ||
     !(held.pending instanceof Map) ||
-    !(held.pendingByDelivery instanceof Map) ||
-    !(held.inboxSyncs instanceof Map)
+    !(held.pendingByDelivery instanceof Map)
   ) {
     g[KEY] = {
       messages: new Map(),
@@ -67,7 +62,6 @@ function store(): Store {
       pending: new Map(),
       pendingByDelivery: new Map(),
       saturatedUntil: 0,
-      inboxSyncs: new Map(),
     };
   }
   return g[KEY] as Store;
@@ -86,9 +80,9 @@ function messageDigest(n: NormalizedChatwootEvent): string {
 }
 
 // What a payload states for each row the mirror writes from it. The conversation row leaves out the
-// event's own name and `changed_attributes`, the message, and what belongs to the shared rows. The
-// inbox part exists only where the payload names the inbox (a message event); a conversation event
-// writes no name. The inbox's channel type is fixed in Chatwoot and is compared with the conversation.
+// event's own name and `changed_attributes`, the message, the contact (its own row) and the inbox
+// name, which a message event carries and a conversation event does not, and which is not compared.
+// The inbox's channel type is fixed in Chatwoot and is compared with the conversation.
 function partsOf(
   tenantId: bigint,
   instanceId: bigint,
@@ -118,18 +112,8 @@ function partsOf(
       digest: digest(contact),
     });
   }
-  if (n.inboxId != null && n.inboxName != null) {
-    parts.push({
-      key: `${inboxPrefix(tenantId, instanceId)}${n.inboxId}`,
-      account: inboxPrefix(tenantId, instanceId),
-      digest: digest(n.inboxName),
-    });
-  }
   return parts;
 }
-
-const inboxPrefix = (tenantId: bigint, instanceId: bigint) =>
-  `b:${tenantId}:${instanceId}:`;
 
 function messageKey(
   tenantId: bigint,
@@ -168,9 +152,6 @@ function droppableShape(n: NormalizedChatwootEvent): boolean {
 // Whether something other than this digest is about to be written to the row: a run in flight, or a
 // delivery accepted and not mirrored yet.
 function rowUnsettled(s: Store, part: Part): boolean {
-  if (part.account !== undefined && (s.inboxSyncs.get(part.account) ?? 0) > 0) {
-    return true;
-  }
   const differs = (m: Map<string, number> | undefined) =>
     m !== undefined && [...m.keys()].some((d) => d !== part.digest);
   return (
@@ -327,28 +308,6 @@ export function trackConversationMirror(
   };
 }
 
-// Around an inbox sync, which writes the account's inbox names from Chatwoot's list outside the
-// mirror: nothing on those inboxes is dropped while it runs, and their records are forgotten after.
-export function trackInboxSync(
-  tenantId: bigint,
-  instanceId: bigint,
-): { done: () => void } {
-  const s = store();
-  const account = inboxPrefix(tenantId, instanceId);
-  s.inboxSyncs.set(account, (s.inboxSyncs.get(account) ?? 0) + 1);
-  let settled = false;
-  return {
-    done: () => {
-      if (settled) return;
-      settled = true;
-      for (const key of [...s.rows.keys()]) {
-        if (key.startsWith(account)) s.rows.delete(key);
-      }
-      bump(s.inboxSyncs, account, -1);
-    },
-  };
-}
-
 // The message half, taken on arrival and kept only once the delivery was processed on this route:
 // call the returned function then.
 export function rememberOnSuccess(
@@ -409,5 +368,4 @@ export function resetUnchangedUpdateRecords(): void {
   s.pending.clear();
   s.pendingByDelivery.clear();
   s.saturatedUntil = 0;
-  s.inboxSyncs.clear();
 }

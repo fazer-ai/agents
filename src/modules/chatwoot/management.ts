@@ -25,7 +25,6 @@ import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
 import { type EnsuredAgentBot, ensureAgentBot } from "./provisioning";
 import { invalidateRouteTokenCache } from "./route-token-cache";
-import { trackInboxSync } from "./unchanged-update";
 
 // Chatwoot deployment + account + inbox management (per-tenant). A DEPLOYMENT (base URL + shared admin
 // token, registered ONCE per tenant) holds the connection; ACCOUNTS (ChatwootInstance rows) hang off
@@ -3124,84 +3123,77 @@ export async function syncInboxes(
     base,
     makeClient: deps.makeClient,
   });
-  // The inbox names this writes are rows the receipt drop keeps records of: none is dropped on this
-  // account's inboxes while the sync runs, and its records are forgotten when it ends.
-  const syncing = trackInboxSync(tenantId, instanceId);
+  const remote = parseInboxList(await client.listInboxes());
+
+  // Best-effort: refresh the account display name (Chatwoot can rename it). Sync is the operator's
+  // explicit "reconcile with Chatwoot" gesture, so it is the natural moment. A failure is ignored —
+  // the stored name (or null) is kept and the #id badge still identifies the account.
+  let accountName: string | undefined;
   try {
-    const remote = parseInboxList(await client.listInboxes());
-
-    // Best-effort: refresh the account display name (Chatwoot can rename it). Sync is the operator's
-    // explicit "reconcile with Chatwoot" gesture, so it is the natural moment. A failure is ignored —
-    // the stored name (or null) is kept and the #id badge still identifies the account.
-    let accountName: string | undefined;
-    try {
-      const name = await client.getAccountName();
-      if (name) accountName = name;
-    } catch {
-      // ignore — keep the stored name
-    }
-
-    // Reconcile (scoped tx, no network).
-    return runScopedOn(base, ctx, async (db) => {
-      // NOTE: the whole reconcile serializes on the account row, the one lock that covers an inbox
-      // that does not exist yet: two first-time syncs (auto-sync on load plus the button) would both
-      // read `existing` as null. Syncs of different accounts never contend.
-      await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${instanceId} FOR NO KEY UPDATE`;
-      // The rename is its own conditional write, so a name Chatwoot did not change does not
-      // count as one. The `null` arm is not decoration: `accountName <> 'x'` is NULL for a row whose
-      // name is NULL, so a plain `not` would silently skip the very rows that most need the name.
-      let renamed = false;
-      if (accountName !== undefined) {
-        const { count } = await db.chatwootInstance.updateMany({
-          where: {
-            id: instanceId,
-            OR: [{ accountName: null }, { accountName: { not: accountName } }],
-          },
-          data: { accountName },
-        });
-        renamed = count > 0;
-      }
-      let created = 0;
-      let updated = 0;
-      for (const inbox of remote) {
-        // The comparison lives inside the write: a webhook's `upsertInbox` (no account lock) can
-        // commit a rename between a read and an upsert, which would then overwrite it and record no
-        // change. Raw SQL because it must be one statement: a create-then-catch cannot work (P2002
-        // aborts the scoped transaction) and Prisma's upsert cannot "update only if it differs".
-        // `xmax = 0` separates inserted from updated; a matching conflict returns no row.
-        const [touched] = await db.$queryRaw<{ inserted: boolean }[]>`
-          INSERT INTO inboxes
-            (tenant_id, chatwoot_instance_id, chatwoot_inbox_id, name, channel_type, provider,
-             created_at, updated_at)
-          VALUES (${tenantId}::bigint, ${instanceId}::bigint, ${inbox.chatwootInboxId}::int,
-                  ${inbox.name}::text, ${inbox.channelType}::text, ${inbox.provider}::text,
-                  now(), now())
-          ON CONFLICT (tenant_id, chatwoot_instance_id, chatwoot_inbox_id) DO UPDATE
-             SET name = EXCLUDED.name,
-                 channel_type = EXCLUDED.channel_type,
-                 provider = EXCLUDED.provider,
-                 updated_at = now()
-           WHERE inboxes.name IS DISTINCT FROM EXCLUDED.name
-              OR inboxes.channel_type IS DISTINCT FROM EXCLUDED.channel_type
-              OR inboxes.provider IS DISTINCT FROM EXCLUDED.provider
-          RETURNING (xmax = 0) AS inserted`;
-        if (touched?.inserted) created++;
-        else if (touched) updated++;
-      }
-      const result = { total: remote.length, created, updated };
-      // NOTE: `updated` counts inboxes this sync changed, not ones that existed: the Channels page
-      // auto-syncs every active account on open, and a reconcile that moved nothing is a read, which
-      // gets no trail row and no "3 updated" toast.
-      if (created > 0 || updated > 0 || renamed) {
-        await auditMutation(db, ctx, {
-          action: "instance.sync_inboxes",
-          target: `chatwoot_instance:${instanceId}`,
-          after: { ...result, accountRenamed: renamed },
-        });
-      }
-      return result;
-    });
-  } finally {
-    syncing.done();
+    const name = await client.getAccountName();
+    if (name) accountName = name;
+  } catch {
+    // ignore — keep the stored name
   }
+
+  // Reconcile (scoped tx, no network).
+  return runScopedOn(base, ctx, async (db) => {
+    // NOTE: the whole reconcile serializes on the account row, the one lock that covers an inbox
+    // that does not exist yet: two first-time syncs (auto-sync on load plus the button) would both
+    // read `existing` as null. Syncs of different accounts never contend.
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${instanceId} FOR NO KEY UPDATE`;
+    // The rename is its own conditional write, so a name Chatwoot did not change does not
+    // count as one. The `null` arm is not decoration: `accountName <> 'x'` is NULL for a row whose
+    // name is NULL, so a plain `not` would silently skip the very rows that most need the name.
+    let renamed = false;
+    if (accountName !== undefined) {
+      const { count } = await db.chatwootInstance.updateMany({
+        where: {
+          id: instanceId,
+          OR: [{ accountName: null }, { accountName: { not: accountName } }],
+        },
+        data: { accountName },
+      });
+      renamed = count > 0;
+    }
+    let created = 0;
+    let updated = 0;
+    for (const inbox of remote) {
+      // The comparison lives inside the write: a webhook's `upsertInbox` (no account lock) can
+      // commit a rename between a read and an upsert, which would then overwrite it and record no
+      // change. Raw SQL because it must be one statement: a create-then-catch cannot work (P2002
+      // aborts the scoped transaction) and Prisma's upsert cannot "update only if it differs".
+      // `xmax = 0` separates inserted from updated; a matching conflict returns no row.
+      const [touched] = await db.$queryRaw<{ inserted: boolean }[]>`
+        INSERT INTO inboxes
+          (tenant_id, chatwoot_instance_id, chatwoot_inbox_id, name, channel_type, provider,
+           created_at, updated_at)
+        VALUES (${tenantId}::bigint, ${instanceId}::bigint, ${inbox.chatwootInboxId}::int,
+                ${inbox.name}::text, ${inbox.channelType}::text, ${inbox.provider}::text,
+                now(), now())
+        ON CONFLICT (tenant_id, chatwoot_instance_id, chatwoot_inbox_id) DO UPDATE
+           SET name = EXCLUDED.name,
+               channel_type = EXCLUDED.channel_type,
+               provider = EXCLUDED.provider,
+               updated_at = now()
+         WHERE inboxes.name IS DISTINCT FROM EXCLUDED.name
+            OR inboxes.channel_type IS DISTINCT FROM EXCLUDED.channel_type
+            OR inboxes.provider IS DISTINCT FROM EXCLUDED.provider
+        RETURNING (xmax = 0) AS inserted`;
+      if (touched?.inserted) created++;
+      else if (touched) updated++;
+    }
+    const result = { total: remote.length, created, updated };
+    // NOTE: `updated` counts inboxes this sync changed, not ones that existed: the Channels page
+    // auto-syncs every active account on open, and a reconcile that moved nothing is a read, which
+    // gets no trail row and no "3 updated" toast.
+    if (created > 0 || updated > 0 || renamed) {
+      await auditMutation(db, ctx, {
+        action: "instance.sync_inboxes",
+        target: `chatwoot_instance:${instanceId}`,
+        after: { ...result, accountRenamed: renamed },
+      });
+    }
+    return result;
+  });
 }

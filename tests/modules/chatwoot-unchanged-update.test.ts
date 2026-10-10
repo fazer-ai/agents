@@ -304,14 +304,23 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
     ).toBe(1);
   });
 
-  // The inbox name rides only on message events, so it is compared per message.
-  test("a receipt carrying a renamed inbox is recorded", async () => {
+  // The inbox name is not compared (the accepted limit, docs/chatwoot.md step 3a): a receipt that
+  // carries a renamed inbox is dropped, and the next delivery that is not a receipt writes the name.
+  test("a receipt carrying a renamed inbox is dropped and the next delivery writes the name", async () => {
     const s = { conv: 1007, msg: 91007 };
     await deliver(body("message_created", s));
     expect(
       (await deliver(body("message_updated", { ...s, inboxName: "Vendas" })))
         .rows,
-    ).toBe(1);
+    ).toBe(0);
+    await deliver(
+      body("message_created", { ...s, msg: 91107, inboxName: "Vendas" }),
+    );
+    const inbox = await suDb.inbox.findFirst({
+      where: { tenantId, chatwootInboxId: 7 },
+      select: { name: true },
+    });
+    expect(inbox?.name).toBe("Vendas");
   });
 
   test("a receipt carrying the snapshot the conversation's own event just mirrored is dropped", async () => {
@@ -366,21 +375,6 @@ describe.skipIf(!dbUp)("unchanged message updates", () => {
     });
     // Mirrored now, and last: the row holds its labels, so a receipt of the first reply heals it.
     expect((await deliver(body("message_updated", s))).rows).toBe(1);
-  });
-
-  // The inbox row is shared by every conversation of the inbox, and a tie goes to the last writer.
-  test("a receipt is compared with the inbox name the last mirror of the inbox wrote", async () => {
-    const renamed = { conv: 1017, msg: 91017, inboxName: "Novo" };
-    await deliver(body("message_created", renamed));
-    await deliver(
-      body("message_created", { conv: 1018, msg: 91018, inboxName: "Velho" }),
-    );
-    expect((await deliver(body("message_updated", renamed))).rows).toBe(1);
-    const inbox = await suDb.inbox.findFirst({
-      where: { tenantId, chatwootInboxId: 7 },
-      select: { name: true },
-    });
-    expect(inbox?.name).toBe("Novo");
   });
 
   test("each bot route answers for its own deliveries", async () => {

@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import type { RuntimeDeps } from "@/graph/runtime";
+import { withKeyedQueue } from "@/lib/locks";
 import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { normalizeChatwootEvent } from "./normalize";
@@ -206,6 +207,25 @@ export function admitChatwootDelivery(
   return true;
 }
 
+// Customer messages the waiting bound turned away go to the recovery ONE AT A TIME: a sustained
+// overflow must not open a handoff transaction per message against the pool the admission bound
+// protects. Past this many queued here the handoff is refused and the row stays PENDING, which the
+// next drain hands over in a bounded batch.
+export const OVERFLOW_HANDOFF_MAX_WAITING = ADMISSION_MAX_WAITING;
+let overflowHandoffs = 0;
+
+// Queues one handoff behind the others. False when the handoff queue is full.
+export function queueOverflowHandoff(handoff: () => Promise<unknown>): boolean {
+  if (overflowHandoffs >= OVERFLOW_HANDOFF_MAX_WAITING) return false;
+  overflowHandoffs++;
+  void withKeyedQueue("chatwoot:overflow-handoff", handoff)
+    .catch(() => {})
+    .finally(() => {
+      overflowHandoffs--;
+    });
+  return true;
+}
+
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
@@ -324,8 +344,10 @@ export async function drainStoredChatwootDeliveries(
   let admitted = 0;
   const rows = await read({ notIn: [...held, ...failed] }, batch);
   const room = batch - rows.length;
+  // The ones that failed longest ago first (the map moves a row to its end on every failure), so a
+  // few that keep failing cannot hold the room against the others.
   if (room > 0 && failed.length > 0)
-    rows.push(...(await read({ in: failed }, room)));
+    rows.push(...(await read({ in: failed.slice(0, room) }, room)));
   for (const row of rows) {
     const normalized = parseStored(row.payload);
     if (normalized === null) {

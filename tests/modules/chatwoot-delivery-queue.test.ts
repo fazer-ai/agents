@@ -16,6 +16,8 @@ import {
   admitChatwootDelivery,
   chatwootAdmissionState,
   drainStoredChatwootDeliveries,
+  OVERFLOW_HANDOFF_MAX_WAITING,
+  queueOverflowHandoff,
   resetChatwootAdmissionForTest,
   STORED_DELIVERY_MAX_AGE_MS,
 } from "@/modules/chatwoot/delivery-queue";
@@ -60,6 +62,54 @@ afterEach(() => {
 // since past it the recovery refuses the row too.
 test("the drain gives a body up at the recovery's own age ceiling", () => {
   expect(STORED_DELIVERY_MAX_AGE_MS).toBe(MAX_RECOVERY_AGE_MS);
+});
+
+// A sustained overflow hands every turned-away message to the recovery; one transaction each, all at
+// once, is the pool pressure the admission bound exists to stop.
+describe("overflow handoffs", () => {
+  test("run one at a time, in arrival order", async () => {
+    const first = held();
+    const second = held();
+    const order: string[] = [];
+    let running = 0;
+    let peak = 0;
+    const step = (name: string, g: { gate: Promise<void> }) => async () => {
+      running++;
+      peak = Math.max(peak, running);
+      order.push(name);
+      await g.gate;
+      running--;
+    };
+    expect(queueOverflowHandoff(step("first", first))).toBe(true);
+    expect(queueOverflowHandoff(step("second", second))).toBe(true);
+    await sleep(0);
+    expect(order).toEqual(["first"]);
+    first.release();
+    for (let i = 0; i < 100 && order.length < 2; i++) await sleep(1);
+    expect(order).toEqual(["first", "second"]);
+    expect(peak).toBe(1);
+    second.release();
+  });
+
+  test("past the bound a handoff is refused and the row is left to the drain", async () => {
+    const g = held();
+    let ran = 0;
+    for (let i = 0; i < OVERFLOW_HANDOFF_MAX_WAITING; i++) {
+      expect(
+        queueOverflowHandoff(async () => {
+          ran++;
+          await g.gate;
+        }),
+      ).toBe(true);
+    }
+    expect(queueOverflowHandoff(async () => {})).toBe(false);
+    g.release();
+    for (let i = 0; i < 200 && ran < OVERFLOW_HANDOFF_MAX_WAITING; i++)
+      await sleep(1);
+    expect(ran).toBe(OVERFLOW_HANDOFF_MAX_WAITING);
+    await sleep(0);
+    expect(queueOverflowHandoff(async () => {})).toBe(true);
+  });
 });
 
 describe("admission", () => {
@@ -403,6 +453,32 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     // The queue is reset between tests and this row would be drained by the next one.
     await suDb.chatwootWebhookDelivery.update({
       where: { id: failing },
+      data: { status: "PROCESSED", payload: null },
+    });
+  });
+
+  test("the rows that failed longest ago get the room, not the lowest ids", async () => {
+    resetChatwootAdmissionForTest();
+    const lower = await ackOnly("queue-fails-later", 615);
+    const higher = await ackOnly("queue-fails-first", 616);
+    for (const id of [higher, lower]) {
+      admitChatwootDelivery(id, async () => {
+        throw new Error("fails before its claim");
+      });
+      for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
+        await sleep(5);
+    }
+    const r = await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      batch: 1,
+    });
+    expect(r.admitted).toBe(1);
+    expect((await settled(higher)).status).toBe("PROCESSED");
+    expect((await rowById(lower)).status).toBe("PENDING");
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: lower },
       data: { status: "PROCESSED", payload: null },
     });
   });

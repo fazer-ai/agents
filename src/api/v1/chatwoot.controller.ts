@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import {
   admissionHolds,
   admitChatwootDelivery,
+  queueOverflowHandoff,
 } from "@/modules/chatwoot/delivery-queue";
 import {
   handToRecovery,
@@ -73,17 +74,20 @@ export const chatwootController = new Elysia({
       );
       // Not admitted and not a duplicate: the waiting bound turned it away.
       if (!admitted && !duplicate && lane === "turn") {
-        // Failures are logged inside; the next drain hands the row over if this did not.
-        void handToRecovery(basePrisma, {
-          tenantId,
-          instanceId,
-          rowId: deliveryRowId,
-          from: "PENDING",
-          event: normalized.event,
-          conversationId: normalized.conversationId,
-          messageId: normalized.message?.id ?? null,
-          reason: "waiting_bound",
-        });
+        // One handoff at a time, behind the others. Failures are logged inside, and a handoff refused
+        // or failed leaves the row PENDING, which the next drain hands over.
+        queueOverflowHandoff(() =>
+          handToRecovery(basePrisma, {
+            tenantId,
+            instanceId,
+            rowId: deliveryRowId,
+            from: "PENDING",
+            event: normalized.event,
+            conversationId: normalized.conversationId,
+            messageId: normalized.message?.id ?? null,
+            reason: "waiting_bound",
+          }),
+        );
       }
     }
 

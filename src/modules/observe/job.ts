@@ -1638,7 +1638,9 @@ export async function runObserve(
   try {
     tools = await underSignal(
       buildToolset(
-        cfg,
+        // A rule's handoff reason is the rule's own text, so the switch for a model's summary does
+        // not hold it back; an empty reason is what leaves no note.
+        decisions ? { ...cfg, transferWithSummary: true } : cfg,
         {
           tenantId,
           instanceId,

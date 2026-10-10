@@ -74,6 +74,8 @@ let extraMessages: Record<string, unknown>[] = [];
 
 function stubClient(labels: string[], log: ClientLog): ChatwootClient {
   return {
+    // An observation's client is built muted, which is what shapes its tools' arguments.
+    muted: true,
     getMessages: async () => ({
       payload: [
         {
@@ -614,6 +616,40 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     expect(rows[0]?.promptTokens).toBe(1000);
     expect(rows[0]?.completionTokens).toBe(0);
     expect(Number(rows[0]?.costUsd)).toBeCloseTo(0.000042, 9);
+  });
+
+  // The reason is the rule's own text, written in the rule: the agent's switch for a model-written
+  // summary does not apply to it, and an empty reason is what leaves no note.
+  test("a handoff rule's reason is left as a private note even with the summary switch off", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { transferWithSummary: false },
+    });
+    try {
+      await setMonitoring(
+        decisionsBlock({
+          rules: [
+            {
+              when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+              action: {
+                tool: "handoff_to_human",
+                args: { reason: "Pede reembolso, ver com o financeiro" },
+              },
+            },
+          ],
+        }),
+      );
+      const p = providerDouble(() =>
+        typesafeAnswer({ pede_reembolso: { type: "noul", noul: 0.92 } }),
+      );
+      const { log } = await tick(p.fetchImpl);
+      expect(log.notes).toEqual(["Pede reembolso, ver com o financeiro"]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { transferWithSummary: true },
+      });
+    }
   });
 
   test("below the threshold nothing runs, and the line says which question and by how much", async () => {

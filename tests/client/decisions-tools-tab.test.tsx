@@ -49,6 +49,7 @@ function renderEditor(
   decides: boolean,
   handoffMode = "pinned",
   transferWithSummary = false,
+  saved: { extraNative?: string[]; onChange?: (g: unknown) => void } = {},
 ) {
   const noop = () => undefined;
   return render(
@@ -78,11 +79,12 @@ function renderEditor(
                       "handoff_to_human",
                       "private_note",
                       "set_custom_attribute",
+                      ...(saved.extraNative ?? []),
                     ],
                   },
                 ] as never
               }
-              onChange={noop}
+              onChange={saved.onChange ?? noop}
               onCatalogChange={noop}
               transferWithSummary={transferWithSummary}
               setTransferWithSummary={noop}
@@ -250,4 +252,24 @@ test("a handoff stored as the AI's choice is a problem with the way out", async 
   const text = await openSettings();
   expect(text.includes("no model to choose")).toBe(true);
   expect(text.includes("Chatwoot routing")).toBe(true);
+});
+
+// Hidden is not revoked: a tool granted while the agent answered stays granted through an edit here.
+test("a grant this engine does not draw survives a toggle on a drawn one", async () => {
+  stubAuth();
+  const emitted: unknown[] = [];
+  renderEditor(true, "pinned", false, {
+    extraNative: ["skip_reply"],
+    onChange: (g) => emitted.push(g),
+  });
+  const card = await waitFor(() => {
+    const el = document.getElementById(nativeToolAnchor("private_note"));
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+  fireEvent.click(focusableIn(card) ?? card);
+  const last = emitted.at(-1) as { source: string; enabledTools?: string[] }[];
+  const native = last.find((g) => g.source === "NATIVE");
+  expect(native?.enabledTools).toContain("skip_reply");
+  expect(native?.enabledTools).not.toContain("private_note");
 });

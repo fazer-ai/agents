@@ -619,6 +619,48 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(calls).not.toContain("sendMessage");
   });
 
+  // A person answered the stored message (and gave the conversation back) before the replay.
+  test("a stored message a person already answered is ingested, not answered again", async () => {
+    await mirror(632);
+    const id = await ackMessage("queue-replay-answered", 632);
+    const calls: string[] = [];
+    await drainStoredChatwootDeliveries({
+      base: appDb,
+      tenantId,
+      minAgeMs: 0,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            {
+              ...heldByPerson(632),
+              status: "pending",
+              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+            },
+            calls,
+            [
+              {
+                id: 63_200,
+                content: "oi",
+                message_type: "incoming",
+                private: false,
+              },
+              {
+                id: 63_204,
+                content: "já resolvi",
+                message_type: "outgoing",
+                private: false,
+                sender: { type: "user", id: 55 },
+              },
+            ],
+          ) as never,
+      },
+    });
+    const row = await settled(id);
+    expect(row.status).toBe("PROCESSED");
+    expect(row.owesMemoryOnly).toBe(true);
+    expect(calls).not.toContain("sendMessage");
+  });
+
   // A newest page that does not reach back to the stored message cannot say whether the customer
   // wrote again: the replay waits.
   test("a newest page that cannot answer defers the replay", async () => {

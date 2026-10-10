@@ -11,6 +11,7 @@ import { maxIncomingId, parseChatwootMessages } from "./messages";
 import { mirrorChatwootEvent } from "./mirror";
 import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
+import { supersededLive } from "./recover-delivery";
 import type { NormalizedChatwootEvent } from "./types";
 import {
   inboxBindingGenerationIn,
@@ -487,7 +488,13 @@ async function replayStored(
       }),
     );
     if (settledStatus) event = { ...normalized, status: settledStatus.status };
-    superseded = await writtenPast(client, conversationId, normalized);
+    superseded = await writtenPast(client, conversationId, normalized, {
+      tenantId: row.tenantId,
+      instanceId: row.chatwootInstanceId,
+      routeBotId: row.routeAgentBotId,
+      base,
+      deps,
+    });
   }
   return processRecordedChatwootDelivery({
     tenantId: row.tenantId,
@@ -502,15 +509,23 @@ async function replayStored(
   });
 }
 
-// Whether the customer has written past this new message: a newer incoming message on the newest page
-// of the conversation (`maxIncomingId`, the delivery path's own predicate). Such a message is ingested
-// into memory and not answered, since the newer message's delivery carries the reply and a turn for
-// the older text would run its tools before any send-time check. A page that cannot answer (empty, or
-// not reaching back to this message) throws, and the delivery waits for the next pass.
+// Whether this new message no longer owes a reply: the customer wrote past it (a newer incoming
+// message on the newest page, `maxIncomingId`, the delivery path's own predicate), or the conversation
+// moved past it (a person or another bot answered it, or it was resolved: `supersededLive`, the
+// recovery's own check). Such a message is ingested into memory and not answered, since a turn for it
+// would run its tools before any send-time check. A newest page that cannot answer (empty, or not
+// reaching back to this message) throws, and the delivery waits for the next pass.
 async function writtenPast(
   client: Awaited<ReturnType<typeof loadChatwootClient>>,
   conversationId: number,
   normalized: NormalizedChatwootEvent,
+  route: {
+    tenantId: bigint;
+    instanceId: bigint;
+    routeBotId: number | null;
+    base: PrismaClient;
+    deps?: RuntimeDeps;
+  },
 ): Promise<boolean> {
   const messageId = normalized.message?.id;
   if (normalized.event !== "message_created" || messageId == null) return false;
@@ -526,7 +541,16 @@ async function writtenPast(
       `the newest page of conversation ${conversationId} does not reach message ${messageId}; replay deferred`,
     );
   }
-  return false;
+  const moved = await supersededLive({
+    tenantId: route.tenantId,
+    instanceId: route.instanceId,
+    conversationId,
+    messageId,
+    routeBotId: route.routeBotId,
+    base: route.base,
+    ...(route.deps?.makeClient ? { makeClient: route.deps.makeClient } : {}),
+  });
+  return moved !== null;
 }
 
 // How long a live delivery may wait for its slot before its freshness is asked again when the slot
@@ -559,7 +583,13 @@ export async function runQueuedDelivery(d: QueuedDelivery): Promise<unknown> {
       ...(d.base ? { base: d.base } : {}),
       ...(d.deps?.makeClient ? { makeClient: d.deps.makeClient } : {}),
     });
-    superseded = await writtenPast(client, conversationId, d.normalized);
+    superseded = await writtenPast(client, conversationId, d.normalized, {
+      tenantId: d.tenantId,
+      instanceId: d.instanceId,
+      routeBotId: d.agentBotId,
+      base: d.base ?? basePrisma,
+      deps: d.deps,
+    });
   }
   return processRecordedChatwootDelivery({
     tenantId: d.tenantId,

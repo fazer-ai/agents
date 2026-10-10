@@ -680,7 +680,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7340 },
+          chatwootConversationId: { gte: 7310, lte: 7341 },
         },
       });
       await dropContact(77);
@@ -1465,6 +1465,62 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         }),
       ).toBe("unreachable");
       expect(stub.sent).toEqual([]);
+    });
+
+    test("refuses a WhatsApp reply whose mirror row a webhook created during the reads", async () => {
+      // Not mirrored at the load, mirrored by the time the customer's clock is read: the hand-over
+      // reads that row, so the ceiling does too.
+      const convId = 7341;
+      const messageId = 7841;
+      await dropContact(77);
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { channelType: "Channel::Whatsapp" },
+      });
+      try {
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          receivedAgoMs: 2 * 60 * 60 * 1000,
+        });
+        const stub = stubChatwoot({
+          page: pageWith([
+            {
+              id: messageId,
+              content: "oi",
+              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+            },
+          ]),
+          onAnchoredRead: async () => {
+            await suDb.conversation.create({
+              data: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: convId,
+                status: "pending",
+                inboxId: inboxDbId,
+                threadId: threadOf(convId),
+                lastEventAt: new Date(),
+              },
+            });
+          },
+        });
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("unrecoverable");
+        expect(stub.sent).toEqual([]);
+      } finally {
+        await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+      }
     });
 
     test("a WhatsApp delivery that owes only memory keeps six hours", () => {

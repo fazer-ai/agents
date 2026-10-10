@@ -5,6 +5,9 @@
 -- One row per tenant, created on first need. `tripped_at` is the latch: set by the send that found
 -- the account at its limit, cleared only by a resume, which also stamps `resumed_at` so the count
 -- after it starts from zero. `auto_*` is the automatic limit's inputs, refreshed at most daily.
+-- One transaction: a failure after CREATE TABLE must not leave the table without its tenant policy.
+BEGIN;
+
 CREATE TABLE "proactive_breakers" (
     "tenant_id" BIGINT NOT NULL,
     "tripped_at" TIMESTAMP(3),
@@ -31,3 +34,5 @@ CREATE POLICY tenant_isolation ON "proactive_breakers"
 DO $$ BEGIN EXECUTE format(
   'CREATE POLICY fleet_super_admin ON "proactive_breakers" TO %I USING (true) WITH CHECK (true)',
   public.fazerai_fleet_role()); END $$;
+
+COMMIT;

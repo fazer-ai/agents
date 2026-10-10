@@ -521,6 +521,60 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     expect(calls).not.toContain("sendMessage");
   });
 
+  // The same for a live message that waited past the recheck: the live read is reconciled and the
+  // message proposes the settled status, not its own `pending`.
+  test("a queued message that waited does not reopen a conversation the live read says is resolved", async () => {
+    await mirror(638);
+    const t = Math.floor(Date.now() / 1000) - 60;
+    const normalized = normalizeChatwootEvent({
+      event: "message_created",
+      id: 63_800,
+      content: "oi",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: 638,
+        inbox_id: 7,
+        status: "pending",
+        updated_at: t + 0.1,
+        last_activity_at: t,
+        meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+      },
+    });
+    if (!normalized) throw new Error("the event did not normalize");
+    const id = await ackMessage("queue-live-resolved", 638);
+    const calls: string[] = [];
+    await runQueuedDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: id,
+      agentBotId: 9,
+      normalized,
+      receiptBindingGeneration: null,
+      receivedAt: Date.now() - QUEUED_RECHECK_AFTER_MS - 1,
+      base: appDb,
+      deps: {
+        makeClient: async () =>
+          fakeClient(
+            {
+              id: 638,
+              status: "resolved",
+              inbox_id: 7,
+              updated_at: t + 0.5,
+              last_activity_at: t,
+              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+            },
+            calls,
+          ) as never,
+      },
+    });
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 638 },
+    });
+    expect(conv.status).toBe("resolved");
+    expect(calls).not.toContain("sendMessage");
+  });
+
   // Customer messages that fill a batch without filling their lane do not leave a status change
   // stored behind them for the next pass.
   test("a pass reads on past a batch of customer messages to the status change behind them", async () => {

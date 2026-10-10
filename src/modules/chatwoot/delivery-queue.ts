@@ -424,118 +424,20 @@ async function replayStored(
     );
     return toSweep();
   }
-  let event = normalized;
-  let superseded = false;
-  const conversationId = normalized.conversationId;
-  // NOTE: A replay can come long after a takeover the mirror never saw: the live conversation is
-  // reconciled into the mirror first, as the delivery recovery does (an unmirrored conversation is
-  // mirrored from the stored event's conversation alone first), and whether a turn is still owed is
-  // the recovery's own decision (`storedTurnVerdict`).
-  if (admissionLaneOf(normalized) === "turn" && conversationId !== null) {
-    const client = await loadChatwootClient(
-      row.tenantId,
-      row.chatwootInstanceId,
-      { base, ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}) },
-    );
-    const live = parseLiveConversation(
-      await client.getConversation(conversationId),
-    );
-    if (live !== null) {
-      const mirrored = await run((db) =>
-        db.conversation.findFirst({
-          where: {
-            tenantId: row.tenantId,
-            chatwootInstanceId: row.chatwootInstanceId,
-            chatwootConversationId: conversationId,
-          },
-          select: { id: true },
-        }),
-      );
-      if (mirrored === null) {
-        await mirrorChatwootEvent(
-          row.tenantId,
-          row.chatwootInstanceId,
-          { ...normalized, event: "conversation_updated", message: undefined },
-          base,
-        );
-      }
-      await reconcileMirrorFromLive({
-        tenantId: row.tenantId,
-        instanceId: row.chatwootInstanceId,
-        conversationId,
-        live,
-        base,
-      });
-    }
-    superseded = await turnNoLongerOwed(client, normalized, {
+  return runQueuedDelivery(
+    {
       tenantId: row.tenantId,
       instanceId: row.chatwootInstanceId,
-      routeBotId: row.routeAgentBotId,
+      deliveryRowId: row.id,
+      agentBotId: row.routeAgentBotId,
+      normalized,
+      receiptBindingGeneration: row.bindingGeneration,
+      receivedAt: row.receivedAt.getTime(),
       base,
-      live,
-    });
-    // The message proposes the status the mirror settled on, not the stored one: a stored
-    // message's whole-second clock can tie a resolve that came after it, and proposing its old
-    // `pending` would reopen what the reconcile just closed. Only the status: the clock and the
-    // pairing stay the message's own.
-    const settledStatus = await run((db) =>
-      db.conversation.findFirst({
-        where: {
-          tenantId: row.tenantId,
-          chatwootInstanceId: row.chatwootInstanceId,
-          chatwootConversationId: conversationId,
-        },
-        select: { status: true },
-      }),
-    );
-    if (settledStatus) event = { ...normalized, status: settledStatus.status };
-  }
-  return processRecordedChatwootDelivery({
-    tenantId: row.tenantId,
-    instanceId: row.chatwootInstanceId,
-    deliveryRowId: row.id,
-    agentBotId: row.routeAgentBotId,
-    normalized: event,
-    receiptBindingGeneration: row.bindingGeneration,
-    base,
-    deps,
-    owesMemoryOnly: superseded,
-  });
-}
-
-// Whether this new message no longer owes a turn: the delivery recovery's own decision
-// (`storedTurnVerdict`). Undecided throws, and the delivery stays PENDING with its body.
-async function turnNoLongerOwed(
-  client: Awaited<ReturnType<typeof loadChatwootClient>>,
-  normalized: NormalizedChatwootEvent,
-  route: {
-    tenantId: bigint;
-    instanceId: bigint;
-    routeBotId: number | null;
-    base: PrismaClient;
-    live: ReturnType<typeof parseLiveConversation>;
-  },
-): Promise<boolean> {
-  const messageId = normalized.message?.id;
-  const conversationId = normalized.conversationId;
-  if (
-    normalized.event !== "message_created" ||
-    messageId == null ||
-    conversationId === null
-  )
-    return false;
-  const v = await storedTurnVerdict({
-    ...route,
-    conversationId,
-    messageId,
-    client,
-  });
-  if (v.verdict === "degraded") {
-    throw new Error(
-      `conversation ${conversationId} cannot say whether message ${messageId} is still owed a turn (${v.why}); deferred`,
-    );
-  }
-  return v.verdict !== "owed";
+      deps,
+    },
+    true,
+  );
 }
 
 // How long a live delivery may wait for its slot before its freshness is asked again when the slot
@@ -554,38 +456,94 @@ export interface QueuedDelivery {
   deps?: RuntimeDeps;
 }
 
-// What the queue runs for a live delivery once its slot opens. A customer's new message that waited
-// past `QUEUED_RECHECK_AFTER_MS` is checked against the conversation first (`writtenPast`).
-export async function runQueuedDelivery(d: QueuedDelivery): Promise<unknown> {
-  let superseded = false;
-  const conversationId = d.normalized.conversationId;
+// What the queue runs once a delivery's slot opens. A customer's new message that was stored (`late`)
+// or waited past `QUEUED_RECHECK_AFTER_MS` can come after a takeover or a resolve the mirror never saw:
+// the live conversation is reconciled into the mirror first, as the delivery recovery does (an
+// unmirrored conversation is mirrored from the event's conversation alone first), whether a turn is
+// still owed is the recovery's own decision (`storedTurnVerdict`; undecided throws and the row stays
+// PENDING with its body), and the message proposes the status the mirror settled on, not its own: its
+// whole-second clock can tie a resolve that came after it, and its old `pending` would reopen it.
+export async function runQueuedDelivery(
+  d: QueuedDelivery,
+  late = false,
+): Promise<unknown> {
+  let event = d.normalized;
+  let owesMemoryOnly = false;
+  const conversationId = event.conversationId;
+  const messageId = event.message?.id;
   if (
-    Date.now() - d.receivedAt > QUEUED_RECHECK_AFTER_MS &&
-    admissionLaneOf(d.normalized) === "turn" &&
+    (late || Date.now() - d.receivedAt > QUEUED_RECHECK_AFTER_MS) &&
+    admissionLaneOf(event) === "turn" &&
     conversationId !== null
   ) {
+    const base = d.base ?? basePrisma;
+    const run = <T>(fn: Parameters<typeof runScopedOn<T>>[2]) =>
+      runScopedOn(base, sysCtx(d.tenantId), fn);
+    const where = {
+      tenantId: d.tenantId,
+      chatwootInstanceId: d.instanceId,
+      chatwootConversationId: conversationId,
+    };
     const client = await loadChatwootClient(d.tenantId, d.instanceId, {
-      ...(d.base ? { base: d.base } : {}),
+      base,
       ...(d.deps?.makeClient ? { makeClient: d.deps.makeClient } : {}),
     });
-    superseded = await turnNoLongerOwed(client, d.normalized, {
-      tenantId: d.tenantId,
-      instanceId: d.instanceId,
-      routeBotId: d.agentBotId,
-      base: d.base ?? basePrisma,
-      live: parseLiveConversation(await client.getConversation(conversationId)),
-    });
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (live !== null) {
+      const mirrored = await run((db) =>
+        db.conversation.findFirst({ where, select: { id: true } }),
+      );
+      if (mirrored === null) {
+        await mirrorChatwootEvent(
+          d.tenantId,
+          d.instanceId,
+          { ...event, event: "conversation_updated", message: undefined },
+          base,
+        );
+      }
+      await reconcileMirrorFromLive({
+        tenantId: d.tenantId,
+        instanceId: d.instanceId,
+        conversationId,
+        live,
+        base,
+      });
+    }
+    if (event.event === "message_created" && messageId != null) {
+      const v = await storedTurnVerdict({
+        tenantId: d.tenantId,
+        instanceId: d.instanceId,
+        conversationId,
+        messageId,
+        routeBotId: d.agentBotId,
+        base,
+        client,
+        live,
+      });
+      if (v.verdict === "degraded") {
+        throw new Error(
+          `conversation ${conversationId} cannot say whether message ${messageId} is still owed a turn (${v.why}); deferred`,
+        );
+      }
+      owesMemoryOnly = v.verdict !== "owed";
+    }
+    const settled = await run((db) =>
+      db.conversation.findFirst({ where, select: { status: true } }),
+    );
+    if (settled) event = { ...event, status: settled.status };
   }
   return processRecordedChatwootDelivery({
     tenantId: d.tenantId,
     instanceId: d.instanceId,
     deliveryRowId: d.deliveryRowId,
     agentBotId: d.agentBotId,
-    normalized: d.normalized,
+    normalized: event,
     receiptBindingGeneration: d.receiptBindingGeneration,
     base: d.base,
     deps: d.deps,
-    owesMemoryOnly: superseded,
+    owesMemoryOnly,
   });
 }
 

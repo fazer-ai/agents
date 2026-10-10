@@ -25,6 +25,8 @@ const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: PrismaClient | undefined;
 let app: PrismaClient | undefined;
+/** The role the app's connections run as, which is how a waiting backend is told apart as ours. */
+let appRole = "";
 if (appUrl && suUrl) {
   try {
     su = new PrismaClient({
@@ -34,7 +36,9 @@ if (appUrl && suUrl) {
     app = new PrismaClient({
       adapter: new PrismaPg({ connectionString: appUrl }),
     });
-    await app.$queryRaw`SELECT 1`;
+    const [me] = await app.$queryRaw<Array<{ role: string }>>`
+      SELECT current_user::text AS role`;
+    appRole = me?.role ?? "";
     dbUp = true;
   } catch {
     dbUp = false;
@@ -241,11 +245,21 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
 
   // Polls Postgres rather than the clock: on a fast machine it returns in one round trip, and on a
   // slow one it keeps asking instead of concluding.
-  async function someoneBlockedBy(pid: number, ms = 5000): Promise<boolean> {
+  /**
+   * Whether an application backend is waiting on `pid`. Only backends of the app's own role count: a
+   * file running beside this one under `--parallel` creates and drops triggers as the superuser, and
+   * that DDL queues behind any table lock without being anything this file started. `stop` ends the
+   * poll early, so a caller that stops needing the answer can wait for it to wind down.
+   */
+  async function someoneBlockedBy(
+    pid: number,
+    { ms = 5000, stop }: { ms?: number; stop?: { done: boolean } } = {},
+  ): Promise<boolean> {
     const until = Date.now() + ms;
-    while (Date.now() < until) {
+    while (Date.now() < until && !stop?.done) {
       const rows = await suDb.$queryRaw<Array<{ pid: number }>>`
-        SELECT pid FROM pg_stat_activity WHERE ${pid} = ANY(pg_blocking_pids(pid))`;
+        SELECT pid FROM pg_stat_activity
+        WHERE ${pid} = ANY(pg_blocking_pids(pid)) AND usename = ${appRole}`;
       if (rows.length > 0) return true;
       await new Promise((r) => setTimeout(r, 25));
     }
@@ -409,12 +423,14 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
         { makeClient: stubClient().makeClient },
         appDb,
       );
+      const stop = { done: false };
+      const probe = someoneBlockedBy(writer?.pid ?? -1, { stop });
       const outcome = await Promise.race([
         binding.then(() => "bound"),
-        someoneBlockedBy(writer?.pid ?? -1).then((b) =>
-          b ? "stalled" : "neither",
-        ),
+        probe.then((b) => (b ? "stalled" : "neither")),
       ]);
+      stop.done = true;
+      await probe;
       release();
       await holding;
       await writing;

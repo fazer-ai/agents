@@ -1401,15 +1401,23 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "issued_document_list",
       {
         description:
-          "List documents the tenant has issued (id, title, number, template, status, thread, revoked). The PDFs themselves are served only to an authenticated console session.",
+          "Issued documents, newest first (id, title, number, template, status, thread, approval, revoked). `q` matches number or title; `before` an id pages back. PDFs: console only.",
         inputSchema: {
           template_id: z.string().optional(),
           thread_id: z.string().optional(),
           limit: z.number().int().optional(),
+          before: z.string().optional(),
+          q: z.string().optional(),
         },
       },
       async (
-        args: { template_id?: string; thread_id?: string; limit?: number },
+        args: {
+          template_id?: string;
+          thread_id?: string;
+          limit?: number;
+          before?: string;
+          q?: string;
+        },
         eff,
       ) => writeContent(await issuedDocumentList(eff, args)),
     );

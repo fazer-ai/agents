@@ -400,12 +400,24 @@ export async function documentStarterList(
 
 export async function issuedDocumentList(
   principal: VerifiedToken,
-  args: { template_id?: string; thread_id?: string; limit?: number } = {},
+  args: {
+    template_id?: string;
+    thread_id?: string;
+    limit?: number;
+    before?: string;
+    q?: string;
+  } = {},
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
+  let before: bigint | undefined;
+  if (args.before !== undefined) {
+    const parsed = parseMcpId(args.before, "before");
+    if (typeof parsed !== "bigint") return parsed;
+    before = parsed;
+  }
   let templateId: bigint | undefined;
   // `!== undefined`, not truthiness: an explicitly empty template_id is a malformed NARROWING
   // filter, and treating it as absent answers the tenant's whole recent list — the widest possible
@@ -419,7 +431,13 @@ export async function issuedDocumentList(
     return ok({
       documents: await listIssuedDocuments(
         ctx,
-        { templateId, threadId: args.thread_id, limit: args.limit },
+        {
+          templateId,
+          threadId: args.thread_id,
+          limit: args.limit,
+          before,
+          query: args.q,
+        },
         base,
       ),
     });

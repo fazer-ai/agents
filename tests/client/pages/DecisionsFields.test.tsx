@@ -603,7 +603,7 @@ describe("a problem the server would name", () => {
 
   // A piece of what the screen says about each case, in its own words.
   const SAYS: Record<string, string> = {
-    "no credential": "Required.",
+    "no credential": "The classifier on the General tab is not complete.",
     "a name with a space": "Lowercase letters",
     "a choice with one option": "At least 2",
     "an option repeated": "is already used in this list",

@@ -36,8 +36,14 @@ describe("the editor of a monitoring agent", () => {
     expect(EDITOR).toContain("items={visibleTabs}");
     expect(EDITOR).toContain('const watcher = agentMode === "monitoring";');
     expect(EDITOR).toContain("watcherTabKeys(engine).has(item.key)");
-    // A URL naming a hidden tab lands on General rather than rendering a tab the page hides.
+    // A URL naming a hidden tab lands on General rather than rendering a tab the page hides, and
+    // only once the agent is read: before that the engine is the form's default, and a link straight
+    // to Questions and rules would be bounced off a tab the agent does have.
     expect(EDITOR).toContain("? !watcherTabKeys(engine).has(tab)");
+    const effect = EDITOR.indexOf("? !watcherTabKeys(engine).has(tab)");
+    expect(EDITOR.slice(effect - 200, effect)).toContain(
+      "if (loading) return;",
+    );
   });
 
   test("no tab a watcher draws offers the playground", () => {

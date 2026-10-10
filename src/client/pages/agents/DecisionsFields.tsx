@@ -1896,7 +1896,12 @@ export function ClassifierFields({
       </FormField>
       <FormField
         label={t("editor.decisionsCredential", "API key")}
-        error={credentialError ?? at("credentialRef")}
+        // NOTE: An empty key is said by the picker itself (`required`); the schema's "Required"
+        // under it would say it twice.
+        error={
+          credentialError ??
+          (decisions.credentialRef === "" ? null : at("credentialRef"))
+        }
         group
         className="sm:col-span-2"
       >
@@ -1960,5 +1965,23 @@ function useStarterNames(): StarterNames {
       "editor.starterHumanQuestion",
       "Does the customer ask to talk to a person?",
     ),
+    // How rules and logs name each question, in the console's language too. Kept to what a
+    // question name accepts, whatever a translation holds.
+    questionNames: {
+      sentiment: questionName(t("editor.starterSentimentName", "sentiment")),
+      subject: questionName(t("editor.starterSubjectName", "subject")),
+      human: questionName(t("editor.starterHumanName", "asks_human")),
+    },
   };
+}
+
+function questionName(word: string): string {
+  const name = word
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^[^a-z]+/, "")
+    .slice(0, 64);
+  return name || "question";
 }

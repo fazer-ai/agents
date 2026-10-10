@@ -50,3 +50,15 @@ export function focusableIn(el: HTMLElement | null): HTMLElement | null {
   if (!el) return null;
   return el.matches(CONTROL) ? el : el.querySelector<HTMLElement>(CONTROL);
 }
+
+// The requests General's Save makes. With the decision setup changed, the identity rides in the same
+// PATCH: written apart, `enabled: true` could land with the previous rules and run them, or stay
+// enabled when the setup's write then fails.
+export type GeneralSaveRequest = "identity" | "setup" | "identity+setup";
+export function generalSaveRequests(
+  identityEdited: boolean,
+  setupEdited: boolean,
+): GeneralSaveRequest[] {
+  if (setupEdited) return [identityEdited ? "identity+setup" : "setup"];
+  return identityEdited ? ["identity"] : [];
+}

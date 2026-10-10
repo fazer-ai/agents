@@ -214,6 +214,7 @@ import {
 } from "./StaleNotice";
 import {
   focusableIn,
+  generalSaveRequests,
   revealFirstProblem,
   setupSaveBlocked,
 } from "./saveAttempt";
@@ -3605,7 +3606,11 @@ function AgentEditor() {
   // or from Questions and rules: the `monitoring` block as stored with the setup the form holds,
   // merged onto the LAST-SYNCED settings like saveChannelRedirect, so the Behavior tab's pending
   // timing and every other tab's edits stay where they are (agents#1224).
-  async function saveDecisions(force = false): Promise<boolean> {
+  // `identity`: General's name, enabled and mode, written in the same PATCH (generalSaveRequests).
+  async function saveDecisions(
+    force = false,
+    identity?: Record<string, unknown>,
+  ): Promise<boolean> {
     savingRef.current += 1;
     setSavingDecisions(true);
     let sent: Record<string, unknown> = {};
@@ -3621,16 +3626,29 @@ function AgentEditor() {
         true,
       );
       block = merged.monitoring?.decisions;
-      const patch = { settings: { ...syncedSettings, ...merged } };
+      const patch = {
+        ...(identity ?? {}),
+        settings: { ...syncedSettings, ...merged },
+      };
       sent = sentFor(patch);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
         ...patch,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
         ...replaceFor(force),
       });
-      if (handleConflict(err, () => void saveDecisions(true))) return false;
+      if (
+        handleConflict(err, () =>
+          identity ? void saveGeneral(true) : void saveDecisions(true),
+        )
+      )
+        return false;
       if (err || !data) throw err ?? new Error("no data");
       applyDecisions(data.agent);
+      if (identity) {
+        applyGeneral(data.agent, "systemPrompt" in identity);
+        bumpSync("general");
+        settleRefusalFor("general");
+      }
       setDecisionsAttempted(false);
       // NOTE: Keep the local bag's block in step so a later Behavior save, which spreads it, does
       // not put the previous one back.
@@ -3666,19 +3684,20 @@ function AgentEditor() {
   // instructions and the chat model are not drawn, so they are not written either.
   async function saveGeneral(force = false): Promise<boolean> {
     if (!decides && !guardModelBeforeSave()) return false;
+    const identity = decides
+      ? { name: name.trim(), enabled, mode: agentMode }
+      : {
+          name: name.trim(),
+          systemPrompt,
+          enabled,
+          mode: agentMode,
+          modelConfig: buildModelConfig(),
+        };
+    const [request] = generalSaveRequests(dirty.general, dirty.decisions);
+    if (request === "identity+setup") return saveDecisions(force, identity);
     if (dirty.general) {
-      // A refused or conflicting identity save stops here: running the setup's save next would
-      // put its own retry in place of this one, and "save anyway" would then drop the identity.
       const ok = await saveAgent(
-        decides
-          ? { name: name.trim(), enabled, mode: agentMode }
-          : {
-              name: name.trim(),
-              systemPrompt,
-              enabled,
-              mode: agentMode,
-              modelConfig: buildModelConfig(),
-            },
+        identity,
         "general",
         force,
         // NOTE: "Save anyway" re-runs the whole of this save, identity and setup alike.

@@ -149,7 +149,9 @@ test("moving to another request drops the previous request's preview at once", a
     ),
   );
   act(() => goTo("/document-approvals/26"));
-  await waitFor(() => expect(screen.queryByText("Orçamento 6")).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByText("Orçamento 6") === null).toBe(true),
+  );
   expect(document.querySelector("iframe")).toBeNull();
   next.open();
   await screen.findByText("Orçamento 26");

@@ -20,6 +20,9 @@ type Handlers = {
     lastEventAt?: string;
   }) => void;
 };
+// Absence is asserted as a boolean, never `expect(element).toBeNull()`: inside a `waitFor`, every
+// failing try pretty-prints the whole element, which takes seconds under happy-dom and starves the
+// short clocks these tests drive (measured on CI: a 100ms clock taking 9s to fire).
 let handlers: Handlers = {};
 mock.module("@/client/hooks/useTenantEvents", () => ({
   useTenantEvents: (h: Handlers) => {
@@ -137,7 +140,9 @@ test("a decision while the list is open drops the flag on the next event", async
     });
   });
   await waitFor(() =>
-    expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+    expect(screen.queryByText("Document awaiting approval") === null).toBe(
+      true,
+    ),
   );
 });
 
@@ -172,13 +177,15 @@ test("an older flag answer arriving last does not put back a cleared flag", asyn
   pending = [];
   await act(async () => handlers.onConversation?.(event));
   await waitFor(() =>
-    expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+    expect(screen.queryByText("Document awaiting approval") === null).toBe(
+      true,
+    ),
   );
   await act(async () => {
     release();
     await new Promise((r) => setTimeout(r, 50));
   });
-  expect(screen.queryByText("Document awaiting approval")).toBeNull();
+  expect(screen.queryByText("Document awaiting approval") === null).toBe(true);
 });
 
 test("a flagged row is read again on its own, without any event", async () => {
@@ -202,7 +209,10 @@ test("a flagged row is read again on its own, without any event", async () => {
   pending = [];
   try {
     await waitFor(
-      () => expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+      () =>
+        expect(screen.queryByText("Document awaiting approval") === null).toBe(
+          true,
+        ),
       { timeout: 8000 },
     );
   } finally {
@@ -231,7 +241,10 @@ test("flag reads slower than the clock still land", async () => {
   flagReadDelayMs = 350;
   try {
     await waitFor(
-      () => expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+      () =>
+        expect(screen.queryByText("Document awaiting approval") === null).toBe(
+          true,
+        ),
       { timeout: 8000 },
     );
   } finally {

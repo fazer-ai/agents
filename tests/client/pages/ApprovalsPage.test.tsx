@@ -764,7 +764,9 @@ test("a history page asked before the rows started over is dropped", async () =>
     );
     release();
     await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByRole("link", { name: /for Old Page/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /for Old Page/ }) === null).toBe(
+      true,
+    );
   } finally {
     globalThis.fetch = realFetchHere;
   }

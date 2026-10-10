@@ -876,6 +876,21 @@ describe("a Save pressed with the setup incomplete", () => {
     expect(focusedText()).toBe("Open General");
   });
 
+  test("on General, the missing key is the field it goes to", () => {
+    stubApi();
+    renderSection({
+      monitoring: {
+        engine: "decisions",
+        decisions: { ...BLOCK, credentialRef: "" },
+      },
+    });
+    const general = screen.getByTestId("classifier-fields");
+    expect(revealFirstProblem(general)).toBe(true);
+    expect(Boolean(document.activeElement?.closest("[data-problem]"))).toBe(
+      true,
+    );
+  });
+
   test("with a broken rule, goes to that rule", () => {
     stubApi();
     renderSection(

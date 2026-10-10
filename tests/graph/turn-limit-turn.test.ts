@@ -5,6 +5,8 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { resolveGraphThreadId } from "@/graph/checkpointer";
+import { isTurnRunning } from "@/graph/inflight";
 import { runAgentNudge } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -326,40 +328,51 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     expect(lines[0]?.errorMessage).toContain(`limit ${LIMIT}`);
   });
 
-  // Two messages back to back: the second turn waits on the first's claim, and when that claim is
-  // released the first turn's delivery must already be counted. The insert is slowed so the window
-  // between the release and the write, if there is one, is wide enough to be seen.
-  test("a turn waiting on the previous one sees its delivery", async () => {
-    const convId = 8207;
-    // A contact-inbox thread, the one whose turns take the durable claim and wait on it.
-    const convDbId = await seedConversation(convId, 7207);
-    await seedDeliveries(convDbId, [minutesAgo(10), minutesAgo(5)]);
-    const slow = appDb.$extends({
+  // A base that records, at each delivery insert, whether the thread is still held: the in-process
+  // mark a queued turn on this process waits on, and the durable lease one on another replica reads.
+  // A row written after the release is a row a queued turn's gate can miss.
+  function heldAtInsert(convId: number, contactInboxId: number) {
+    const gid = resolveGraphThreadId(
+      tenantId,
+      instanceId,
+      convId,
+      contactInboxId,
+    );
+    const seen: boolean[] = [];
+    const base = appDb.$extends({
       query: {
         agentTurnDelivery: {
           async create({ args, query }) {
-            await Bun.sleep(400);
+            const lease = await suDb.$queryRaw<{ live: boolean }[]>`
+              SELECT turn_held_until > now() AS live FROM agent_threads
+               WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${instanceId}
+                 AND contact_inbox_id = ${contactInboxId}`;
+            seen.push(isTurnRunning(gid) && lease[0]?.live === true);
             return query(args);
           },
         },
       },
     }) as unknown as PrismaClient;
+    return { base, seen };
+  }
 
-    const first = newCalls();
-    const second = newCalls();
-    const outcomes = await Promise.all([
-      turn(convId, first, { base: slow, contactInboxId: 7207 }),
-      Bun.sleep(50).then(() =>
-        turn(convId, second, { base: slow, contactInboxId: 7207 }),
-      ),
-    ]);
-    expect(outcomes).toEqual(["posted", "blocked"]);
-    expect(second.sent).toEqual([]);
+  // The turn that answers writes its delivery before it lets go of the thread, so the next message,
+  // queued on that hold, is gated on a count that already includes it.
+  test("a reply's delivery is written while the thread is still held", async () => {
+    const convId = 8207;
+    // A contact-inbox thread, the one whose turns take the durable claim and wait on it.
+    await seedConversation(convId, 7207);
+    const { base, seen } = heldAtInsert(convId, 7207);
+
+    expect(await turn(convId, newCalls(), { base, contactInboxId: 7207 })).toBe(
+      "posted",
+    );
+    expect(seen).toEqual([true]);
   });
 
-  // The same for a follow-up whose only send was a tool's ack: the reactive turn queued behind it on
-  // the thread counts that ack, though the nudge records it only after its graph has run.
-  test("a turn waiting on a follow-up sees the follow-up's tool send", async () => {
+  // The same for a follow-up whose only send was a tool's ack: it records that send before its graph
+  // lets go of the thread, though its outcome is decided only after.
+  test("a follow-up's tool send is written while the thread is still held", async () => {
     const convId = 8209;
     const convDbId = await seedConversation(convId, 7209);
     // A nudge finds its agent through the conversation's inbox; a reply finds it in the event.
@@ -371,7 +384,6 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
       where: { id: convDbId },
       data: { inboxId: inbox.id },
     });
-    await seedDeliveries(convDbId, [minutesAgo(10), minutesAgo(5)]);
     const tool = await suDb.toolDefinition.create({
       data: {
         tenantId,
@@ -400,16 +412,7 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       })) as unknown as typeof globalThis.fetch;
-    const slow = appDb.$extends({
-      query: {
-        agentTurnDelivery: {
-          async create({ args, query }) {
-            await Bun.sleep(400);
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as PrismaClient;
+    const { base, seen } = heldAtInsert(convId, 7209);
     let n = 0;
     const ackThenSilence = {
       invoke: async () => new AIMessage(""),
@@ -444,27 +447,20 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
     };
     try {
       const nudgeCalls = newCalls();
-      const reactive = newCalls();
-      const [, outcome] = await Promise.all([
-        runAgentNudge({
-          tenantId,
-          threadId: `${tenantId}:${instanceId}:${convId}`,
-          nudge: { source: "followup", kind: "inactivity", step: 1 },
-          base: slow,
-          deps: {
-            makeModel: () => ackThenSilence as never,
-            makeClient: chatwootDouble(nudgeCalls),
-            checkpointer: new MemorySaver(),
-            persistUsage: async () => {},
-          },
-        }),
-        Bun.sleep(50).then(() =>
-          turn(convId, reactive, { base: slow, contactInboxId: 7209 }),
-        ),
-      ]);
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base,
+        deps: {
+          makeModel: () => ackThenSilence as never,
+          makeClient: chatwootDouble(nudgeCalls),
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
       expect(nudgeCalls.sent).toEqual(["Só um momento!"]);
-      expect(outcome).toBe("blocked");
-      expect(reactive.sent).toEqual([]);
+      expect(seen).toEqual([true]);
     } finally {
       globalThis.fetch = realFetch;
       await suDb.agentToolSelection.delete({ where: { id: selection.id } });

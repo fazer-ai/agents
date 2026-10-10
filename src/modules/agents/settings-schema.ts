@@ -361,7 +361,7 @@ const limits = z.looseObject({
   maxTurnsPerHour: z
     .number()
     .optional()
-    .describe("replies/conversation/hour, then handoff; 0 = off"),
+    .describe("per conversation per hour; 0 = off"),
 });
 
 const availability = z.looseObject({

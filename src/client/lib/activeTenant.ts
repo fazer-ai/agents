@@ -42,7 +42,9 @@ export function getActiveTenantId(): string | null {
   // A tab that has not chosen starts from the last choice and KEEPS it: pinned to the tab on first
   // read, so a later choice in another tab does not move this one.
   const inherited = read(sharedStore);
-  if (inherited !== null) tabStore()?.setItem(KEY, inherited);
+  // A tab store the browser blocks is no store: nothing to pin, as `pinTabTenantId` skips it. One that
+  // exists and refuses the write still throws.
+  if (inherited !== null) available(tabStore)?.setItem(KEY, inherited);
   return inherited;
 }
 

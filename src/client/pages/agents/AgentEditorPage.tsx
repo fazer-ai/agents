@@ -1095,6 +1095,11 @@ function AgentEditor() {
   // it is there (a toast would scroll away with the only copy of the reason). Declared AFTER the
   // state it reads: the lists depend on the open tab and the follow-up steps drawn. The switches
   // are this page's state; the module owns which switch each control sits behind. See docs/ui.md.
+  // By the index the save writes, which is the one the server names (the screen shows the default
+  // first).
+  const snoozedWrittenSteps = snoozedFollowUpToStored(
+    snoozedFollowUp,
+  ).cadences.map((c) => c.steps.length);
   const refusalView: EditorControlsShown = {
     tab,
     awayEnabled,
@@ -1120,11 +1125,7 @@ function AgentEditor() {
     followUpSteps: followUp.steps.length,
     snoozedFollowUpEnabled:
       snoozedFollowUp.enabled && agentMode !== "monitoring",
-    // By the index the save writes, which is the one the server names (the screen shows the
-    // default first).
-    snoozedFollowUpSteps: snoozedFollowUpToStored(snoozedFollowUp).cadences.map(
-      (c) => c.steps.length,
-    ),
+    snoozedFollowUpSteps: snoozedWrittenSteps,
   };
   const refusalFields = editorRefusalFields(refusalView);
   const snoozedStoredIndices = snoozedFollowUpStoredIndices(snoozedFollowUp);

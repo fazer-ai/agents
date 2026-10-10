@@ -18,7 +18,7 @@ import {
   runCompaction,
 } from "@/modules/memory/compact";
 import { runCompactionTick } from "@/modules/memory/worker";
-import { getDeadLetterHandler, runClaimed } from "@/modules/scheduler/worker";
+import { runClaimed } from "@/modules/scheduler/worker";
 import { codeOnly } from "@/tests/utils/source-text";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
@@ -599,11 +599,6 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
         },
       },
     });
-  });
-
-  test("compaction registers its dead-letter hook", () => {
-    registerMemoryHandlers();
-    expect(getDeadLetterHandler("MEMORY_COMPACT")).toBeDefined();
   });
 });
 

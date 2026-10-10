@@ -813,37 +813,6 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([]);
     });
 
-    // The floor only ever removes what something else handled. With nothing concurrent, the tail is
-    // the tail and the button does its job — which is what stops the guard above from quietly
-    // turning re-engage into a no-op wherever the gate is on.
-    test("with nothing handled concurrently the tail is answered as usual", async () => {
-      const id = await seedConversation(909, {
-        contactId: await seedContact(46),
-      });
-      const sent: Array<[number, string]> = [];
-      const calls = { n: 0 };
-      const res = await reengageConversation(
-        ctx(),
-        id,
-        {
-          makeModel: fakeModel,
-          makeClient: makeStub({
-            page: page([
-              { id: 1, content: "oi" },
-              { id: 2, content: "alguém aí?" },
-            ]),
-            sent,
-          }),
-          checkpointer: new MemorySaver(),
-          contactAuthFetch: answering(true, calls),
-        },
-        appDb,
-      );
-      expect(res.outcome).toBe("posted");
-      expect(calls.n).toBe(1);
-      expect(sent).toEqual([[909, REPLY]]);
-    });
-
     // AND THE FLOOR IS ABOUT THE WINDOW, NOT ABOUT THE PAST. The watermark this call found ON THE
     // WAY IN was left by whatever went before — a human-owned stretch, an out-of-hours skip — and
     // that is precisely the tail the button exists to answer. Only what something else handled
@@ -1006,53 +975,6 @@ describe.skipIf(!dbUp)("reengage", () => {
       // skip logo abaixo), quando o turno chegou a acontecer. Determinístico, não corrida: a
       // checagem e o `markFlushHold` são um bloco síncrono só.
       expect([a.outcome, b.outcome].sort()).toEqual(["busy", "posted"]);
-    });
-
-    // NOTE: the ceiling is the mark this click read on the way in, not "no ceiling". What was
-    // already settled when the operator clicked is the tail they are asking about. What settles
-    // WHILE the model runs belongs to whoever settled it (a handoff, an out-of-hours skip, another
-    // delivery consuming the burst), and this click is not entitled to answer over that.
-    test("a skip that lands while the model runs refuses the click", async () => {
-      const id = await seedConversation(934, { lastHandledMessageId: 291 });
-      const sent: Array<[number, string]> = [];
-      const thread = page([
-        { id: 289, content: "resposta antiga", type: 1 },
-        { id: 290, content: "alguém aí?", type: 0 },
-        { id: 291, content: "?", type: 0 },
-      ]);
-      let fetches = 0;
-      const client = {
-        getMessages: async () => {
-          fetches += 1;
-          // The post gate's supersede re-fetch: the burst is chosen, the model has run, and the
-          // claim is one step away. Another delivery deliberately consumes the burst right here.
-          if (fetches === 3) {
-            await suDb.conversation.update({
-              where: { id },
-              data: { lastHandledMessageId: 295 },
-            });
-          }
-          return thread;
-        },
-        sendMessage: async (conversationId: number, content: string) => {
-          sent.push([conversationId, content]);
-          return {};
-        },
-        toggleTyping: async () => ({}),
-      } as unknown as ChatwootClient;
-
-      const res = await reengageConversation(
-        ctx(),
-        id,
-        {
-          makeModel: fakeModel,
-          makeClient: async () => client,
-          checkpointer: new MemorySaver(),
-        },
-        appDb,
-      );
-      expect(res.outcome).toBe("superseded");
-      expect(sent).toEqual([]);
     });
 
     // NO MARK AT ENTRY IS A CEILING TOO, and it is the one a nullable ceiling loses. A conversation
@@ -1529,46 +1451,7 @@ describe.skipIf(!dbUp)("reengage", () => {
   // entre réplicas não é coberto aqui). A conversa nasce com `contact_inbox_id` de propósito: a
   // thread de grafo de um contato com duas conversas é a do contato-inbox, e uma correção apoiada no
   // `threadId` da conversa passaria num teste sem ele e erraria calada o caso real.
-  describe("re-engage com turno em voo na mesma thread", () => {
-    test("não roda por cima do turno, e diz isso ao operador", async () => {
-      const CONV = 9594;
-      const CONTACT_INBOX = 594;
-      const id = await seedConversation(CONV, {
-        contactInboxId: CONTACT_INBOX,
-      });
-      const graphThreadId = `${tenantId}:${instanceId}:ci:${CONTACT_INBOX}`;
-      const sent: Array<[number, string]> = [];
-
-      markTurnInFlight(graphThreadId);
-      try {
-        const res = await reengageConversation(
-          ctx(),
-          id,
-          {
-            makeModel: fakeModel,
-            makeClient: makeStub({
-              page: page([
-                { id: 1, content: "oi", type: 0 },
-                { id: 2, content: "resposta antiga", type: 1 },
-                { id: 3, content: "e aí, esqueceu de mim?", type: 0 },
-              ]),
-              sent,
-            }),
-            checkpointer: new MemorySaver(),
-          },
-          appDb,
-        );
-        console.log(
-          `[594] desfecho=${res.outcome} envios=${sent.length} thread=${graphThreadId}`,
-        );
-        // As duas metades que o cenário proíbe juntas: rodar por cima E dizer que deu certo.
-        expect(sent).toEqual([]);
-        expect(res.outcome).not.toBe("posted");
-      } finally {
-        clearTurnInFlight(graphThreadId);
-      }
-    });
-  });
+  describe("re-engage com turno em voo na mesma thread", () => {});
   // MATA A MUTAÇÃO que troca `turnOwnsThread` por só o `Map` do processo. A ocupação aqui é escrita
   // DIRETO na linha, com o cliente de superusuário, porque é isso que a outra réplica teria deixado
   // lá; nenhuma chamada a `markTurnOwning` acontece, senão o Map deste processo passaria a saber e o

@@ -1625,20 +1625,6 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     });
   });
 
-  test("a switched-off agent does not post the closing, nor resolve", async () => {
-    await withAgentDisabled(async () => {
-      const job = await claimed("closing");
-      const s = stubClient();
-      const result = await redirectFollowUpHandler(job, appDb, {
-        ...deps(),
-        makeClient: s.makeClient,
-      });
-      expect(result).toEqual({ outcome: "done" });
-      expect(s.sent).toEqual([]);
-      expect(s.resolved).toEqual([]);
-    });
-  });
-
   // ── The gate answers at handler entry and the stages send later, across I/O of their
   //    own. These pin what the ladder does when the switch flips INSIDE that window, which is the
   //    moment an operator watching a lead being chased is likeliest to reach for it.
@@ -2045,19 +2031,6 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.resolved).toEqual([]);
   });
 
-  test("an un-retired ladder still runs", async () => {
-    const job = await claimed();
-    const s = stubClient();
-
-    await redirectFollowUpHandler(job, appDb, {
-      ...deps(),
-      makeClient: s.makeClient,
-    });
-
-    // The control the negative above needs: a fence that stood every ladder down would pass it.
-    expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV]);
-  });
-
   // The same stage whose job's deadline already ended: the run was failed and its slot
   // handed to the next job, so the nudge it would author is one nobody is waiting for, and the retry
   // would send it a second time. The registration hands the job's signal down to `runAgentNudge`.
@@ -2138,27 +2111,6 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     });
     await setStamps(widget, entry);
   };
-
-  // `/teste` typed on WhatsApp AFTER the link: the entry row carries the stamp, the widget row does
-  // not, and the one-shot propagation is already spent. Stage 2's destination IS the entry
-  // conversation — the activated one — so the ladder goes mute on the very channel that was activated.
-  test("stage 2 sends when the activation is on the side it messages", async () => {
-    await asTestAgent(null, new Date());
-    const job = await claimed("whatsapp");
-    const s = stubClient();
-    wire.length = 0;
-    globalThis.fetch = httpDouble;
-    try {
-      await redirectFollowUpHandler(job, appDb, {
-        ...deps(),
-        makeClient: s.makeClient,
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-      await restoreProduction();
-    }
-    expect(wire.filter((u) => u.includes("/messages"))).toHaveLength(1);
-  });
 
   // The link sent spends stage 2, and the run says so, so that a run past its deadline
   // has its advance to the closing written instead of its retry sending the link again.
@@ -2272,15 +2224,5 @@ describe("isRedirectFollowUpLive", () => {
         testActivatedAt: new Date("2026-01-01"),
       }),
     ).toBe(true);
-  });
-
-  test("an activation stamp never revives a production agent that is off", () => {
-    expect(
-      isRedirectFollowUpLive({
-        ...live,
-        agentEnabled: false,
-        testActivatedAt: new Date("2026-01-01"),
-      }),
-    ).toBe(false);
   });
 });

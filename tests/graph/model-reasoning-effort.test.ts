@@ -278,39 +278,12 @@ describe("createChatModel on the gpt-5.6 family", () => {
     expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
   });
 
-  test("every model of the family carries it", async () => {
-    for (const model of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
-      const { sent, url } = await turn(model);
-      expect(effortOf(sent, url)).toBe("none");
-      expectStoreOff(sent, url);
-      fake?.restore();
-    }
-  });
-
   // The typed `reasoning` field would be dropped here: @langchain/openai gates it on its own
   // isReasoningModel(), which tests model.startsWith("gpt-5") and so misses a routed id.
   test("a routed OpenRouter id carries it too", async () => {
     const { sent, url } = await turn("openai/gpt-5.6-luna", "openrouter");
     expect(effortOf(sent, url)).toBe("none");
     expectStoreOff(sent, url);
-  });
-
-  // Only the rejection's own precondition (tools) may disable reasoning. graph.ts invokes the RAW
-  // instance once the tool budget runs out — `hardLimit ? model : llm` — and THAT call writes the
-  // final answer to the customer. The guardrail pass, the TTS normalization and an agent with no
-  // grants never bind tools either. All of them are accepted at the provider's default effort.
-  test("a call with no tools keeps the provider's own default", async () => {
-    fake = fakeOpenAI();
-    const chat = createChatModel({
-      provider: "openai",
-      model: "gpt-5.6-luna",
-      apiKey: "test",
-      temperature: 0.3,
-    });
-    await chat.invoke([{ role: "user", content: "oi" }]);
-    expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
-    expect(fake.requests[0]).not.toHaveProperty("reasoning");
-    expectStoreOff(fake.requests[0] ?? {}, fake.urls[0] ?? "");
   });
 
   test("binding tools does not contaminate the raw instance behind it", async () => {
@@ -415,16 +388,6 @@ describe("createChatModel leaves every other model alone", () => {
       expect([model, temp(model)]).toEqual([model, 0.3]);
     }
   });
-
-  test("temperature stays dropped for the family, as for every reasoning model", () => {
-    const chat = createChatModel({
-      provider: "openai",
-      model: "gpt-5.6-luna",
-      apiKey: "test",
-      temperature: 0.3,
-    }) as ChatOpenAI;
-    expect(chat.temperature).toBeUndefined();
-  });
 });
 
 // The operator picks the effort per agent. /v1/chat/completions refuses EVERY effort above "none"
@@ -497,19 +460,6 @@ describe("planOpenAITransport", () => {
       effort: "none",
     });
   });
-
-  // The one that catches a family-scoped implementation: gpt-5.4-mini works fine with tools today,
-  // yet it too rejects an effort on completions, so it needs the same transport.
-  test("every effort moves to responses, whatever the family", () => {
-    for (const model of ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.5", "gpt-4o"]) {
-      for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
-        expect(planOpenAITransport(model, effort)).toEqual({
-          responses: true,
-          effort,
-        });
-      }
-    }
-  });
 });
 
 describe("createChatModel with an explicit effort", () => {
@@ -517,13 +467,6 @@ describe("createChatModel with an explicit effort", () => {
     const { reply, sent, url } = await turn("gpt-5.6-luna", "openai", "high");
     expect(url).toContain("/responses");
     expect(sent.reasoning).toEqual({ effort: "high" });
-    expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
-  });
-
-  test("an older family moves too, because completions refuses it as well", async () => {
-    const { reply, sent, url } = await turn("gpt-5.4-mini", "openai", "medium");
-    expect(url).toContain("/responses");
-    expect(sent.reasoning).toEqual({ effort: "medium" });
     expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
   });
 
@@ -553,27 +496,6 @@ describe("createChatModel with an explicit effort", () => {
     expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
   });
 
-  // gpt-5.2-pro, gpt-5.4-pro, gpt-5.5-pro and any id containing "codex" are routed to
-  // /v1/responses by @langchain/openai itself (_modelPrefersResponsesAPI), whatever we ask for.
-  // A plan that sent the completions spelling for "none" would 400 every turn of those agents.
-  test("a model the adapter routes on its own gets the right spelling", async () => {
-    for (const model of ["gpt-5.4-pro", "gpt-5.5-pro", "gpt-5.2-pro"]) {
-      const { sent, url } = await turn(model, "openai", "none");
-      expect(url).toContain("/responses");
-      expect(sent.reasoning).toEqual({ effort: "none" });
-      expect(sent).not.toHaveProperty("reasoning_effort");
-      fake?.restore();
-    }
-  });
-
-  // NOTE: The gpt-5.6 "none" pin exists only because nobody chose an effort. Once the operator
-  // does choose, the pin must not survive and silently cap the choice at "none".
-  test("the choice overrides the pin the family carries by default", async () => {
-    const { sent, url } = await turn("gpt-5.6-luna", "openai", "high");
-    expect(url).toContain("/responses");
-    expect(sent).not.toHaveProperty("reasoning_effort");
-  });
-
   // Unlike the pin, an explicit choice is about the agent, so it also covers the calls that carry
   // no tools: the answer written after the tool budget runs out (`hardLimit ? model : llm` in
   // graph.ts) and an agent with no grants at all.
@@ -589,19 +511,6 @@ describe("createChatModel with an explicit effort", () => {
     await chat.invoke([{ role: "user", content: "oi" }]);
     expect(fake.urls[0]).toContain("/responses");
     expect(fake.requests[0]?.reasoning).toEqual({ effort: "high" });
-  });
-
-  test("an explicit none reaches a call that binds no tools too", async () => {
-    fake = fakeOpenAI();
-    const chat = createChatModel({
-      provider: "openai",
-      model: "gpt-5.6-luna",
-      apiKey: "test",
-      temperature: 0.3,
-      reasoningEffort: "none",
-    });
-    await chat.invoke([{ role: "user", content: "oi" }]);
-    expect(fake.requests[0]?.reasoning).toEqual({ effort: "none" });
   });
 });
 

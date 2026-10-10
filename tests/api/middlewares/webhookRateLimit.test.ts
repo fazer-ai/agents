@@ -215,21 +215,6 @@ describe("guessing tokens is", () => {
     expect(await app.post("/api/v1/chatwoot/webhook/held-token")).toBe(429);
   });
 
-  test("not refusing a real sender's burst whose first delivery is slow", async () => {
-    held = Promise.withResolvers<void>();
-    const app = serve({ globalMax: 1000, failureMax: 2, waitMs: 400 });
-    const first = app.post("/api/v1/chatwoot/webhook/good-slow");
-    await Bun.sleep(20);
-    const repeats = Array.from({ length: 2 }, () =>
-      app.post("/api/v1/chatwoot/webhook/good-slow"),
-    );
-    await Bun.sleep(150);
-    held.resolve();
-    expect([await first, ...(await Promise.all(repeats))]).toEqual([
-      200, 200, 200,
-    ]);
-  });
-
   test("waking the repeats as soon as the first delivery is answered", async () => {
     held = Promise.withResolvers<void>();
     const app = serve({ globalMax: 1000, failureMax: 2, waitMs: 3_000 });

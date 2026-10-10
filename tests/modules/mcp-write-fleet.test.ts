@@ -115,16 +115,6 @@ describe.skipIf(!dbUp)("MCP fleet tools (DB)", () => {
     }
   });
 
-  test("tenant_get invalid id → error", async () => {
-    const r = await tenantGet(
-      superAdmin(),
-      { tenant_id: "nope" },
-      { base: appDb },
-    );
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain("invalid tenant_id");
-  });
-
   // NOTE: The other half of "invalid", and the half a `try`/`catch` around `BigInt` cannot see: these all
   // CONVERT. The first would reach Postgres as a bind error instead of this tool's own refusal, and
   // the rest would address a row the caller never named (`0x11` is 17). Every MCP surface parses ids

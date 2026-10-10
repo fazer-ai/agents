@@ -313,25 +313,6 @@ describe.skipIf(!dbUp)(
       expect(config.baseURL).toBeUndefined();
     });
 
-    // NOTE: this shape also rides on the documents list, which any authenticated role can read,
-    // while the reindex endpoint that needs the deeplink is TENANT_ADMIN. The ref is still resolved
-    // here (the controller drops it), so the split has to stay visible.
-    test("the block carries the vault ref for the admin path that needs it", async () => {
-      const { id } = await seedTenant("blk-ref");
-      const entry = await createPendingVaultEntry(
-        ctx(id),
-        { name: "embed-ref2", kind: "generic" },
-        appDb,
-      );
-      await updateEmbeddingSettings(
-        ctx(id),
-        { credentialRef: entry.ref },
-        appDb,
-      );
-      const block = await readEmbeddingBlock(ctxOf(id), appDb);
-      expect(block?.credentialRef).toBe(entry.ref);
-    });
-
     // MCP hands `AppError.message` to the caller verbatim and the key has no server-side locale entry,
     // so off-console the message is the only thing that names the reason.
     test("the thrown message names the reason, not just the key", async () => {

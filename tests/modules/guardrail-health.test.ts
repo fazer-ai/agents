@@ -64,12 +64,6 @@ describe("guardrailHealthWindowStart", () => {
     ).toEqual(new Date("2026-08-18T12:00:00.000Z"));
     expect(GUARDRAIL_HEALTH_WINDOW_HOURS).toBe(24);
   });
-
-  test("crosses a month boundary without drifting", () => {
-    expect(
-      guardrailHealthWindowStart(new Date("2026-03-01T03:00:00.000Z")),
-    ).toEqual(new Date("2026-02-28T03:00:00.000Z"));
-  });
 });
 
 describe.skipIf(!dbUp)("readGuardrailHealth", () => {

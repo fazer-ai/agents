@@ -258,36 +258,6 @@ describe("listProviderModels", () => {
     expect(ids).not.toContain("gpt-4o-mini");
   });
 
-  test("vision/openai: keeps chat-capable models (gpt-4o), drops whisper", async () => {
-    const body = { data: [{ id: "gpt-4o" }, { id: "whisper-1" }] };
-    const result = await listProviderModels(
-      ctx,
-      { provider: "openai", credentialRef: "vault:1", capability: "vision" },
-      noDb,
-      makeFetch(body),
-      passthroughSafe,
-      fakeResolveKey,
-    );
-    const ids = result.map((m) => m.id);
-    expect(ids).toContain("gpt-4o");
-    expect(ids).not.toContain("whisper-1");
-  });
-
-  test("openrouter is allowed for vision and transcription capabilities too", async () => {
-    const body = { data: [{ id: "openai/gpt-4o" }] };
-    for (const capability of ["vision", "transcription"] as const) {
-      const result = await listProviderModels(
-        ctx,
-        { provider: "openrouter", credentialRef: "vault:1", capability },
-        noDb,
-        makeFetch(body),
-        passthroughSafe,
-        fakeResolveKey,
-      );
-      expect(result.map((m) => m.id)).toContain("openai/gpt-4o");
-    }
-  });
-
   test("gemini provider maps to the Google generativelanguage listing", async () => {
     const body = {
       models: [

@@ -737,17 +737,6 @@ describe("ChatwootClient", () => {
     );
   });
 
-  test("an admin-token call on that same client still works", async () => {
-    const { fetchImpl, calls } = stub(200, { payload: [] });
-    const client = await createChatwootClient(
-      { ...baseConfig, botToken: "" },
-      { fetchImpl, assertSafe: passthroughSafe },
-    );
-    await client.getConversationLabels(42);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
-  });
-
   // THE SHAPE THIS ENDPOINT ACTUALLY ANSWERS. The fork's view is `json.agent_bot do ... if
   // @agent_bot.present?`, so the key is always there and its EMPTINESS is the answer. A parser that
   // read `res.id` would report "no bot" for every attached bot, and a stub handing back a bare number

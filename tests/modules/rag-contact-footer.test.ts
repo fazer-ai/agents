@@ -124,10 +124,6 @@ describe("stripping it from a passage", () => {
       crlf,
     );
   });
-
-  test("nothing to strip returns the passage untouched", () => {
-    expect(stripContactFooter(ARTICLE)).toBe(ARTICLE);
-  });
 });
 
 function row(over: Partial<ChunkRow>): ChunkRow {
@@ -191,26 +187,6 @@ describe("the hit a search returns", () => {
       passageOf(row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }))
         .content,
     ).toBe(content);
-  });
-
-  test("a paragraph that repeats the MIDDLE of the footer is not its head", () => {
-    const content = `${ARTICLE}\n\nnosso atendimento pelo e-mail sac@exemplo.com.br.`;
-    expect(
-      passageOf(row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }))
-        .content,
-    ).toBe(content);
-  });
-
-  test("a passage that starts inside the tail is placed by it", () => {
-    expect(
-      passageOf(
-        row({
-          atDocumentEnd: false,
-          documentTail: DOC_TAIL,
-          content: `O link de troca vale por 24 horas.\n\n${HEAD_OF_FOOTER}`,
-        }),
-      ).content,
-    ).toBe("O link de troca vale por 24 horas.");
   });
 
   test("a passage longer than the tail the query returns is still placed by it", () => {

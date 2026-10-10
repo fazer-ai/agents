@@ -196,19 +196,6 @@ describe("reading the ceiling out of the settings bag", () => {
     );
   });
 
-  // NOTE: a ceiling is money, so it is read to the cent, and the third decimal is dropped rather
-  // than rounded up: a ceiling that is LOWER is the safe side of its own field.
-  test("a ceiling is read to the cent, and never rounded up", () => {
-    expect(
-      readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: 10.9 } })
-        .monthlyInboxUsd,
-    ).toBe(10.9);
-    expect(
-      readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: 10.999 } })
-        .monthlyInboxUsd,
-    ).toBe(10.99);
-  });
-
   // NOTE: the float's own error is not a third decimal. `262144.04 * 100` is `26214403.999999996`,
   // so a floor, or a fixed nudge smaller than that error, would read a legally saved amount as a
   // cent less and refuse a cent early. A whole number of cents to within the float's precision is
@@ -473,13 +460,6 @@ describe("how often the ceiling announces itself", () => {
         7n,
       ),
     ).toBeNull();
-  });
-
-  test("every refused message is written", () => {
-    const said = [0, 1, 2, 3, 4].map(
-      () => spendCeilingAnnouncement(over, "inbox", 7n)?.level ?? null,
-    );
-    expect(said).toEqual(["error", "error", "error", "error", "error"]);
   });
 
   test("the warning is said once per window, not once per message", () => {

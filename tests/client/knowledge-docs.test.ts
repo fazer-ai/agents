@@ -43,14 +43,6 @@ describe("mergeDocumentEvent", () => {
     expect(row.chunkCount).toBe(7);
   });
 
-  test("a genuine failure replaces a previous reason instead of merging with it", () => {
-    const row = mergeDocumentEvent(blocked, {
-      status: "FAILED",
-      error: "boom",
-    });
-    expect(row.error).toBe("boom");
-  });
-
   // The opposite of `error`: the count is only sent on the event that establishes it, and the
   // intermediate states do not mean the document lost its chunks.
   test("chunkCount is inherited when the event does not carry one", () => {

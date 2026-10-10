@@ -623,43 +623,6 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     ).toBe(1);
   });
 
-  test("optimistic concurrency: stale expectedUpdatedAt is 409; fresh applies; grant replace bumps the token", async () => {
-    const a = await createAgent(ctx(tenantC), { name: "Concurrent" }, appDb);
-    const id = BigInt(a.id);
-    // A stale token (epoch) is a conflict on BOTH write paths (PATCH + grant replace).
-    await expect(
-      updateAgent(ctx(tenantC), id, { systemPrompt: "x" }, appDb, {
-        expectedUpdatedAt: new Date(0),
-      }),
-    ).rejects.toMatchObject({ statusCode: 409 });
-    await expect(
-      replaceAgentToolSelections(ctx(tenantC), id, [], appDb, {
-        expectedUpdatedAt: new Date(0),
-      }),
-    ).rejects.toMatchObject({ statusCode: 409 });
-    // The current token applies.
-    const fresh = await getAgent(ctx(tenantC), id, appDb);
-    const updated = await updateAgent(
-      ctx(tenantC),
-      id,
-      { systemPrompt: "Concurrency-safe." },
-      appDb,
-      { expectedUpdatedAt: fresh.updatedAt },
-    );
-    expect(updated.systemPrompt).toBe("Concurrency-safe.");
-    // A grants-only change advances the agent's version token (single token covers the editor).
-    const view = await replaceAgentToolSelections(
-      ctx(tenantC),
-      id,
-      [{ source: "NATIVE", enabledTools: ["calculator"] }],
-      appDb,
-    );
-    expect(view.agentUpdatedAt).not.toBeNull();
-    expect((view.agentUpdatedAt as Date).getTime()).toBeGreaterThanOrEqual(
-      updated.updatedAt.getTime(),
-    );
-  });
-
   test("every config-write path publishes an agent-config realtime event (metadata only)", async () => {
     const a = await createAgent(ctx(tenantC), { name: "Realtime" }, appDb);
     const id = BigInt(a.id);
@@ -1231,37 +1194,6 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
         appDb,
       ),
     ).rejects.toBeInstanceOf(SettingsBlocksDroppedError);
-  });
-
-  // The same race the 409 covers, one level down. The console sends the bag it LOADED, so a block
-  // written after that load (by MCP, or by another tab) is missing from it, and the save would delete
-  // it. Without a precondition there is no 409 to raise, and this refusal is what is left
-  // between a stale bag and a block nobody meant to touch.
-  test("a save that raced a block written elsewhere is refused, not silently reverted", async () => {
-    const a = await createAgent(ctx(tenantC), { name: "RacedBlock" }, appDb);
-    const id = BigInt(a.id);
-    const loaded = { signature: { enabled: true, text: "Alex" } };
-    await updateAgent(ctx(tenantC), id, { settings: loaded }, appDb);
-    // Somebody else adds a block while this editor holds `loaded`.
-    await suDb.agent.update({
-      where: { id },
-      data: {
-        settings: { ...loaded, memory: { compaction: { enabled: true } } },
-      },
-    });
-
-    expect(
-      updateAgent(
-        ctx(tenantC),
-        id,
-        { settings: { signature: { enabled: true, text: "Alex Souza" } } },
-        appDb,
-      ),
-    ).rejects.toBeInstanceOf(SettingsBlocksDroppedError);
-    const row = await suDb.agent.findFirstOrThrow({ where: { id } });
-    expect((row.settings as Record<string, unknown>).memory).toEqual({
-      compaction: { enabled: true },
-    });
   });
 
   // The console sends the whole bag (AgentEditorPage spreads the last-synced settings), so

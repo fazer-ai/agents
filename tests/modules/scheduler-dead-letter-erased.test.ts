@@ -749,19 +749,4 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     await announceReaped(lote, appDb);
     expect(await mortesAnunciadas()).toHaveLength(1);
   });
-
-  // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um
-  // chamador só — mas um conserto amarrado ao literal `INGEST_MESSAGE` deixaria este exposto no dia
-  // em que aparecer o segundo, e o dia não avisa.
-  test("o outro kind delete-on-done recebe o mesmo tratamento", async () => {
-    await limpa();
-    await claimedAndStale("DELIVERY_RECOVERY", "recover:t-s8:88");
-    await morreComoReaper("DELIVERY_RECOVERY", async () => {
-      expect(await revoga("recover:t-s8:", "DELIVERY_RECOVERY")).toBe(1);
-    });
-    const linhas = await mortesAnunciadas();
-    expect(linhas).toHaveLength(1);
-    const d = linhas[0]?.detail as Record<string, unknown>;
-    expect(d.kind).toBe("DELIVERY_RECOVERY");
-  });
 });

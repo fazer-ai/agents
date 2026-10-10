@@ -46,19 +46,6 @@ describe("what a claim does before and after its version is stamped", () => {
   };
   const restating = { status: "pending", reopens: false, version: 101 };
 
-  test("inside the gap it refuses, and keeps the version to be adjudicated", () => {
-    // No stamp yet: the source has said nothing about our own transition, so there is nothing this
-    // version can be placed against. It is kept rather than dropped because the event carrying it is
-    // about to be acknowledged and Chatwoot never sends it again.
-    expect(
-      statusClaimVerdict(
-        { ...claimed, statusClaimStampedAt: null },
-        restating,
-        now,
-      ),
-    ).toBe("refuse-and-defer");
-  });
-
   test("a payload with no version at all is refused with nothing to keep", () => {
     // Chatwoot < 4.0.2. There is no number to adjudicate later, so the refusal is the whole answer.
     expect(

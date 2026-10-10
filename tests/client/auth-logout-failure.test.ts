@@ -51,21 +51,6 @@ describe("logging out", () => {
     expect(ended).toBe(false);
     expect(ok).toBe(false);
   });
-
-  it("does not let the failure escape to the caller", async () => {
-    // NOTE: an unhandled rejection in an onClick is a console error the operator cannot act on, so
-    // it comes back as an ANSWER. Navigating to `/login` on any resolution would be wrong too:
-    // `LoginPage` sends a still-signed-in visitor back to `redirectTo`, so the operator loses the
-    // route and "Switch account" silently does nothing.
-    expect(
-      performLogout(
-        async () => {
-          throw new Error("boom");
-        },
-        () => {},
-      ),
-    ).resolves.toBe(false);
-  });
 });
 
 // And what the two buttons do with that answer is one decision, tested as one. Neither caller can

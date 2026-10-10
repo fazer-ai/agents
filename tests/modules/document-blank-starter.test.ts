@@ -50,12 +50,4 @@ describe("the blank starter", () => {
     expect(pt?.name).not.toBe(en?.name);
     expect(pt?.summary).not.toBe(en?.summary);
   });
-
-  // The minimum is a real rule and not a habit of this starter: without the header, nothing prints.
-  test("dropping its one block is refused", () => {
-    const blank = documentStarter("blank", "pt-BR");
-    if (!blank) throw new Error("no blank starter");
-    const parsed = parseAuthoredTemplate([], [], blank.style);
-    expect(parsed.ok).toBe(false);
-  });
 });

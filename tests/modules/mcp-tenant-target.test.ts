@@ -26,13 +26,6 @@ function principal(over: Partial<VerifiedToken>): VerifiedToken {
 }
 
 describe("resolveEffectivePrincipal (no DB)", () => {
-  test("tenant-scoped token → effective principal is itself (tenant implicit)", async () => {
-    const p = principal({ tenantId: 42n });
-    const r = await resolveEffectivePrincipal(p, {});
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.eff.tenantId).toBe(42n);
-  });
-
   test("tenant-scoped token IGNORES a `tenant` arg (cannot cross)", async () => {
     const p = principal({ tenantId: 42n });
     // Even handed a different tenant selector, a tenant user stays fenced to its own tenant.

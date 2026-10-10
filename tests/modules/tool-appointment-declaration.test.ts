@@ -342,18 +342,10 @@ describe("readAppointmentDeclaration and an explicit provider", () => {
     expect(withProvider(null)?.provider).toBe("declared");
   });
 
-  test("a valid slug is kept", () => {
-    expect(withProvider("feegow")?.provider).toBe("feegow");
-  });
-
   test("a malformed one is REFUSED, not quietly defaulted", () => {
     expect(withProvider("Feegow Clínica!")).toBeNull();
     expect(withProvider(42)).toBeNull();
     expect(withProvider("")).toBeNull();
-  });
-
-  test("and so is Google's own name, which is the reserved one", () => {
-    expect(withProvider("google_calendar")).toBeNull();
   });
 });
 

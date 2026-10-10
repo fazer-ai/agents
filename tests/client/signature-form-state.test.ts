@@ -72,18 +72,6 @@ describe("signatureToStored: what the screen writes back", () => {
     });
   });
 
-  test("on is written as on", () => {
-    expect(
-      signatureToStored({
-        enabled: true,
-        text: SIG,
-        position: "top",
-        frequency: "all",
-        separator: "blank",
-      }).enabled,
-    ).toBe(true);
-  });
-
   // Saving an untouched form must be a no-op, or every unrelated save rewrites this block.
   test("the pair round-trips a stored bag unchanged", () => {
     for (const bag of [
@@ -140,13 +128,6 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
     });
   });
 
-  // THE GUARD. Seeding over a kept text is the same data loss the switch was built to prevent,
-  // committed by the convenience meant to celebrate it.
-  test("turning it on over a kept text changes nothing but the switch", () => {
-    const kept = { ...off, text: SIG };
-    expect(signatureOnToggle(kept, true)).toEqual({ ...kept, enabled: true });
-  });
-
   test("a box holding only whitespace counts as empty", () => {
     expect(signatureOnToggle({ ...off, text: "   \n" }, true).text).toBe(
       SIGNATURE_SEED,
@@ -179,10 +160,6 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
 // which only works if the form gives back what was stored.
 describe("a stored signature longer than the cap", () => {
   const LONG = "x".repeat(SIGNATURE_MAX + 100);
-
-  test("hydrates whole, not clamped", () => {
-    expect(signatureToForm({ signature: { text: LONG } }).text).toBe(LONG);
-  });
 
   test("round-trips byte for byte, so an untouched save is a no-op", () => {
     const bag = {

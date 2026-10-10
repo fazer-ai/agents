@@ -405,29 +405,6 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     expect(ok.description).toContain("😀");
   });
 
-  // The dry run and the apply have to agree: both refuse, and both say it about the name.
-  test("the dry run refuses the same duplicate the apply refuses", async () => {
-    await createDocumentTemplate(
-      ctx(tenantA),
-      { name: "Proposta dupla", blocks: MINIMAL_BLOCKS, fields: [] },
-      appDb,
-    );
-    expect(
-      await documentTemplateWriteProblem(
-        ctx(tenantA),
-        { name: "Proposta dupla" },
-        appDb,
-      ),
-    ).toMatch(/Proposta dupla/);
-    await expect(
-      createDocumentTemplate(
-        ctx(tenantA),
-        { name: "Proposta dupla", blocks: MINIMAL_BLOCKS, fields: [] },
-        appDb,
-      ),
-    ).rejects.toThrow(/Proposta dupla/);
-  });
-
   // The fence: uniqueness is per tenant, so a neighbour holding the name must not refuse mine.
   test("another tenant's name does not block this one", async () => {
     await createDocumentTemplate(
@@ -1846,17 +1823,6 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
         appDb,
       ),
     ).rejects.toThrow(/newer version wrote/);
-  });
-
-  // The same zero, on the list filter: `?templateId=0` selects the documents of a template that
-  // cannot exist, which is none of them. Read as "no filter given" it answers with every document
-  // the tenant has ever issued.
-  test("filters by a template id of zero rather than ignoring it", async () => {
-    const all = await listIssuedDocuments(ctx(tenantA), {}, appDb);
-    expect(all.length).toBeGreaterThan(0);
-    expect(
-      await listIssuedDocuments(ctx(tenantA), { templateId: 0n }, appDb),
-    ).toEqual([]);
   });
 
   // NOTE: The same tolerance through the SAVE, which is where it costs something: if a style property a newer

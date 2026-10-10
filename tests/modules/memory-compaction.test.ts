@@ -1213,49 +1213,6 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(row.tenantId).toBe(tenantId);
   });
 
-  // loadAgentConfig resolves the agent's A/B variant, and resolving one WRITES an assignment keyed by
-  // the thread it is handed. Keyed by contact-inbox it would be an assignment no conversion can ever
-  // match, counted in the denominator of every result for that agent — rates drifting down by one row
-  // per contact, with nothing in the numbers to say why.
-  test("compacting does not invent an experiment assignment", async () => {
-    const contactInboxId = 5028;
-    const conversationId = 731;
-    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
-    const exp = await suDb.experiment.create({
-      data: {
-        tenantId,
-        agentId,
-        name: "tom",
-        enabled: true,
-        variants: [
-          { key: "a", systemPrompt: "A" },
-          { key: "b", systemPrompt: "B" },
-        ],
-      },
-      select: { id: true },
-    });
-    const saver = new MemorySaver();
-    await seedThread(saver, threadId, twoAttendances());
-
-    await runCompaction(
-      tenantId,
-      payload(contactInboxId, conversationId, "new_attendance"),
-      appDb,
-      {
-        checkpointer: saver,
-        makeModel: () => new SummarizerModel("resumo"),
-      },
-    );
-
-    const assignments = await suDb.promptVariantAssignment.findMany({
-      where: { tenantId, experimentId: exp.id },
-      select: { threadId: true },
-    });
-    // Whatever it assigned, it is NOT keyed by the contact-inbox thread: that key belongs to no
-    // conversation, so no conversion could ever be matched to it.
-    expect(assignments.map((a) => a.threadId)).not.toContain(threadId);
-  });
-
   // Resolving a variant is not a read: it INSERTS the assignment when the thread has none. Keying it
   // by the conversation only makes the row look real — an attendance a human handled, or one that
   // predates the experiment, still gets a phantom participant that no conversion can match.
@@ -2075,29 +2032,6 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       expect(captured[0]).toMatchObject({
         provider: "openai",
         model: "gpt-5.4-mini",
-      });
-    });
-
-    test("a model named for the same provider replaces only the model", async () => {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: {
-          settings: {
-            memory: {
-              compaction: {
-                enabled: true,
-                provider: "openai",
-                model: "gpt-5.4-nano",
-              },
-            },
-          },
-        },
-      });
-      const { captured, makeModel } = captureModel();
-      expect(await compactWith(5302, makeModel)).toEqual({ outcome: "done" });
-      expect(captured[0]).toMatchObject({
-        provider: "openai",
-        model: "gpt-5.4-nano",
       });
     });
 

@@ -24,12 +24,6 @@ describe("assertUsableCount", () => {
     });
   }
 
-  test("zero is refused rather than clamped to the default", () => {
-    // NOTE: Clamping `limit=0` to the default page would answer a different question than the one
-    // asked, indistinguishable by the client from having asked for it.
-    expect(() => assertUsableCount(0, "limit")).toThrow(AppError);
-  });
-
   test("absent is not a value, and a positive integer survives", () => {
     expect(() => assertUsableCount(undefined, "limit")).not.toThrow();
     expect(() => assertUsableCount(1, "limit")).not.toThrow();

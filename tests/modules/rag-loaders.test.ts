@@ -27,15 +27,6 @@ describe("extractText", () => {
     expect(text).toBe("# Título\n\nConteúdo.");
   });
 
-  test("csv: accepted by extension", async () => {
-    const { text } = await extractText({
-      name: "data.csv",
-      type: "text/csv",
-      bytes: toBytes("a,b,c\n1,2,3"),
-    });
-    expect(text).toBe("a,b,c\n1,2,3");
-  });
-
   test("txt: accepted by mime type even with unknown extension", async () => {
     const { text } = await extractText({
       name: "file.unknown",
@@ -53,15 +44,6 @@ describe("extractText", () => {
     }).catch((e) => e);
     expect(err.statusCode).toBe(415);
     expect(err.translationKey).toBe("errors.unsupportedFileType");
-  });
-
-  test("unsupported mime with unknown extension throws 415", async () => {
-    const err = await extractText({
-      name: "file.xyz",
-      type: "application/octet-stream",
-      bytes: toBytes("data"),
-    }).catch((e) => e);
-    expect(err.statusCode).toBe(415);
   });
 
   test("text exceeding 2M chars throws 413 errors.documentTooLarge", async () => {

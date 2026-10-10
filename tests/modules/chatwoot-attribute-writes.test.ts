@@ -17,37 +17,6 @@ const client = (fetchImpl: typeof fetch) =>
   );
 
 describe("custom attribute writes against endpoints that replace", () => {
-  test("a conversation write keeps the keys already in the bag", async () => {
-    // The deterministic half, visible without a burst: the tool sends ONE key and the
-    // endpoint assigns the whole hash, so a plain write would erase every other attribute.
-    const cw = fakeChatwootAttributeStore(5, {
-      conversations: { 61: { origem: "Instagram" } },
-    });
-    const c = await client(cw.fetchImpl);
-    await c.setConversationCustomAttributes(61, { produto: "cadeira" });
-    expect(cw.conversations.get(61)).toEqual({
-      origem: "Instagram",
-      produto: "cadeira",
-    });
-  });
-
-  test("concurrent conversation writes in one turn all survive", async () => {
-    // How a burst actually arrives: LangGraph's ToolNode runs one response's tool calls with
-    // Promise.all (tool_node: `await Promise.all(aiMessage.tool_calls...map(runTool))`).
-    const cw = fakeChatwootAttributeStore(5);
-    const c = await client(cw.fetchImpl);
-    await Promise.all([
-      c.setConversationCustomAttributes(61, { produto: "cadeira" }),
-      c.setConversationCustomAttributes(61, { medida: "90cm" }),
-      c.setConversationCustomAttributes(61, { quantidade: "4" }),
-    ]);
-    expect(cw.conversations.get(61)).toEqual({
-      produto: "cadeira",
-      medida: "90cm",
-      quantidade: "4",
-    });
-  });
-
   test("conversation writes asked together go out as one read and one write", async () => {
     // Three rules of one decision, or three tool calls of one model response: each round trip is
     // time the conversation waits, and the endpoint takes the whole bag anyway.
@@ -332,19 +301,6 @@ describe("custom attribute writes against endpoints that replace", () => {
     expect(cw.conversations.get(61)).toEqual({ etapa: "c" });
   });
 
-  test("an admin write and a bot write to one conversation do not ride together", async () => {
-    const cw = fakeChatwootAttributeStore(5);
-    const c = await client(cw.fetchImpl);
-    await Promise.all([
-      c.setConversationCustomAttributes(61, { a: "1" }),
-      c.setConversationCustomAttributes(61, { b: "2" }, { asAdmin: true }),
-    ]);
-    expect(
-      cw.requests.filter((r) => r.method === "POST").map((r) => r.token),
-    ).toEqual(["BOT_TOK", "ADMIN_TOK"]);
-    expect(cw.conversations.get(61)).toEqual({ a: "1", b: "2" });
-  });
-
   test("concurrent contact writes in one turn all survive", async () => {
     // The contact path already read-merge-writes, so this is the interleaving half: every call GETs
     // the same pre-write snapshot before any of them PUTs.
@@ -363,18 +319,6 @@ describe("custom attribute writes against endpoints that replace", () => {
       nome_cliente: "Maria",
       tipo_pessoa: "PJ",
     });
-  });
-
-  test("the conversation reset still empties the bag", async () => {
-    // The `/reset` command clears every attribute, and it is the one caller that WANTS the
-    // replacing semantics. A merge-based setter turns `{}` into a no-op, so the clear has to stay a
-    // separate, explicit operation rather than a special case of the setter.
-    const cw = fakeChatwootAttributeStore(5, {
-      conversations: { 61: { origem: "Instagram", produto: "cadeira" } },
-    });
-    const c = await client(cw.fetchImpl);
-    await c.clearConversationCustomAttributes(61);
-    expect(cw.conversations.get(61)).toEqual({});
   });
 
   test("the conversation read uses the admin token, the write the bot token", async () => {

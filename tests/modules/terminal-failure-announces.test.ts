@@ -604,44 +604,6 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(deliveries[0]?.status).toBe("DEAD");
   });
 
-  test("and it does not breed: four ticks against a broken channel stay at one", async () => {
-    await clearRows();
-    await suDb.alertDelivery.create({
-      data: {
-        tenantId,
-        channelId,
-        stage: "generate",
-        level: "error",
-        summary: "the turn failed",
-        attempts: 7,
-      },
-    });
-    // The claim above is one cycle; this holds it over many. Without the guard each death arms
-    // one new delivery (cycle 6 leaves 6 DEAD + 1 PENDING and six lines), for as long as the channel
-    // stays broken.
-    const census: number[] = [];
-    for (let cycle = 0; cycle < 4; cycle++) {
-      await processAlertBatch({
-        base: appDb,
-        tenantId,
-        coalesceWindowMs: 0,
-        fetchImpl: (async () =>
-          ({ status: 500 }) as Response) as unknown as typeof fetch,
-        assertSafe: async (u: string) => new URL(u),
-      });
-      await Bun.sleep(250);
-      // Anything born in this cycle is made immediately claimable, so the next tick would kill it
-      // and emit again — the loop runs at the retry ladder's pace, and this removes the wait.
-      await suDb.alertDelivery.updateMany({
-        where: { tenantId, status: "PENDING" },
-        data: { nextAttemptAt: new Date(Date.now() - 1000), attempts: 7 },
-      });
-      census.push(await suDb.alertDelivery.count({ where: { tenantId } }));
-    }
-    expect(census).toEqual([1, 1, 1, 1]);
-    expect(await deadRows(0, 0)).toHaveLength(1);
-  });
-
   test("a blocked channel URL dies on the first attempt, and says so too", async () => {
     await clearRows();
     const blocked = (

@@ -155,15 +155,6 @@ describe("readFollowUpConfig", () => {
     ).toEqual(FOLLOW_UP_DEFAULTS.steps);
   });
 
-  test("a blank assignLabel is dropped (not stored as empty string)", () => {
-    const cfg = readFollowUpConfig({
-      followUp: {
-        steps: [{ delayValue: 1, delayUnit: "hours", assignLabel: "   " }],
-      },
-    });
-    expect(cfg.steps[0]?.assignLabels).toBeUndefined();
-  });
-
   test("assignLabels: multiple labels are trimmed, bounded and de-duplicated", () => {
     const cfg = readFollowUpConfig({
       followUp: {

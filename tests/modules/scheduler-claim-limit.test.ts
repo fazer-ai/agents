@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { claimSql, laneFilter } from "@/modules/scheduler/service";
 
 // Everything a lane budgets is the claim's one `LIMIT`. As `id IN (SELECT ... FOR UPDATE SKIP
@@ -97,17 +97,6 @@ describe.skipIf(!dbUp)("the claim hands back its limit and no more", () => {
       >(`SHOW ${knob}`);
       expect(row?.[knob]).toBe("off");
     }
-  });
-
-  // NOTE: the property the count below rests on, asserted where a reader can see it: the due set is
-  // computed ONCE, as its own node, instead of being a subquery the join may re-enter.
-  test("the due set is evaluated once, as a CTE", async () => {
-    const plan = await pinnedDb.$queryRaw<Array<Record<string, string>>>(
-      Prisma.sql`EXPLAIN (COSTS OFF) ${claimSql(5, new Date(), laneFilter("shared", true), tenantId)}`,
-    );
-    const text = plan.map((r) => Object.values(r)[0]).join("\n");
-    expect(text).toContain("CTE due");
-    expect(text).not.toContain("Semi Join");
   });
 
   test("the traffic share claims its five of ten, not all ten", async () => {

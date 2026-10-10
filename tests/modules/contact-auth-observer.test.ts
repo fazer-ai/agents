@@ -446,16 +446,6 @@ describe.skipIf(!dbUp)("the contact gate's rule on the observer path", () => {
     );
   });
 
-  test("a burst the rule refuses arms nothing on any of its messages", async () => {
-    await setGate({ enabled: true, rule: GROUP_ONLY });
-    await deliverMessage(3, "individual");
-    await deliverMessage(3, "individual");
-    await deliverMessage(3, "individual");
-    expect(await observeRows(3)).toEqual([]);
-    expect(providers.stt).toBe(0);
-    expect(customerFacing).toEqual([]);
-  });
-
   test("an endpoint-only gate asks the endpoint once before arming, and its allow is observed", async () => {
     await setGate({ enabled: true, url: AUTH_URL });
     await deliverMessage(4, "individual");

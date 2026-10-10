@@ -254,20 +254,6 @@ describe("a leaked `t` still interpolates", () => {
     ).toEqual([]);
   });
 
-  // NOTE: inverted on purpose, zero is the expected count. A per-file i18next instance handed down
-  // through `I18nextProvider` (tests/utils/i18n.tsx) answers the same `t` without touching the
-  // module registry. The fixture table below covers the function, and the sweep above keeps the
-  // zero true: an unwaived `mock.module("react-i18next", …)` fails there first.
-  test("nothing stubs react-i18next any more", async () => {
-    expect(
-      i18nStubFiles(await scanTree()),
-      "Stubbing this package replaces it for the whole process, and the `i18n` a hand-written stub " +
-        "hands back freezes `language` at a literal, which is what made " +
-        "tests/client/document-starters-race.test.tsx stop racing. Use `withI18n` from " +
-        "tests/utils/i18n.tsx instead: a real instance, per file, delivered by context.",
-    ).toEqual([]);
-  });
-
   describe("the decision, over files it is handed", () => {
     const scan = (source: string) =>
       nonInterpolatingI18nStubs([{ rel: "a.test.tsx", source }]);

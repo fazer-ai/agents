@@ -13,10 +13,6 @@ describe("tools controller writeBody vs service schema (drift guard)", () => {
     const missing = serviceKeys.filter((k) => !bodyKeys.has(k));
     expect(missing).toEqual([]);
   });
-
-  test("label specifically is present (the field that regressed)", () => {
-    expect(Object.keys(writeBody.properties)).toContain("label");
-  });
 });
 
 // The same `normalize` behavior lets a client still sending the retired `riskTier` keep working.

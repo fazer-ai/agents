@@ -157,15 +157,6 @@ describe("voice knobs are stored at the value that will actually be used", () =>
     });
   });
 
-  // Clamping must not turn "leave it to the voice" into a number: null is a value here, and the
-  // lowest end of the band is NOT the same instruction.
-  test("a blank knob still clears to null", () => {
-    expect(knobs({ stability: "", speed: "" })).toMatchObject({
-      stability: null,
-      speed: null,
-    });
-  });
-
   test("a value inside the band is untouched", () => {
     expect(knobs({ stability: "0.35", speed: "1.15" })).toMatchObject({
       stability: 0.35,

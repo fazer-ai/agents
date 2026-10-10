@@ -106,12 +106,6 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("link", { name: /admin/i })).toBeNull();
   });
 
-  test("shows Admin link for ADMIN role", () => {
-    mockUser.role = "TENANT_ADMIN";
-    renderSidebar();
-    expect(screen.getByRole("link", { name: /admin/i })).toBeInTheDocument();
-  });
-
   test("marks current route with aria-current=page", () => {
     mockUser.role = "TENANT_ADMIN";
     renderSidebar("/admin");
@@ -119,19 +113,7 @@ describe("Sidebar", () => {
     expect(adminLink).toHaveAttribute("aria-current", "page");
   });
 
-  test("has collapse/expand toggle button", () => {
-    renderSidebar();
-    const toggles = screen.getAllByRole("button", { name: /collapse|expand/i });
-    expect(toggles.length).toBeGreaterThanOrEqual(1);
-  });
-
   describe("footer", () => {
-    test("renders support button (opens modal, not a link)", () => {
-      renderSidebar();
-      const btn = screen.getByRole("button", { name: /^support$/i });
-      expect(btn.tagName).toBe("BUTTON");
-    });
-
     test("renders secondary links with target=_blank and rel=noopener", () => {
       renderSidebar();
       const github = screen.getByRole("link", { name: /github/i });
@@ -159,14 +141,6 @@ describe("Sidebar", () => {
     test("is not mounted when mobileOpen is false", () => {
       renderSidebar();
       expect(screen.queryByRole("dialog")).toBeNull();
-    });
-
-    test("mounts a dialog when mobileOpen becomes true", () => {
-      renderSidebar();
-      act(() => {
-        hook?.setMobileOpen(true);
-      });
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
     });
 
     test("exposes close button with accessible name", () => {

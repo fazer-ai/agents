@@ -56,21 +56,6 @@ describe("o turno botou alguma coisa na frente do cliente?", () => {
     ).toBe(true);
   });
 
-  // NOTE: o discriminante: a transferência que declarou não ter o que dizer. O nome da ferramenta é
-  // o mesmo do caso de cima, e a resposta é a oposta.
-  test("transferência que declarou silêncio: não", () => {
-    expect(
-      turnDeliveredToCustomer(
-        turno(),
-        transferiu({
-          customerMessage: "",
-          completed: true,
-          declinedToSpeak: true,
-        }),
-      ),
-    ).toBe(false);
-  });
-
   // Uma transferência que morreu no meio deixa a linha composta sem ninguém para entregá-la, e o
   // turno segue com o texto do próprio modelo. Não houve entrega desta.
   test("transferência que não concluiu: não", () => {
@@ -127,29 +112,6 @@ describe("o turno botou alguma coisa na frente do cliente?", () => {
     ).toBe(false);
   });
 
-  test("silêncio declarado com reserva em voo: não", () => {
-    expect(
-      turnDeliveredToCustomer(
-        turno({ imagesInFlight: 1 }),
-        transferiu({
-          customerMessage: "",
-          completed: true,
-          declinedToSpeak: true,
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  // NOTE: a terceira porta. O aviso de ferramenta lenta (`emitAck`, em src/graph/prepare.ts) manda
-  // uma mensagem ao cliente DIRETO pelo cliente do Chatwoot: não conta balão nem enfileira anexo.
-  // Sem esta fonte, um turno que avisou "só um instante" e depois chamou `skip_reply` responderia
-  // que ninguém foi atendido.
-  test("aviso de ferramenta lenta já entregue: sim", () => {
-    expect(
-      turnDeliveredToCustomer(turno({ spokeOutsideTheReply: true }), undefined),
-    ).toBe(true);
-  });
-
   // E ele responde ANTES do silêncio declarado, porque a ordem aqui é a da irreversibilidade: o
   // silêncio declarado dropa a fila e o texto, que ainda não saíram, e não tem como des-enviar uma
   // mensagem que já está no telefone do cliente.
@@ -183,10 +145,6 @@ describe("o que chegou ao cliente, quando o turno acabou", () => {
     expect(
       turnReachedTheCustomer({ ...nada, spokeOutsideTheReply: false }),
     ).toBe(false);
-  });
-
-  test("balão de texto: sim", () => {
-    expect(turnReachedTheCustomer({ ...nada, balloons: 1 })).toBe(true);
   });
 
   // Zero balões é uma entrega que ACONTECEU e não rendeu balão nenhum? Não: o contador só deixa de

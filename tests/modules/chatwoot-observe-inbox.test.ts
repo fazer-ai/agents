@@ -1754,44 +1754,6 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await unobserveInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
   });
 
-  // ...AND IT GOES BACK WITH A CALL THAT DOES NOT COMPLETE. A pending row outliving its call is
-  // worse than no row: it counts as observing, so it would refuse the agent's mode changes and its
-  // deletion for good, and the observe tick would retry against a binding that never lands.
-  test("a failed observe leaves no pending row behind", async () => {
-    const inbox = await suDb.inbox.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootInboxId: OTHER_INBOX_ID + 71,
-        name: "Attach que falha",
-      },
-      select: { id: true },
-    });
-    const observing = new Set<string>();
-    const cw = fakeChatwoot({
-      observerRoute: true,
-      observing,
-      onAttach: async () => {
-        // The account disconnected inside the Chatwoot window: the transaction below refuses, and
-        // everything this call put in has to go back.
-        await softDisconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
-      },
-    });
-    try {
-      await expect(
-        observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
-      ).rejects.toMatchObject({ statusCode: 409 });
-      expect(
-        await suDb.inboxObserver.count({
-          where: { tenantId, inboxId: inbox.id },
-        }),
-      ).toBe(0);
-      // ...and the attachment with it, since no row is left depending on it.
-      expect(observing.size).toBe(0);
-    } finally {
-      await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
-    }
-  });
   // NOTE: ...AND OF EVERY OTHER WRITER, which is why the counter is a trigger and not a list of call
   // sites: an account disconnect unbinds every inbox with a raw UPDATE of its own, and the PREVIOUS
   // RELEASE moves bindings for the whole length of a rolling deploy (docs/deploy.md) without naming

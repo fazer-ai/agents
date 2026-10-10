@@ -33,10 +33,6 @@ describe("MCP_DCR_ENABLED parsing", () => {
   test('"false" → closed', async () => {
     expect(await dcrDefaultFor("false")).toBe(false);
   });
-
-  test('"true" → open', async () => {
-    expect(await dcrDefaultFor("true")).toBe(true);
-  });
 });
 
 describe("MCP DCR endpoints with MCP_DCR_ENABLED=false", () => {

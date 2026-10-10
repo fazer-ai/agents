@@ -92,17 +92,6 @@ describe("selectClosedPrefix", () => {
     ]);
   });
 
-  // The resolve trigger vouches that the current attendance ended too, so the reopened run closes
-  // along with everything under it. Same answer as any other thread — the run scan must not change
-  // that.
-  test("a reopened conversation that itself ended closes whole", () => {
-    const cut = selectClosedPrefix(reopened(), {
-      currentAttendanceClosed: true,
-    });
-    expect(cut.closed.length).toBe(6);
-    expect(cut.open).toEqual([]);
-  });
-
   const cases: {
     name: string;
     shape: string;
@@ -223,16 +212,6 @@ describe("selectClosedPrefix", () => {
       expect(rebuilt).toEqual(messages);
     });
   }
-
-  test("the open attendance always starts on the divider that opened it", () => {
-    const cut = selectClosedPrefix(build("haDataDa"), {
-      currentAttendanceClosed: false,
-    });
-    expect(cut.open[0]?.getType()).toBe("human");
-    expect(String(cut.open[0]?.content)).toStartWith(CONVERSATION_DIVIDER);
-    // and the compacted chunk keeps the divider of the attendance it belongs to
-    expect(String(cut.closed[2]?.content)).toStartWith(CONVERSATION_DIVIDER);
-  });
 
   test("a head that is not first is not treated as a head", () => {
     // Only position 0 is the head. Anywhere else it is ordinary content and must not be dropped

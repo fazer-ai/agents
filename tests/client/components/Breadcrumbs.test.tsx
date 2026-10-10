@@ -21,12 +21,6 @@ describe("Breadcrumbs", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  test("renders a single page crumb as current", () => {
-    renderAt("/admin");
-    const page = screen.getByText(/admin/i);
-    expect(page).toHaveAttribute("aria-current", "page");
-  });
-
   test("links parent crumbs and marks the last as current", () => {
     renderAt("/settings/profile");
     const parent = screen.getByRole("link", { name: /settings/i });

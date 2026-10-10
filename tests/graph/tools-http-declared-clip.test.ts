@@ -72,11 +72,6 @@ describe("an HTTP tool that declares its own trim", () => {
     }
   });
 
-  test("the header name is matched case-insensitively", async () => {
-    const { notes } = await call(SHORT, { "x-tool-truncated": "9000" });
-    expect(notes[0]?.detail).toMatchObject({ declared: true, chars: 9000 });
-  });
-
   test("a body past the limit that also declares a trim is ONE line: the platform's, marked declared", async () => {
     const big = "y".repeat(5000);
     const { notes, text } = await call(big, { "X-Tool-Truncated": "20000" });

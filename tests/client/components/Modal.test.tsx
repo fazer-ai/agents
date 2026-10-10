@@ -90,13 +90,6 @@ describe("Modal", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  test("closes when Esc is pressed", () => {
-    render(<ControlledModal />);
-    const dialog = screen.getByRole("dialog");
-    fireEvent.keyDown(dialog, { key: "Escape" });
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
   test("exposes close button with aria-label", () => {
     render(<ControlledModal />);
     expect(

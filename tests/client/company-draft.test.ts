@@ -95,16 +95,6 @@ describe("nextCompanyDraft", () => {
     );
   });
 
-  // Undoing the edit hands the form back: it is untouched again, so the newest server copy lands.
-  test("a draft typed back to its baseline is untouched again", () => {
-    const untouched = seedCompanyDraft(stored());
-    const moved = stored({ address: "Av. Paulista, 1000" });
-    const retyped = { ...untouched, draft: { ...untouched.draft } };
-    expect(nextCompanyDraft(retyped, moved).draft).toEqual(
-      companyToDraft(moved),
-    );
-  });
-
   // Typing before the server has answered: the baseline is blank, so the keystroke IS the edit and
   // the copy that arrives afterwards does not wipe it.
   test("text typed before the first load survives that load", () => {

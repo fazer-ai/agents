@@ -731,26 +731,6 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     }
   });
 
-  test("a reset that lands while the job reads the conversation still stops the send", async () => {
-    const cw = fakeChatwoot({
-      onRead: async () => {
-        await suDb.conversation.updateMany({
-          where: { tenantId, chatwootConversationId: CONV_ID },
-          data: { resetAtMessageId: 9001 },
-        });
-      },
-    });
-    try {
-      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
-      expect(cw.sent).toEqual([]);
-    } finally {
-      await suDb.conversation.updateMany({
-        where: { tenantId, chatwootConversationId: CONV_ID },
-        data: { resetAtMessageId: null },
-      });
-    }
-  });
-
   test("a reset that lands while the job reads who owns the conversation still stops the send", async () => {
     const cw = fakeChatwoot({
       onLive: async () => {

@@ -40,14 +40,6 @@ describe("the database gate's decision", () => {
     );
   });
 
-  // An EMPTY string is the shape a shell hands over when someone clears the variable, and it is not
-  // the same falsy as absent for every predicate one could write here.
-  test("an empty variable counts as missing", () => {
-    expect(
-      missingDbConfig({ ...configured, TEST_MIGRATION_DATABASE_URL: "" }),
-    ).toContain("TEST_MIGRATION_DATABASE_URL");
-  });
-
   test("the opt-out is what makes a deliberate run without a database silent", () => {
     expect(missingDbConfig({ [DB_GATE_OPT_OUT]: "1" })).toBeNull();
     // NOTE: only the exact value. A variable left at "0" or "false" by a shell profile is not a

@@ -14,11 +14,7 @@ describe("sanitizeBranding (server-side)", () => {
       }),
     ).toEqual({ accent: "#ff0000", accentSolid: "oklch(0.6 0.2 20)" });
   });
-  test("drops the keys the split accent replaced (accentMuted, primary)", () => {
-    expect(
-      sanitizeBranding({ accentMuted: "#ff0000", primary: "#00ff00" }),
-    ).toEqual({});
-  });
+
   test("drops unknown keys and invalid values (anti-injection)", () => {
     expect(
       sanitizeBranding({

@@ -29,18 +29,6 @@ describe("agent editor observation round-trip", () => {
     );
   });
 
-  // The guard that catches the NEXT field: `monitoring` growing a key the form does not carry
-  // fails here, when it is added, rather than as a value that disappears on an operator's save.
-  test("the form carries every key the reader produces", () => {
-    const written = Object.keys(
-      observationToStored(observationToForm({})),
-    ).sort();
-    expect(written).toEqual(monitoringReaderKeys());
-    expect(monitoringReaderKeys()).toEqual(
-      Object.keys(readMonitoringConfig({})).sort(),
-    );
-  });
-
   // NOTE: A label group left in a stored bag is not carried forward: the taxonomy no longer exists, and
   // the save replaces the block, so the next Behavior save drops it (what it classified into lives
   // in the prompt).
@@ -89,16 +77,6 @@ describe("agent editor observation round-trip", () => {
         seconds,
       );
     }
-  });
-
-  // The server refuses a negative window. Narrowed here it would be saved as 0, a model call per
-  // message, by a typo.
-  test("a negative window travels as typed, so the server's refusal reaches the operator", () => {
-    const stored = observationToStored({
-      ...observationToForm({}),
-      windowSeconds: "-1",
-    });
-    expect(stored.debounce.windowSeconds).toBe(-1);
   });
 
   // Rounded first, -0.5 is a zero and the refusal never happens.

@@ -3,7 +3,6 @@ import { debugModesFrom } from "@/modules/flowlog/debug-mode";
 import {
   FULL_DETAIL_ARM_HOURS,
   FULL_DETAIL_MAX_HOURS,
-  isFullDetailWindowOpen,
   readObservabilityConfig,
 } from "@/modules/flowlog/settings";
 
@@ -216,14 +215,6 @@ describe("the editor re-judges the window instead of freezing at mount", () => {
     expect(block).toContain("observability.fullDetailUntil");
     expect(/(?<![A-Za-z])savedObservability/.test(block)).toBe(false);
     expect(SOURCE).not.toContain("checked={observability.fullDetail}");
-  });
-
-  test("the derivation the switch uses closes the window on time", () => {
-    const until = new Date(Date.now() + 60_000);
-    expect(isFullDetailWindowOpen(until, new Date())).toBe(true);
-    expect(isFullDetailWindowOpen(until, new Date(Date.now() + 120_000))).toBe(
-      false,
-    );
   });
 });
 

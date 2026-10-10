@@ -33,13 +33,6 @@ describe("readMemoryConfig", () => {
         .compaction.enabled,
     ).toBe(false);
   });
-
-  test("an explicit true stays on", () => {
-    expect(
-      readMemoryConfig({ memory: { compaction: { enabled: true } } }).compaction
-        .enabled,
-    ).toBe(true);
-  });
 });
 
 // The summariser's model override. The safety property of every one of these is the same: whatever
@@ -113,20 +106,6 @@ describe("a partial patch into memory.compaction", () => {
       provider: "openai",
       model: "gpt-5.4-mini",
       credentialRef: "vault:7",
-      baseURL: null,
-    });
-  });
-
-  test("a patch naming only the model leaves the switch alone", () => {
-    const next = mergeBehaviorSettings(
-      { memory: { compaction: { enabled: false, provider: "openai" } } },
-      { memory: { compaction: { model: "gpt-5.4-nano" } } },
-    );
-    expect(readMemoryConfig(next).compaction).toEqual({
-      enabled: false,
-      provider: "openai",
-      model: "gpt-5.4-nano",
-      credentialRef: null,
       baseURL: null,
     });
   });

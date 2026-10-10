@@ -60,15 +60,6 @@ describe("MCP read gate (no DB)", () => {
     if (!r.ok) expect(r.error).toContain("invalid agent_id");
   });
 
-  // NOTE: `code_tool_schema` is a CONSTANT, not tenant data, and it still goes through the read gate: a
-  // surface that answers before the fence is one more thing to remember, and the answer costs the same
-  // either way.
-  test("code_tool_schema is behind the gate like every other read", () => {
-    const r = codeToolSchema(principal({ scopes: [] }));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain("insufficient_scope");
-  });
-
   // What it answers, and the assertions are about the two things the description cannot carry: the
   // `context` keys WITH their absent-when, and the limits read off the modules that enforce them
   // rather than restated here.

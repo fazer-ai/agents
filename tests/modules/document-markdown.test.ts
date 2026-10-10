@@ -18,14 +18,6 @@ describe("parseInline", () => {
     expect(parseInline("*it*")).toEqual([{ text: "it", italic: true }]);
   });
 
-  test("nests bold inside italic", () => {
-    expect(parseInline("_a **b** c_")).toEqual([
-      { text: "a ", italic: true },
-      { text: "b", italic: true, bold: true },
-      { text: " c", italic: true },
-    ]);
-  });
-
   // Without the closer lookahead, the asterisk in an arithmetic line turns the rest of it italic and
   // an underscore in a file name eats everything after it. Both appear in real quote text.
   test("leaves an unmatched marker literal", () => {

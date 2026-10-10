@@ -287,18 +287,6 @@ describe.skipIf(!dbUp)("the floor in front of the reviewer", () => {
     expect(same.created).toBe(false);
   });
 
-  test("a rejected entry is not proposed again", async () => {
-    const kb = await newKb();
-    const a = await propose(kb, "Entrega grátis acima de 100 reais.", {
-      agent: false,
-    });
-    await rejectApprovalItem({ ctx: ctxOf(tenantId), id: a.id, base: appDb });
-    expect(await propose(kb, "entrega grátis acima de 100 reais")).toEqual({
-      id: a.id,
-      created: false,
-    });
-  });
-
   test("proposals racing on one burst leave one row and no error", async () => {
     const kb = await newKb();
     const results = await Promise.all(

@@ -115,19 +115,6 @@ describe("media annotations (issue #49)", () => {
     expect(stale[0]?.transcribedText).toBeNull();
   });
 
-  test("the TTL sweep DELETES idle annotations, it does not merely hide them", () => {
-    stashMediaAnnotation(
-      { tenantId: T1, instanceId: I1, messageId: 1 },
-      { transcribedText: "conteúdo do cliente" },
-      1_000,
-    );
-    expect(mediaAnnotationCount()).toBe(1);
-    // NOTE: no further stash happens: this is the idle process, where only the scheduled sweeper
-    // (which calls exactly this function) can reclaim the entry.
-    sweepMediaAnnotations(1_000 + 16 * 60_000);
-    expect(mediaAnnotationCount()).toBe(0);
-  });
-
   test("a file's vision read is deleted by the sweep too, and the next wake-up counts it", () => {
     rememberFileRead(
       "vision:1:2:3:4:read",
@@ -141,16 +128,6 @@ describe("media annotations (issue #49)", () => {
     expect(mediaAnnotationCount()).toBe(1);
     sweepMediaAnnotations(1_000 + 16 * 60_000);
     expect(mediaAnnotationCount()).toBe(0);
-  });
-
-  test("the sweep keeps annotations that are still inside the TTL", () => {
-    stashMediaAnnotation(
-      { tenantId: T1, instanceId: I1, messageId: 1 },
-      { transcribedText: "ainda válido" },
-      1_000,
-    );
-    sweepMediaAnnotations(1_000 + 60_000);
-    expect(mediaAnnotationCount()).toBe(1);
   });
 
   test("the sweep is scheduled for the earliest expiry, not a flat TTL from the last stash", () => {

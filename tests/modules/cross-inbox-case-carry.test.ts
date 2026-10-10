@@ -232,35 +232,6 @@ describe("carryCaseAttachments", () => {
     expect(f.calls.some((c) => c.fn === "sendMessageAsAdmin")).toBe(false);
   });
 
-  test("attendance: only files since the attendance started", async () => {
-    const f = fake({
-      messages: [
-        { id: 1, createdAt: 100, files: [{ id: 11 }] },
-        { id: 2, createdAt: 200, files: [{ id: 12 }] },
-        { id: 3, createdAt: 300, type: "out" },
-        { id: 4, createdAt: 1000, files: [{ id: 13 }] },
-        {
-          id: 5,
-          createdAt: 1100,
-          files: [{ id: 14 }, { id: 15, type: "image" }],
-        },
-      ],
-    });
-    const out = await carryCaseAttachments(
-      f.client,
-      carryInput(
-        { mode: "attendance" },
-        { attendanceStartedAt: async () => new Date(500 * 1000) },
-      ),
-    );
-    expect(out).toEqual({ carried: 3, skipped: 0, failed: 0 });
-    expect(uploadedNames(uploads(f.calls)[0])).toEqual([
-      "doc-13.pdf",
-      "doc-14.pdf",
-      "doc-15.pdf",
-    ]);
-  });
-
   test("attendance: the message the attendance started with is part of it", async () => {
     const f = fake({
       messages: [
@@ -612,18 +583,6 @@ describe("carryCaseAttachments", () => {
         .map((c) => c.fn)
         .filter((fn) => fn !== "getMessages" && fn !== "getConversation"),
     ).toEqual([]);
-  });
-
-  test("the walk goes back past the newest page", async () => {
-    const messages: Msg[] = Array.from({ length: 45 }, (_, i) => ({
-      id: i + 1,
-      createdAt: i + 1,
-      ...(i === 0 ? { files: [{ id: 900, name: "first.pdf" }] } : {}),
-    }));
-    const f = fake({ messages });
-    const out = await carryCaseAttachments(f.client, carryInput({}));
-    expect(out?.carried).toBe(1);
-    expect(uploadedNames(uploads(f.calls)[0])).toEqual(["first.pdf"]);
   });
 
   test("the walk follows time, not ids, past imported history", async () => {

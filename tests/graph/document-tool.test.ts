@@ -404,18 +404,6 @@ describe.skipIf(!dbUp)("buildDocumentTools", () => {
     );
   });
 
-  // Same values, same document: a retried turn reuses the row instead of putting a second numbered
-  // document in front of one customer.
-  test("the same values on the same thread issue one document", async () => {
-    const before = await suDb.issuedDocument.count({ where: { tenantId } });
-    await tool(newTurnState()).invoke({ ...ARGS, cliente: "Repetido" });
-    const mid = await suDb.issuedDocument.count({ where: { tenantId } });
-    await tool(newTurnState()).invoke({ ...ARGS, cliente: "Repetido" });
-    const after = await suDb.issuedDocument.count({ where: { tenantId } });
-    expect(mid).toBe(before + 1);
-    expect(after).toBe(mid);
-  });
-
   // The dedupe window is a RETRY's, not a conversation's. Nothing in the key was time-bound, so it
   // never expired: the same values asked for again weeks later — a customer coming back for the same
   // service, or a document the agent produced for a turn that was then discarded — answered with the

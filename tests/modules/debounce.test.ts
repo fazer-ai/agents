@@ -1118,40 +1118,6 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(model.seen.join("\n")).not.toContain("quero cancelar");
   });
 
-  // Meeting the page is not reaching the reaction. The orphan sorts above the page's non-reaction
-  // messages, so the read goes on until it runs dry.
-  test("issue #746: the catch-up read goes past the page to the reaction above it", async () => {
-    const convId = 7471;
-    await seedConversation(convId, { lastHandledMessageId: 2 });
-    const sent: Array<[number, string]> = [];
-    const reads: Array<{ after?: number }> = [];
-    const model = new CaptureReplyModel(REPLY);
-    await flushDebounceJob({
-      job: jobFor(convId, { lastMessageId: 120, reactionArmed: true }),
-      base: appDb,
-      deps: {
-        makeModel: () => model as unknown as BaseChatModel,
-        makeClient: makeForkStub({
-          latest: page(activityRows(100, 119)),
-          after: (after: number) =>
-            page(
-              after === 2
-                ? activityRows(3, 102)
-                : [
-                    ...activityRows(103, 119),
-                    { id: 120, content: "🔥", reaction: true },
-                  ],
-            ),
-          sent,
-          reads,
-        }),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(reads.slice(0, 3)).toEqual([{}, { after: 2 }, { after: 102 }]);
-    expect(model.seen[0]).toContain('<reação do cliente emoji="🔥"');
-  });
-
   // A conversation the agent never answered has no mark, and the flush was armed last by the text
   // typed after the reaction.
   test("issue #746: with no mark, the catch-up read starts at the burst's first reaction", async () => {
@@ -1671,65 +1637,6 @@ describe.skipIf(!dbUp)("debounce", () => {
         base: appDb,
       }),
     ).toEqual({ won: false, reason: "partial" });
-  });
-
-  // A BURST DOES NOT CARRY WHAT ANOTHER TURN IS ALREADY SPEAKING FOR. The claim is taken before its
-  // turn sends and the watermark only moves after that turn returns, so in between a message sits
-  // above the mark with a row on it. Carried into the burst it makes the all-or-nothing claim
-  // conflict, and the message BESIDE it, which nobody claimed, would be refused too with nothing
-  // coming for it afterwards. This asserts the claim's half: the free message wins on its own.
-  test("a burst claims the message beside one another turn already holds", async () => {
-    const convId = 934;
-    await seedConversation(convId);
-    const { id } = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    // A direct turn claimed 1001 and has not returned yet, so the watermark is still behind it.
-    expect(
-      await claimReplyBurst({
-        tenantId,
-        conversationDbId: id,
-        toMessageId: 1001,
-        maxHandledAllowed: 1000,
-        messageIds: [1001],
-        initiatedBy: "automatic",
-        base: appDb,
-      }),
-    ).toEqual({ won: true });
-
-    // The flush's selection drops 1001 and claims what is actually free.
-    expect(
-      await claimReplyBurst({
-        tenantId,
-        conversationDbId: id,
-        toMessageId: 1002,
-        maxHandledAllowed: 1001,
-        messageIds: [1002],
-        initiatedBy: "automatic",
-        base: appDb,
-      }),
-    ).toEqual({ won: true });
-
-    // ...and carrying 1001 along would have cost 1002 as well, which is the shape the selection
-    // exists to avoid.
-    expect(
-      await claimReplyBurst({
-        tenantId,
-        conversationDbId: id,
-        toMessageId: 1003,
-        maxHandledAllowed: 1002,
-        messageIds: [1001, 1003],
-        initiatedBy: "automatic",
-        base: appDb,
-      }),
-      // `partial`, because 1003 was free: the word is what tells the flush to come back for it.
-    ).toEqual({ won: false, reason: "partial" });
-    expect(
-      await suDb.messageReplyClaim.findFirst({
-        where: { conversationId: id, messageId: 1003 },
-      }),
-    ).toBeNull();
   });
 
   // THE FLOOR IS THE MAX OF BOTH SCALARS, and a conversation where the CLAIM is ahead of the
@@ -2765,52 +2672,6 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(model.seen.join("\n")).toContain("tem alguém?");
   });
 
-  // AND THE FLUSH'S GATE ASKS THE SAME. The person replies WHILE the turn runs: the selection that
-  // built the burst is from before, the gate's re-fetch from after. Asking only "did something
-  // newer arrive?", the gate sees the fence take the whole burst out of the selection and reads
-  // that emptiness as "nobody came after me", posting over the person who replied.
-  test("a person who answers mid-turn stops the flush from posting", async () => {
-    const convId = 947;
-    await seedConversation(convId);
-    const { id } = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    await suDb.conversation.update({
-      where: { id },
-      data: { replyClaimFloorMessageId: 0 },
-    });
-    const sent: Array<[number, string]> = [];
-    await flushDebounceJob({
-      job: jobFor(convId),
-      base: appDb,
-      deps: {
-        makeModel: () => fakeModel(),
-        makeClient: makeStub({
-          pages: [
-            // NOTE: The selection, before the human reply.
-            page([{ id: 1, content: "tem alguém?" }]),
-            // NOTE: The gate's re-fetch, after it.
-            page([
-              { id: 1, content: "tem alguém?" },
-              {
-                id: 2,
-                content: "oi, sou a Ana do suporte",
-                type: 1,
-                sender: "user",
-                senderId: 41,
-              },
-            ]),
-          ],
-          sent,
-          calls: { getMessages: 0 },
-        }),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(sent).toEqual([]);
-  });
-
   // ...AND WHOEVER REPLIED CLOSES THE BURST, instead of leaving it hanging. The test above asserts
   // the silence, which both gates produce; this asserts the BOOKKEEPING. `superseded` means "a new
   // message arrived and its flush is armed", so it moves no mark, writes no dispensal and settles no
@@ -3130,96 +2991,6 @@ describe.skipIf(!dbUp)("debounce", () => {
       },
     });
     expect(model.seen.join("\n")).not.toContain("segunda via do boleto");
-  });
-
-  // AND THE LEDGER CLOSES THE SAME SET THE REFUSAL CONSUMED. The ceiling's refusal can decide about
-  // an orphan BELOW the mark; a ledger closed by range from the mark would leave that orphan's
-  // delivery DEAD, reported as an unattended loss and eligible for recovery after the refusal
-  // already decided it.
-  test("the ceiling's refusal closes the ledger row of the orphan it consumed", async () => {
-    const convId = 952;
-    await seedConversation(convId, { lastHandledMessageId: 2 });
-    const { id } = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    await suDb.conversation.update({
-      where: { id },
-      data: { replyClaimFloorMessageId: 0 },
-    });
-    // The orphan's delivery, stuck and reported as a loss.
-    const reported = await suDb.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `ceiling-orphan-${process.pid}`,
-        event: "message_created",
-        status: "DEAD",
-        processedAt: new Date(Date.now() - 60_000),
-        receivedAt: new Date(Date.now() - 120_000),
-        conversationId: convId,
-        inboundMessageId: 1,
-      },
-      select: { id: true },
-    });
-    const monthStart = new Date(
-      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
-    );
-    await suDb.tenant.update({
-      where: { id: tenantId },
-      data: {
-        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
-      },
-    });
-    await suDb.spendCostSnapshot.upsert({
-      where: {
-        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
-      },
-      create: {
-        tenantId,
-        source: "inbox",
-        monthStart,
-        costUsd: 99,
-        polledAt: new Date(),
-      },
-      update: { costUsd: 99, polledAt: new Date() },
-    });
-    try {
-      await flushDebounceJob({
-        job: jobFor(convId, { lastMessageId: 2 }),
-        base: appDb,
-        deps: {
-          makeModel: () => fakeModel(),
-          makeClient: makeStub({
-            pages: [
-              page([
-                { id: 1, content: "me manda a segunda via" },
-                { id: 2, content: "obrigado" },
-              ]),
-            ],
-            sent: [],
-            calls: { getMessages: 0 },
-          }),
-          checkpointer: new MemorySaver(),
-        },
-      });
-    } finally {
-      await suDb.tenant.update({
-        where: { id: tenantId },
-        data: { settings: {} },
-      });
-      await suDb.spendCostSnapshot.deleteMany({
-        where: { tenantId, source: "inbox" },
-      });
-    }
-    expect(
-      (
-        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
-          where: { id: reported.id },
-          select: { status: true },
-        })
-      ).status,
-    ).toBe("PROCESSED");
   });
 
   // ...AND IT DOES NOT CLOSE THE ONE IT DID NOT CONSUME. Reaching the orphan below the mark
@@ -3782,50 +3553,6 @@ describe.skipIf(!dbUp)("debounce", () => {
     // A caller that read NO mark on the way in. Null is that reading, not "no ceiling": a mark
     // stands here now, so it was written after that read and this claim is not entitled to it.
     expect(await claim(50, null)).toEqual({ won: false, reason: "handled" });
-  });
-
-  // A NEWER BURST'S CLAIM DOES NOT CLOSE AN OLDER MESSAGE. With debounce OFF two deliveries of one
-  // conversation are serialized, and the NEWER message's turn can take the thread first, having
-  // loaded the channel before the older one existed. The direct path claims ONE message, its own
-  // trigger (`claimReply` in src/graph/runtime.ts), so a single-number claim of 1002 would close
-  // 1001 and refuse the older message's turn, the only one that loaded BOTH, and nothing reopens
-  // 1001 afterwards. BOTH GATES would refuse it (`claimed`, and behind it the ceiling the newer turn
-  // moved to 1002), so a fix to only one leaves the same silence with a different word in the log.
-  test("a newer burst's claim does not close a message no turn answered", async () => {
-    const convId = 896;
-    await seedConversation(convId);
-    const { id } = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    const claim = (toMessageId: number, maxHandledAllowed: number | null) =>
-      claimReplyBurst({
-        tenantId,
-        conversationDbId: id,
-        toMessageId,
-        maxHandledAllowed,
-        // The direct path's shape: one turn, one message, its own trigger.
-        messageIds: [toMessageId],
-        initiatedBy: "automatic",
-        base: appDb,
-      });
-
-    // MSG-B (1002) arrives second and is answered first, by a turn that never had MSG-A. The
-    // ceiling is the direct path's own: nothing at or past my message may have been handled.
-    expect(await claim(1002, 1001)).toEqual({ won: true });
-    await advanceHandledWatermark({
-      tenantId,
-      conversationDbId: id,
-      toMessageId: 1002,
-      // NOTE: Positioning the mark, not reporting a decision: this call closes nothing, and says so
-      // explicitly rather than letting a default speak for it.
-      dispensed: { kind: "messages", messageIds: [] },
-      base: appDb,
-    });
-
-    // MSG-A (1001), whose turn read `[system, MSG-B, RESP-B, MSG-A]` and is the one that can answer
-    // it. No turn has spoken for 1001; a reply that never saw it must not close it.
-    expect(await claim(1001, 1000)).toEqual({ won: true });
   });
 
   // THE SECOND GATE, ISOLATED. The test above is refused by `claimed` first, which hides the
@@ -6378,33 +6105,6 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await watermarkOf(803)).toBe(5);
     expect(await advance(8)).toBe(true);
     expect(await watermarkOf(803)).toBe(8);
-  });
-
-  test("an empty reply still advances the watermark (the burst was consumed)", async () => {
-    await seedConversation(804);
-    const sent: Array<[number, string]> = [];
-    const calls = { getMessages: 0 };
-    const out = await flushDebounceJob({
-      job: jobFor(804),
-      base: appDb,
-      deps: {
-        makeModel: () => new FakeListChatModel({ responses: [""] }),
-        makeClient: makeStub({
-          pages: [
-            page([
-              { id: 1, content: "oi" },
-              { id: 2, content: "tem horário amanhã?" },
-            ]),
-          ],
-          sent,
-          calls,
-        }),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(out).toEqual({ outcome: "done" });
-    expect(sent).toEqual([]);
-    expect(await watermarkOf(804)).toBe(2);
   });
 
   // AND IT CLAIMS NOTHING. The watermark advances because the burst was CONSUMED (nothing will

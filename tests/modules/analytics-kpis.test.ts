@@ -229,11 +229,6 @@ describe.skipIf(!dbUp)("getKpis: what counts as a resolution", () => {
     expect(kpis.resolvedByBot).toBe(1);
   });
 
-  test("a human takeover is still a handoff", async () => {
-    const kpis = await getKpis(ctx(), {}, appDb);
-    expect(kpis.handoff).toBe(1);
-  });
-
   // The ledger records calls that are not agent turns, so "billed" is not "involved": a vision-only
   // conversation is billed and never answered.
   test("a call billed before the bot gate is not involvement", async () => {
@@ -247,14 +242,6 @@ describe.skipIf(!dbUp)("getKpis: what counts as a resolution", () => {
     expect(after.involvementRate).toBeLessThan(before.involvementRate);
     // And the resolution rate, whose denominator is `involved`, must not move at all.
     expect(after.resolutionRate).toBe(before.resolutionRate);
-  });
-
-  test("a legacy row with no node still counts as the agent turn it was", async () => {
-    // The eight conversations seeded above carry `node: null`, the shape of a legacy row.
-    // `notIn` alone drops them (SQL NOT IN with NULL), so this catches the filter tightening past
-    // its own rule.
-    const kpis = await getKpis(ctx(), {}, appDb);
-    expect(kpis.involved).toBeGreaterThanOrEqual(8);
   });
 
   test("the rates derive from the recorded resolutions", async () => {

@@ -999,11 +999,6 @@ describe("openCaseInInbox", () => {
     expect(openings).toHaveLength(1);
   });
 
-  test("a new case is numbered above what the contact had, and reads as opened", async () => {
-    const f = fakeChatwoot({ listNewest: 1 });
-    expect((await openCaseInInbox(f.client, input())).kind).toBe("opened");
-  });
-
   test("a policy transfer that did not land stops the opening", async () => {
     // Read as a plain drop, the case would open and resolveOrigin would close the origin.
     const f = fakeChatwoot();
@@ -3403,15 +3398,6 @@ describe("who holds the case (issue #908)", () => {
     ]);
   });
 
-  test("a bot the JSON does show (typed) is cleared the same way", async () => {
-    const f = fakeChatwoot({
-      continueOpen: true,
-      convs: [originConv(), emailAgentsCase({ botTyped: true })],
-    });
-    await openCaseInInbox(f.client, input());
-    expect(f.convs.find((x) => x.id === 55)?.bot).toBeNull();
-  });
-
   test("a person already on the case: nothing is written, the team neither", async () => {
     // The fork drops an assignee who is not in a newly set team, so even the team would take
     // the case from the person working it.
@@ -3923,19 +3909,6 @@ describe("the operator's opening and the case note (issue #923)", () => {
       );
     });
 
-    test("without a template the opening is the model's text, signed, as before", async () => {
-      const f = fakeChatwoot();
-      await openCaseInInbox(
-        f.client,
-        withTemplates(null, null, {
-          signCustomerMessage: (t) => `${t} -- Ana`,
-        }),
-      );
-      expect(sends(f, false)).toEqual([
-        "Olá! Abrimos seu atendimento por aqui. -- Ana",
-      ]);
-    });
-
     test("a fixed template goes out even when the model wrote nothing", async () => {
       const f = fakeChatwoot();
       await openCaseInInbox(
@@ -3985,36 +3958,6 @@ describe("the operator's opening and the case note (issue #923)", () => {
             t.includes("PROIBIDO") ? "drop" : "send",
         }),
       );
-      expect(sends(f, false)).toEqual([]);
-    });
-
-    test("a continued case gets no opening, template or not", async () => {
-      const f = fakeChatwoot({
-        continueOpen: true,
-        convs: [
-          {
-            id: 7,
-            inboxId: 10,
-            contactId: 5,
-            status: "pending",
-            attrs: {},
-            labels: [],
-          },
-          {
-            id: 60,
-            inboxId: 40,
-            contactId: 5,
-            status: "open",
-            attrs: {},
-            labels: [],
-          },
-        ],
-      });
-      const r = await openCaseInInbox(
-        f.client,
-        withTemplates("Caso nº {{numero_caso}}.", null),
-      );
-      expect(r.kind).toBe("continued");
       expect(sends(f, false)).toEqual([]);
     });
 

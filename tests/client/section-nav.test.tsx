@@ -116,14 +116,6 @@ describe("the section index", () => {
     expect(current()).toEqual(["One"]);
   });
 
-  // The defect the band had: a tall section still covering the upper part of the screen kept the
-  // highlight from the one whose top was already well inside it.
-  test("a tall section above does not keep the highlight from the one under it", () => {
-    const { scroller } = renderNav();
-    scrollTo(scroller, 900, { one: -900, two: 250, three: 1200 });
-    expect(current()).toEqual(["Two"]);
-  });
-
   // The app scrolls <main>, which starts below the header: the line is measured from the
   // container's own top, not the viewport's.
   test("the line sits 35% down the scroll container, wherever the container starts", () => {

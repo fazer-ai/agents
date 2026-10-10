@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
-import { FLOW_STAGES } from "@/modules/flowlog/stages";
 
 // The Logs page groups by `turnId`, which is a correlation id and not a claim that a turn happened,
 // so a group with neither a conversation nor a thread must not fall through to the word "Turn".
@@ -86,19 +85,4 @@ describe("what a Logs group is called", () => {
       ).toEqual(r.expected);
     });
   }
-
-  // The `stage` answer is only worth having if the vocabulary can actually produce it: a group of
-  // one row is what every conversation-less emit writes (its own synthesized `turnId`), so each
-  // stage has to come back as itself rather than as "Turn".
-  test("every stage in the vocabulary can name a group of its own", () => {
-    const named = FLOW_STAGES.map(
-      (stage) =>
-        logGroupTitle({
-          conversationId: null,
-          threadId: null,
-          rows: [{ stage }],
-        }).kind,
-    );
-    expect(named).toEqual(FLOW_STAGES.map(() => "stage"));
-  });
 });

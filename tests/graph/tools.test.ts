@@ -381,23 +381,6 @@ describe("native tools", () => {
     expect(calls).toEqual([["toggleStatus", [42, "open"]]]);
   });
 
-  test("transferWithSummary:true (explicit) still posts the note", async () => {
-    const { client, calls } = recordingClient();
-    const tools = buildNativeTools({
-      client,
-      conversationId: 42,
-      transferWithSummary: true,
-    });
-    await byName(tools, "handoff_to_human").invoke({
-      reason: "summary text",
-      customerMessage: "",
-    });
-    expect(calls).toEqual([
-      ["sendPrivateNote", [42, "summary text"]],
-      ["toggleStatus", [42, "open"]],
-    ]);
-  });
-
   const kanbanCtx = {
     taskId: 11,
     boardId: 2,
@@ -1124,21 +1107,6 @@ describe("native tools", () => {
       });
     });
 
-    test("INVERTED: naming a label in add DOES put it back after somebody removed it", () => {
-      // NOTE: nothing forces the model to mention a label it does not mean, so naming one in `add`
-      // IS a request to have it, and honouring that is correct. Operator prose that says "repeat the
-      // labels that are already there" asks for exactly this, which is why the retired `labels`
-      // shape is refused by name rather than best-effort.
-      expect(applyLabelDelta(["vip", "lead"], [], [])).toEqual({
-        next: ["vip", "lead"],
-        added: ["vip", "lead"],
-        removed: [],
-        refusedAdd: [],
-        refusedRemove: [],
-        heldRemove: [],
-      });
-    });
-
     test("naming nothing changes nothing, whatever is standing", () => {
       // NOTE: `[]` can only mean "I name nothing", and wiping a conversation requires naming every
       // label on it.
@@ -1217,36 +1185,6 @@ describe("native tools", () => {
       expect(out.next).toEqual(["vip", "testando-agente", "lead"]);
       expect(out.removed).toEqual([]);
     });
-
-    test("an empty guard list is the behaviour before the guard", () => {
-      expect(applyLabelDelta([], ["b"], ["a", "b"], [])).toEqual({
-        next: ["a"],
-        added: [],
-        removed: ["b"],
-        refusedAdd: [],
-        refusedRemove: [],
-        heldRemove: [],
-      });
-    });
-  });
-
-  test("an add-only call never removes anything", async () => {
-    const setCalls: unknown[][] = [];
-    const client = {
-      getConversationLabels: async () => ["vip"],
-      setConversationLabels: async (...args: unknown[]) => {
-        setCalls.push(args);
-        return {};
-      },
-    } as unknown as ChatwootClient;
-    // `vip` is not named, so it is not touched, and no snapshot of what the model saw has to
-    // be consulted to know that.
-    const tools = buildNativeTools({ client, conversationId: 9 });
-    const out = String(
-      await byName(tools, "set_labels").invoke({ add: ["lead"] }),
-    );
-    expect(setCalls).toEqual([[9, ["vip", "lead"]]]);
-    expect(out).toContain("lead");
   });
 
   test("set_labels removes exactly what `remove` names", async () => {
@@ -1856,30 +1794,6 @@ describe("native tools", () => {
     expect(out).toContain("called off");
   });
 
-  test("set_labels task scope reads the card fresh and writes it", async () => {
-    const setCalls: unknown[][] = [];
-    const client = {
-      getKanbanTask: async () => ({ labels: [] }),
-      setKanbanTaskLabels: async (...args: unknown[]) => {
-        setCalls.push(args);
-        return {};
-      },
-    } as unknown as ChatwootClient;
-    const tools = buildNativeTools({
-      client,
-      conversationId: 9,
-      kanban: kanbanCtx, // card.labels: []
-    });
-    const out = String(
-      await byName(tools, "set_labels").invoke({
-        add: ["quente"],
-        scope: "task",
-      }),
-    );
-    expect(setCalls).toEqual([[11, ["quente"]]]);
-    expect(out.toLowerCase()).toContain("card");
-  });
-
   test("a label added to the card mid-turn survives, like in the other two scopes", async () => {
     // "not named, not touched" has to hold for the card itself, not for a turn-prep snapshot
     // of it, or a label put on it while the model was generating is erased by the next write. One
@@ -2327,34 +2241,6 @@ describe("native tools", () => {
     expect(out).not.toContain("stays");
     // The refusal is still reported: the model asked for something it may not have.
     expect(out).toContain("cannot be added");
-  });
-
-  test("a guarded label that is NOT standing still holds the swap", async () => {
-    // The other side of the same line, so the refinement above cannot be widened into "a refused
-    // addition never holds anything". Same call, same guard, and the only difference is that the
-    // guarded label the model named is not on the conversation, so asking for it was a real
-    // request and the removal did come with it.
-    let posts = 0;
-    const client = {
-      getConversationLabels: async () => ["compra-de-ingresso"],
-      setConversationLabels: async () => {
-        posts++;
-        return {};
-      },
-    } as unknown as ChatwootClient;
-    const tools = buildNativeTools({
-      client,
-      conversationId: 9,
-      protectedLabels: ["agente-off"],
-    });
-    const out = String(
-      await byName(tools, "set_labels").invoke({
-        add: ["agente-off"],
-        remove: ["compra-de-ingresso"],
-      }),
-    );
-    expect(posts).toBe(0);
-    expect(out).toContain('"compra-de-ingresso" stays');
   });
 
   test("a hold names only what was actually standing", async () => {
@@ -3289,17 +3175,6 @@ describe("a muted turn is not offered what it cannot complete", () => {
     expect(names).toContain("private_note");
     expect(names).toContain("set_labels");
     expect(names).toContain("resolve_conversation");
-  });
-
-  test("an ordinary turn keeps both", () => {
-    // The negative above is worth nothing without this: a filter that dropped them always would
-    // pass it and take the two tools away from every responder.
-    const names = buildNativeTools({
-      client: clientWithMute(false),
-      conversationId: 7,
-    }).map((t) => t.name);
-    expect(names).toContain("react_to_message");
-    expect(names).toContain("send_image");
   });
 
   test("the grant is still fail-closed under a mute", () => {

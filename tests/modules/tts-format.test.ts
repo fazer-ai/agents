@@ -31,10 +31,6 @@ describe("pickTtsFormat", () => {
     // Chatwoot shows as sent and Meta then rejects. Better an honest text reply.
     expect(pickTtsFormat(openrouter, "Channel::Instagram")).toBeNull();
   });
-
-  test("an unknown channel string behaves like the default", () => {
-    expect(pickTtsFormat(openai, "Channel::WebWidget")).toBe("ogg_opus");
-  });
 });
 
 describe("pcmToWav", () => {

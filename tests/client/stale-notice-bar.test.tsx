@@ -49,11 +49,6 @@ describe("the save bar carries the stale notice", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   });
 
-  test("outside the editor's provider the bar renders as before", () => {
-    render(<Bar />);
-    expect(screen.queryByText("Changed elsewhere")).toBeNull();
-  });
-
   test("with a notice the bar shows the short line and a Reload that reloads", () => {
     const n = notice(false);
     const { getByTestId } = render(

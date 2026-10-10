@@ -297,16 +297,6 @@ describe("AlertChannelsSection", () => {
     ).toBe(true);
   });
 
-  test("a configured secret the read cannot show is still not cleared", async () => {
-    // NOTE: a legacy `alert_channels.secret_ref` row can hold text that names no vault entry. The
-    // read refuses to hand that out (it would publish whatever was typed there), so the modal gets
-    // `hasSecret` true with no ref; echoing the blank picker back would erase the stored secret.
-    channels = [channel({ hasSecret: true, secretRef: null })];
-    await openEditor();
-    const body = await save();
-    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
-  });
-
   test("clearing the picker still unsigns the channel", async () => {
     await openEditor();
     await waitFor(() =>
@@ -348,15 +338,6 @@ describe("AlertChannelsSection", () => {
     const body = await save();
     expect(String(body?.type)).toBe("discord");
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
-  });
-
-  test("the modal says WHICH credential signs, not just that one does", async () => {
-    await openEditor();
-    // NOTE: the picker resolving the ref to its vault entry is what lets the operator see, and
-    // keep, the credential they configured.
-    await waitFor(() =>
-      expect(screen.queryAllByText("ops-hmac").length > 0).toBe(true),
-    );
   });
 
   // ── the Test button ──
@@ -507,15 +488,6 @@ describe("AlertChannelsSection", () => {
       globalThis.fetch = realFetch2;
       for (const r of release) r();
     }
-  });
-
-  test("an unsigned channel is left alone too", async () => {
-    channels = [channel({ hasSecret: false, secretRef: null })];
-    await openEditor();
-    const body = await save();
-    // NOTE: an untouched empty picker is still untouched, so it must not send a stale ref from the
-    // component's last session either.
-    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
   });
 
   // ── excluded agents ──

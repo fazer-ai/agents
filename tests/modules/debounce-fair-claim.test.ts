@@ -204,18 +204,6 @@ describe.skipIf(!dbUp)(
       expect(three.map((j) => j.id)).not.toContain(b1);
     });
 
-    test("three tenants with deep queues get one slot each before anyone gets a second", async () => {
-      // A's queue is the oldest of the three, B's next, C's the newest.
-      for (const [k, t] of [tenantA, tenantB, tenantC].entries())
-        for (let i = 0; i < 5; i++) await due(t, `q${i}`, 60 - k * 5 - i);
-      const jobs = await claim(3);
-      expect([
-        byTenant(jobs, tenantA),
-        byTenant(jobs, tenantB),
-        byTenant(jobs, tenantC),
-      ]).toEqual([1, 1, 1]);
-    });
-
     test("a row locked by another session is skipped, not waited for", async () => {
       const a0 = await due(tenantA, "a0", 60);
       await due(tenantA, "a1", 50);

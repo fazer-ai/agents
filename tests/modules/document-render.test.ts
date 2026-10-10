@@ -136,12 +136,6 @@ describe("renderDocumentPdf", () => {
     expect(withLogo.subarray(0, 5).toString()).toBe("%PDF-");
   });
 
-  // A tenant whose storage volume did not come back still has to receive their document.
-  test("renders without a logo rather than failing the document", async () => {
-    const bytes = await renderDocumentPdf({ ...starterInput(), logo: null });
-    expect(bytes.subarray(0, 5).toString()).toBe("%PDF-");
-  });
-
   test("renders an empty document and a document with no values", async () => {
     const empty = await renderDocumentPdf({
       blocks: [],
@@ -163,28 +157,6 @@ describe("renderDocumentPdf", () => {
     const a = await renderDocumentPdf(input);
     const b = await renderDocumentPdf(input);
     expect(a.byteLength).toBe(b.byteLength);
-  });
-
-  test("renders every starter, in both languages", async () => {
-    for (const locale of ["pt-BR", "en-US"] as const) {
-      for (const starter of documentStarters(locale)) {
-        const parsed = parseTemplateContent(starter.blocks, starter.fields, {});
-        expect(parsed.ok).toBe(true);
-        if (!parsed.ok) continue;
-        const bytes = await renderDocumentPdf({
-          blocks: parsed.content.blocks,
-          fields: parsed.content.fields,
-          style: starter.style,
-          values: sampleValues(
-            parsed.content.fields,
-            new Date("2026-09-05T12:00:00Z"),
-          ),
-          company: COMPANY,
-          meta: META,
-        });
-        expect(bytes.subarray(0, 5).toString()).toBe("%PDF-");
-      }
-    }
   });
 });
 

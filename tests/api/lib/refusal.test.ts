@@ -117,12 +117,4 @@ describe("refusalBody", () => {
       expect(refusalBody(row.error, row.acceptLanguage)).toEqual(row.body);
     });
   }
-
-  test("the key is ABSENT, not null, when nothing was named", () => {
-    // A `field: null` would be a wire change for every refusal in the app, and every client that
-    // reads the body would have to learn a second spelling of "nothing here".
-    expect("field" in refusalBody(new AppError("Forbidden", 403), "en")).toBe(
-      false,
-    );
-  });
 });

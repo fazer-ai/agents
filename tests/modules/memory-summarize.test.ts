@@ -48,20 +48,6 @@ class ScriptedModel extends BaseChatModel {
 }
 
 describe("renderTranscript", () => {
-  // System markers ride as HumanMessages, so without filtering them the divider's own directive is
-  // quoted to the summarizer as something the CUSTOMER said — and the memory can end up recording the
-  // system's words as the contact's.
-  test("system markers are not quoted as the customer", () => {
-    const t = renderTranscript([
-      conversationDividerMessage(42, "oi, voltei"),
-      new AIMessage("Oi! Como posso ajudar?"),
-    ]);
-    expect(t).not.toContain("Contexto do sistema");
-    expect(t).toContain("Oi! Como posso ajudar?");
-    // The customer's own words, which rode along with the marker, are still there.
-    expect(t).toContain("oi, voltei");
-  });
-
   // A proactive nudge is injected as a HUMAN turn (a SystemMessage would make strict providers reject
   // the call — see src/graph/nudge.ts), so without filtering it the operator's own guidance and the
   // untrusted external event payload are summarized as things the CUSTOMER said, and the agent

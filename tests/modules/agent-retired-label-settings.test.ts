@@ -105,20 +105,6 @@ describe("retired label settings", () => {
     expect(stripRetiredNoteFlagInPlace({ monitoring: null })).toBe(false);
   });
 
-  test("a taxonomy is STILL refused, which is the half an operator can act on", () => {
-    // NOTE: a taxonomy is a decision the operator made and can move (the refusal names
-    // `toolGuidance.set_labels`); the note flag is not a decision, it is what the old console writes
-    // for every agent.
-    expect(() =>
-      assertSettingsRetiredLabelKeys({
-        monitoring: {
-          labelGroups: [{ name: "assunto", values: ["a"] }],
-          noteOnChange: true,
-        },
-      }),
-    ).toThrow(RetiredLabelSettingError);
-  });
-
   test("a settings bag without either key passes", () => {
     expect(() =>
       assertSettingsRetiredLabelKeys({

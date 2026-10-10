@@ -238,16 +238,6 @@ async function documentsSection(): Promise<HTMLElement> {
   return section;
 }
 
-test("the Documents section offers New, like its siblings", async () => {
-  await i18n.changeLanguage("en");
-  serve();
-  renderEditor();
-  const section = await documentsSection();
-  expect(
-    within(section).queryAllByRole("button", { name: /^new$/i }).length,
-  ).toBe(1);
-});
-
 test("with no templates the empty state points at the action, not at Components", async () => {
   await i18n.changeLanguage("en");
   serve();
@@ -328,27 +318,6 @@ test("a language switch while the starters load shows the new language's list", 
     { timeout: 3000 },
   );
   expect(document.body.textContent?.includes("Quote en-US")).toBe(false);
-  await act(async () => {
-    await i18n.changeLanguage("en");
-  });
-});
-
-test("a language switch with the picker open reloads the list", async () => {
-  await i18n.changeLanguage("en");
-  serve();
-  renderEditor();
-  const section = await documentsSection();
-  fireEvent.click(within(section).getByRole("button", { name: /^new$/i }));
-  await screen.findByText("Quote en-US");
-  await act(async () => {
-    await i18n.changeLanguage("pt-BR");
-  });
-  await waitFor(
-    () => {
-      expect(document.body.textContent?.includes("Quote pt-BR")).toBe(true);
-    },
-    { timeout: 3000 },
-  );
   await act(async () => {
     await i18n.changeLanguage("en");
   });

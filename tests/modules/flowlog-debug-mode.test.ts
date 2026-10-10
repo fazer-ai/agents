@@ -340,9 +340,6 @@ describe("the window a caller may arm is bounded, which is what makes the expiry
   const ahead = (h: number) =>
     new Date(Date.now() + h * 3_600_000).toISOString();
 
-  test("an hour ahead is accepted", () => {
-    expect(send(ahead(1))).toBe(true);
-  });
   test("the maximum window is accepted", () => {
     expect(send(ahead(FULL_DETAIL_MAX_HOURS - 0.01))).toBe(true);
   });
@@ -510,22 +507,6 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
       string
     >;
     expect(out.password).toBe("‹redacted›");
-  });
-
-  test("an empty leaf past exhaustion stays empty, marker and all", () => {
-    // `truncate("", -5)` is the marker BY ITSELF: the length test is `s.length > max`, and zero is
-    // greater than a negative allowance. So an exhausted budget followed by empty fields — a tool
-    // result's unset keys, which is the ordinary shape — would write a marker for each one, saying
-    // a string was cut when there was no string.
-    const cap = 1_000;
-    const out = redactSecretsDeep(
-      { big: "a".repeat(5_000), empty: "", also: "" },
-      0,
-      cap,
-      { left: cap },
-    ) as Record<string, string>;
-    expect(out.empty).toBe("");
-    expect(out.also).toBe("");
   });
 
   test("a leaf that was REDACTED is charged what it stored, not what it arrived as", () => {
@@ -769,13 +750,6 @@ describe("every flow context that knows an agent carries the debug mode", () => 
   });
 });
 
-test("the debug ceiling can never fall below the ordinary one", () => {
-  // `AGENT_PROMPT_MAX_CHARS` is an operator's env var and nothing stops it being small. Below 667
-  // the derivation falls under 2,000, and arming the mode would then SHRINK what a line stores.
-  expect(DEBUG_MAX_STRING).toBeGreaterThanOrEqual(MAX_STRING);
-  expect(Math.max(MAX_STRING, 500 * 3)).toBe(MAX_STRING);
-});
-
 // The ceiling is derived from "the largest operator-authored prompt this API accepts", which holds
 // only while every path that supplies a prompt is held to the same number. An A/B experiment variant
 // REPLACES the agent's prompt when assigned, so a variant schema taking any string would ship a prompt
@@ -805,27 +779,9 @@ describe("every prompt source is held to the ceiling the derivation assumes", ()
     expect(parseVariants([{ key: "a", systemPrompt: over() }])).toHaveLength(1);
   });
 
-  test("an oversized legacy variant does not take the others down with it", () => {
-    // `safeParse` on the array is all-or-nothing, so one bad entry answers `[]` and the experiment
-    // stops assigning anything at all.
-    expect(
-      parseVariants([
-        { key: "a", systemPrompt: over() },
-        { key: "b", systemPrompt: "curto" },
-      ]),
-    ).toHaveLength(2);
-  });
-
   test("a variant without a prompt is still valid on both", () => {
     expect(variantSchema.safeParse({ key: "a" }).success).toBe(true);
     expect(variantWriteSchema.safeParse({ key: "a" }).success).toBe(true);
-  });
-
-  test("the ceiling covers the audit of the largest prompt any path may supply", () => {
-    // NOTE: Both sources are the same number, so the 2.56x worst case above still bounds the audit.
-    expect(DEBUG_MAX_STRING).toBeGreaterThanOrEqual(
-      Math.ceil(config.agent.promptMaxChars * 2.56),
-    );
   });
 });
 

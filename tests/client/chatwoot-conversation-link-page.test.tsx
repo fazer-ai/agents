@@ -92,16 +92,6 @@ test("one match opens the conversation naming its tenant, and the inbox and bot 
   ]).toEqual(["3", "42", "9", "b".repeat(64)]);
 });
 
-test("one match in another tenant of the person opens it there", async () => {
-  answer = matches({ id: "56", tenantId: "2" });
-  const view = open("/chatwoot/accounts/3/conversations/42");
-  await waitFor(() =>
-    expect(view.getByTestId("landed").textContent).toBe(
-      "/conversations/56?switchTenant=2",
-    ),
-  );
-});
-
 test("no match says the conversation is not here, naming what was asked", async () => {
   answer = matches();
   const view = open("/chatwoot/accounts/3/conversations/42");

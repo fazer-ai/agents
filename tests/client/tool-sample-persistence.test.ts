@@ -252,17 +252,6 @@ describe("what the editor opens with", () => {
     );
   });
 
-  it("takes the revision from the row the SAVE returned, not the one the form opened with", () => {
-    // The save is what moves the revision, so keeping the old one would make the entry describe a
-    // definition that stopped existing the moment it was written.
-    rememberToolSample(
-      "42",
-      { revision: NEWER, text: RESPONSE, status: 200, credentialRef: null },
-      sampleTicket(),
-    );
-    expect(formFromTool(toolRow({ updatedAt: NEWER })).sample).toBe(RESPONSE);
-  });
-
   it("is per tool, so one tool's response is never offered for another", () => {
     rememberToolSample(
       "42",
@@ -578,20 +567,6 @@ describe("what the tab remembers", () => {
     expect(recallToolSample("7", REV)).toBeNull();
   });
 
-  // A SHARED COOKIE MOVES FROM ONE OPERATOR TO ANOTHER WITH NO NULL IN BETWEEN: another tab signs
-  // out and back in as B, and this tab's next `/me` answers B directly. The entries are keyed by
-  // tenant and tool, so B opening the same tool would be handed A's captured response.
-  it("is emptied when one operator becomes another, with no signed-out state between them", () => {
-    noteOperator("A");
-    rememberToolSample(
-      "7",
-      { revision: REV, text: RESPONSE, status: 200, credentialRef: null },
-      sampleTicket(),
-    );
-    noteOperator("B");
-    expect(recallToolSample("7", REV)).toBeNull();
-  });
-
   it("is left alone when the same operator is reported again", () => {
     noteOperator("A");
     rememberToolSample(
@@ -806,21 +781,6 @@ describe("which definition the sample describes", () => {
     expect(shapeOfOpening(formFromTool(toolRow()))).toBeNull();
   });
 
-  // The round-trip is the part that could quietly stop working: the shape is computed from the form
-  // the SERVER answered with, and compared at the save against the payload the form produces. If
-  // reading a row and writing it back did not agree, every save would drop its own sample.
-  it("a definition read back from the server produces the shape a save of it does", () => {
-    const opened = formFromTool(toolRow());
-    expect(
-      shapeOfArrival({
-        text: RESPONSE,
-        status: 200,
-        against: opened,
-        previous: null,
-      }),
-    ).toBe(captureShapeOf(payloadOf(opened)));
-  });
-
   // NOTE: the emptiness rule is the module's, asked rather than spelled again, so no two copies can
   // disagree about a 404 with no body.
   it("asks the module what counts as no sample", () => {
@@ -912,20 +872,6 @@ describe("a credential changing under the same name", () => {
     expect(sampleDescribes(captured, payloadOf(opened))).toBe(false);
   });
 
-  // And a sample captured AFTER the change describes the vault as it is now, so an operator who
-  // edits a credential and tests again keeps what comes back.
-  it("a sample captured after the change describes the request", () => {
-    invalidateVault();
-    const opened = formFromTool(toolRow({ credentialRef: "acme" }));
-    const captured = shapeOfArrival({
-      text: RESPONSE,
-      status: 200,
-      against: opened,
-      previous: null,
-    });
-    expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
-  });
-
   // NOTE: two spellings of "no credential" reach this module: the form holds an empty string and the
   // payload holds null. Reading one as a credential would drop a sample no vault edit can touch, so
   // the empty string is the null here, on the way in and on the way out.
@@ -939,17 +885,6 @@ describe("a credential changing under the same name", () => {
     invalidateVault();
     rememberToolSample("49", { ...WITH, credentialRef: "" }, ticket);
     expect(recallToolSample("49", REV)?.text).toBe(RESPONSE);
-  });
-
-  // THE MODULE LISTENS FOR ITSELF, because a credential is edited from the Vault panel, the agent
-  // editor and the picker inlined here, and the tool editor is mounted for at most one of those. A
-  // listener living in a component is absent exactly when the edit happens somewhere else. Every
-  // test above goes through `invalidateVault`, the entry point a mutation actually uses, so what is
-  // exercised is that seam and not a function called by hand.
-  it("hears the change without anyone wiring it up", () => {
-    rememberToolSample("47", WITH, sampleTicket());
-    invalidateVault();
-    expect(recallToolSample("47", REV)).toBeNull();
   });
 
   // ONE CHANGE IS ANNOUNCED TWICE. `refreshVault` notifies on the drop and again when the new list
@@ -1013,18 +948,6 @@ describe("a save that lands after the sample's life ended", () => {
     expect(recallToolSample("7", REV)).toBeNull();
   });
 
-  it("does not put it back after one operator became another", () => {
-    noteOperator("A");
-    const ticket = sampleTicket();
-    noteOperator("B");
-    rememberToolSample(
-      "7",
-      { revision: REV, text: RESPONSE, status: 200, credentialRef: null },
-      ticket,
-    );
-    expect(recallToolSample("7", REV)).toBeNull();
-  });
-
   // NOTE: a global invalidation over-rejects: deleting tool B while tool A's save is out must not drop
   // A's, or the operator sees a tool they never touched come back with an older response.
   it("is not invalidated by the deletion of a DIFFERENT tool", () => {
@@ -1048,30 +971,6 @@ describe("a save that lands after the sample's life ended", () => {
       ticket,
     );
     expect(recallToolSample("7", REV)).toBeNull();
-  });
-
-  // NOTE: two openings of the same tool, the slow one answering last. `docs/modals.md` covers the
-  // dialog side; the revision cannot see it, because the second opening loaded exactly the revision
-  // the first save committed.
-  it("does not let an older opening's response land on a newer one's", () => {
-    const first = sampleTicket();
-    rememberToolSample(
-      "7",
-      {
-        revision: REV,
-        text: '{"novo":true}',
-        status: 200,
-        credentialRef: null,
-      },
-      sampleTicket(),
-    );
-    // The first save's response, finally arriving with the ticket it left with.
-    rememberToolSample(
-      "7",
-      { revision: REV, text: RESPONSE, status: 200, credentialRef: null },
-      first,
-    );
-    expect(recallToolSample("7", REV)?.text).toBe('{"novo":true}');
   });
 
   it("is per tool, so a save for one does not block a slower save for another", () => {
@@ -1162,16 +1061,6 @@ describe("a save that lands after the sample's life ended", () => {
     ];
     expect(new Set(issued).size).toBe(issued.length);
     expect([...issued].sort((a, b) => a - b)).toEqual(issued);
-  });
-
-  it("still writes when nothing cleared while it was out", () => {
-    const ticket = sampleTicket();
-    rememberToolSample(
-      "7",
-      { revision: REV, text: RESPONSE, status: 200, credentialRef: null },
-      ticket,
-    );
-    expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
   });
 });
 

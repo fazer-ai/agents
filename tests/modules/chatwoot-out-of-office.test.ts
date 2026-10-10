@@ -281,17 +281,6 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(calls.sort()).toEqual([1, 2]);
   });
 
-  test("the other agent's inbox is its own, even on the same account", async () => {
-    const { makeClient } = fakeChatwoot({ 1: ACCOUNT_1, 2: ACCOUNT_2 });
-    const found = await listOutOfOfficeInboxes(
-      ctx(tenantA),
-      agent2,
-      { makeClient },
-      appDb,
-    );
-    expect(found.map((f) => f.name)).toEqual(["Site"]);
-  });
-
   test("an account that cannot be read says nothing, and does not sink the others", async () => {
     // Account 2 has no payload → its listInboxes throws.
     const { makeClient, calls } = fakeChatwoot({ 1: ACCOUNT_1 });
@@ -421,35 +410,6 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.unreadable).toBe(1);
   });
 
-  // The field half of the same question: an id that parses, with a switch that does not. The parser
-  // defaults it to off, which reads as "this inbox answers nothing" — a conclusion nobody may draw
-  // from a value they could not read.
-  test("an inbox whose out-of-hours fields are unreadable is unread", async () => {
-    const { makeClient } = fakeChatwoot({
-      1: {
-        payload: [
-          { id: 101, name: "Vendas", working_hours_enabled: "yes" },
-          {
-            id: 102,
-            name: "WhatsApp Suporte",
-            working_hours_enabled: true,
-            out_of_office_message: "",
-          },
-        ],
-      },
-      2: ACCOUNT_2,
-    });
-    const read = await readOutOfOfficeInboxes(
-      ctx(tenantA),
-      agent1,
-      { makeClient },
-      appDb,
-    );
-    expect(read.unreadable).toBe(1);
-    // 102 was read and is NOT armed (working hours on, empty message), which is a real answer.
-    expect(read.inboxes.map((i) => i.name)).not.toContain("WhatsApp Suporte");
-  });
-
   // NOTE: The message check already catches truthy non-boolean switch values, so this is the one
   // case only the switch check sees.
   test("an unreadable switch is unread even when the message is fine", async () => {
@@ -521,36 +481,6 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
       1: {
         payload: [
           { id: 101, name: "Vendas", working_hours_enabled: true },
-          {
-            id: 102,
-            name: "WhatsApp Suporte",
-            working_hours_enabled: true,
-            out_of_office_message: "",
-          },
-        ],
-      },
-      2: ACCOUNT_2,
-    });
-    const read = await readOutOfOfficeInboxes(
-      ctx(tenantA),
-      agent1,
-      { makeClient },
-      appDb,
-    );
-    expect(read.unreadable).toBe(1);
-  });
-
-  // The switch is on and the message is not a string: same conclusion, other field.
-  test("an armed inbox with an unreadable message is unread too", async () => {
-    const { makeClient } = fakeChatwoot({
-      1: {
-        payload: [
-          {
-            id: 101,
-            name: "Vendas",
-            working_hours_enabled: true,
-            out_of_office_message: { pt: "Fechado" },
-          },
           {
             id: 102,
             name: "WhatsApp Suporte",

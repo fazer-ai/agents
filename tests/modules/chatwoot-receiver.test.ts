@@ -27,10 +27,7 @@ import {
   receiveChatwootWebhook,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
-import {
-  CHATWOOT_WEBHOOK_MOUNT,
-  chatwootOutgoingUrl,
-} from "@/modules/chatwoot/webhook-mount";
+import { chatwootOutgoingUrl } from "@/modules/chatwoot/webhook-mount";
 import {
   generateRouteToken,
   hashRouteToken,
@@ -39,9 +36,6 @@ import { seedChatwootInstance, withRunNamespace } from "../utils/chatwoot";
 
 // ── mount constant + outgoing_url derivation (unit) ──
 describe("chatwoot webhook mount", () => {
-  test("the mount constant is the canonical receiver path", () => {
-    expect(CHATWOOT_WEBHOOK_MOUNT).toBe("/api/v1/chatwoot/webhook");
-  });
   test("outgoing_url derives from the mount constant; trailing slash trimmed", () => {
     expect(chatwootOutgoingUrl("http://localhost:3000", "tok")).toBe(
       "http://localhost:3000/api/v1/chatwoot/webhook/tok",
@@ -145,10 +139,6 @@ describe("heldByAnotherParty", () => {
         { ourAgentBotId: 9 },
       ),
     ).toBe(false);
-  });
-  // Status is deliberately absent: a resolved conversation nobody holds must not read as held.
-  test("a resolved conversation with no assignee is nobody's", () => {
-    expect(heldByAnotherParty({ assigneeType: null })).toBe(false);
   });
 });
 

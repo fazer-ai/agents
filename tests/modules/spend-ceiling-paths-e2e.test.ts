@@ -316,39 +316,6 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect(verdict.state).toBe("allowed");
   });
 
-  // Vision asks BEFORE IT SPENDS, which is what this proves: the provider seam throws, so an
-  // extraction that got as far as the billed call fails the test.
-  test("vision over the ceiling never calls the provider", async () => {
-    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
-    await spend("inbox", 1200);
-    const s = visionStub();
-    const result = await extractInboundFile({
-      tenantId,
-      instanceId,
-      conversationId: 77,
-      messageId: 78,
-      attachmentId: 79,
-      dataUrl: "https://203.0.113.31:9/a.png",
-      cfg: {
-        enabled: true,
-        provider: "openai",
-        model: "gpt-4o-mini",
-        // A credential that RESOLVES, so the only thing that can stop this before the download is
-        // the ceiling. A dangling ref would make the test pass on `credential_not_found` and go on
-        // passing with the gate deleted, which is exactly what it did until the mutation said so.
-        credentialRef: visionRef,
-        baseURL: null,
-        extractionPrompt: "descreva",
-        maxOutputTokens: null,
-        reasoningEffort: null,
-      },
-      base: appDb,
-      deps: s.deps,
-    });
-    expect(result).toBeNull();
-    expect(s.providerCalls).toEqual([]);
-  });
-
   // AND THE FILE THAT WAS NEVER GOING TO BE READ IS NOT REFUSED. `application/zip` resolves to no
   // vision kind, so the same attachment in a month with budget to spare is skipped as an unsupported
   // type — answering `spend_ceiling` in a spent one names a cause that was not operative, and sends

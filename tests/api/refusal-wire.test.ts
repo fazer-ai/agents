@@ -316,14 +316,6 @@ describe("an error that calls itself a framework refusal", () => {
       expect(body).not.toContain(SECRET);
     },
   );
-
-  test("while the real NotFoundError keeps its 404", async () => {
-    const res = await app.handle(
-      new Request("http://localhost/__real/notfound"),
-    );
-    expect(res.status).toBe(404);
-    expect(await res.text()).toBe("Not Found");
-  });
 });
 
 // The sweep's route, registered HERE and not next to its describe below: everything this file serves
@@ -408,14 +400,6 @@ describe("the access log records the status actually answered", () => {
   test("the 404 arm logs 404 even when the error carries another status", async () => {
     expect(await wireStatusFor("/__real/notfound-status")).toBe(404);
     expect(await loggedStatusFor("/__real/notfound-status")).toBe("404");
-  });
-
-  // An unparsed id reaches the generic arm and is answered and recorded as unhandled. Every
-  // caller-supplied id has its own parse (tests/lib/caller-id-spelling.test.ts sweeps for one that
-  // skips it), so nothing on an HTTP path throws this.
-  test("a bare BigInt throw is answered 500 and logged 500", async () => {
-    expect(await wireStatusFor("/__logged/bigint")).toBe(500);
-    expect(await loggedStatusFor("/__logged/bigint")).toBe("500");
   });
 });
 

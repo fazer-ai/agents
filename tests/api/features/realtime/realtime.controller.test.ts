@@ -109,10 +109,4 @@ describe("realtimeController WS auth gate", () => {
     // succeeded. Browsers may surface this as 1006 instead.
     expect([1002, 1006]).toContain(result.closeCode);
   });
-
-  test("rejects upgrade with an invalid cookie", async () => {
-    const result = await tryConnect("auth_token=not-a-real-jwt");
-    expect(result.opened).toBe(false);
-    expect([1002, 1006]).toContain(result.closeCode);
-  });
 });

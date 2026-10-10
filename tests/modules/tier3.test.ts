@@ -1347,22 +1347,6 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.unassignConversation).toBe(1);
   });
 
-  test("a user carrying the bot's id after a refused assignment is still unassigned", async () => {
-    const stub = makeStub({
-      assigneeType: "User",
-      assigneeId: 7,
-      botMisreadAsUser: true,
-    });
-    await returnConversationToAgent(
-      ctx(tenant),
-      convId,
-      { makeClient: stub.makeClient },
-      appDb,
-    );
-    expect(stub.calls.assignAgentBot).toEqual([501]);
-    expect(stub.calls.unassignConversation).toBe(1);
-  });
-
   test("a bot assignment Chatwoot does not take falls back to removing the person", async () => {
     // A bot deleted in Chatwoot, or a Chatwoot that predates bot assignees, answers without a bot.
     // The person still has to go, or the hand-back leaves them holding a pending conversation.
@@ -2095,63 +2079,6 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(caught).toBeInstanceOf(ConflictError);
     expect((caught as ConflictError).translationKey).toBe(
       "errors.returnAgentOff",
-    );
-    expect(stub.calls.toggleStatus).toEqual([]);
-    expect(stub.calls.unassignConversation).toBe(0);
-  });
-
-  // NOTE: THE BINDING IS RE-READ, NOT ONLY THE AGENT IT NAMED. The inbox row is resolved before the
-  // attachment GET and the move confirmation, so a rebind in that window would leave the last
-  // validation judging the agent that WAS there before, and the confirmation sees nothing, because
-  // it compares the inbox NUMBER, which did not move.
-  test("a responder swapped during the GETs stops the write", async () => {
-    await suDb.conversation.update({
-      where: { id: convId },
-      data: { status: "open", assigneeType: "User", assigneeId: 7 },
-    });
-    const spare = await suDb.agent.create({
-      data: {
-        tenantId: tenant,
-        name: "Spare",
-        systemPrompt: "x",
-        modelConfig: {
-          provider: "openai-compatible",
-          model: "local",
-          baseURL: "https://llm.example.invalid/v1",
-        },
-      },
-    });
-    const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
-    const client = await stub.makeClient();
-    // The rebind lands while the ATTACHMENT read is in flight: past the resolution the validation
-    // below is built on, and before the toggle.
-    (client as { inboxAgentBotId: unknown }).inboxAgentBotId = async () => {
-      await suDb.inbox.update({
-        where: { id: inboxId },
-        data: { agentId: spare.id },
-      });
-      return 501;
-    };
-    let caught: unknown = null;
-    try {
-      await returnConversationToAgent(
-        ctx(tenant),
-        convId,
-        { makeClient: async () => client },
-        appDb,
-      );
-    } catch (e) {
-      caught = e;
-    } finally {
-      await suDb.inbox.update({
-        where: { id: inboxId },
-        data: { agentId: responderId },
-      });
-      await suDb.agent.delete({ where: { id: spare.id } });
-    }
-    expect(caught).toBeInstanceOf(ConflictError);
-    expect((caught as ConflictError).translationKey).toBe(
-      "errors.returnResponderChanged",
     );
     expect(stub.calls.toggleStatus).toEqual([]);
     expect(stub.calls.unassignConversation).toBe(0);

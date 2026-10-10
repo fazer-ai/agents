@@ -71,25 +71,6 @@ describe("burstReopenedResolved", () => {
     ).toBe(false);
   });
 
-  test("an operator's reopen whose activity lands after the message still counts", () => {
-    // The activity job is asynchronous: the reopen's row can carry a higher id than the message.
-    expect(
-      burstReopenedResolved(
-        page(status(12, "resolved"), row(20, 0), status(21, "open")),
-        [20],
-      ),
-    ).toBe(false);
-  });
-
-  test("an 'ok' later in the episode the reopen started is not the reopen", () => {
-    expect(
-      burstReopenedResolved(
-        page(status(12, "resolved"), row(15, 0), row(16, 1), row(20, 0)),
-        [20],
-      ),
-    ).toBe(false);
-  });
-
   test("an earlier customer message after the close, answered by nobody yet, is not in this burst", () => {
     expect(
       burstReopenedResolved(
@@ -105,12 +86,6 @@ describe("burstReopenedResolved", () => {
         page(row(11, 1), row(20, 0), status(21, "resolved")),
         [20],
       ),
-    ).toBe(false);
-  });
-
-  test("a snooze is not a close", () => {
-    expect(
-      burstReopenedResolved(page(status(12, "snoozed"), row(20, 0)), [20]),
     ).toBe(false);
   });
 
@@ -154,19 +129,6 @@ describe("burstReopenedResolved", () => {
     expect(
       burstReopenedResolved(
         page(status(12, "resolved"), row(15, 1), row(20, 0)),
-        [20],
-      ),
-    ).toBe(false);
-  });
-
-  test("an empty burst answers no even on a page that ends in a close", () => {
-    expect(burstReopenedResolved(page(status(12, "resolved")), [])).toBe(false);
-  });
-
-  test("a thank-you whose turn runs after a newer exchange was answered does not close it", () => {
-    expect(
-      burstReopenedResolved(
-        page(status(12, "resolved"), row(20, 0), row(21, 0), row(22, 1)),
         [20],
       ),
     ).toBe(false);

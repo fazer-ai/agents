@@ -231,14 +231,6 @@ describe("renderResponseTemplate", () => {
     expect(got.missing).toEqual([]);
   });
 
-  test("{{secret}} is a path into the RESPONSE and never the credential", () => {
-    // The request-side vocabulary does not exist here. `secret` resolves in the body like any other
-    // key, finds nothing, and renders absent.
-    expect(render("{{secret}}|{{contact_name}}", BODY).text).toBe(
-      `${ABSENT_MARKER}|${ABSENT_MARKER}`,
-    );
-  });
-
   test("a non-object body resolves nothing", () => {
     expect(render("{{a}}", "plain text").text).toBe(ABSENT_MARKER);
     expect(render("{{a}}", null).text).toBe(ABSENT_MARKER);

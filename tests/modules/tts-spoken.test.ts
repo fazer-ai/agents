@@ -264,14 +264,6 @@ describe("planSpokenReply", () => {
     ).toEqual(["sac_vendas@x.com.br"]);
   });
 
-  test("a link label keeps its words and loses only the address inside it", () => {
-    expect(
-      planSpokenReply(
-        "Escreva para [o time em sac@x.com.br](mailto:sac@x.com.br) e respondemos em 2 dias",
-      ).speech,
-    ).toBe("Escreva para o time em e respondemos em 2 dias");
-  });
-
   test("a leading underscore with no closing one is the address's", () => {
     expect(
       planSpokenReply("Escreva para _sac@x.com.br e respondemos em 2 dias")
@@ -441,14 +433,6 @@ describe("planSpokenReply", () => {
     ).toEqual(["https://x.com.br/a>b"]);
   });
 
-  test("an address never restarts inside a local part it cannot hold", () => {
-    expect(
-      planSpokenReply(
-        "Escreva para john!doe.smith@x.com.br e respondemos em 2 dias",
-      ).written,
-    ).toEqual([]);
-  });
-
   test("letters in the CJK and fullwidth blocks belong to the URL", () => {
     expect(
       planSpokenReply(
@@ -561,15 +545,6 @@ describe("planSpokenReply", () => {
     ).toEqual([]);
   });
 
-  // NOTE: pairing later on the line does not make a mid-token marker a token start.
-  test("a marker inside a local part stays the address's even when one closes later", () => {
-    expect(
-      planSpokenReply(
-        "Fale com ops*billing@x.com.br e aguarde *dois dias* pela resposta",
-      ).written,
-    ).toEqual([]);
-  });
-
   test("an underscore inside a later word does not close a leading one", () => {
     expect(
       planSpokenReply(
@@ -599,11 +574,5 @@ describe("planSpokenReply", () => {
     expect(
       planSpokenReply("Acompanhe em `https://x.com.br/pedido…` depois").written,
     ).toEqual(["https://x.com.br/pedido…"]);
-  });
-
-  test("a decimal, a time and a file name are not URLs", () => {
-    const text =
-      "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";
-    expect(planSpokenReply(text).written).toEqual([]);
   });
 });

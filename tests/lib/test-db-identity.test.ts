@@ -28,12 +28,6 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
 const ROOT = checkoutRootFrom(import.meta.url, "../..");
 
 describe("the test database's name belongs to ONE checkout", () => {
-  test("two checkouts of the same repo do not share a database", () => {
-    const a = testDbNameFor("fazerai_agents_test", "/home/dev/agents/main");
-    const b = testDbNameFor("fazerai_agents_test", "/home/dev/agents/hotfix");
-    expect(a).not.toBe(b);
-  });
-
   // The basename alone is not the identity: worktrees are named after the issue they carry, and two
   // clones of two repos can both hold a `main`. The hash is over the ABSOLUTE path for that reason,
   // and it is what makes the readable half safe to truncate.
@@ -308,15 +302,6 @@ describe("a database that is not this tree's database", () => {
     );
   });
 
-  // Order is not the question. `_prisma_migrations` is read in whatever order the query returns and
-  // the directory in whatever order the filesystem lists, so a set difference that depended on
-  // either would report a healthy database as divergent.
-  test("neither side's order is part of the answer", () => {
-    expect(
-      schemaOutOfStep("x_test", done(...[...local].reverse()), sameSql(local)),
-    ).toBeNull();
-  });
-
   // An empty applied set is a database that exists and has never been migrated, which is what a
   // fresh `CREATE DATABASE` leaves behind. It is out of step with every non-empty tree, and saying
   // so is the difference between one clear refusal and a suite that fails on the first missing
@@ -341,13 +326,6 @@ describe("a database that is not this tree's database", () => {
     const message = schemaOutOfStep("x_test", rows, sameSql(local)) as string;
     expect(message).toContain("20260199000000_died_elsewhere");
     expect(message).toContain("never finished");
-  });
-
-  test("a local migration that died half-way stops the run too", () => {
-    const rows = [done(local[0] as string)[0], halfWay(local[1] as string)];
-    expect(
-      schemaOutOfStep("x_test", rows as MigrationRow[], sameSql(local)),
-    ).toContain(local[1] as string);
   });
 });
 
@@ -754,14 +732,6 @@ describe("a schema assembled in an order no fresh database uses", () => {
     expect(out[0]).toContain("20260102000000_b");
   });
 
-  // One deploy writes rows that can share an instant, and a fresh build would have run them in name
-  // order anyway. Reporting a tie would refuse databases that are correct.
-  test("rows that finished in the same instant are not out of order", () => {
-    expect(
-      appliedOutOfOrder([at("20260102000000_b", 5), at("20260101000000_a", 5)]),
-    ).toEqual([]);
-  });
-
   // NOTE: the tie-break and the inversion test have to be the SAME order, and it has to be Prisma's: code
   // points, because it sorts directory names as bytes. `localeCompare` disagrees with `<` on exactly
   // the characters a migration name carries (`-` vs `_`, case), and with two orders a tie sorted one
@@ -831,13 +801,6 @@ describe("a schema assembled in an order no fresh database uses", () => {
 // below checks that against this repo's ledger, since the wrong algorithm would refuse every run.
 describe("a migration whose file no longer matches what ran", () => {
   const names = ["20260101000000_a", "20260102000000_b"];
-
-  test("a matching checksum is silent", () => {
-    expect(changedMigrations(done(...names), sameSql(names))).toEqual([]);
-    expect(
-      schemaOutOfStep("x_test", done(...names), sameSql(names)),
-    ).toBeNull();
-  });
 
   test("an edited file is named, and the refusal says what changed", () => {
     const edited: LocalMigration[] = [

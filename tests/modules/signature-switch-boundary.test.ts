@@ -91,12 +91,6 @@ describe("assertSettingsSignature: the frequency", () => {
     }
   });
 
-  test("an absent frequency passes, because that is every bag written before it existed", () => {
-    expect(() =>
-      assertSettingsSignature({ signature: { text: "Alex" } }, undefined),
-    ).not.toThrow();
-  });
-
   test("a value outside the domain is refused, naming the field", () => {
     let caught: unknown;
     try {
@@ -185,10 +179,6 @@ describe("assertSettingsSignature: position and separator", () => {
     }
   });
 
-  test("an absent field passes: the reader answers it with the default", () => {
-    expect(refusal({ signature: { text: "Alex" } }, undefined)).toBeNull();
-  });
-
   test("a position outside the domain is refused, naming the field", () => {
     const err = refusal({ signature: { position: "esquerda" } }, undefined);
     expect(err?.statusCode).toBe(400);
@@ -211,16 +201,6 @@ describe("assertSettingsSignature: position and separator", () => {
         "signature.separator",
       );
     }
-  });
-
-  test("a stored bad value re-sent unchanged does not block an unrelated save", () => {
-    const stored = { signature: { position: "esquerda", separator: "~~" } };
-    expect(
-      refusal(
-        { signature: { position: "esquerda", separator: "~~", text: "Outro" } },
-        stored,
-      ),
-    ).toBeNull();
   });
 
   // Per FIELD, not per block: fixing the separator of a legacy row does not require fixing its

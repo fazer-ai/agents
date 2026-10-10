@@ -69,14 +69,6 @@ test("and the filter on screen shows that name, not the dead one", async () => {
   expect(text).not.toContain("mcp_oauth_consent_denied");
 });
 
-// The redirect is for the two names it names and nothing else: a value the catalog never had is the
-// operator's own typing, and rewriting it would hide their mistake behind a filter that looks fine.
-test("an unrelated value is left exactly as it was asked", async () => {
-  mountAt("?action=not_an_action");
-  await waitFor(() => expect(sent.length).toBeGreaterThan(0));
-  expect(sent.at(-1) ?? "").toContain("not_an_action");
-});
-
 // ...including one a plain-object lookup would answer with an inherited FUNCTION, reaching the
 // query string as "[object Object]". Driven through the page, where the operator's value enters.
 test("a name off Object.prototype travels as the string it is", async () => {

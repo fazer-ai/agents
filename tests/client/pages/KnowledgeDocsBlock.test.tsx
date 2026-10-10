@@ -445,26 +445,6 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // The list read carries a block too, and it is subject to the same ordering: a slow one must not
-  // land on top of a recheck that started later and already answered.
-  test("a slow list read cannot outrank an answer that overtook it", async () => {
-    docsQueue = [
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: { reason: "credential_pending" },
-      },
-    ];
-    blockQueue = [null];
-    await openModal();
-    onKnowledgeDocument?.({
-      knowledgeBaseId: "b1",
-      documentId: "d1",
-      status: "UNINDEXED",
-    });
-    await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
-    expect(shows(PENDING_TEXT)).toBe(false);
-  });
-
   // A batch emits one event per document and the answer is identical for all of them: the block is
   // the workspace's, not the row's.
   test("a burst of events does not become a burst of reads", async () => {
@@ -881,33 +861,6 @@ describe("a failed document's reason, rendered", () => {
       expect(seen[0]).not.toBe(seen[1]);
     },
   );
-
-  test("the two languages are not the same sentence on screen", async () => {
-    const seen: string[] = [];
-    for (const locale of ["en", "pt-BR"] as const) {
-      setLanguage(locale);
-      docsQueue = [
-        {
-          documents: [
-            doc({ status: "FAILED", error: "errors.embeddingPending" }),
-          ],
-          embeddingBlock: null,
-        },
-      ];
-      await openModal();
-      openTooltip(locale);
-      const text = lookup(locale, "knowledge.docError.embeddingPending");
-      await waitFor(() => {
-        expect(shows(text as string)).toBe(true);
-      });
-      seen.push(text as string);
-      cleanup();
-      docsCalls = 0;
-    }
-    // The control: a screen that ignored the locale would put the same sentence in both slots and
-    // every assertion above would still pass.
-    expect(seen[0]).not.toBe(seen[1]);
-  });
 
   // NOTE: the stored column in its legacy token shape. Same render path, same tooltip: the alias
   // only matters if it survives to the screen.

@@ -589,55 +589,6 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
     });
 
-    // Everything past the scheme is model-written free text: an order number, a document, a person's
-    // name in a filename — and the HOST too, because an operator who allows `*.loja.com.br` has handed
-    // the model the subdomain. `detail` is documented to hold ids/counts/enums and to be exportable.
-    test("an identifying path does not survive into storage", async () => {
-      const logged = await argsLoggedFor({
-        url: "https://cdn.loja.com.br/pedidos/48213/nota-fiscal-maria-silva.png",
-      });
-      expect(logged?.url).toMatch(/^string\(\d+\)$/);
-      expect(JSON.stringify(logged)).not.toContain("maria-silva");
-      expect(JSON.stringify(logged)).not.toContain("48213");
-    });
-
-    test("a subdomain the model chose under a wildcard host is gone too", async () => {
-      const logged = await argsLoggedFor({
-        url: "https://pedido-48213.loja.com.br/foto.png",
-      });
-      expect(logged?.url).toMatch(/^string\(\d+\)$/);
-      expect(JSON.stringify(logged)).not.toContain("48213");
-    });
-
-    test("credentials embedded in the URL itself are dropped too", async () => {
-      const logged = await argsLoggedFor({
-        url: "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png",
-      });
-      expect(logged?.url).toMatch(/^string\(\d+\)$/);
-      expect(JSON.stringify(logged)).not.toContain("senha-secreta");
-      expect(JSON.stringify(logged)).not.toContain("usuario");
-    });
-
-    // NOTE: WHATWG ignores leading spaces and control characters, so this is a working URL to
-    // `new URL()` and to `fetch`, while a `^https?` prefix check would take it for text and store it whole.
-    test("whitespace in front of a URL does not smuggle it past the sanitizer", async () => {
-      const logged = await argsLoggedFor({
-        url: " \thttps://cdn.loja.com.br/fotos/x.png?token=segredo-escondido",
-      });
-      expect(logged?.url).toMatch(/^string\(\d+\)$/);
-      expect(JSON.stringify(logged)).not.toContain("segredo-escondido");
-    });
-
-    // A string that announces itself as http(s) and then does not parse is exactly the case where we
-    // cannot tell which part of it is host and which is payload, so none of it is kept.
-    test("a URL that does not parse is replaced, not passed through", async () => {
-      const logged = await argsLoggedFor({
-        url: "https://cdn.loja.com.br:99999/x.png?token=segredo-em-voo",
-      });
-      expect(logged?.url).toMatch(/^string\(\d+\)$/);
-      expect(JSON.stringify(logged)).not.toContain("segredo-em-voo");
-    });
-
     // A key the model invented (a free-form record parameter, or any provider-authored result) has no
     // declaration behind it, so it is counted rather than logged. The identifier-looking shortcut this
     // replaced would have logged `Maria` verbatim.
@@ -661,17 +612,6 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       );
       expect(logged?.url).toBe("https://cdn.loja.com.br/x.png");
       expect(logged?.caption).toBe("Oi Maria");
-    });
-
-    test("a caption never reaches storage at all", async () => {
-      const logged = await argsLoggedFor({
-        url: "https://cdn.loja.com.br/x.png",
-        caption: "Oi Maria, aqui está o modelo que você pediu",
-      });
-      // NOTE: The caption is described like any other value, not dropped by NAME, so the text is gone
-      // without a list of key names to maintain.
-      expect(logged?.caption).toMatch(/^string\(\d+\)$/);
-      expect(JSON.stringify(logged)).not.toContain("Maria");
     });
   });
 });

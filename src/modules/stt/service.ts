@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { shareInFlight } from "@/lib/locks";
+import { shareAbortableInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
@@ -107,9 +107,10 @@ export async function transcribeInboundAudio(
   );
   if (stashed?.transcribedText) return stashed.transcribedText;
   if (stashed?.transcriptionEmpty) return null;
-  return shareInFlight(
+  return shareAbortableInFlight(
     `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
-    () => transcribeOnce(params),
+    (signal) => transcribeOnce({ ...params, signal }),
+    params.signal,
   );
 }
 

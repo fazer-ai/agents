@@ -861,7 +861,8 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       },
       signal: deadline.signal,
     });
-    expect(downloads.length).toBe(8);
+    // A deadline already passed starts no download at all.
+    expect(downloads.length).toBe(0);
   });
 
   test("a passed deadline also stops the downloads that only sort out ornaments", async () => {
@@ -896,8 +897,57 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       },
       signal: deadline.signal,
     });
-    // The first batch was already under way; nothing past the cap is downloaded to classify it.
-    expect(downloads.length).toBe(8);
+    // Nothing is read, and nothing past the cap is downloaded to classify it.
+    expect(downloads.length).toBe(0);
+  });
+
+  test("a deadline passing while a body image past the cap is downloaded cuts that download", async () => {
+    await setVision(true);
+    const fotos = Array.from({ length: 9 }, (_, i) =>
+      blob(680 + i, `g${i}.png`),
+    );
+    const ninth = fotos[8];
+    const deadline = new AbortController();
+    let cut: boolean | undefined;
+    const client = {
+      servesUrl: () => true,
+      downloadAttachment: async (
+        dataUrl: string,
+        opts?: { signal?: AbortSignal },
+      ) => {
+        if (dataUrl === ninth) {
+          deadline.abort();
+          cut = opts?.signal?.aborted;
+        }
+        return { bytes: png(1200, 1600), contentType: "image/png" };
+      },
+      updateAttachmentMeta: async () => ({}),
+    } as unknown as ChatwootClient;
+    await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1052,
+      messageId: 1,
+      visuals: fotos.map((dataUrl, i) => ({
+        id: null,
+        dataUrl,
+        name: `g${i}.png`,
+        imageDescription: null,
+        extractedText: null,
+      })),
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: async () => client,
+        fetchImpl: visionFetch(Array.from({ length: 8 }, () => "foto")),
+      },
+      signal: deadline.signal,
+    });
+    expect(cut).toBe(true);
   });
 
   test("a message the deadline cut halfway keeps what was read and names what was not", async () => {

@@ -94,11 +94,17 @@ describe.if(dbUp)("remove the decisions simulation mode", () => {
         decisions: { ...BLOCK, apply: "enforce" },
       },
     });
+    // `apply` was optional and read as `shadow`: this one was in simulation without saying so.
+    ids.implicit = await agent("simulando sem dizer", {
+      monitoring: { engine: "decisions", decisions: BLOCK },
+    });
+    // A draft block left behind the language model governed nothing, so its agent stays on.
+    ids.draft = await agent("rascunho no llm", {
+      monitoring: { engine: "llm", decisions: BLOCK },
+    });
     ids.none = await agent("sem decisoes", {
       monitoring: { engine: "llm", analysis: "incremental" },
     });
-    for (const statement of statementsOf(sql)) await suDb.query(statement);
-    // Twice: the file must be safe to run again.
     for (const statement of statementsOf(sql)) await suDb.query(statement);
   });
 
@@ -127,6 +133,28 @@ describe.if(dbUp)("remove the decisions simulation mode", () => {
         after: { enabled: false, reason: REASON },
       },
     ]);
+  });
+
+  test("an agent on decisions with no apply was in simulation too, and is disabled", async () => {
+    const r = await row(id("implicit"));
+    expect(r.enabled).toBe(false);
+    expect(await auditOf(id("implicit"))).toEqual([
+      {
+        action: "agent.disabled_by_upgrade",
+        actor_type: "system",
+        before: {
+          enabled: true,
+          "monitoring.decisions.apply": "shadow (default)",
+        },
+        after: { enabled: false, reason: REASON },
+      },
+    ]);
+  });
+
+  test("a draft block behind the language model leaves its agent on", async () => {
+    const r = await row(id("draft"));
+    expect(r.enabled).toBe(true);
+    expect(await auditOf(id("draft"))).toEqual([]);
   });
 
   test("an agent already live keeps running and only loses the key", async () => {

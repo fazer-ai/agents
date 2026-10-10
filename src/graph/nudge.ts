@@ -1403,15 +1403,18 @@ async function runAgentNudgeBody(
     cfg = withAuthContextSection(cfg, auth.context ?? null);
   }
 
-  const integrationNameOf = async (id: string): Promise<string | null> =>
-    runScopedOn(base, sysCtx(tenantId), (db) =>
+  const integrationNameOf = async (raw: string): Promise<string | null> => {
+    const id = parseDbId(raw);
+    if (id === null) return null;
+    return runScopedOn(base, sysCtx(tenantId), (db) =>
       db.integrationInstance.findUnique({
-        where: { id: BigInt(id) },
+        where: { id },
         select: { name: true },
       }),
     )
       .then((r) => r?.name ?? null)
       .catch(() => null);
+  };
   // THE PROACTIVE LIMIT, asked once nothing else stands between this nudge and the model. Every run
   // is gated, the note-only ones included (a person holds it, or the window closed with no template):
   // their reply is a note, but a tool's own send (an ack) can still reach the customer, and only a

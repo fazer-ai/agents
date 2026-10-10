@@ -624,6 +624,10 @@ export async function runSchedulerTick(
 // How many observations the drain is running RIGHT NOW. Per process, which is what this worker is by
 // construction.
 let observeRunning = 0;
+// Set when the observe drain had a free slot and found no provider permit, cleared when it gets one.
+// While set, the traffic drain leaves one permit free (runTrafficTick): a freed permit is otherwise
+// retaken by the traffic refill in the same turn, and a recovery backlog would starve the observers.
+let observeRefused = false;
 
 export interface ObserveTickOptions {
   // How many observations may run at once. `startScheduler` passes the provider bound.
@@ -656,6 +660,7 @@ export async function runObserveTick(
   }
   // NOTE: not a claim of zero. claimWhere clamps its limit to at least 1, so asking with no permit
   // in hand would take one row the drain cannot start.
+  observeRefused = permits.length === 0 && opts.slots > observeRunning;
   if (permits.length === 0) return { claimed: 0, settled: Promise.resolve() };
   let jobs: ClaimedJob[];
   try {
@@ -738,6 +743,7 @@ export async function runTrafficTick(
     if (!permit) break;
     permits.push(permit);
   }
+  if (observeRefused) permits.pop()?.();
   let jobs: ClaimedJob[];
   try {
     jobs = await claimDueTrafficJobs(

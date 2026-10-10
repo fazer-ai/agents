@@ -21,6 +21,7 @@ import {
   getJobHandler,
   type JobHandler,
   registerJobHandler,
+  runObserveTick,
   runSchedulerTick,
   runTrafficTick,
   startScheduler,
@@ -285,6 +286,42 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
         where: { tenantId, kind: "DELIVERY_RECOVERY", status: "PENDING" },
       }),
     ).toBe(1);
+  });
+
+  test("after the observe drain was refused a permit, the traffic drain leaves one free for it", async () => {
+    install();
+    h.release();
+    await arm("DELIVERY_RECOVERY", "yields");
+    const gate = new Semaphore(1);
+    const held = gate.tryAcquire();
+    const refused = await runObserveTick(appDb, {
+      slots: 1,
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    });
+    expect(refused.claimed).toBe(0);
+    held?.();
+    const opts = {
+      slots: 2,
+      window: new StartWindow(100),
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    };
+    expect((await runTrafficTick(appDb, opts)).claimed).toBe(0);
+    // The observe drain takes the permit it was owed (no row due here, so it hands it back).
+    await (
+      await runObserveTick(appDb, {
+        slots: 1,
+        gate,
+        staleMs: 300_000,
+        tenantId,
+      })
+    ).settled;
+    const tick = await runTrafficTick(appDb, opts);
+    await tick.settled;
+    expect(h.started).toEqual(["yields"]);
   });
 
   test("a recovery is claimed before older ingestion, and ingestion before an older NOTHING_TO_ANSWER", async () => {

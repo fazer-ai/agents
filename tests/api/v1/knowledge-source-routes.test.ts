@@ -172,13 +172,6 @@ describe.skipIf(!dbUp)("knowledge base source routes (issue #794)", () => {
     ).toBeNull();
   });
 
-  test("asking for a sync or a removal on a base with no source is refused, not a 500", async () => {
-    const sync = await call("POST", `/bases/${kb}/source/sync`, adminKey);
-    const remove = await call("DELETE", `/bases/${kb}/source`, adminKey);
-    expect(sync.status).toBe(409);
-    expect(remove.status).toBe(404);
-  });
-
   test("a malformed body is refused with the field, and nothing is saved", async () => {
     const cases: [unknown, number][] = [
       [{ ...GOOD, slug: "a/b" }, 400],

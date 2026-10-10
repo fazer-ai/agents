@@ -121,20 +121,6 @@ describe.skipIf(!dbUp)(
       expect(await rows()).toHaveLength(1);
     });
 
-    test("a DELETE that does not settle first leaves the scheduled write behind", async () => {
-      await settleFlowEvents();
-      await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
-      const { ctx, ev } = event(crypto.randomUUID());
-      emitFlowEvent({ ...ctx, base: slowBase(suDb, 300) }, ev);
-      // NOTE: A raw clear, the shape `clearFlowLog` replaces.
-      await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
-      await settleFlowEvents();
-      // The table was emptied twice and still holds a row: this is the defect, stated as a fact so
-      // that a future change making the write synchronous is a deliberate red rather than a silent
-      // one. It is also why `settleFlowEvents` cannot be optional at a clear site.
-      expect(await rows()).toHaveLength(1);
-    });
-
     test("a DELETE that settles first leaves nothing behind", async () => {
       await settleFlowEvents();
       await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;

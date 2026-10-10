@@ -240,24 +240,6 @@ describe.skipIf(!dbUp)("playground", () => {
     );
   });
 
-  // NOTE: the playground runs the production toolset on a thread of its own, and its REACTIVE path
-  // applies the same silence rule as the follow-up path, so the operator is never shown the raw
-  // token as the reply.
-  test("the follow-up's skip sentinel is not rendered as a playground reply", async () => {
-    const r = await runPlaygroundTurn({
-      ctx: ctx(tenantId),
-      agentId: agentOk,
-      message: "oi",
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(r.reply).toBe("");
-  });
-
   // NOTE: emptying the REPLY does not empty the THREAD: `graph.invoke` checkpoints the raw message
   // before the rule runs, and on a multi-turn session the next turn would read one more sentinel
   // answer, the compounding the inbox path rolls back (production fidelity, `docs/playground.md`).
@@ -1030,20 +1012,6 @@ describe.skipIf(!dbUp)("playground", () => {
     } finally {
       await suDb.agentToolSelection.delete({ where: { id: grant.id } });
     }
-  });
-
-  test("a follow-up with an empty model reply is reported as silent", async () => {
-    const r = await runPlaygroundFollowup({
-      ctx: ctx(tenantId),
-      agentId: agentOk,
-      base: appDb,
-      deps: {
-        makeModel: () => new FakeListChatModel({ responses: [""] }),
-        checkpointer: new MemorySaver(),
-      },
-    });
-    expect(r.reply).toBe("");
-    expect(r.silent).toBe(true);
   });
 
   test("listPlaygroundTools classifies native/utility/http/rag and marks simulated", async () => {

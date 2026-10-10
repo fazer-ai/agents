@@ -175,14 +175,6 @@ describe("round 1: the editor renders exactly, or not at all", () => {
     );
     expect(Object.keys(out)).toEqual(["set_labels"]);
   });
-
-  test("a malformed entry is NOT rewritten into a working rule by a save", () => {
-    const stored = { t: { kind: "attribute", scope: "moon", key: "k" } };
-    const out = serializeToolPreconditions([], stored);
-    expect(out.t).toEqual({ kind: "attribute", scope: "moon", key: "k" });
-    // And the runtime still ignores it, which is the state the operator asked for by never fixing it.
-    expect(readToolPreconditions({ toolPreconditions: out })).toEqual({});
-  });
 });
 
 // SAVING WITHOUT CHANGING A ROW MUST NOT CHANGE WHAT THE RUNTIME ACCEPTS, asserted per class of

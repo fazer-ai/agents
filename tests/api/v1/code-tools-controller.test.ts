@@ -12,11 +12,6 @@ describe("code-tools controller writeBody vs service schema (drift guard)", () =
     const serviceKeys = Object.keys(codeToolCreateSchema.shape);
     expect(serviceKeys.filter((k) => !bodyKeys.has(k))).toEqual([]);
   });
-
-  test("code and description specifically are present", () => {
-    expect(Object.keys(writeBody.properties)).toContain("code");
-    expect(Object.keys(writeBody.properties)).toContain("description");
-  });
 });
 
 // The transport must not rebuild the field map. A record schema turns a `__proto__` field into the

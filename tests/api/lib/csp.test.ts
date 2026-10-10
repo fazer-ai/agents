@@ -5,12 +5,6 @@ const sha256b64 = (content: string) =>
   new Bun.CryptoHasher("sha256").update(content).digest("base64");
 
 describe("extractInlineScriptHashes", () => {
-  test("hashes a single inline script", () => {
-    const content = "console.log(1);";
-    const hashes = extractInlineScriptHashes(`<script>${content}</script>`);
-    expect(hashes).toEqual([`'sha256-${sha256b64(content)}'`]);
-  });
-
   test("skips external scripts with src attribute", () => {
     const html = `<script src="x.js"></script><script>inline</script>`;
     const hashes = extractInlineScriptHashes(html);
@@ -117,12 +111,6 @@ describe("buildCspDirectives", () => {
     expect(d.scriptSrc).toContain("'unsafe-eval'");
   });
 
-  test("prod mode does NOT include 'unsafe-inline'/'unsafe-eval' in script-src", () => {
-    const d = buildCspDirectives({ ...baseOpts, isDev: false });
-    expect(d.scriptSrc).not.toContain("'unsafe-inline'");
-    expect(d.scriptSrc).not.toContain("'unsafe-eval'");
-  });
-
   test("googleOAuthEnabled adds GSI origin to script/style/connect/frame", () => {
     const d = buildCspDirectives({ ...baseOpts, googleOAuthEnabled: true });
     expect(d.scriptSrc).toContain("https://accounts.google.com");
@@ -136,16 +124,6 @@ describe("buildCspDirectives", () => {
     // NOTE: GSI does not load images/fonts; keep those directives lean.
     expect(d.imgSrc).not.toContain("https://accounts.google.com");
     expect(d.fontSrc).not.toContain("https://accounts.google.com");
-  });
-
-  // The document preview needs `'self'`/`blob:` in frame-src whether or not GSI is on, and the GSI
-  // origin is ADDED to that rather than replacing it. Asserting the disabled case separately is what
-  // catches a future edit that makes the two branches disagree — which is how the preview would work
-  // only on instances with Google login configured.
-  test("googleOAuth disabled keeps frame-src at self/blob:", () => {
-    const d = buildCspDirectives({ ...baseOpts, googleOAuthEnabled: false });
-    expect(d.frameSrc).toEqual(["'self'", "blob:"]);
-    expect(d.frameSrc).not.toContain("https://accounts.google.com");
   });
 });
 

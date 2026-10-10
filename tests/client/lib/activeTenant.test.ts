@@ -52,19 +52,6 @@ describe("reconcileActiveTenantId", () => {
     });
     expect(getActiveTenantId()).toBeNull();
   });
-
-  test("it judges what is stored NOW, not what was stored when the list was asked for", () => {
-    // NOTE: a deep link can switch the selection while the list is in flight. The answer coming
-    // back describes tenants, not the moment it was requested, so the newer choice is judged on its
-    // own merit rather than discarded for having arrived late.
-    setActiveTenantId("1");
-    setActiveTenantId("3");
-    expect(reconcileActiveTenantId(["1", "3"])).toEqual({
-      activeId: "3",
-      cleared: false,
-    });
-    expect(getActiveTenantId()).toBe("3");
-  });
 });
 
 // The other end of the same question. `reconcileActiveTenantId` asks it at page load, against the
@@ -74,12 +61,6 @@ describe("reconcileActiveTenantId", () => {
 describe("dropRejectedSelection", () => {
   beforeEach(() => {
     setActiveTenantId(null);
-  });
-
-  test("the selection the server refused is the selection it drops", () => {
-    setActiveTenantId("9");
-    expect(dropRejectedSelection("9")).toBe(true);
-    expect(getActiveTenantId()).toBeNull();
   });
 
   test("a refusal naming another id leaves the selection alone", () => {

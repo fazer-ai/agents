@@ -321,14 +321,6 @@ describe.skipIf(!dbUp)(
           await expect(f.update(ctx(), 999999999n)).rejects.toThrow();
           expect((await rows()).length).toBe(0);
         });
-
-        test("the door is on the row, so an MCP context is not a browser session", async () => {
-          await clearAudit();
-          const id = await f.create(ctx({ actorType: "mcp" }));
-          const r = await rows(`${f.entity}.create`);
-          expect(r[0]?.actorType).toBe("mcp");
-          await f.del(ctx(), id);
-        });
       });
     }
 

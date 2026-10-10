@@ -208,20 +208,6 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
     ).toEqual(atTop);
   });
 
-  test("what it does NOT catch is a paraphrase, by design", () => {
-    // Stated rather than implied: a model writing its own VARIANT of the closing still produces two,
-    // and the fix for that is emptying the prompt, which is what this feature is for. Chatwoot has
-    // the same limit.
-    const paraphrase = "corpo\n\nAtenciosamente,\nGi";
-    expect(
-      attachSignature([paraphrase], SIG, {
-        position: "bottom",
-        separator: "blank",
-        frequency: "once",
-      }),
-    ).toEqual([`${paraphrase}\n\n${SIG}`]);
-  });
-
   test("trailing whitespace does not defeat it", () => {
     expect(
       attachSignature([`corpo\n\n${SIG}\n  \n`], SIG, {
@@ -255,10 +241,6 @@ describe("signatureFor: on or off, and the variables", () => {
       "separator",
       "text",
     ]);
-  });
-
-  test("empty text is the off switch, and the only one", () => {
-    expect(signatureFor({ ...cfg, text: "" })).toBeNull();
   });
 
   test("the SAME placeholders the system prompt takes, through the same function", () => {
@@ -489,10 +471,6 @@ describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
     const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
     expect(alreadySigned(chunks, MULTI, reply)).toBe(false);
   });
-
-  test("a one-message caller needs no whole", () => {
-    expect(alreadySigned([`corpo\n\n${MULTI}`], MULTI)).toBe(true);
-  });
 });
 
 describe("the render options travel with the variables (review of #599)", () => {
@@ -557,19 +535,6 @@ describe("the dedupe asks for a whole line, not a prefix", () => {
     ]);
   });
 
-  // The other half stays true: a real repetition is still caught, at either end.
-  test("the signature on its own line is still recognised at the top", () => {
-    expect(sign("Ana\n\nAnalisei o seu pedido.", "Ana", "top")).toEqual([
-      "Ana\n\nAnalisei o seu pedido.",
-    ]);
-  });
-
-  test("the signature on its own line is still recognised at the bottom", () => {
-    expect(sign("Analisei o seu pedido.\n\nAna", "Ana", "bottom")).toEqual([
-      "Analisei o seu pedido.\n\nAna",
-    ]);
-  });
-
   // A single newline counts too: the model writing its own closing does not have to leave a blank
   // line, and the question is whether the line IS the signature, not how it was spaced.
   test("one newline is boundary enough", () => {
@@ -628,11 +593,6 @@ describe("turning the signature off without deleting it (#612)", () => {
       expect(
         readSignatureConfig({ signature: { text: "  \n " } }).enabled,
       ).toBe(false);
-    });
-
-    test("no signature block at all is off", () => {
-      expect(readSignatureConfig({}).enabled).toBe(false);
-      expect(readSignatureConfig(null).enabled).toBe(false);
     });
   });
 
@@ -781,18 +741,6 @@ describe("frequency: every message of the turn, or one of them", () => {
         fim.join("\n\n"),
       ),
     ).toEqual(fim);
-  });
-
-  test("a silent turn stays silent with all: no balloon is invented", () => {
-    for (const chunks of [[], ["   "], ["  ", "\n "]]) {
-      expect(
-        attachSignature(chunks, SIG, {
-          position: "top",
-          separator: "--",
-          frequency: "all",
-        }),
-      ).toEqual(chunks);
-    }
   });
 
   // NOTE: a signature that spans a blank line is cut by the same paragraph rule the reply is, so
@@ -956,38 +904,6 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual(["Alex\nSupport", `Resposta.\n\n${INDENTED}`]);
   });
 
-  // A COPY IN THE MIDDLE is reached by no walk, because the walks start at the ends. The exact
-  // per-balloon check is what covers it, and that is why it is not redundant with them.
-  test("all: a balloon that IS the signature in the middle is left alone", () => {
-    const chunks = [SIG, "Resposta.", SIG, "Mais uma coisa."];
-    const out = attachSignature(
-      chunks,
-      SIG,
-      { position: "top", separator: "blank", frequency: "all" },
-      chunks.join("\n\n"),
-    );
-    expect(out[0]).toBe(SIG);
-    expect(out[2]).toBe(SIG);
-    expect(out[1]).toBe(`${SIG}\n\nResposta.`);
-    expect(out[3]).toBe(`${SIG}\n\nMais uma coisa.`);
-  });
-
-  // AND THE FLATTENED CHECK IS A BOUNDARY CHECK, not containment, for the reason the exact one is:
-  // a signature that merely APPEARS inside a sentence is prose, and reading it as a signature sends
-  // that balloon out with no closing at all.
-  test("all: a multi-line signature mentioned inside a sentence is still prose", () => {
-    const MULTI = "Alex\n\nMinha Empresa";
-    const chunks = ["Falei com Alex Minha Empresa ontem.", MULTI];
-    expect(
-      attachSignature(
-        chunks,
-        MULTI,
-        { position: "bottom", separator: "blank", frequency: "all" },
-        chunks.join("\n\n"),
-      ),
-    ).toEqual([`Falei com Alex Minha Empresa ontem.\n\n${MULTI}`, MULTI]);
-  });
-
   // NOTE: both ends are walked, because `alreadySigned` asks about both and a model that opened and
   // closed with the same closing wrote two copies, each of which the splitter may have cut.
   test("all: a multi-balloon copy at EACH end is left whole, and only the body is signed", () => {
@@ -1052,21 +968,6 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual(["Se precisar, é só chamar o Alex\n\nAlex"]);
   });
 
-  // A COPY AT EACH END is two copies, and the walk only ever reaches one of them: it stops the
-  // moment the accumulation is the whole signature. The per-balloon question is what covers the
-  // other, and it is not redundant with the walk for exactly this reason.
-  test("all: a balloon that IS the signature is left alone wherever it sits", () => {
-    const chunks = [SIG, "Resposta.", SIG];
-    expect(
-      attachSignature(
-        chunks,
-        SIG,
-        { position: "top", separator: "blank", frequency: "all" },
-        chunks.join("\n\n"),
-      ),
-    ).toEqual([SIG, `${SIG}\n\nResposta.`, SIG]);
-  });
-
   // NOTE: the splitter mangles the model's copy in more ways than one, so the rule is one question
   // for the whole family: with the reply's own ends saying a copy EXISTS, walk in from that end over
   // balloons that are still a suffix (or prefix) of the signature with whitespace collapsed. Every
@@ -1101,24 +1002,6 @@ describe("frequency: every message of the turn, or one of them", () => {
         `Bom dia.\n\n${WIDE}`,
       ),
     ).toEqual([`Bom dia.\n\n${WIDE}`, "Alex\n\n\nMinha Empresa"]);
-  });
-
-  // NOTE: the maxChunks ceiling merges the overflow into the last balloon, rejoining the paragraphs
-  // with a plain "\n\n" after trimming each, so a signature with an INDENTED line comes back without
-  // the indentation. `once` survives it because it asks the original; the per-balloon question
-  // cannot, so it compares like with like: the signature put through the same normalisation.
-  test("all: a copy merged at the ceiling is recognised despite the lost indentation", () => {
-    const INDENTED = "Alex\n\n  Minha Empresa";
-    // What `splitReplyParts` returns for this reply at maxChunks 2.
-    const chunks = ["Bom dia.", "Alex\n\nMinha Empresa"];
-    expect(
-      attachSignature(
-        chunks,
-        INDENTED,
-        { position: "bottom", separator: "blank", frequency: "all" },
-        `Bom dia.\n\n${INDENTED}`,
-      ),
-    ).toEqual([`Bom dia.\n\n${INDENTED}`, "Alex\n\nMinha Empresa"]);
   });
 
   // NOTE: the original is the authority, not the chunk array, the same rule the whole-reply

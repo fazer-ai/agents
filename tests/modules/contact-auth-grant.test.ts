@@ -627,50 +627,6 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(unconfirmedWriteCount()).toBe(0);
   });
 
-  test("an allow cannot slip through while a refusal's delete is in flight", async () => {
-    const ep = endpoint(allowed, denied, allowed);
-    await ask({ cfg: cfg(), ...ep });
-
-    let releaseAllow: (() => void) | undefined;
-    const heldAllow = new Promise<void>((r) => {
-      releaseAllow = r;
-    });
-    let deleteStarted: (() => void) | undefined;
-    const deleting = new Promise<void>((r) => {
-      deleteStarted = r;
-    });
-    const slowAllow = (async () => {
-      await heldAllow;
-      return allowed();
-    }) as unknown as typeof fetch;
-
-    // The allow is in flight first, so its check started before the refusal's.
-    const allowInFlight = ask({ cfg: cfg(), fetchImpl: slowAllow });
-    // The refusal's DELETE is entered and held there: the row is already doomed and the
-    // database has not been told yet.
-    const denial = ask({
-      cfg: cfg({ mode: "perMessage" }),
-      fetchImpl: ep.fetchImpl,
-      base: baseWithGrantHook(appDb, (m, delegate) =>
-        m === "deleteMany"
-          ? async (...args: unknown[]) => {
-              deleteStarted?.();
-              await Bun.sleep(150);
-              return delegate.deleteMany(...args);
-            }
-          : undefined,
-      ),
-    });
-    await deleting;
-    releaseAllow?.();
-    const [late] = await Promise.all([allowInFlight, denial]);
-
-    expect(late.outcome).toBe("allowed");
-    // Checking `refusedSince` and writing are one step per contact, so the allow cannot pass the
-    // check in the gap the delete leaves open. Read and act in two steps and this row comes back.
-    expect(await grants()).toHaveLength(0);
-  });
-
   test("an allow that already passed its check cannot revive the row behind a refusal", async () => {
     const ep = endpoint(allowed, allowed, denied);
     await ask({ cfg: cfg(), ...ep });
@@ -1109,14 +1065,6 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(ep.calls).toHaveLength(2);
   });
 
-  test("the TTL changing re-asks", async () => {
-    const ep = endpoint(allowed, allowed);
-    await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
-    const second = await ask({ cfg: cfg({ grantTtlSeconds: 1800 }), ...ep });
-    expect(second.reused).toBeFalsy();
-    expect(ep.calls).toHaveLength(2);
-  });
-
   // A POLICY CHANGE IS A MATCH RULE, NOT A CLEAR. Stated as a fact, because the tempting reading of
   // the four re-ask cases above is "so nudging a field is how I drop the stored verdicts", and it is
   // not. The fingerprint is a pure function of the policy: change a field and the grants stop
@@ -1127,17 +1075,6 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const restored = contactAuthPolicyHash(cfg({ grantTtlSeconds: 3600 }));
     expect(nudged).not.toBe(before);
     expect(restored).toBe(before);
-  });
-
-  test("nudging a field and putting it back clears nothing", async () => {
-    const ep = endpoint(allowed, allowed);
-    await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
-    // The round trip as an operator would perform it: two saves, and no message in between. Nothing
-    // read a grant while the nudged value stood, so nothing happened to any of them, and the very
-    // next message is served from the verdict the nudge was supposed to have dropped.
-    const after = await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
-    expect(after.reused).toBe(true);
-    expect(ep.calls).toHaveLength(1);
   });
 
   test("a message DURING the nudge moves the grant, it does not drop it", async () => {

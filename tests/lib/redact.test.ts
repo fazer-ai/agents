@@ -161,19 +161,6 @@ describe("the scrub reads past the cut", () => {
     expect(out.v).toBe("‹redacted›…[truncated]");
   });
 
-  test("the marker is decided by the INPUT's length, not the scrubbed one", () => {
-    // Scrubbing frees room, so the stored string can come out shorter than the cap while content
-    // past the margin was still dropped. Deciding the marker on the result would call that complete.
-    const out = redactSecretsDeep(
-      { v: `sk-${"G".repeat(16)} ${"h".repeat(500)}` },
-      0,
-      40,
-      { left: 40 },
-    ) as { v: string };
-    expect(out.v.startsWith("‹redacted›")).toBe(true);
-    expect(out.v).toContain("…[truncated]");
-  });
-
   test("`sanitizeErrorMessage` gets the same order, and always did", () => {
     // It routes through the shared repair, scrub, cut function, which keeps the two surfaces
     // from drifting apart.

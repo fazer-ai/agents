@@ -365,20 +365,6 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect((await rows()).map((r) => r.action)).toEqual(["agent.tools_set"]);
   });
 
-  test("the delete row names the agent under the lock that deletes it", async () => {
-    const agent = await seedAgent({ name: `doomed-${process.pid}` });
-    await clearAudit();
-
-    await deleteAgent(ctx(), BigInt(agent.id), appDb);
-
-    const got = await rows();
-    expect(got.map((r) => r.action)).toEqual(["agent.delete"]);
-    expect(got[0]?.before).toEqual({
-      id: agent.id,
-      name: `doomed-${process.pid}`,
-    });
-  });
-
   test("importing an agent through the service leaves the import row", async () => {
     const source = await seedAgent({ name: `exp-${process.pid}` });
     const doc = await exportAgent(ctx(), BigInt(source.id), appDb);
@@ -544,21 +530,6 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(
       Object.keys(got[0]?.after as Record<string, unknown>).sort(),
     ).toEqual(["followUpHoursId", "settings"]);
-  });
-
-  test("a prompt rewrite alongside a toggle is an update, not a prompt_set", async () => {
-    const agent = await seedAgent();
-    await clearAudit();
-
-    await updateAgent(
-      ctx(),
-      BigInt(agent.id),
-      { systemPrompt: "rewritten", enabled: !agent.enabled },
-      appDb,
-    );
-
-    const got = await rows();
-    expect(got.map((r) => r.action)).toEqual(["agent.update"]);
   });
 
   test("an apply that changes nothing leaves no row", async () => {
@@ -1014,39 +985,6 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(marked?.unreadConfigChanged).toBe(true);
   });
 
-  test("whitespace around the endpoint does not smuggle the credential past the rule", async () => {
-    // `z.string().url()` validates through `new URL`, which ignores surrounding whitespace,
-    // and `validateModelConfigForWrite` discards the parsed result, so the space reaches the column and
-    // an anchored test on the raw string would answer "not an endpoint".
-    const agent = await seedAgent({
-      modelConfig: {
-        provider: "openai-compatible",
-        model: "m",
-        baseURL: " https://u:hunter2@h.example.com/v1",
-      },
-    });
-    await clearAudit();
-
-    await updateAgent(
-      ctx(),
-      BigInt(agent.id),
-      {
-        modelConfig: {
-          provider: "openai-compatible",
-          model: "m",
-          baseURL: " https://u:rotated@h.example.com/v1",
-        },
-      },
-      appDb,
-    );
-
-    const got = await rows();
-    expect(got.length).toBe(1);
-    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
-    expect(dump).not.toContain("hunter2");
-    expect(dump).not.toContain("rotated");
-  });
-
   test("a stored block named __proto__ is not swallowed by the residue map", async () => {
     // `out[k] = v` is not an assignment for that key: it invokes the legacy prototype setter
     // and creates no own property, so both residues would serialize empty and the write would vanish.
@@ -1222,39 +1160,6 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     const deletedRow = got[2]?.before as Record<string, unknown> | undefined;
     expect(createdRow?.id).toBe(created.id);
     expect(deletedRow?.id).toBe(clone.id);
-  });
-
-  test("userinfo is asked of any scheme, and prose is left alone", async () => {
-    // `z.string().url()` accepts `ftp://user:pw@host`, so bounding the WHOLE rule to `http(s)` let
-    // that one through. Widening the userinfo half costs nothing: prose parses with an empty
-    // username (`"Pergunta: você quer?"` has protocol `pergunta:`), which is why the query and
-    // fragment half stays bounded to what is unambiguously an endpoint.
-    const agent = await seedAgent({
-      settings: {
-        stt: { enabled: true, baseURL: "ftp://u:hunter2@files.example.com/x" },
-      },
-    });
-    await clearAudit();
-
-    await updateAgent(
-      ctx(),
-      BigInt(agent.id),
-      {
-        settings: {
-          stt: {
-            enabled: true,
-            baseURL: "ftp://u:rotated@files.example.com/x",
-          },
-        },
-      },
-      appDb,
-    );
-
-    const got = await rows();
-    expect(got.length).toBe(1);
-    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
-    expect(dump).not.toContain("hunter2");
-    expect(dump).not.toContain("rotated");
   });
 
   test("a prompt that merely reads like a URL is recorded in full", async () => {

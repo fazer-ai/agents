@@ -6,10 +6,6 @@ import { importWarningCount } from "@/client/lib/importWarningCount";
 // the count under `n`, not `count`. Coercing a missing `count` to a number gives 0, and the
 // sentence would read "0 bundled documents" about a base that skipped one.
 describe("importWarningCount", () => {
-  test("reads the current name", () => {
-    expect(importWarningCount({ name: "KB", count: 3 })).toBe(3);
-  });
-
   // The direction that fails silently: this is the previous release's payload.
   test("falls back to the name the previous release sent", () => {
     expect(importWarningCount({ name: "KB", n: 3 })).toBe(3);

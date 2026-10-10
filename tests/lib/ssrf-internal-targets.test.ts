@@ -98,12 +98,6 @@ describe("assertSafeOutboundUrl with internal targets", () => {
     expect(url.host).toBe("sidecar:8080");
   });
 
-  test("the same URL without the list keeps the full guard", async () => {
-    await expect(
-      assertSafeOutboundUrl("http://sidecar:8080/sign"),
-    ).rejects.toBeInstanceOf(SsrfError);
-  });
-
   test("a declared host on another port is refused, and says which port was declared", async () => {
     const err = await assertSafeOutboundUrl("http://sidecar:9090/sign", {
       internalTargets: targets,

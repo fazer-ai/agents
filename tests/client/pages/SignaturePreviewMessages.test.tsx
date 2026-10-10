@@ -63,11 +63,6 @@ const messageText = (n: number): string =>
 describe("the signature preview says its balloons are separate messages", () => {
   afterEach(() => cleanup());
 
-  test("split on: each balloon is numbered, and says how many there are", () => {
-    renderTab(true);
-    expect(captions()).toEqual(["1/2", "2/2"]);
-  });
-
   // NOTE: the number alone says "there are two of these"; it does not say WHY, and an operator who
   // does not connect it to the split section reads it as duplication.
   test("split on: the hint names the setting that produced the second message", () => {

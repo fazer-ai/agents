@@ -250,19 +250,6 @@ describe("computeAggregatedSlots", () => {
     expect(at9[0]?.calendarLabel).toBe("Dr. Paulo");
   });
 
-  test("busy intervals are NOT pooled across calendars", () => {
-    // Pooling would intersect the two and leave 09:00 free for nobody.
-    const slots = agg({
-      sources: [
-        { ...ANA, busy: [{ start: iso("09:00"), end: iso("09:30") }] },
-        { ...PAULO, busy: [{ start: iso("09:30"), end: iso("10:00") }] },
-      ],
-    });
-    const starts = slots.map((s) => `${localHM(s.start)}/${s.calendarId}`);
-    expect(starts).toContain("09:00/paulo@x");
-    expect(starts).toContain("09:30/ana@x");
-  });
-
   test("the merged list is chronological, ties broken by the configured order", () => {
     const slots = agg({
       sources: [

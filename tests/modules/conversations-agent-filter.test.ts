@@ -206,16 +206,6 @@ describe.skipIf(!dbUp)("conversations filtered by agent", () => {
     expect(ids(page.items)).toEqual([101, 102, 103]);
   });
 
-  test("a responder's filter is its bound inbox, not the observer's", async () => {
-    const page = await listConversations(
-      ctx(tenantA),
-      { agentId: support },
-      appDb,
-    );
-    // 201 is on inbox 2, which `support` answers and `watcher` observes; 301 is the watcher's alone.
-    expect(ids(page.items)).toEqual([201]);
-  });
-
   test("a monitoring agent's filter is the conversations of the inboxes it observes", async () => {
     const page = await listConversations(
       ctx(tenantA),

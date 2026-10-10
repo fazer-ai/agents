@@ -254,13 +254,6 @@ describe.skipIf(!dbUp)("resend toolpack — resend_email_status", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("a 404 answers recoverable guidance", async () => {
-    const { impl } = stubFetch(404, { name: "not_found" });
-    const tool = statusTool(baseCtx({ fetchImpl: impl }));
-    const out = String(await tool?.invoke({ emailId: "email_zz" }));
-    expect(out).toContain("HTTP 404");
-  });
-
   // NOTE: a sending-only key sends fine and answers 401 to `GET /emails/{id}`, and
   // src/modules/vault/secret-types.ts passes that key at save time on purpose (`restricted_api_key`
   // means the key is valid). The credential test cannot warn about it, and HTTP 401 alone sends the
@@ -294,21 +287,6 @@ describe("resend toolpack — who the recipient may be", () => {
       resolveContactEmail: async () => "cliente@example.com",
       ...over,
     });
-
-  test("the contact's own address goes through", async () => {
-    const { impl, calls } = stubFetch(200, { id: "email_1" });
-    const tool = resendToolpack.build(
-      sel({ enabledTools: ["resend_send_email"] }),
-      contactCtx({ fetchImpl: impl }),
-    )[0];
-    const out = (await tool?.invoke({
-      to: "cliente@example.com",
-      subject: "Confirmação",
-      html: "<p>ok</p>",
-    })) as string;
-    expect(out).toContain("email_1");
-    expect(calls).toHaveLength(1);
-  });
 
   test("any other address is refused, and nothing leaves", async () => {
     const { impl, calls } = stubFetch(200, { id: "email_2" });

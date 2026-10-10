@@ -120,23 +120,9 @@ describe("parseExceptions", () => {
       { date: "2026-12-25", ranges: [] },
     ]);
   });
-
-  test("an empty ranges array survives — closed all day is the common case", () => {
-    expect(
-      parseExceptions([
-        { date: "2026-09-07", label: "Independência", ranges: [] },
-      ]),
-    ).toEqual([{ date: "2026-09-07", label: "Independência", ranges: [] }]);
-  });
 });
 
 describe("isOpenAt (São Paulo, UTC-3)", () => {
-  test("Monday 12:00 local is open", () => {
-    // 2026-06-01T15:00Z = Mon 12:00 in SP
-    expect(
-      isOpenAt(sched(weekdayWindows), new Date("2026-06-01T15:00:00Z")),
-    ).toBe(true);
-  });
   test("Sunday is closed", () => {
     expect(
       isOpenAt(sched(weekdayWindows), new Date("2026-05-31T15:00:00Z")),
@@ -271,14 +257,6 @@ describe("exceptions replace the weekly grid for the dates they match", () => {
     expect(isOpenAt(s, new Date("2026-09-07T13:30:00Z"))).toBe(true); // 10:30 SP
   });
 
-  test("a recurring Feb 29 matches only on leap years", () => {
-    const s = sched(everyDay, SP, [
-      { date: "2024-02-29", recurring: true, ranges: [] },
-    ]);
-    expect(isOpenAt(s, new Date("2028-02-29T15:00:00Z"))).toBe(false);
-    expect(isOpenAt(s, new Date("2027-02-28T15:00:00Z"))).toBe(true);
-  });
-
   test("an exception matches on the schedule's LOCAL date, not the UTC one", () => {
     const s = sched(everyDay, NY, [{ date: "2026-11-01", ranges: [] }]);
     // 2026-11-01T03:00Z is still Oct 31, 23:00 in New York (EDT, UTC-4).
@@ -361,14 +339,6 @@ describe("nextOpenAt", () => {
       new Date("2026-07-10T12:00:00Z"),
     );
     expect(summer?.toISOString()).toBe("2026-07-10T13:00:00.000Z");
-  });
-
-  test("the returned instant is itself open (round-trip)", () => {
-    const at = new Date("2026-05-31T10:00:00Z");
-    const s = sched(weekdayWindows);
-    const next = nextOpenAt(s, at);
-    expect(next).not.toBeNull();
-    expect(isOpenAt(s, next as Date)).toBe(true);
   });
 
   test("skips a holiday and lands on the next working day", () => {

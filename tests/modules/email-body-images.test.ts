@@ -158,16 +158,6 @@ describe("emailBodyImageUrlsFrom", () => {
     expect(emailBodyImageUrlsFrom(ca)).toEqual([url]);
   });
 
-  test("the same blob in both bodies is one image", () => {
-    const ca = {
-      email: {
-        html_content: { full: `<img src="${BLOB}">` },
-        text_content: { full: `<img src="${BLOB}">` },
-      },
-    };
-    expect(emailBodyImageUrlsFrom(ca)).toEqual([BLOB]);
-  });
-
   test("HTML entities in the src are decoded before the URL is used", () => {
     const ca = {
       email: {

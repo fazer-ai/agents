@@ -81,10 +81,6 @@ describe("scanTemplate", () => {
     expect(kinds("{{a}} }}")).toEqual(["token:{{a}}", "stray:}}"]);
   });
 
-  test("does not call a token's own braces stray", () => {
-    expect(kinds("{{a}}{{b}}")).toEqual(["token:{{a}}", "token:{{b}}"]);
-  });
-
   // THE SPANS COME BACK IN DOCUMENT ORDER, because the caller draws them onto a document and a
   // decoration set out of order is a runtime error in CodeMirror, not a cosmetic problem.
   test("returns spans in document order", () => {

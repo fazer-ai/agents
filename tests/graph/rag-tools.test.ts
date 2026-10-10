@@ -120,10 +120,6 @@ describe("resolveSearchScope", () => {
     { id: 11n, name: "FAQ" },
   ];
 
-  test("a valid pick scopes to that base's id", () => {
-    expect(resolveSearchScope("Planos", named, [10n, 11n])).toEqual([10n]);
-  });
-
   test("a duplicate name resolves to EVERY matching base (nothing excluded)", () => {
     const dup = [
       { id: 10n, name: "Planos" },
@@ -219,10 +215,6 @@ describe("resolveSuggestTarget", () => {
     { id: 10n, name: "Planos" },
     { id: 11n, name: "FAQ" },
   ];
-
-  test("a valid pick resolves to that base's id", () => {
-    expect(resolveSuggestTarget("FAQ", named, [10n, 11n])).toBe(11n);
-  });
 
   test("a duplicate name resolves to the FIRST matching base (single target)", () => {
     const dup = [

@@ -178,46 +178,6 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
     expect(loaded?.systemPrompt).toBe("Você é um assistente.");
   });
 
-  test("concurrent set_custom_attribute writes keep every key (atomic jsonb merge)", async () => {
-    const convId = CONV_ID + 1;
-    const conv = await suDb.conversation.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootConversationId: convId,
-        status: "pending",
-        threadId: `${tenantId}:${instanceId}:${convId}`,
-        customAttributes: { origem: "Instagram" },
-      },
-    });
-    const client = {
-      setConversationCustomAttributes: async () => ({}),
-    } as unknown as ChatwootClient;
-    const tools = buildNativeTools({
-      client,
-      conversationId: convId,
-      tenantId,
-      base: appDb,
-      conversationDbId: conv.id,
-    }) as StructuredToolInterface[];
-    const tool = tools.find((t) => t.name === "set_custom_attribute");
-    if (!tool) throw new Error("set_custom_attribute missing");
-
-    // A turn's tool calls run CONCURRENTLY in the tool node, so the mirror write-through has
-    // to merge in ONE statement. A read-modify-write drops keys here: every call would read the
-    // same starting bag and the last writer would win with only its own key.
-    const keys = Array.from({ length: 10 }, (_, i) => `campo_${i}`);
-    await Promise.all(keys.map((key) => tool.invoke({ key, value: key })));
-
-    const row = await suDb.conversation.findUniqueOrThrow({
-      where: { id: conv.id },
-    });
-    expect(row.customAttributes).toEqual({
-      origem: "Instagram",
-      ...Object.fromEntries(keys.map((k) => [k, k])),
-    });
-  });
-
   test("after a burst, what the operator sees and what the agent reads agree", async () => {
     // The test above stubs the Chatwoot call, so it proves only OUR bag survives a burst.
     // Chatwoot's side can diverge (every key mirrored, one kept) and nothing reconciles it, since

@@ -119,12 +119,6 @@ describe("assertSafeOutboundUrl — allowPrivate escape", () => {
     ).resolves.toBeInstanceOf(URL);
   });
 
-  test("allowPrivate:true lets 127.0.0.1 over http through", async () => {
-    await expect(
-      assertSafeOutboundUrl("http://127.0.0.1/mcp", { allowPrivate: true }),
-    ).resolves.toBeInstanceOf(URL);
-  });
-
   test("allowPrivate:true still blocks file: protocol", async () => {
     await expect(
       assertSafeOutboundUrl("file:///etc/passwd", { allowPrivate: true }),

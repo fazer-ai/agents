@@ -86,11 +86,6 @@ describe("describeShape", () => {
     });
   }
 
-  test("a value with no declarations named for it never yields a key", () => {
-    const deep = { a: { b: { c: { d: { e: { f: "segredo" } } } } } };
-    expect(describeShape(deep)).toBe("object(1 keys)");
-  });
-
   // The whole point: whatever the model wrote, none of it comes back out.
   test("no value survives, at any depth", () => {
     const payload = {

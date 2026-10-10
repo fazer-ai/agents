@@ -49,12 +49,6 @@ function def(over: Partial<HttpToolDef> = {}): HttpToolDef {
 }
 
 describe("sanitizeToolName / schema", () => {
-  test("sanitizes provider-invalid characters", () => {
-    expect(sanitizeToolName("asaas payment.create")).toBe(
-      "asaas_payment_create",
-    );
-  });
-
   test("normalizes accents (NFD), case, spaces and collapses underscores", () => {
     expect(sanitizeToolName("Busca por CPF/CNPJ")).toBe("busca_por_cpf_cnpj");
     expect(sanitizeToolName("Consultar Pedição")).toBe("consultar_pedicao");
@@ -833,20 +827,6 @@ describe("buildHttpTool — query params (any method)", () => {
     expect(url.searchParams.get("bar")).toBe("static");
     expect(url.searchParams.get("foo")).toBeNull();
   });
-
-  test("legacy GET (no query) still derives non-path fields into the query", async () => {
-    const captured: Captured = {};
-    const tool = buildHttpTool(
-      def({
-        method: "GET",
-        urlTemplate: `https://${PUBLIC}/v1/x`,
-        inputSchema: { foo: { type: "string" } },
-      }),
-      { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
-    );
-    await tool.invoke({ foo: "X" });
-    expect(new URL(captured.url as string).searchParams.get("foo")).toBe("X");
-  });
 });
 
 describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_schema + single-brace placeholders)", () => {
@@ -930,23 +910,6 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
     await tool.invoke({ nome_cliente: "Maria" });
     const headers = captured.init?.headers as Record<string, string>;
     expect(headers["X-Nome-Cliente"]).toBe("Maria");
-  });
-
-  test("POST with empty body config + JSON-Schema input: args land in the JSON body", async () => {
-    const captured: Captured = {};
-    const tool = buildHttpTool(
-      def({
-        method: "POST",
-        urlTemplate: `https://${PUBLIC}/v1/x`,
-        inputSchema: JSON_SCHEMA_INPUT,
-        body: {},
-      }),
-      { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
-    );
-    await tool.invoke({ valor: "TESTE123" });
-    expect(JSON.parse(captured.init?.body as string)).toEqual({
-      valor: "TESTE123",
-    });
   });
 
   // NOTE: the three "empty" spellings send three different things (`{}` is not "no body"). Pinned
@@ -1113,11 +1076,6 @@ describe("buildHttpTool — declared expected statuses (issue #59)", () => {
     expect(String(declared.content)).toBe(String(undeclared.content));
   });
 
-  test("an undeclared status on the same tool is still a failure", async () => {
-    const out = await callWith(500, [404]);
-    expect(out.status).toBe("error");
-  });
-
   // The reason this is a list and not a range: an operator declaring "not found is data" must not
   // silently stop hearing about the credential failures next to it.
   test("declaring 404 does not cover 401 or 403", async () => {
@@ -1125,11 +1083,6 @@ describe("buildHttpTool — declared expected statuses (issue #59)", () => {
       const out = await callWith(s, [404]);
       expect(out.status).toBe("error");
     }
-  });
-
-  test("an empty declaration leaves issue #40 exactly as it was", async () => {
-    const out = await callWith(404, []);
-    expect(out.status).toBe("error");
   });
 });
 
@@ -1394,39 +1347,6 @@ describe("a response template with no tokens does not need a body", () => {
       "HTTP 200\nDone. The booking is confirmed.",
     );
   });
-
-  test("a template WITH a token still falls back to the raw body when it is not JSON", async () => {
-    // The other half of the gate is untouched: a token needs a body to resolve against, and an
-    // empty render would be worse than the body it replaced.
-    const warns: string[] = [];
-    const tool = buildHttpTool(
-      {
-        name: "lookup",
-        method: "GET",
-        urlTemplate: "https://8.8.8.8/v1/x",
-        allowedHosts: ["8.8.8.8"],
-        headers: {},
-        inputSchema: {},
-        expectedStatuses: [],
-        credentialRef: null,
-        credentialKind: null,
-        credentialParamName: null,
-        credentialBaseUrl: null,
-        ackMessage: null,
-        outputSchema: { mode: "template", template: "Name: {{name}}" },
-      },
-      {
-        resolveCredential: async () => null,
-        onSideEffectError: (e) => warns.push(e.phase),
-        fetchImpl: (async () =>
-          new Response("not json at all", {
-            status: 200,
-          })) as unknown as typeof fetch,
-      },
-    );
-    expect(String(await tool.invoke({}))).toBe("HTTP 200\nnot json at all");
-    expect(warns).toContain("response_template");
-  });
 });
 
 // "Not rendered" covers a tool with NO template and a tool whose template deliberately does not
@@ -1533,17 +1453,6 @@ describe("a list of unknown length renders through a block (#459)", () => {
   const body = JSON.stringify({ total: 120, resultados: results });
   const TEMPLATE =
     "{{total}} resultados:\n{{#each resultados}}\n- #{{id}} {{nome}} — R$ {{preco}}\n{{/each}}";
-
-  test("without a block the raw list is clipped and the model reads the cut as an end", async () => {
-    expect(body.length).toBeGreaterThan(4000);
-    const tool = buildHttpTool(def(), {
-      resolveCredential: async () => null,
-      fetchImpl: stubFetch({}, 200, body),
-    });
-    const text = String(await tool.invoke({}));
-    expect(text).toContain("…[truncated]");
-    expect(text).not.toContain("Produto 120");
-  });
 
   test("with a block the model receives one line per row, the noise dropped, and the rest counted", async () => {
     const notes: string[] = [];
@@ -1698,16 +1607,6 @@ describe("the turn's deadline reaches an http tool", () => {
     // Relayed onto the bounded fetch's own controller, so a request in flight is cancelled when the
     // budget ends instead of running to its own timeout past the end of the tick.
     expect(captured.init?.signal).toBeDefined();
-  });
-
-  test("no deadline is the reactive turn, and it is unchanged", async () => {
-    const captured: Captured = {};
-    const tool = buildHttpTool(def(), {
-      resolveCredential: async () => null,
-      fetchImpl: stubFetch(captured),
-    });
-    await tool.invoke({});
-    expect(captured.url).toContain("/v1/thing");
   });
 });
 

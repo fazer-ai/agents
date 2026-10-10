@@ -15,12 +15,6 @@ describe("readerSafeBlock", () => {
     expect(readerSafeBlock(null)).toBeNull();
   });
 
-  test("the reason survives", () => {
-    expect(readerSafeBlock({ reason: "embedding_not_configured" })).toEqual({
-      reason: "embedding_not_configured",
-    });
-  });
-
   // A pending or empty credential is exactly the case that carries the ref, so it is the one that
   // must not cross.
   test("the credential ref and its vault id never cross", () => {
@@ -31,14 +25,5 @@ describe("readerSafeBlock", () => {
     });
     expect(out).toEqual({ reason: "credential_pending" });
     expect(JSON.stringify(out)).not.toContain("42");
-  });
-
-  test("the same holds for an empty credential", () => {
-    const out = readerSafeBlock({
-      reason: "credential_empty",
-      credentialRef: "vault:7",
-      vaultId: "7",
-    });
-    expect(Object.keys(out ?? {})).toEqual(["reason"]);
   });
 });

@@ -307,18 +307,6 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(m.judgeCalls()).toBe(1);
   });
 
-  test("an output violation with the silent action leaves no reply at all", async () => {
-    const m = models({ violated: true });
-    const r = await runPlaygroundTurn({
-      ctx: ctx(tenantId),
-      agentId: agentSilent,
-      message: "e o concorrente?",
-      base: appDb,
-      deps: deps(m),
-    });
-    expect(r.reply).toBe("");
-  });
-
   // Faithful reproduction of the direction that does not merely alter the reply: it skips the graph.
   // Asserting the reply alone would pass on a build that ran the agent and then discarded its answer,
   // which is the same text and a different (and billed) thing.

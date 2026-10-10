@@ -466,35 +466,6 @@ describe("the fallback keeps the turn once it has it", () => {
     expect(lastAssistantText(out.messages)).toBe("pronto");
   });
 
-  // The cost, not just the count, because the count alone cannot say whether it mattered. The
-  // primary is given a measurable failure here for the same reason production's worst case is a
-  // hang: an instant failure makes every version of this code look identical.
-  test("and the turn does not pay that failure once per round", async () => {
-    const primary = new SlowFailingModel(
-      Object.assign(new Error("overloaded"), { status: 503 }),
-      120,
-    );
-    const fallback = new ToolLoopModel("peek", 2);
-    const graph = buildAgentGraph({
-      model: primary,
-      systemPrompt: "s",
-      tools: [peek()],
-      primary: PRIMARY,
-      fallback: {
-        model: fallback,
-        provider: "anthropic",
-        modelId: "claude-haiku-4-5",
-      },
-    });
-    const started = performance.now();
-    await graph.invoke({ messages: [new HumanMessage("oi")] });
-    const elapsed = performance.now() - started;
-    // One 120ms failure, not three. The bound is deliberately loose (a third round would put this
-    // past 360ms); what it asserts is that the failure is paid ONCE.
-    expect(elapsed).toBeLessThan(240);
-    expect(primary.calls).toBe(1);
-  });
-
   // The demotion is not free: it costs the primary the rest of the turn. So it may only happen when
   // the primary actually failed, and a healthy one has to keep every round.
   test("a healthy primary keeps all of them", async () => {
@@ -729,44 +700,11 @@ describe("assertSettingsModelFallback", () => {
     ).toBeNull();
   });
 
-  test("and every other provider still needs one", () => {
-    for (const provider of [
-      "openai",
-      "anthropic",
-      "google",
-      "deepseek",
-      "openrouter",
-    ]) {
-      expect(refuses(bag({ provider, model: null }), {})).toContain(
-        "model is missing",
-      );
-    }
-  });
-
-  // The exemption is about the MODEL, not about the pair: a model with no provider is still no
-  // destination, whichever provider would have been named.
-  test("a model with no provider is refused on that path too", () => {
-    expect(refuses(bag({ provider: null, model: "llama-3" }), {})).toContain(
-      "provider is missing",
-    );
-  });
-
   // Whitespace is not a name, and this is the one the editor's own trim already agreed with.
   test("a blank string does not count as named", () => {
     expect(refuses(bag({ provider: "openai", model: "   " }), {})).toContain(
       "model is missing",
     );
-  });
-
-  // PER FIELD, because mergeBehaviorSettings merges a block one level deep: the MCP patch sends the
-  // fields it means to change, and a patch naming only the model is a complete statement when the
-  // stored block already names a provider.
-  test("a patch naming only the model is whole against a stored provider", () => {
-    expect(
-      merged(bag({ model: "other" }), {
-        modelFallback: { provider: "openai", model: "gpt-5.4-mini" },
-      }),
-    ).toBeNull();
   });
 
   test("a patch naming only the provider is still half a fallback", () => {

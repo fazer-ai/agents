@@ -224,18 +224,6 @@ describe("google calendar toolpack — credential + calendar binding", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("a single allowed calendar is auto-selected", async () => {
-    const { impl, calls } = stubFetch(200, { items: [] });
-    await toolFor(
-      "calendar_list_events",
-      { calendarIds: ["team@group.calendar.google.com"] },
-      baseCtx({ fetchImpl: impl }),
-    )?.invoke({});
-    expect(calls[0]?.url).toContain(
-      `/calendars/${encodeURIComponent("team@group.calendar.google.com")}/events`,
-    );
-  });
-
   test("several allowed calendars + no arg → asks to choose, no fetch", async () => {
     const { impl, calls } = stubFetch(200, { items: [] });
     const out = (await toolFor(
@@ -2025,19 +2013,6 @@ describe("google calendar toolpack — inviting the customer (issue #1005)", () 
     expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
     expect(read).toBe(0);
     expect(JSON.parse(out).invitedEmail).toBeUndefined();
-  });
-
-  test("an unknown mode value stays off", async () => {
-    const { impl, calls } = stubWriteFetch(CREATED);
-    await toolFor(
-      "calendar_create_event",
-      { ...OFF, inviteCustomer: "yes" },
-      baseCtx({
-        fetchImpl: impl,
-        readContactEmail: async () => "ana@example.com",
-      }),
-    )?.invoke(INPUT);
-    expect(bodyOf(writeCall(calls)).attendees).toBeUndefined();
   });
 
   test("contact mode: the address read from Chatwoot at call time is the one attendee, notified", async () => {

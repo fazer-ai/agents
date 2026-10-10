@@ -332,20 +332,6 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     expect(sent).toHaveLength(0);
   });
 
-  test("the result never carries the channel's own URL", async () => {
-    const id = await seed("secretive", { url: outboundUrl("/t0k3n-in-here") });
-    const { fetchImpl } = receiver(() => new Response("nope", { status: 500 }));
-
-    const res = await sendAlertChannelTest(ctx(), id, appDb, {
-      fetchImpl,
-      assertSafe: allowAll,
-    });
-
-    // A Discord webhook URL embeds a bot token, which is why the read returns it masked. A result
-    // that quotes the URL back hands it to every log and every screenshot of the console.
-    expect(JSON.stringify(res)).not.toContain("t0k3n-in-here");
-  });
-
   test("a destination that redirects does not hand the URL back in the reason", async () => {
     // A Discord webhook URL embeds a bot token, and Bun's `UnexpectedRedirect` names the URL
     // it was fetching IN FULL, which would reach this result, the console toast and

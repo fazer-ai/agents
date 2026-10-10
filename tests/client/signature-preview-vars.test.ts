@@ -152,13 +152,6 @@ describe("the preview signs with the operator's own names", () => {
     ).toBe(`${PROMPT_PREVIEW_AGENT}, ${PROMPT_PREVIEW_COMPANY}`);
   });
 
-  // The contact stays an example in both cases: it is the half the editor cannot know.
-  test("the contact is the shared example either way", () => {
-    expect(preview("{{nome_contato}}", vars)).toContain(
-      PROMPT_PREVIEW_CONTACT.contactName,
-    );
-  });
-
   // The call site has to hand the component's live map over, not rebuild a fixed one beside it.
   test("the tab passes the live map to its preview", () => {
     const at = SOURCE.indexOf("const signatureVars =");

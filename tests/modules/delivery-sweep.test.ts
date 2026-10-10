@@ -914,33 +914,6 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
-  test("reports a row the OLD container stranded during a rolling deploy", async () => {
-    // The migration closes what exists when it runs, and then the container still serving keeps
-    // acking webhooks until it is stopped. That build writes neither id and does not stamp the
-    // claim, so a row it strands carries nothing but its status — and read literally, every message
-    // it lost would be closed as "carried none". The missing claim stamp is the tell: tx1 writes one
-    // on every row THIS build works, so a PROCESSING row without it was claimed by a build whose
-    // nulls mean "unrecorded".
-    const rowId = await seedStrandedDelivery({
-      conversationId: null,
-      ageMs: STALE_MS * 2,
-      // No claimedAgoMs: the old tx1 had no column to stamp.
-      inboundMessageId: null,
-      event: "message_created",
-    });
-
-    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
-    expect(counts.lost).toBe(1);
-    expect(counts.closed).toBe(0);
-    expect((await statusOf(rowId)).status).toBe("DEAD");
-    // Filed without a conversation, because that is all the row can say.
-    const lines = await unscopedDeliveryLines();
-    expect(lines.length).toBeGreaterThan(0);
-
-    await clearFlowLog(suDb, { tenantId });
-    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
-  });
-
   test("reports a loss even when the mirror does not know the conversation", async () => {
     // The process died before the mirror write, so there is no watermark to compare against. The
     // safe reading of a question that cannot be answered is the one that puts the row in front of

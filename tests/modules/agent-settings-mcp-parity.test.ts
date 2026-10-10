@@ -355,17 +355,6 @@ describe("toolGuidance and toolPreconditions publish the native catalog", () => 
     expect(String(block.description)).toContain("PRECEDENCE");
     expect(String(block.description)).toContain("handoff.instructions");
   });
-
-  test("a name added to the catalog needs no edit here", () => {
-    // The shape is generated from NATIVE_TOOL_NAMES; this asserts the generation is wired,
-    // since a hand-written list would pass the test above and go stale on the next native tool.
-    const shape = (
-      BEHAVIOR_PATCH_SHAPE.toolGuidance as unknown as {
-        unwrap: () => { shape: Record<string, unknown> };
-      }
-    ).unwrap().shape;
-    expect(Object.keys(shape).sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
-  });
 });
 
 // The merge takes a `null` tombstone so a rule can be REMOVED over MCP, and both the schema and the

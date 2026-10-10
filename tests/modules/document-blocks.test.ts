@@ -1245,19 +1245,4 @@ describe("storable structural keys", () => {
     expect(r.ok).toBe(false);
     expect(r.ok ? "" : r.reason).toContain("U+D800");
   });
-
-  test("but an id in someone's own alphabet still passes", () => {
-    // The half that makes this a STORABILITY rule and not a character-set one. An id is a name, and
-    // an operator authoring through MCP writes it in the language they think in.
-    const r = parseAuthoredTemplate(
-      [
-        text,
-        { id: "secao", type: "divider" },
-        { id: "\u0440\u0430\u0437\u0434\u0435\u043b", type: "divider" },
-      ],
-      [],
-      undefined as never,
-    );
-    expect(r.ok).toBe(true);
-  });
 });

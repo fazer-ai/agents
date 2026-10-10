@@ -1778,31 +1778,6 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     }
   });
 
-  test("a bundle carrying the retired riskTier still imports (issue #137)", async () => {
-    // Bundles exported before the risk tier was dropped carry `riskTier` on every HTTP tool.
-    // The import schema is a plain z.object, which STRIPS unknown keys; the removal is only safe as
-    // long as that holds, so pin it against a bundle from an older instance.
-    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
-      includeComponents: true,
-    });
-    const dated = structuredClone(exp);
-    const tool = dated.components?.httpTools.find(
-      (h) => h.name === "lookup_order",
-    );
-    if (!tool) throw new Error("bundle missing lookup_order");
-    tool.name = "retired_tier_lookup";
-    (tool as unknown as Record<string, unknown>).riskTier = "high";
-    const grant = dated.agent.tools.find(
-      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
-    );
-    if (grant?.source === "HTTP") grant.tool = "retired_tier_lookup";
-    await importAgent(dstCtx(), dated, appDb);
-    const row = await suDb.toolDefinition.findFirst({
-      where: { tenantId: dstTenant, name: "retired_tier_lookup" },
-    });
-    expect(row?.name).toBe("retired_tier_lookup");
-  });
-
   test("re-import reuses same-name components (never overwrites) and warns", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,

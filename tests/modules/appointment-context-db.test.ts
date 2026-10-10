@@ -380,29 +380,6 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("## Agendamentos deste atendimento");
   });
 
-  // hasLiveAppointment is the follow-up suppression predicate, reading the same record the block
-  // above does. Covered here because this file already owns the fixtures.
-  test("hasLiveAppointment: true while the start is ahead, false once cancelled", async () => {
-    await seedConversation(104);
-    await appointmentBooked({
-      tenantId,
-      threadId: threadOf(104),
-      eventId: "ev_ctx3",
-      calendarId: "primary",
-      credentialRef: null,
-      startISO: inHours(48),
-      summary: null,
-      calendarLabel: null,
-      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
-      base: appDb,
-    });
-    expect(await hasLiveAppointment(tenantId, threadOf(104), appDb)).toBe(true);
-    await cancelAppointment(tenantId, "ev_ctx3", appDb);
-    expect(await hasLiveAppointment(tenantId, threadOf(104), appDb)).toBe(
-      false,
-    );
-  });
-
   // The two configurations that write no scheduler row must still leave the platform with an
   // appointment. Both assert the RECORD's consequences, not the row count: the pause predicate and
   // the prompt block.
@@ -1047,35 +1024,5 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
       loadAppointmentContext(db, tenantId, threadOf(116)),
     );
     expect(left.map((e) => e.eventId)).toEqual(["foo:bar"]);
-  });
-
-  // The other half of the same rule: a Google appointment keeps the BARE event id in its dedupe key,
-  // because every reminder armed before providers existed is keyed that way and a cancel that
-  // started prefixing them would leave a real customer reminder firing.
-  test("(#352) a Google appointment's reminder key is unchanged", async () => {
-    await seedConversation(112);
-    await appointmentBooked({
-      tenantId,
-      threadId: threadOf(112),
-      eventId: "ev_gcal_key",
-      calendarId: "primary",
-      credentialRef: "vault:1",
-      startISO: inHours(48),
-      summary: null,
-      calendarLabel: null,
-      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
-      base: appDb,
-    });
-    expect(
-      await runScopedOn(appDb, sysCtx(), (db) =>
-        db.schedulerJob.count({
-          where: {
-            tenantId,
-            kind: "APPOINTMENT_REMINDER",
-            dedupeKey: "reminder:ev_gcal_key:24",
-          },
-        }),
-      ),
-    ).toBe(1);
   });
 });

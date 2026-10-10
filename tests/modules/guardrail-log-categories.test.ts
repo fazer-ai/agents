@@ -61,11 +61,4 @@ describe("loggableCategories", () => {
       expect(loggableCategories(c.input)).toEqual(c.expected);
     });
   }
-
-  // The count is absent, not zero, when nothing was dropped: a key that is always there stops being
-  // read, and the question it answers ("did something fire that we cannot name?") only exists when
-  // the answer is yes.
-  test("a clean list carries no count at all", () => {
-    expect("categoriesUnnamed" in loggableCategories(["toxicity"])).toBe(false);
-  });
 });

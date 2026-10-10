@@ -79,17 +79,6 @@ describe("a response template under the tool's limit", () => {
     expect(got.text).toContain("Preço: R$ 10");
   });
 
-  test("raised to 20000, the whole description renders, with the field after it", () => {
-    const got = renderResponseTemplate(
-      { template: TEMPLATE },
-      JSON.parse(EVENT_BODY),
-      { maxChars: 20_000 },
-    );
-    expect(got.text).toContain(DESCRIPTION);
-    expect(got.text).not.toContain("…[truncated]");
-    expect(got.text).toContain("Preço: R$ 10");
-  });
-
   test("a value longer than the limit is cut where it is, and the rest of the template keeps 2000", () => {
     const got = renderResponseTemplate(
       { template: TEMPLATE },

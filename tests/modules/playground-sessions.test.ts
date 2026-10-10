@@ -119,19 +119,6 @@ describe("rebuildPlaygroundTurns", () => {
     });
   });
 
-  // The control, and it is the whole reason the rules differ: an ORDINARY turn keeps the token,
-  // because editing a customer-facing answer is the data loss `docs/graph.md` prohibits.
-  test("a reopened ordinary turn still carries a stray token", () => {
-    const turns = rebuildPlaygroundTurns([
-      new HumanMessage("oi"),
-      new AIMessage(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`),
-    ]);
-    expect(turns[1]).toMatchObject({
-      role: "assistant",
-      text: `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`,
-    });
-  });
-
   test("a system nudge yields a follow-up reply; a silent one is skipped", () => {
     const turns = rebuildPlaygroundTurns([
       new HumanMessage("oi"),

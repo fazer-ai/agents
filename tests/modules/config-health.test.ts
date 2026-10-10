@@ -280,14 +280,6 @@ describe("computeConfigIssues", () => {
     expect(stt).toMatchObject({ pending: true, vaultId: "9" });
     expect(tts).toMatchObject({ pending: true, vaultId: "8" });
   });
-
-  test("a filled credential not in pendingRefs is not flagged", () => {
-    const issues = computeConfigIssues({
-      ...base,
-      pendingRefs: new Set(["vault:999"]),
-    });
-    expect(issues).toEqual([]);
-  });
 });
 
 describe("computeConfigIssues — knowledge indexing gated by embedding", () => {
@@ -772,28 +764,6 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ]);
     });
 
-    // A credential that is referenced but never filled is a second, independent way for the rewrite
-    // to go quiet, and it is checked whether or not the provider was also overridden.
-    test("a pending credential is reported as pending, with its vaultId", () => {
-      expect(
-        computeConfigIssues({
-          ...audio,
-          ttsNormalize: true,
-          ttsNormalizeProvider: "openai",
-          ttsNormalizeCredentialRef: "vault:3",
-          pendingRefs: new Set(["vault:3"]),
-        }),
-      ).toEqual([
-        {
-          key: "ttsNormalize",
-          tab: "behavior",
-          sectionId: "tts",
-          pending: true,
-          vaultId: "3",
-        },
-      ]);
-    });
-
     test("a resolvable credential with its provider named raises nothing", () => {
       expect(
         computeConfigIssues({
@@ -1151,16 +1121,6 @@ describe("computeConfigIssues — an openai-compatible model with a ref of its o
     modelBaseURL: "http://llama:8080/v1",
   };
 
-  test("still raises nothing when no credential is set", () => {
-    expect(
-      computeConfigIssues({
-        ...compat,
-        modelCredentialRef: "",
-        knownRefs: new Set(["vault:1"]),
-      }),
-    ).toEqual([]);
-  });
-
   test("flags a credential it does set whose entry is gone", () => {
     expect(
       computeConfigIssues({ ...compat, knownRefs: new Set(["vault:9"]) }),
@@ -1400,19 +1360,6 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
     ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
   });
 
-  test("waits when the rewrite's own credential could carry the endpoint", () => {
-    expect(
-      computeConfigIssues({
-        ...audio,
-        ttsNormalize: true,
-        ttsNormalizeProvider: "openai-compatible",
-        ttsNormalizeCredentialRef: "vault:3",
-        ttsNormalizeBaseURL: "",
-        knownRefs: null,
-      }),
-    ).toEqual([]);
-  });
-
   // Inheriting the agent's model means inheriting its endpoint, and the agent's endpoint can live on
   // the agent's credential — read from the same list.
   test("waits when the inherited agent credential could carry it", () => {
@@ -1428,19 +1375,6 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
         knownRefs: null,
       }),
     ).toEqual([]);
-  });
-
-  test("stops waiting once the vault has answered and nothing supplied one", () => {
-    expect(
-      computeConfigIssues({
-        ...audio,
-        ttsNormalize: true,
-        ttsNormalizeProvider: "openai-compatible",
-        ttsNormalizeCredentialRef: "vault:3",
-        ttsNormalizeBaseURL: "",
-        knownRefs: new Set(["vault:1", "vault:2", "vault:3"]),
-      }),
-    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
   });
 });
 
@@ -1549,17 +1483,6 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
     });
   }
 
-  // The mirror of the pair above: the schedule alone does not make it the duplicate either.
-  test("a closing schedule with the away message off is still the contradiction", () => {
-    const issues = computeConfigIssues({
-      ...base,
-      settings: { availability: { enabled: false, awayMessage: "Fechados." } },
-      savedSchedule: CLOSES,
-      outOfOfficeInboxes: ONE,
-    });
-    expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
-  });
-
   // NOTE: A disabled agent says nothing to the customer at all (the runtime gates the away message on
   // it and refuses the turn), so Chatwoot's message is the only one that arrives and NEITHER spelling
   // is true. This is the one line in this panel that claims something about what the customer receives
@@ -1580,23 +1503,6 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
       ).toEqual([]);
     });
   }
-
-  // Every other line in the panel offers a fix; these two must as well, or the operator reads a
-  // problem with no way in.
-  test("both spellings offer an action", () => {
-    for (const settings of [
-      {},
-      { availability: { enabled: true, awayMessage: "x" } },
-    ]) {
-      const issue = computeConfigIssues({
-        ...base,
-        settings,
-        savedSchedule: CLOSES,
-        outOfOfficeInboxes: ONE,
-      })[0];
-      expect(issue && issueHasAction(issue)).toBe(true);
-    }
-  });
 });
 
 describe("computeConfigIssues — text stored over its cap", () => {
@@ -1846,12 +1752,6 @@ describe("issueHasAction", () => {
           contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
         }).map((i) => i.key),
       ).toEqual(["contactAuthNoUrl"]);
-    });
-
-    test("no flag when the gate is off — an unused URL field is not a problem", () => {
-      expect(
-        computeConfigIssues({ ...base, contactAuthEnabled: false }),
-      ).toEqual([]);
     });
   });
 

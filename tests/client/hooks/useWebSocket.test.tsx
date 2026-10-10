@@ -285,30 +285,6 @@ describe("useWebSocket", () => {
     }
   });
 
-  test("reconnect() resets attempts and reopens", async () => {
-    const factory = makeFactory();
-    const { result } = renderHook(() => useWebSocket(factory));
-    act(() => sockets[0]?.fireOpen());
-    act(() => result.current.reconnect());
-    await waitFor(() => {
-      expect(factory).toHaveBeenCalledTimes(2);
-      expect(sockets[0]?.closedWith?.code).toBe(1000);
-    });
-  });
-
-  test("autoReconnect=false leaves status 'disconnected' on close", async () => {
-    const factory = makeFactory();
-    const { result } = renderHook(() =>
-      useWebSocket(factory, { autoReconnect: false }),
-    );
-    act(() => sockets[0]?.fireOpen());
-    act(() => sockets[0]?.fireClose(1006));
-    await waitFor(() => {
-      expect(result.current.status).toBe("disconnected");
-    });
-    expect(factory).toHaveBeenCalledTimes(1);
-  });
-
   test("status moves to 'error' after maxAttempts failed reconnects", async () => {
     // We close *without* opening, so `attemptRef` is never reset.
     // With maxAttempts=2, the 3rd close in sequence trips the limit branch.

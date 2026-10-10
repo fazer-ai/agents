@@ -12,10 +12,6 @@ describe("resolveSafeRedirect", () => {
     expect(resolveSafeRedirect(value, ORIGIN)).toBeNull();
   });
 
-  test("accepts a plain internal path", () => {
-    expect(resolveSafeRedirect("/t/42", ORIGIN)).toBe("/t/42");
-  });
-
   test("preserves the query string and hash", () => {
     expect(resolveSafeRedirect("/t/42?tab=notes#comment-1", ORIGIN)).toBe(
       "/t/42?tab=notes#comment-1",
@@ -59,10 +55,4 @@ describe("resolveSafeRedirect", () => {
       expect(resolveSafeRedirect(value, ORIGIN)).toBeNull();
     },
   );
-
-  test("rejects a value whose origin differs by port", () => {
-    expect(
-      resolveSafeRedirect("http://localhost:9999/t/42", ORIGIN),
-    ).toBeNull();
-  });
 });

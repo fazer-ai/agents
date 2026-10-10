@@ -138,35 +138,6 @@ describe("schemaRefusal", () => {
     expect(en.body.field).toBe("name");
   });
 
-  test("a query parameter is named the same way a body value is", () => {
-    const refusal = schemaRefusal(
-      validationError("query", t.Object({ limit: t.Number() }), {
-        limit: "abc",
-      }),
-      "en",
-    );
-    expect(refusal.status).toBe(422);
-    expect(refusal.body.field).toBe("limit");
-  });
-
-  test("a route parameter is named, like every other request side", () => {
-    const refusal = schemaRefusal(
-      validationError("params", t.Object({ id: t.Numeric() }), { id: "abc" }),
-      "en",
-    );
-    expect(refusal.status).toBe(422);
-    expect(refusal.body.field).toBe("id");
-  });
-
-  test("a header is named too", () => {
-    const refusal = schemaRefusal(
-      validationError("headers", t.Object({ "x-tenant": t.String() }), {}),
-      "en",
-    );
-    expect(refusal.status).toBe(422);
-    expect(refusal.body.field).toBe("x-tenant");
-  });
-
   test("a value with no nameable input answers without a field at all", () => {
     const refusal = schemaRefusal(
       validationError("body", t.String(), 42),

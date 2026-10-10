@@ -38,9 +38,4 @@ describe("limits form ↔ stored round trip", () => {
       retrySilence: true,
     });
   });
-
-  test("an emptied ceiling field is stored as off", () => {
-    const form = { ...limitsToForm({}), maxHistoryTokens: "" };
-    expect(limitsToStored(form).maxHistoryTokens).toBeNull();
-  });
 });

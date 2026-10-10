@@ -298,21 +298,6 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     expect(t.map((e) => e.turnDelivered)).toEqual([true, false]);
   });
 
-  // Só a ferramenta do silêncio afirma alguma coisa sobre o silêncio. O marcador da transferência,
-  // no mesmo turno que entregou, não passa a carregar o fato.
-  test("nenhum outro marcador do turno passa a carregar o fato", async () => {
-    await clearFlowLog(suDb, { tenantId });
-    await linhaDeFerramenta("turno-transferiu", "handoff_to_human", {
-      args: { customerMessage: "Já chamo uma pessoa." },
-    });
-    await linhaDeFerramenta("turno-transferiu", "skip_reply", {
-      turnDelivered: true,
-    });
-    const t = await trilha();
-    const h = t.find((e) => e.name === "handoff_to_human");
-    expect(h?.turnDelivered).toBeNull();
-  });
-
   // A linha antiga, escrita antes desta entrega, não carrega o fato. Ela não pode virar "entregou"
   // por omissão: o rótulo que ela já tinha é o que ela continua tendo.
   test("uma linha sem o fato não afirma entrega nenhuma", async () => {

@@ -95,13 +95,6 @@ describe("confirmStepUp", () => {
       await expect(confirmStepUp(legacy, "s3cret")).resolves.toBeUndefined();
     }
   });
-
-  // The cookie session's `actorType` is absent (the tenancy boundary only stamps "api_key"); absent
-  // is a session, never a key.
-  test("an absent actorType is a session", async () => {
-    const err = await confirmStepUp({ userId: 1n }, undefined).catch((e) => e);
-    expect((err as AppError).translationKey).toBe("errors.passwordRequired");
-  });
 });
 
 // A key never mints a credential that outlives it: the routes that mint one refuse

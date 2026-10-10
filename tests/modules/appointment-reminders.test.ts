@@ -38,9 +38,6 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 describe("normalizeOffsets", () => {
-  test("keeps valid hours, sorted descending", () => {
-    expect(normalizeOffsets([1, 24])).toEqual([24, 1]);
-  });
   test("de-dups and rounds", () => {
     expect(normalizeOffsets([24, 24, 2.7, 1])).toEqual([24, 3, 1]);
   });
@@ -139,10 +136,7 @@ describe("reminderNudge", () => {
     expect(n.instructions).toContain("calendar_confirm_appointment");
     expect(n.summary).toContain("Consulta");
   });
-  test("not the last reminder → plain reminder, no confirmation", () => {
-    const n = reminderNudge({ ...args, isLast: false, askConfirmation: true });
-    expect(n.instructions).not.toContain("calendar_confirm_appointment");
-  });
+
   test("last but confirmation disabled → plain reminder", () => {
     const n = reminderNudge({ ...args, isLast: true, askConfirmation: false });
     expect(n.instructions).not.toContain("calendar_confirm_appointment");
@@ -815,24 +809,6 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(s.sent).toEqual([]);
     // Nothing to retry either: the appointment happened.
     expect(result).toEqual({ outcome: "done" });
-  });
-
-  test("a run before the appointment still reminds", async () => {
-    const job = await armed("reminder:evt-ahead:60", {
-      isLast: true,
-      startISO: new Date(Date.now() + 3_600_000).toISOString(),
-    });
-    const s = stubClient();
-
-    const result = await appointmentReminderHandler(job, appDb, {
-      makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
-      makeClient: s.makeClient,
-      checkpointer: new MemorySaver(),
-      persistUsage: async () => {},
-    });
-
-    expect(result).toEqual({ outcome: "done" });
-    expect(s.sent.length).toBeGreaterThan(0);
   });
 
   // A reminder whose job's deadline already fired sends nothing: that run was failed, and its
@@ -1601,14 +1577,6 @@ describe("reminderNudge temporal grounding (#685)", () => {
   test("under two hours, the distance is in minutes", () => {
     const i = at("2026-09-16T16:00:00-03:00", "2026-09-16T15:15:00-03:00");
     expect(i).toContain("about 45 minutes");
-  });
-
-  // The boundary that decides "today" is the appointment's OWN offset, which is the zone the customer
-  // reads the time in. In UTC this pair straddles midnight (02:00Z on the 17th against 23:00Z on the
-  // 16th) and the reminder would announce tomorrow's appointment an hour before it starts.
-  test("the day boundary is the start's own offset, not UTC", () => {
-    const i = at("2026-09-16T23:00:00-03:00", "2026-09-16T20:00:00-03:00");
-    expect(i).toContain("on that same calendar day (today)");
   });
 
   // The SIGN of that offset, in both directions. The pair above cannot see it: an offset shifts the

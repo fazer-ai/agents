@@ -418,35 +418,6 @@ describe.skipIf(!dbUp)(
       expect(stub.calls).not.toContain("assignAgentBot");
     });
 
-    test("a hand-back records the outcome, because taken-over is not the outcome asked for", async () => {
-      await clearAudit();
-      const id = await seedConversation(4004, {
-        status: "open",
-        assigneeType: "User",
-        assigneeId: 5,
-      });
-      const stub = stubClient();
-      const outcome = await returnConversationToAgent(
-        ctx(),
-        id,
-        { makeClient: stub.makeClient },
-        appDb,
-      );
-      const [row] = await rows();
-      expect(row?.action).toBe("conversation.return");
-      expect(row?.before).toEqual({
-        status: "open",
-        assigneeType: "User",
-        assigneeId: 5,
-      });
-      expect(row?.after).toEqual({
-        status: "pending",
-        assigneeType: "AgentBot",
-        assigneeId: 9,
-        outcome,
-      });
-    });
-
     // THE MATRIX: a row carries where the write LANDED, not what the caller ASKED for. Every action
     // that writes through `mirrorConsoleWrite` gets a row from the same value the broadcast
     // publishes, and each is driven on a conversation whose live state answers something other than

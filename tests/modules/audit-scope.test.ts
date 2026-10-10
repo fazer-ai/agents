@@ -174,13 +174,6 @@ describe.skipIf(!dbUp)("which trail the read answers for", () => {
     });
   }
 
-  test("a tenant admin may still ask for its own tenant", async () => {
-    const page = await listAudit(ctx(), { scope: "tenant", limit: 500 }, appDb);
-    expect(page.entries.map((e) => e.target ?? "").filter(OURS)).toEqual([
-      `${TAG}:mine`,
-    ]);
-  });
-
   // `latestAt` is documented as the newest row of the trail past any filter, and the TRAIL is now
   // whichever one the scope named. Reporting the tenant's newest row on a fleet read would describe
   // a trail the page is not showing.

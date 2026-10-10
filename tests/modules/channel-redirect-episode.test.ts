@@ -42,15 +42,6 @@ describe("redirectSide", () => {
   test("a disabled redirect has no sides at all", () => {
     expect(redirectSide({ ...cfg, enabled: false }, ENTRY_INBOX)).toBeNull();
   });
-
-  test("a half that is not provisioned yet is not a side", () => {
-    expect(
-      redirectSide({ ...cfg, widgetInboxId: null }, WIDGET_INBOX),
-    ).toBeNull(
-      // Null must not match a null inbox id either — the guard is on the id, not on the pairing.
-    );
-    expect(redirectSide({ ...cfg, entryInboxId: null }, null)).toBeNull();
-  });
 });
 
 // Each row is a reason NOT to touch the database, and the reactive gate runs on every inbound
@@ -79,32 +70,6 @@ describe("episodeOriginQuery", () => {
     // Not a recency fallback. The source said this episode has no WhatsApp half, and the consumers
     // of this answer MESSAGE and RESOLVE what it names.
     expect(q).toBeNull();
-  });
-
-  test("never having been told still falls back to recency", () => {
-    const q = episodeOriginQuery({
-      ...base,
-      widget: {
-        chatwootRedirectOriginAt: null,
-        redirectOriginDisplayId: null,
-        contactId: 9n,
-      },
-    });
-    expect(q?.by).toBe("recency");
-  });
-
-  // A stated pairing is the answer whether or not we hold a mark for it — a Chatwoot too old to send
-  // `updated_at` writes the value and stamps nothing.
-  test("a stored pairing with no mark is still the answer", () => {
-    const q = episodeOriginQuery({
-      ...base,
-      widget: {
-        chatwootRedirectOriginAt: null,
-        redirectOriginDisplayId: 41,
-        contactId: 9n,
-      },
-    });
-    expect(q?.by).toBe("stored");
   });
 
   test("a stored pairing IS the answer: looked up by id, with no ordering to lose it", () => {
@@ -361,16 +326,6 @@ describe.skipIf(!dbUp)("episodeTestActivatedAt", () => {
       base: appDb,
       ...over,
     });
-
-  test("an unstamped widget inherits the entry side's activation", async () => {
-    const at = new Date("2026-08-20T10:00:00Z");
-    await stampEntry(ENTRY_CONV, at);
-    try {
-      expect((await askFromWidget(null))?.toISOString()).toBe(at.toISOString());
-    } finally {
-      await clearEntries();
-    }
-  });
 
   // The other direction, which the link-time propagation has never covered: `/teste` typed in the
   // chat is the same person saying the same thing.

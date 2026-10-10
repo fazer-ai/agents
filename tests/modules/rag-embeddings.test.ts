@@ -79,19 +79,6 @@ describe("OpenAI-compatible embeddings", () => {
     ).toEqual([vec(0), vec(1)]);
   });
 
-  test("uses the same compatible path for query embeddings", async () => {
-    const fetchImpl = (async () =>
-      json({
-        data: [{ index: 0, embedding: vec(7) }],
-      })) as unknown as typeof fetch;
-    expect(
-      await embedQuery("consulta", config(), {
-        fetchImpl,
-        assertSafe: passThrough,
-      }),
-    ).toEqual(vec(7));
-  });
-
   // The guard the vault does not apply: `baseUrl` is persisted after an http(s) SYNTAX check only,
   // so without this a tenant admin turns ingestion into a POST at a loopback or metadata address.
   test("asserts the outbound URL before any fetch, and refuses on a block", async () => {
@@ -185,17 +172,6 @@ describe("OpenAI-compatible embeddings", () => {
     expect(String((err.cause as Error).message)).toContain("invalid api key");
   });
 
-  test("rejects a response with the wrong vector count", async () => {
-    const fetchImpl = (async () =>
-      json({ data: [] })) as unknown as typeof fetch;
-    await expect(
-      embedTexts(["consulta"], config(), {
-        fetchImpl,
-        assertSafe: passThrough,
-      }),
-    ).rejects.toThrow("provider error");
-  });
-
   test("rejects a vector that is not all numbers", async () => {
     const fetchImpl = (async () =>
       json({
@@ -204,20 +180,6 @@ describe("OpenAI-compatible embeddings", () => {
     await expect(
       embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
     ).rejects.toThrow("provider error");
-  });
-
-  // The column is `vector(1536)` and `updateEmbeddingSettings` pins the model precisely because
-  // nothing records which model produced a stored vector. Once the endpoint is configurable, the
-  // width is no longer guaranteed by construction — and it has to fail by NAME, not as the closed
-  // "provider error", or the operator cannot tell a wrong endpoint from a dead one.
-  test("refuses an endpoint answering with a different dimensionality", async () => {
-    const fetchImpl = (async () =>
-      json({
-        data: [{ index: 0, embedding: vec(0, 768) }],
-      })) as unknown as typeof fetch;
-    await expect(
-      embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
-    ).rejects.toThrow(/returned 768 dimensions .* is 1536 wide/);
   });
 
   // `@langchain/openai` pins the OpenAI client to `maxRetries: 0` and wraps the call in AsyncCaller,

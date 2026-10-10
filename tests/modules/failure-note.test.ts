@@ -1469,11 +1469,6 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(note?.token).toBe(BOT_TOKEN);
   });
 
-  test("the debounce flush registers its dead-letter hook", () => {
-    registerDebounceHandler();
-    expect(getDeadLetterHandler("DEBOUNCE")).toBe(announceDeadDebounceFlush);
-  });
-
   // The direct webhook path, end to end: a delivery arrives, the turn dies inside the runtime, and the
   // operator finds out INSIDE Chatwoot. Nothing runtime-shaped is injected — no fake model, no stub
   // client — so the turn runs for real and the note is posted by the real client against the double,

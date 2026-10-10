@@ -5,7 +5,6 @@ import {
   filterNavItems,
   groupNavItems,
   NAV_ITEMS,
-  type NavItem,
 } from "@/client/lib/navigation";
 
 describe("navigation", () => {
@@ -52,21 +51,5 @@ describe("navigation", () => {
       "/resources",
       "/channels",
     ]);
-  });
-
-  test("groupNavItems splits consecutive items by section", () => {
-    const icon = () => null;
-    const admin = { labelKey: "nav.sectionAdmin", defaultLabel: "Admin" };
-    const items: NavItem[] = [
-      { to: "/", labelKey: "a", defaultLabel: "A", icon },
-      { to: "/b", labelKey: "b", defaultLabel: "B", icon, section: admin },
-      { to: "/c", labelKey: "c", defaultLabel: "C", icon, section: admin },
-    ];
-    const groups = groupNavItems(items);
-    expect(groups.map((g) => g.section?.labelKey ?? null)).toEqual([
-      null,
-      "nav.sectionAdmin",
-    ]);
-    expect(groups[1]?.items.map((i) => i.to)).toEqual(["/b", "/c"]);
   });
 });

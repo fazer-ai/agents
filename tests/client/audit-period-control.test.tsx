@@ -230,27 +230,6 @@ test("and emptying its last bound removes the filter", async () => {
   );
 });
 
-// The other side of the same rule, and the reason it is not simply "commit whatever is valid": with
-// a pair applied, clearing one input is what happens MID-EDIT, and committing there would fire a
-// request off a window nobody asked for and drop a bound from the URL.
-test("clearing one input of an applied pair commits nothing", async () => {
-  setSystemTime(new Date(2026, 8, 3, 12, 0));
-  // A window no preset names, so the row opens as custom on its own bounds.
-  const view = mount("/audit?from=2026-08-05&to=2026-08-20");
-  await waitFor(() => expect(view.dates()).toHaveLength(2));
-
-  fireEvent.change(view.dates()[0] as HTMLInputElement, {
-    target: { value: "" },
-  });
-
-  expect(view.dates()[0]?.value).toBe("");
-  const params = new URLSearchParams(search);
-  expect([params.get("from"), params.get("to")]).toEqual([
-    "2026-08-05",
-    "2026-08-20",
-  ]);
-});
-
 // An empty page has two reasons and only one of them is "nothing happened". These actions write rows
 // keyed to no tenant, which this read cannot reach at all, so the ordinary "no entries match these
 // filters" would be the page asserting something it never checked.

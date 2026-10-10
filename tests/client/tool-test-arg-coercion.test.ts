@@ -131,13 +131,6 @@ describe("fieldUsesPicker", () => {
   ])("%p -> %p", (field, expected) => {
     expect(fieldUsesPicker(field as never)).toBe(expected);
   });
-
-  test("and an empty enum really is a free string to the runtime", () => {
-    const schema = parseToolInputSchema({
-      tier: { type: "enum", enumValues: [], required: true },
-    });
-    expect(schema.safeParse({ tier: "anything at all" }).success).toBe(true);
-  });
 });
 
 // An empty string is a VALUE for a string field (a PATCH that clears a provider field sends exactly

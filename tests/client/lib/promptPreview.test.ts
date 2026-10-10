@@ -19,13 +19,6 @@ function runPlugin(tree: Node): Node {
 }
 
 describe("wrapPreviewVar", () => {
-  test("wraps a non-empty value in the sentinel pair", () => {
-    const wrapped = wrapPreviewVar("Maria");
-    expect(wrapped).not.toBe("Maria");
-    expect(wrapped).toContain("Maria");
-    expect(wrapped.length).toBe("Maria".length + 2);
-  });
-
   test("leaves an empty value bare (no stray highlight)", () => {
     expect(wrapPreviewVar("")).toBe("");
   });

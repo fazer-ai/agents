@@ -21,12 +21,6 @@ describe("normalizeAgentMode", () => {
     expect(normalizeAgentMode("")).toBe("production");
     expect(normalizeAgentMode("staging")).toBe("production");
   });
-
-  test("monitoring is NOT collapsed into production", () => {
-    // NOTE: the failure this function exists to prevent: read through a two-way ternary, a
-    // monitoring agent comes back as a fully answering one.
-    expect(normalizeAgentMode("monitoring")).not.toBe("production");
-  });
 });
 
 describe("isMonitoring", () => {

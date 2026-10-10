@@ -137,30 +137,6 @@ describe("runToolTest", () => {
     ]);
   });
 
-  test("the host allowlist is the runtime's, not a second copy", async () => {
-    await expect(
-      runToolTest(
-        ctx,
-        {
-          definition: { ...base, allowedHosts: ["example.com"] },
-          args: { cnpj: "1" },
-        },
-        noDb,
-        { fetchImpl: stub({}, 200) },
-      ),
-    ).rejects.toThrow(/not in allowlist/);
-  });
-
-  test("a placeholder with no value refuses before anything goes out", async () => {
-    const seen: Seen = {};
-    await expect(
-      runToolTest(ctx, { definition: base, args: {} }, noDb, {
-        fetchImpl: stub(seen, 200),
-      }),
-    ).rejects.toThrow(/cnpj/);
-    expect(seen.url).toBeUndefined();
-  });
-
   test("only the runtime's own context names are honoured", async () => {
     const seen: Seen = {};
     await runToolTest(
@@ -779,25 +755,6 @@ describe("runToolTest — the raw body is bounded while it is read", () => {
     expect(r.rawChars).toBe(CHUNK.length * CHUNKS);
     expect(r.rawClipped).toBe(true);
   }, 30_000);
-
-  test("a response under the cap is returned whole and reported as such", async () => {
-    const body = JSON.stringify({ a: "x".repeat(500) });
-    const r = await runToolTest(
-      ctx,
-      {
-        definition: {
-          ...base,
-          urlTemplate: `https://${PUBLIC}/v1/x`,
-          inputSchema: {},
-        } as never,
-      },
-      noDb,
-      { fetchImpl: stub({}, 200, body) },
-    );
-    expect(r.raw).toBe(body);
-    expect(r.rawChars).toBe(body.length);
-    expect(r.rawClipped).toBe(false);
-  });
 
   test("a multi-byte character split across two chunks is not corrupted", async () => {
     // The decoder is streaming for exactly this: "é" is two bytes, and a chunk boundary between

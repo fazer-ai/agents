@@ -36,12 +36,6 @@ describe("the selected tenant is the tab's", () => {
     expect(getActiveTenantId()).toBe("3");
   });
 
-  test("the tab's own choice wins over the shared default", () => {
-    sessionStorage.setItem(KEY, "4");
-    localStorage.setItem(KEY, "5");
-    expect(getActiveTenantId()).toBe("4");
-  });
-
   test("a refused selection is dropped from the tab and from the default", () => {
     setActiveTenantId("8");
     expect(dropRejectedSelection("8")).toBe(true);

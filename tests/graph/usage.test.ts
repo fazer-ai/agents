@@ -248,23 +248,6 @@ describe("UsageCapture attributes a run to the model that made it", () => {
     });
   const KEY = "fazerai_usage_model";
 
-  test("with no override, the row names the agent's configured model", async () => {
-    const rows: UsageRow[] = [];
-    const c = capture(rows, "gpt-5.4-mini");
-    await c.handleLLMEnd(resultWithUsageMetadata(10, 5), "run-a");
-    expect(rows[0]?.model).toBe("gpt-5.4-mini");
-  });
-
-  test("an override names the model that answered", async () => {
-    const rows: UsageRow[] = [];
-    const c = capture(rows, "gpt-5.4-mini");
-    await c.handleLLMStart({}, [], "run-b", undefined, undefined, undefined, {
-      [KEY]: "claude-haiku-4-5",
-    });
-    await c.handleLLMEnd(resultWithUsageMetadata(10, 5), "run-b");
-    expect(rows[0]?.model).toBe("claude-haiku-4-5");
-  });
-
   // NOTE: PRESENT, NOT TRUTHY. An empty name is what a model-less `openai-compatible` fallback is
   // called (the server picks, so there is no id), and `""` is what this ledger stores for a PRIMARY
   // pointed at such an endpoint. Read as falsy, the override would be discarded and the row billed

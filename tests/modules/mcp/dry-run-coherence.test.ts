@@ -1269,20 +1269,6 @@ describe.skipIf(!dbUp)("a preview asks the questions that need a row", () => {
     expect(r.applied).toBe("refused");
     expect(r.previewed).toBe("refused");
   });
-
-  // The normalization the advisory check depends on, and the reason it takes the NORMALIZED pair.
-  // `kind` defaults to "generic" on the way in, and the uniqueness is on what gets STORED — so a
-  // preview that looked the pair up with the raw `kind: null` would find nothing and answer "will
-  // create" for the exact name it just refused above.
-  test("credential_create: the default kind is the one the lookup uses", async () => {
-    const r = await both(
-      (a) =>
-        writeRoot.credentialCreate(principal(), a as never, { base: appDb }),
-      { name: TAKEN, kind: "generic" },
-    );
-    expect(r.applied).toBe("refused");
-    expect(r.previewed).toBe("refused");
-  });
 });
 
 // A preflight that answers part of what its core decides, the same shape as

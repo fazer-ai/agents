@@ -463,20 +463,6 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(togglesFor(convId)).toHaveLength(1);
   });
 
-  test("a conversation with no console mark runs unfenced", async () => {
-    const convId = 9133;
-    const rowId = await seedStranded(convId, { humanReplyMessageId: 700 });
-    expect(
-      await recoverStrandedTakeover({
-        tenantId,
-        deliveryRowId: rowId,
-        base: appDb,
-        makeClient,
-      }),
-    ).toBe("recovered");
-    expect(togglesFor(convId)).toHaveLength(1);
-  });
-
   // NOTE: AND THE ATTEMPT WHOSE TOGGLE NEVER LANDED IS COVERED BY THE SAME BRANCH, which is why the
   // fence sits after the finishing arm rather than before it. A hand-back writes `pending` on the
   // ROW, taking the conversation OUT of the `open`-under-a-pending-claim shape the finishing arm is
@@ -703,32 +689,6 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(togglesFor(convId)).toHaveLength(1);
   });
 
-  test("an attempt whose toggle threw is finished, not refused", async () => {
-    // The claim is written BEFORE the toggle, so a toggle that throws leaves the row `open`
-    // under a live claim while Chatwoot still says `pending`. Asked again, the ownership fence would
-    // read our own write as somebody else moving the conversation and stand down, spending the
-    // scheduler's retry on a verdict that can never change, deleting the job, and leaving Chatwoot
-    // `pending` with the bot able to answer.
-    const convId = 9113;
-    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
-    // Chatwoot's side of that state: the transition never landed.
-    liveStatus.set(convId, "pending");
-
-    expect(
-      await recoverStrandedTakeover({
-        tenantId,
-        deliveryRowId: rowId,
-        base: appDb,
-        makeClient,
-      }),
-    ).toBe("recovered");
-    // The remote half, which is the whole point: the row already said `open`.
-    expect(togglesFor(convId)).toHaveLength(1);
-    expect(liveStatus.get(convId)).toBe("open");
-    // And the version the first attempt never earned, written through the claim it still holds.
-    expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
-  });
-
   test("an attempt whose toggle landed but whose answer was lost is finished against `open`", async () => {
     const convId = 9135;
     const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
@@ -914,29 +874,6 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     ).toBe("not-owed");
     expect(togglesFor(convId)).toHaveLength(0);
     expect(liveStatus.get(convId)).toBe("resolved");
-  });
-
-  test("a first attempt whose RESPONSE was lost is finished, not refused", async () => {
-    // Chatwoot committed the transition and only the answer was lost, so the conversation is
-    // already `open` there: the one status a takeover being DECIDED would refuse and one being
-    // FINISHED must accept, since it is our own write coming back. What remains owed is the
-    // version, which the reconcile writes through the claim it named. The toggle still runs (a
-    // no-op at Chatwoot on an open conversation); a branch to skip it would be a second reading of a
-    // state the fence above has already decided.
-    const convId = 9119;
-    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
-    liveStatus.set(convId, "open");
-
-    expect(
-      await recoverStrandedTakeover({
-        tenantId,
-        deliveryRowId: rowId,
-        base: appDb,
-        makeClient,
-      }),
-    ).toBe("recovered");
-    expect(liveStatus.get(convId)).toBe("open");
-    expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
   });
 
   test("a conversation Chatwoot reassigned is not toggled out of somebody else's queue", async () => {

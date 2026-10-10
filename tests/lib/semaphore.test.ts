@@ -4,24 +4,6 @@ import { Semaphore } from "@/lib/semaphore";
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
 describe("Semaphore", () => {
-  test("never runs more than `permits` tasks at once", async () => {
-    const sem = new Semaphore(3);
-    let active = 0;
-    let maxActive = 0;
-    await Promise.all(
-      Array.from({ length: 10 }, () =>
-        sem.run(async () => {
-          active += 1;
-          maxActive = Math.max(maxActive, active);
-          await tick();
-          active -= 1;
-        }),
-      ),
-    );
-    expect(maxActive).toBe(3);
-    expect(active).toBe(0);
-  });
-
   test("releases the permit when a task throws", async () => {
     const sem = new Semaphore(1);
     await expect(

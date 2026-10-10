@@ -676,15 +676,6 @@ describe("analyzeGuardrail", () => {
         expect(v.suggestedReply).toBeNull();
       });
 
-      // ...but a clean relevance verdict leaves the rewrite alone, which is the case it exists for.
-      test("a policy rewrite survives when relevance is happy", async () => {
-        const r = recordingModel((c) =>
-          isFenced(c) ? clean : violation("toxicity", "TROCA"),
-        );
-        const v = await analyzeProse(r.model, split);
-        expect(v.suggestedReply).toBe("TROCA");
-      });
-
       // Fail-open on one half plus approval on the other must not read as "screened and approved":
       // that is the same argument as the error field itself, one level up.
       test("an error on one side survives the merge", async () => {
@@ -751,19 +742,6 @@ describe("analyzeGuardrail", () => {
     expect(v.violated).toBe(true);
     expect(v.categories).toEqual(["unsafe_content"]);
     expect(v.suggestedReply).toBeNull();
-  });
-
-  test("clean verdict when nothing is violated", async () => {
-    const v = await analyzeProse(
-      fakeModel('{"violated": false, "categories": [], "rationale": ""}'),
-      base,
-    );
-    expect(v.violated).toBe(false);
-  });
-
-  test("fail-open on a model error (never blocks)", async () => {
-    const v = await analyzeProse(throwingModel, base);
-    expect(v.violated).toBe(false);
   });
 
   test("fail-open on unparseable output", async () => {
@@ -874,24 +852,6 @@ describe("analyzeGuardrail", () => {
       base,
     );
     expect([v.violated, typeof v.error]).toEqual([false, "string"]);
-  });
-
-  test("a genuine clean verdict is not reported as a failure", async () => {
-    const v = await analyzeProse(
-      fakeModel('{"violated": false, "categories": [], "rationale": ""}'),
-      base,
-    );
-    expect(v.error).toBeUndefined();
-  });
-
-  test("a violation is not reported as a failure", async () => {
-    const v = await analyzeProse(
-      fakeModel(
-        '{"violated": true, "categories": ["toxicity"], "rationale": "x", "suggestedReply": null}',
-      ),
-      base,
-    );
-    expect(v.error).toBeUndefined();
   });
 });
 

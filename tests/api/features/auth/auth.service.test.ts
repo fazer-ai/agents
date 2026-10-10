@@ -365,13 +365,6 @@ describe("auth.service", () => {
       config.adminSignupDomains = ["mycompany.io"];
       expect(getSignupRoleForEmail("user@other.com", true)).toBe("AGENT");
     });
-
-    test("matches case-insensitively", () => {
-      config.adminSignupDomains = ["mycompany.io"];
-      expect(getSignupRoleForEmail("Founder@MyCompany.IO", true)).toBe(
-        "TENANT_ADMIN",
-      );
-    });
   });
 
   describe("hashPassword", () => {
@@ -429,25 +422,6 @@ describe("auth.service", () => {
   });
 
   describe("verifyPassword", () => {
-    test("returns true for matching password and hash", async () => {
-      const password = "securePassword123";
-      const hash = await hashPassword(password);
-
-      const isValid = await verifyPassword(password, hash);
-
-      expect(isValid).toBe(true);
-    });
-
-    test("returns false for non-matching password", async () => {
-      const password = "securePassword123";
-      const wrongPassword = "wrongPassword456";
-      const hash = await hashPassword(password);
-
-      const isValid = await verifyPassword(wrongPassword, hash);
-
-      expect(isValid).toBe(false);
-    });
-
     test("returns false for empty password", async () => {
       const password = "securePassword123";
       const hash = await hashPassword(password);

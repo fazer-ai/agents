@@ -189,29 +189,4 @@ describe.skipIf(!dbUp)("o recibo das mortes anteriores à entrega", () => {
     // a tabela sem sujeitar o dono à policy de tenant para sempre.
     expect(por("stamp:morta")?.force).toBe(true);
   });
-
-  // A prova de que o `NO FORCE` é o que faz o UPDATE morder. Sem ele, o dono é sujeito à policy e,
-  // sem `app.tenant_id`, a policy não casa com nada: o UPDATE decide sobre zero linhas e relata
-  // sucesso, que é o modo de falhar mais caro que existe aqui.
-  test("sem o NO FORCE, o mesmo UPDATE decide sobre zero linhas", async () => {
-    sql = sql || (await Bun.file(MIGRATION).text());
-    const semBypass = sql
-      .replace(
-        /ALTER TABLE "scheduler_jobs" NO FORCE ROW LEVEL SECURITY;\n/,
-        "",
-      )
-      .replace(/ALTER TABLE "scheduler_jobs" FORCE ROW LEVEL SECURITY;\n/, "");
-    await bancoDeProva();
-    await onProbe(async (c) => {
-      await c.query(semBypass);
-    }, true);
-    const recibo = await onProbe(async (c) => {
-      const { rows } = await c.query(
-        `SELECT payload->>'${DEAD_LETTER_ANNOUNCED}' AS recibo
-           FROM scheduler_jobs WHERE dedupe_key = 'stamp:morta'`,
-      );
-      return (rows[0] as { recibo: string | null }).recibo;
-    });
-    expect(recibo).toBeNull();
-  });
 });

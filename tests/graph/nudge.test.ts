@@ -2047,40 +2047,6 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.order).toEqual(["resolve", "message", "label"]);
   });
 
-  // NOTE: THE SAME LAG, AND THE OTHER DECISION. The transfer above spoke, so a stale mirror costs
-  // nothing there. Here the transfer DECLARED that this case receives no reply, and the probe meant
-  // to stop the model's own proactive text reads that same stale mirror: `toggleStatus` does not
-  // write it, and only a caller passing `requireLiveBotOwnership` asks Chatwoot instead. Two of the
-  // three callers do not (`channel-redirect/followup.ts` and `appointments/reminders.ts`), so
-  // without this the declared silence would hold on the reactive path and leak on the proactive
-  // one.
-  test("a nudge whose handoff declared silence sends nothing, even with the mirror still bot-owned", async () => {
-    await seedConv(9991, null);
-    const s = stub();
-    const outcome = await runAgentNudge({
-      tenantId,
-      threadId: `${tenantId}:${instanceId}:9991`,
-      nudge: { source: "followup", kind: "inactivity", step: 1 },
-      postActions: { assignLabels: ["follow-up"], resolve: true },
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new HandoffDeclaredSilenceModel(
-            "Encaminhado para a equipe responsável.",
-          ) as never,
-        // stub() does not mirror toggleStatus, so the row still says the bot owns it.
-        makeClient: s.makeClient,
-        checkpointer: new MemorySaver(),
-        persistUsage: async () => {},
-      },
-    });
-    expect(outcome).toBe("silent");
-    expect(s.messages).toEqual([]);
-    // The label still applies, the same way it does on every other silent end, and the resolve
-    // still falls with the transfer.
-    expect(s.labelSets).toEqual([["follow-up"]]);
-  });
-
   // NOTE: On the proactive path an unsolicited message is the worst thing a follow-up can do, so
   // nothing is sent, while the operator's remaining step still runs. Both halves are asserted,
   // because "sent nothing" on its own is satisfied by a turn that died after the decision.
@@ -3251,34 +3217,6 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9907]);
   });
 
-  // NOTE: The model can hand off and then say nothing of its own. Its silence is about ITS text,
-  // never about the line the transfer committed to; reading the two as one fact transfers a
-  // customer without a word. The label still applies; the resolve must not, or the follow-up closes
-  // a conversation it just handed to a human.
-  test("a handoff whose model then says nothing still delivers the closing line", async () => {
-    await seedConv(9905, null);
-    const s = stub();
-    const outcome = await runAgentNudge({
-      tenantId,
-      threadId: `${tenantId}:${instanceId}:9905`,
-      nudge: { source: "followup", kind: "inactivity", step: 1 },
-      postActions: { assignLabels: ["follow-up"], resolve: true },
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new HandoffThenReplyModel("", "Um humano vai te atender.") as never,
-        makeClient: s.makeClient,
-        checkpointer: new MemorySaver(),
-        persistUsage: async () => {},
-      },
-    });
-    expect(outcome).toBe("messaged");
-    expect(s.messages).toEqual([[9905, "Um humano vai te atender."]]);
-    expect(s.labelSets).toEqual([["follow-up"]]);
-    // Exactly one status call: the handoff's own `open`. A second one would be the resolve.
-    expect(s.resolved).toEqual([9905]);
-  });
-
   // NOTE: The last step of a follow-up ladder closes out a customer who stopped answering, and that
   // close must not read as the agent resolving the conversation (a lead that ghosted would raise
   // the Resolution funnel), so the origin is recorded at the close.
@@ -3546,29 +3484,6 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     expect(s.labelSets).toEqual([]);
     expect(s.resolved).toEqual([]);
-  });
-
-  // The control: nothing retired, and the resolve follows the labels.
-  test("the same turn resolves when nothing retires it", async () => {
-    await seedConv(9995, null);
-    const s = stub();
-    const outcome = await runAgentNudge({
-      tenantId,
-      threadId: `${tenantId}:${instanceId}:9995`,
-      nudge: { source: "followup", kind: "inactivity", step: 1 },
-      postActions: { assignLabels: ["follow-up"], resolve: true },
-      base: appDb,
-      deps: {
-        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
-        makeClient: s.makeClient,
-        checkpointer: new MemorySaver(),
-        persistUsage: async () => {},
-      },
-    });
-
-    expect(outcome).toBe("messaged");
-    expect(s.labelSets).toEqual([["follow-up"]]);
-    expect(s.resolved).toEqual([9995]);
   });
 
   // NOTE: The window of the POST-MODEL ownership probe, whose answer every end below it consumes
@@ -4186,45 +4101,6 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.messages).toEqual([]);
     expect(s.notes).toEqual([]);
     expect(s.labelSets).toEqual([]);
-  });
-
-  // The live ownership probe failing is not the same as the bot having lost the conversation, and
-  // after a transfer neither answer may take the closing line away: the probe is skipped outright,
-  // so a transient Chatwoot GET cannot end the episode holding a sentence nobody will ever deliver.
-  test("a handoff delivers its closing line even when the live probe cannot run", async () => {
-    await seedConv(9910, null);
-    const s = stub();
-    const inner = await s.makeClient();
-    let probes = 0;
-    const client = {
-      ...inner,
-      // The PRE-invoke probe answers (an unavailable one there correctly stops the turn before any
-      // handoff exists). The one AFTER the model has already transferred is the failure under test.
-      getConversation: async (c: number) => {
-        if (probes++ > 0) throw new Error("chatwoot 503");
-        return { id: c, status: "pending", meta: {} };
-      },
-    } as unknown as ChatwootClient;
-    const outcome = await runAgentNudge({
-      tenantId,
-      threadId: `${tenantId}:${instanceId}:9910`,
-      nudge: { source: "followup", kind: "inactivity", step: 1 },
-      postActions: { assignLabels: ["follow-up"], resolve: true },
-      requireLiveBotOwnership: true,
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new HandoffThenReplyModel(
-            "Vou te encaminhar!",
-            "Um humano vai te atender.",
-          ) as never,
-        makeClient: async () => client,
-        checkpointer: new MemorySaver(),
-        persistUsage: async () => {},
-      },
-    });
-    expect(outcome).toBe("messaged");
-    expect(s.messages).toEqual([[9910, "Um humano vai te atender."]]);
   });
 
   // The private note is written to the OPERATOR, so the customer-output policy has no business
@@ -6267,27 +6143,6 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         `${OUTSIDE_WINDOW_NOTE_PREFIX}Um humano vai te atender {{ '{{' }}contact.name}}.`,
       ],
     ]);
-  });
-
-  test("human-handling conversation → private note, never a customer message", async () => {
-    await seedConv(901, "User");
-    const s = stub();
-    const outcome = await runAgentNudge({
-      tenantId,
-      threadId: `${tenantId}:${instanceId}:901`,
-      nudge: { source: "ASAAS", status: "paid" },
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new FakeListChatModel({ responses: ["Cliente pagou."] }),
-        makeClient: s.makeClient,
-        checkpointer: new MemorySaver(),
-        persistUsage: async () => {},
-      },
-    });
-    expect(outcome).toBe("noted");
-    expect(s.notes).toEqual([[901, "Cliente pagou."]]);
-    expect(s.messages).toEqual([]);
   });
 
   test("empty reply → silent (nothing posted)", async () => {

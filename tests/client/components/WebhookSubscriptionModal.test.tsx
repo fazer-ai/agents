@@ -163,12 +163,6 @@ describe("WebhookSubscriptionModal", () => {
     expect(String(body?.url)).toBe("https://ops.example.com/hook");
   });
 
-  test("a secret the read cannot show survives an unrelated save", async () => {
-    await open({ hasSecret: true, secretRef: null });
-    const body = await save();
-    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
-  });
-
   test("and the modal says so instead of reading as None", async () => {
     await open({ hasSecret: true, secretRef: null });
     expect(

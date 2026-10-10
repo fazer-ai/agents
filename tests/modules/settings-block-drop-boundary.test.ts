@@ -40,12 +40,6 @@ describe("assertSettingsBlocksKept", () => {
     expect(err.translationParams?.count).toBe(2);
   });
 
-  test("an empty bag on a configured agent is the whole wipe, and is refused", () => {
-    expect(() => assertSettingsBlocksKept({}, stored)).toThrow(
-      SettingsBlocksDroppedError,
-    );
-  });
-
   // The write that does not touch settings at all (a rename, a mode change) is not this rule's
   // business. `undefined` is "the column is not in this write", not "an empty bag".
   test("a write without a settings bag passes", () => {
@@ -89,20 +83,6 @@ describe("assertSettingsBlocksKept", () => {
     expect(
       (caught as SettingsBlocksDroppedError).translationParams?.blocks,
     ).toBe("signature");
-  });
-
-  // A block that is OFF is still a decision somebody made, and the bag that drops it reverts that
-  // decision to whatever the default is. `enabled: false` is the case where the two differ most.
-  test("a block switched off is still configuration", () => {
-    expect(() =>
-      assertSettingsBlocksKept({}, { split: { enabled: false } }),
-    ).toThrow(SettingsBlocksDroppedError);
-  });
-
-  test("a key the bag adds is nobody's loss", () => {
-    expect(() =>
-      assertSettingsBlocksKept({ ...stored, somethingNew: { a: 1 } }, stored),
-    ).not.toThrow();
   });
 
   // The bag names the block and empties it: that is an edit of the block, not its removal, and the

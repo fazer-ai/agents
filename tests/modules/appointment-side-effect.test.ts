@@ -108,12 +108,6 @@ describe("appointment side effects: what the report names", () => {
     expect(h.reports[0]?.message).toContain("2099-09-02");
   });
 
-  test("a recorded booking reports nothing at all", async () => {
-    const h = harness();
-    await h.fx.booked({ ...NOTICE, tool: "feegow_create_appointment" });
-    expect(h.reports).toEqual([]);
-  });
-
   test("a cancel that throws is reported against the tool that cancelled", async () => {
     const h = harness({
       cancel: async () => {

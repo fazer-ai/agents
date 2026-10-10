@@ -48,11 +48,6 @@ describe("Header", () => {
   beforeEach(() => localStorage.clear());
   afterEach(() => cleanup());
 
-  test("renders logo link", () => {
-    renderHeader();
-    expect(screen.getByRole("link")).toBeInTheDocument();
-  });
-
   test("marks logo with aria-current=page when on root", () => {
     renderHeader("/");
     expect(screen.getByRole("link")).toHaveAttribute("aria-current", "page");

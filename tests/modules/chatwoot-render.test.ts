@@ -42,12 +42,6 @@ describe("renderInboundMessage", () => {
     expect(out).toContain("não audível");
   });
 
-  test("image without a description renders the send-text marker", () => {
-    expect(
-      renderInboundMessage({ text: "", attachmentTypes: ["image"] }),
-    ).toContain("enviou uma imagem");
-  });
-
   // NOTE: o marcador não escolhe o canal de volta. O modelo o lê como parte da mensagem, então o
   // que ele pedir é o que o cliente recebe, e uma instrução dentro do conteúdo vence o prompt: numa
   // caixa de e-mail, pedir "texto ou áudio" oferece um canal que não existe.

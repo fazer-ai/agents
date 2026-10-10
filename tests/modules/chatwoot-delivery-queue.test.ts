@@ -600,48 +600,6 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       });
   });
 
-  // A person answered the stored message (and gave the conversation back) before the replay.
-  test("a stored message a person already answered is ingested, not answered again", async () => {
-    await mirror(632);
-    const id = await ackMessage("queue-replay-answered", 632);
-    const calls: string[] = [];
-    await drainStoredChatwootDeliveries({
-      base: appDb,
-      tenantId,
-      minAgeMs: 0,
-      deps: {
-        makeClient: async () =>
-          fakeClient(
-            {
-              ...heldByPerson(632),
-              status: "pending",
-              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
-            },
-            calls,
-            [
-              {
-                id: 63_200,
-                content: "oi",
-                message_type: "incoming",
-                private: false,
-              },
-              {
-                id: 63_204,
-                content: "já resolvi",
-                message_type: "outgoing",
-                private: false,
-                sender: { type: "user", id: 55 },
-              },
-            ],
-          ) as never,
-      },
-    });
-    const row = await settled(id);
-    expect(row.status).toBe("PROCESSED");
-    expect(row.owesMemoryOnly).toBe(true);
-    expect(calls).not.toContain("sendMessage");
-  });
-
   // A read that fails inside the already-answered check is an unknown answer, not a "no": the replay
   // waits, since a turn would run its tools before any send-time check.
   test("a failed read in the already-answered check defers the replay", async () => {
@@ -753,20 +711,28 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
       base: appDb,
       deps: {
         makeClient: async () =>
-          fakeClient(heldByPerson(630), calls, [
+          fakeClient(
             {
-              id: 63_000,
-              content: "oi",
-              message_type: "incoming",
-              private: false,
+              ...heldByPerson(630),
+              status: "pending",
+              meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
             },
-            {
-              id: 63_009,
-              content: "deixa",
-              message_type: "incoming",
-              private: false,
-            },
-          ]) as never,
+            calls,
+            [
+              {
+                id: 63_000,
+                content: "oi",
+                message_type: "incoming",
+                private: false,
+              },
+              {
+                id: 63_009,
+                content: "deixa",
+                message_type: "incoming",
+                private: false,
+              },
+            ],
+          ) as never,
       },
     });
     expect(calls).toContain("getMessages");
@@ -1137,7 +1103,9 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
     const row = await rowById(id);
     expect(row.status).toBe("PENDING");
     expect(row.attempts).toBe(0);
-    expect(row.payload).toBeNull();
+    // The next pass clears the body and leaves the row to the sweep.
+    await drainStoredChatwootDeliveries({ base: appDb, tenantId, minAgeMs: 0 });
+    expect((await rowById(id)).payload).toBeNull();
   });
 
   // ...and is still retried, with the room the others leave, on the very next pass.

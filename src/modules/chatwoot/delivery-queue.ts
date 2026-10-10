@@ -346,6 +346,7 @@ export async function drainStoredChatwootDeliveries(
       row.id,
       () => replayStored(row, normalized, base, run, params.deps),
       lane,
+      row.receivedAt.getTime(),
     );
     if (ok) admitted++;
     else if (admissionLaneFull(lane)) full[lane] = true;
@@ -392,22 +393,10 @@ async function replayStored(
   run: <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) => Promise<T>,
   deps: RuntimeDeps | undefined,
 ): Promise<unknown> {
-  // The body is dropped and the row left to the sweep and the delivery recovery: past the ceiling (a
-  // busy queue can hold a row past it), or, for a customer message, when the inbox binding moved since
-  // receipt (the recovery's fences decide what the route's role was then). A status or assignment
-  // change keeps its replay: it has no recovery, and what it mirrors does not depend on the role.
-  const toSweep = async () => {
-    await run((db) =>
-      db.chatwootWebhookDelivery.updateMany({
-        where: { id: row.id, status: "PENDING" },
-        data: { payload: null },
-      }),
-    );
-    return "skipped";
-  };
-  if (Date.now() - row.receivedAt.getTime() > STORED_DELIVERY_MAX_AGE_MS) {
-    return toSweep();
-  }
+  // NOTE: A customer message whose inbox binding moved since receipt (an observer made the responder, a
+  // persona swapped) is left to the sweep and the delivery recovery, whose fences decide what the
+  // route's role was then: the body is dropped. A status or assignment change keeps its replay: it has
+  // no recovery, and what it mirrors does not depend on the role. The age ceiling is admission's.
   if (
     admissionLaneOf(normalized) === "turn" &&
     row.bindingGeneration !== null &&
@@ -422,7 +411,13 @@ async function replayStored(
       "chatwoot: stored delivery row %s was received under another inbox binding; left to the sweep and the delivery recovery",
       String(row.id),
     );
-    return toSweep();
+    await run((db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: row.id, status: "PENDING" },
+        data: { payload: null },
+      }),
+    );
+    return "skipped";
   }
   return runQueuedDelivery(
     {
@@ -503,13 +498,14 @@ export async function runQueuedDelivery(
           base,
         );
       }
-      await reconcileMirrorFromLive({
+      const settled = await reconcileMirrorFromLive({
         tenantId: d.tenantId,
         instanceId: d.instanceId,
         conversationId,
         live,
         base,
       });
+      if (settled.state) event = { ...event, status: settled.state.status };
     }
     if (event.event === "message_created" && messageId != null) {
       const v = await storedTurnVerdict({
@@ -529,10 +525,6 @@ export async function runQueuedDelivery(
       }
       owesMemoryOnly = v.verdict !== "owed";
     }
-    const settled = await run((db) =>
-      db.conversation.findFirst({ where, select: { status: true } }),
-    );
-    if (settled) event = { ...event, status: settled.status };
   }
   return processRecordedChatwootDelivery({
     tenantId: d.tenantId,

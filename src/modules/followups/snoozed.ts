@@ -80,6 +80,9 @@ function readMessagePage(raw: unknown): ChatwootMessageRow[] {
   return rows;
 }
 
+// The fork's `MessageFinder::CATCH_UP_LIMIT`: a catch-up read this full may have more behind it.
+const CATCH_UP_PAGE = 100;
+
 // How much of the person's message goes into the reminder's directive.
 const ANCHOR_TEXT_MAX = 1500;
 
@@ -568,7 +571,15 @@ export async function snoozedFollowUpHandler(
             after: anchor.newestMessageId,
           }),
         );
-        return !someoneSpokeAfter(since, anchor.newestMessageId, ctx.reply);
+        if (someoneSpokeAfter(since, anchor.newestMessageId, ctx.reply))
+          return false;
+        // A full catch-up read may have more behind it, a person's request among them: unproven
+        // silence is a failed read, tried again from the top, never a reminder sent over it.
+        if (since.length >= CATCH_UP_PAGE) {
+          messageReadFailed = true;
+          return false;
+        }
+        return true;
       } catch {
         messageReadFailed = true;
         return false;

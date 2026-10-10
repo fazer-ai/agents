@@ -81,3 +81,18 @@ describe("the way back from a conversation to its approval", () => {
     ).toBeGreaterThan(-1);
   });
 });
+
+// A marker for an approved document's turn says what the turn was about, never that it was sent: the
+// marker is exactly the case where no message carried the PDF (a note when the WhatsApp window was
+// closed). Read off the source, since the marker is drawn inside the page.
+test("the approval marker reuses the bubble's neutral words", async () => {
+  const src = await Bun.file(
+    `${import.meta.dir}/../../src/client/pages/ConversationDetailPage.tsx`,
+  ).text();
+  const branch = src.slice(
+    src.indexOf('entry.kind === "approval"'),
+    src.indexOf('entry.kind === "event"'),
+  );
+  expect(branch).toContain("followUpBadgeText(");
+  expect(branch).not.toMatch(/sent/i);
+});

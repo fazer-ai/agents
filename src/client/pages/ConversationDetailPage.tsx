@@ -467,8 +467,13 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
     Icon = Megaphone;
     label = t("conversation.trail.redirectSent", "Redirect follow-up sent");
   } else if (entry.kind === "approval") {
+    // The bubble's own words, and no claim of a send: a marker means no message carried the PDF here
+    // (the WhatsApp window closed and only a note was posted, or the message is on an older page).
     Icon = FileCheck;
-    label = t("conversation.trail.approvalSent", "Approved document sent");
+    label = followUpBadgeText(
+      { kind: "approval", step: null, total: 0, integrationName: null },
+      t,
+    );
   } else if (entry.kind === "event") {
     Icon = Webhook;
     label = entry.integrationName

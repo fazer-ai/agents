@@ -720,7 +720,6 @@
     "returnToAi": "Return to AI",
     "reviewApproval": "Review",
     "trail": {
-      "approvalSent": "Approved document sent",
       "args": "Arguments",
       "error": "Error",
       "eventHandled": "Event: {{name}}",

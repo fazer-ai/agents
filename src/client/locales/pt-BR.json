@@ -738,7 +738,6 @@
     "returnToAi": "Devolver para a IA",
     "reviewApproval": "Revisar",
     "trail": {
-      "approvalSent": "Documento aprovado enviado",
       "args": "Argumentos",
       "error": "Erro",
       "eventHandled": "Evento: {{name}}",

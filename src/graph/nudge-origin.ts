@@ -9,6 +9,7 @@ export const NUDGE_ORIGINS = [
   "reminder",
   "redirect",
   "event",
+  "approval",
 ] as const;
 export type NudgeOrigin = (typeof NUDGE_ORIGINS)[number];
 
@@ -16,6 +17,8 @@ export function nudgeOrigin(nudge: { source: string }): NudgeOrigin {
   if (nudge.source === "appointment_reminder") return "reminder";
   if (nudge.source === "channel-redirect") return "redirect";
   if (nudge.source === "followup") return "followup";
+  // The turn that sends a document a person approved: the team spoke, not an external system.
+  if (nudge.source === "document_approval") return "approval";
   // NOTE: every other source is an inbound integration's catalog type (ASAAS, GENERIC, …): an
   // external system spoke, whatever its framing.
   return "event";

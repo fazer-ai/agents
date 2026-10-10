@@ -319,6 +319,9 @@ export interface ApprovedDocumentDelivery {
   // Left when the output guardrail replaced the agent's line: a trip drops every attachment of the
   // turn (docs/documents.md), so the document is a person's to send.
   blockedNote: string;
+  // Called once the PDF itself went out, so the caller can tell a delivery from a turn that messaged
+  // the customer without it (a replaced line, a hand-over).
+  onAttached?: () => void;
 }
 
 export function parseThreadId(
@@ -2790,6 +2793,7 @@ async function runAgentNudgeBody(
             )
           : client.sendMessage(conversationId, signedReply)),
       );
+      if (attach) attach.onAttached?.();
       await recordProactiveSpeech();
       logger.info(
         "agentNudge messaged: conv=%s source=%s",

@@ -3,6 +3,7 @@ import {
   Bot,
   ChevronRight,
   Eye,
+  FileClock,
   MessagesSquare,
   Search,
   User,
@@ -77,6 +78,15 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
               </Badge>
             )}
             {c.outOfHours && <OutOfHoursBadge />}
+            {c.awaitingApproval && (
+              <Badge variant="warning" className="flex items-center gap-1">
+                <FileClock className="h-3 w-3" aria-hidden="true" />
+                {t(
+                  "conversations.awaitingApproval",
+                  "Document awaiting approval",
+                )}
+              </Badge>
+            )}
             {c.observerNames.length > 0 && (
               <Badge variant="secondary" className="flex items-center gap-1">
                 <Eye className="h-3 w-3" aria-hidden="true" />
@@ -130,6 +140,10 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
     </li>
   );
 }
+
+// How often a row flagged as awaiting approval is asked again while the list stays open. An object so
+// a test can shorten it.
+export const flagRefresh = { ms: 30_000 };
 
 // Static keys so the skeleton rows don't key off the array index.
 const CONV_SKELETON_KEYS = [
@@ -309,11 +323,68 @@ export function ConversationsPage() {
     };
   }, [fetchConversations]);
 
+  // A conversation event can come with an approval decided, opened or expired, and the row's flag is
+  // not in the event: it is asked again, for that conversation alone.
+  // Only the latest read per conversation is applied: two events close together ask twice, and the
+  // older answer arriving last would put back a flag the newer one cleared.
+  const flagReads = useRef(new Map<string, number>());
+  // The conversations with a flag read still out: the slow clock skips them, so a read slower than
+  // the clock is answered instead of being superseded on every tick.
+  const flagInFlight = useRef(new Set<string>());
+  const refreshAwaitingApproval = useCallback(
+    async (conversationId: string) => {
+      const read = (flagReads.current.get(conversationId) ?? 0) + 1;
+      flagReads.current.set(conversationId, read);
+      flagInFlight.current.add(conversationId);
+      try {
+        const { data } = await api.api.v1["document-approvals"].get({
+          query: { conversationId, waiting: "true", limit: "1" },
+        });
+        if (!data || flagReads.current.get(conversationId) !== read) return;
+        const awaiting = data.requests.length > 0;
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === conversationId && c.awaitingApproval !== awaiting
+              ? { ...c, awaitingApproval: awaiting }
+              : c,
+          ),
+        );
+      } catch {
+        // The flag stays as the list last read it; the next event or load asks again.
+      } finally {
+        if (flagReads.current.get(conversationId) === read) {
+          flagInFlight.current.delete(conversationId);
+        }
+      }
+    },
+    [],
+  );
+
+  // A flagged row is also read again on a slow clock: a decision does not always leave an event (no
+  // bot left to write the note), and the flag must not outlive the request it stands for.
+  // The clock runs while anything is flagged and reads which rows are through a ref: tied to the list
+  // itself, every live event that re-sorts it would restart the clock before it ever fired.
+  const flaggedIds = useRef<string[]>([]);
+  flaggedIds.current = conversations
+    .filter((c) => c.awaitingApproval)
+    .map((c) => c.id);
+  const anyFlagged = flaggedIds.current.length > 0;
+  useEffect(() => {
+    if (!anyFlagged) return;
+    const timer = setInterval(() => {
+      for (const id of flaggedIds.current) {
+        if (!flagInFlight.current.has(id)) void refreshAwaitingApproval(id);
+      }
+    }, flagRefresh.ms);
+    return () => clearInterval(timer);
+  }, [anyFlagged, refreshAwaitingApproval]);
+
   // Live updates on the active tenant's channel. Known rows merge in place (and
   // re-sort by recency); an unknown id (a brand-new conversation) triggers a
   // lightweight refetch so it appears without a full reload.
   useTenantEvents({
     onConversation: (event) => {
+      void refreshAwaitingApproval(event.conversationId);
       setConversations((prev) => {
         const current = prev.find((c) => c.id === event.conversationId);
         if (!current) {

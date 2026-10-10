@@ -4,10 +4,13 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
+import { listConversations } from "@/modules/conversations/service";
 import {
   countPendingApprovals,
   getApprovalRequest,
   issueOrRequestApproval,
+  listApprovalRequests,
+  listDecidedApprovals,
   listPendingApprovals,
   requestApprovalAgain,
 } from "@/modules/documents/approval";
@@ -708,6 +711,142 @@ describe.skipIf(!dbUp)(
       expect(nextPage[0]?.id).not.toBe(firstPage[0]?.id);
       expect(Number(nextPage[0]?.id)).toBeGreaterThan(Number(firstPage[0]?.id));
       expect(await countPendingApprovals(ctx(), appDb)).toBe(countBefore + 2);
+    });
+
+    test("the history lists what is no longer waiting, the latest decision first, with who decided and what it came to", async () => {
+      const reviewer = await suDb.user.create({
+        data: {
+          email: `hist-${Date.now()}@local.test`,
+          name: "Bruno Revisor",
+          passwordHash: "x",
+        },
+      });
+      const waiting = await newRequest();
+      const approved = await newRequest();
+      const issued = await suDb.issuedDocument.create({
+        data: {
+          tenantId,
+          title: "Orçamento",
+          number: 3,
+          numberPrefix: "ORC-",
+          idempotencyKey: `hist-issued-${approved.requestId}`,
+        },
+      });
+      await suDb.documentApprovalRequest.update({
+        where: { id: approved.requestId },
+        data: {
+          status: "APPROVED",
+          issuedDocumentId: issued.id,
+          reviewerUserId: reviewer.id,
+          // Asked before the expired one and decided after it: the history runs by decision.
+          decidedAt: new Date(Date.now() + 86_400_000),
+          outcome: "DELIVERED",
+          outcomeAt: new Date(),
+        },
+      });
+      const expired = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: expired.requestId },
+        data: {
+          status: "EXPIRED",
+          decidedAt: new Date(Date.now() + 86_400_000 - 3_600_000),
+        },
+      });
+      const history = await listDecidedApprovals(ctx(), appDb);
+      const ids = history.map((r) => r.id);
+      expect(ids).not.toContain(String(waiting.requestId));
+      expect(ids.slice(0, 2)).toEqual([
+        String(approved.requestId),
+        String(expired.requestId),
+      ]);
+      const row = history.find((r) => r.id === String(approved.requestId));
+      expect(row?.status).toBe("APPROVED");
+      expect(row?.reviewerName).toBe("Bruno Revisor");
+      expect(row?.outcome).toBe("DELIVERED");
+      expect(row?.contactName).toBe("Ana Ribeiro");
+      // Issued, the document goes by its own number; the expired one never took one.
+      expect(row?.issuedNumber).toBe("ORC-0003");
+      expect(
+        history.find((r) => r.id === String(expired.requestId))?.issuedNumber,
+      ).toBeNull();
+      // A page starts after the last row of the one before, in the same order.
+      const next = await listDecidedApprovals(ctx(), appDb, {
+        cursor: BigInt(String(approved.requestId)),
+        limit: 1,
+      });
+      expect(next.map((r) => r.id)).toEqual([String(expired.requestId)]);
+      const foreign: TenantContext = {
+        tenantId: otherTenantId,
+        userId: null,
+        role: "TENANT_ADMIN",
+      };
+      expect(await listDecidedApprovals(foreign, appDb)).toEqual([]);
+      const read = await getApprovalRequest(ctx(), approved.requestId, appDb);
+      expect(read.reviewerName).toBe("Bruno Revisor");
+      expect(read.issuedNumber).toBe("ORC-0003");
+      await suDb.user.delete({ where: { id: reviewer.id } });
+    });
+
+    test("the conversations list flags a conversation whose document waits on the team", async () => {
+      const waiting = await newRequest();
+      const lapsed = await newRequest();
+      await suDb.documentApprovalRequest.update({
+        where: { id: lapsed.requestId },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const page = await listConversations(ctx(), { limit: 100 }, appDb);
+      const flag = (id: bigint) =>
+        page.items.find((c) => c.id === String(id))?.awaitingApproval;
+      expect(flag(waiting.conversationId)).toBe(true);
+      expect(flag(lapsed.conversationId)).toBe(false);
+    });
+
+    test("what waits on the team is filtered before the limit, so overdue rows never crowd it out", async () => {
+      const waiting = await newRequest();
+      // A newer request of the same conversation, past its validity and not yet closed by the expiry.
+      const overdue = await issueOrRequestApproval({
+        ctx: ctx(),
+        base: appDb,
+        storageDir: DIR,
+        templateId,
+        idempotencyKey: `overdue-${Date.now()}`,
+        values: { ...ARGS, cliente: "Outro" },
+        threadId: (
+          await suDb.conversation.findUniqueOrThrow({
+            where: { id: waiting.conversationId },
+            select: { threadId: true },
+          })
+        ).threadId,
+        chatwootInstanceId: instanceId,
+        conversationId: waiting.conversationId,
+        now: new Date(),
+      });
+      if (overdue.kind !== "approval") throw new Error("expected a request");
+      await suDb.documentApprovalRequest.update({
+        where: { id: BigInt(overdue.request.id) },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const listed = await listApprovalRequests(
+        ctx(),
+        { conversationId: waiting.conversationId, waiting: true, limit: 1 },
+        appDb,
+      );
+      expect(listed.map((r) => r.id)).toEqual([String(waiting.requestId)]);
+    });
+
+    test("a conversation's requests are listed apart from every other conversation's", async () => {
+      const mine = await newRequest();
+      await newRequest();
+      const listed = await listApprovalRequests(
+        ctx(),
+        { conversationId: mine.conversationId },
+        appDb,
+      );
+      expect(listed.length).toBeGreaterThan(0);
+      for (const r of listed) {
+        expect(r.conversationId).toBe(String(mine.conversationId));
+      }
+      expect(listed.map((r) => r.id)).toContain(String(mine.requestId));
     });
 
     test("another tenant reads nothing of the request, its page or its context", async () => {

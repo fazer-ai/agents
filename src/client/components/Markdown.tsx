@@ -11,6 +11,11 @@ import { cn } from "@/client/lib/utils";
 // `rehypePlugins` is optional and off by default; the prompt preview passes one that wraps resolved
 // variable values in <span class="prompt-var"> so the dynamic text is colored (see promptPreview.ts).
 // Without it, no spans are produced and the `span` renderer below is never invoked.
+export function isConsoleLink(href: string | undefined): boolean {
+  if (!href || typeof window === "undefined") return false;
+  return href.startsWith(`${window.location.origin}/`);
+}
+
 export function Markdown({
   children,
   className,
@@ -52,8 +57,11 @@ export function Markdown({
           a: ({ children, href }) => (
             <a
               href={href}
-              target="_blank"
-              rel="noopener noreferrer"
+              // A link into the console itself (the approval link a note ends on) opens in place;
+              // anything else opens in a new tab.
+              {...(isConsoleLink(href)
+                ? {}
+                : { target: "_blank", rel: "noopener noreferrer" })}
               className={cn(
                 "underline underline-offset-2",
                 onAccent ? "text-accent-foreground" : "text-accent",

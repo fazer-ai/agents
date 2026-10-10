@@ -1483,7 +1483,7 @@ export async function storedTurnVerdict(params: {
 // (Chatwoot's sender-less outgoing, an away message, an automation, a survey, answers nothing), or
 // the conversation resolved. Null on anything the read cannot settle, which leaves the line as it
 // was: a page about an answered customer is noise, and silence about a waiting one is the loss.
-export async function supersededLive(params: {
+async function supersededLive(params: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;

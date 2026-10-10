@@ -8,11 +8,10 @@ import { isDraining, trackWork } from "@/lib/shutdown";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AdmissionLane, admissionLaneOf } from "./admission-lane";
 import { loadChatwootClient } from "./instance";
-import { maxIncomingId, parseChatwootMessages } from "./messages";
 import { mirrorChatwootEvent } from "./mirror";
 import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
-import { supersededLive } from "./recover-delivery";
+import { storedTurnVerdict } from "./recover-delivery";
 import type { NormalizedChatwootEvent } from "./types";
 import {
   inboxBindingGenerationIn,
@@ -393,9 +392,11 @@ async function replayStored(
   run: <T>(fn: Parameters<typeof asSuperAdminOn<T>>[1]) => Promise<T>,
   deps: RuntimeDeps | undefined,
 ): Promise<unknown> {
-  // NOTE: The ceiling is asked again when the slot opens, since a busy queue can hold a row past it; a
-  // row that crossed it is handed to the sweep exactly as the clearing pass would.
-  if (Date.now() - row.receivedAt.getTime() > STORED_DELIVERY_MAX_AGE_MS) {
+  // The body is dropped and the row left to the sweep and the delivery recovery: past the ceiling (a
+  // busy queue can hold a row past it), or, for a customer message, when the inbox binding moved since
+  // receipt (the recovery's fences decide what the route's role was then). A status or assignment
+  // change keeps its replay: it has no recovery, and what it mirrors does not depend on the role.
+  const toSweep = async () => {
     await run((db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: { id: row.id, status: "PENDING" },
@@ -403,49 +404,33 @@ async function replayStored(
       }),
     );
     return "skipped";
+  };
+  if (Date.now() - row.receivedAt.getTime() > STORED_DELIVERY_MAX_AGE_MS) {
+    return toSweep();
   }
-  // NOTE: The binding a customer message was received under must still stand. One that moved since (an
-  // observer made the responder, a persona swapped) asks what the route's role was at receipt, which
-  // the delivery recovery answers with its own fences: the body is dropped and the row goes to the
-  // sweep. Only for a customer message: a status or assignment change has no recovery to go to, and
-  // what it mirrors does not depend on the route's role.
   if (
     admissionLaneOf(normalized) === "turn" &&
-    row.bindingGeneration !== null
-  ) {
-    const current = await run((db) =>
+    row.bindingGeneration !== null &&
+    (await run((db) =>
       inboxBindingGenerationIn(db, row.chatwootInstanceId, {
         chatwootInboxId: normalized.inboxId ?? null,
         chatwootConversationId: normalized.conversationId,
       }),
+    )) !== row.bindingGeneration
+  ) {
+    logger.warn(
+      "chatwoot: stored delivery row %s was received under another inbox binding; left to the sweep and the delivery recovery",
+      String(row.id),
     );
-    if (current !== row.bindingGeneration) {
-      logger.warn(
-        "chatwoot: stored delivery row %s was received under binding generation %d and the inbox is at %s now; left to the sweep and the delivery recovery",
-        String(row.id),
-        row.bindingGeneration,
-        String(current),
-      );
-      await run((db) =>
-        db.chatwootWebhookDelivery.updateMany({
-          where: { id: row.id, status: "PENDING" },
-          data: { payload: null },
-        }),
-      );
-      return "skipped";
-    }
+    return toSweep();
   }
   let event = normalized;
   let superseded = false;
   const conversationId = normalized.conversationId;
-  // NOTE: A stored customer message can be replayed long after it arrived, past a takeover whose own
-  // webhooks never reached the mirror while this process was down. The live conversation is read
-  // first and reconciled into the mirror, as the delivery recovery does, and the stored event is then
-  // processed as it arrived: the mirror's ordering keeps what is newer, so ownership comes from the
-  // live read while the message's own clock and pairing keep theirs. A conversation not mirrored yet
-  // is mirrored from the stored event's conversation alone (no message) first, so there is a row for
-  // the live state to land on. A read that fails, or that does not say who holds the conversation,
-  // throws, and the row waits for the next pass with its body.
+  // NOTE: A replay can come long after a takeover the mirror never saw: the live conversation is
+  // reconciled into the mirror first, as the delivery recovery does (an unmirrored conversation is
+  // mirrored from the stored event's conversation alone first), and whether a turn is still owed is
+  // the recovery's own decision (`storedTurnVerdict`).
   if (admissionLaneOf(normalized) === "turn" && conversationId !== null) {
     const client = await loadChatwootClient(
       row.tenantId,
@@ -455,35 +440,39 @@ async function replayStored(
     const live = parseLiveConversation(
       await client.getConversation(conversationId),
     );
-    if (live === null || !live.assigneeStated) {
-      throw new Error(
-        `the live conversation ${conversationId} does not say who holds it; replay deferred`,
+    if (live !== null) {
+      const mirrored = await run((db) =>
+        db.conversation.findFirst({
+          where: {
+            tenantId: row.tenantId,
+            chatwootInstanceId: row.chatwootInstanceId,
+            chatwootConversationId: conversationId,
+          },
+          select: { id: true },
+        }),
       );
-    }
-    const mirrored = await run((db) =>
-      db.conversation.findFirst({
-        where: {
-          tenantId: row.tenantId,
-          chatwootInstanceId: row.chatwootInstanceId,
-          chatwootConversationId: conversationId,
-        },
-        select: { id: true },
-      }),
-    );
-    if (mirrored === null) {
-      await mirrorChatwootEvent(
-        row.tenantId,
-        row.chatwootInstanceId,
-        { ...normalized, event: "conversation_updated", message: undefined },
+      if (mirrored === null) {
+        await mirrorChatwootEvent(
+          row.tenantId,
+          row.chatwootInstanceId,
+          { ...normalized, event: "conversation_updated", message: undefined },
+          base,
+        );
+      }
+      await reconcileMirrorFromLive({
+        tenantId: row.tenantId,
+        instanceId: row.chatwootInstanceId,
+        conversationId,
+        live,
         base,
-      );
+      });
     }
-    await reconcileMirrorFromLive({
+    superseded = await turnNoLongerOwed(client, normalized, {
       tenantId: row.tenantId,
       instanceId: row.chatwootInstanceId,
-      conversationId,
-      live,
+      routeBotId: row.routeAgentBotId,
       base,
+      live,
     });
     // The message proposes the status the mirror settled on, not the stored one: a stored
     // message's whole-second clock can tie a resolve that came after it, and proposing its old
@@ -500,13 +489,6 @@ async function replayStored(
       }),
     );
     if (settledStatus) event = { ...normalized, status: settledStatus.status };
-    superseded = await writtenPast(client, conversationId, normalized, {
-      tenantId: row.tenantId,
-      instanceId: row.chatwootInstanceId,
-      routeBotId: row.routeAgentBotId,
-      base,
-      deps,
-    });
   }
   return processRecordedChatwootDelivery({
     tenantId: row.tenantId,
@@ -521,49 +503,39 @@ async function replayStored(
   });
 }
 
-// Whether this new message no longer owes a reply: the customer wrote past it (a newer incoming
-// message on the newest page, `maxIncomingId`, the delivery path's own predicate), or the conversation
-// moved past it (a person or another bot answered it, or it was resolved: `supersededLive`, the
-// recovery's own check). Such a message is ingested into memory and not answered, since a turn for it
-// would run its tools before any send-time check. A newest page that cannot answer (empty, or not
-// reaching back to this message) throws, and the delivery waits for the next pass.
-async function writtenPast(
+// Whether this new message no longer owes a turn: the delivery recovery's own decision
+// (`storedTurnVerdict`). Undecided throws, and the delivery stays PENDING with its body.
+async function turnNoLongerOwed(
   client: Awaited<ReturnType<typeof loadChatwootClient>>,
-  conversationId: number,
   normalized: NormalizedChatwootEvent,
   route: {
     tenantId: bigint;
     instanceId: bigint;
     routeBotId: number | null;
     base: PrismaClient;
-    deps?: RuntimeDeps;
+    live: ReturnType<typeof parseLiveConversation>;
   },
 ): Promise<boolean> {
   const messageId = normalized.message?.id;
-  if (normalized.event !== "message_created" || messageId == null) return false;
-  const page = parseChatwootMessages(await client.getMessages(conversationId));
-  const newest = maxIncomingId(page, messageId);
-  if (newest > messageId) return true;
-  const oldest = page.reduce<number | null>(
-    (min, m) => (min === null || m.id < min ? m.id : min),
-    null,
-  );
-  if (oldest === null || oldest > messageId) {
-    throw new Error(
-      `the newest page of conversation ${conversationId} does not reach message ${messageId}; replay deferred`,
-    );
-  }
-  const moved = await supersededLive({
-    tenantId: route.tenantId,
-    instanceId: route.instanceId,
+  const conversationId = normalized.conversationId;
+  if (
+    normalized.event !== "message_created" ||
+    messageId == null ||
+    conversationId === null
+  )
+    return false;
+  const v = await storedTurnVerdict({
+    ...route,
     conversationId,
     messageId,
-    routeBotId: route.routeBotId,
-    base: route.base,
-    ...(route.deps?.makeClient ? { makeClient: route.deps.makeClient } : {}),
-    throwOnReadFailure: true,
+    client,
   });
-  return moved !== null;
+  if (v.verdict === "degraded") {
+    throw new Error(
+      `conversation ${conversationId} cannot say whether message ${messageId} is still owed a turn (${v.why}); deferred`,
+    );
+  }
+  return v.verdict !== "owed";
 }
 
 // How long a live delivery may wait for its slot before its freshness is asked again when the slot
@@ -596,12 +568,12 @@ export async function runQueuedDelivery(d: QueuedDelivery): Promise<unknown> {
       ...(d.base ? { base: d.base } : {}),
       ...(d.deps?.makeClient ? { makeClient: d.deps.makeClient } : {}),
     });
-    superseded = await writtenPast(client, conversationId, d.normalized, {
+    superseded = await turnNoLongerOwed(client, d.normalized, {
       tenantId: d.tenantId,
       instanceId: d.instanceId,
       routeBotId: d.agentBotId,
       base: d.base ?? basePrisma,
-      deps: d.deps,
+      live: parseLiveConversation(await client.getConversation(conversationId)),
     });
   }
   return processRecordedChatwootDelivery({

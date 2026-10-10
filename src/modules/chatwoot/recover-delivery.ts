@@ -982,8 +982,11 @@ async function runRecovery(params: {
         row,
         // Off the mirror as it stands now, which is what the hand-over reads: a null inbox was
         // repaired above to the route's, and a webhook may have created the row during the REST
-        // reads. A conversation still not mirrored has nothing to hand over and keeps six hours.
-        mirrorNow?.inbox?.channelType ?? null,
+        // reads. A conversation still not mirrored has nothing to hand over and keeps six hours. An
+        // inbox that never learned its channel takes the one the live conversation names.
+        mirrorNow?.inbox
+          ? (mirrorNow.inbox.channelType ?? liveChannelOf(liveRaw))
+          : null,
       )
   ) {
     return "unrecoverable";
@@ -1638,6 +1641,13 @@ async function schedulerGaveUp(
     }),
   ).catch(() => null);
   return row?.status === "DEAD" && row.claimSeq === job.claimSeq;
+}
+
+// The channel the live conversation names (`meta.channel`), for a mirrored inbox that never learned
+// its own.
+function liveChannelOf(raw: unknown): string | null {
+  const meta = isRecord(raw) && isRecord(raw.meta) ? raw.meta : null;
+  return typeof meta?.channel === "string" ? meta.channel : null;
 }
 
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a

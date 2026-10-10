@@ -680,7 +680,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7341 },
+          chatwootConversationId: { gte: 7310, lte: 7342 },
         },
       });
       await dropContact(77);
@@ -1508,6 +1508,48 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
               },
             });
           },
+        });
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("unrecoverable");
+        expect(stub.sent).toEqual([]);
+      } finally {
+        await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+      }
+    });
+
+    test("refuses on the live channel when the mirror's inbox never learned its own", async () => {
+      const convId = 7342;
+      const messageId = 7842;
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true, metadataAt: true },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { channelType: null, metadataAt: null },
+      });
+      try {
+        await seedConversation(convId);
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          receivedAgoMs: 2 * 60 * 60 * 1000,
+        });
+        const stub = stubChatwoot({
+          page: pageWith([
+            {
+              id: messageId,
+              content: "oi",
+              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+            },
+          ]),
+          conv: { channel: "Channel::Whatsapp" },
         });
         expect(
           await recoverStrandedDelivery({

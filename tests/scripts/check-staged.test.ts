@@ -154,6 +154,36 @@ describe("the lint step", () => {
     expect(hook().code).not.toBe(0);
   });
 
+  test("lints the whole index when the rules change, and still not the disk", () => {
+    // A comment the formatter keeps as it is: the change has to be valid for the clean case to pass.
+    write(
+      "biome.jsonc",
+      `${readFileSync(join(repo, "biome.jsonc"))}`.replace(
+        "{\n",
+        "{\n  // tweak\n",
+      ),
+    );
+    git("add", "biome.jsonc");
+    write("tests/untracked.ts", BAD);
+    expect(hook().code).toBe(0);
+
+    write("tests/fixed-on-disk.ts", BAD);
+    git("add", "tests/fixed-on-disk.ts");
+    write("tests/fixed-on-disk.ts", GOOD);
+    const refused = hook();
+    expect(refused.code).not.toBe(0);
+    expect(refused.output).toContain("fixed-on-disk.ts");
+  });
+
+  test("refuses a staged deletion of a plugin the config still names", () => {
+    const named = readFileSync(join(repo, "biome.jsonc"), "utf8").match(
+      /\.\/biome-plugins\/([\w-]+\.grit)/,
+    )?.[1];
+    expect(named).toBeDefined();
+    git("rm", "-q", `biome-plugins/${named}`);
+    expect(hook().code).not.toBe(0);
+  });
+
   test("leaves the index and the working tree as it found them", () => {
     write("tests/bad.ts", BAD);
     git("add", "tests/bad.ts");

@@ -129,6 +129,18 @@ describe("the lint step", () => {
     expect(refused.output).toContain("noDebugger");
   });
 
+  test("passes a commit that stages package.json", () => {
+    write("tests/a.ts", GOOD);
+    git("add", "tests/a.ts");
+    const manifest = JSON.parse(
+      readFileSync(join(repo, "package.json"), "utf8"),
+    );
+    manifest.description = "staged";
+    write("package.json", `${JSON.stringify(manifest, null, 2)}\n`);
+    git("add", "package.json");
+    expect(hook().code).toBe(0);
+  });
+
   // Biome enables its React rules from the dependencies package.json lists.
   test("applies the React rules CI applies", () => {
     write(

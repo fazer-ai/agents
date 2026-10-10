@@ -37,9 +37,10 @@ if [ -n "$lint_all" ]; then
   # commit does not carry first shows up, and it is cheaper to see it here than on the next commit.
   bun "$root/node_modules/.bin/biome" check --error-on-warnings
 elif [ -s "$list" ]; then
-  # package.json too: Biome turns its React rules on from the dependencies it lists.
+  # package.json too: Biome turns its React rules on from the dependencies it lists. -f, since a staged
+  # package.json is named twice and the scratch tree is the only thing it overwrites.
   { cat "$list"; printf 'biome.jsonc\0package.json\0'; git ls-files -z biome-plugins; } |
-    git checkout-index -z --prefix="$work/tree/" --stdin
+    git checkout-index -f -z --prefix="$work/tree/" --stdin
   (cd "$work/tree" && xargs -0 bun "$root/node_modules/.bin/biome" check --vcs-enabled=false \
     --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true <"$list")
 fi

@@ -48,8 +48,16 @@ describe("navigation", () => {
       "/",
       "/conversations",
       "/agents",
+      "/approvals",
       "/resources",
       "/channels",
     ]);
+  });
+
+  test("every role finds the approvals queue, and it carries the badge", () => {
+    const approvals = NAV_ITEMS.find((i) => i.to === "/approvals");
+    expect(approvals?.badge).toBe("approvals");
+    expect(approvals?.requireAdmin).toBeUndefined();
+    expect(NAV_ITEMS.filter((i) => i.badge === "approvals")).toHaveLength(1);
   });
 });

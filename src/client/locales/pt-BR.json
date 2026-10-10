@@ -223,6 +223,22 @@
     "title": "Chaves de API",
     "tokenWarning": "Copie esta chave agora. Por segurança, ela é exibida apenas uma vez e não pode ser recuperada depois."
   },
+  "approvalQueue": {
+    "conversation": "conversa #{{number}}",
+    "documentFor": "{{title}} para {{customer}}",
+    "documentMeta": "Pedido em {{at}} · vence em {{expires}}",
+    "documents": "Documentos",
+    "knowledge": "Sugestões da base de conhecimento",
+    "loadError": "Não foi possível carregar os documentos aguardando aprovação.",
+    "more": "Mostrar mais",
+    "moreFailed": "Não foi possível carregar mais documentos.",
+    "noDocuments": "Nenhum documento aguardando aprovação.",
+    "noKnowledge": "Nenhuma sugestão da base de conhecimento aguardando revisão.",
+    "review": "Revisar",
+    "subtitle": "Documentos aguardando a equipe.",
+    "subtitleAdmin": "Documentos aguardando a equipe e sugestões que os agentes fizeram para a base de conhecimento.",
+    "title": "Aprovações"
+  },
   "approvals": {
     "actionError": "A ação falhou.",
     "approve": "Aprovar",
@@ -629,6 +645,7 @@
     },
     "attachment": "Anexo",
     "back": "Voltar para conversas",
+    "backToApproval": "Voltar para a aprovação",
     "configureAgent": "Configurar agente",
     "configureObserver": "Configurar {{name}}",
     "error": "Não foi possível carregar a conversa.",
@@ -2902,6 +2919,7 @@
     "admin": "Admin",
     "agents": "Agentes",
     "apiKeys": "Chaves de API",
+    "approvals": "Aprovações",
     "audit": "Auditoria",
     "breadcrumbs": "Navegação contextual",
     "channels": "Canais",

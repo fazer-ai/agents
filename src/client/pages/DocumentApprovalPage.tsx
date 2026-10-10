@@ -13,6 +13,7 @@ import {
   Textarea,
   useToast,
 } from "@/client/components";
+import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { mediaFetch } from "@/client/lib/media";
@@ -137,6 +138,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { refresh: refreshApprovals } = usePendingApprovals();
   // Whether this request's page is still the one on screen: an action that answers after the
   // reviewer moved on must not navigate them away from where they went.
   const onScreen = useRef(true);
@@ -221,6 +223,12 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
 
   const endpoint = api.api.v1["document-approvals"]({ id });
 
+  // A decision changes what waits on the team, so the sidebar badge is asked again with the page.
+  const reloadAfterAction = async () => {
+    await load();
+    refreshApprovals();
+  };
+
   const approve = async () => {
     setBusy("approve");
     try {
@@ -231,7 +239,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
             t("documentApproval.approveFailed", "Could not approve."),
           "error",
         );
-        await load();
+        await reloadAfterAction();
         return;
       }
       showToast(
@@ -242,7 +250,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         ),
         "success",
       );
-      await load();
+      await reloadAfterAction();
     } catch {
       // The body could not be read (a cut connection, a malformed answer): the server may have
       // acted anyway, so the request is read again rather than guessed.
@@ -250,7 +258,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         t("documentApproval.approveFailed", "Could not approve."),
         "error",
       );
-      await load();
+      await reloadAfterAction();
     } finally {
       setBusy(null);
     }
@@ -269,7 +277,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
             t("documentApproval.rejectFailed", "Could not reject."),
           "error",
         );
-        await load();
+        await reloadAfterAction();
         return;
       }
       showToast(
@@ -281,7 +289,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
       );
       setRejecting(false);
       setNote("");
-      await load();
+      await reloadAfterAction();
     } catch {
       // The body could not be read (a cut connection, a malformed answer): the server may have
       // acted anyway, so the request is read again rather than guessed.
@@ -289,7 +297,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         t("documentApproval.rejectFailed", "Could not reject."),
         "error",
       );
-      await load();
+      await reloadAfterAction();
     } finally {
       setBusy(null);
     }
@@ -305,7 +313,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
             t("documentApproval.againFailed", "Could not request it again."),
           "error",
         );
-        await load();
+        await reloadAfterAction();
         return;
       }
       showToast(
@@ -323,7 +331,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
         t("documentApproval.againFailed", "Could not request it again."),
         "error",
       );
-      await load();
+      await reloadAfterAction();
     } finally {
       setBusy(null);
     }
@@ -454,7 +462,7 @@ function DocumentApprovalRequestPage({ id }: { id: string }) {
                 )}
                 {context?.conversation && (
                   <Link
-                    to={`/conversations/${context.conversation.id}`}
+                    to={`/conversations/${context.conversation.id}?from=/document-approvals/${id}`}
                     className="text-accent text-sm"
                   >
                     {t(

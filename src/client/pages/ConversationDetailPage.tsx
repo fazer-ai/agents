@@ -37,7 +37,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import {
   Badge,
   Button,
@@ -61,6 +61,7 @@ import { useAuth } from "@/client/contexts/AuthContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { approvalBreadcrumb } from "@/client/lib/approval-breadcrumb";
 import { isAdminRole } from "@/client/lib/roles";
 import { type TurnFacts, toolLabel } from "@/client/lib/tool-label";
 import { cn, formatRelativeTime } from "@/client/lib/utils";
@@ -1060,6 +1061,9 @@ export function ConversationDetailPage() {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
   const { id = "" } = useParams();
+  // A conversation opened from a document approval's page offers the way back to it.
+  const [searchParams] = useSearchParams();
+  const backToApproval = approvalBreadcrumb(searchParams.get("from"));
   // Metadata shell (fast) and the message thread (slow, live from Chatwoot) load independently so
   // the page renders immediately and only the messages area spins.
   const [conv, setConv] = useState<ConversationDetail | null>(null);
@@ -1638,6 +1642,15 @@ export function ConversationDetailPage() {
         <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         {t("conversation.back", "Back to conversations")}
       </Link>
+      {backToApproval && (
+        <Link
+          to={backToApproval}
+          className="inline-flex w-fit items-center gap-1.5 text-accent text-sm hover:underline"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          {t("conversation.backToApproval", "Back to the approval")}
+        </Link>
+      )}
 
       <DataBoundary
         loading={metaLoading}

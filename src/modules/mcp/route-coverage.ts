@@ -141,6 +141,9 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "DELETE /v1/document-templates/:id": { tool: "document_template_delete" },
   "GET /v1/document-approvals/": { gap: "list document approval requests" },
   "GET /v1/document-approvals/:id": { gap: "read a document approval request" },
+  "GET /v1/document-approvals/pending": {
+    gap: "list the document approvals waiting on the team",
+  },
   "GET /v1/document-approvals/:id/preview": { none: BINARY },
   "POST /v1/document-approvals/:id/approve": {
     gap: "approve a document approval request",

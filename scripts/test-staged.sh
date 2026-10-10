@@ -13,7 +13,7 @@
 # Prisma schema change every test file at once.
 set -e
 
-staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --diff-filter=ACMRD)}
+staged=${TEST_STAGED_FILES:-$(git diff --cached --name-only --no-renames --diff-filter=ACMD)}
 [ -z "$staged" ] && exit 0
 
 full=$(printf '%s\n' "$staged" | grep -E '^(tests/(setup|dom-setup|db-gate|db-name)\.ts|bunfig\.toml|package\.json|bun\.lock|tsconfig\.json|prisma/)' || true)
@@ -36,24 +36,26 @@ grep_tests() {
 
 # The files that import a staged module, by any spelling of the import: `@/modules/split/service`,
 # `../utils/poll`, `../../scripts/set-admin` all end in the parent directory and the name, with or
-# without the extension, and a file directly under src/ is imported as `@/config`. An `index` file is also imported by its directory. A sibling import
+# without the extension (a JSON module keeps it), and a file directly under src/ is imported as
+# `@/config`. A rename counts as its old path deleted and its new one added, so a test that still
+# names the old path is selected. An `index` file is also imported by its directory. A sibling import
 # (`./behaviorTabProps`) names no directory, so it is searched only next to the staged file.
 importers() {
   file=$1
   name=$(basename "$file")
   name=${name%.*}
   parent=$(basename "$(dirname "$file")")
-  grep_tests -E "[/'\"]$parent/$name(\.tsx?)?['\"]"
+  grep_tests -E "[/'\"]$parent/$name(\.[A-Za-z]+)?['\"]"
   if [ "$name" = index ]; then
     grand=$(basename "$(dirname "$(dirname "$file")")")
     grep_tests -E "[/'\"]$grand/$parent['\"]"
   fi
-  grep -l -E "['\"]\./$name(\.tsx?)?['\"]" "$(dirname "$file")"/*.test.ts "$(dirname "$file")"/*.test.tsx 2>/dev/null || true
+  grep -l -E "['\"]\./$name(\.[A-Za-z]+)?['\"]" "$(dirname "$file")"/*.test.ts "$(dirname "$file")"/*.test.tsx 2>/dev/null || true
   case "$file" in
     src/*)
       spec="@/${file#src/}"
       spec="${spec%.*}"
-      grep_tests -F -e "\"$spec\"" -e "'$spec'"
+      grep_tests -F -e "\"$spec\"" -e "'$spec'" -e "\"@/${file#src/}\"" -e "'@/${file#src/}'"
       ;;
   esac
 }
@@ -70,7 +72,7 @@ for file in $staged; do
   esac
   case "$file" in
     tests/*.test.ts | tests/*.test.tsx) add "$file" ;;
-    *.ts | *.tsx)
+    *.ts | *.tsx | *.json)
       # shellcheck disable=SC2046
       add $(importers "$file")
       # shellcheck disable=SC2046

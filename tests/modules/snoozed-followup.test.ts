@@ -35,6 +35,7 @@ import {
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { until } from "../utils/poll";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import {
   guardrailModel,
@@ -756,19 +757,16 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const s = stub({ messages: [personAsked(360, 3)] });
     await snoozedFollowUpHandler(jobFor(2043), appDb, s.deps);
     expect(s.sent).toEqual([REPLY]);
-    let origin: unknown = null;
-    for (let i = 0; i < 30 && origin === null; i++) {
+    const hit = await until("the reminder's generate line", async () => {
       const rows = await flowLogRows(suDb, {
         where: { tenantId, stage: "generate", threadId: threadOf(2043) },
         select: { detail: true },
       });
-      const hit = rows
+      return rows
         .map((r) => r.detail as Record<string, unknown> | null)
         .find((d) => typeof d?.outcome === "string");
-      if (hit) origin = hit.origin;
-      else await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(origin).toBe("snoozed");
+    });
+    expect(hit.origin).toBe("snoozed");
   });
 
   test("not yet due: rescheduled to the due instant, nothing sent", async () => {

@@ -2,7 +2,10 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
-import { revealFirstProblem } from "@/client/pages/agents/saveAttempt";
+import {
+  revealFirstProblem,
+  setupSaveBlocked,
+} from "@/client/pages/agents/saveAttempt";
 
 // A Save pressed while something keeps the setup from being written is never a silent click
 // (agents#1224): the page lights what is missing and takes the operator to the first problem on
@@ -103,5 +106,17 @@ describe("revealing the first problem", () => {
     expect(revealFirstProblem(container)).toBe(false);
     expect(revealFirstProblem(null)).toBe(false);
     expect(scrolled).toEqual([]);
+  });
+});
+
+describe("when a Save on the setup's tabs goes to the problems", () => {
+  test("with problems, whenever it would write the setup or nothing at all", () => {
+    expect(setupSaveBlocked(1, true, false)).toBe(true);
+    expect(setupSaveBlocked(1, true, true)).toBe(true);
+    // A stored setup that is incomplete and nothing edited: the press is not a silent no-op.
+    expect(setupSaveBlocked(1, false, false)).toBe(true);
+    // Only the name edited on General: it is saved, the setup stays as stored.
+    expect(setupSaveBlocked(1, false, true)).toBe(false);
+    expect(setupSaveBlocked(0, true, false)).toBe(false);
   });
 });

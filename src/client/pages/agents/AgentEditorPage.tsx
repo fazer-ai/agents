@@ -2039,7 +2039,11 @@ function AgentEditor() {
       JSON.stringify({ systemPrompt, model, memory, modelFallback }) !==
         JSON.stringify({ ...chatSnap, ...hiddenSnap })) ||
     guidanceDraftHidden(formGuidance, storedGuidance) ||
-    canonicalGrants(grants) !== canonicalGrants(savedGrants);
+    canonicalGrants(grants) !== canonicalGrants(savedGrants) ||
+    // The suggestion reviewer is Knowledge's, which this engine does not draw.
+    (decides &&
+      JSON.stringify(review) !==
+        JSON.stringify(suggestionReviewToForm(syncedForChat?.settings)));
   const sectionSnap = {
     // NOTE: General covers identity + model (the tabs merged). Track the raw model
     // form state, not buildModelConfig() — the latter collapses to {} until
@@ -2163,6 +2167,12 @@ function AgentEditor() {
     watcher && !!baseline && decisionsHeadOf(observation) !== baseHead;
   const decisionsBodyDirty =
     watcher && !!baseline && decisionsBodyOf(observation) !== baseBody;
+  // The setup edited while the agent is not a watcher: no save writes it, and it is still the operator's.
+  const hiddenDecisionsPending =
+    !watcher &&
+    !!baseline &&
+    (decisionsHeadOf(observation) !== baseHead ||
+      decisionsBodyOf(observation) !== baseBody);
   const dirty = {
     general: !!baseline && sectionSnap.general !== baseline.general,
     decisions: decisionsHeadDirty || decisionsBodyDirty,
@@ -2182,6 +2192,7 @@ function AgentEditor() {
     );
   const anyDirty =
     hiddenDraftsPending ||
+    hiddenDecisionsPending ||
     dirty.general ||
     dirty.decisions ||
     dirty.behavior ||
@@ -3900,7 +3911,17 @@ function AgentEditor() {
       showToast(
         t(
           "editor.hiddenDraftsPending",
-          "There are unsaved changes to the instructions, the model, memory or the fallback provider, which questions and rules do not use. Switch back to the language model on General to save them, or discard them.",
+          "There are unsaved changes that questions and rules do not use (the instructions, the model, memory, the fallback provider, Knowledge, or tools it does not show). Switch back to the language model on General to save them, or discard them.",
+        ),
+        "error",
+      );
+      return false;
+    }
+    if (hiddenDecisionsPending) {
+      showToast(
+        t(
+          "editor.hiddenDecisionsPending",
+          "There are unsaved changes to the questions and rules, which only a monitoring agent uses. Switch the mode back to Monitoring on General to save them, or discard them.",
         ),
         "error",
       );

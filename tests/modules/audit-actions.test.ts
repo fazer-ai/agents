@@ -57,7 +57,30 @@ async function producerSources(): Promise<string[]> {
   return out;
 }
 
+// The actions an upgrade writes from SQL: every migration that inserts into `audit_logs`, its
+// `'<entity>.<verb>'` literals. These rows reach the same console filter as the code's.
+async function migrationActions(): Promise<Set<string>> {
+  const out = new Set<string>();
+  for await (const rel of new Bun.Glob("**/migration.sql").scan(
+    "prisma/migrations",
+  )) {
+    const sql = await Bun.file(`prisma/migrations/${rel}`).text();
+    if (!/INSERT INTO "?audit_logs"?/.test(sql)) continue;
+    for (const m of sql.matchAll(/'([a-z_]+\.[a-z_]+)'/g))
+      out.add(m[1] as string);
+  }
+  return out;
+}
+
 describe("the audit action vocabulary", () => {
+  test("every action an upgrade writes is on the list", async () => {
+    const written = await migrationActions();
+    expect(written.has("agent.disabled_by_upgrade")).toBe(true);
+    expect(
+      [...written].filter((a) => !AUDIT_ACTIONS.includes(a as never)),
+    ).toEqual([]);
+  });
+
   // MISSING: a family adds `channel.foo` and the operator cannot pick it. The type is the real
   // fence (`AuditEntry.action` is `AuditAction`); this costs one sweep and fails with the NAME
   // rather than with a union of ninety alternatives.
@@ -86,8 +109,10 @@ describe("the audit action vocabulary", () => {
   // a helper (`auditConsentDecision`), and presence does not depend on the shape.
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
+    const upgrades = await migrationActions();
     const orphaned = AUDIT_ACTIONS.filter(
-      (a) => !sources.some((code) => code.includes(`"${a}"`)),
+      (a) =>
+        !upgrades.has(a) && !sources.some((code) => code.includes(`"${a}"`)),
     );
     expect(orphaned).toEqual([]);
   });

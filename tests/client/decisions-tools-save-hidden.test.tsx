@@ -79,10 +79,11 @@ const AGENT = {
 };
 
 function stubApi(
-  agent: Record<string, unknown> = AGENT,
+  initial: Record<string, unknown> = AGENT,
   grants: unknown[] = GRANTS,
 ): { method: string; path: string; body: unknown }[] {
   let stored = grants;
+  let agent = initial;
   const asked: { method: string; path: string; body: unknown }[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -110,6 +111,17 @@ function stubApi(
         langfuse: { sendContent: false },
       },
     };
+    // The agent PATCH stores what it was sent, as the server does.
+    if (method === "PATCH" && url.pathname === "/api/v1/agents/1") {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      delete sent.expectedUpdatedAt;
+      agent = {
+        ...agent,
+        ...sent,
+        updatedAt: `2026-01-0${(asked.length % 9) + 1}T00:00:00.000Z`,
+      };
+      routes["PATCH /api/v1/agents/1"] = { agent };
+    }
     // The grants PUT stores what it was sent, as the server does.
     if (
       method === "PUT" &&
@@ -438,4 +450,90 @@ test("a Knowledge draft made on the language model stays unsaved through a Tools
   await tab("Knowledge");
   await waitFor(() => expect(text().includes("FAQ do SAC")).toBe(true));
   expect(`${sentRag} ${Boolean(button("Discard"))}`).toBe("false true");
+});
+
+const renderAt = (path: string) =>
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <ThemeProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <NavGuardProvider>
+              <TooltipProvider>
+                <Routes>
+                  <Route
+                    path="/agents/:id/:tab"
+                    element={<AgentEditorPage />}
+                  />
+                </Routes>
+              </TooltipProvider>
+            </NavGuardProvider>
+          </AuthProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+
+const DECIDING = {
+  ...AGENT,
+  settings: {
+    ...AGENT.settings,
+    monitoring: {
+      engine: "decisions",
+      decisions: {
+        provider: "typesafe",
+        credentialRef: "vault:12",
+        questions: [
+          { name: "pede_reembolso", type: "yes_no", instructions: "Pede?" },
+        ],
+        rules: [
+          {
+            when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+            action: { tool: "set_labels", args: { add: ["reembolso"] } },
+          },
+        ],
+      },
+    },
+  },
+};
+
+// The questions and rules are drawn only for a monitoring agent. Edited, then hidden by a switch to
+// Production and a General save, they are still the operator's: leaving still asks about them.
+test("questions and rules edited before a switch to answering keep the editor unsaved", async () => {
+  const asked = stubApi(DECIDING);
+  renderAt("/agents/1/decisions");
+  await waitFor(() => expect(Boolean(button("Add question"))).toBe(true));
+  fireEvent.click(button("Add question"));
+  await waitFor(() => expect(Boolean(button("Discard all"))).toBe(true));
+  await tab("General");
+  fireEvent.click(button("Production"));
+  fireEvent.click(button("Save"));
+  await waitFor(() =>
+    expect(asked.some((a) => a.method === "PATCH")).toBe(true),
+  );
+  await waitFor(() => expect(text().includes("Production")).toBe(true));
+  expect(Boolean(button("Discard all"))).toBe(true);
+});
+
+// The suggestion reviewer is Knowledge's, which questions and rules do not draw: edited before the
+// switch, "Save and export" refuses instead of writing it unseen.
+test("a reviewer edited on the language model is a hidden draft on questions and rules", async () => {
+  const asked = stubApi();
+  renderAt("/agents/1/knowledge");
+  const provider = await waitFor(() => {
+    const el = [...document.querySelectorAll<HTMLSelectElement>("select")].find(
+      (e) => [...e.options].some((o) => o.text === "Same as the agent"),
+    );
+    if (!el) throw new Error("the reviewer provider is not there yet");
+    return el;
+  });
+  fireEvent.change(provider, { target: { value: "openai" } });
+  await engine("decisions");
+  fireEvent.click(button("Export"));
+  await waitFor(() => expect(Boolean(button("Save and export"))).toBe(true));
+  fireEvent.click(button("Save and export"));
+  await waitFor(() =>
+    expect(text().includes("questions and rules do not use")).toBe(true),
+  );
+  expect(asked.filter((a) => a.method !== "GET").length).toBe(0);
 });

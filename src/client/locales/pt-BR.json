@@ -1200,6 +1200,7 @@
     "nextNumber": "Próximo número",
     "nextNumberHint": "O próximo documento sai como {{number}}. Não dá para voltar a um número já emitido com este prefixo; um prefixo novo começa uma nova sequência.",
     "nextNumberInvalid": "Informe um número inteiro a partir de 1.",
+    "nextNumberShort": "próximo {{number}}",
     "noFields": "Nenhum campo ainda.",
     "noTextBlocks": "Este modelo não tem bloco de texto.",
     "numberPrefix": "Prefixo da numeração",

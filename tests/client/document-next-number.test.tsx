@@ -152,3 +152,35 @@ test("a number already used shows the server's refusal", async () => {
     expect(screen.queryAllByText(refusal as string).length).toBeGreaterThan(0),
   );
 });
+
+test("the template list says where each template's numbering continues", async () => {
+  const { DocumentsPanel } = await import(
+    "@/client/pages/resources/documents/DocumentsPanel"
+  );
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://localhost");
+    const body = url.pathname.endsWith("/document-templates")
+      ? {
+          templates: [
+            { ...TEMPLATE, toolName: "send_orcamento", nextNumber: 1501 },
+          ],
+        }
+      : url.pathname.endsWith("/starters")
+        ? { starters: [] }
+        : url.pathname.endsWith("/tenant-settings")
+          ? { company: null }
+          : { documents: [] };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  render(
+    <MemoryRouter>
+      <ToastProvider>
+        <DocumentsPanel />
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+  await screen.findByText(/(next|próximo) ORC-1501/);
+});

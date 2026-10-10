@@ -473,6 +473,10 @@ export function DocumentsPanel() {
                         t("documents.blockCount", "{{count}} blocks", {
                           count: tpl.blocks.length,
                         })}
+                      {" · "}
+                      {t("documents.nextNumberShort", "next {{number}}", {
+                        number: `${tpl.numberPrefix ?? ""}${String(tpl.nextNumber).padStart(4, "0")}`,
+                      })}
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-1">

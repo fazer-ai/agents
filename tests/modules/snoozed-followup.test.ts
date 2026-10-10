@@ -22,6 +22,10 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  CHATWOOT_SEND_ID_KEY,
+  resetAckSendId,
+} from "@/modules/chatwoot/constants";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import { isSnoozedForAPerson } from "@/modules/chatwoot/normalize";
 import {
@@ -909,9 +913,9 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const s = stub({
       messages: [
         contact(400, 20, "pré-reset: quero cancelar tudo"),
-        contact(402, 10, "Comprei dois ingressos para o show de sábado"),
+        contact(403, 10, "Comprei dois ingressos para o show de sábado"),
         {
-          id: 403,
+          id: 404,
           message_type: 1,
           private: true,
           created_at: minutesAgo(9),
@@ -919,7 +923,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
           content: "nota interna: conferir no admin",
         },
         {
-          id: 404,
+          id: 405,
           message_type: 1,
           created_at: minutesAgo(8),
           sender: { type: "user", id: PERSON },
@@ -927,14 +931,22 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
           content_attributes: { imported: true },
         },
         {
-          id: 405,
+          id: 406,
           message_type: 1,
           created_at: minutesAgo(7),
           sender: { type: "user", id: PERSON },
           content: "👍",
           content_attributes: { is_reaction: true },
         },
-        personAsked(406, 3),
+        {
+          id: 402,
+          message_type: 1,
+          created_at: minutesAgo(11),
+          sender: { type: "agent_bot", id: 7 },
+          content: "🔄 Memória desta conversa foi limpa.",
+          content_attributes: { [CHATWOOT_SEND_ID_KEY]: resetAckSendId(401) },
+        },
+        personAsked(407, 3),
       ],
       model: () => model,
     });
@@ -949,6 +961,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     );
     for (const absent of [
       "pré-reset",
+      "Memória desta conversa foi limpa",
       "nota interna",
       "histórico antigo importado",
       "👍",

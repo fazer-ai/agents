@@ -127,8 +127,12 @@ describe("the editor of a monitoring agent", () => {
     expect(BEHAVIOR.slice(at - 60, at)).toContain("{watcher && (");
     const first = BEHAVIOR.indexOf('<Section\n            id="availability"');
     expect(at).toBeLessThan(first);
-    // The save REPLACES the `monitoring` block through the form-state pair, like memory.
-    expect(EDITOR).toContain("monitoring: observationToStored(observation)");
+    // The save REPLACES the `monitoring` block through the form-state pair, like memory, and only
+    // for an agent that is a watcher or already has the block.
+    expect(EDITOR).toContain(
+      '...monitoringPatch(observation, agentMode === "monitoring")',
+    );
+    expect(EDITOR).not.toContain("monitoring: observationToStored(");
   });
 });
 

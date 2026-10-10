@@ -120,6 +120,7 @@ function renderContactAuth(
         contactAuthDenyMessage: null,
         memoryCredential: null,
         modelFallbackCredential: null,
+        decisionsCredential: null,
         awayMessage: null,
         followUpSteps: [],
       },
@@ -207,6 +208,8 @@ function renderContactAuth(
       mode: "production",
       observation: observationToForm({}),
       setObservation: noop,
+      agentSavedAt: null,
+      decisionsRefusal: null,
       memoryCredBaseUrl: null,
       modelFallback: {
         provider: "",

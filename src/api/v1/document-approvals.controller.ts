@@ -57,6 +57,7 @@ export const documentApprovalsController = new Elysia({
       instance: instanceIdentity,
       requests: await listApprovalRequests(ctxOrThrow(tenantContext), {
         status: query.status,
+        waiting: query.waiting === "true",
         conversationId:
           query.conversationId === undefined
             ? undefined
@@ -68,6 +69,12 @@ export const documentApprovalsController = new Elysia({
       requireRole: "AGENT",
       query: t.Object({
         status: t.Optional(STATUS),
+        waiting: t.Optional(
+          t.Union([t.Literal("true"), t.Literal("false")], {
+            description:
+              "Only the requests waiting on the team now: pending and not past their validity.",
+          }),
+        ),
         conversationId: t.Optional(
           t.String({
             pattern: "^[0-9]+$",

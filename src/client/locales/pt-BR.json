@@ -1099,7 +1099,7 @@
       "noAgent": "Nenhum agente na conversa para avisar",
       "notIssued": "Não emitido: aprove de novo",
       "notSent": "Não enviado: uma nota privada na conversa explica o motivo",
-      "rejectedNoted": "A conversa já estava com um atendente",
+      "rejectedNotHanded": "Nada enviado, e a conversa não foi transferida",
       "sending": "A caminho do cliente",
       "unconfirmed": "Sem confirmação de envio"
     },

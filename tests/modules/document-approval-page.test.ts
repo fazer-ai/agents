@@ -785,6 +785,39 @@ describe.skipIf(!dbUp)(
       expect(flag(lapsed.conversationId)).toBe(false);
     });
 
+    test("what waits on the team is filtered before the limit, so overdue rows never crowd it out", async () => {
+      const waiting = await newRequest();
+      // A newer request of the same conversation, past its validity and not yet closed by the expiry.
+      const overdue = await issueOrRequestApproval({
+        ctx: ctx(),
+        base: appDb,
+        storageDir: DIR,
+        templateId,
+        idempotencyKey: `overdue-${Date.now()}`,
+        values: { ...ARGS, cliente: "Outro" },
+        threadId: (
+          await suDb.conversation.findUniqueOrThrow({
+            where: { id: waiting.conversationId },
+            select: { threadId: true },
+          })
+        ).threadId,
+        chatwootInstanceId: instanceId,
+        conversationId: waiting.conversationId,
+        now: new Date(),
+      });
+      if (overdue.kind !== "approval") throw new Error("expected a request");
+      await suDb.documentApprovalRequest.update({
+        where: { id: BigInt(overdue.request.id) },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const listed = await listApprovalRequests(
+        ctx(),
+        { conversationId: waiting.conversationId, waiting: true, limit: 1 },
+        appDb,
+      );
+      expect(listed.map((r) => r.id)).toEqual([String(waiting.requestId)]);
+    });
+
     test("a conversation's requests are listed apart from every other conversation's", async () => {
       const mine = await newRequest();
       await newRequest();

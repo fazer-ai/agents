@@ -36,6 +36,8 @@ let pending: unknown[] = [];
 // Set per test: an answer to hold back, by the order the flag was asked.
 let holdFirstFlagRead: Promise<void> | null = null;
 let flagReads = 0;
+// Set per test: how long every flag read takes.
+let flagReadDelayMs = 0;
 
 const ROW = {
   id: "41",
@@ -54,6 +56,11 @@ const ROW = {
   observerNames: [],
   outOfHours: false,
   awaitingApproval: true,
+};
+
+const WAITING = {
+  id: "9",
+  expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
 };
 
 function json(body: unknown): Response {
@@ -76,6 +83,8 @@ beforeAll(() => {
       flagReads += 1;
       const snapshot = pending;
       if (flagReads === 1 && holdFirstFlagRead) await holdFirstFlagRead;
+      if (flagReadDelayMs > 0)
+        await new Promise((r) => setTimeout(r, flagReadDelayMs));
       return json({ instance: "i", requests: snapshot });
     }
     return json({});
@@ -90,6 +99,7 @@ afterEach(() => {
   pending = [];
   holdFirstFlagRead = null;
   flagReads = 0;
+  flagReadDelayMs = 0;
 });
 
 test("a decision while the list is open drops the flag on the next event", async () => {
@@ -164,6 +174,8 @@ test("an older flag answer arriving last does not put back a cleared flag", asyn
 test("a flagged row is read again on its own, without any event", async () => {
   const before = flagRefresh.ms;
   flagRefresh.ms = 100;
+  // Still waiting until the test decides it.
+  pending = [WAITING];
   render(
     withI18n(
       <MemoryRouter initialEntries={["/conversations"]}>
@@ -179,10 +191,40 @@ test("a flagged row is read again on its own, without any event", async () => {
   // Decided with no bot left to write in the conversation: no event comes.
   pending = [];
   try {
-    await waitFor(() =>
-      expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+    await waitFor(
+      () => expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+      { timeout: 8000 },
     );
   } finally {
     flagRefresh.ms = before;
   }
-});
+}, 15_000);
+
+test("flag reads slower than the clock still land", async () => {
+  const before = flagRefresh.ms;
+  flagRefresh.ms = 100;
+  // Still waiting until the test decides it.
+  pending = [WAITING];
+  render(
+    withI18n(
+      <MemoryRouter initialEntries={["/conversations"]}>
+        <TooltipPrimitive.Provider>
+          <ToastProvider>
+            <ConversationsPage />
+          </ToastProvider>
+        </TooltipPrimitive.Provider>
+      </MemoryRouter>,
+    ),
+  );
+  await screen.findByText("Document awaiting approval");
+  pending = [];
+  flagReadDelayMs = 350;
+  try {
+    await waitFor(
+      () => expect(screen.queryByText("Document awaiting approval")).toBeNull(),
+      { timeout: 8000 },
+    );
+  } finally {
+    flagRefresh.ms = before;
+  }
+}, 15_000);

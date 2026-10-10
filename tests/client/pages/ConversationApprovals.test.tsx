@@ -24,7 +24,7 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   onRead?.(url);
   if (readDelayMs > 0) await new Promise((r) => setTimeout(r, readDelayMs));
   // As the server answers: the pending ones on their own, else the latest.
-  const answer = url.includes("status=PENDING")
+  const answer = url.includes("waiting=true")
     ? rows.filter((r) => (r as { status: string }).status === "PENDING")
     : rows.slice(0, 1);
   return new Response(JSON.stringify({ requests: answer }), {
@@ -145,7 +145,7 @@ test("a decision whose reads are slow still lands its outcome", async () => {
   let reads = 0;
   onRead = (url) => {
     // One read is the pending query and then the latest; count the latest.
-    if (url.includes("status=PENDING")) return;
+    if (url.includes("waiting=true")) return;
     reads += 1;
     // Slower than the poll from the second read on, and answered by then.
     if (reads >= 2) {

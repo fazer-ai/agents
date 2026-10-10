@@ -60,7 +60,7 @@ export function ConversationApprovals({
         const waiting = await list.get({
           query: {
             conversationId,
-            status: "PENDING",
+            waiting: "true",
             limit: String(PENDING_SHOWN),
           },
         });

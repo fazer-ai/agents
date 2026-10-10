@@ -395,6 +395,9 @@ export async function listApprovalRequests(
   ctx: TenantContext,
   opts: {
     status?: ApprovalStatus;
+    // Only what waits on the team now: PENDING and inside its validity, as the queue counts it.
+    // Applied before the limit, so overdue rows the expiry has not closed never crowd one out.
+    waiting?: boolean;
     conversationId?: bigint;
     limit?: number;
   } = {},
@@ -404,6 +407,9 @@ export async function listApprovalRequests(
     const rows = await db.documentApprovalRequest.findMany({
       where: {
         ...(opts.status ? { status: opts.status } : {}),
+        ...(opts.waiting
+          ? { status: "PENDING", expiresAt: { gt: new Date() } }
+          : {}),
         ...(opts.conversationId === undefined
           ? {}
           : { conversationId: opts.conversationId }),

@@ -42296,6 +42296,18 @@
             }
           },
           {
+            "name": "waiting",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
             "name": "conversationId",
             "in": "query",
             "required": false,

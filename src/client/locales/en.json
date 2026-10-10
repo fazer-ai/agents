@@ -1068,7 +1068,7 @@
       "noAgent": "No agent left in the conversation to tell",
       "notIssued": "Not issued: approve it again",
       "notSent": "Not sent: a private note in the conversation says why",
-      "rejectedNoted": "A person already had the conversation",
+      "rejectedNotHanded": "Nothing sent, and the conversation was not handed over",
       "sending": "On its way to the customer",
       "unconfirmed": "No confirmation that it was sent"
     },

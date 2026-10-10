@@ -26,7 +26,6 @@ import {
 } from "@/client/components";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
-import { serverNow } from "@/client/lib/serverClock";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
 type ConversationsData = Awaited<
@@ -329,18 +328,20 @@ export function ConversationsPage() {
   // Only the latest read per conversation is applied: two events close together ask twice, and the
   // older answer arriving last would put back a flag the newer one cleared.
   const flagReads = useRef(new Map<string, number>());
+  // The conversations with a flag read still out: the slow clock skips them, so a read slower than
+  // the clock is answered instead of being superseded on every tick.
+  const flagInFlight = useRef(new Set<string>());
   const refreshAwaitingApproval = useCallback(
     async (conversationId: string) => {
       const read = (flagReads.current.get(conversationId) ?? 0) + 1;
       flagReads.current.set(conversationId, read);
+      flagInFlight.current.add(conversationId);
       try {
         const { data } = await api.api.v1["document-approvals"].get({
-          query: { conversationId, status: "PENDING", limit: "50" },
+          query: { conversationId, waiting: "true", limit: "1" },
         });
         if (!data || flagReads.current.get(conversationId) !== read) return;
-        const awaiting = data.requests.some(
-          (r) => new Date(r.expiresAt).getTime() > serverNow(),
-        );
+        const awaiting = data.requests.length > 0;
         setConversations((prev) =>
           prev.map((c) =>
             c.id === conversationId && c.awaitingApproval !== awaiting
@@ -350,6 +351,10 @@ export function ConversationsPage() {
         );
       } catch {
         // The flag stays as the list last read it; the next event or load asks again.
+      } finally {
+        if (flagReads.current.get(conversationId) === read) {
+          flagInFlight.current.delete(conversationId);
+        }
       }
     },
     [],
@@ -364,7 +369,9 @@ export function ConversationsPage() {
   useEffect(() => {
     if (!flagged) return;
     const timer = setInterval(() => {
-      for (const id of flagged.split(",")) void refreshAwaitingApproval(id);
+      for (const id of flagged.split(",")) {
+        if (!flagInFlight.current.has(id)) void refreshAwaitingApproval(id);
+      }
     }, flagRefresh.ms);
     return () => clearInterval(timer);
   }, [flagged, refreshAwaitingApproval]);

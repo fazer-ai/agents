@@ -86,9 +86,11 @@ export function approvalOutcomeLabel(
       );
     }
     if (r.outcome === "NOTED") {
+      // The bot did not own the conversation, which says nothing about who did: a person, another
+      // bot, or nobody after it was resolved.
       return t(
-        "documentApproval.outcome.rejectedNoted",
-        "A person already had the conversation",
+        "documentApproval.outcome.rejectedNotHanded",
+        "Nothing sent, and the conversation was not handed over",
       );
     }
   }

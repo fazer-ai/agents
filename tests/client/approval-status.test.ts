@@ -47,3 +47,9 @@ test("an approval whose document was never issued is not on its way", () => {
     ),
   ).toBe("Not issued: approve it again");
 });
+
+test("a rejection the bot could not hand over does not claim a person had the conversation", () => {
+  expect(
+    approvalOutcomeLabel({ status: "REJECTED", outcome: "NOTED" }, t),
+  ).toBe("Nothing sent, and the conversation was not handed over");
+});

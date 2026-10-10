@@ -14,6 +14,9 @@ export interface SttRequest {
   apiKey: string;
   baseURL: string | null;
   fetchImpl: typeof fetch;
+  // The caller's deadline, on top of the provider timeout: a caller with a budget of its own (the
+  // snoozed reminder's media reads) stops a transcription that would outlast it.
+  signal?: AbortSignal;
 }
 
 // What the provider's own confidence said about the text, for the providers that report one, and
@@ -35,6 +38,11 @@ export interface SttProvider {
   // openai-compatible requires an explicit baseURL (no public default endpoint).
   requiresBaseURL?: boolean;
   transcribe(req: SttRequest): Promise<SttResult>;
+}
+
+function sttSignal(req: SttRequest): AbortSignal {
+  const own = AbortSignal.timeout(STT_TIMEOUT_MS);
+  return req.signal ? AbortSignal.any([own, req.signal]) : own;
 }
 
 export class SttError extends Error {
@@ -157,7 +165,7 @@ async function openaiTranscribe(req: SttRequest): Promise<SttResult> {
       headers: { authorization: `Bearer ${req.apiKey}` },
       body: form,
       redirect: "error",
-      signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+      signal: sttSignal(req),
     });
   };
   const shape = confidenceShapeFor(req.model);
@@ -219,7 +227,7 @@ async function elevenlabsTranscribe(req: SttRequest): Promise<SttResult> {
     headers: { "xi-api-key": req.apiKey },
     body: form,
     redirect: "error",
-    signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+    signal: sttSignal(req),
   });
   if (!res.ok) throw new SttError("elevenlabs", res.status);
   return judgeScribe((await res.json()) as ScribeTranscription);
@@ -260,7 +268,7 @@ async function geminiTranscribe(req: SttRequest): Promise<SttResult> {
       },
       body: JSON.stringify(body),
       redirect: "error",
-      signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+      signal: sttSignal(req),
     },
   );
   if (!res.ok) throw new SttError("gemini", res.status);
@@ -311,7 +319,7 @@ async function openrouterTranscribe(req: SttRequest): Promise<SttResult> {
     },
     body: JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+    signal: sttSignal(req),
   });
   if (!res.ok) throw new SttError("openrouter", res.status);
   const json = (await res.json()) as { text?: string };

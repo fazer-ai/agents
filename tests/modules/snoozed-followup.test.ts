@@ -555,6 +555,7 @@ function stub(over: {
   const toggles: string[] = [];
   const labelSets: string[][] = [];
   const notes: string[] = [];
+  const downloadSignals: (AbortSignal | undefined)[] = [];
   let currentLabels = over.labels ?? [];
   // Shown only once the model is GENERATING: after every ask that precedes the invoke, so only a
   // check at the send boundary can see it.
@@ -637,14 +638,18 @@ function stub(over: {
       toggles.push(status);
       return {};
     },
-    downloadAttachment: async () => ({
-      bytes: png(),
-      contentType: "image/png",
-    }),
+    downloadAttachment: async (
+      _url: string,
+      opts?: { signal?: AbortSignal },
+    ) => {
+      downloadSignals.push(opts?.signal);
+      return { bytes: png(), contentType: "image/png" };
+    },
     updateAttachmentMeta: async () => ({}),
   } as unknown as ChatwootClient;
   return {
     sent,
+    downloadSignals,
     toggles,
     labelSets,
     notes,
@@ -1110,6 +1115,58 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       expect(providerCalls).toBe(1);
       expect(model.inputs.join("\n")).toContain("o número do pedido é 4471");
       expect(model.inputs.join("\n")).toContain("já tinha sido ouvido");
+    } finally {
+      await setSettings(LADDER);
+    }
+  });
+
+  test("a transcription in flight is cut when the reminder's media budget runs out", async () => {
+    const provider = {
+      enabled: true,
+      provider: "openai",
+      credentialRef: `vault:${llmKeyId}`,
+    };
+    await setSettings({ ...LADDER, stt: provider });
+    try {
+      await seed(2072);
+      const deadline = new AbortController();
+      let cut = false;
+      const s = stub({
+        messages: [
+          {
+            id: 460,
+            message_type: 0,
+            created_at: minutesAgo(10),
+            sender: { type: "contact", id: 1 },
+            content: "",
+            attachments: [
+              {
+                id: 1460,
+                file_type: "audio",
+                data_url: "https://chat.example.com/a/460.ogg",
+              },
+            ],
+          },
+          personAsked(461, 3),
+        ],
+        // The deadline fires while the provider is answering.
+        sttFetch: (async (_url: string, init?: RequestInit) => {
+          deadline.abort();
+          cut = init?.signal?.aborted === true;
+          if (cut) throw init?.signal?.reason;
+          return new Response(JSON.stringify({ text: "ouvida" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }) as unknown as typeof fetch,
+      });
+      await snoozedFollowUpHandler(jobFor(2072), appDb, s.deps, {
+        signal: deadline.signal,
+        commit: () => {},
+      });
+      expect(cut).toBe(true);
+      // The download was under the same deadline.
+      expect(s.downloadSignals[0]?.aborted).toBe(true);
     } finally {
       await setSettings(LADDER);
     }

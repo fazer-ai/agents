@@ -86,6 +86,8 @@ export interface TranscribeInboundParams {
   deps?: { makeClient?: MakeClient; fetchImpl?: typeof fetch };
   // Optional execution-flow context: when present, the transcription is logged as an `stt` stage.
   flow?: FlowContext;
+  // The caller's deadline: it aborts the download and the provider call in flight.
+  signal?: AbortSignal;
 }
 
 // Downloads, transcribes, and writes the transcription back to Chatwoot. Returns the transcription
@@ -181,6 +183,7 @@ async function transcribeOnce(
   try {
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
       retryOnMissing: true,
+      signal: params.signal,
     }));
   } catch (err) {
     if (params.flow) {
@@ -212,6 +215,7 @@ async function transcribeOnce(
         apiKey: entry.secret,
         baseURL: effectiveBaseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
+        signal: params.signal,
       }),
   );
   const text = cleanTranscription(result.text);

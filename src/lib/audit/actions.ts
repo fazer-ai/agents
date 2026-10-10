@@ -100,6 +100,9 @@ export const AUDIT_ACTIONS = [
   "tenant_settings.langfuse_set",
   "tenant_settings.price_overrides_set",
   "tenant_settings.spend_ceiling_set",
+  "tenant_settings.proactive_breaker_set",
+  // An admin reopening the proactive breaker after a trip.
+  "proactive_breaker.resume",
   "tool.create",
   "tool.delete",
   "tool.update",

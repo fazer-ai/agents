@@ -30,6 +30,9 @@ export const FLOW_STAGES = [
   // conversation already received that many proactive messages in the last 24 hours. Only the first
   // refusal of a day is `error`; the conversation stays with the agent.
   "proactive_limit",
+  // The account-wide proactive breaker refusing a proactive send: the account delivered its limit of
+  // proactive messages in 24 hours and stays paused until an admin resumes. The trip is `error`.
+  "proactive_breaker",
   "generate", // the LLM turn (graph.invoke)
   "guardrail", // input/output moderation trip (a guardrails check fired)
   "tool", // a tool call the agent made during the turn (name + status + duration)

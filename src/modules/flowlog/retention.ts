@@ -15,6 +15,8 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const BATCH = 5000;
 const TURN_DELIVERY_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
+// The proactive breaker's automatic limit reads the largest 24h of the last 30 days from these rows.
+const PROACTIVE_DELIVERY_RETENTION_MS = 31 * 24 * 60 * 60 * 1000;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -44,11 +46,13 @@ async function flowlogSweepHandler(
     await db.$executeRaw(Prisma.sql`
       DELETE FROM alert_deliveries
       WHERE status IN ('DELIVERED', 'DEAD') AND created_at < ${cutoff}`);
-    // NOTE: The turn limit counts the last hour and the proactive limit the last day, so the rows go
-    // once two days have passed, whatever the log retention is.
+    // NOTE: The turn limit counts the last hour and the proactive limit the last day, so a reply's row
+    // goes once two days have passed, whatever the log retention is. A proactive row stays a month,
+    // since the breaker's automatic limit is the largest day of the last thirty.
     await db.$executeRaw(Prisma.sql`
       DELETE FROM agent_turn_deliveries
-      WHERE delivered_at < ${new Date(Date.now() - TURN_DELIVERY_RETENTION_MS)}`);
+      WHERE (NOT proactive AND delivered_at < ${new Date(Date.now() - TURN_DELIVERY_RETENTION_MS)})
+         OR delivered_at < ${new Date(Date.now() - PROACTIVE_DELIVERY_RETENTION_MS)}`);
   });
   return {
     outcome: "reschedule",

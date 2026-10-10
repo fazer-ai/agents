@@ -63,6 +63,7 @@ import {
   listIntegrationInstances,
 } from "@/modules/integrations/service";
 import { listMcpConnections } from "@/modules/mcp-connections/service";
+import { getProactiveBreakerStatus } from "@/modules/proactive-breaker/service";
 import { getDocument, listDocuments } from "@/modules/rag/documents";
 import {
   listApprovals,
@@ -862,6 +863,21 @@ export async function experimentResultsGet(
 }
 
 // ── tenant settings (embedding / langfuse) ──
+
+// The account-wide proactive breaker, as the console card and REST read it.
+export async function proactiveBreakerGet(
+  principal: VerifiedToken,
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    return ok({ proactiveBreaker: await getProactiveBreakerStatus(ctx, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
 
 export async function tenantSettingsGet(
   principal: VerifiedToken,

@@ -2060,6 +2060,63 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
   });
 
+  test("an unmirrored conversation whose live read names no holder is not opened", async () => {
+    // `pending` with no `meta`: nobody is named, which is not the same as nobody holding it.
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending" });
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-nometa-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(writes.filter((w) => w.conversationId === conv)).toEqual([]);
+  });
+
+  test("a mirror row a webhook creates during the hand-over takes the note's window", async () => {
+    const conv = nextConv++;
+    liveConversations.set(conv, { status: "pending", meta: {} });
+    onToggle = async (id) => {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: id,
+          inboxId: inboxDbId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${id}`,
+        },
+      });
+    };
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `failnote-gaveup-unmirrored-appears-${process.pid}-${conv}`,
+        event: "message_created",
+        status: "DEAD",
+        conversationId: conv,
+        inboundMessageId: 8_000 + conv,
+        routeAgentBotId: 9,
+      },
+      select: { id: true },
+    });
+    await announceUnanswered(tenantId, row.id, appDb);
+    expect(
+      writes.filter((w) => w.conversationId === conv).map((w) => w.kind),
+    ).toEqual(["toggle", "note"]);
+    // Stamped, so a failure right after a hand-back is coalesced like any mirrored conversation's.
+    expect(await noticeAt(conv)).not.toBeNull();
+  });
+
   test("an unmirrored conversation a person holds in Chatwoot is not opened", async () => {
     const conv = nextConv++;
     liveConversations.set(conv, {

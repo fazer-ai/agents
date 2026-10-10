@@ -436,10 +436,7 @@ async function runRecovery(params: {
     if (
       live !== null &&
       params.now.getTime() - row.receivedAt.getTime() >
-        recoveryAgeCeilingMs(
-          row,
-          conv?.inbox?.channelType ?? liveChannelOf(liveRaw),
-        )
+        recoveryAgeCeilingMs(row, handOverChannel(row, conv?.inbox, liveRaw))
     ) {
       logger.warn(
         "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
@@ -984,7 +981,7 @@ async function runRecovery(params: {
         // Off the mirror as it stands now: a null inbox was repaired above to the route's, and a
         // webhook may have created the row during the REST reads. A conversation still not mirrored,
         // or an inbox that never learned its channel, takes the one the live conversation names.
-        mirrorNow?.inbox?.channelType ?? liveChannelOf(liveRaw),
+        handOverChannel(row, mirrorNow?.inbox, liveRaw),
       )
   ) {
     return "unrecoverable";
@@ -1646,6 +1643,19 @@ async function schedulerGaveUp(
 function liveChannelOf(raw: unknown): string | null {
   const meta = isRecord(raw) && isRecord(raw.meta) ? raw.meta : null;
   return typeof meta?.channel === "string" ? meta.channel : null;
+}
+
+// The channel the age ceiling reads: the mirror's inbox, or the live conversation's where that inbox
+// never learned it. With no inbox at all, the live channel only where a refusal can still be handed
+// over: the hand-over's persona is then the delivery's route bot, and a row an older build wrote
+// carries none, so it keeps `MAX_RECOVERY_AGE_MS`.
+function handOverChannel(
+  row: { routeAgentBotId: number | null },
+  inbox: { channelType: string | null } | null | undefined,
+  raw: unknown,
+): string | null {
+  if (inbox) return inbox.channelType ?? liveChannelOf(raw);
+  return row.routeAgentBotId === null ? null : liveChannelOf(raw);
 }
 
 // Whether the delivery owed the customer a reply, or only the agent's memory: an observer's route, a

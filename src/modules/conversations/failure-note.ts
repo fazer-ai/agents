@@ -386,9 +386,11 @@ export async function announceFailedTurn(params: {
             });
             ownership = await ownershipNow();
           }
-          // With no mirror row, Chatwoot's answer above is the only one there is, and it said ours.
-          // A row that appeared since is read like any other.
-          const unmirroredOurs = !persona.mirrored && live !== null;
+          // With no mirror row, Chatwoot's answer above is the only one there is, and it said ours, as
+          // long as it named the holder: a snapshot with no `meta` reads as unassigned and says
+          // nothing. A row that appeared since is read like any other.
+          const unmirroredOurs =
+            !persona.mirrored && live !== null && live.assigneeStated;
           if (!ownership.ours && !unmirroredOurs) {
             lastAsk = null;
             return false;
@@ -551,16 +553,26 @@ export async function announceFailedTurn(params: {
     // The window lives on the mirror row, so a conversation with none elects its announcer by
     // the toggle instead: Chatwoot's `expectedStatus` lets exactly one hand-over open it, and only
     // that one posts. One that did not open it says nothing, since nothing else would coalesce it.
-    const noticeClaimed = persona.mirrored
-      ? await claimFailureNotice({
-          tenantId,
-          instanceId,
-          chatwootConversationId: conversationId,
-          now: params.now,
-          cooldownMs: params.cooldownMs,
-          base,
-        })
-      : opened;
+    // Asked of the row as it is now: one a webhook created during the hand-over takes the window.
+    const noticeClaimed =
+      (await claimFailureNotice({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conversationId,
+        now: params.now,
+        cooldownMs: params.cooldownMs,
+        base,
+      })) ||
+      (opened &&
+        (await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.conversation.count({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conversationId,
+            },
+          }),
+        )) === 0);
     if (!noticeClaimed) {
       return "coalesced";
     }

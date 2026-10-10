@@ -1989,12 +1989,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           fields: z.array(z.record(z.string(), z.unknown())).optional(),
           style: z.record(z.string(), z.unknown()).optional(),
           number_prefix: z.string().nullable().optional(),
+          next_number: z.number().optional(),
           enabled: z.boolean().optional(),
           requires_approval: z
             .boolean()
             .optional()
             .describe(
-              "A person approves each document an agent issues from this template before the customer receives it. Off by default.",
+              "A person approves each document issued from this template before the customer gets it. Off by default.",
             ),
           approval_ttl_hours: z
             .number()
@@ -2027,12 +2028,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           fields: z.array(z.record(z.string(), z.unknown())).optional(),
           style: z.record(z.string(), z.unknown()).optional(),
           number_prefix: z.string().nullable().optional(),
+          next_number: z.number().optional(),
           enabled: z.boolean().optional(),
           requires_approval: z
             .boolean()
             .optional()
             .describe(
-              "A person approves each document an agent issues from this template before the customer receives it. Off by default.",
+              "A person approves each document issued from this template before the customer gets it. Off by default.",
             ),
           approval_ttl_hours: z
             .number()

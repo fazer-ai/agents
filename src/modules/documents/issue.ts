@@ -16,6 +16,7 @@ import {
 import { documentVerdict } from "./deliverable";
 import { documentDraws } from "./draws";
 import { formatDate, formatDocumentNumber } from "./format";
+import { lockNumbering, nextNumberFor } from "./numbering";
 import { renderDocumentPdf } from "./render";
 import { readRenderContext } from "./templates";
 import {
@@ -668,6 +669,7 @@ async function finish(
 async function assignNumber(
   db: {
     $queryRaw: PrismaClient["$queryRaw"];
+    $executeRaw: PrismaClient["$executeRaw"];
     issuedDocument: PrismaClient["issuedDocument"];
   },
   templateId: bigint,
@@ -687,17 +689,34 @@ async function assignNumber(
   // The DOCUMENT row is claimed first (docs/documents.md, Issuing): a row is unnumbered for a
   // moment by design, and two callers healing it at once would render one PDF with no number.
   // Scoped by RLS like every other statement in this transaction, and the id is one we inserted.
-  const claimed = await db.$queryRaw<{ number: number | null }[]>`
-    SELECT "number" FROM "issued_documents" WHERE "id" = ${documentId} FOR UPDATE
+  const claimed = await db.$queryRaw<
+    { number: number | null; tenant_id: bigint; number_prefix: string | null }[]
+  >`
+    SELECT "number", "tenant_id", "number_prefix" FROM "issued_documents" WHERE "id" = ${documentId} FOR UPDATE
   `;
   if (claimed.length === 0) return null;
-  const already = claimed[0]?.number ?? null;
+  const doc = claimed[0];
+  if (!doc) return null;
   // Someone numbered it while we waited for the lock. Their number is the document's number.
-  if (already !== null) return already;
+  if (doc.number !== null) return doc.number;
 
+  // Not the template's counter alone (numbering.ts): another template on the same prefix, a prefix
+  // this template moved to, or another prefix printing the same text may already hold the next one.
+  // Locked after the template and the document, the order every path keeps.
+  await lockNumbering(db, doc.tenant_id);
+  const counter = await db.$queryRaw<{ last_number: number }[]>`
+    SELECT "last_number" FROM "document_templates" WHERE "id" = ${templateId}
+  `;
+  if (counter.length === 0) return null;
+  const take = await nextNumberFor(
+    db,
+    doc.tenant_id,
+    doc.number_prefix,
+    counter[0]?.last_number ?? 0,
+  );
   const rows = await db.$queryRaw<{ last_number: number }[]>`
     UPDATE "document_templates"
-    SET "last_number" = "last_number" + 1
+    SET "last_number" = ${take}
     WHERE "id" = ${templateId}
     RETURNING "last_number"
   `;

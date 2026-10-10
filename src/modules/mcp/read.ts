@@ -324,6 +324,7 @@ export async function documentTemplateList(
         ),
         numberPrefix: t.numberPrefix,
         lastNumber: t.lastNumber,
+        nextNumber: t.nextNumber,
         enabled: t.enabled,
         requiresApproval: t.requiresApproval,
         approvalTtlHours: t.approvalTtlHours,

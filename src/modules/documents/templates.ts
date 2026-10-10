@@ -30,6 +30,12 @@ import { type CompanyLogo, readCompanyLogo } from "./company";
 import { documentDraws } from "./draws";
 import { formatDate, formatDocumentNumber } from "./format";
 import { calendarDay } from "./issue";
+import {
+  lockNumbering,
+  nextNumberFor,
+  nextNumberProblem,
+  usedNumberProblem,
+} from "./numbering";
 import { unprintableProblem } from "./printable";
 import { renderDocumentPdf } from "./render";
 import { sampleValues } from "./sample";
@@ -265,6 +271,7 @@ export async function documentTemplateWriteProblem(
     description?: unknown;
     numberPrefix?: unknown;
     approvalTtlHours?: unknown;
+    nextNumber?: unknown;
   },
   base: PrismaClient = basePrisma,
   opts: { deriveSlugFromName: boolean; excludeId?: bigint } = {
@@ -274,6 +281,16 @@ export async function documentTemplateWriteProblem(
   const { deriveSlugFromName, excludeId } = opts;
   const metadata = templateMetadataProblem(input);
   if (metadata) return metadata;
+  if (input.nextNumber !== undefined) {
+    const problem = await nextNumberWriteProblem(
+      ctx,
+      base,
+      input.nextNumber,
+      input.numberPrefix,
+      excludeId,
+    );
+    if (problem) return problem;
+  }
   const name =
     // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
     input.name !== undefined ? templateNameSchema.parse(input.name) : undefined;
@@ -341,6 +358,10 @@ export interface DocumentTemplateDto {
   style: DocumentStyle;
   numberPrefix: string | null;
   lastNumber: number;
+  // The number the next document issued from this template will print, before the prefix: one above
+  // the larger of this template's counter and the highest number the tenant already issued under its
+  // prefix (numbering.ts).
+  nextNumber: number;
   enabled: boolean;
   requiresApproval: boolean;
   approvalTtlHours: number;
@@ -369,8 +390,9 @@ type Row = Prisma.DocumentTemplateGetPayload<{ select: typeof SELECT }>;
 
 // What the audit row carries: identity, policy and shape PROJECTED (blocks and fields as structure
 // only), the rest in `UNDISCLOSED`, compared without being carried, so an edit inside a block still
-// registers. `lastNumber` is in NEITHER half: issuing is not editing. The fence over this model's
-// columns is `tests/modules/audit-config-families.test.ts`.
+// registers. `lastNumber` is projected: issuing moves it without an audit row (issuing is not
+// editing), but an operator setting the next number is an edit. The fence over this model's columns
+// is `tests/modules/audit-config-families.test.ts`.
 function auditProjection(r: Row) {
   const blocks = Array.isArray(r.blocks) ? r.blocks : [];
   const fields = Array.isArray(r.fields) ? r.fields : [];
@@ -379,6 +401,7 @@ function auditProjection(r: Row) {
     slug: r.slug,
     description: r.description,
     numberPrefix: r.numberPrefix,
+    lastNumber: r.lastNumber,
     enabled: r.enabled,
     requiresApproval: r.requiresApproval,
     approvalTtlHours: r.approvalTtlHours,
@@ -407,7 +430,7 @@ const UNDISCLOSED = ["blocks", "fields", "style"] as const;
 // by an older version of this file may not satisfy today's schema. Falling back to an empty document
 // rather than throwing keeps the console listable: a template that cannot be parsed has to be
 // visible to be fixed.
-function toDto(row: Row): DocumentTemplateDto {
+function toDto(row: Row, nextNumber?: number): DocumentTemplateDto {
   const parsed = parseTemplateContent(row.blocks, row.fields, row.style);
   return {
     id: String(row.id),
@@ -420,6 +443,7 @@ function toDto(row: Row): DocumentTemplateDto {
     style: parseDocumentStyle(row.style),
     numberPrefix: row.numberPrefix,
     lastNumber: row.lastNumber,
+    nextNumber: nextNumber ?? row.lastNumber + 1,
     enabled: row.enabled,
     requiresApproval: row.requiresApproval,
     approvalTtlHours: row.approvalTtlHours,
@@ -443,6 +467,9 @@ export interface DocumentTemplateInput {
   fields?: unknown;
   style?: unknown;
   numberPrefix?: string | null;
+  // Where the numbering continues from: the number the next document prints. Refused at or below a
+  // number the tenant already issued under the template's prefix (numbering.ts).
+  nextNumber?: number;
   enabled?: boolean;
   requiresApproval?: boolean;
   approvalTtlHours?: number;
@@ -563,6 +590,62 @@ function parseNumberPrefix(value: unknown): string | null {
   return templateNumberPrefixSchema.parse(value ?? null);
 }
 
+// The dry run's answer for a next number, read without the lock the apply takes: the apply asks again
+// under it, so a document issued in between is still refused there.
+async function nextNumberWriteProblem(
+  ctx: TenantContext,
+  base: PrismaClient,
+  next: unknown,
+  patchPrefix: unknown,
+  templateId: bigint | undefined,
+): Promise<string | null> {
+  const problem = nextNumberProblem(next);
+  if (problem) return problem;
+  if (ctx.tenantId === null) return null;
+  const tenantId = ctx.tenantId;
+  return runScopedOn(base, ctx, async (db) => {
+    const prefix =
+      patchPrefix !== undefined
+        ? ((patchPrefix as string | null) ?? null)
+        : templateId === undefined
+          ? null
+          : ((
+              await db.documentTemplate.findUnique({
+                where: { id: templateId },
+                select: { numberPrefix: true },
+              })
+            )?.numberPrefix ?? null);
+    return (
+      (await usedNumberProblem(db, tenantId, prefix, next as number))
+        ?.message ?? null
+    );
+  });
+}
+
+function parseNextNumber(value: unknown): number {
+  const problem = nextNumberProblem(value);
+  if (problem) {
+    throw new AppError(problem, 400, "errors.invalidDocumentNextNumber", {
+      reason: problem,
+    });
+  }
+  return value as number;
+}
+
+// The counter that makes `next` the next number, after checking under the sequence lock that no
+// document of the tenant already printed it or anything above it under `prefix`.
+async function counterForNextNumber(
+  db: ScopedDb,
+  tenantId: bigint,
+  prefix: string | null,
+  next: number,
+): Promise<number> {
+  await lockNumbering(db, tenantId);
+  const refusal = await usedNumberProblem(db, tenantId, prefix, next);
+  if (refusal) throw refusal;
+  return next - 1;
+}
+
 function parseTemplateDescription(value: unknown): string | null {
   const problem = templateMetadataProblem({ description: value });
   if (problem) {
@@ -618,10 +701,38 @@ export async function listDocumentTemplates(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
 ): Promise<DocumentTemplateDto[]> {
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.documentTemplate.findMany({ orderBy: { name: "asc" }, select: SELECT }),
+  return runScopedOn(base, ctx, async (db) => {
+    const rows = await db.documentTemplate.findMany({
+      orderBy: { name: "asc" },
+      select: SELECT,
+    });
+    if (rows.length === 0 || ctx.tenantId === null) {
+      return rows.map((r) => toDto(r));
+    }
+    const tenantId = ctx.tenantId;
+    // One read per template: a tenant has a handful, and the answer depends on each one's counter.
+    return Promise.all(
+      rows.map(async (r) =>
+        toDto(
+          r,
+          await nextNumberFor(db, tenantId, r.numberPrefix, r.lastNumber),
+        ),
+      ),
+    );
+  });
+}
+
+// The DTO with its next number read in the same transaction, for the paths that return one template.
+async function dtoOf(
+  db: ScopedDb,
+  row: Row & { tenantId?: bigint },
+  tenantId: bigint | null,
+) {
+  if (tenantId === null) return toDto(row);
+  return toDto(
+    row,
+    await nextNumberFor(db, tenantId, row.numberPrefix, row.lastNumber),
   );
-  return rows.map(toDto);
 }
 
 export async function getDocumentTemplate(
@@ -629,16 +740,48 @@ export async function getDocumentTemplate(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<DocumentTemplateDto> {
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.documentTemplate.findUnique({ where: { id }, select: SELECT }),
-  );
-  if (!row) {
-    throw new NotFoundError(
-      "document template not found",
-      "errors.documentTemplateNotFound",
-    );
-  }
-  return toDto(row);
+  return runScopedOn(base, ctx, async (db) => {
+    const row = await db.documentTemplate.findUnique({
+      where: { id },
+      select: SELECT,
+    });
+    if (!row) {
+      throw new NotFoundError(
+        "document template not found",
+        "errors.documentTemplateNotFound",
+      );
+    }
+    return dtoOf(db, row, ctx.tenantId);
+  });
+}
+
+// Where this template's numbering would continue under `prefix` (its own when undefined): what an
+// editor moving the prefix, and a dry run that moves it, show before the save. The counter stays with
+// the template across a prefix change, so it is the larger of that counter and the highest number the
+// tenant issued under the destination prefix, plus one.
+export async function nextNumberUnderPrefix(
+  ctx: TenantContext,
+  id: bigint,
+  prefix: string | null | undefined,
+  base: PrismaClient = basePrisma,
+): Promise<number> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+  return runScopedOn(base, ctx, async (db) => {
+    const row = await db.documentTemplate.findUnique({
+      where: { id },
+      select: { lastNumber: true, numberPrefix: true },
+    });
+    if (!row) {
+      throw new NotFoundError(
+        "document template not found",
+        "errors.documentTemplateNotFound",
+      );
+    }
+    const target =
+      prefix === undefined ? row.numberPrefix : parseNumberPrefix(prefix);
+    return nextNumberFor(db, tenantId, target, row.lastNumber);
+  });
 }
 
 // The stored row as it IS, not as this version reads it. The preview needs this: `toDto` drops a
@@ -723,6 +866,10 @@ export async function createDocumentTemplate(
       input.approvalTtlHours ?? APPROVAL_TTL_HOURS.default,
     ),
   };
+  const nextNumber =
+    input.nextNumber === undefined
+      ? undefined
+      : parseNextNumber(input.nextNumber);
   const slug = derived ? slugifyTemplateName(name) : (input.slug as string);
   const problem = slugProblem(slug);
   if (problem) {
@@ -739,24 +886,39 @@ export async function createDocumentTemplate(
     const refusal = nameTaken(holder.name, name, slug, !derived);
     refuse(refusal, 409);
   }
-  const row = await runScopedOn(base, ctx, async (db) => {
+  return runScopedOn(base, ctx, async (db) => {
     // The other half of the namespace, asked INSIDE this transaction and behind the same lock the
     // tool services take: the slug becomes `send_<slug>`, and an HTTP or code tool may hold that
     // name. The assembly builds documents FIRST, so the tool is the one that would be dropped —
     // silently, with a flow-log line as the only trace. No unique index spans the three tables, so
     // the lock is what keeps two writers from each seeing the name free (namespace.ts).
     await assertToolNameFreeForSlug(db, slug, name, !derived);
+    const lastNumber =
+      nextNumber === undefined
+        ? undefined
+        : await counterForNextNumber(
+            db,
+            tenantId,
+            data.numberPrefix,
+            nextNumber,
+          );
     const created = await db.documentTemplate
-      .create({ data: { ...data, slug }, select: SELECT })
+      .create({
+        data: {
+          ...data,
+          slug,
+          ...(lastNumber === undefined ? {} : { lastNumber }),
+        },
+        select: SELECT,
+      })
       .catch(writeConflict(slug, name, !derived));
     await auditMutation(db, ctx, {
       action: "document_template.create",
       target: `document_template:${created.id}`,
       after: auditProjection(created),
     });
-    return created;
+    return dtoOf(db, created, tenantId);
   });
-  return toDto(row);
 }
 
 export async function updateDocumentTemplate(
@@ -785,7 +947,7 @@ export async function updateDocumentTemplate(
       );
     }
     const current = toDto(found);
-    const row = await patched(current, found, patch, db, id);
+    const row = await patched(current, found, patch, db, id, ctx.tenantId);
     const beforeProj = auditProjection(found);
     const afterProj = auditProjection(row);
     const undisclosed = undisclosedMoved(found, row, UNDISCLOSED);
@@ -797,7 +959,7 @@ export async function updateDocumentTemplate(
         after: undisclosed ? markUndisclosed(afterProj) : afterProj,
       });
     }
-    return toDto(row);
+    return dtoOf(db, row, ctx.tenantId);
   });
 }
 
@@ -949,6 +1111,7 @@ async function patched(
   patch: Partial<DocumentTemplateInput>,
   db: ScopedDb,
   id: bigint,
+  tenantId: bigint | null,
 ): Promise<Row> {
   const data: Prisma.DocumentTemplateUpdateInput = {};
   if (patch.name !== undefined) data.name = parseTemplateName(patch.name);
@@ -972,6 +1135,17 @@ async function patched(
   }
   if (patch.numberPrefix !== undefined) {
     data.numberPrefix = parseNumberPrefix(patch.numberPrefix);
+  }
+  if (patch.nextNumber !== undefined) {
+    const next = parseNextNumber(patch.nextNumber);
+    if (tenantId === null) throw new AppError("tenant required", 400);
+    // Checked against the prefix the template will HAVE: a patch moving the prefix and setting the
+    // number together starts the number in the new sequence.
+    const prefix =
+      data.numberPrefix !== undefined
+        ? (data.numberPrefix as string | null)
+        : stored.numberPrefix;
+    data.lastNumber = await counterForNextNumber(db, tenantId, prefix, next);
   }
   if (patch.enabled !== undefined) data.enabled = patch.enabled;
   if (patch.requiresApproval !== undefined) {

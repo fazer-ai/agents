@@ -1,16 +1,12 @@
 import { AppError } from "@/lib/errors";
 import { formatDocumentNumber } from "./format";
 
-// A printed number (the prefix and the counter as `formatDocumentNumber` prints them, within a tenant)
-// names one document, and is never issued twice (docs/documents.md, Numbering). The counter lives on
-// the template, but a printed number is not the template's alone: two templates can share a prefix, a
-// prefix can move to one another template already used, and two different prefixes can print the
-// same text ("INV-" with 10001 and "INV-1" with 0001 both print INV-10001). So the next number is the
-// first one, from one above the larger of the template's counter and the highest number issued under
-// its prefix, whose printed text no document of the tenant already carries, deleted templates and
-// revoked documents included (a number once printed stays taken).
-//
-// No prefix and an empty prefix print the same ("0007"), so they are one sequence.
+// A printed number (prefix and counter as `formatDocumentNumber` prints them, in a tenant) names one
+// document and is never issued twice (docs/documents.md, Numbering). Templates can share a prefix,
+// and two prefixes can print the same text ("INV-" 10001 and "INV-1" 0001), so the next number is the
+// first one, from one above the larger of the template's counter and its prefix's highest, whose
+// printed text no document of the tenant carries; a number once printed stays taken. No prefix and
+// an empty one print the same, so they are one sequence.
 
 type Db = {
   $executeRaw: (

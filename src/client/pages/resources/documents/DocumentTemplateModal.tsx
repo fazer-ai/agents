@@ -313,12 +313,6 @@ export function DocumentTemplateModal({
     }
   }
 
-  // Answered here because the answer is a keystroke away, not because the write stopped checking:
-  // this is the SAME `slugProblem` the write runs, imported rather than restated.
-  //
-  // Guarded on `template`, not on the slug being non-empty. An operator who CLEARS the field has to
-  // be told something, and the modal keeps its payload after closing (Radix needs it for the exit
-  // animation), so this never flashes a refusal at a form nobody has opened.
   // A prefix being typed moves where an untouched number continues; asked of the server, which alone
   // knows what the tenant issued under it, after the typing settles. Answers for an older prefix or
   // another open are dropped.
@@ -348,6 +342,12 @@ export function DocumentTemplateModal({
     : nextPending
       ? ""
       : String(prefixNext ?? template?.nextNumber ?? "");
+  // Answered here because the answer is a keystroke away, not because the write stopped checking:
+  // this is the SAME `slugProblem` the write runs, imported rather than restated.
+  //
+  // Guarded on `template`, not on the slug being non-empty. An operator who CLEARS the field has to
+  // be told something, and the modal keeps its payload after closing (Radix needs it for the exit
+  // animation), so this never flashes a refusal at a form nobody has opened.
   const slugIssue = template ? slugProblem(slug) : null;
   // The shape only, and only once the operator moved it; whether a number was already used is the
   // server's to say, on save.

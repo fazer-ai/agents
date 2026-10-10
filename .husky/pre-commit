@@ -1,4 +1,6 @@
 set -e
 
-# Local quality gate: the same checks the PR CI runs (lint, type-check, i18n, tests).
-bun check
+# Local quality gate: the static checks the PR CI runs (i18n, lint, type-check, OpenAPI) and the tests
+# closest to the commit (scripts/test-staged.sh). The whole suite is the CI gate.
+bun run check:static
+sh scripts/test-staged.sh

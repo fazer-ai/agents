@@ -38,20 +38,25 @@ export function stepsToForm(
   // default, so a save that rewrites the block does not change a delay the operator never set.
   defaultDelayValue = "30",
 ): FollowUpStepState[] {
-  return rawSteps.slice(0, FOLLOW_UP_MAX_STEPS).map((raw) => {
-    const st = (raw && typeof raw === "object" ? raw : {}) as Record<
-      string,
-      unknown
-    >;
-    return {
-      delayValue: num(st.delayValue) || defaultDelayValue,
-      delayUnit: str(st.delayUnit) || "minutes",
-      instructions: str(st.instructions),
-      assignLabels: stepLabels(st),
-      resolve: st.resolve === true,
-      ignoreAppointmentPause: st.ignoreAppointmentPause === true,
-    };
-  });
+  // A step that is not an object is dropped, as `parseFollowUpStep` drops it: built into a default row
+  // here, a save would write a reminder the runtime never had.
+  return rawSteps
+    .slice(0, FOLLOW_UP_MAX_STEPS)
+    .filter((raw) => raw !== null && typeof raw === "object")
+    .map((raw) => {
+      const st = (raw && typeof raw === "object" ? raw : {}) as Record<
+        string,
+        unknown
+      >;
+      return {
+        delayValue: num(st.delayValue) || defaultDelayValue,
+        delayUnit: str(st.delayUnit) || "minutes",
+        instructions: str(st.instructions),
+        assignLabels: stepLabels(st),
+        resolve: st.resolve === true,
+        ignoreAppointmentPause: st.ignoreAppointmentPause === true,
+      };
+    });
 }
 
 export function followUpToStored(form: FollowUpState): {

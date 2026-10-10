@@ -239,24 +239,52 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
     ).toBe(2);
   });
 
-  test("recoveries run under the shared provider bound, whatever the drain's slots", async () => {
+  test("a recovery is claimed only with a provider permit in hand, and the rest of the lane is not held for it", async () => {
     install();
+    h.release();
     for (const key of ["p1", "p2", "p3"]) {
-      await arm("DELIVERY_RECOVERY", key);
+      await arm("DELIVERY_RECOVERY", key, 120_000);
     }
+    await arm("INGEST_MESSAGE", "free");
+    const gate = new Semaphore(1);
     const tick = await runTrafficTick(appDb, {
       slots: 4,
       window: new StartWindow(100),
-      gate: new Semaphore(1),
+      gate,
       staleMs: 300_000,
       tenantId,
     });
-    expect(tick.claimed).toBe(3);
-    await until("one recovery to be running", () => h.started.length === 1);
-    h.release();
     await tick.settled;
-    expect(h.finished).toHaveLength(3);
-    expect(h.state.maxInflight).toBe(1);
+    expect(h.started.sort()).toEqual(["free", "p1"]);
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, kind: "DELIVERY_RECOVERY", status: "PENDING" },
+      }),
+    ).toBe(2);
+    // The permit went back with the row.
+    expect(gate.tryAcquire()).not.toBeNull();
+  });
+
+  test("with every permit taken, no recovery is claimed", async () => {
+    install();
+    h.release();
+    await arm("DELIVERY_RECOVERY", "blocked");
+    const gate = new Semaphore(1);
+    const taken = gate.tryAcquire();
+    const tick = await runTrafficTick(appDb, {
+      slots: 4,
+      window: new StartWindow(100),
+      gate,
+      staleMs: 300_000,
+      tenantId,
+    });
+    taken?.();
+    expect(tick.claimed).toBe(0);
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, kind: "DELIVERY_RECOVERY", status: "PENDING" },
+      }),
+    ).toBe(1);
   });
 
   test("a recovery is claimed before older ingestion, and ingestion before an older NOTHING_TO_ANSWER", async () => {

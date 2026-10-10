@@ -711,14 +711,13 @@ export interface TrafficTickOptions {
   onFreed?: () => void;
 }
 
-// The drain of the traffic-proportional kinds (./lanes.ts, JOB_TRAFFIC_PROPORTIONAL). SLOTS, NOT
-// BATCHES, as the observe drain: a tick claims into the free slots, as many as the start window
-// still allows, and returns once its rows have STARTED, so a slow recovery holds one slot and not
-// the lane. Concurrency bounds what runs at once and the window bounds the sustained rate, which is
-// the CPU a backlog takes from live traffic. Provider-spending rows run under the shared gate after
-// the claim, as on the shared tick: the kinds are mixed, so a permit cannot be taken per row before
-// it is known. `waitMs` is how long until the window admits another start when it is what stopped
-// the claim, else null.
+// The drain of the traffic-proportional kinds (./lanes.ts, JOB_TRAFFIC_PROPORTIONAL), in SLOTS as
+// the observe drain: it claims into the free slots, as many as the start window allows, and returns
+// once its rows have STARTED. Concurrency bounds what runs at once, the window the sustained rate
+// (the CPU a backlog takes from live traffic). Provider permits are taken BEFORE the claim, which
+// takes no more spending rows than it holds (`spendCap`): a claimed row never waits for capacity,
+// so every claim is a start and the observe drain never queues behind a backlog. `waitMs` is how
+// long until the window admits another start when it is what stopped the claim.
 export async function runTrafficTick(
   base: PrismaClient,
   opts: TrafficTickOptions,
@@ -733,22 +732,37 @@ export async function runTrafficTick(
       settled: Promise.resolve(),
     };
   }
-  const jobs = await claimDueTrafficJobs(
-    allowed,
-    base,
-    new Date(),
-    opts.tenantId,
-  );
+  const permits: (() => void)[] = [];
+  while (permits.length < allowed) {
+    const permit = opts.gate.tryAcquire();
+    if (!permit) break;
+    permits.push(permit);
+  }
+  let jobs: ClaimedJob[];
+  try {
+    jobs = await claimDueTrafficJobs(
+      allowed,
+      base,
+      new Date(),
+      opts.tenantId,
+      permits.length,
+    );
+  } catch (err) {
+    for (const permit of permits) permit();
+    throw err;
+  }
+  const spending = jobs.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length;
+  for (const permit of permits.splice(spending)) permit();
   opts.window.record(Date.now(), jobs.length);
   trafficRunning += jobs.length;
   const deadlineMs = jobDeadlineMs(opts.staleMs);
-  // allSettled: runClaimed never re-throws, but a stray throw must not strand a slot.
+  // allSettled: runClaimed never re-throws, but a stray throw must not strand a slot or a permit.
   const settled = Promise.allSettled(
-    jobs.map((job) =>
-      (async () =>
-        JOB_SPENDS_PROVIDER[job.kind]
-          ? opts.gate.run(() => runClaimed(job, base, { deadlineMs }))
-          : runClaimed(job, base, { deadlineMs }))()
+    jobs.map((job) => {
+      const permit = JOB_SPENDS_PROVIDER[job.kind]
+        ? permits.shift()
+        : undefined;
+      return (async () => runClaimed(job, base, { deadlineMs }))()
         .catch((err) =>
           logger.error(
             { err, kind: job.kind, jobId: String(job.id) },
@@ -756,10 +770,11 @@ export async function runTrafficTick(
           ),
         )
         .finally(() => {
+          permit?.();
           trafficRunning -= 1;
           opts.onFreed?.();
-        }),
-    ),
+        });
+    }),
   ).then(() => {});
   return { claimed: jobs.length, waitMs: null, settled };
 }

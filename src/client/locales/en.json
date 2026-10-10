@@ -2084,6 +2084,7 @@
     "snoozedFollowUpNoSteps": "A cadence with no step reminds nobody. Add a step or remove the cadence.",
     "snoozedFollowUpRemoveCadence": "Remove cadence",
     "snoozedFollowUpRemoveDefault": "Remove the default cadence",
+    "snoozedFollowUpScheduleHint": "Shared with the follow-up above. Reminders only fire inside this schedule.",
     "snoozedFollowUpSectionHint": "Remind the customer on a person's behalf when a conversation they snoozed until the next reply gets no answer, then close it.",
     "snoozedFollowUpSignature": "Sign the reminders with the agent's signature",
     "snoozedFollowUpSignatureHint": "Off by default: the reminder speaks for the person who asked, so the agent's sign-off is usually wrong there.",

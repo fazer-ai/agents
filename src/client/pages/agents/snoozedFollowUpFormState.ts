@@ -6,15 +6,13 @@ import {
 import type { FollowUpStepState } from "./BehaviorTab";
 import { stepsToForm, stepsToStored } from "./followUpFormState";
 
-// The agent editor's "Snoozed follow-up" block (settings.snoozedFollowUp, docs/snoozed-followup.md),
-// as the pure pair the other blocks have: stored settings -> form state -> stored settings. The
-// Behavior save REPLACES the whole block, so the pair carries every field; the steps go through the
-// follow-up's own step mapper (./followUpFormState), since a step means the same thing in both ladders.
-//
-// The reader (`readSnoozedFollowUpConfig`) DROPS what it cannot use: a second cadence with a label
-// already taken, a cadence with no step, labeled cadences past the cap. A save that wrote those would
-// look accepted and do nothing, so the form keeps them on screen and `snoozedFollowUpIssues` flags each
-// one, which blocks the save until the operator fixes it.
+// The agent editor's "Snoozed follow-up" block (settings.snoozedFollowUp, docs/snoozed-followup.md):
+// stored settings -> form state -> stored settings. The Behavior save REPLACES the whole block, so the
+// pair carries every field; steps go through the follow-up's own mapper (./followUpFormState).
+
+// The reader DROPS what it cannot use (a taken label, a cadence with no step, cadences past the cap), so
+// a save that wrote those would look accepted and do nothing. The form keeps them on screen and
+// `snoozedFollowUpIssues` flags each one, which blocks the save.
 
 export interface SnoozedCadenceState {
   // null = the default cadence, for a conversation carrying none of the labels below. A labeled

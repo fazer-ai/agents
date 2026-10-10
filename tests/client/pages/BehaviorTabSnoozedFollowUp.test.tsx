@@ -116,4 +116,14 @@ describe("snoozed follow-up section", () => {
     );
     expect(saveDisabled()).toBe(false);
   });
+  test("the schedule its reminders fire in is shown with the snoozed ladder on, even with the follow-up off", () => {
+    const hint =
+      /Shared with the follow-up above|O mesmo horário do follow-up acima/i;
+    renderWith({ enabled: true, signature: false, cadences: [cadence(null)] });
+    const on = count(hint);
+    cleanup();
+    renderWith({ enabled: false, signature: false, cadences: [cadence(null)] });
+    const off = count(hint);
+    expect([on, off]).toEqual([1, 0]);
+  });
 });

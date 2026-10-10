@@ -2050,6 +2050,50 @@ export function BehaviorTab({
       ]
     : sections;
 
+  // The follow-up's schedule (`followUpHoursId`, else the agent's main one) holds BOTH ladders, so it
+  // is drawn under each one that is on: an operator with only the snoozed ladder on would otherwise
+  // have no way to see or change when its reminders fire.
+  const followUpScheduleField = (description: string) => (
+    <FormField
+      label={t("editor.followUpWindowField", "Allowed schedule")}
+      group
+      description={description}
+    >
+      <SchedulePicker
+        value={followUpHoursId}
+        onChange={setFollowUpHoursId}
+        schedules={hours.map(toScheduleOption)}
+        emptyLabel={t(
+          "editor.followUpHoursDefault",
+          "Follow agent's main schedule",
+        )}
+        emptySummary={(() => {
+          if (businessHoursId) {
+            const inherited = hours.find(
+              (h) => String(h.id) === businessHoursId,
+            );
+            if (inherited) {
+              const summary = formatWindowsSummary(
+                toScheduleOption(inherited).windows,
+                t("schedule.noWindows", "No windows"),
+                i18n.language,
+              );
+              return `${t("editor.followUpHoursInherited", "Inherited:")} ${inherited.name} — ${summary}`;
+            }
+          }
+          return t(
+            "editor.followUpHoursAnyTime",
+            "No schedule set — follow-up may fire at any time.",
+          );
+        })()}
+        aria-label={t("editor.followUpWindowField", "Allowed schedule")}
+        onScheduleSaved={(savedId) => {
+          onScheduleSaved(savedId, setFollowUpHoursId);
+        }}
+      />
+    </FormField>
+  );
+
   return (
     <div className="flex grow flex-col gap-4">
       <div className="flex gap-6">
@@ -4481,50 +4525,12 @@ export function BehaviorTab({
               />
               {followUp.enabled && (
                 <>
-                  <FormField
-                    label={t("editor.followUpWindowField", "Allowed schedule")}
-                    group
-                    description={t(
+                  {followUpScheduleField(
+                    t(
                       "editor.followUpScheduleHint",
                       "Applies to the whole sequence. Steps only fire inside this schedule.",
-                    )}
-                  >
-                    <SchedulePicker
-                      value={followUpHoursId}
-                      onChange={setFollowUpHoursId}
-                      schedules={hours.map(toScheduleOption)}
-                      emptyLabel={t(
-                        "editor.followUpHoursDefault",
-                        "Follow agent's main schedule",
-                      )}
-                      emptySummary={(() => {
-                        if (businessHoursId) {
-                          const inherited = hours.find(
-                            (h) => String(h.id) === businessHoursId,
-                          );
-                          if (inherited) {
-                            const summary = formatWindowsSummary(
-                              toScheduleOption(inherited).windows,
-                              t("schedule.noWindows", "No windows"),
-                              i18n.language,
-                            );
-                            return `${t("editor.followUpHoursInherited", "Inherited:")} ${inherited.name} — ${summary}`;
-                          }
-                        }
-                        return t(
-                          "editor.followUpHoursAnyTime",
-                          "No schedule set — follow-up may fire at any time.",
-                        );
-                      })()}
-                      aria-label={t(
-                        "editor.followUpWindowField",
-                        "Allowed schedule",
-                      )}
-                      onScheduleSaved={(savedId) => {
-                        onScheduleSaved(savedId, setFollowUpHoursId);
-                      }}
-                    />
-                  </FormField>
+                    ),
+                  )}
                   <FollowUpStepsEditor
                     stepRefusals={refusals.followUpSteps}
                     agentId={agentId}
@@ -4659,6 +4665,13 @@ export function BehaviorTab({
               "A person on the team asks the customer for something, such as an order number or a document, and snoozes the conversation in Chatwoot until the next reply. If the customer never answers, nothing else reminds them or closes it.\n\nEach step is a reminder the agent writes on that person's behalf, with no tools; the last step can add labels and resolve. The customer answering ends the reminders.\n\nSteps fire inside the follow-up's allowed schedule. To pick the pace in one click, create a Chatwoot macro that snoozes and adds a cadence's label.",
             )}
           >
+            {snoozedFollowUp.enabled &&
+              followUpScheduleField(
+                t(
+                  "editor.snoozedFollowUpScheduleHint",
+                  "Shared with the follow-up above. Reminders only fire inside this schedule.",
+                ),
+              )}
             <SnoozedFollowUpEditor
               agentId={agentId}
               snoozedFollowUp={snoozedFollowUp}

@@ -1179,7 +1179,14 @@ async function runRecovery(params: {
   // nothing, `no-thread` has nowhere to hold it, `covered` is the responder already having it).
   // Silence is no route having asked, so the row goes back to DEAD for an inbox bound and switched
   // on again. Only for the replay that posts nothing; where a turn was owed, `TURN_SETTLED` answers.
-  const memoryUnsettled = !replayPosts && ingestOutcome === null;
+  // A reply replay the gate turned into memory (a person took the conversation before the replay)
+  // is held to the same rule as the memory-only one above: on a conversation this recovery found
+  // unmirrored, `no-thread` is the missing webhook speaking (the pairing only a webhook carries),
+  // not a contact with no memory, so the words are still owed and the row goes back to DEAD. On a
+  // row the mirror already had, `no-thread` is that row's own answer and settles as it always did.
+  const memoryUnsettled =
+    (!replayPosts && ingestOutcome === null) ||
+    (turnOutcome === null && ingestOutcome === "no-thread" && conv === null);
   if (turnThrew || turnUnsettled || memoryUnsettled) {
     // The row goes BACK to DEAD, the same repair as for a throw: it left the worklist at the
     // claim and the customer is still owed. The attempt stays spent, so `MAX_RECOVERY_ATTEMPTS`
@@ -1209,7 +1216,9 @@ async function runRecovery(params: {
       turnThrew
         ? "threw"
         : memoryUnsettled
-          ? "never ran and no route ingested the message either"
+          ? ingestOutcome === "no-thread"
+            ? "never ran and the message has no stored pairing to be remembered under"
+            : "never ran and no route ingested the message either"
           : `came back "${turnOutcome}"`,
       row.deliveryId,
       conversationId,

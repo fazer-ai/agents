@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7331 },
+          chatwootConversationId: { gte: 7310, lte: 7333 },
         },
       });
       await dropContact(77);
@@ -1097,6 +1097,68 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         }),
       ).toBe("unrecoverable");
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("leaves a reply replay DEAD when a takeover turns it into memory no pairing names", async () => {
+      // The row owed a reply, so the memory-only guard does not stop it; a person holding the
+      // conversation now closes the gate, and what is left is memory with nowhere stored to hold it.
+      const convId = 7332;
+      const messageId = 7832;
+      await dropContact(77);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unreachable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    });
+
+    test("settles the same takeover on a row the mirror already had without a pairing", async () => {
+      // There `no-thread` is the row's own answer, not a webhook this recovery never saw.
+      const convId = 7333;
+      const messageId = 7833;
+      await dropContact(77);
+      // The mirror's row is the state the recovery reads, so the takeover is on it.
+      const seeded = await seedConversation(convId);
+      await suDb.conversation.update({
+        where: { id: seeded.id },
+        data: {
+          status: "open",
+          assigneeType: "User",
+          assigneeId: 41,
+          contactInboxId: null,
+        },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+        conv: { status: "open", assigneeType: "User", assigneeId: 41 },
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
     });
 
     test("positions the contact it states at the live reading, even on a row a webhook created meanwhile", async () => {

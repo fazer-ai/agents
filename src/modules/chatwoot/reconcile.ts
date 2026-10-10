@@ -7,6 +7,7 @@ import type { LiveConversationState } from "./normalize";
 import { firstOwnershipStamp } from "./state-order";
 import { announceStatusChange } from "./status-announce";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
+import { runResolutionHooks } from "./webhook";
 
 // Applies a live conversation snapshot (REST `GET /conversations/:id`) to the mirror row, under the
 // webhook mirror's ordering rule. A GET is the only way to learn the conversation's version
@@ -68,6 +69,11 @@ export interface ReconcileFromLiveParams {
   base: PrismaClient;
 }
 
+interface ResolvedHere {
+  inboxId: number | null;
+  contactInboxId: number | null;
+}
+
 export async function reconcileMirrorFromLive(
   params: ReconcileFromLiveParams,
 ): Promise<ReconcileResult> {
@@ -81,6 +87,9 @@ export async function reconcileMirrorFromLive(
   // What the deferred adjudication has to announce once the transaction it happened in has
   // committed, and null on every other path. See the note where it is filled in.
   let announce: Parameters<typeof broadcastConversationEvent>[1] | null = null;
+  // The resolution this call applied, run once the transaction has committed: the webhook for the
+  // same transition finds the status already `resolved` and runs nothing.
+  let resolved: ResolvedHere | null = null;
   // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
   // freshness guard — a webhook committed between our GET and this write is NEWER than the
   // probe snapshot, so the reconcile must not restore stale status/assignee over it. The
@@ -107,6 +116,8 @@ export async function reconcileMirrorFromLive(
             // subscribers route and filter on it.
             id: true,
             inboxId: true,
+            inbox: { select: { chatwootInboxId: true } },
+            contactInboxId: true,
             status: true,
             assigneeType: true,
             assigneeId: true,
@@ -340,6 +351,13 @@ export async function reconcileMirrorFromLive(
         };
         if (Object.keys(data).length === 0) return;
         await db.conversation.update({ where, data });
+        // NOTE: `data.status` is written only when it differs from the stored one, so this is the transition.
+        if (data.status === "resolved") {
+          resolved = {
+            inboxId: current.inbox?.chatwootInboxId ?? null,
+            contactInboxId: current.contactInboxId,
+          };
+        }
         // NOTE: the durable half for EVERY status this call moves, not only the deferred one: the
         // source's own event for the same transition reaches the mirror after this write, finds the
         // status already equal and says nothing. ./status-announce.ts.
@@ -384,5 +402,18 @@ export async function reconcileMirrorFromLive(
     ),
   );
   if (announce) broadcastConversationEvent(tenantId, announce);
+  // Read through a cast because the assignment happens inside the callback, where the compiler's
+  // narrowing of the `null` initializer does not follow it.
+  const owed = resolved as ResolvedHere | null;
+  if (owed) {
+    await runResolutionHooks({
+      tenantId,
+      instanceId,
+      conversationId,
+      inboxId: owed.inboxId,
+      contactInboxId: owed.contactInboxId,
+      base,
+    });
+  }
   return result;
 }

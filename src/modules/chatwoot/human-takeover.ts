@@ -33,6 +33,7 @@ import {
 import { reconcileMirrorFromLive } from "./reconcile";
 import { announceStatusChange } from "./status-announce";
 import { statusClaimDeadline } from "./status-claim";
+import { runResolutionHooks } from "./webhook";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -373,7 +374,7 @@ async function withdrawClaimStatusOnly(p: {
   assigneeId: number | null;
   lastEventAt: Date | null;
 } | null> {
-  return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+  const written = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
     withEntityLock(
       db,
       `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
@@ -391,6 +392,8 @@ async function withdrawClaimStatusOnly(p: {
           select: {
             id: true,
             inboxId: true,
+            inbox: { select: { chatwootInboxId: true } },
+            contactInboxId: true,
             assigneeType: true,
             assigneeId: true,
             lastEventAt: true,
@@ -416,6 +419,19 @@ async function withdrawClaimStatusOnly(p: {
       },
     ),
   );
+  // NOTE: a withdrawal onto `resolved` is this write's transition, after the commit: the resolve's own
+  // event finds the status already equal and runs nothing.
+  if (written && p.status === "resolved") {
+    await runResolutionHooks({
+      tenantId: p.tenantId,
+      instanceId: p.instanceId,
+      conversationId: p.conversationId,
+      inboxId: written.inbox?.chatwootInboxId ?? null,
+      contactInboxId: written.contactInboxId,
+      base: p.base,
+    });
+  }
+  return written;
 }
 
 // Puts the row of a takeover Chatwoot refused back on the source's state, through the claim it owns.

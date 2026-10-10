@@ -3788,6 +3788,207 @@ async function maybeConsumeCommandOrGate(params: {
   return false;
 }
 
+// What a conversation this agent manages owes once it transitions TO resolved, by anyone (the agent's
+// tool, our console, Chatwoot): memory compaction for every agent, and the redirect handling for a
+// widget inbox. Run by whichever write moved the mirror's status to `resolved` (the webhook mirror
+// here, `reconcileMirrorFromLive`, the console's unversioned write, a takeover withdrawn), because the
+// write that comes after finds the status already equal and sees no transition. Best-effort: never throws.
+export async function runResolutionHooks(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  // The Chatwoot ids as the caller knows them; null falls back to the mirror for compaction, while the
+  // redirect keys off this inbox alone.
+  inboxId: number | null;
+  contactInboxId: number | null;
+  base: PrismaClient;
+}): Promise<void> {
+  const { conversationId, base } = p;
+  const convLabel = String(conversationId);
+  // Both ids FROM THE MIRROR when the event lacks them (a conversation_* payload can omit
+  // `inbox` and `contact_inbox`), or compaction is skipped and a returning customer's history stays
+  // raw. In its OWN best-effort boundary: a failure here must not reach the shared catch and skip the
+  // redirect's chase cancel and closing message, which a conversation that resolves once never gets back.
+  let storedInboxId: number | null = null;
+  let storedContactInboxId: number | null = null;
+  if (p.inboxId === null || p.contactInboxId === null) {
+    try {
+      const stored = await runScopedOn(base, sysCtx(p.tenantId), (db) =>
+        db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId: p.tenantId,
+              chatwootInstanceId: p.instanceId,
+              chatwootConversationId: conversationId,
+            },
+          },
+          select: {
+            contactInboxId: true,
+            inbox: { select: { chatwootInboxId: true } },
+          },
+        }),
+      );
+      storedInboxId = stored?.inbox?.chatwootInboxId ?? null;
+      storedContactInboxId = stored?.contactInboxId ?? null;
+    } catch (err) {
+      logger.warn(
+        "chatwoot: resolving ids for compaction on resolve failed (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+    }
+  }
+  const closingInboxId = p.inboxId ?? storedInboxId;
+  const closingContactInboxId = p.contactInboxId ?? storedContactInboxId;
+  try {
+    // The responder's alone: an observer's route keeps no memory on an inbox without one
+    // (`routeRemembers`).
+    const responderClosingRt = await inboxAgentRuntime(
+      p.tenantId,
+      p.instanceId,
+      closingInboxId,
+      base,
+    );
+    if (responderClosingRt) {
+      // NOTE: Memory compaction, armed at resolve with a grace period so the thread is compacted BEFORE
+      // the customer returns: the resumption turn is the one billed without cache, so compacting on
+      // return would miss it. The job re-checks the status, since a resolve can be undone.
+      if (closingContactInboxId !== null) {
+        try {
+          await armCompaction({
+            tenantId: p.tenantId,
+            instanceId: p.instanceId,
+            contactInboxId: closingContactInboxId,
+            conversationId,
+            agentId: responderClosingRt.agentId,
+            reason: "resolved",
+            enabled: readMemoryConfig(responderClosingRt.settings).compaction
+              .enabled,
+            base,
+          });
+        } catch (err) {
+          logger.warn(
+            "chatwoot: arming compaction on resolve failed (conv=%s): %s",
+            String(conversationId),
+            errMsg(err),
+          );
+        }
+      }
+      // The redirect is the RESPONDER's, never the watcher's: it ends in customer-facing text on
+      // the WhatsApp sibling, so reading it off the responder makes that structural. On a widget
+      // conversation resolving: stop the ladder, and post the closing on the sibling, where
+      // `deliverRedirectClosing` CAS-guards the watermark (idempotent under redelivery and against the
+      // ladder's own closing stage).
+      const redirectCfg = readChannelRedirectConfig(
+        responderClosingRt?.settings,
+      );
+      // The redirect keys off the EVENT's inbox (it is the widget conversation that resolved).
+      // A sparse payload carries none, and `widgetInboxId === null` would otherwise read as a
+      // match on a half-configured agent.
+      if (
+        responderClosingRt !== null &&
+        redirectCfg.enabled &&
+        p.inboxId !== null &&
+        redirectCfg.widgetInboxId === p.inboxId
+      ) {
+        // (1) Stop chasing a resolved conversation, regardless of whether closing is on.
+        await cancelPendingJob(
+          p.tenantId,
+          "REDIRECT_FOLLOWUP",
+          followUpDedupeKey(
+            chatwootThreadId(p.tenantId, p.instanceId, conversationId),
+          ),
+          base,
+        );
+        // (2) Closing message on the WhatsApp sibling (at most once, CAS-guarded); Chatwoot is already
+        // resolving the widget, so resolveWidget:false. Gated on the agent being live, as the ladder's own
+        // closing stage is: this fixed-text send has no nudge behind it to ask. The cancel above stays
+        // ungated: standing the chase down is not a send.
+        const closingLive =
+          redirectCfg.closingEnabled &&
+          redirectCfg.entryInboxId !== null &&
+          isRedirectFollowUpLive({
+            agentEnabled: responderClosingRt.enabled,
+            agentMode: responderClosingRt.mode,
+            // NOTE: Only a test agent's liveness needs the stamp, and a failure here is permanent (the ladder is
+            // already cancelled and a conversation resolves once), so a production agent skips the read.
+            testActivatedAt:
+              responderClosingRt.mode === "test"
+                ? await episodeActivationForWidget(
+                    p.tenantId,
+                    p.instanceId,
+                    conversationId,
+                    redirectCfg,
+                    responderClosingRt.mode,
+                    base,
+                  )
+                : null,
+          });
+        if (closingLive && redirectCfg.entryInboxId !== null) {
+          const outcome = await deliverRedirectClosing({
+            // NOTE: The gate above predates the sibling lookup and client build, and this path has no job to
+            // ask, so the switch is re-asked from inside at the ladder's points. One read, failing OPEN: a
+            // transient error must not cost the closing.
+            fence: async () => {
+              const rt = await inboxAgentRuntime(
+                p.tenantId,
+                p.instanceId,
+                closingInboxId,
+                base,
+              ).catch(() => undefined);
+              if (rt === undefined) return "go" as const;
+              if (rt === null) return "stood-down" as const;
+              // NOTE: The switch is conclusive on its own, and it is read here — before the
+              // stamp, which is fallible and which only a test agent needs at all.
+              if (!rt.enabled) return "stood-down" as const;
+              if (isMonitoring(rt.mode)) return "stood-down" as const;
+              if (rt.mode !== "test") return "go" as const;
+              // A test agent's answer takes a second read, not in the same snapshot as the switch. Left as
+              // a residual: closing it needs agent and stamp in ONE statement, and `Inbox` has no `agent` relation
+              // to select through (raw SQL or a schema change for a one-query window on a test agent).
+              const testActivatedAt = await episodeActivationForWidget(
+                p.tenantId,
+                p.instanceId,
+                conversationId,
+                redirectCfg,
+                rt.mode,
+                base,
+              ).catch(() => new Date());
+              return isRedirectFollowUpLive({
+                agentEnabled: rt.enabled,
+                agentMode: rt.mode,
+                testActivatedAt,
+              })
+                ? ("go" as const)
+                : ("stood-down" as const);
+            },
+            tenantId: p.tenantId,
+            instanceId: p.instanceId,
+            widgetConversationId: conversationId,
+            entryInboxId: redirectCfg.entryInboxId,
+            closingMessage: redirectCfg.closingMessage,
+            // The widget conversation is already being resolved by this trigger — only the WhatsApp
+            // sibling still needs the closing message.
+            closeChat: false,
+            base,
+          });
+          logger.info(
+            "channel-redirect: widget resolved (conv=%s) closing=%s",
+            convLabel,
+            outcome,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      "channel-redirect: closing delivery failed (conv=%s): %s",
+      convLabel,
+      errMsg(err),
+    );
+  }
+}
+
 export async function processChatwootDelivery(
   params: ProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
@@ -4432,10 +4633,8 @@ export async function processChatwootDelivery(
       );
     }
   }
-  // NOTE: A conversation this agent manages just transitioned TO resolved, by anyone (the agent's
-  // tool, our console, Chatwoot). Two independent consequences: memory compaction for every agent, and
-  // the redirect handling for a widget inbox. Detected off the mirror's fresh prevStatus to status
-  // transition, on any event carrying a status.
+  // NOTE: the transition this delivery applied to the mirror. A transition another write applied first
+  // runs the same hooks from there (see `runResolutionHooks`).
   if (
     mirror.applied &&
     mirror.prevStatus !== null &&
@@ -4443,193 +4642,14 @@ export async function processChatwootDelivery(
     mirror.status === "resolved" &&
     n.conversationId !== null
   ) {
-    const conversationId = n.conversationId;
-    // Both ids FROM THE MIRROR when the event lacks them (a conversation_* payload can omit
-    // `inbox` and `contact_inbox`), or compaction is skipped and a returning customer's history stays
-    // raw. In its OWN best-effort boundary: a failure here must not reach the shared catch and skip the
-    // redirect's chase cancel and closing message, which a conversation that resolves once never gets back.
-    let storedInboxId: number | null = null;
-    let storedContactInboxId: number | null = null;
-    if (n.inboxId === null || n.contactInboxId === null) {
-      try {
-        const stored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-          db.conversation.findUnique({
-            where: {
-              tenantId_chatwootInstanceId_chatwootConversationId: {
-                tenantId: params.tenantId,
-                chatwootInstanceId: params.instanceId,
-                chatwootConversationId: conversationId,
-              },
-            },
-            select: {
-              contactInboxId: true,
-              inbox: { select: { chatwootInboxId: true } },
-            },
-          }),
-        );
-        storedInboxId = stored?.inbox?.chatwootInboxId ?? null;
-        storedContactInboxId = stored?.contactInboxId ?? null;
-      } catch (err) {
-        logger.warn(
-          "chatwoot: resolving ids for compaction on resolve failed (conv=%s): %s",
-          String(conversationId),
-          errMsg(err),
-        );
-      }
-    }
-    const closingInboxId = n.inboxId ?? storedInboxId;
-    const closingContactInboxId = n.contactInboxId ?? storedContactInboxId;
-    try {
-      // The responder's alone: an observer's route keeps no memory on an inbox without one
-      // (`routeRemembers`).
-      const responderClosingRt = await inboxAgentRuntime(
-        params.tenantId,
-        params.instanceId,
-        closingInboxId,
-        base,
-      );
-      if (responderClosingRt) {
-        // NOTE: Memory compaction, armed at resolve with a grace period so the thread is compacted BEFORE
-        // the customer returns: the resumption turn is the one billed without cache, so compacting on
-        // return would miss it. The job re-checks the status, since a resolve can be undone.
-        if (closingContactInboxId !== null) {
-          try {
-            await armCompaction({
-              tenantId: params.tenantId,
-              instanceId: params.instanceId,
-              contactInboxId: closingContactInboxId,
-              conversationId,
-              agentId: responderClosingRt.agentId,
-              reason: "resolved",
-              enabled: readMemoryConfig(responderClosingRt.settings).compaction
-                .enabled,
-              base,
-            });
-          } catch (err) {
-            logger.warn(
-              "chatwoot: arming compaction on resolve failed (conv=%s): %s",
-              String(conversationId),
-              errMsg(err),
-            );
-          }
-        }
-        // The redirect is the RESPONDER's, never the watcher's: it ends in customer-facing text on
-        // the WhatsApp sibling, so reading it off the responder makes that structural. On a widget
-        // conversation resolving: stop the ladder, and post the closing on the sibling, where
-        // `deliverRedirectClosing` CAS-guards the watermark (idempotent under redelivery and against the
-        // ladder's own closing stage).
-        const redirectCfg = readChannelRedirectConfig(
-          responderClosingRt?.settings,
-        );
-        // The redirect keys off the EVENT's inbox (it is the widget conversation that resolved).
-        // A sparse payload carries none, and `widgetInboxId === null` would otherwise read as a
-        // match on a half-configured agent.
-        if (
-          responderClosingRt !== null &&
-          redirectCfg.enabled &&
-          n.inboxId !== null &&
-          redirectCfg.widgetInboxId === n.inboxId
-        ) {
-          // (1) Stop chasing a resolved conversation, regardless of whether closing is on.
-          await cancelPendingJob(
-            params.tenantId,
-            "REDIRECT_FOLLOWUP",
-            followUpDedupeKey(
-              chatwootThreadId(
-                params.tenantId,
-                params.instanceId,
-                conversationId,
-              ),
-            ),
-            base,
-          );
-          // (2) Closing message on the WhatsApp sibling (at most once, CAS-guarded); Chatwoot is already
-          // resolving the widget, so resolveWidget:false. Gated on the agent being live, as the ladder's own
-          // closing stage is: this fixed-text send has no nudge behind it to ask. The cancel above stays
-          // ungated: standing the chase down is not a send.
-          const closingLive =
-            redirectCfg.closingEnabled &&
-            redirectCfg.entryInboxId !== null &&
-            isRedirectFollowUpLive({
-              agentEnabled: responderClosingRt.enabled,
-              agentMode: responderClosingRt.mode,
-              // NOTE: Only a test agent's liveness needs the stamp, and a failure here is permanent (the ladder is
-              // already cancelled and a conversation resolves once), so a production agent skips the read.
-              testActivatedAt:
-                responderClosingRt.mode === "test"
-                  ? await episodeActivationForWidget(
-                      params.tenantId,
-                      params.instanceId,
-                      conversationId,
-                      redirectCfg,
-                      responderClosingRt.mode,
-                      base,
-                    )
-                  : null,
-            });
-          if (closingLive && redirectCfg.entryInboxId !== null) {
-            const outcome = await deliverRedirectClosing({
-              // NOTE: The gate above predates the sibling lookup and client build, and this path has no job to
-              // ask, so the switch is re-asked from inside at the ladder's points. One read, failing OPEN: a
-              // transient error must not cost the closing.
-              fence: async () => {
-                const rt = await inboxAgentRuntime(
-                  params.tenantId,
-                  params.instanceId,
-                  closingInboxId,
-                  base,
-                ).catch(() => undefined);
-                if (rt === undefined) return "go" as const;
-                if (rt === null) return "stood-down" as const;
-                // NOTE: The switch is conclusive on its own, and it is read here — before the
-                // stamp, which is fallible and which only a test agent needs at all.
-                if (!rt.enabled) return "stood-down" as const;
-                if (isMonitoring(rt.mode)) return "stood-down" as const;
-                if (rt.mode !== "test") return "go" as const;
-                // A test agent's answer takes a second read, not in the same snapshot as the switch. Left as
-                // a residual: closing it needs agent and stamp in ONE statement, and `Inbox` has no `agent` relation
-                // to select through (raw SQL or a schema change for a one-query window on a test agent).
-                const testActivatedAt = await episodeActivationForWidget(
-                  params.tenantId,
-                  params.instanceId,
-                  conversationId,
-                  redirectCfg,
-                  rt.mode,
-                  base,
-                ).catch(() => new Date());
-                return isRedirectFollowUpLive({
-                  agentEnabled: rt.enabled,
-                  agentMode: rt.mode,
-                  testActivatedAt,
-                })
-                  ? ("go" as const)
-                  : ("stood-down" as const);
-              },
-              tenantId: params.tenantId,
-              instanceId: params.instanceId,
-              widgetConversationId: conversationId,
-              entryInboxId: redirectCfg.entryInboxId,
-              closingMessage: redirectCfg.closingMessage,
-              // The widget conversation is already being resolved by this trigger — only the WhatsApp
-              // sibling still needs the closing message.
-              closeChat: false,
-              base,
-            });
-            logger.info(
-              "channel-redirect: widget resolved (conv=%s) closing=%s",
-              convLabel,
-              outcome,
-            );
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn(
-        "channel-redirect: closing delivery failed (conv=%s): %s",
-        convLabel,
-        errMsg(err),
-      );
-    }
+    await runResolutionHooks({
+      tenantId: params.tenantId,
+      instanceId: params.instanceId,
+      conversationId: n.conversationId,
+      inboxId: n.inboxId,
+      contactInboxId: n.contactInboxId,
+      base,
+    });
   }
 
   // Production analyzes every new incoming message, and a late attachment on message_updated

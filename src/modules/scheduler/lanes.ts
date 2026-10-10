@@ -277,6 +277,37 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   SUGGESTION_REVIEW: true,
 };
 
+// The order the traffic drain claims in, lowest first and FIFO by run_at within a rank. It only
+// shows under a backlog, which is when it matters: a customer's lost message or a conversation held
+// by the wrong side outranks memory ingestion (every turn drains its own thread first), and both
+// outrank a delayed judgement of a blank message. Read only for JOB_TRAFFIC_PROPORTIONAL kinds;
+// exhaustive so a new kind does not compile until it is placed.
+export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
+  DELIVERY_RECOVERY: 0,
+  TAKEOVER_RECOVERY: 0,
+  HUMAN_REPLY_RECOVERY: 0,
+  MEDIA_TEXT_FALLBACK: 0,
+  INBOUND_REDISPATCH: 0,
+  INGEST_MESSAGE: 1,
+  SUGGESTION_REVIEW: 1,
+  NOTHING_TO_ANSWER: 2,
+  FOLLOWUP: 1,
+  FOLLOWUP_SWEEP: 1,
+  WEBHOOK_RETRY: 1,
+  DEBOUNCE: 1,
+  RAG_INGEST: 1,
+  HEARTBEAT: 1,
+  FLOWLOG_SWEEP: 1,
+  APPOINTMENT_REMINDER: 1,
+  REDIRECT_FOLLOWUP: 1,
+  MEMORY_COMPACT: 1,
+  DELIVERY_SWEEP: 1,
+  SPEND_CEILING_POLL: 1,
+  OBSERVE: 1,
+  KNOWLEDGE_SOURCE_SYNC: 1,
+  INBOUND_SWEEP: 1,
+};
+
 // What one kind's death means to the operator, read by the generic dead-letter announcement in
 // ./worker.ts. Exhaustive with no default, so a new kind does not compile until someone decides it.
 // The rule: `error` where the system accepted work and lost it, `warn` where the operator has their

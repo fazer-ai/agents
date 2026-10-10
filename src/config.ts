@@ -25,6 +25,8 @@ const {
   WEBHOOK_WORKER_INTERVAL_MS,
   SCHEDULER_WORKER_ENABLED,
   SCHEDULER_WORKER_INTERVAL_MS,
+  SCHEDULER_TRAFFIC_CONCURRENCY,
+  SCHEDULER_TRAFFIC_PER_MINUTE,
   OBSERVE_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_ENABLED,
   COMPACTION_WORKER_ENABLED,
@@ -423,6 +425,24 @@ const config = {
       15_000,
       "It is how often the scheduler worker claims due jobs.",
       MAX_DURATION_MS,
+    ),
+    // The traffic-proportional kinds' drain (./modules/scheduler/lanes.ts): at most this many at
+    // once, and at most `trafficPerMinute` started in any minute. Five at once is what one tick ran
+    // before the drain existed; the per-minute ceiling is what bounds the CPU a backlog can take
+    // from live traffic, since a lane of fast jobs at five at a time would start hundreds a minute.
+    trafficConcurrency: parseIntSetting(
+      SCHEDULER_TRAFFIC_CONCURRENCY,
+      "SCHEDULER_TRAFFIC_CONCURRENCY",
+      5,
+      "It is how many recovery, ingestion and similar scheduler jobs may run at once.",
+      100,
+    ),
+    trafficPerMinute: parseIntSetting(
+      SCHEDULER_TRAFFIC_PER_MINUTE,
+      "SCHEDULER_TRAFFIC_PER_MINUTE",
+      120,
+      "It is how many recovery, ingestion and similar scheduler jobs may start in any minute.",
+      100_000,
     ),
   },
   // NOTE: The scheduler's FAST drain for OBSERVE jobs only (a monitoring agent's turn on a

@@ -390,10 +390,15 @@ async function replayStored(
     );
     return "skipped";
   }
-  // NOTE: The binding the row was received under must still stand. One that moved since (an observer
-  // made the responder, a persona swapped) asks what the route's role was at receipt, which the
-  // delivery recovery answers with its own fences: the body is dropped and the row goes to the sweep.
-  if (row.bindingGeneration !== null) {
+  // NOTE: The binding a customer message was received under must still stand. One that moved since (an
+  // observer made the responder, a persona swapped) asks what the route's role was at receipt, which
+  // the delivery recovery answers with its own fences: the body is dropped and the row goes to the
+  // sweep. Only for a customer message: a status or assignment change has no recovery to go to, and
+  // what it mirrors does not depend on the route's role.
+  if (
+    admissionLaneOf(normalized) === "turn" &&
+    row.bindingGeneration !== null
+  ) {
     const current = await run((db) =>
       inboxBindingGenerationIn(db, row.chatwootInstanceId, {
         chatwootInboxId: normalized.inboxId ?? null,

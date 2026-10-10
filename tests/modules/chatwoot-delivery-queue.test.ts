@@ -539,7 +539,7 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
 
   // The binding a row was received under must still stand when it is replayed: an observer made the
   // responder since asks what the role was at receipt, which the delivery recovery answers.
-  test("a stored row whose inbox binding moved since receipt is left to the sweep", async () => {
+  test("a stored customer message whose inbox binding moved since receipt is left to the sweep", async () => {
     const inbox = await suDb.inbox.create({
       data: {
         tenantId,
@@ -548,35 +548,60 @@ describe.skipIf(!dbUp)("draining the rows the ack stored", () => {
         name: "Rebound",
       },
     });
-    const body = JSON.stringify({
-      event: "conversation_updated",
-      id: 620,
-      inbox_id: 77,
-      status: "pending",
-      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
-    });
-    const r0 = await receiveChatwootWebhook({
-      routeToken,
-      rawBody: body,
-      getHeader: headers(body, "queue-rebound"),
-      nowSeconds: NOW,
-      base: appDb,
-    });
-    const id = r0.deliveryRowId as bigint;
-    expect((await rowById(id)).bindingGeneration).toBe(inbox.bindingGeneration);
+    const ack = async (deliveryId: string, body: string) =>
+      (
+        await receiveChatwootWebhook({
+          routeToken,
+          rawBody: body,
+          getHeader: headers(body, deliveryId),
+          nowSeconds: NOW,
+          base: appDb,
+        })
+      ).deliveryRowId as bigint;
+    const message = await ack(
+      "queue-rebound-message",
+      JSON.stringify({
+        event: "message_created",
+        id: 62_000,
+        content: "oi",
+        message_type: "incoming",
+        private: false,
+        conversation: {
+          id: 620,
+          inbox_id: 77,
+          status: "pending",
+          meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+        },
+      }),
+    );
+    // A status change has no recovery to go to, so it is mirrored whatever the binding did.
+    const status = await ack(
+      "queue-rebound-status",
+      JSON.stringify({
+        event: "conversation_updated",
+        id: 623,
+        inbox_id: 77,
+        status: "open",
+        meta: { assignee_type: "User", assignee: { id: 55 } },
+      }),
+    );
+    expect((await rowById(message)).bindingGeneration).toBe(
+      inbox.bindingGeneration,
+    );
     await suDb.inbox.update({
       where: { id: inbox.id },
       data: { bindingGeneration: { increment: 1 } },
     });
     await drainStoredChatwootDeliveries({ base: appDb, tenantId, minAgeMs: 0 });
+    expect((await settled(status)).status).toBe("PROCESSED");
     for (let i = 0; i < 100 && chatwootAdmissionState().running > 0; i++)
       await sleep(5);
-    const row = await rowById(id);
+    const row = await rowById(message);
     expect(row.status).toBe("PENDING");
     expect(row.attempts).toBe(0);
     expect(row.payload).toBeNull();
     await suDb.chatwootWebhookDelivery.update({
-      where: { id },
+      where: { id: message },
       data: { status: "PROCESSED" },
     });
   });

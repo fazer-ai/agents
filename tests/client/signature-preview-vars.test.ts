@@ -1,4 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import {
   signaturePreviewParts,
   signaturePreviewVars,
@@ -12,6 +19,11 @@ import {
   type PromptRenderOpts,
 } from "@/graph/prompt";
 import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
+import {
+  type EditorStub,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
 
 // EVERY VARIABLE THE SIGNATURE FIELD ACCEPTS RESOLVES IN ITS PREVIEW.
 //
@@ -21,11 +33,6 @@ import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 // LISTS the editor itself offers, so a variable added to the prompt is covered without anyone
 // remembering to add it.
 const t = (_k: string, d: string) => d;
-
-const SOURCE = await Bun.file("src/client/pages/agents/BehaviorTab.tsx").text();
-const PROMPT_SOURCE = await Bun.file(
-  "src/client/pages/agents/PromptPanel.tsx",
-).text();
 
 const OPTS: PromptRenderOpts = {
   availability: {
@@ -76,21 +83,68 @@ describe("the signature preview answers every variable the field offers", () => 
 });
 
 // The cases above prove the FUNCTION honours its options; only the CALL SITE can fail to pass them,
-// which calling the function directly cannot catch, so this reads the tab's own source.
+// so these render the editor's Behavior tab and read its preview: the agent's schedule, its live
+// names and its split switch have to reach the bubbles.
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
+
+const SCHEDULE = {
+  id: "5",
+  name: "Comercial",
+  timezone: "America/Sao_Paulo",
+  windows: [{ day: 1, start: "09:00", end: "18:00" }],
+  exceptions: [],
+};
+
+async function behaviorPreview(
+  text: string,
+  over: { split?: boolean; name?: string } = {},
+): Promise<EditorStub> {
+  const stub = stubEditorApi({
+    name: over.name ?? "Recepção",
+    settings: {
+      signature: {
+        enabled: true,
+        text,
+        position: "top",
+        frequency: "all",
+        separator: "blank",
+      },
+      split: { enabled: over.split ?? false },
+    },
+  });
+  stub.agent.businessHoursId = SCHEDULE.id;
+  stub.override = (method, path) =>
+    method === "GET" && path === "/api/v1/business-hours"
+      ? new Response(JSON.stringify({ businessHours: [SCHEDULE] }), {
+          headers: { "Content-Type": "application/json" },
+        })
+      : undefined;
+  await renderEditor(stub, "behavior");
+  await act(async () => {});
+  return stub;
+}
+
+// The preview's own text: everything the signature section draws after its "Preview" heading.
+function shownPreview(): string {
+  const all = document.getElementById("signature")?.textContent ?? "";
+  return all.slice(all.lastIndexOf("Preview") + "Preview".length);
+}
+
 describe("the tab passes the render options to its preview", () => {
-  test("the preview call forwards an options argument", () => {
-    const at = SOURCE.indexOf("{signaturePreviewParts(");
-    expect(at).toBeGreaterThan(-1);
-    const call = SOURCE.slice(at, SOURCE.indexOf(").map(", at));
-    // Four arguments: the state, `t`, the example variables, and the options.
-    expect(call).toContain("signatureVars");
-    expect(call).toContain("signaturePreviewOpts");
+  test("the preview call forwards an options argument", async () => {
+    await behaviorPreview("{{horario_atendimento}}");
+    await waitFor(() => expect(shownPreview()).toContain("09:00–18:00"));
+    expect(shownPreview()).not.toContain("{{horario_atendimento}}");
   });
 
-  test("those options carry an availability, which is what a schedule name needs", () => {
-    const at = SOURCE.indexOf("const signaturePreviewOpts");
-    expect(at).toBeGreaterThan(-1);
-    expect(SOURCE.slice(at, at + 400)).toContain("availability");
+  test("those options carry an availability, which is what a schedule name needs", async () => {
+    await behaviorPreview("{{esta_aberto}} · {{horario_atendimento}}");
+    await waitFor(() => expect(shownPreview()).toContain("09:00–18:00"));
+    expect(shownPreview()).not.toContain("{{esta_aberto}}");
   });
 });
 
@@ -100,9 +154,23 @@ describe("the tab passes the render options to its preview", () => {
 // written beside the call site: a hand-written literal drifts from the other preview, and the tree
 // ships to every deployment, so it must not carry a real customer.
 describe("the editor's previews speak to one example person", () => {
-  test("both preview call sites read the shared example contact", () => {
-    expect(SOURCE).toContain("PROMPT_PREVIEW_CONTACT");
-    expect(PROMPT_SOURCE).toContain("PROMPT_PREVIEW_CONTACT");
+  test("both preview call sites read the shared example contact", async () => {
+    await behaviorPreview("{{nome_contato}} <{{email_contato}}>");
+    const signature = shownPreview();
+    fireEvent.click(screen.getByRole("tab", { name: /General/ }));
+    await act(async () => {});
+    fireEvent.change(screen.getByDisplayValue("Você atende."), {
+      target: { value: "Fale com {{nome_contato}} <{{email_contato}}>." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const prompt = (await screen.findByText(/^Fale com/)).textContent ?? "";
+    const shared = (text: string) =>
+      text.includes(PROMPT_PREVIEW_CONTACT.contactName) &&
+      text.includes(PROMPT_PREVIEW_CONTACT.contactEmail);
+    expect({ signature: shared(signature), prompt: shared(prompt) }).toEqual({
+      signature: true,
+      prompt: true,
+    });
   });
 
   test("the signature preview resolves the shared contact, not one of its own", () => {
@@ -112,21 +180,6 @@ describe("the editor's previews speak to one example person", () => {
     expect(preview("{{email_contato}}")).toContain(
       PROMPT_PREVIEW_CONTACT.contactEmail,
     );
-  });
-
-  // NOTE: a sample contact hard-coded next to the call site is how the two previews drift apart.
-  // Asked of both files, so neither editor can grow a private one.
-  test("neither editor hard-codes a sample contact beside its preview", () => {
-    // Booleans, not the file: a failed `expect(src).not.toContain(...)` prints the whole tab.
-    const files: Array<[string, string]> = [
-      ["BehaviorTab.tsx", SOURCE],
-      ["PromptPanel.tsx", PROMPT_SOURCE],
-    ];
-    const offenders = files.flatMap(([name, src]) => [
-      ...(src.includes("@exemplo.com") ? [`${name}: sample e-mail`] : []),
-      ...(/contactName: "/.test(src) ? [`${name}: sample name`] : []),
-    ]);
-    expect(offenders).toEqual([]);
   });
 });
 
@@ -152,13 +205,19 @@ describe("the preview signs with the operator's own names", () => {
     ).toBe(`${PROMPT_PREVIEW_AGENT}, ${PROMPT_PREVIEW_COMPANY}`);
   });
 
-  // The call site has to hand the component's live map over, not rebuild a fixed one beside it.
-  test("the tab passes the live map to its preview", () => {
-    const at = SOURCE.indexOf("const signatureVars =");
-    expect(at).toBeGreaterThan(-1);
-    const decl = SOURCE.slice(at, at + 120);
-    expect(decl).toContain("agentName");
-    expect(decl).toContain("companyName");
+  // The call site has to hand the component's live map over, not rebuild a fixed one beside it:
+  // the name being typed on General is the one the preview signs with.
+  test("the tab passes the live map to its preview", async () => {
+    await behaviorPreview("{{nome_agente}}");
+    await waitFor(() => expect(shownPreview()).toContain("Recepção"));
+    fireEvent.click(screen.getByRole("tab", { name: /General/ }));
+    await act(async () => {});
+    fireEvent.change(screen.getByDisplayValue("Recepção"), {
+      target: { value: "Balcão" },
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /Behavior/ }));
+    await act(async () => {});
+    expect(shownPreview()).toContain("Balcão");
   });
 });
 
@@ -232,10 +291,11 @@ describe("the preview shows one bubble per message", () => {
 // The tab has to hand the preview the SPLIT's own switch, or an operator with the split off reads a
 // two-balloon preview of a one-message delivery.
 describe("the tab tells its preview whether the reply is split", () => {
-  test("the preview call forwards the split switch", () => {
-    const at = SOURCE.indexOf("{signaturePreviewParts(");
-    expect(at).toBeGreaterThan(-1);
-    const call = SOURCE.slice(at, SOURCE.indexOf(").map(", at));
-    expect(call).toContain("split.enabled");
+  test("the preview call forwards the split switch", async () => {
+    await behaviorPreview("Alex", { split: false });
+    expect(shownPreview()).not.toContain("Message 1 of");
+    cleanup();
+    await behaviorPreview("Alex", { split: true });
+    expect(shownPreview()).toContain("Message 1 of");
   });
 });

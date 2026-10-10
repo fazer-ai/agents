@@ -277,20 +277,30 @@ test("a token is inserted at the caret, not appended", async () => {
 // the offer is in the document and correctly placed either way, but invisible behind the dialog.
 //
 // `public/index.css` defines the z scale as TOKENS, and a Tailwind `z-50` is not a step on it: 50 is
-// `--z-drawer`, BELOW `--z-modal` (80). This picker only ever opens inside a modal, so a numeric class
-// is always wrong here. Read off the source because the property is about paint order.
+// `--z-drawer`, BELOW `--z-modal` (80). So the rendered offer's z class is asked: it names a token,
+// and that token, read off the stylesheet, is above the modal's.
 test("the offer's z-index comes from the popover token, not a numeric class", async () => {
-  const source = await Bun.file(
-    new URL(
-      "../../src/client/pages/resources/ToolEditModal.tsx",
-      import.meta.url,
-    ),
-  ).text();
-  const content = source.slice(source.indexOf("PopoverPrimitive.Content"));
-  const className = /className="([^"]*)"/.exec(content)?.[1] ?? "";
-  expect(className.includes("z-(--z-popover)")).toBe(true);
-  // NOTE: and no bare numeric z anywhere on it.
-  expect(/\bz-\d+\b/.test(className)).toBe(false);
+  await openBookForm();
+  const idField = controlFor<HTMLInputElement>(
+    /onde está o id|where the id is/i,
+  );
+  fireEvent.click(openerFor(idField));
+  const wrapper = await waitFor(() => {
+    const el = document.querySelector("[data-radix-popper-content-wrapper]");
+    if (!el) throw new Error("the offer never appeared");
+    return el;
+  });
+  const className = wrapper.firstElementChild?.getAttribute("class") ?? "";
+  // NOTE: no bare numeric z on it.
+  expect(/(^|\s)z-\d+\b/.test(className)).toBe(false);
+  const token = /(?:^|\s)z-\(--([\w-]+)\)/.exec(className)?.[1] ?? "";
+  const css = await Bun.file("public/index.css").text();
+  const level = (name: string) =>
+    Number(new RegExp(`--${name}:\\s*(\\d+);`).exec(css)?.[1] ?? Number.NaN);
+  expect({ token, above: level(token) > level("z-modal") }).toEqual({
+    token: "z-popover",
+    above: true,
+  });
 });
 
 // THE OFFER PORTALS INTO THE DIALOG, NOT INTO THE BODY, and the difference is a scroll that works.

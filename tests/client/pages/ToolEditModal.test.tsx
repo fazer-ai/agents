@@ -1,6 +1,19 @@
 /// <reference lib="dom" />
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { EditorView } from "@codemirror/view";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { useEffect, useRef } from "react";
+import { MemoryRouter } from "react-router";
+import { ToastProvider, useModalController } from "@/client/components";
 import {
   formFromTool,
   insertEachBlock,
@@ -10,6 +23,7 @@ import {
   parseMaxResponseChars,
   payloadOf,
   type Tool,
+  ToolEditModal,
   templatePreviewFor,
   templateSaveProblem,
   testFieldsFrom,
@@ -456,38 +470,6 @@ describe("templateSaveProblem agrees with the service, shape for shape", () => {
   });
 });
 
-// The server refuses a declared template it would not honour (400), so a Test button that ignores
-// the same check spends a REAL request against the operator's provider to be told what the box
-// already knew. Asserted at the source because the alternative is mounting the whole editor.
-test("the Test button is gated on the same template check Save is", async () => {
-  const src = await Bun.file(
-    "src/client/pages/resources/ToolEditModal.tsx",
-  ).text();
-  const button = src.slice(src.indexOf("tools.testOpen") - 900);
-  const disabled = button.slice(0, button.indexOf("onClick={openTest}"));
-  expect(disabled).toContain("templateDeclProblem");
-  // And it is the READER's verdict both places, never a second phrasing of the rule.
-  expect(src).toMatch(/templateDeclProblem\s*=\s*useMemo/);
-});
-
-// The runtime has three outcomes, not a boolean: a 2xx response that is not JSON (a CSV, an XML, a
-// plain "OK") must not be explained as "outside 2xx", with the status interpolated as `null` when
-// the sample was pasted by hand.
-test("the preview names WHY the template did not apply, one branch per reason", async () => {
-  const src = await Bun.file(
-    "src/client/pages/resources/ToolEditModal.tsx",
-  ).text();
-  // Each reason the runtime can return has its own sentence, selected by that reason.
-  expect(src).toMatch(
-    /templatePreview\?\.skipped === "not-2xx"[\s\S]{0,400}outputTemplateNotApplied/,
-  );
-  expect(src).toMatch(
-    /templatePreview\?\.skipped === "not-json"[\s\S]{0,400}outputTemplateNotJson/,
-  );
-  // NOTE: and never on the negation of "it rendered", which makes one sentence cover two causes.
-  expect(src).not.toContain("!templatePreview.projected");
-});
-
 // The dialog runs the definition `payloadOf` produced, so its boxes come from that definition, not
 // from the raw form rows. Those disagree wherever two rows trim to one name (which the editor
 // permits): `schemaFromAiFields` writes an object, so the last declaration wins. Two boxes on one
@@ -545,33 +527,6 @@ test("a legacy fixed field gets no box: it is not the model's to supply", () => 
   ).toEqual([
     { name: "qty", description: "", required: true, type: "integer" },
   ]);
-});
-
-test("and the dialog is built from that reader, not from the form rows", async () => {
-  const src = await Bun.file(
-    "src/client/pages/resources/ToolEditModal.tsx",
-  ).text();
-  expect(src).toMatch(/aiFields: testFieldsFrom\(/);
-  // NOTE: the form rows disagree with the payload, so they must not be the source here.
-  expect(src).not.toMatch(/aiFields: form\.aiFields/);
-});
-
-// A relative urlTemplate with no credential base is refused by `buildHttpTool` before a request
-// goes out, and Save already knows: `urlTemplateInvalid` is deliberately false for that shape
-// because `relativeWithoutBase` carries it separately. The Test button must read both halves too.
-test("the Test button carries the whole URL gate Save does", async () => {
-  const src = await Bun.file(
-    "src/client/pages/resources/ToolEditModal.tsx",
-  ).text();
-  const at = src.indexOf("tools.testOpen");
-  const disabled = src.slice(at - 1200, at).slice(-900);
-  for (const cond of [
-    "urlTemplateInvalid",
-    "relativeWithoutBase",
-    "templateDeclProblem",
-  ]) {
-    expect(disabled).toContain(cond);
-  }
 });
 
 // The preview promises "exactly what the agent would receive", and a block is the one
@@ -758,5 +713,189 @@ describe("the response limit", () => {
     const asBefore = templatePreviewFor({ template, sample, status: 200 });
     expect(asBefore?.text).not.toContain("FIM-9K");
     expect(asBefore?.text).toContain(`${"d".repeat(2000)}…[truncated]`);
+  });
+});
+
+// The edit dialog itself, rendered on a stored tool: the Test button, the dialog it opens and the
+// preview's sentences are what the operator meets, so they are asked there.
+describe("the edit dialog, rendered", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = realFetch;
+  });
+
+  // What the test endpoint answers, set per test.
+  let testAnswer = { status: 200, raw: "{}" };
+
+  async function openStored(over: Partial<Tool> = {}) {
+    const tool = legacyTool({
+      name: "lookup",
+      label: "Lookup",
+      urlTemplate: "https://api.example.com/x",
+      outputSchema: { mode: "template", template: "{{total}}" },
+      ...over,
+    });
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          headers: { "Content-Type": "application/json" },
+        });
+      if ((init?.method ?? "GET").toUpperCase() === "POST") {
+        return json({
+          instance: {},
+          result: {
+            status: testAnswer.status,
+            durationMs: 1,
+            raw: testAnswer.raw,
+            rawChars: testAnswer.raw.length,
+            rawClipped: false,
+            modelText: `HTTP ${testAnswer.status}\n${testAnswer.raw}`,
+            failed: testAnswer.status >= 400,
+            notes: [],
+          },
+        });
+      }
+      if (path === "/api/v1/tools/1") return json({ tool });
+      return json({ items: [], entries: [], instances: [] });
+    }) as unknown as typeof fetch;
+    function Harness() {
+      const modal = useModalController<{ id?: string }>();
+      const opened = useRef(false);
+      useEffect(() => {
+        if (opened.current) return;
+        opened.current = true;
+        modal.open({ id: "1" });
+      }, [modal]);
+      return <ToolEditModal modal={modal as never} onSaved={() => undefined} />;
+    }
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByDisplayValue("https://api.example.com/x");
+  }
+
+  const testButton = () =>
+    screen.getByRole("button", { name: "Send a test request" });
+  const testable = () => !testButton().hasAttribute("disabled");
+
+  function writeTemplate(text: string): void {
+    const content = Array.from(document.querySelectorAll(".cm-content")).find(
+      (el) =>
+        /what the agent receives/i.test(el.getAttribute("aria-label") ?? ""),
+    );
+    if (!content) throw new Error("no template editor on screen");
+    const view = EditorView.findFromDOM(
+      content.closest(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: text },
+      });
+    });
+  }
+
+  // The server refuses a declared template it would not honour (400), so a Test button that ignores
+  // the same check spends a REAL request against the operator's provider to be told what the box
+  // already knew. The NUL is the case only the reader refuses.
+  test("the Test button is gated on the same template check Save is", async () => {
+    await openStored();
+    const gate: Record<string, boolean> = { stored: testable() };
+    for (const [label, text] of [
+      ["too long", "x".repeat(MAX_TEMPLATE_CHARS + 1)],
+      ["a NUL", "a\u0000b"],
+      ["a usable one", "{{total}} itens"],
+    ] as const) {
+      writeTemplate(text);
+      gate[label] = testable();
+    }
+    expect(gate).toEqual({
+      stored: true,
+      "too long": false,
+      "a NUL": false,
+      "a usable one": true,
+    });
+  });
+
+  // A relative urlTemplate with no credential base is refused by `buildHttpTool` before a request
+  // goes out, and Save already knows; so does an URL that is not one.
+  test("the Test button carries the whole URL gate Save does", async () => {
+    await openStored();
+    const url = screen.getByDisplayValue("https://api.example.com/x");
+    const gate: Record<string, boolean> = {};
+    for (const value of ["/v1/x", "not a url", "https://api.example.com/y"]) {
+      fireEvent.change(url, { target: { value } });
+      gate[value] = testable();
+    }
+    expect(gate).toEqual({
+      "/v1/x": false,
+      "not a url": false,
+      "https://api.example.com/y": true,
+    });
+  });
+
+  // The runtime has three outcomes, not a boolean: a 2xx response that is not JSON must not be
+  // explained as "outside 2xx", and a JSON error must not be explained as "not JSON".
+  test("the preview names WHY the template did not apply, one branch per reason", async () => {
+    const NOT_2XX = /^This sample came back as HTTP/;
+    const NOT_JSON = /^This sample is not JSON/;
+    const said: Record<string, { not2xx: boolean; notJson: boolean }> = {};
+    for (const answer of [
+      { status: 500, raw: '{"erro":"x"}' },
+      { status: 200, raw: "OK" },
+    ]) {
+      testAnswer = answer;
+      await openStored();
+      fireEvent.click(testButton());
+      fireEvent.click(await screen.findByText("Send request"));
+      await waitFor(() =>
+        expect(
+          screen.queryAllByText(answer.status === 500 ? NOT_2XX : NOT_JSON)
+            .length,
+        ).toBe(1),
+      );
+      said[answer.status] = {
+        not2xx: screen.queryAllByText(NOT_2XX).length > 0,
+        notJson: screen.queryAllByText(NOT_JSON).length > 0,
+      };
+      cleanup();
+    }
+    expect(said).toEqual({
+      500: { not2xx: true, notJson: false },
+      200: { not2xx: false, notJson: true },
+    });
+  });
+
+  // The dialog runs the definition `payloadOf` produced, so its boxes come from that definition, not
+  // from the raw form rows: two rows that trim to one name are one declared field, the last one.
+  test("and the dialog is built from that reader, not from the form rows", async () => {
+    await openStored({
+      inputSchema: { qty: { type: "integer", required: true } },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add field" }));
+    const names = document.querySelectorAll<HTMLInputElement>(
+      'input[placeholder="field_name"]',
+    );
+    fireEvent.change(names[names.length - 1] as HTMLInputElement, {
+      target: { value: "  qty  " },
+    });
+    fireEvent.click(testButton());
+    const send = await screen.findByText("Send request");
+    const dialog = send.closest("[role='dialog']") as HTMLElement;
+    const boxes = within(dialog)
+      .queryAllByText(/^\s*qty\s*$/)
+      .map((el) => el.textContent);
+    expect({
+      boxes,
+      required: within(dialog).queryAllByText(/"qty" is required/).length,
+    }).toEqual({ boxes: ["qty"], required: 0 });
   });
 });

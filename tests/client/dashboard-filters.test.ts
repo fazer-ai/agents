@@ -1,4 +1,10 @@
+/// <reference lib="dom" />
+
 import { describe, expect, test } from "bun:test";
+import { cleanup, render, waitFor } from "@testing-library/react";
+import { createElement } from "react";
+import { ThemeProvider } from "@/client/contexts/ThemeContext";
+import { LineTrend } from "@/client/pages/dashboard/charts";
 import { toCsv } from "@/client/pages/dashboard/csv";
 import {
   DEFAULT_FILTERS,
@@ -259,7 +265,43 @@ describe("a day with no figure", () => {
   // The blocks send null for a day with no conversations or no priced call and say it is left
   // blank; a line drawn across it would show a rate or a cost nobody measured.
   test("is a gap in every line chart, never bridged", async () => {
-    const src = await Bun.file("src/client/pages/dashboard/charts.tsx").text();
-    expect(src).not.toMatch(/connectNulls(?!=\{false\})/);
+    // happy-dom has no layout, so the chart's own container is given a size; nothing else is.
+    const measure = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return this.classList.contains("recharts-responsive-container")
+        ? DOMRect.fromRect({ width: 600, height: 260 })
+        : measure.call(this);
+    };
+    try {
+      const { container } = render(
+        createElement(
+          ThemeProvider,
+          null,
+          createElement(LineTrend, {
+            data: [
+              { day: "2026-01-01", turns: 1 },
+              { day: "2026-01-02", turns: null },
+              { day: "2026-01-03", turns: 3 },
+              { day: "2026-01-04", turns: 4 },
+            ],
+            series: [{ key: "turns", label: "Turns" }],
+            lang: "en",
+            format: String,
+          }),
+        ),
+      );
+      const line = await waitFor(() => {
+        const d = container
+          .querySelector(".recharts-line-curve")
+          ?.getAttribute("d");
+        if (!d) throw new Error("no line drawn yet");
+        return d;
+      });
+      // One segment before the missing day and one after it: two moves, not one.
+      expect(line.match(/M/g)?.length).toBe(2);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = measure;
+      cleanup();
+    }
   });
 });

@@ -1,10 +1,29 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+/// <reference lib="dom" />
+
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useEffect } from "react";
+import { useModalController } from "@/client/components";
 import {
+  CodeToolTestModal,
+  type CodeToolTestTarget,
   contextNamesUsedBy,
   contextToSend,
 } from "@/client/pages/resources/CodeToolTestModal";
 import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
+import { withI18n } from "../../utils/i18n";
+
+afterEach(() => cleanup());
+
+// The test dialog, open on a body.
+function OpenDialog({ code }: { code: string }) {
+  const modal = useModalController<CodeToolTestTarget>();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opened once, on mount
+  useEffect(() => {
+    modal.open({ definition: { code }, aiFields: [] });
+  }, []);
+  return <CodeToolTestModal modal={modal} />;
+}
 
 // The test dialog runs the body as the agent would, so it has to send `context`, or every variable
 // arrives `undefined`. The HTTP tool's dialog asks `contextNamesReferencedBy` which `{{names}}` its
@@ -74,15 +93,25 @@ describe("what the scan cannot see", () => {
     expect(CONTEXT_VAR_NAMES).toContain("contact_email");
   });
 
-  test("the dialog always offers the way out, whether or not the scan saw anything", () => {
-    // A source fence, for the reason the fences in CodeToolEditModal.test.tsx give: what is being
-    // asserted is that the button is not gated on the scan having found something.
-    const src = readFileSync(
-      "src/client/pages/resources/CodeToolTestModal.tsx",
-      "utf8",
-    );
-    expect(src.includes("{!allContext && (")).toBe(true);
-    expect(src.includes("? [...CONTEXT_VAR_NAMES]")).toBe(true);
+  // What the scan saw only decides what the dialog OPENS with: the button to the full list is there
+  // either way, and every name is one click away.
+  test("the dialog always offers the way out, whether or not the scan saw anything", async () => {
+    for (const [code, button] of [
+      [
+        "const { contact_email } = context;\nreturn contact_email;",
+        "Show all variables",
+      ],
+      ["return context.contact_name;", "Show the other variables"],
+    ] as const) {
+      render(withI18n(<OpenDialog code={code} />));
+      expect(screen.queryAllByLabelText("contact_email").length).toBe(0);
+      fireEvent.click(await screen.findByRole("button", { name: button }));
+      const boxes = CONTEXT_VAR_NAMES.filter(
+        (name) => screen.queryByLabelText(name) !== null,
+      );
+      cleanup();
+      expect(boxes).toEqual([...CONTEXT_VAR_NAMES]);
+    }
   });
 });
 

@@ -1,8 +1,8 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -10,6 +10,12 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import {
+  type EditorStub,
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
 
 // `sendImage.allowedHosts` is config OF the send_image tool, and an empty list makes the tool refuse
 // every call while it is still offered to the model, so it is edited on the tool's own card, where
@@ -66,52 +72,127 @@ describe("the form round-trips what is stored", () => {
   });
 });
 
-describe("which save owns the block (source)", () => {
-  const src = readFileSync(
-    "src/client/pages/agents/AgentEditorPage.tsx",
-    "utf8",
-  );
-  const slice = (from: string, to: string) => {
-    const start = src.indexOf(from);
-    expect(start, `anchor not found: ${from}`).toBeGreaterThan(-1);
-    const end = src.indexOf(to, start + from.length);
-    expect(end, `closing anchor not found: ${to}`).toBeGreaterThan(-1);
-    return src.slice(start, end);
+// The two saves write the same settings column, each resending the whole bag: the Tools save owns
+// the block, and a Behavior save carries whatever the Tools save last stored. Asked of the whole
+// editor, rendered against a stubbed API.
+describe("which save owns the block", () => {
+  const STORED = { allowedHosts: ["cdn.loja.com.br"] };
+
+  async function openTools(): Promise<EditorStub> {
+    const stub = stubEditorApi(
+      { settings: { sendImage: STORED } },
+      {
+        catalog: { native: [{ name: "send_image" }] },
+        grants: [
+          {
+            source: "NATIVE",
+            enabledTools: ["send_image"],
+            knowledgeBaseIds: [],
+          },
+        ],
+      },
+    );
+    await renderEditor(stub, "tools");
+    return stub;
+  }
+  async function field(): Promise<HTMLTextAreaElement> {
+    if (!hostsField()) expand();
+    return await waitFor(() => {
+      const el = hostsField();
+      if (!el) throw new Error("the hosts field is not drawn");
+      return el;
+    });
+  }
+  async function typeHosts(value: string) {
+    fireEvent.change(await field(), { target: { value } });
+  }
+  const goTo = async (name: RegExp) => {
+    fireEvent.click(screen.getByRole("tab", { name }));
+    await act(async () => {});
   };
+  const patches = (stub: EditorStub) =>
+    stub.writes.filter((w) => w.method === "PATCH" && w.body.settings);
+  const savedHosts = (stub: EditorStub) =>
+    (lastSavedSettings(stub)?.sendImage as { allowedHosts?: string[] })
+      ?.allowedHosts;
+  const behaviorSwitch = () =>
+    screen.findByRole("switch", {
+      name: /Stop answering when a person replies to the customer/,
+    });
+  async function saveBehaviorEdit(stub: EditorStub) {
+    const before = patches(stub).length;
+    await goTo(/Behavior/);
+    fireEvent.click(await behaviorSwitch());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches(stub).length).toBe(before + 1));
+  }
+  const dirty = (name: RegExp) =>
+    screen.getByRole("tab", { name }).querySelector(".bg-warning") !== null;
 
-  test("the Tools save writes it and keeps the shared bag in step", () => {
-    const body = slice("async function saveTools(", "\n  }\n");
-    expect(body).toContain(
-      "const sendImageJson = serializeSendImage(sendImage);",
-    );
-    expect(body.match(/sendImage: sendImageJson,/g)?.length ?? 0).toBe(2);
+  test("the Tools save writes it and keeps the shared bag in step", async () => {
+    const stub = await openTools();
+    await typeHosts("cdn.novo.com.br");
+    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    await waitFor(() => expect(savedHosts(stub)).toEqual(["cdn.novo.com.br"]));
+    await saveBehaviorEdit(stub);
+    expect(savedHosts(stub)).toEqual(["cdn.novo.com.br"]);
   });
 
-  test("the Behavior save does not name it, so it cannot write a stale form over it", () => {
-    const body = slice("function buildSettings(", "\n  }\n");
-    expect(body).toContain("...settings,");
-    expect(body).not.toContain("sendImage");
+  test("the Behavior save does not name it, so it cannot write a stale form over it", async () => {
+    const stub = await openTools();
+    await typeHosts("rascunho.com.br");
+    await saveBehaviorEdit(stub);
+    expect(savedHosts(stub)).toEqual(STORED.allowedHosts);
   });
 
-  test("it is re-read with the other tool config, not by a Behavior load or revert", () => {
-    const body = slice("const syncToolConfig = useCallback(", "}, []);");
-    expect(body).toContain("setSendImage(b.sendImage);");
-    expect(src.match(/setSendImage\(b\.sendImage\)/g)?.length).toBe(1);
+  test("it is re-read with the other tool config, not by a Behavior load or revert", async () => {
+    const stub = await openTools();
+    expect((await field()).value).toBe("cdn.loja.com.br");
+    await typeHosts("rascunho.com.br");
+    // A Behavior save re-reads the Behavior blocks, and a Behavior Discard reverts them.
+    await saveBehaviorEdit(stub);
+    fireEvent.click(await behaviorSwitch());
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await goTo(/Tools/);
+    expect((await field()).value).toBe("rascunho.com.br");
   });
 
-  test("it lights the Tools tab's unsaved dot, not Behavior's", () => {
-    expect(slice("tools: JSON.stringify({", "}),")).toContain("sendImage,");
-    expect(slice("behavior: JSON.stringify({", "}),")).not.toContain(
-      "sendImage",
-    );
+  test("it lights the Tools tab's unsaved dot, not Behavior's", async () => {
+    await openTools();
+    expect(dirty(/Tools/)).toBe(false);
+    await typeHosts("outro.com.br");
+    await waitFor(() => expect(dirty(/Tools/)).toBe(true));
+    expect(dirty(/Behavior/)).toBe(false);
   });
 
-  test("the Behavior tab no longer draws the section", () => {
-    const behavior = readFileSync(
-      "src/client/pages/agents/BehaviorTab.tsx",
-      "utf8",
-    );
-    expect(behavior).not.toContain("sendImage");
+  test("the Behavior tab no longer draws the section", async () => {
+    await openTools();
+    await goTo(/Behavior/);
+    await behaviorSwitch();
+    // NOTE: booleans: a failed expectation holding a node serializes the whole tree and stalls.
+    expect({
+      labelled: screen.queryByLabelText("Allowed hosts") !== null,
+      field: hostsField() !== null,
+    }).toEqual({ labelled: false, field: false });
+  });
+
+  // The Knowledge save writes the grants and none of the Tools config, so an unsaved host list stays
+  // unsaved after it.
+  test("the Knowledge save leaves an unsaved host list dirty", async () => {
+    const stub = await openTools();
+    await typeHosts("rascunho.com.br");
+    await waitFor(() => expect(dirty(/Tools/)).toBe(true));
+    await goTo(/Knowledge/);
+    const provider = document
+      .getElementById("kb-review")
+      ?.querySelector("select");
+    if (!provider)
+      throw new Error("the reviewer's provider select is not drawn");
+    fireEvent.change(provider, { target: { value: "anthropic" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save knowledge" }));
+    await waitFor(() => expect(dirty(/Knowledge/)).toBe(false));
+    expect(stub.requests).toContain("PUT /api/v1/agents/41/tool-selections");
+    expect(dirty(/Tools/)).toBe(true);
   });
 });
 
@@ -141,28 +222,6 @@ describe("the Knowledge save leaves unsaved tool config dirty", () => {
         JSON.stringify({ ...JSON.parse(baseline), grants: ["new"] }),
       ),
     ).toBe(JSON.stringify({ ...JSON.parse(baseline), grants: ["new"] }));
-  });
-
-  test("the Knowledge save asks for it, and the recapture honors it", () => {
-    const src = readFileSync(
-      "src/client/pages/agents/AgentEditorPage.tsx",
-      "utf8",
-    );
-    const start = src.indexOf("async function saveGrants(");
-    const body = src.slice(start, src.indexOf("\n  }\n", start));
-    expect(body).toContain("toolGrantsOnlyRef.current = true;");
-    expect(src).toContain(
-      "rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)",
-    );
-    // NOTE: the flag is what picks that branch, and the Tools recapture is what consumes it.
-    expect(src).toContain(
-      'const grantsOnly = k === "tools" && toolGrantsOnlyRef.current;',
-    );
-    expect(src).toContain("[k]: grantsOnly");
-    const save = src.indexOf("async function saveTools(");
-    expect(src.slice(save, src.indexOf("\n  }\n", save))).not.toContain(
-      "toolGrantsOnlyRef",
-    );
   });
 });
 

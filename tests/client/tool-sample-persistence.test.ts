@@ -1064,7 +1064,10 @@ describe("a save that lands after the sample's life ended", () => {
   });
 });
 
-// TWO SOURCE FENCES, and they say so: what they can answer for is a grammar, not intent.
+// TWO SOURCE FENCES over the whole client tree, and they say so: what they can answer for is a
+// grammar, not intent. The call sites themselves (the save's ticket and captured definition, Format,
+// the opening, the delete's ticket, the auth context's merge) are rendered in
+// tests/client/tool-sample-editor.test.tsx.
 describe("the two seams that have to clear it", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
   // The STATE SETTER, not any particular argument to it, and not the logout request: a 401 and
@@ -1131,17 +1134,6 @@ describe("the two seams that have to clear it", () => {
     expect(sites).toEqual(["src/client/contexts/AuthContext.tsx"]);
   });
 
-  // `updateUser` merges a late save into the user the ref holds. A ref refreshed per render lags a
-  // sign-out queued in the same batch, and the save then brings the signed-out user back, so the
-  // ref is written where the state is and nowhere else.
-  it("keeps the merged-into user in step with the one setter", async () => {
-    const src = strip(
-      await Bun.file("src/client/contexts/AuthContext.tsx").text(),
-    );
-    expect(src.match(/userRef\.current\s*=(?!=)/g)?.length ?? 0).toBe(1);
-    expect(src).toMatch(/userRef\.current\s*=\s*next;\s*setUser\(next\)/);
-  });
-
   // The positive control for the fence above, over every spelling a setter call takes.
   it("counts a setter call whatever is passed to it", () => {
     const spellings = [
@@ -1158,149 +1150,6 @@ describe("the two seams that have to clear it", () => {
         /setUser\(/g,
       ),
     ).toBeNull();
-  });
-
-  // NOTE: one place decides which definition the sample describes: every assignment to the marker
-  // goes through the rule. A site computing its own is invisible to the module, so this is the only
-  // thing that can catch it.
-  it("records the sample's definition only through the rule that decides it", async () => {
-    const src = codeOnly(
-      await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
-    );
-    const assignments = src.match(/sampleShapeRef\.current\s*=/g) ?? [];
-    const throughTheRule = [
-      ...src.matchAll(/sampleShapeRef\.current\s*=\s*([A-Za-z]+)\(/g),
-    ].map((m) => m[1]);
-    expect(assignments.length).toBeGreaterThan(0);
-    expect(throughTheRule.length).toBe(assignments.length);
-    expect([...new Set(throughTheRule)].sort()).toEqual([
-      "shapeOfArrival",
-      "shapeOfOpening",
-    ]);
-  });
-
-  // AND FORMAT DOES NOT RE-CAPTURE. Asked of the handler and not of the file, because both setters
-  // are legitimately called elsewhere in it: what makes this one different is that it changes the
-  // whitespace of a response that came back from a definition it must keep pointing at.
-  it("formats the sample without capturing it again", async () => {
-    const src = codeOnly(
-      await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
-    );
-    const from = src.indexOf("const tidy = sampleFormat.text;");
-    expect(from).toBeGreaterThan(-1);
-    const handler = src.slice(from, src.indexOf("}}", from));
-    expect(handler).toInclude("reformatSample(");
-    expect(handler).not.toInclude("setSample(");
-  });
-
-  // NOTE: the ticket is only worth anything if it is read early. `tsc` catches a call that omits it;
-  // it cannot see one that reads it AT THE WRITE, which always compares equal to itself. That is a
-  // question about ORDER, asked of the SAVE rather than of the file: `.v1.tools` appears in that
-  // module long before `save()`, so a whole-file index would compare two unrelated positions.
-  it("reads the ticket before the request rather than at the write", async () => {
-    const src = codeOnly(
-      await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
-    );
-    const from = src.indexOf("async function save()");
-    expect(from).toBeGreaterThan(-1);
-    const save = src.slice(from);
-
-    const read = save.indexOf("sampleTicket()");
-    const request = save.indexOf(".v1.tools");
-    const write = save.indexOf("rememberToolSample(");
-    // All three are found after that anchor, so a rename or a move fails here instead of passing.
-    expect(read).toBeGreaterThan(-1);
-    expect(request).toBeGreaterThan(-1);
-    expect(write).toBeGreaterThan(-1);
-    expect(read).toBeLessThan(request);
-    // And the first suspension after the read is the request itself. Eden evaluates its
-    // `headers` callback INSIDE the call expression, synchronously, so another tab's `localStorage`
-    // write cannot land between the two reads; an `await` in between would open that window.
-    const firstAwait = save.indexOf("await", read);
-    expect(firstAwait).toBeGreaterThan(-1);
-    // The api call has to be INSIDE that await's operand, which is what makes the suspension happen
-    // after the request is dispatched rather than before it. Asked as "no statement boundary in
-    // between" rather than "the operand starts with `api.`", because the operand is legitimately a
-    // parenthesised ternary here and a grammar that only knew the simpler spelling would fail on a
-    // refactor that changed nothing about the ordering.
-    const firstApi = save.indexOf("api.", firstAwait);
-    expect(firstApi).toBeGreaterThan(firstAwait);
-    expect(save.slice(firstAwait, firstApi)).not.toInclude(";");
-    // And the write is handed a NAME: `sampleTicket()` inline would read it after everything the
-    // request took, which is the same as not having it at all.
-    const call = save.slice(
-      write,
-      save.indexOf(")", save.indexOf("ticket", write)),
-    );
-    expect(call).not.toInclude("sampleTicket");
-    expect(call).toInclude("ticket");
-    // NOTE: and the sample goes over whole. What counts as nothing is the module's rule, and a
-    // conditional here is a second copy the module cannot see. Asked of what the save ASSEMBLES
-    // (`sampleToRemember`, a tested value): the sample and the status as they stand, and the payload
-    // the request carried.
-    expect(call).not.toInclude("?");
-    const assembled = save.slice(
-      save.indexOf("sampleToRemember({"),
-      save.indexOf("}),", save.indexOf("sampleToRemember({")),
-    );
-    expect(assembled).not.toInclude("?");
-    for (const name of [
-      "revision",
-      "text: sample",
-      "status: sampleStatus",
-      "payload",
-    ])
-      expect(assembled).toInclude(name);
-    // NOTE: what revision gets written is a tested value (`revisionForSave`), not asked here. What IS
-    // asked is that the save consults the captured shape at all, since a tested decision does not stop
-    // a caller from handing it a constant (`true` in place of that argument). A stable grammar: it
-    // says the question is asked, not how.
-    expect(save).toInclude("sampleShapeRef");
-    // And it is read before the request, like the ticket. Everything else the continuation uses
-    // is a value this closure captured when Save was pressed; the marker is a REF, so reading it at the
-    // end would get the next opening's answer after a dismiss-and-reopen.
-    const shapeRead = save.indexOf("sampleShapeRef.current");
-    expect(shapeRead).toBeGreaterThan(-1);
-    expect(shapeRead).toBeLessThan(request);
-    // ONCE, because a second read is a second answer and only one of them went out with the request.
-    expect(save.match(/sampleShapeRef\.current/g)?.length ?? 0).toBe(1);
-  });
-
-  // NOTE: the same question at the OTHER site that mutates the cache after a request: a delete whose
-  // continuation reads the tenant selector clears the wrong scope when another tab moved it.
-  it("reads the ticket before the delete request too", async () => {
-    const src = codeOnly(
-      await Bun.file("src/client/pages/resources/ToolsPanel.tsx").text(),
-    );
-    const from = src.indexOf("async function confirmDelete()");
-    expect(from).toBeGreaterThan(-1);
-    const body = src.slice(from);
-    const read = body.indexOf("sampleTicket()");
-    const request = body.indexOf(".delete(");
-    const write = body.indexOf("forgetToolSample(");
-    expect(read).toBeGreaterThan(-1);
-    expect(request).toBeGreaterThan(-1);
-    expect(write).toBeGreaterThan(-1);
-    expect(read).toBeLessThan(request);
-    // And the first suspension after the read is the request itself. Eden evaluates its
-    // `headers` callback INSIDE the call expression, synchronously, so another tab's `localStorage`
-    // write cannot land between the two reads; an `await` in between would open that window.
-    const firstAwait = body.indexOf("await", read);
-    expect(firstAwait).toBeGreaterThan(-1);
-    // The api call has to be INSIDE that await's operand, which is what makes the suspension happen
-    // after the request is dispatched rather than before it. Asked as "no statement boundary in
-    // between" rather than "the operand starts with `api.`", because the operand is legitimately a
-    // parenthesised ternary here and a grammar that only knew the simpler spelling would fail on a
-    // refactor that changed nothing about the ordering.
-    const firstApi = body.indexOf("api.", firstAwait);
-    expect(firstApi).toBeGreaterThan(firstAwait);
-    expect(body.slice(firstAwait, firstApi)).not.toInclude(";");
-    const call = body.slice(
-      write,
-      body.indexOf(")", body.indexOf("ticket", write)),
-    );
-    expect(call).not.toInclude("sampleTicket");
-    expect(call).toInclude("ticket");
   });
 
   it("catches a delete that forgets, over the three ways it could look like it did not", () => {

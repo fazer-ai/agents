@@ -1,5 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { z } from "zod";
 import {
   invalidCaseAttributeKey,
@@ -10,6 +16,18 @@ import {
 } from "@/client/pages/agents/CrossInboxCaseFields";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
+import {
+  type EditorStub,
+  lastSavedSettings,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
+
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  cleanup();
+  globalThis.fetch = realFetch;
+});
 
 // `crossInboxCase` is config OF the open_case_in_inbox tool, so it is edited on the
 // tool's card and written by the Tools tab's save, the way `handoff` is. Two saves write the same
@@ -90,50 +108,97 @@ test("case labels picked on the card are saved, and an empty pick saves an empty
   expect(serializeCrossInboxCase(state).caseLabels).toEqual([]);
 });
 
-describe("which save owns the block (source)", () => {
-  const src = readFileSync(
-    "src/client/pages/agents/AgentEditorPage.tsx",
-    "utf8",
-  );
-  const slice = (from: string, to: string) => {
-    const start = src.indexOf(from);
-    expect(start, `anchor not found: ${from}`).toBeGreaterThan(-1);
-    const end = src.indexOf(to, start + from.length);
-    expect(end, `closing anchor not found: ${to}`).toBeGreaterThan(-1);
-    return src.slice(start, end);
+// The two saves write the same settings column, each resending the whole bag: the Tools save owns
+// the block, and a Behavior save carries whatever the Tools save last stored.
+describe("which save owns the block", () => {
+  const STORED = {
+    targetInboxId: 40,
+    targetInstanceId: 3,
+    caseAttributeKey: "protocolo",
   };
+  const KEY_ERROR =
+    "Use lowercase letters, digits and _, starting with a letter.";
 
-  test("the Tools save writes it and keeps the shared bag in step", () => {
-    const body = slice("async function saveTools(", "\n  }\n");
-    expect(body).toContain(
-      "const crossInboxCaseJson = serializeCrossInboxCase(crossInboxCase);",
+  async function openTools(): Promise<EditorStub> {
+    const stub = stubEditorApi(
+      { settings: { crossInboxCase: STORED } },
+      { catalog: { native: [{ name: "open_case_in_inbox" }] } },
     );
-    expect(
-      body.match(/crossInboxCase: crossInboxCaseJson,/g)?.length ?? 0,
-    ).toBe(2);
+    await renderEditor(stub, "tools");
+    return stub;
+  }
+  async function keyField(): Promise<HTMLInputElement> {
+    if (!screen.queryByPlaceholderText("case_conversation_id")) {
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    }
+    return (await screen.findByPlaceholderText(
+      "case_conversation_id",
+    )) as HTMLInputElement;
+  }
+  async function typeKey(value: string) {
+    fireEvent.change(await keyField(), { target: { value } });
+  }
+  const goTo = async (name: string) => {
+    fireEvent.click(screen.getByRole("tab", { name }));
+    await act(async () => {});
+  };
+  const patches = (stub: EditorStub) =>
+    stub.writes.filter((w) => w.method === "PATCH" && w.body.settings);
+  const savedKey = (stub: EditorStub) =>
+    (lastSavedSettings(stub)?.crossInboxCase as { caseAttributeKey?: string })
+      ?.caseAttributeKey;
+  async function saveBehaviorEdit(stub: EditorStub) {
+    const before = patches(stub).length;
+    await goTo("Behavior");
+    fireEvent.click(
+      await screen.findByRole("switch", {
+        name: /Stop answering when a person replies to the customer/,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches(stub).length).toBe(before + 1));
+  }
+  const dirty = (name: string) =>
+    screen.getByRole("tab", { name }).querySelector(".bg-warning") !== null;
+
+  test("the Tools save writes it, and a later Behavior save keeps what it wrote", async () => {
+    const stub = await openTools();
+    await typeKey("protocolo_novo");
+    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    await waitFor(() => expect(savedKey(stub)).toBe("protocolo_novo"));
+
+    await saveBehaviorEdit(stub);
+    expect(savedKey(stub)).toBe("protocolo_novo");
   });
 
-  test("the Behavior save does not name it, so it cannot write a stale form over it", () => {
-    const body = slice("function buildSettings(", "\n  }\n");
-    expect(body).toContain("...settings,");
-    expect(body).not.toContain("crossInboxCase");
+  test("an unsaved Tools edit is neither written by a Behavior save nor wiped by it", async () => {
+    const stub = await openTools();
+    await typeKey("rascunho");
+
+    await saveBehaviorEdit(stub);
+    expect(savedKey(stub)).toBe("protocolo");
+    await goTo("Tools");
+    expect((await keyField()).value).toBe("rascunho");
   });
 
-  test("it is re-read with the other tool config, not by a Behavior save", () => {
-    const body = slice("const syncToolConfig = useCallback(", "}, []);");
-    expect(body).toContain("setCrossInboxCase(b.crossInboxCase);");
-    expect(src.match(/setCrossInboxCase\(b\.crossInboxCase\)/g)?.length).toBe(
-      1,
-    );
+  test("the stored block loads into the card, and an edit lights the Tools tab's unsaved dot only", async () => {
+    await openTools();
+    expect((await keyField()).value).toBe("protocolo");
+    expect(dirty("Tools")).toBe(false);
+    await typeKey("outro_campo");
+    await waitFor(() => expect(dirty("Tools")).toBe(true));
+    expect(dirty("Behavior")).toBe(false);
   });
 
-  test("it lights the Tools tab's unsaved dot, not Behavior's", () => {
-    expect(slice("tools: JSON.stringify({", "}),")).toContain(
-      "crossInboxCase,",
-    );
-    expect(slice("behavior: JSON.stringify({", "}),")).not.toContain(
-      "crossInboxCase",
-    );
+  // A PATCH refusing the key would come after the grants PUT, leaving new grants beside the old
+  // settings, so the save stops before either request.
+  test("a key the reader would replace is flagged on the field and stops the Tools save", async () => {
+    const stub = await openTools();
+    await typeKey("Ticket-ID");
+    expect(screen.getAllByText(KEY_ERROR).length).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    await waitFor(() => expect(screen.getAllByText(KEY_ERROR).length).toBe(2));
+    expect(stub.writes).toEqual([]);
   });
 });
 
@@ -163,31 +228,6 @@ describe("the attribute key is checked where it is written", () => {
     expect(at("protocolo_caso")).toBe(false);
     expect(at(" protocolo ")).toBe(false);
     expect(at("")).toBe(false);
-    const src = readFileSync(
-      "src/client/pages/agents/CrossInboxCaseFields.tsx",
-      "utf8",
-    );
-    expect(src).toContain("invalidCaseAttributeKey(value)");
-  });
-  test("the Tools save refuses a bad key before the grants PUT", () => {
-    // The check runs before the grants PUT, since a PATCH that refuses the key after it would
-    // leave new grants beside the old settings.
-    const src = readFileSync(
-      "src/client/pages/agents/AgentEditorPage.tsx",
-      "utf8",
-    );
-    const start = src.indexOf("async function saveTools(");
-    const body = src.slice(start, src.indexOf("\n  }\n", start));
-    // The call itself is the condition of the refusal, chained after the other preflight errors.
-    const check = body.indexOf("// Refused by the PATCH");
-    expect(body).toContain(
-      "(invalidCaseAttributeKey(crossInboxCase)\n          ? t(",
-    );
-    expect(check).toBeGreaterThan(-1);
-    expect(check).toBeLessThan(body.indexOf('["tool-selections"].put('));
-    expect(
-      body.slice(check, body.indexOf('["tool-selections"].put(')),
-    ).toContain('showToast(toolsText, "error");\n        return;');
   });
 });
 

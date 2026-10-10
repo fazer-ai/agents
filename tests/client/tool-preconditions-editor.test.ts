@@ -1,5 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+/// <reference lib="dom" />
+
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -10,6 +18,11 @@ import {
   invalidToolPreconditions,
   readToolPreconditions,
 } from "@/modules/agents/tool-preconditions";
+import {
+  type EditorStub,
+  renderEditor,
+  stubEditorApi,
+} from "../utils/agent-editor";
 
 // The editor's two pure halves, tested against the RUNTIME reader rather than against themselves.
 // The whole feature fails silently in one direction — a rule the console shows as saved and the turn
@@ -296,47 +309,52 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
 
 // The Tools save must put every key it PATCHes back into the shared settings bag, or the next Behavior
 // save spreads the pre-save map over the rules just stored, with this tab still showing them saved.
-//
-// Read from the source because rendering the editor pulls auth, theme, toast and a live catalog. A
-// FENCE over every sent key rather than a check for one, so the next block added to this tab is held
-// to it too.
+// Asked of the whole bag: an agent with nothing stored has every Tools block written for the first
+// time, so a block the save does not put back is missing from the Behavior save that follows.
 describe("round 2: the Tools save puts back everything it wrote", () => {
-  const SRC = readFileSync(
-    "src/client/pages/agents/AgentEditorPage.tsx",
-    "utf8",
-  );
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = realFetch;
+  });
 
-  function keysOfObjectLiteral(src: string, start: number): string[] {
-    let depth = 0;
-    const keys: string[] = [];
-    for (let i = start; i < src.length; i++) {
-      const ch = src[i];
-      if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) break;
-      } else if (depth === 1) {
-        const m = /^\n\s{6,}([A-Za-z_$][\w$]*):/.exec(src.slice(i, i + 60));
-        if (m?.[1]) keys.push(m[1]);
-      }
-    }
-    return keys;
-  }
+  const patches = (stub: EditorStub) =>
+    stub.writes
+      .filter((w) => w.method === "PATCH" && w.body.settings)
+      .map((w) => w.body.settings as Record<string, unknown>);
 
-  test("every key sent in toolsSettings is written back to the settings state", () => {
-    const sentAt = SRC.indexOf("const toolsSettings = {");
-    expect(sentAt).toBeGreaterThan(-1);
-    const sent = keysOfObjectLiteral(SRC, SRC.indexOf("{", sentAt));
+  test("every key sent in toolsSettings is written back to the settings state", async () => {
+    const stub = stubEditorApi(
+      { settings: {} },
+      { catalog: { native: [{ name: "open_case_in_inbox" }] } },
+    );
+    await renderEditor(stub, "tools");
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.change(
+      await screen.findByPlaceholderText("case_conversation_id"),
+      { target: { value: "protocolo" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    await waitFor(() => expect(patches(stub).length).toBe(1));
+    const tools = patches(stub)[0] as Record<string, unknown>;
+    // NOTE: the bag has to hold the tab's blocks, or the comparison below passes over nothing.
+    expect(Object.keys(tools)).toContain("toolPreconditions");
+    expect(Object.keys(tools).length).toBeGreaterThanOrEqual(4);
 
-    // The setSettings that belongs to this handler is the first one AFTER the send.
-    const backAt = SRC.indexOf("setSettings((s) => ({", sentAt);
-    expect(backAt).toBeGreaterThan(sentAt);
-    const back = keysOfObjectLiteral(SRC, SRC.indexOf("{", backAt + 18));
-
-    // Positive control: the parse has to actually find keys, or this passes on an empty set.
-    expect(sent).toContain("toolGuidance");
-    expect(sent.length).toBeGreaterThanOrEqual(4);
-    expect(sent.filter((k) => !back.includes(k))).toEqual([]);
+    fireEvent.click(screen.getByRole("tab", { name: /Behavior/ }));
+    await act(async () => {});
+    fireEvent.click(
+      await screen.findByRole("switch", {
+        name: /Stop answering when a person replies to the customer/,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(patches(stub).length).toBe(2));
+    const behavior = patches(stub)[1] as Record<string, unknown>;
+    const lost = Object.keys(tools).filter(
+      (k) => JSON.stringify(behavior[k]) !== JSON.stringify(tools[k]),
+    );
+    expect(lost).toEqual([]);
   });
 });
 

@@ -1,7 +1,15 @@
 /// <reference lib="dom" />
 
 import { afterEach, expect, test } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { useState } from "react";
 import { MemoryRouter } from "react-router";
 
 // A WATCHER'S TOOLS TAB OFFERS ONLY WHAT ITS TURN CAN RUN. The monitoring turn builds its Chatwoot
@@ -10,7 +18,7 @@ import { MemoryRouter } from "react-router";
 // A grant for one of those is a control that cannot fire. Grants already saved are left alone:
 // flipping the mode back returns the agent.
 
-const { ToolGrantsEditor, offeredPackTools } = await import(
+const { ToolGrantsEditor } = await import(
   "@/client/pages/agents/ToolGrantsEditor"
 );
 const { ToolsTab } = await import("@/client/pages/agents/ToolsTab");
@@ -68,9 +76,22 @@ const CATALOG = {
   ],
 };
 
-function renderEditor(observing: boolean) {
+// The editor with its catalog and grants as props: fixed by default, or held by the caller.
+function Editor({
+  observing,
+  catalog = CATALOG,
+  grants = GRANTED,
+  onChange = () => undefined,
+  onCatalogChange = () => undefined,
+}: {
+  observing: boolean;
+  catalog?: unknown;
+  grants?: unknown;
+  onChange?: (grants: unknown) => void;
+  onCatalogChange?: () => void | Promise<void>;
+}) {
   const noop = () => undefined;
-  return render(
+  return (
     <MemoryRouter>
       <ThemeProvider>
         <AuthProvider>
@@ -85,19 +106,10 @@ function renderEditor(observing: boolean) {
                 labelInstructions: null,
                 updateKanbanInstructions: null,
               }}
-              catalog={CATALOG as never}
-              // The integration is GRANTED, and expanded, so its tool list is on screen.
-              grants={
-                [
-                  {
-                    source: "INTEGRATION",
-                    integrationInstanceId: "9",
-                    enabledTools: ["drive_find_file", "drive_send_file"],
-                  },
-                ] as never
-              }
-              onChange={noop}
-              onCatalogChange={noop}
+              catalog={catalog as never}
+              grants={grants as never}
+              onChange={onChange as never}
+              onCatalogChange={onCatalogChange as never}
               transferWithSummary={false}
               setTransferWithSummary={noop}
               handoff={{
@@ -153,8 +165,21 @@ function renderEditor(observing: boolean) {
           </ToastProvider>
         </AuthProvider>
       </ThemeProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+// The integration is GRANTED, and expanded, so its tool list is on screen.
+const GRANTED = [
+  {
+    source: "INTEGRATION",
+    integrationInstanceId: "9",
+    enabledTools: ["drive_find_file", "drive_send_file"],
+  },
+];
+
+function renderEditor(observing: boolean) {
+  return render(<Editor observing={observing} />);
 }
 
 afterEach(() => {
@@ -188,34 +213,83 @@ test("an agent that only observes is not offered the tools its turn would refuse
   expect(screen.queryAllByText("Find file").length).toBeGreaterThan(0);
 });
 
+// The other place a pack's tools are decided: an integration created from inside this editor is
+// granted on the spot, and a watcher is granted only what it would have been offered.
+async function grantOnCreate(observing: boolean): Promise<unknown> {
+  const created = {
+    ...(CATALOG.integrationInstances[0] as Record<string, unknown>),
+    id: "77",
+  };
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/auth/me")) {
+      return json({ user: { id: "1", email: "a@b.c", role: "ADMIN" } });
+    }
+    if (url.includes("/integrations/catalog")) {
+      return json({
+        catalog: [{ catalogType: "GOOGLE_DRIVE", kind: "TOOLPACK", tools: [] }],
+      });
+    }
+    if (url.includes("/integrations/instances")) {
+      return json({ id: "77", routeToken: null });
+    }
+    return json({});
+  }) as typeof fetch;
+  let granted: unknown = null;
+  function Live() {
+    const [catalog, setCatalog] = useState<Record<string, unknown>>({
+      ...CATALOG,
+      integrationInstances: [],
+    });
+    const [grants, setGrants] = useState<unknown[]>([]);
+    return (
+      <Editor
+        observing={observing}
+        catalog={catalog}
+        grants={grants}
+        onChange={(next) => {
+          granted = next;
+          setGrants(next as unknown[]);
+        }}
+        onCatalogChange={() =>
+          setCatalog((c) => ({ ...c, integrationInstances: [created] }))
+        }
+      />
+    );
+  }
+  render(<Live />);
+  const section = await waitFor(() => {
+    const el = document.getElementById("tools-integrations");
+    if (!el) throw new Error("the integrations section is not drawn");
+    return el;
+  });
+  fireEvent.click(within(section).getByRole("button", { name: /New/ }));
+  const dialog = await screen.findByRole("dialog");
+  const save = within(dialog).getByRole("button", { name: "Save" });
+  await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(save);
+  await waitFor(() => expect(granted).not.toBeNull());
+  return granted;
+}
+
 test("both places a pack's tools are decided read one predicate", async () => {
-  // The auto-grant that fires when an integration is created inside this editor is not
-  // reachable without driving the creation modal, so both sites share one function and this asks
-  // that function directly; a mutant would have to re-introduce a duplicate to get past it.
-  const tools = [
-    { name: "drive_find_file" },
-    { name: "drive_send_file", deliversToCustomer: true },
-  ];
-  expect(offeredPackTools(tools, true).map((x) => x.name)).toEqual([
-    "drive_find_file",
+  expect(await grantOnCreate(true)).toEqual([
+    {
+      source: "INTEGRATION",
+      integrationInstanceId: "77",
+      enabledTools: ["drive_find_file"],
+    },
   ]);
-  expect(offeredPackTools(tools, false).map((x) => x.name)).toEqual([
-    "drive_find_file",
-    "drive_send_file",
+});
+
+test("...and an agent that answers is granted the whole pack on creation", async () => {
+  expect(await grantOnCreate(false)).toEqual([
+    {
+      source: "INTEGRATION",
+      integrationInstanceId: "77",
+      enabledTools: ["drive_find_file", "drive_send_file"],
+    },
   ]);
-  expect(offeredPackTools(tools, undefined)).toHaveLength(2);
-  // ...and the source of both call sites names it. Read from the file rather than deduced:
-  // this is the assertion that a second, hand-rolled filter cannot pass.
-  const src = await Bun.file(
-    new URL(
-      "../../src/client/pages/agents/ToolGrantsEditor.tsx",
-      import.meta.url,
-    ).pathname,
-  ).text();
-  expect(src.match(/offeredPackTools\(inst\.tools, observing\)/g)).toHaveLength(
-    2,
-  );
-  expect(src.includes("deliversToCustomer)")).toBe(true);
 });
 
 test("...and an agent that answers is offered all of them", async () => {

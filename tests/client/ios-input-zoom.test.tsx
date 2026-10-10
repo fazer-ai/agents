@@ -1,4 +1,8 @@
+/// <reference lib="dom" />
+
 import { describe, expect, test } from "bun:test";
+import { cleanup, render } from "@testing-library/react";
+import { HighlightedTemplateField } from "@/client/components/HighlightedTemplateField";
 
 // IOS Safari zooms on focus into a field under 16px, and the density
 // scale sets form text at 13-15px. The guard is a rule in public/index.css that
@@ -18,12 +22,38 @@ describe("iOS input zoom guard", () => {
   });
 
   // The highlighted template field draws its text on a backdrop behind a transparent control. Sized
-  // apart, the two layers wrap at different points and the caret leaves the visible text.
-  test("the highlighted field's backdrop is sized with the control it mirrors", async () => {
-    const field = await Bun.file(
-      "src/client/components/HighlightedTemplateField.tsx",
-    ).text();
-    expect(field).toContain('data-field-backdrop=""');
+  // apart, the two layers wrap at different points and the caret leaves the visible text, so the rule
+  // has to reach both layers of the rendered field, multiline or not.
+  test("the highlighted field's backdrop is sized with the control it mirrors", () => {
+    const block = css.slice(start, css.indexOf("}\n}", start));
+    const selectors = (
+      block.match(/\{\s*([^{}]*?)\s*\{\s*font-size:\s*16px/)?.[1] ?? ""
+    )
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    expect(selectors.length).toBeGreaterThan(0);
+    const reached = (el: Element | null) =>
+      el !== null && selectors.some((s) => el.matches(s));
+    for (const multiline of [true, false]) {
+      const { container } = render(
+        <HighlightedTemplateField
+          value="Olá {{nome}}"
+          onChange={() => {}}
+          isKnownToken={() => true}
+          patternSource="\\{\\{(\\w+)\\}\\}"
+          multiline={multiline}
+          aria-label="campo"
+        />,
+      );
+      const layers = {
+        multiline,
+        control: reached(container.querySelector("textarea, input")),
+        backdrop: reached(container.querySelector('[aria-hidden="true"]')),
+      };
+      cleanup();
+      expect(layers).toEqual({ multiline, control: true, backdrop: true });
+    }
   });
 
   test("the rule is not inside a cascade layer", () => {

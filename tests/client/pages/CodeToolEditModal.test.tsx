@@ -1,16 +1,18 @@
 /// <reference lib="dom" />
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
+import * as acorn from "acorn";
 import { ToastProvider } from "@/client/components";
 import { isMacLike, scopeKeyLabel } from "@/client/components/CodeEditor";
 import { useModalController } from "@/client/components/Modal";
@@ -610,23 +612,73 @@ test("a save that FAILS after the dialog was dismissed does not mark the next on
   }
 });
 
-test("the parser only runs while the dialog is open", () => {
-  // This component stays mounted on the Tools page and the agent editor, and the empty form starts
-  // with the starter body, so an ungated effect downloads the parser chunk and parses a body
-  // nobody is editing, on every visit to either page. A source fence rather than a module mock:
-  // `mock.module` is process-global here and tears down mocks other files installed (the note in
-  // document-starters-race.test.tsx), and what is being asserted is one guard's presence.
-  const src = readFileSync(
-    "src/client/pages/resources/CodeToolEditModal.tsx",
-    "utf8",
-  );
-  const effect = src.slice(
-    src.indexOf("const code = form.code;") - 400,
-    src.indexOf("const code = form.code;"),
-  );
-  expect(effect.includes("if (!modal.isOpen) return;")).toBe(true);
+// This component stays mounted on the Tools page and the agent editor, and the empty form starts
+// with the starter body, so an ungated effect downloads the parser chunk and parses a body nobody is
+// editing, on every visit to either page. Asked of the parser itself: closed, it is never called;
+// opened, it is.
+test("the parser only runs while the dialog is open", async () => {
+  const parse = spyOn(acorn, "parse");
+  jest.useFakeTimers();
+  try {
+    render(<TwoToolsHarness />);
+    act(() => jest.advanceTimersByTime(1_000));
+    await act(async () => {});
+    const whileClosed = parse.mock.calls.length;
+    fireEvent.click(screen.getByText("open-new"));
+    act(() => jest.advanceTimersByTime(1_000));
+    jest.useRealTimers();
+    await waitFor(() => expect(parse.mock.calls.length).toBeGreaterThan(0));
+    expect(whileClosed).toBe(0);
+  } finally {
+    jest.useRealTimers();
+    parse.mockRestore();
+  }
 });
 
+// NO WAY OUT WHILE THE SAVE IS IN FLIGHT (docs/modals.md): dismissing mid-request and reopening
+// offers a second Save for a write already on its way. Asked of the dialog: Escape on an unedited
+// stored tool whose save is out leaves it open.
+test("a save in flight cannot be dismissed", async () => {
+  const realFetch = globalThis.fetch;
+  const held: Array<() => void> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href = input instanceof Request ? input.url : String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (href.includes("/code-tools") && method !== "GET") {
+      await new Promise<void>((r) => held.push(r));
+      return new Response(JSON.stringify({ tool: codeTool(), warnings: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (/\/code-tools\/\d+/.test(href)) {
+      return new Response(JSON.stringify({ tool: codeTool() }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    // Unedited, so Escape is the dialog's own dismissal and not the discard prompt's.
+    fireEvent.click(screen.getByText("open-1"));
+    await screen.findByDisplayValue("Look up CPF");
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+    await waitFor(() => expect(held.length).toBe(1));
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+    await act(async () => {});
+    expect(screen.queryAllByText("Edit code tool").length).toBe(1);
+    held[0]?.();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// NOTE: the `finally` half stays a source fence: a reopened dialog does not reset `saving`, so the
+// scoped `setSaving(false)` has no observable effect to assert until the opening resets it.
 test("a save in flight cannot be dismissed, and its finally belongs to its own opening", () => {
   // Two guards over one hole, a save dismissed with Esc/X and reopened before it answers. The
   // dialog refuses the dismissal (docs/modals.md), which makes the second guard unreachable from

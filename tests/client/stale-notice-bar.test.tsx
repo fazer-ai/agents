@@ -6,7 +6,16 @@
 // the bar exactly when it shows in the card" hold by construction instead of by two conditions.
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
+import en from "@/client/locales/en.json";
+import ptBR from "@/client/locales/pt-BR.json";
 import {
   type StaleNotice,
   StaleNoticeCard,
@@ -14,6 +23,8 @@ import {
   staleNoticeOf,
 } from "@/client/pages/agents/StaleNotice";
 import { TabActionBar } from "@/client/pages/agents/TabActionBar";
+import { renderEditor, stubEditorApi } from "../utils/agent-editor";
+import { createTestI18n, withI18n } from "../utils/i18n";
 
 afterEach(cleanup);
 
@@ -158,51 +169,95 @@ describe("the page's state becomes one notice", () => {
   });
 });
 
+// The editor itself: a save the server refuses as a conflict raises the notice, and the card at the
+// top and every tab's save bar show that one notice and clear together.
 describe("the editor wires one notice to both places", () => {
-  const SRC = Bun.file("src/client/pages/agents/AgentEditorPage.tsx").text();
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  async function conflicted(): Promise<void> {
+    const stub = stubEditorApi({ settings: {} });
+    stub.override = (method, path) =>
+      method === "PATCH" && path === `/api/v1/agents/${stub.agent.id}`
+        ? new Response(JSON.stringify({ error: "conflict" }), {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          })
+        : undefined;
+    await renderEditor(stub, "general");
+    fireEvent.change(screen.getByDisplayValue("Atendente"), {
+      target: { value: "Atendente 2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("stale-notice-strip");
+  }
+  const card = () =>
+    screen
+      .queryAllByRole("alert")
+      .find((el) =>
+        el.textContent?.includes("This agent was changed elsewhere"),
+      );
+  const shown = () => ({
+    card: card() !== undefined,
+    bar: screen.queryAllByTestId("stale-notice-strip").length,
+    saveAnyway: screen.queryAllByRole("button", { name: "Save anyway" }).length,
+  });
 
   test("the card and the provider read the same value", async () => {
-    const src = await SRC;
-    expect(src).toContain("<StaleNoticeCard notice={stale} />");
-    expect(src).toContain(
-      "const stale = staleNoticeOf(staleNotice, conflictRetry, {",
+    await conflicted();
+    expect(shown()).toEqual({ card: true, bar: 1, saveAnyway: 2 });
+    fireEvent.click(
+      within(card() as HTMLElement).getByRole("button", { name: "Dismiss" }),
     );
-    expect(src).toContain("<StaleNoticeContext.Provider value={stale}>");
-    expect(src).not.toContain('"editor.staleNotice"');
+    expect(shown()).toEqual({ card: false, bar: 0, saveAnyway: 0 });
   });
 
   test("the provider wraps the whole page, and the page holds every tab that renders a save bar", async () => {
-    const src = await SRC;
-    expect(src).toMatch(
-      /return \(\s*<StaleNoticeContext\.Provider value=\{stale\}>\s*\{page\}\s*<\/StaleNoticeContext\.Provider>\s*\);\s*\}\s*$/,
-    );
-    const open = src.indexOf("const page = (");
-    const close = src.indexOf("</PageContainer>", open);
-    expect(open).toBeGreaterThan(-1);
+    await conflicted();
     for (const tab of [
-      "<GeneralTab",
-      "<ToolsTab",
-      "<KnowledgeTab",
-      "<BehaviorTab",
-      "<GuardrailsTab",
-      "<ChannelRedirectTab",
+      /General/,
+      /Tools/,
+      /Knowledge/,
+      /Behavior/,
+      /Guardrails/,
+      /Channel redirect|Redirect/,
     ]) {
-      const at = src.indexOf(tab);
-      expect({ tab, inside: at > open && at < close }).toEqual({
-        tab,
-        inside: true,
+      fireEvent.click(screen.getByRole("tab", { name: tab }));
+      await act(async () => {});
+      expect({ tab: String(tab), bar: shown().bar }).toEqual({
+        tab: String(tab),
+        bar: 1,
       });
     }
   });
 });
 
+// The bar's short line is its own sentence in each locale, read where the bar draws it.
 describe("both locales carry the short line", () => {
-  test("en and pt-BR each have their own text for editor.staleShort", async () => {
-    const en = await Bun.file("src/client/locales/en.json").json();
-    const pt = await Bun.file("src/client/locales/pt-BR.json").json();
-    expect(en.editor.staleShort).toBe("Changed elsewhere");
-    expect(typeof pt.editor.staleShort).toBe("string");
-    expect(pt.editor.staleShort.length).toBeGreaterThan(0);
-    expect(pt.editor.staleShort).not.toBe(en.editor.staleShort);
+  test("en and pt-BR each have their own text for editor.staleShort", () => {
+    const lines: Record<string, string> = {};
+    for (const [lng, translation] of [
+      ["en", en],
+      ["pt-BR", ptBR],
+    ] as const) {
+      const { unmount, getByTestId } = render(
+        withI18n(
+          <StaleNoticeContext.Provider value={notice(false)}>
+            <Bar />
+          </StaleNoticeContext.Provider>,
+          createTestI18n(lng, { [lng]: { translation } }),
+        ),
+      );
+      lines[lng] = (getByTestId("stale-notice-strip").textContent ?? "")
+        .replace("Recarregar", "")
+        .replace("Reload", "")
+        .trim();
+      unmount();
+    }
+    expect(lines.en).toBe("Changed elsewhere");
+    expect((lines["pt-BR"] ?? "").length).toBeGreaterThan(0);
+    expect(lines["pt-BR"]).not.toBe(lines.en);
   });
 });

@@ -72,6 +72,22 @@ export const MAX_RECOVERY_ATTEMPTS = 3;
 // `proactiveSendMode` here. Not covered: an agent whose `serviceWindow.windowHours` is below this.
 export const MAX_RECOVERY_AGE_MS = 6 * 60 * 60 * 1000;
 
+// The ceiling for a REPLY on WhatsApp. NINETY MINUTES is policy: a WhatsApp customer writes for an
+// answer now, and one that arrives hours later lands after they gave up or a person answered them.
+export const WHATSAPP_RECOVERY_AGE_MS = 90 * 60 * 1000;
+
+// The ceiling a stranded delivery is held to: the channel's, for a delivery that owes the customer a
+// reply, and `MAX_RECOVERY_AGE_MS` for one that owes only memory, since the reason for the shorter
+// one is a customer waiting. `channelType` is the inbox's Chatwoot channel; null means not known.
+export function recoveryAgeCeilingMs(
+  row: Parameters<typeof owesAReply>[0],
+  channelType: string | null,
+): number {
+  return owesAReply(row) && channelType === "Channel::Whatsapp"
+    ? WHATSAPP_RECOVERY_AGE_MS
+    : MAX_RECOVERY_AGE_MS;
+}
+
 // How long to wait before asking again about a conversation that was BUSY. A minute: long enough
 // that a short turn is over, short enough that a customer's second stranded message is not left
 // behind the first one for a scheduler interval. Nothing measures a turn's length (there is no
@@ -358,6 +374,7 @@ async function runRecovery(params: {
             chatwootInboxId: true,
             name: true,
             agentId: true,
+            channelType: true,
           },
         },
       },
@@ -411,6 +428,23 @@ async function runRecovery(params: {
           base,
         })
       : null;
+    // NOTE: the channel's ceiling, on the row's receipt, read off the mirror's inbox. Only the
+    // mirror's: a refusal ends with the conversation handed to the team, and the hand-over reads the
+    // persona and the ownership off the mirror row, so a conversation the mirror never learned could
+    // not be handed over and keeps `MAX_RECOVERY_AGE_MS`, a late answer over none. Asked AFTER the
+    // reconcile for the same reason: a message that reopened a resolved conversation left the mirror
+    // saying `resolved`, and the hand-over would refuse that stale ownership.
+    if (
+      params.now.getTime() - row.receivedAt.getTime() >
+      recoveryAgeCeilingMs(row, conv?.inbox?.channelType ?? null)
+    ) {
+      logger.warn(
+        "chatwoot recovery: %s is past its channel's ceiling (conversation %d); left DEAD",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unrecoverable";
+    }
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
     // NOTE: a reaction the anchored page cannot carry. The fork pages by the messages that are not
     // reactions and keeps a reaction only when its target is in the same page of the same
@@ -625,6 +659,7 @@ async function runRecovery(params: {
         chatwootInboxId: true,
         name: true,
         agentId: true,
+        channelType: true,
         // When THIS binding was made. A role the row never stated cannot be read off a binding
         // younger than the delivery; see the refusal below.
         responderBoundAt: true,
@@ -939,7 +974,15 @@ async function runRecovery(params: {
   // creation keeps the ceiling.
   if (
     row.event === TURN_BEARING_EVENT &&
-    params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS
+    params.now.getTime() - sentAt * 1000 >
+      recoveryAgeCeilingMs(
+        row,
+        // A mirror row with no inbox was repaired above to the route's, so that is the channel the
+        // hand-over will read. A conversation the mirror never learned has nothing to hand over.
+        conv === null
+          ? null
+          : (conv.inbox?.channelType ?? inbox?.channelType ?? null),
+      )
   ) {
     return "unrecoverable";
   }

@@ -652,6 +652,64 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).toBe(String(rowId));
   });
 
+  describe("a recovery past its channel's ceiling", () => {
+    let whatsappInboxId = 0n;
+    beforeAll(async () => {
+      whatsappInboxId = (
+        await suDb.inbox.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootInboxId: 662,
+            name: "WhatsApp",
+            channelType: "Channel::Whatsapp",
+            agentId: agentDbId,
+          },
+        })
+      ).id;
+    });
+
+    async function strandOn(
+      convId: number,
+      inboxId: bigint,
+      ageMs: number,
+    ): Promise<{ rowId: bigint; convDbId: bigint }> {
+      const conv = await seedConversation(convId);
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { inboxId },
+      });
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs,
+        inboundMessageId: convId + 1000,
+      });
+      return { rowId, convDbId: conv.id };
+    }
+
+    const armed = async (rowId: bigint) =>
+      (await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+        },
+      })) === 1;
+
+    // Past the ceiling the recovery can only refuse, and it is still armed: the job is what hands the
+    // conversation to the team, and a row left DEAD without it stays with the bot for good.
+    test("a WhatsApp message past ninety minutes is still armed, so its refusal reaches the team", async () => {
+      const { rowId } = await strandOn(
+        8981,
+        whatsappInboxId,
+        2 * 60 * 60 * 1000,
+      );
+      await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect((await statusOf(rowId)).status).toBe("DEAD");
+      expect(await armed(rowId)).toBe(true);
+    });
+  });
+
   test("declares a loss DEAD only together with its recovery", async () => {
     // A DEAD row with no job is invisible to every later sweep: the arm failing has to leave the row
     // where the next sweep finds it, not on the worklist with nothing retrying it.

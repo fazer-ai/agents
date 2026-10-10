@@ -30,6 +30,7 @@ import * as tenancy from "@/lib/tenancy";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { TURN_BEARING_EVENT } from "@/modules/chatwoot/normalize";
 import * as reconcileModule from "@/modules/chatwoot/reconcile";
 import {
   announceUnanswered,
@@ -38,6 +39,7 @@ import {
   MAX_RECOVERY_ATTEMPTS,
   putRowBack,
   recoverStrandedDelivery,
+  recoveryAgeCeilingMs,
   registerDeliveryRecoveryHandler,
   runRecoveryJob,
 } from "@/modules/chatwoot/recover-delivery";
@@ -678,7 +680,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       await suDb.conversation.deleteMany({
         where: {
           tenantId,
-          chatwootConversationId: { gte: 7310, lte: 7334 },
+          chatwootConversationId: { gte: 7310, lte: 7339 },
         },
       });
       await dropContact(77);
@@ -1193,6 +1195,246 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       ).toBe("unreachable");
       expect(stub.sent).toEqual([]);
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    });
+
+    test.each([7335, 7336] as const)(
+      "keeps six hours for a conversation the mirror never learned, WhatsApp or not (%i)",
+      async (convId) => {
+        // A refusal hands the conversation to the team, and the hand-over reads the mirror row: with
+        // none, a WhatsApp conversation is still answered late rather than left with the bot.
+        // The route's inbox says WhatsApp too: the hand-over still has no mirror row to read.
+        const before = await suDb.inbox.findUniqueOrThrow({
+          where: { id: inboxDbId },
+          select: { channelType: true },
+        });
+        if (convId === 7335)
+          await suDb.inbox.update({
+            where: { id: inboxDbId },
+            data: { channelType: "Channel::Whatsapp" },
+          });
+        try {
+          await dropContact(77);
+          const messageId = convId + 500;
+          const rowId = await seedDeadDelivery({
+            conversationId: convId,
+            inboundMessageId: messageId,
+            receivedAgoMs: 2 * 60 * 60 * 1000,
+          });
+          const stub = stubChatwoot({
+            page: pageWith([
+              {
+                id: messageId,
+                content: "oi, alguém aí?",
+                createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+              },
+            ]),
+            conv: {
+              channel: convId === 7335 ? "Channel::Whatsapp" : "Channel::Api",
+            },
+          });
+          expect(
+            await recoverStrandedDelivery({
+              tenantId,
+              deliveryRowId: rowId,
+              base: appDb,
+              deps: depsWith(stub),
+            }),
+          ).toBe("recovered");
+          expect(stub.sent).toEqual([[convId, REPLY]]);
+        } finally {
+          await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+        }
+      },
+    );
+
+    test("refuses a WhatsApp reply the customer wrote ninety minutes ago, though its webhook arrived late", async () => {
+      // The receipt is recent, so the check before the network lets it through; the live read
+      // carries the customer's own clock, and the mirror names the channel.
+      const convId = 7338;
+      const messageId = 7838;
+      const waInbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: 7338,
+          name: "WhatsApp late",
+          channelType: "Channel::Whatsapp",
+        },
+        select: { id: true },
+      });
+      const conv = await seedConversation(convId);
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { inboxId: waInbox.id },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        receivedAgoMs: 10 * 60 * 1000,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([
+          {
+            id: messageId,
+            content: "oi",
+            createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+          },
+        ]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("refuses a WhatsApp reply past ninety minutes from the mirror, and hands the conversation over", async () => {
+      const convId = 7337;
+      const messageId = 7837;
+      const waInbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: 7337,
+          name: "WhatsApp",
+          channelType: "Channel::Whatsapp",
+        },
+        select: { id: true },
+      });
+      // The stranded message reopened it in Chatwoot; the mirror never heard.
+      const conv = await seedConversation(convId, {
+        inboxId: waInbox.id,
+        status: "resolved",
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        receivedAgoMs: 2 * 60 * 60 * 1000,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(stub.asked).toEqual([]);
+      expect(stub.sent).toEqual([]);
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+      // Refused after the live state was reconciled, so the hand-over below does not read a stale
+      // `resolved` as somebody else's decision.
+      expect(
+        (
+          await suDb.conversation.findUniqueOrThrow({
+            where: { id: conv.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("pending");
+      // The job is still what says so: refused, the conversation goes to the team as unanswered
+      // instead of sitting with the bot.
+      const result = await runRecoveryJob(
+        {
+          id: phantomJobId,
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          payload: { deliveryRowId: String(rowId) },
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+        depsWith(stub),
+      );
+      expect(result.outcome).toBe("done");
+      expect(stub.sent).toEqual([]);
+      expect(
+        (await deliveryLines(conv.id)).map((l) => [
+          l.level,
+          (l.detail as Record<string, unknown> | null)?.outcome,
+        ]),
+      ).toEqual([["error", "unanswered"]]);
+    });
+
+    test("refuses on the route's WhatsApp inbox when the mirror row named no inbox", async () => {
+      // The recovery fills the mirror's null inbox from the route, so that is the channel the
+      // hand-over reads, and the check on the customer's clock reads it too.
+      const convId = 7339;
+      const messageId = 7839;
+      const before = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inboxDbId },
+        select: { channelType: true },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { channelType: "Channel::Whatsapp" },
+      });
+      try {
+        const conv = await seedConversation(convId, { inboxId: null });
+        const rowId = await seedDeadDelivery({
+          conversationId: convId,
+          inboundMessageId: messageId,
+          receivedAgoMs: 2 * 60 * 60 * 1000,
+        });
+        const stub = stubChatwoot({
+          page: pageWith([
+            {
+              id: messageId,
+              content: "oi",
+              createdAt: Math.floor(Date.now() / 1000) - 2 * 60 * 60,
+            },
+          ]),
+          conv: { channel: "Channel::Whatsapp" },
+        });
+        expect(
+          await recoverStrandedDelivery({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            deps: depsWith(stub),
+          }),
+        ).toBe("unrecoverable");
+        expect(stub.sent).toEqual([]);
+        expect(
+          (
+            await suDb.conversation.findUniqueOrThrow({
+              where: { id: conv.id },
+              select: { inboxId: true },
+            })
+          ).inboxId,
+        ).toBe(inboxDbId);
+      } finally {
+        await suDb.inbox.update({ where: { id: inboxDbId }, data: before });
+      }
+    });
+
+    test("a WhatsApp delivery that owes only memory keeps six hours", () => {
+      const row = {
+        routeObserved: false,
+        event: TURN_BEARING_EVENT,
+        owesMemoryOnly: null as boolean | null,
+      };
+      expect(recoveryAgeCeilingMs(row, "Channel::Whatsapp")).toBe(
+        90 * 60 * 1000,
+      );
+      expect(
+        recoveryAgeCeilingMs(
+          { ...row, owesMemoryOnly: true },
+          "Channel::Whatsapp",
+        ),
+      ).toBe(MAX_RECOVERY_AGE_MS);
+      expect(recoveryAgeCeilingMs(row, "Channel::Api")).toBe(
+        MAX_RECOVERY_AGE_MS,
+      );
     });
 
     test("positions the contact it states at the live reading, even on a row a webhook created meanwhile", async () => {

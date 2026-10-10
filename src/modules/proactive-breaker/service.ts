@@ -88,7 +88,8 @@ async function countWindow(
 
 // The largest number of proactive messages the account delivered in any 24h window of the last 30
 // days, from two records of the same sends: the delivery rows the breaker counts (every proactive
-// send, the redirect ladder's fixed ones included, kept a month), and the flow log's line for a nudge
+// send, the redirect ladder's fixed ones included, kept a month; a reservation that never became a
+// delivery is not volume), and the flow log's line for a nudge
 // that reached the customer (`generate` with outcome `messaged` or `templated`), written since before
 // the rows were, so no account starts below its own peak. The larger of the two wins.
 export async function computeAutoPeak(
@@ -109,6 +110,7 @@ export async function computeAutoPeak(
           FROM agent_turn_deliveries
          WHERE tenant_id = ${tenantId}
            AND proactive
+           AND NOT pending
            AND delivered_at > ${since}
       ) w
       ORDER BY n DESC, at ASC

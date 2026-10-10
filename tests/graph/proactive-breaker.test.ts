@@ -612,6 +612,16 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
       })),
     });
     await seedDeliveries(conv, false, 5 * day - 1000, 5 * day - 2000);
+    // Reservations a dead process left behind never reached anyone, and are not volume.
+    await suDb.agentTurnDelivery.createMany({
+      data: Array.from({ length: 900 }, (_, i) => ({
+        tenantId,
+        conversationId: conv,
+        proactive: true,
+        pending: true,
+        deliveredAt: new Date(now.getTime() - 2 * day + i * 60_000),
+      })),
+    });
     const peak = await runScopedOn(appDb, ctx(), (db) =>
       computeAutoPeak(db, tenantId, now),
     );

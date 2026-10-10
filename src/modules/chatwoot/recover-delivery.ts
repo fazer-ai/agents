@@ -42,11 +42,16 @@ import {
   registerJobHandler,
 } from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
-import { maxIncomingId, parseChatwootMessages } from "./messages";
+import {
+  type ChatwootMessageRow,
+  maxIncomingId,
+  parseChatwootMessages,
+} from "./messages";
 import {
   controlCommand,
   inboundTranscriptionOnUpdate,
   isNewIncomingMessage,
+  type LiveConversationState,
   normalizeChatwootEvent,
   parseLiveConversation,
   TURN_BEARING_EVENT,
@@ -381,8 +386,9 @@ async function runRecovery(params: {
   let live: ReturnType<typeof parseLiveConversation> = null;
   let reconciled: Awaited<ReturnType<typeof reconcileMirrorFromLive>> | null =
     null;
+  let client: Awaited<ReturnType<typeof loadChatwootClient>> | null = null;
   try {
-    const client = await loadChatwootClient(params.tenantId, instanceId, {
+    client = await loadChatwootClient(params.tenantId, instanceId, {
       base,
       // The same seam every other caller uses, so a test drives a fake account rather than mocking
       // the module.
@@ -406,33 +412,12 @@ async function runRecovery(params: {
           base,
         })
       : null;
-    raw = await client.getMessages(conversationId, { before: messageId + 1 });
-    // NOTE: a reaction the anchored page cannot carry. The fork pages by the messages that are not
-    // reactions and keeps a reaction only when its target is in the same page of the same
-    // conversation, so a reaction to an older message is on no `before` page and would read as
-    // deleted. The catch-up read lists by id with no such window.
-    if (findRawMessage(raw, messageId) === null) {
-      const caught = await client.getMessages(conversationId, {
-        after: messageId - 1,
-      });
-      if (findRawMessage(caught, messageId) !== null) {
-        raw = caught;
-        caughtUp = parseChatwootMessages(caught);
-      }
-    }
-    // NOTE: the NEWEST page, unanchored, answers whether the customer has written again since: the
-    // anchored page ends at the stranded message, and the newest page need not contain it (the
-    // default page holds 20). Not fetched on a replay that posts nothing, the only reader of this
-    // page: an observation or a memory append is not an answer, and a failed read here would return
-    // `unreachable` and spend the budget over a page nothing reads. What the catch-up read found
-    // counts too: a newer reaction the default page leaves out is still the customer writing again.
-    // A read that came back FULL is refused below before it is trusted as coverage.
-    recent = replayPosts
-      ? mergeById(
-          parseChatwootMessages(await client.getMessages(conversationId)),
-          caughtUp,
-        )
-      : [];
+    ({ raw, caughtUp, recent } = await readStoredMessagePages(
+      client,
+      conversationId,
+      messageId,
+      replayPosts,
+    ));
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
     // so this is a DEFERRAL rather than a verdict: the row keeps its attempt budget and the next
@@ -473,73 +458,55 @@ async function runRecovery(params: {
   // replay would answer: an observer's or a transcription replay owes the words reaching memory, and
   // an ingest job carries its own message only, so a newer message does not cover this one and
   // refusing it would lose the words for good.
-  if (replayPosts) {
-    // NOTE: a FULL catch-up read (a hundred messages at or past this one) stops short of the newest
-    // page and cannot say what sits in the gap: merged as coverage it would hide a newer message
-    // there, discarded it would hide the newer reactions it carried. Either way the message is a
-    // hundred behind, further than the page rule below answers, so it is not answered.
-    if (caughtUp.length >= CATCH_UP_PAGE) {
-      logger.info(
-        "chatwoot recovery: %s has a full catch-up read behind it on conversation %d; not answered",
-        row.deliveryId,
-        conversationId,
-      );
-      return "unrecoverable";
-    }
-    const oldestSeen = recent.reduce<number | null>(
-      (a, m) => (a === null || m.id < a ? m.id : a),
-      null,
-    );
-    if (oldestSeen === null) {
+  if (replayPosts && client !== null) {
+    const verdict = await storedTurnVerdict({
+      tenantId: params.tenantId,
+      instanceId,
+      conversationId,
+      messageId,
+      routeBotId: row.routeAgentBotId,
+      base,
+      client,
+      live,
+      pages: { recent, caughtUp },
+    });
+    if (verdict.verdict === "degraded") {
       logger.warn(
-        "chatwoot recovery: %s got an empty newest page on conversation %d; the REST read is degraded",
+        "chatwoot recovery: %s on conversation %d: %s; the REST read is degraded",
         row.deliveryId,
         conversationId,
+        verdict.why,
       );
       return "unreachable";
     }
-    if (oldestSeen > messageId) {
+    if (verdict.verdict === "not_owed") {
+      // Where the customer wrote past it, say whether the newer message's delivery is DEAD too: a
+      // stranded BURST, whose newest row's recovery answers the conversation while this older text
+      // stays DEAD on the operator's page. Recovering a burst together is the flush's job.
+      const covering =
+        verdict.newest === undefined
+          ? null
+          : await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+              db.chatwootWebhookDelivery.findFirst({
+                where: {
+                  tenantId: params.tenantId,
+                  chatwootInstanceId: instanceId,
+                  conversationId,
+                  inboundMessageId: verdict.newest,
+                },
+                select: { status: true },
+              }),
+            );
       logger.info(
-        "chatwoot recovery: %s is more than a page behind on conversation %d; not answered",
+        "chatwoot recovery: %s on conversation %d: %s; not answered%s",
         row.deliveryId,
         conversationId,
-      );
-      return "unrecoverable";
-    }
-    // A customer who wrote again cannot be answered about the older message. Live,
-    // `shouldPost` withholds the reply and the newer message's delivery carries it; for a recovery
-    // that delivery already ran and answered the newer message only (a direct turn feeds the graph
-    // its OWN trigger text), so the replay would spend a model call, post nothing and close the loss
-    // falsely. Asked HERE, before the claim, as `unrecoverable` (a newer message never un-arrives),
-    // through `maxIncomingId`, the delivery path's own predicate: an away message or an operator's
-    // note moves the conversation forward without answering anything.
-    const newest = maxIncomingId(recent, messageId);
-    if (newest > messageId) {
-      // Which of the two cases, said out loud, because they read the same from the row and an
-      // operator does different things about them. The newer message's delivery is NOT dead: it ran
-      // or is running and carries the reply. Or its row is DEAD TOO, a stranded BURST: the newest
-      // row's recovery answers the conversation, and this older message's TEXT never reaches a model
-      // (a direct turn carries its own trigger text), so this row stays DEAD on the operator's page,
-      // their only signal. Recovering a burst together is the flush's job, not this module's.
-      const covering = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-        db.chatwootWebhookDelivery.findFirst({
-          where: {
-            tenantId: params.tenantId,
-            chatwootInstanceId: instanceId,
-            conversationId,
-            inboundMessageId: newest,
-          },
-          select: { status: true },
-        }),
-      );
-      logger.info(
-        "chatwoot recovery: %s is behind message %d on conversation %d; not answered (%s)",
-        row.deliveryId,
-        newest,
-        conversationId,
-        covering?.status === "DEAD"
-          ? "that message is stranded too, so this one is part of a burst its own recovery answers"
-          : `that message's delivery is ${covering?.status ?? "not in the ledger"}`,
+        verdict.why,
+        verdict.newest === undefined
+          ? ""
+          : covering?.status === "DEAD"
+            ? " (that message is stranded too, so this one is part of a burst its own recovery answers)"
+            : ` (that message's delivery is ${covering?.status ?? "not in the ledger"})`,
       );
       return "unrecoverable";
     }
@@ -1394,6 +1361,122 @@ async function replyIdentity(params: {
 // How far past the stranded message the catch-up read walks before leaving the decision to the line.
 const SUPERSEDED_MAX_PAGES = 10;
 
+// The message reads a late customer message is judged on, shared by the recovery and the ack's
+// stored-delivery replay: the page that ENDS at the message (`before` anchors it), a catch-up read when
+// that page cannot carry it, and, where a reply could be owed, the newest page.
+async function readStoredMessagePages(
+  client: Awaited<ReturnType<typeof loadChatwootClient>>,
+  conversationId: number,
+  messageId: number,
+  replayPosts: boolean,
+): Promise<{
+  raw: unknown;
+  caughtUp: ChatwootMessageRow[];
+  recent: ChatwootMessageRow[];
+}> {
+  let raw: unknown = await client.getMessages(conversationId, {
+    before: messageId + 1,
+  });
+  let caughtUp: ChatwootMessageRow[] = [];
+  // NOTE: a reaction the anchored page cannot carry. The fork pages by the messages that are not
+  // reactions and keeps a reaction only when its target is in the same page of the same
+  // conversation, so a reaction to an older message is on no `before` page and would read as
+  // deleted. The catch-up read lists by id with no such window.
+  if (findRawMessage(raw, messageId) === null) {
+    const caught = await client.getMessages(conversationId, {
+      after: messageId - 1,
+    });
+    if (findRawMessage(caught, messageId) !== null) {
+      raw = caught;
+      caughtUp = parseChatwootMessages(caught);
+    }
+  }
+  // The NEWEST page, unanchored, answers whether the customer has written again since: the
+  // anchored page ends at the stranded message, and the newest page need not contain it (the
+  // default page holds 20). Not fetched on a replay that posts nothing, the only reader of this
+  // page: an observation or a memory append is not an answer, and a failed read here would return
+  // `unreachable` and spend the budget over a page nothing reads. What the catch-up read found
+  // counts too: a newer reaction the default page leaves out is still the customer writing again.
+  // A read that came back FULL is refused below before it is trusted as coverage.
+  const recent = replayPosts
+    ? mergeById(
+        parseChatwootMessages(await client.getMessages(conversationId)),
+        caughtUp,
+      )
+    : [];
+  return { raw, caughtUp, recent };
+}
+
+// THE ONE DECISION about a late customer message: does it still owe a turn? Asked by the delivery
+// recovery and by the ack's stored-delivery replay, so a check either one needs lives here. `not_owed`
+// (the recovery leaves the row DEAD, the replay ingests without a turn) carries `newest` when the
+// customer wrote past it; `degraded` means the reads cannot decide yet.
+export type StoredTurnVerdict =
+  | { verdict: "owed" }
+  | { verdict: "degraded" | "not_owed"; why: string; newest?: number };
+
+export async function storedTurnVerdict(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  messageId: number;
+  routeBotId: number | null;
+  base: PrismaClient;
+  client: Awaited<ReturnType<typeof loadChatwootClient>>;
+  live: LiveConversationState | null;
+  // The reads of `readStoredMessagePages`, when the caller already made them.
+  pages?: { recent: ChatwootMessageRow[]; caughtUp: ChatwootMessageRow[] };
+}): Promise<StoredTurnVerdict> {
+  const { conversationId, messageId, live } = params;
+  const degraded = (why: string) => ({ verdict: "degraded" as const, why });
+  const notOwed = (why: string, newest?: number) => ({
+    verdict: "not_owed" as const,
+    why,
+    newest,
+  });
+  if (live === null || !live.assigneeStated) {
+    return degraded("the live conversation does not say who holds it");
+  }
+  const { recent, caughtUp } =
+    params.pages ??
+    (await readStoredMessagePages(
+      params.client,
+      conversationId,
+      messageId,
+      true,
+    ));
+  // A FULL catch-up read stops short of the newest page and cannot say what sits in the gap.
+  if (caughtUp.length >= CATCH_UP_PAGE) {
+    return notOwed("a full catch-up read is behind it");
+  }
+  // The page has to reach back to the message (twenty outgoing or activity messages since would push
+  // a newer customer message off it); an EMPTY page is a degraded read.
+  const oldestSeen = recent.reduce<number | null>(
+    (a, m) => (a === null || m.id < a ? m.id : a),
+    null,
+  );
+  if (oldestSeen === null) return degraded("the newest page came back empty");
+  if (oldestSeen > messageId) return notOwed("it is more than a page behind");
+  // The customer wrote again: the newer message's delivery carries the reply (`maxIncomingId`, the
+  // delivery path's own predicate, so an away message or a note answers nothing).
+  const newest = maxIncomingId(recent, messageId);
+  if (newest > messageId)
+    return notOwed(`it is behind message ${newest}`, newest);
+  // Answered by a person or another bot since, or resolved. A failed read is undecided.
+  try {
+    const moved = await supersededLive({
+      ...params,
+      throwOnReadFailure: true,
+    });
+    if (moved !== null) return notOwed(`the conversation was ${moved} since`);
+  } catch (err) {
+    return degraded(
+      `the already-answered read failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return { verdict: "owed" };
+}
+
 // Whether the conversation itself has moved past the stranded message, read live, because the row
 // cannot say: a later turn retires only the rows it ran over, and one still PENDING then, or one a
 // person answered, stays DEAD. Two answers close it: a reply past the delivery path's own boundary
@@ -1411,16 +1494,16 @@ export async function supersededLive(params: {
   // A read that fails throws instead of reading as "not superseded": for a caller about to run a
   // turn, an unknown answer is not permission.
   throwOnReadFailure?: boolean;
+  // A client the caller already holds, so the check costs no second one.
+  client?: Awaited<ReturnType<typeof loadChatwootClient>>;
 }): Promise<"answered" | "resolved" | null> {
   try {
-    const client = await loadChatwootClient(
-      params.tenantId,
-      params.instanceId,
-      {
+    const client =
+      params.client ??
+      (await loadChatwootClient(params.tenantId, params.instanceId, {
         base: params.base,
         ...(params.makeClient ? { makeClient: params.makeClient } : {}),
-      },
-    );
+      }));
     const conv = await client.getConversation(params.conversationId);
     if (isRecord(conv) && conv.status === "resolved") return "resolved";
     // The catch-up read lists by id and stops at a page, so a reply behind a hundred notes or

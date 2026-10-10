@@ -1926,6 +1926,50 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([[convId, REPLY]]);
   });
 
+  test("a message a person already answered is not answered again", async () => {
+    // The same decision the ack's stored-delivery replay asks (`storedTurnVerdict`): a conversation a
+    // person answered after the stranded message owes it no reply, whoever holds it now.
+    const convId = 8942;
+    const messageId = 9445;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }]),
+      caughtUp: {
+        payload: [
+          {
+            id: messageId + 2,
+            content: "Oi, já te respondo por aqui.",
+            message_type: 1,
+            private: false,
+            inbox_id: CHATWOOT_INBOX_ID,
+            created_at: SENT_AT,
+            sender: { id: 5, name: "Atendente", type: "user" },
+            attachments: [],
+          },
+        ],
+      },
+    });
+    const turns = { built: 0 };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+    expect(turns.built).toBe(0);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
   test("the recovered message advances the inbound watermark, even past the conversation's own state", async () => {
     // `lastInboundAt` anchors the follow-up "new episode" gate and the WhatsApp 24h window, so
     // the recovered customer message must move it. The hard case: an away message after the strand

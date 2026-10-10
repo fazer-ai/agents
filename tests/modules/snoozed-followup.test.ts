@@ -1335,6 +1335,41 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     }
   });
 
+  test("an inbox rebound while the model writes sends nothing and closes nothing", async () => {
+    await setSettings(LADDER);
+    await seed(2088);
+    const other = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Outro durante",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {},
+      },
+    });
+    try {
+      const s = stub({
+        messages: [personAsked(270, 3)],
+        model: () =>
+          new SideEffectModel(async () => {
+            await suDb.inbox.update({
+              where: { id: inboxDbId },
+              data: { agentId: other.id },
+            });
+          }, REPLY),
+      });
+      await snoozedFollowUpHandler(jobFor(2088), appDb, s.deps);
+      expect(s.sent).toEqual([]);
+      expect(s.toggles).toEqual([]);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { agentId },
+      });
+      await suDb.agent.delete({ where: { id: other.id } });
+    }
+  });
+
   test("an unreadable conversation, or a snooze whose end date is missing, is tried again", async () => {
     await setSettings(LADDER);
     await seed(2034);

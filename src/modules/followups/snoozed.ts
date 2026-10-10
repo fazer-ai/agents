@@ -531,6 +531,15 @@ export async function snoozedFollowUpHandler(
 
   // A send-time message read that failed is not a withdrawal: the step is tried again, not dropped.
   let messageReadFailed = false;
+  const stillBoundToPlan = async () => {
+    const inbox = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.inbox.findUnique({
+        where: { id: ctx.conv.inboxId as bigint },
+        select: { agentId: true },
+      }),
+    );
+    return inbox?.agentId === ctx.agentId;
+  };
   const outcome = await runAgentNudge({
     signal: run?.signal,
     // The agent whose cadence, hours and fence were read: a rebinding since then is not its to send.
@@ -561,6 +570,9 @@ export async function snoozedFollowUpHandler(
     stillWanted: async ({ strict }) => {
       if (await (strict ? jobRetiredStrict(job, base) : jobRetired(job, base)))
         return false;
+      // The inbox still bound to the agent whose plan this is: a rebinding while the model ran is
+      // not this cadence's to finish. The sweep re-arms on the new binding.
+      if (!(await stillBoundToPlan())) return false;
       try {
         // The conversation first: an operator who unsnoozed it, dated the snooze or took it over
         // while the model ran (or while the post-actions read the labels) has taken it back, and no

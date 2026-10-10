@@ -10,11 +10,7 @@ import {
   heldDeliveryRowIds,
 } from "./delivery-queue";
 import { TURN_BEARING_EVENT } from "./normalize";
-import {
-  armDeliveryRecoveryOn,
-  isRecoverableStrand,
-  recoveryAgeCeilingMs,
-} from "./recover-delivery";
+import { armDeliveryRecoveryOn, isRecoverableStrand } from "./recover-delivery";
 import {
   armHumanReplyRecovery,
   namesRecoverableHumanReply,
@@ -373,7 +369,6 @@ interface StrandedRow {
   routeObserved: boolean | null;
   routeAgentBotId: number | null;
   routeRemembers: boolean | null;
-  owesMemoryOnly: boolean | null;
 }
 
 export interface SweepCounts {
@@ -427,8 +422,6 @@ async function mirrorOf(
   // Whether that responder has a ROUTE of its own — a bot row the fork could have delivered to.
   // Null when it was not asked (the loss verdict does not need it) or could not be read.
   responderHasRoute: boolean | null;
-  // The inbox's Chatwoot channel, which sets how late a recovery may still answer.
-  channelType: string | null;
 } | null> {
   if (row.conversationId === null) return null;
   const conversationId = row.conversationId;
@@ -447,7 +440,7 @@ async function mirrorOf(
     const inbox = conv.inboxId
       ? await db.inbox.findUnique({
           where: { id: conv.inboxId },
-          select: { agentId: true, channelType: true },
+          select: { agentId: true },
         })
       : null;
     const agentId = inbox?.agentId ?? null;
@@ -471,7 +464,6 @@ async function mirrorOf(
     return {
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
-      channelType: inbox?.channelType ?? null,
       agentId,
       lineAgentId,
       responderHasRoute:
@@ -613,7 +605,6 @@ export async function sweepStrandedDeliveries(
         routeObserved: true,
         routeAgentBotId: true,
         routeRemembers: true,
-        owesMemoryOnly: true,
       },
     }),
   )) as StrandedRow[];
@@ -646,7 +637,7 @@ export async function sweepStrandedDeliveries(
             return null;
           })
         : null;
-    await record(verdict, row, tenantId, mirror, counts, base, now);
+    await record(verdict, row, tenantId, mirror, counts, base);
   }
   return counts;
 }
@@ -685,7 +676,6 @@ async function record(
   mirror: Awaited<ReturnType<typeof mirrorOf>>,
   counts: SweepCounts,
   base: PrismaClient,
-  now: Date,
 ): Promise<void> {
   const label = `${row.deliveryId} (${row.event})`;
   // NOTE: the transcription strand takes one half from each neighbour. From the loss: the row goes
@@ -817,12 +807,7 @@ async function record(
   // Armed with the CAS, the only moment anything knows the row became recoverable (the query reads
   // PENDING and PROCESSING). Rows DEAD before recovery existed are never backfilled: that would arm
   // a whole backlog of model calls and replies at once, and they are already on the worklist.
-  // And only while the row is inside its channel's ceiling: past it the recovery could only refuse,
-  // and the job would take a slot in the traffic drain to say so.
-  const tooLate =
-    now.getTime() - row.receivedAt.getTime() >
-    recoveryAgeCeilingMs(row, mirror?.channelType ?? null);
-  const recoveryArmed = isRecoverableStrand(row) && !tooLate;
+  const recoveryArmed = isRecoverableStrand(row);
   // The CAS goes first and the line only if it wins: `writeFlowEvent` dispatches the alert as
   // it writes and nothing retracts it, and a redelivery claiming the row in between is a designed
   // path. A write failing after a won CAS leaves a DEAD row with no line, which is still the record.

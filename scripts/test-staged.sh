@@ -2,8 +2,8 @@
 # Runs the tests closest to a commit, not the whole suite, which is the CI gate. Selected: the staged
 # test files; the test files that import or `mock.module` a staged module (source, script or test
 # helper) directly; the ones that name a staged path as text (docs, fixtures, a source file read with
-# Bun.file); and, when src/ or tests/ is staged, the ones that walk a tree (a Glob or readdir sweep
-# reads every file without naming it, itself or through a helper under tests/).
+# Bun.file); the tree sweeps, for any change that is not only prose; and tests/lint/ when the Biome
+# config or a GritQL plugin changes.
 #
 # `bun test --changed` follows the whole import graph instead, and src/ is coupled enough that it
 # picks most of the suite for a central module: 547 of about 950 files for
@@ -89,9 +89,10 @@ for file in $staged; do
   esac
 done
 
-# A sweep reads a whole tree (src/ or tests/) without naming the file it trips on, so a staged file in
-# either runs every test that walks one, itself or through a helper under tests/.
-if printf '%s\n' "$staged" | grep -qE '^(src|tests)/'; then
+# A sweep reads whole trees (src/, tests/, scripts/, workers/) without naming the file it trips on,
+# so any staged change other than prose runs every test that walks one, itself or through a helper
+# under tests/.
+if printf '%s\n' "$staged" | grep -qvE '\.md$'; then
   walks='Glob\(|readdirSync|readdir\('
   # shellcheck disable=SC2046
   add $(grep_tests -E "$walks")
@@ -100,6 +101,12 @@ if printf '%s\n' "$staged" | grep -qE '^(src|tests)/'; then
     # shellcheck disable=SC2046
     add $(importers "$helper")
   done
+fi
+
+# Biome loads its config and the GritQL plugins rather than importing them; tests/lint/ runs them.
+if printf '%s\n' "$staged" | grep -qE '^(biome\.jsonc?|biome-plugins/)'; then
+  # shellcheck disable=SC2046
+  add $(find tests/lint -name '*.test.ts' 2>/dev/null)
 fi
 
 if [ -z "$picked" ]; then

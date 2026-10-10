@@ -472,6 +472,9 @@ const BARE_SLICES: Record<
   "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
+  // The reminder's window, the newest messages kept off an ARRAY of rows, twice: once to render,
+  // once to pick what to read.
+  "src/modules/followups/snoozed.ts": [2, "array"],
   // `parseIsoInstant`: the date half of an ISO instant, to check a calendar `Date.parse` would
   // silently normalise (February 30 to March 2). Position 10 is the format's own boundary, and the
   // string already matched an ASCII-only pattern.

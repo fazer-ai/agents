@@ -42,6 +42,7 @@ import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
+  hasAnswerableContent,
   parseChatwootMessages,
   pendingIncoming,
   toRenderable,
@@ -225,6 +226,9 @@ export interface CoalesceTurnContext {
     // The burst's earliest reaction, for a conversation with no mark (see `readReactionFrom`).
     reactionFrom?: number | null;
   };
+  // Called with the page the selection read when it found no burst to answer, so the caller can tell
+  // "nothing to answer" (the message that armed it has no answerable content) from nothing pending.
+  onEmptyBurst?: (page: ChatwootMessageRow[]) => void;
 }
 
 // Is there a burst to answer, and what is it. Shared with the flush's spend-ceiling branch, which must
@@ -323,6 +327,7 @@ export async function selectAnswerableBurst(
     | "settings"
     | "label"
     | "catchUp"
+    | "onEmptyBurst"
   > & {
     // Presente só quando o chamador quer os anexos sem extração abertos antes do render (ver
     // `fillMissingMedia` em CoalesceTurnContext). Os ids são os da linha de log: sem eles a linha
@@ -375,7 +380,10 @@ export async function selectAnswerableBurst(
       if (free.length > 0) pending = free;
     }
   }
-  if (pending.length === 0) return null;
+  if (pending.length === 0) {
+    ctx.onEmptyBurst?.(messages);
+    return null;
+  }
   let dropped: typeof pending = [];
 
   const cfg = readDebounceConfig(ctx.settings);
@@ -463,6 +471,7 @@ export async function selectAnswerableBurst(
       toMessageId: targetWatermark,
       base,
     });
+    ctx.onEmptyBurst?.(messages);
     return null;
   }
   return {
@@ -2288,8 +2297,25 @@ export async function flushDebounceJob(
     }
     // Set by the claim, read once the turn is over: see the branch at the tail of this function.
     let claimLostPartial = false;
+    // Set by the burst selection. Only a flush whose own message has nothing to answer arms the delayed
+    // close: an empty burst with nothing pending, or a turn that ran and sent nothing, is not that,
+    // and the job it would arm only takes the traffic lane's slots to find out.
+    const triggerId =
+      typeof job.payload.lastMessageId === "number"
+        ? job.payload.lastMessageId
+        : null;
+    let unanswerable = false;
     const outcome = await coalesceAndRunTurn(
       {
+        onEmptyBurst: (page) => {
+          unanswerable = page.some(
+            (m) =>
+              m.id === triggerId &&
+              m.messageType === "incoming" &&
+              !m.private &&
+              !hasAnswerableContent(m),
+          );
+        },
         signal: params.signal,
         afterThrow: jobRetriesAfterFailure(job) ? "retry" : "dead_letter",
         tenantId,
@@ -2346,7 +2372,7 @@ export async function flushDebounceJob(
     }
     // NOTE: Nothing to answer: the flush does not decide the conversation's fate on the hot path; it
     // arms the delayed judgement, which reads everything fresh.
-    if (outcome === "empty" && ctx.convDbId !== null) {
+    if (outcome === "empty" && unanswerable && ctx.convDbId !== null) {
       await armNothingToAnswer({
         tenantId,
         instanceId,
@@ -2355,10 +2381,7 @@ export async function flushDebounceJob(
         conversationDbId: ctx.convDbId,
         agentId: ctx.loaded.agentId,
         agentBotId: ctx.loaded.agentBotId,
-        triggerMessageId:
-          typeof job.payload.lastMessageId === "number"
-            ? job.payload.lastMessageId
-            : null,
+        triggerMessageId: triggerId,
         base,
       });
     }

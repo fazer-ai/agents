@@ -197,6 +197,17 @@ class Answers {
   }
 }
 
+class Silent {
+  calls = 0;
+  async invoke(): Promise<AIMessage> {
+    this.calls++;
+    return new AIMessage("");
+  }
+  bindTools(_t: unknown) {
+    return { invoke: () => this.invoke() };
+  }
+}
+
 class NeverCalled {
   async invoke(): Promise<AIMessage> {
     throw new Error("nothing to answer must not reach the model");
@@ -614,6 +625,52 @@ describe.skipIf(!dbUp)(
       expect(model.calls).toBeGreaterThan(0);
       expect(await armedRow(89_505)).toBeNull();
     });
+
+    test("a flush with nothing pending arms nothing", async () => {
+      await seedConversation(89_506);
+      const cw = chatwoot([]);
+      await flush(89_506, cw, new NeverCalled());
+      expect(await armedRow(89_506)).toBeNull();
+    });
+
+    test("a turn that ran on an answerable burst and sent nothing arms nothing", async () => {
+      await seedConversation(89_507);
+      const cw = chatwoot([{ id: 2, content: "quero cancelar" }]);
+      const model = new Silent();
+      await flush(89_507, cw, model);
+      expect(model.calls).toBeGreaterThan(0);
+      expect(cw.sent).toEqual([]);
+      expect(await armedRow(89_507)).toBeNull();
+    });
+
+    test("a flush whose own message was already answered arms nothing, whatever blank sits before it", async () => {
+      // The page still carries an older blank message; the judgement is about the message that armed
+      // the flush, which had something to answer and is below the mark.
+      const conv = await seedConversation(89_601);
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { lastHandledMessageId: 2 },
+      });
+      const cw = chatwoot([
+        { id: 1, content: "" },
+        { id: 2, content: "quero cancelar" },
+      ]);
+      await flush(89_601, cw, new NeverCalled());
+      expect(await armedRow(89_601)).toBeNull();
+    });
+
+    test.each([
+      ["our own blank message", 89_602, { type: 1 }],
+      ["a blank private note", 89_603, { private: true }],
+    ] as const)(
+      "a flush whose message id names %s arms nothing",
+      async (_, convId, shape) => {
+        await seedConversation(convId);
+        const cw = chatwoot([{ id: 2, content: "", ...shape }]);
+        await flush(convId, cw, new NeverCalled());
+        expect(await armedRow(convId)).toBeNull();
+      },
+    );
 
     // ---- the job -------------------------------------------------------------------------------
 

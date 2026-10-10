@@ -150,6 +150,22 @@ describe("snoozed ladder: what the live read decides", () => {
     expect(a?.text).toContain("<atendente enviou um arquivo do tipo 'audio'>");
   });
 
+  test("a WhatsApp template a person sent is a request and an answer", () => {
+    const a = anchorOf([
+      row({ id: 11 }),
+      row({ id: 12, messageType: "template", content: "Seu pedido?" }),
+    ]);
+    expect(a?.messageId).toBe(12);
+    expect(spoke([row({ id: 21, messageType: "template" })], 20)).toBe(true);
+    // A template the bot sent is not the person.
+    expect(
+      spoke(
+        [row({ id: 22, messageType: "template", senderType: "agent_bot" })],
+        20,
+      ),
+    ).toBe(false);
+  });
+
   test("an operator's emoji reaction is neither a request nor an answer", () => {
     const a = anchorOf([
       row({ id: 11 }),

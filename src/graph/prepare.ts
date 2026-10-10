@@ -361,6 +361,9 @@ export interface AgentConfig {
   // Delivered turns per conversation per rolling hour; 0 = no limit
   // (agent.settings.limits.maxTurnsPerHour).
   maxTurnsPerHour: number;
+  // Proactive messages delivered per conversation per rolling 24 hours; 0 = no limit
+  // (agent.settings.limits.maxProactivePerDay).
+  maxProactivePerDay: number;
   // Whether a closed attendance gets folded into the contact's memory instead of staying raw on
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
@@ -1020,6 +1023,7 @@ export async function loadAgentConfig(
     maxHistoryTokens: limits.maxHistoryTokens,
     retrySilence: limits.retrySilence,
     maxTurnsPerHour: limits.maxTurnsPerHour,
+    maxProactivePerDay: limits.maxProactivePerDay,
     memoryCompaction: memoryCfg.enabled,
     historyDates: memoryRead.historyDates.enabled,
     memoryCompactionOverride: {

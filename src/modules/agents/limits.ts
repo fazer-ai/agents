@@ -4,8 +4,8 @@
 // - maxHistoryTokens: null (no ceiling) by default, so an upgrade never silently starts forgetting.
 // - retrySilence: a reactive turn ending with no reply, handoff or `skip_reply` is asked once more;
 //   on unless `false`, since an unanswered customer is the worse failure.
-// - maxTurnsPerHour: delivered turns per conversation per rolling hour (src/modules/turn-limit); ON
-//   by default, and only an explicit 0 turns it off, so "no limit" is a stored choice.
+// - maxTurnsPerHour (src/modules/turn-limit) and maxProactivePerDay (src/modules/proactive-limit):
+//   per-conversation counts, ON by default; only an explicit 0 turns one off.
 
 export interface LimitsConfig {
   maxToolCalls: number;
@@ -15,6 +15,8 @@ export interface LimitsConfig {
   retrySilence: boolean;
   // 0 = no limit. Not null: this shape is written back to storage, where null reads as the default.
   maxTurnsPerHour: number;
+  // 0 = no limit, for the same reason.
+  maxProactivePerDay: number;
 }
 
 export const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -31,12 +33,17 @@ const MAX_HISTORY_TOKENS = 1_000_000;
 export const DEFAULT_MAX_TURNS_PER_HOUR = 60;
 export const MAX_TURNS_PER_HOUR = 1_000;
 
+// A follow-up sequence has at most ten steps, so a valid sequence alone never reaches the default.
+export const DEFAULT_MAX_PROACTIVE_PER_DAY = 10;
+export const MAX_PROACTIVE_PER_DAY = 1_000;
+
 export function readLimitsConfig(settings: unknown): LimitsConfig {
   const def: LimitsConfig = {
     maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
     maxHistoryTokens: null,
     retrySilence: true,
     maxTurnsPerHour: DEFAULT_MAX_TURNS_PER_HOUR,
+    maxProactivePerDay: DEFAULT_MAX_PROACTIVE_PER_DAY,
   };
   if (!settings || typeof settings !== "object") return def;
   const l = (settings as Record<string, unknown>).limits;
@@ -63,13 +70,29 @@ export function readLimitsConfig(settings: unknown): LimitsConfig {
   // Only an explicit `false` turns it off: absent, null or anything else keeps the default.
   const retrySilence = bag.retrySilence !== false;
 
-  const turns = bag.maxTurnsPerHour;
-  const maxTurnsPerHour =
-    typeof turns === "number" && Number.isFinite(turns)
-      ? turns <= 0
-        ? 0
-        : Math.min(MAX_TURNS_PER_HOUR, Math.max(1, Math.round(turns)))
-      : DEFAULT_MAX_TURNS_PER_HOUR;
+  const maxTurnsPerHour = readCountLimit(
+    bag.maxTurnsPerHour,
+    DEFAULT_MAX_TURNS_PER_HOUR,
+    MAX_TURNS_PER_HOUR,
+  );
+  const maxProactivePerDay = readCountLimit(
+    bag.maxProactivePerDay,
+    DEFAULT_MAX_PROACTIVE_PER_DAY,
+    MAX_PROACTIVE_PER_DAY,
+  );
 
-  return { maxToolCalls, maxHistoryTokens, retrySilence, maxTurnsPerHour };
+  return {
+    maxToolCalls,
+    maxHistoryTokens,
+    retrySilence,
+    maxTurnsPerHour,
+    maxProactivePerDay,
+  };
+}
+
+// A count limit that is ON by default: absent or non-numeric reads as the default, zero or below as
+// off, anything else clamped to 1..max.
+function readCountLimit(raw: unknown, def: number, max: number): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return def;
+  return raw <= 0 ? 0 : Math.min(max, Math.max(1, Math.round(raw)));
 }

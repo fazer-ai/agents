@@ -215,7 +215,12 @@ describe.skipIf(!dbUp)("the per-conversation turn limit", () => {
             model: "gpt-5.4-mini",
             credentialRef: `vault:${llmKey.id}`,
           },
-          settings: { split: { enabled: false }, limits },
+          // NOTE: The proactive limit off, so a follow-up here records its send where the turn limit
+          // reads it, and not as the proactive limit's reservation taken before the claim.
+          settings: {
+            split: { enabled: false },
+            limits: { ...limits, maxProactivePerDay: 0 },
+          },
         },
       });
     const limited = await agent("Limitado", { maxTurnsPerHour: LIMIT });

@@ -219,9 +219,12 @@ export function alertLinks(
       url: consoleUrl(`/conversations/${a.conversationId}`, opts),
     });
   }
-  // NOTE: A tripped turn limit is a setting the operator may want to raise during legitimate use, so
-  // the alert goes straight to it.
-  if (a.stage === "turn_limit" && a.agentId != null) {
+  // NOTE: A tripped turn or proactive limit is a setting the operator may want to raise during
+  // legitimate use, so the alert goes straight to it.
+  if (
+    (a.stage === "turn_limit" || a.stage === "proactive_limit") &&
+    a.agentId != null
+  ) {
     links.push({
       label: "Change the limit",
       url: turnLimitSettingsUrl(a.tenantId, a.agentId),

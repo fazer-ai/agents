@@ -26,6 +26,10 @@ export const FLOW_STAGES = [
   // The per-conversation turn limit handing a conversation to a person: the agent answered so often
   // in the last hour that the other side is most likely automated. Before the turn, like the ceiling.
   "turn_limit",
+  // The per-conversation proactive limit refusing a follow-up, reminder or integration event: the
+  // conversation already received that many proactive messages in the last 24 hours. Only the first
+  // refusal of a day is `error`; the conversation stays with the agent.
+  "proactive_limit",
   "generate", // the LLM turn (graph.invoke)
   "guardrail", // input/output moderation trip (a guardrails check fired)
   "tool", // a tool call the agent made during the turn (name + status + duration)

@@ -374,6 +374,74 @@ describe.skipIf(!dbUp)("the traffic drain", () => {
     },
   );
 
+  test.each([
+    ["the tick's claim", undefined],
+    ["the drain's claim", 5],
+  ])(
+    "%s takes a recovery a busy conversation deferred before the recoveries armed after it",
+    async (_, spendCap) => {
+      // The deferred row was armed first and is due again a minute later than the rest: its place
+      // is its age, and the later run_at only says when it may run.
+      await arm("DELIVERY_RECOVERY", "deferred", 1_000);
+      await arm("DELIVERY_RECOVERY", "later-1", 1_800_000);
+      await arm("DELIVERY_RECOVERY", "later-2", 1_800_000);
+      const ago = (ms: number) => new Date(Date.now() - ms);
+      await suDb.schedulerJob.updateMany({
+        where: { tenantId, dedupeKey: "deferred" },
+        data: { createdAt: ago(3_600_000) },
+      });
+      await suDb.schedulerJob.updateMany({
+        where: { tenantId, dedupeKey: { in: ["later-1", "later-2"] } },
+        data: { createdAt: ago(1_800_000) },
+      });
+      const order: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const jobs = await claimDueTrafficJobs(
+          1,
+          appDb,
+          new Date(),
+          tenantId,
+          spendCap,
+        );
+        abandonClaimed(jobs);
+        order.push(...jobs.map((job) => job.dedupeKey ?? ""));
+      }
+      expect(order[0]).toBe("deferred");
+      expect(order.slice(1).sort()).toEqual(["later-1", "later-2"]);
+      await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+    },
+  );
+
+  test("with one permit, the permit goes to the older recovery, not to the one due earlier", async () => {
+    await arm("DELIVERY_RECOVERY", "older", 1_000);
+    await arm("DELIVERY_RECOVERY", "due-earlier", 1_800_000);
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, dedupeKey: "older" },
+      data: { createdAt: new Date(Date.now() - 3_600_000) },
+    });
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, dedupeKey: "due-earlier" },
+      data: { createdAt: new Date(Date.now() - 1_800_000) },
+    });
+    const jobs = await claimDueTrafficJobs(5, appDb, new Date(), tenantId, 1);
+    abandonClaimed(jobs);
+    expect(jobs.map((job) => job.dedupeKey)).toEqual(["older"]);
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
+  test("a row whose run_at is still ahead is not claimed, however old it is", async () => {
+    await arm("DELIVERY_RECOVERY", "not-yet", -60_000);
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, dedupeKey: "not-yet" },
+      data: { createdAt: new Date(Date.now() - 3_600_000) },
+    });
+    await arm("DELIVERY_RECOVERY", "due", 1_000);
+    const jobs = await claimDueTrafficJobs(5, appDb, new Date(), tenantId);
+    abandonClaimed(jobs);
+    expect(jobs.map((job) => job.dedupeKey)).toEqual(["due"]);
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
   test("the permits no claimed row spends go back at once", async () => {
     install();
     await arm("DELIVERY_RECOVERY", "spends", 120_000);

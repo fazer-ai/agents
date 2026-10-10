@@ -167,7 +167,7 @@ describe("a 404 about the tenant selector the session is carrying", () => {
 });
 
 // ── unhandled errors ─────────────────────────────────────────────────────────────────────────────
-// The failures the app did not plan for. Outside development src/app.ts answers every thrown value
+// The failures the app did not plan for. src/app.ts answers every thrown value
 // that is not a refusal Elysia raised with "Something went wrong", whatever `code` it carries,
 // because an unhandled error's message can hold anything.
 

@@ -7,7 +7,7 @@ import {
   t,
   ValidationError,
 } from "elysia";
-import { errorDetail, isFrameworkRefusal } from "@/api/lib/unhandled-error";
+import { isFrameworkRefusal } from "@/api/lib/unhandled-error";
 
 // The policy behind src/app.ts's 500, as a table. The wiring — that the handler actually consults
 // it, and what the client receives — is asserted over the real app in tests/api/refusal-wire.test.ts;
@@ -86,28 +86,4 @@ describe("isFrameworkRefusal", () => {
       expect(isFrameworkRefusal(thrown)).toBe(false);
     },
   );
-});
-
-describe("errorDetail", () => {
-  test("an Error gives its stack", () => {
-    const e = new Error("boom");
-    expect(errorDetail(e)).toBe(e.stack ?? "boom");
-  });
-
-  test("an Error with no stack falls back to the message", () => {
-    const e = new Error("boom");
-    e.stack = undefined;
-    expect(errorDetail(e)).toBe("boom");
-  });
-
-  // `throw "boom"` reaches the handler as the string, and reading .stack ?? .message off it would
-  // make the development response the literal "undefined".
-  test.each([
-    ["boom", "boom"],
-    [42, "42"],
-    [null, "null"],
-    [undefined, "undefined"],
-  ])("a thrown %p renders as %p", (thrown, expected) => {
-    expect(errorDetail(thrown)).toBe(expected as string);
-  });
 });

@@ -9,7 +9,7 @@ import {
 // What the app is allowed to say when a request fails in a way nobody planned for. The policy is
 // stated by EXCLUSION and keyed on the thrown value's IDENTITY: a value that IS one of Elysia's own
 // refusals keeps Elysia's answer; anything else is an unhandled failure whose text never reaches the
-// client outside development. Not keyed on `code`: Elysia hands over the thrown value's own `code`,
+// client. Not keyed on `code`: Elysia hands over the thrown value's own `code`,
 // which every library stamps (Prisma `P2025`, Node `EACCES`, a DOMException's `25`), so no list
 // over it closes. Import these as ESM, never `require`: a `require("elysia")` resolves a SECOND
 // instance of the package, against which every `instanceof` is false (fail-open).
@@ -26,12 +26,4 @@ export function isFrameworkRefusal(error: unknown): boolean {
     // break a deliberate answer.
     error instanceof ElysiaCustomStatusResponse
   );
-}
-
-// The development-only detail. `error` is typed as `Error` at the call site but is not one at runtime
-// whenever a handler throws a primitive: `throw "boom"` reaches here as the string itself, and reading
-// `.stack ?? .message` off it yields undefined for both, and the body would read "undefined".
-export function errorDetail(error: unknown): string {
-  if (error instanceof Error) return error.stack ?? error.message;
-  return String(error);
 }

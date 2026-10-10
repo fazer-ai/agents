@@ -8,13 +8,14 @@ import { cspDirectives } from "@/api/lib/csp";
 import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
+import { loggedPath, loggedUrl } from "@/api/lib/request-target";
 import { schemaRefusal } from "@/api/lib/schema-refusal";
 import {
   applyStaticCacheControl,
   developmentIndexHandler,
   productionIndexHandler,
 } from "@/api/lib/static-cache";
-import { errorDetail, isFrameworkRefusal } from "@/api/lib/unhandled-error";
+import { isFrameworkRefusal } from "@/api/lib/unhandled-error";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
   credentialRateLimitMiddleware,
@@ -112,8 +113,13 @@ export async function buildApp() {
       }),
     )
     .use(localeMiddleware)
-    .onAfterResponse(({ request, set }) => {
-      logger.info("%s %s [%s]", request.method, request.url, set.status);
+    .onAfterResponse(({ request, route, set }) => {
+      logger.info(
+        "%s %s [%s]",
+        request.method,
+        loggedUrl(request.url, route),
+        set.status,
+      );
     })
     .onAfterHandle(applyStaticCacheControl)
     // NOTE: AppErrors carry their HTTP status and log at warn (expected control flow). The message is
@@ -121,9 +127,9 @@ export async function buildApp() {
     // Registered BEFORE the limiters: an AppError comes from a matched route that was already charged,
     // and the plugin's own `onError` cannot tell our NotFoundError from a missing route, so it would
     // charge again and can turn an admitted 404 into a 429.
-    .onError(({ path, error, request, set }) => {
+    .onError(({ path, route, error, request, set }) => {
       if (!(error instanceof AppError)) return;
-      logger.warn("%s %s", path, error.message);
+      logger.warn("%s %s", loggedPath(path, route), error.message);
       const body = refusalBody(error, request.headers.get("accept-language"));
       // NOTE: keep set.status in sync, because the access log in onAfterResponse reads it and a raw
       // Response alone would make a 4xx show up there as a 500.
@@ -143,7 +149,8 @@ export async function buildApp() {
     // from the plugin's own `onError`, and Elysia stops at the first error handler that returns a
     // value, so answering NOT_FOUND or VALIDATION before the plugin would leave them uncharged.
     // Framework refusals such as PARSE return `undefined` below, so they reach the plugin either way.
-    .onError(({ path, error, request, set }) => {
+    .onError(({ path, route, error, request, set }) => {
+      const logged = loggedPath(path, route);
       // NOTE: a schema refusal in the app's own vocabulary (body and log line: api/lib/schema-refusal.ts).
       // Here and not next to the AppError branch, so the plugin's charge for VALIDATION is not skipped
       // (see middlewares/rateLimit.ts). Keyed on identity, not `code`: Elysia forwards a thrown value's
@@ -155,15 +162,15 @@ export async function buildApp() {
         );
         const line = "%s %s";
         if (refusal.severity === "error") {
-          logger.error(line, path, refusal.log);
+          logger.error(line, logged, refusal.log);
         } else {
-          logger.warn(line, path, refusal.log);
+          logger.warn(line, logged, refusal.log);
         }
         set.status = refusal.status;
         return Response.json(refusal.body, { status: refusal.status });
       }
 
-      logger.error("%s\n%s", path, error);
+      logger.error("%s\n%s", logged, error);
 
       if (error instanceof NotFoundError) {
         // NOTE: API endpoints respond with JSON 404. SPA paths normally
@@ -177,17 +184,14 @@ export async function buildApp() {
       }
 
       // NOTE: anything that is not a refusal Elysia itself raised is an unhandled failure, and its
-      // text reaches the client only in development. Decided from the thrown value, not from `code`,
-      // which any library can set (see api/lib/unhandled-error.ts).
+      // text reaches the log above and never the client, in development too: a dev server receiving
+      // Chatwoot webhooks is reachable from outside. Decided from the thrown value, not from
+      // `code`, which any library can set (see api/lib/unhandled-error.ts).
       if (isFrameworkRefusal(error)) return;
       // NOTE: `set.status` too: the access log reads it, and Elysia seeds it from the thrown value's
       // own `status`, so an error carrying `status: 401` would be answered 500 but logged as 401.
       set.status = 500;
-      const message =
-        config.env === "development"
-          ? errorDetail(error)
-          : "Something went wrong";
-      return new Response(message, { status: 500 });
+      return new Response("Something went wrong", { status: 500 });
     })
     .use(
       await staticPlugin({

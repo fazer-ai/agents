@@ -35,6 +35,7 @@ import {
   contactAuthHasRuleStage,
 } from "@/modules/contact-auth/settings";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import { approvalNoticesForTurn } from "@/modules/documents/approval";
 import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
@@ -1584,7 +1585,13 @@ async function runAgentNudgeBody(
   // messages land on one thread. Resolved here rather than inside the claim: `getCheckpointer` can
   // reach the network on first use, and the claim runs inside an advisory-lock transaction.
   const checkpointer = params.deps?.checkpointer ?? (await getCheckpointer());
+  const standingNotices = await approvalNoticesForTurn(
+    params.tenantId,
+    { conversationId: cfg.conversationDbId, threadId: params.threadId },
+    base,
+  );
   const graph = await buildModelAndGraph(cfg, tools, {
+    standingNotices,
     makeModel: params.deps?.makeModel,
     checkpointer,
     // NOTE: THE SAME SEAM THE REACTIVE TURN HANDS DOWN: a nudge runs from a scheduler job that

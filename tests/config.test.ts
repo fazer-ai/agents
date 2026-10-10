@@ -2,131 +2,137 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { parseIntSetting } from "@/config";
 
-// Every numeric environment variable goes through one validated parser, and this file keeps that
-// true as variables are added. An unchecked `Number(RAW)` turns "15s" into NaN and "1e309" into
-// Infinity: a `setInterval` worker then ticks about every millisecond against the database, and
-// `Date` arithmetic gets an Invalid Date (the retention sweep stops, the heartbeat never comes due).
-// Checked on the SOURCE because `bun test` evaluates `@/config` once per worker, so a hostile
-// environment set here never reaches it. The parser itself is driven with hostile input in
-// tests/api/middlewares/credentialRateLimit.test.ts; this file proves config.ts routes through it.
-
-// Whole comment lines are dropped before scanning, since the NOTEs in config.ts quote `Number(RAW)`.
-// A `Number(` after code on the same line is still read as code, the safe direction to be wrong in.
-const isComment = (line: string): boolean => /^\s*(\/\/|\/\*|\*)/.test(line);
-
-const CODE = readFileSync("src/config.ts", "utf8")
-  .split("\n")
-  .filter((line) => !isComment(line))
-  .join("\n");
+// Every numeric environment variable goes through one validated parser. An unchecked `Number(RAW)`
+// turns "15s" into NaN and "1e309" into Infinity: a `setInterval` worker then ticks about every
+// millisecond against the database, and `Date` arithmetic gets an Invalid Date (the retention sweep
+// stops, the heartbeat never comes due). `@/config` is evaluated once per import specifier, so each
+// environment below loads a fresh copy of the module under its own query string.
+const CONFIG_MODULE = Bun.resolveSync("@/config", import.meta.dir);
 const ENV_EXAMPLE = readFileSync(".env.example", "utf8");
 
-// Every `Number(x)` call, by argument. The parser converts its own input, so `raw` is the one
-// argument allowed to appear; anything else is an environment variable being converted without being
-// checked. `Number.isInteger` and `Number.isSafeInteger` do not match, which is deliberate: they are
-// the check, not the conversion.
-const numberCallArguments = (code: string): string[] => {
-  const found = new Set<string>();
-  for (const match of code.matchAll(/\bNumber\(([^)]*)\)/g)) {
-    const argument = (match[1] ?? "").trim();
-    if (argument) found.add(argument);
-  }
-  return [...found].sort();
-};
+// The numeric defaults .env.example documents, which is where the operator reads them.
+const DOCUMENTED = new Map(
+  [...ENV_EXAMPLE.matchAll(/^([A-Z][A-Z0-9_]*)=([0-9]+)\s*$/gm)].map(
+    (match) => [match[1] as string, Number(match[2])],
+  ),
+);
 
-// Each `parseIntSetting(...)` call, split into its top-level arguments. Walked rather than matched: a
-// regex cannot tell the call's closing paren from an inner one, nor an argument comma from a comma
-// inside a consequence sentence, which several calls have.
-interface Call {
-  variable: string;
-  reportedAs: string;
-  fallback: string;
-  minimum: string | undefined;
+let loads = 0;
+async function loadConfig(
+  env: Record<string, string | undefined>,
+): Promise<Record<string, unknown>> {
+  const saved = Object.fromEntries(
+    Object.keys(env).map((key) => [key, process.env[key]]),
+  );
+  try {
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    loads += 1;
+    return (await import(`${CONFIG_MODULE}?load=${loads}`)).default;
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
-const parserCalls = (code: string): Call[] => {
-  const calls: Call[] = [];
-  const CALL = "parseIntSetting(";
-  for (
-    let at = code.indexOf(CALL);
-    at !== -1;
-    at = code.indexOf(CALL, at + 1)
-  ) {
-    let depth = 1;
-    let quote: string | undefined;
-    const args: string[] = [];
-    let current = "";
-    let i = at + CALL.length;
-    for (; i < code.length && depth > 0; i++) {
-      const ch = code[i] as string;
-      if (quote) {
-        if (ch === "\\") {
-          current += ch + (code[i + 1] ?? "");
-          i++;
-          continue;
-        }
-        if (ch === quote) quote = undefined;
-        current += ch;
-        continue;
-      }
-      if (ch === '"' || ch === "'" || ch === "`") {
-        quote = ch;
-        current += ch;
-        continue;
-      }
-      if (ch === "(") depth++;
-      if (ch === ")") {
-        depth--;
-        if (depth === 0) break;
-      }
-      if (ch === "," && depth === 1) {
-        args.push(current.trim());
-        current = "";
-        continue;
-      }
-      current += ch;
-    }
-    if (current.trim()) args.push(current.trim());
-    calls.push({
-      variable: args[0] ?? "",
-      reportedAs: (args[1] ?? "").replaceAll('"', ""),
-      fallback: (args[2] ?? "").replaceAll("_", ""),
-      minimum: args[5],
-    });
+async function refusalOf(
+  env: Record<string, string | undefined>,
+): Promise<string | null> {
+  try {
+    await loadConfig(env);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
   }
-  return calls;
-};
+}
 
-const CALLS = parserCalls(CODE);
+// Every primitive in the loaded config, by path, so a variable's effect is found by what it changes.
+function leaves(value: unknown, at = ""): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, inner] of Object.entries(value)) {
+      for (const [path, leaf] of leaves(inner, at ? `${at}.${key}` : key)) {
+        out.set(path, leaf);
+      }
+    }
+  } else {
+    out.set(at, Array.isArray(value) ? JSON.stringify(value) : value);
+  }
+  return out;
+}
+
+// Every documented number, unset, so the baseline is the code's own defaults and not this machine's
+// `.env`.
+const UNSET = Object.fromEntries(
+  [...DOCUMENTED.keys()].map((key) => [key, undefined]),
+);
+
+interface Setting {
+  variable: string;
+  documented: number;
+  // The config paths this variable moves, and what each holds with the variable unset.
+  defaults: Map<string, unknown>;
+}
+
+// A documented variable is a config setting when setting it moves a value in the loaded config; one
+// that moves nothing (`POSTGRES_PORT`) is read by something else.
+async function numericSettings(): Promise<Setting[]> {
+  const baseline = leaves(await loadConfig(UNSET));
+  const settings: Setting[] = [];
+  for (const [variable, documented] of DOCUMENTED) {
+    const probe = String(documented > 1 ? documented - 1 : documented + 1);
+    const moved = leaves(await loadConfig({ ...UNSET, [variable]: probe }));
+    const defaults = new Map<string, unknown>();
+    for (const [path, value] of moved) {
+      if (value !== baseline.get(path)) defaults.set(path, baseline.get(path));
+    }
+    if (defaults.size > 0) settings.push({ variable, documented, defaults });
+  }
+  return settings;
+}
+
+const SETTINGS = await numericSettings();
 
 describe("numeric environment parsing", () => {
-  // NOTE: a variable added with the unchecked `Number(RAW)` shape shows up here by name.
-  test("nothing is converted to a number without being checked", () => {
-    expect(numberCallArguments(CODE)).toEqual(["raw"]);
-  });
-
-  // NOTE: one variable's value reported under another's name gives the operator an error naming a variable
-  // they never set, and no type checker sees it because both sides are just strings.
-  test("every parsed variable is reported under its own name", () => {
-    const mismatched = CALLS.filter(
-      (call) => call.variable !== call.reportedAs,
-    ).map((call) => `${call.variable} reported as ${call.reportedAs}`);
-    expect(mismatched).toEqual([]);
-  });
-
-  // NOTE: a mistyped fallback runs the app on a number nobody chose. Checked against `.env.example` rather
-  // than a list here, because that is where the operator reads the default, so this also fails when
-  // the documentation drifts from the code or a parsed variable is not documented at all.
-  test("every default is the one .env.example documents", () => {
-    const documented = new Map(
-      [...ENV_EXAMPLE.matchAll(/^([A-Z][A-Z0-9_]*)=([0-9]+)\s*$/gm)].map(
-        (match) => [match[1] as string, match[2] as string],
-      ),
+  // NOTE: the probe is looking at something: a discovery that finds no setting would pass every test
+  // below.
+  test("the documented numeric settings are found in the loaded config", () => {
+    expect(SETTINGS.length).toBeGreaterThanOrEqual(25);
+    expect(SETTINGS.map((s) => s.variable)).toContain(
+      "OBSERVE_WORKER_INTERVAL_MS",
     );
-    const disagreements = CALLS.filter(
-      (call) => documented.get(call.variable) !== call.fallback,
-    ).map(
-      (call) =>
-        `${call.variable}: config.ts says ${call.fallback}, .env.example says ${documented.get(call.variable) ?? "nothing"}`,
+  });
+
+  // NOTE: a variable converted with the unchecked `Number(RAW)` shape loads "15s" as NaN instead of
+  // refusing it, and one reported under another's name gives the operator an error naming a variable
+  // they never set.
+  test("garbage is refused at load, naming the variable that carried it", async () => {
+    const wrong: string[] = [];
+    for (const { variable } of SETTINGS) {
+      const refusal = await refusalOf({ ...UNSET, [variable]: "15s" });
+      if (!refusal?.startsWith(`${variable} must be`)) {
+        wrong.push(`${variable}: ${refusal ?? "loaded"}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  // NOTE: a mistyped fallback runs the app on a number nobody chose. Checked against `.env.example`,
+  // because that is where the operator reads the default, so this also fails when the documentation
+  // drifts from the code.
+  test("every default is the one .env.example documents", () => {
+    const disagreements = SETTINGS.flatMap(
+      ({ variable, documented, defaults }) =>
+        [...defaults]
+          .filter(([, value]) => value !== documented)
+          .map(
+            ([path, value]) =>
+              `${variable}: config.${path} defaults to ${String(value)}, .env.example says ${documented}`,
+          ),
     );
     expect(disagreements).toEqual([]);
   });
@@ -134,18 +140,14 @@ describe("numeric environment parsing", () => {
   // NOTE: zero is admitted only where the CONSUMER treats it as a value rather than an absence; elsewhere it
   // is a 1ms tick, a heartbeat due at `now`, or a port nothing can route to. Widening the exception
   // fails here until someone makes it deliberately.
-  test("zero is a value at one setting, and this is which", () => {
-    const admitZero = CALLS.filter((call) => call.minimum === "0").map(
-      (call) => call.variable,
-    );
+  test("zero is a value at one setting, and this is which", async () => {
+    const admitZero: string[] = [];
+    for (const { variable } of SETTINGS) {
+      if ((await refusalOf({ ...UNSET, [variable]: "0" })) === null) {
+        admitZero.push(variable);
+      }
+    }
     expect(admitZero).toEqual(["ALERT_COALESCE_WINDOW_MS"]);
-  });
-
-  // Every variable is checked, so the scan above must be finding calls at all. Without this, deleting
-  // the parser and every call site would leave both tests above green.
-  test("the parser is actually used", () => {
-    expect(CALLS.length).toBeGreaterThanOrEqual(13);
-    expect(new Set(CALLS.map((call) => call.variable)).size).toBe(CALLS.length);
   });
 });
 
@@ -175,11 +177,16 @@ describe("the timer bound is the runtime's, not a policy", () => {
 // interval is a safety net with a floor of its own, and the operator reads both numbers where the
 // variable is set.
 describe("the observe drain's interval", () => {
-  const call = CALLS.find((c) => c.variable === "OBSERVE_WORKER_INTERVAL_MS");
-
-  test("has a default and a minimum of its own", () => {
-    expect(call?.fallback).toBe("2500");
-    expect(call?.minimum).toBe("100");
+  test("has a default and a minimum of its own", async () => {
+    const intervalOf = async (raw: string | undefined) =>
+      (
+        (await loadConfig({ OBSERVE_WORKER_INTERVAL_MS: raw }))
+          .observeWorker as {
+          intervalMs: number;
+        }
+      ).intervalMs;
+    expect(await intervalOf(undefined)).toBe(2_500);
+    expect(await intervalOf("100")).toBe(100);
   });
 
   test(".env.example states the default and the minimum next to the variable", () => {
@@ -189,17 +196,10 @@ describe("the observe drain's interval", () => {
     expect(note).toContain("default 2500, minimum 100");
   });
 
-  test("a value below the minimum is refused by name at boot", () => {
-    expect(() =>
-      parseIntSetting(
-        "99",
-        "OBSERVE_WORKER_INTERVAL_MS",
-        2_500,
-        "why.",
-        2_147_483_647,
-        Number(call?.minimum),
-      ),
-    ).toThrow(/OBSERVE_WORKER_INTERVAL_MS must be a whole number between 100/);
+  test("a value below the minimum is refused by name at boot", async () => {
+    expect(await refusalOf({ OBSERVE_WORKER_INTERVAL_MS: "99" })).toMatch(
+      /^OBSERVE_WORKER_INTERVAL_MS must be a whole number between 100/,
+    );
   });
 });
 
@@ -245,19 +245,22 @@ describe("the minimum", () => {
   });
 });
 
-// The storage-directory fallback chain, read off config.ts rather than driven with an environment.
-// Same reason as above: `@/config` is evaluated once per worker, so a test that set the variables
-// would be asserting whatever the environment held when the first file in the worker imported it.
+// The storage-directory fallback chain.
 describe("documentsStorageDir fallback chain", () => {
-  const source = readFileSync("src/config.ts", "utf8");
-
   // NOTE: the ORDER matters: Coolify freezes a compose `environment:` value at install time, so an existing
   // install keeps QUOTES_STORAGE_DIR forever. Without that fallback it lands on the in-container
   // default and every PDF disappears on the next redeploy, silently.
-  test("prefers the new name, then the frozen old one, then the default", () => {
-    expect(source).toContain(
-      'DOCUMENTS_STORAGE_DIR || QUOTES_STORAGE_DIR || "./data/documents"',
-    );
+  test("prefers the new name, then the frozen old one, then the default", async () => {
+    const dirFor = async (documents?: string, quotes?: string) =>
+      (
+        await loadConfig({
+          DOCUMENTS_STORAGE_DIR: documents,
+          QUOTES_STORAGE_DIR: quotes,
+        })
+      ).documentsStorageDir;
+    expect(await dirFor("/new", "/old")).toBe("/new");
+    expect(await dirFor(undefined, "/old")).toBe("/old");
+    expect(await dirFor(undefined, undefined)).toBe("./data/documents");
   });
 
   // NOTE: a variable the composes do not declare lands on that in-container default, which is the same

@@ -5,6 +5,7 @@ import {
   isAdminRole,
   resolveRequestTenantContext,
   roleAtLeast,
+  runScopedOn,
 } from "@/lib/tenancy";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
@@ -149,9 +150,59 @@ describe("resolveRequestTenantContext", () => {
   });
 });
 
-// The registry of tenant-scoped models is a hand-kept list in `multi-tenant.ts`. This reads it
-// against the schema, so a new table with a `tenant_id` is a DECISION: register it, or name it below
-// with a reason. The list is not an approval: everything but the documented global/identity tables
+// The scope's query hook, taken from the extension `runScopedOn` installs: a client that records the
+// extension and refuses the transaction, so no database is reached.
+async function scopeHook(tenantId: bigint) {
+  let hook:
+    | ((p: {
+        model: string;
+        operation: string;
+        args: Record<string, unknown>;
+        query: (a: unknown) => Promise<unknown>;
+      }) => Promise<unknown>)
+    | undefined;
+  const refuse = { $transaction: () => Promise.reject(new Error("no db")) };
+  const client = {
+    $extends(ext: unknown) {
+      const record = (def: {
+        query: { $allModels: { $allOperations: typeof hook } };
+      }) => {
+        hook = def.query.$allModels.$allOperations;
+        return refuse;
+      };
+      return typeof ext === "function"
+        ? ext({ $extends: record })
+        : record(ext as never);
+    },
+  };
+  await runScopedOn(
+    client as never,
+    { tenantId, userId: null, role: "TENANT_ADMIN" },
+    async () => null,
+  ).catch(() => undefined);
+  if (!hook) throw new Error("runScopedOn installed no query extension");
+  return hook;
+}
+
+// Whether the scoped client overrides a caller's tenant_id on every insert shape for this model.
+async function scopeStamps(model: string): Promise<boolean> {
+  const hook = await scopeHook(7n);
+  const spoofed = () => ({ tenantId: 9n });
+  const create = { data: spoofed() };
+  const createMany = { data: [spoofed(), spoofed()] };
+  const upsert = { create: spoofed(), update: {}, where: {} };
+  const pass = async (a: unknown) => a;
+  await hook({ model, operation: "create", args: create, query: pass });
+  await hook({ model, operation: "createMany", args: createMany, query: pass });
+  await hook({ model, operation: "upsert", args: upsert, query: pass });
+  return [create.data, ...createMany.data, upsert.create].every(
+    (d) => d.tenantId === 7n,
+  );
+}
+
+// The registry of tenant-scoped models is a hand-kept list in `multi-tenant.ts`. This holds what the
+// scoped client DOES with each schema model against the schema, so a new table with a `tenant_id` is
+// a DECISION: register it, or name it below with a reason. The list is not an approval: everything but the documented global/identity tables
 // is unaudited, and the point is that the set cannot grow silently.
 describe("every model with a tenant_id is accounted for", () => {
   const KNOWN_UNREGISTERED: Record<string, string> = {
@@ -175,7 +226,7 @@ describe("every model with a tenant_id is accounted for", () => {
     PlaygroundSession: "pre-existing gap, not audited",
   };
 
-  test("it is registered, or named here with a reason", () => {
+  test("it is registered, or named here with a reason", async () => {
     const schema = readFileSync("prisma/schema.prisma", "utf8");
     const withTenantId = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)]
       // NOTE: a field the client ignores (`@ignore`) is not one it can read or write, and the
@@ -187,15 +238,12 @@ describe("every model with a tenant_id is accounted for", () => {
     // NOTE: a sweep that finds nothing is a broken sweep, not a clean repo.
     expect(withTenantId.length).toBeGreaterThan(20);
 
-    const src = readFileSync("src/lib/tenancy/multi-tenant.ts", "utf8");
     const registered = new Set(
-      [
-        ...(src
-          .match(
-            /TENANT_SCOPED_MODELS = new Set<string>\(\[([\s\S]*?)\]\)/,
-          )?.[1]
-          ?.matchAll(/"(\w+)"/g) ?? []),
-      ].map(([, m]) => m as string),
+      (
+        await Promise.all(
+          withTenantId.map(async (m) => ((await scopeStamps(m)) ? m : null)),
+        )
+      ).filter((m): m is string => m !== null),
     );
     expect(registered.has("PlaygroundTurnNote")).toBe(true);
 

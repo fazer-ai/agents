@@ -93,11 +93,10 @@ jobs:
             [ -n "$f" ] || continue
             case "$f" in
               # DOCUMENTATION THE SUITE READS AS INPUT, and therefore not documentation for this
-              # question. Three tests open `docs/deploy.md` and assert on its prose, so editing it
-              # can turn the suite red; classifying it as skippable would let that red reach `main`
-              # and surface on the next code PR, charged to whoever did not cause it. Measured:
-              # replacing `stop the old process` inside the migration note takes
-              # native-tool-names-renamed-by-migration from 2 pass to 1 pass 1 fail.
+              # question. A doc a test opens and asserts on can turn the suite red when edited;
+              # classifying it as skippable would let that red reach `main` and surface on the next
+              # code PR, charged to whoever did not cause it. No test reads `docs/deploy.md` today;
+              # the arm stays because the fence's fixtures name it.
               # tests/scripts/ci-required-contexts.test.ts derives this list from the tests
               # themselves, so a test that starts reading another doc turns that fence red.
               docs/deploy.md) echo "test input: $f"; code=true ;;

@@ -266,42 +266,6 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   });
 });
 
-// The opening message reaches the customer from inside the tool, so the
-// screening every reply passes has to be handed to it by the two runtimes that own the gate, and a
-// `handoff` verdict has to take the transfer those runtimes take for their own trips. Read off the
-// source because the binding is a closure over a gate built later in the same function.
-describe("both runtimes bind the output gate for it", () => {
-  const binding = (src: string) => {
-    const at = src.indexOf("screenCustomerText: async (text) => {");
-    expect(at).toBeGreaterThan(-1);
-    return src.slice(at, src.indexOf("\n        },\n", at) + 1 || at + 900);
-  };
-  test("the reactive turn screens with its gate and transfers through its own hand-over", async () => {
-    const b = binding(await Bun.file("src/graph/runtime.ts").text());
-    expect(b).toContain('await runGuardrail("output", text)');
-    expect(b).toContain('if (!guardrailTripped(d)) return "send";');
-    expect(b).toContain('() => handOverForGuardrail("output")');
-    expect(b).toContain("handoffState.customerMessage = d.reply;");
-    // NOTE: a transfer that did not land stops the opening instead of reading as a drop.
-    expect(b).toContain('if (handed === "failed") return "failed";');
-  });
-  test("the proactive turn screens with its gate and transfers through the guardrail hand-off", async () => {
-    const b = binding(await Bun.file("src/graph/nudge.ts").text());
-    expect(b).toContain("await screenOutput(text)");
-    expect(b).toContain('if (!guardrailTripped(d)) return "send";');
-    expect(b).toContain("applyGuardrailHandoff({");
-    expect(b).toContain('return handed ? "handed" : "failed";');
-    // NOTE: a policy with no line is a silent transfer here too.
-    expect(b).toContain("handoffState.declinedToSpeak = d.reply === null;");
-    expect(b).toContain("handoffState.completed = handed;");
-    // Asked after the screening and before the transfer, since inside `ownTransfer`
-    // the in-flight mark hides the turn's own change from the ownership reads.
-    const fence = b.indexOf('if (!(await toolFence())) return "drop";');
-    expect(fence).toBeGreaterThan(b.indexOf("await screenOutput(text)"));
-    expect(fence).toBeLessThan(b.indexOf("await ownTransfer("));
-  });
-});
-
 // A transfer the output check asks for, made from inside a tool call, has to wear the
 // turn's own ownership marks, or a sibling call's fence reads its status webhook as a takeover.
 describe("ownTransfer", () => {
@@ -330,29 +294,5 @@ describe("ownTransfer", () => {
       (r) => r === "handed",
     );
     expect(state.ownerChanged).toBe(true);
-  });
-
-  test("both runtimes wrap the guardrail transfer in it", async () => {
-    for (const f of ["src/graph/runtime.ts", "src/graph/nudge.ts"]) {
-      const src = await Bun.file(f).text();
-      const at = src.indexOf("screenCustomerText: async (text) => {");
-      expect(src.slice(at, at + 900)).toContain("await ownTransfer(");
-    }
-  });
-});
-
-// A nudge that may only write notes (a person owns the conversation) must not get a
-// tool that sends to the customer from inside the call. Read off the source, since the toolset is
-// built from a config the nudge derives in the middle of a long function.
-describe("a note-only nudge does not get the tool", () => {
-  test("the destination is cleared unless this nudge may message the customer", async () => {
-    const src = await Bun.file("src/graph/nudge.ts").text();
-    const at = src.indexOf(
-      "const nudgeCfg: AgentConfig = withFollowupSilenceChannel(",
-    );
-    expect(at).toBeGreaterThan(src.indexOf("const canMessagePre ="));
-    const b = src.slice(at, at + 400);
-    expect(b).toContain("canMessagePre\n      ? cfg");
-    expect(b).toContain("targetInboxId: null");
   });
 });

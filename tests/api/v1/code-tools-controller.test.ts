@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { writeBody } from "@/api/v1/code-tools.controller";
+import { Elysia } from "elysia";
+import { codeToolsController, writeBody } from "@/api/v1/code-tools.controller";
 import { codeToolCreateSchema } from "@/modules/code-tools/service";
 
 // The same drift guard tools-controller.test.ts holds: Elysia's `normalize` strips any request-body
@@ -16,17 +16,70 @@ describe("code-tools controller writeBody vs service schema (drift guard)", () =
 
 // The transport must not rebuild the field map. A record schema turns a `__proto__` field into the
 // object's prototype on the way in, so the service's refusal would judge a schema the caller never
-// sent and the tool would save with its declared argument missing (measured: `t.Record` answers own
-// keys `["cpf"]` for a body that also sent `__proto__`).
+// sent and the tool would save with its declared argument missing. Each route's own registered body
+// schema is mounted on a bare app and fed the raw JSON a caller sends.
 describe("the write body keeps the schema map as it arrived", () => {
-  test("inputSchema is not a Record on either the write or the test route", () => {
-    const src = readFileSync("src/api/v1/code-tools.controller.ts", "utf8");
-    const records = [
-      ...src.matchAll(/inputSchema: t\.Optional\(\s*t\.Record/g),
-    ];
-    expect(records.length).toBe(0);
-    expect(src.includes("inputSchema: t.Optional(\n    t.Unknown({")).toBe(
-      true,
+  const RAW_SCHEMA =
+    '{"cpf":{"type":"string"},"__proto__":{"type":"string","required":true}}';
+
+  async function ownKeysThrough(
+    schema: unknown,
+    raw: string,
+    pick: (body: Record<string, unknown>) => unknown,
+  ): Promise<string[]> {
+    const app = new Elysia().post(
+      "/t",
+      ({ body }) => ({
+        keys: Object.keys(pick(body as Record<string, unknown>) as object),
+      }),
+      { body: schema as typeof writeBody },
     );
+    const res = await app.handle(
+      new Request("http://localhost/t", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: raw,
+      }),
+    );
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { keys: string[] }).keys;
+  }
+
+  const bodyOf = (method: string, path: string): unknown => {
+    const route = (
+      codeToolsController.routes as unknown as {
+        method: string;
+        path: string;
+        hooks?: { body?: unknown };
+      }[]
+    ).find((r) => r.method === method && r.path === path);
+    if (!route?.hooks?.body) throw new Error(`${method} ${path} has no body`);
+    return route.hooks.body;
+  };
+
+  test("the create and update routes hand the service every field, __proto__ included", async () => {
+    for (const [method, path] of [
+      ["POST", "/v1/code-tools/"],
+      ["PATCH", "/v1/code-tools/:id"],
+    ] as const) {
+      const keys = await ownKeysThrough(
+        bodyOf(method, path),
+        `{"name":"consulta","label":"Consulta","description":"d","code":"return 1","inputSchema":${RAW_SCHEMA}}`,
+        (body) => body.inputSchema,
+      );
+      expect({ route: `${method} ${path}`, keys }).toEqual({
+        route: `${method} ${path}`,
+        keys: ["cpf", "__proto__"],
+      });
+    }
+  });
+
+  test("the test route hands the run every field, __proto__ included", async () => {
+    const keys = await ownKeysThrough(
+      bodyOf("POST", "/v1/code-tools/test"),
+      `{"definition":{"code":"return 1","inputSchema":${RAW_SCHEMA}}}`,
+      (body) => (body.definition as Record<string, unknown>).inputSchema,
+    );
+    expect(keys).toEqual(["cpf", "__proto__"]);
   });
 });

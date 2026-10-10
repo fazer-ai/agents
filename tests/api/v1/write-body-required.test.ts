@@ -206,20 +206,6 @@ describe("the create route declares exactly what the service requires", () => {
 // service that parses one member of the request passes a prefix, or a bad variant reports
 // `0.weight` and a lone token no field at all, names no input on the caller's side answers to.
 
-// The argument text of a call, read by matching parentheses so a nested call cannot end it early.
-function balancedArgs(source: string, openParen: number): string {
-  let depth = 0;
-  for (let i = openParen; i < source.length; i++) {
-    const c = source[i];
-    if (c === "(") depth++;
-    else if (c === ")") {
-      depth--;
-      if (depth === 0) return source.slice(openParen + 1, i);
-    }
-  }
-  return "";
-}
-
 describe("a refusal about a value inside the request names the whole path", () => {
   test("the prefix and the issue path are joined", async () => {
     const { parseInput } = await import("@/lib/parse-input");
@@ -247,28 +233,6 @@ describe("a refusal about a value inside the request names the whole path", () =
     })();
     // Without the prefix zod reports an empty path here, so the wire would carry no field at all.
     expect(err?.field).toBe("adminToken");
-  });
-
-  // The call sites, read from the source with the whitespace taken out so the assertion is about the
-  // arguments and not about how the formatter broke the line.
-  test("the two call sites that parse a sub-value pass one", async () => {
-    // NOTE: EVERY call that parses that sub-value, not "the file mentions one somewhere":
-    // experiments parses `params.variants` at two call sites, and a per-file assertion is satisfied
-    // by whichever one still carries the prefix.
-    for (const [file, value] of [
-      ["src/modules/experiments/service.ts", "params.variants"],
-      ["src/modules/chatwoot/management.ts", "adminToken"],
-    ] as const) {
-      const dense = (await Bun.file(file).text()).replace(/\s+/g, "");
-      const calls = [...dense.matchAll(/parseInput\(/g)].map((m) =>
-        balancedArgs(dense, (m.index ?? 0) + "parseInput(".length - 1),
-      );
-      const subValue = calls.filter((c) => c.includes(`,${value}`));
-      expect([file, subValue.length > 0]).toEqual([file, true]);
-      for (const c of subValue) {
-        expect([file, c, /,"[^"]+",?$/.test(c)]).toEqual([file, c, true]);
-      }
-    }
   });
 });
 

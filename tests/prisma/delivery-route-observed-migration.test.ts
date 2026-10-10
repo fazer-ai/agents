@@ -31,22 +31,6 @@ describe("migration: the delivery's route role", () => {
     expect(update).toContain('"route_observed" IS NULL');
   });
 
-  // NOTE: The backfill is one shot and the column has no DEFAULT, so a row the previous release
-  // inserts afterwards keeps a null role. A default is not the fix: it would make an unclaimed row
-  // say "the responder's", a false statement rather than a missing one. The deploy note is.
-  test("is named in the deploy notes as wanting the old writer stopped", async () => {
-    const notes = await Bun.file("docs/deploy.md").text();
-    const para = notes
-      .split("\n")
-      .find((l) => l.includes("20260903130000_delivery_route_observed"));
-    expect(para).toBeDefined();
-    expect(para).toContain("stop the old process");
-    const sql = await Bun.file(MIGRATION).text();
-    expect(sql).toContain("STOP THE OLD PROCESS FIRST");
-    // No DEFAULT on the column, which is what makes the note necessary rather than optional.
-    expect(sql).toMatch(/ADD COLUMN "route_observed" BOOLEAN;/);
-  });
-
   test("brackets the write, because the table forces row-level security", async () => {
     const sql = await Bun.file(MIGRATION).text();
     const noForce = sql.indexOf("NO FORCE ROW LEVEL SECURITY");

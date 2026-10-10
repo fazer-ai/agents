@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
   AIMessage,
@@ -12,7 +12,12 @@ import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import { CALLED_OFF_TOOL_RESULT } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
-import { withoutComments } from "@/tests/utils/source-text";
+import * as reminders from "@/modules/appointments/reminders";
+import * as redirect from "@/modules/channel-redirect/followup";
+import * as debounce from "@/modules/debounce/handler";
+import * as approvalOutcome from "@/modules/documents/approval-outcome";
+import * as followups from "@/modules/followups/handlers";
+import { getJobHandler, type JobContext } from "@/modules/scheduler/worker";
 
 // Where a job's deadline meets the graph. The signal is never handed to `graph.invoke`:
 // aborting an invoke between a checkpointed tool call and its result leaves the thread with a call no
@@ -310,110 +315,64 @@ describe("a job's deadline inside the graph (issue #811)", () => {
     expect(performance.now() - t).toBeLessThan(2_000);
   });
 
-  test("no graph invoke in the runtime or the nudge is handed a signal", async () => {
-    // The structural half: the two places a job's turn invokes its graph build the invoke's options
-    // next to `recursionLimit`, and none of them may carry `signal`.
-    for (const file of ["src/graph/runtime.ts", "src/graph/nudge.ts"]) {
-      const src = await Bun.file(file).text();
-      const sites = [...src.matchAll(/recursionLimit: recursionLimitFor\(/g)];
-      expect(sites.length).toBeGreaterThan(0);
-      for (const m of sites) {
-        // The rest of the options object: up to the brace that closes it, nested ones included.
-        let depth = 1;
-        let end = m.index;
-        while (depth > 0 && end < src.length) {
-          end++;
-          if (src[end] === "{") depth++;
-          else if (src[end] === "}") depth--;
-        }
-        const options = src.slice(m.index, end);
-        expect({ file, options }).toEqual({
-          file,
-          options: options.replace(/\bsignal\b[^\n]*\n/g, ""),
-        });
+  // The handlers are tested by calling them, which skips the registration, and a registration that
+  // wraps its handler is where the signal is easiest to drop. Each kind whose handler runs a model
+  // turn is driven through its REGISTERED handler with a job context, and the function it delegates
+  // to must receive that context's signal; from there each handler's own deadline tests carry it to
+  // the turn.
+  test.each([
+    {
+      kind: "FOLLOWUP",
+      register: followups.registerFollowUpHandlers,
+      spy: () => spyOn(followups, "followUpHandler"),
+      signalOf: (args: unknown[]) =>
+        (args[3] as JobContext | undefined)?.signal,
+    },
+    {
+      kind: "APPOINTMENT_REMINDER",
+      register: reminders.registerAppointmentReminderHandler,
+      spy: () => spyOn(reminders, "appointmentReminderHandler"),
+      signalOf: (args: unknown[]) =>
+        (args[3] as JobContext | undefined)?.signal,
+    },
+    {
+      kind: "REDIRECT_FOLLOWUP",
+      register: redirect.registerRedirectFollowUpHandlers,
+      spy: () => spyOn(redirect, "redirectFollowUpHandler"),
+      signalOf: (args: unknown[]) =>
+        (args[3] as JobContext | undefined)?.signal,
+    },
+    {
+      kind: "DEBOUNCE",
+      register: debounce.registerDebounceHandler,
+      spy: () => spyOn(debounce, "flushDebounceJob"),
+      signalOf: (args: unknown[]) =>
+        (args[0] as { signal?: AbortSignal } | undefined)?.signal,
+    },
+    {
+      kind: "DOCUMENT_APPROVAL_OUTCOME",
+      register: approvalOutcome.registerDocumentApprovalOutcomeHandler,
+      spy: () => spyOn(approvalOutcome, "runOutcomeJob"),
+      signalOf: (args: unknown[]) =>
+        (args[3] as JobContext | undefined)?.signal,
+    },
+  ])(
+    "the $kind registration hands its job's signal on",
+    async ({ kind, register, spy, signalOf }) => {
+      register();
+      const handler = getJobHandler(kind);
+      if (!handler) throw new Error(`${kind} has no registered handler`);
+      const delegate = spy().mockImplementation((async () => ({
+        outcome: "done",
+      })) as never);
+      const signal = new AbortController().signal;
+      try {
+        await handler({} as never, {} as never, { signal } as JobContext);
+        expect(delegate).toHaveBeenCalledTimes(1);
+        expect(signalOf(delegate.mock.calls[0] as unknown[])).toBe(signal);
+      } finally {
+        delegate.mockRestore();
       }
-    }
-  });
-
-  test("every send of a nudge is marked as delivered before it leaves", async () => {
-    // After a send the step is the run's, and what follows it (labels, resolve) runs past the
-    // deadline; the mark is what tells `stillWanted` so. A send without it would lose those to a
-    // deadline that fired during it, and a new send added later is held to the same line.
-    const src = withoutComments(await Bun.file("src/graph/nudge.ts").text());
-    const lines = src.split("\n");
-    const sends = lines
-      .map((line, i) => ({ line, i }))
-      .filter(({ line }) =>
-        /await client\.send(Message|Template|PrivateNote)\(/.test(line),
-      );
-    expect(sends.length).toBeGreaterThan(0);
-    for (const { line, i } of sends) {
-      expect({ line: line.trim(), marked: lines[i - 1]?.trim() }).toEqual({
-        line: line.trim(),
-        marked: "delivered = true;",
-      });
-    }
-  });
-
-  test("no silent end of a nudge drops a refused post-action", async () => {
-    // A silent end sent nothing, so a post-action the deadline refused leaves the step to the retry;
-    // an end that reported "silent" over it would have the step stamped and committed with its
-    // labels or resolve missing. So a call whose answer is thrown away must be followed by an end
-    // that did send something.
-    const src = withoutComments(await Bun.file("src/graph/nudge.ts").text());
-    const bare = [...src.matchAll(/\n\s*await applyPostActions\(/g)];
-    expect(bare.length).toBeGreaterThan(0);
-    for (const m of bare) {
-      const after = src.slice(m.index);
-      const end = after
-        .slice(after.indexOf(";") + 1)
-        .match(/return [^;]*;/)?.[0];
-      expect({ end, silent: /"silent"/.test(end ?? "") }).toEqual({
-        end,
-        silent: false,
-      });
-    }
-  });
-
-  test("every job kind whose handler runs a model turn hands the turn its job's signal", async () => {
-    // The handlers are tested by calling them, which skips the registration, and a registration
-    // that wraps its handler is where the signal is easiest to drop. A kind that starts running a turn
-    // has to be added to the list below, which is the point: it cannot join without being looked at.
-    const turn = /\b(runAgentNudge|runLoadedTurn|runAgentTurn)\(/;
-    const noTurn = new Set(["FOLLOWUP_SWEEP"]);
-    const kinds: string[] = [];
-    for await (const file of new Bun.Glob("src/**/*.ts").scan(".")) {
-      const src = withoutComments(await Bun.file(file).text());
-      if (!turn.test(src)) continue;
-      const sites = src.matchAll(
-        /registerJobHandler\(\s*"([A-Z_]+)",\s*([\s\S]*?)\);\n/g,
-      );
-      for (const [, kind = "", handler = ""] of sites) {
-        if (noTurn.has(kind)) continue;
-        kinds.push(kind);
-        // The call, not the arrow's parameter list, which names `ctx` whether or not it is passed on.
-        let body = handler.includes("=>")
-          ? handler.slice(handler.indexOf("=>"))
-          : handler;
-        const named = handler.trim();
-        if (/^\w+$/.test(named)) {
-          const start = src.indexOf(`function ${named}(`);
-          body = src.slice(start, src.indexOf("\n}\n", start));
-        }
-        // The signal, or the whole context, which also carries `commit`.
-        const forwards = /\bctx\??\.signal\b|[(,]\s*ctx\s*\)/.test(body);
-        expect({ kind, forwards }).toEqual({
-          kind,
-          forwards: true,
-        });
-      }
-    }
-    expect(kinds.sort()).toEqual([
-      "APPOINTMENT_REMINDER",
-      "DEBOUNCE",
-      "DOCUMENT_APPROVAL_OUTCOME",
-      "FOLLOWUP",
-      "REDIRECT_FOLLOWUP",
-    ]);
-  });
+    },
+  );
 });

@@ -1,130 +1,148 @@
 import { describe, expect, test } from "bun:test";
-import { codeOnly } from "@/tests/utils/source-text";
+import { DECISION_PROVIDER_REGISTRY } from "@/modules/decisions/providers";
+import { getSttProvider, STT_PROVIDER_NAMES } from "@/modules/stt/providers";
+import { getTtsProvider, TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
+import {
+  getVisionProvider,
+  VISION_PROVIDER_NAMES,
+} from "@/modules/vision/providers";
 
-// A file that authenticates to an operator-configured endpoint and issues a request is a provider
-// boundary, and every one of them is listed below saying HOW it keeps the other end's text out of an
-// operator-facing store. A rule kept beside its call sites, or in prose (`docs/stt.md`), is invisible
-// where the next call site is born, so a new one fails here until somebody answers the question.
+// Every provider adapter the app calls with an operator's credential answers for the other end's
+// text: what a provider writes in a failed response may quote the customer's content or the
+// operator's account, and the error's `.message` reaches execution_logs, alerts and the
+// conversation's private note. So each registered adapter is handed a failure whose body is that
+// kind of text, in every field the known error shapes use, and its error must not repeat it.
+// Embeddings (`throughProvider`) are held to the same rule in
+// tests/modules/rag-embeddings-failure.test.ts.
 
-// How each boundary discharges the rule.
-//
-//   own-error-type   throws only a class it defines, built from a status and a constant
-//   throughProvider  wraps the call in `@/lib/provider-failure`
-//   runModelCall     the request is issued elsewhere, behind the model semaphore, which reduces it
-//   not-a-provider   matched the predicate without being one; the entry records the judgement
-type Discharge =
-  | "own-error-type"
-  | "throughProvider"
-  | "runModelCall"
-  | "not-a-provider";
+const QUOTED = "Maria disse que o CPF dela termina em 4471";
 
-const BOUNDARIES: Record<string, Discharge> = {
-  // Builds the chat clients; nothing here awaits one. Every invocation goes through `runModelCall`
-  // (src/graph/model-limit.ts), which replaces what the provider wrote.
-  "src/graph/models.ts": "runModelCall",
-  "src/modules/stt/providers.ts": "own-error-type",
-  "src/modules/vision/providers.ts": "own-error-type",
-  "src/modules/tts/providers.ts": "own-error-type",
-  // The OpenAI client builds its message out of the response body (asserted in
-  // tests/modules/rag-embeddings-failure.test.ts), so this one needs the wrapper.
-  "src/modules/rag/embeddings.ts": "throughProvider",
-  // Never reads a response body into an error: `DecisionProviderError` carries the status alone.
-  "src/modules/decisions/providers.ts": "own-error-type",
-  // OUR server, not a provider client: it matches on the API-key admin tools it exposes and on a
-  // URL fetch that carries no operator credential to a model vendor.
-  "src/modules/mcp/server.ts": "not-a-provider",
-};
-
-// Authenticates to something the operator configured, AND issues the request itself.
-function isCandidate(src: string): boolean {
-  if (!src.includes("apiKey")) return false;
-  return /fetchImpl\(|await fetch\(|new OpenAIEmbeddings|new Chat[A-Z]/.test(
-    src,
-  );
+function hostile(status: number): typeof fetch {
+  const body = JSON.stringify({
+    error: { message: QUOTED, code: QUOTED, type: QUOTED },
+    detail: { status: QUOTED, message: QUOTED },
+    message: QUOTED,
+  });
+  return (async () =>
+    new Response(body, {
+      status,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
 }
 
-async function candidates(): Promise<string[]> {
-  const { Glob } = await import("bun");
-  const found: string[] = [];
-  for await (const file of new Glob("src/**/*.ts").scan(".")) {
-    // NOTE: through the scan, so a comment naming `await fetch(` does not make a file a provider
-    // boundary.
-    if (isCandidate(codeOnly(await Bun.file(file).text()))) found.push(file);
+async function messageOf(call: () => Promise<unknown>): Promise<string> {
+  try {
+    await call();
+  } catch (e) {
+    return (e as Error).message;
   }
-  return found.sort();
+  return "did not throw";
 }
 
-describe("every provider boundary answers for the other end's text", () => {
-  test("a boundary that is not on the list fails this test", async () => {
-    const found = await candidates();
-    // NOTE: both directions: an unlisted file is a new boundary, and a listed file that stopped
-    // matching means the list is describing code that no longer exists.
-    expect(found).toEqual(Object.keys(BOUNDARIES).sort());
-  });
+const BASE_URL = "https://203.0.113.10/v1";
 
-  // The predicate itself, against a known positive and a known negative. A sweep that matches
-  // nothing reports a clean tree forever, which is the failure mode of every check like this one.
-  test("the predicate recognises a boundary and ignores a bystander", () => {
-    expect(
-      isCandidate(
-        "const res = await req.fetchImpl(url, { headers: { authorization: apiKey } });",
-      ),
-    ).toBe(true);
-    expect(isCandidate("const apiKey = cfg.apiKey; return apiKey;")).toBe(
-      false,
-    );
-    expect(isCandidate("await fetch(url); // no credential here")).toBe(false);
-  });
+describe("a provider's failure text stays out of the error", () => {
+  for (const status of [400, 500]) {
+    test(`speech-to-text, every adapter, on a ${status}`, async () => {
+      const leaked: string[] = [];
+      for (const name of STT_PROVIDER_NAMES) {
+        const provider = getSttProvider(name);
+        if (!provider) throw new Error(`${name} left the registry`);
+        const message = await messageOf(() =>
+          provider.transcribe({
+            audio: new Uint8Array([1, 2, 3]).buffer,
+            mimeType: "audio/ogg",
+            language: "pt",
+            model: provider.defaultModel || "m",
+            apiKey: "k",
+            baseURL: BASE_URL,
+            fetchImpl: hostile(status),
+          }),
+        );
+        if (message === "did not throw" || message.includes(QUOTED)) {
+          leaked.push(`${name}: ${message}`);
+        }
+      }
+      expect(leaked).toEqual([]);
+    });
 
-  test("each answer is the one the file actually gives", async () => {
-    const offenders: string[] = [];
-    for (const [file, discharge] of Object.entries(BOUNDARIES)) {
-      const src = codeOnly(await Bun.file(file).text());
-      if (discharge === "throughProvider") {
-        // Per ENTRY POINT, not per file: a file-level check is satisfied by a module with two
-        // exported calls and only one of them wrapped (the half-converted shape).
-        const entries = src.split(/export async function /).slice(1);
-        if (entries.length === 0) {
-          offenders.push(
-            `${file}: says throughProvider, exports no async entry point`,
+    test(`text-to-speech, every adapter, on a ${status}`, async () => {
+      const leaked: string[] = [];
+      for (const name of TTS_PROVIDER_NAMES) {
+        const provider = getTtsProvider(name);
+        if (!provider) throw new Error(`${name} left the registry`);
+        const message = await messageOf(() =>
+          provider.synthesize({
+            text: "Olá",
+            voice: "v",
+            model: "m",
+            language: "pt",
+            apiKey: "k",
+            baseURL: BASE_URL,
+            fetchImpl: hostile(status),
+            format: "ogg_opus",
+          }),
+        );
+        if (message === "did not throw" || message.includes(QUOTED)) {
+          leaked.push(`${name}: ${message}`);
+        }
+      }
+      expect(leaked).toEqual([]);
+    });
+
+    test(`vision, every adapter and kind, on a ${status}`, async () => {
+      const leaked: string[] = [];
+      for (const name of VISION_PROVIDER_NAMES) {
+        const provider = getVisionProvider(name);
+        if (!provider) throw new Error(`${name} left the registry`);
+        for (const [kind, mimeType] of [
+          ["image", "image/png"],
+          ["document", "application/pdf"],
+        ] as const) {
+          const message = await messageOf(() =>
+            provider.extract({
+              bytes: new Uint8Array([1, 2, 3]).buffer,
+              mimeType,
+              kind,
+              prompt: "descreva",
+              model: provider.defaultModel || "m",
+              apiKey: "k",
+              baseURL: BASE_URL,
+              fetchImpl: hostile(status),
+              timeoutMs: 5_000,
+            }),
           );
-        }
-        for (const entry of entries) {
-          const name = entry.slice(0, entry.indexOf("("));
-          if (!/\bthroughProvider\(/.test(entry)) {
-            offenders.push(
-              `${file}: ${name} does not go through throughProvider`,
-            );
+          if (message === "did not throw" || message.includes(QUOTED)) {
+            leaked.push(`${name} ${kind}: ${message}`);
           }
         }
       }
-      if (discharge === "own-error-type") {
-        const owned = [...src.matchAll(/class (\w+) extends Error/g)].map(
-          (m) => m[1],
+      expect(leaked).toEqual([]);
+    });
+
+    test(`decisions, every adapter, on a ${status}`, async () => {
+      const leaked: string[] = [];
+      for (const [name, provider] of Object.entries(
+        DECISION_PROVIDER_REGISTRY,
+      )) {
+        const message = await messageOf(() =>
+          provider.decide({
+            input: "oi",
+            questions: [
+              { name: "quer_comprar", type: "yes_no", instructions: "?" },
+            ],
+            model: "m",
+            apiKey: "k",
+            baseURL: BASE_URL,
+            fetchImpl: hostile(status),
+            signal: new AbortController().signal,
+          }),
         );
-        if (owned.length === 0) {
-          offenders.push(`${file}: says own-error-type, defines none`);
-        }
-        // The CALL, not the identifier: a file that defines its own error and then throws something
-        // else somewhere is the half-converted shape this is meant to catch.
-        for (const m of src.matchAll(/throw new (\w+)\(/g)) {
-          const thrown = m[1] as string;
-          if (!owned.includes(thrown)) {
-            offenders.push(
-              `${file}: throws ${thrown}, which it does not define`,
-            );
-          }
+        if (message === "did not throw" || message.includes(QUOTED)) {
+          leaked.push(`${name}: ${message}`);
         }
       }
-      if (
-        discharge === "runModelCall" &&
-        /await \w*\.(invoke|stream)\(/.test(src)
-      ) {
-        offenders.push(
-          `${file}: says runModelCall, awaits a model call itself`,
-        );
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
+      expect(leaked).toEqual([]);
+    });
+  }
 });

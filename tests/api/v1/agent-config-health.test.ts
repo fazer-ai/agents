@@ -174,17 +174,26 @@ describe.skipIf(!dbUp)("GET /v1/agents/:id/config-health", () => {
     expect(body.counts.blocking).toBeGreaterThanOrEqual(1);
   });
 
-  // The OpenAPI text is what a REST client reads, and nothing else checks it against the body. A SET
-  // COMPARISON on the shape line, not a presence check: the paragraph names each field twice, so one
-  // occurrence can go stale while the other keeps the word present. It catches both directions.
+  // The OpenAPI text is what a REST client reads, and nothing else checks it against the body. Read
+  // from the route the app registered, which is what the spec is generated from. A SET COMPARISON on
+  // the shape line, not a presence check: the paragraph names each field twice, so one occurrence
+  // can go stale while the other keeps the word present. It catches both directions.
   test("the route's documented shape is the shape it returns", async () => {
-    const source = await Bun.file(
-      new URL("../../../src/api/v1/agents.controller.ts", import.meta.url),
-    ).text();
-    const start = source.indexOf('"/:id/config-health"');
-    expect(start).toBeGreaterThan(0);
-    const doc = source.slice(start, start + 3000);
-    const shape = doc.match(/Shape: `\{([^}]*)\}`/);
+    const route = (
+      server as unknown as {
+        routes: {
+          method: string;
+          path: string;
+          hooks?: { detail?: { description?: string } };
+        }[];
+      }
+    ).routes.find(
+      (r) =>
+        r.method === "GET" && r.path === "/api/v1/agents/:id/config-health",
+    );
+    const shape = (route?.hooks?.detail?.description ?? "").match(
+      /Shape: `\{([^}]*)\}`/,
+    );
     expect(shape).not.toBeNull();
     const documented = (shape?.[1] ?? "")
       .split(",")

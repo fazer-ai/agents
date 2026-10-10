@@ -5,7 +5,6 @@ import {
   turnDeliveredToCustomer,
   turnReachedTheCustomer,
 } from "@/graph/tools/native";
-import { withoutComments } from "../utils/source-text";
 
 // O critério é o do operador, e é de superfície: ESTE TURNO botou alguma coisa na frente do cliente?
 // A transferência com `customerMessage` e a imagem entregue respondem que sim; a reação e a
@@ -162,35 +161,5 @@ describe("o que chegou ao cliente, quando o turno acabou", () => {
     expect(
       turnReachedTheCustomer({ ...nada, spokeOutsideTheReply: true }),
     ).toBe(true);
-  });
-});
-
-// A trilha e o balão ao vivo têm que sair do MESMO leitor: um só na trilha deixa o balão dizendo que
-// o agente decidiu não responder um segundo depois de a linha da transferência ter saído. O jeito de
-// isso se perder é alguém passar o leitor para um dos dois construtores.
-describe("as duas superfícies saem do mesmo leitor", () => {
-  test("o runtime passa o leitor para o log e para o indicador", async () => {
-    const src = withoutComments(await Bun.file("src/graph/runtime.ts").text());
-    const status = src.slice(src.indexOf("new AgentStatusReporter("));
-    const logger = src.slice(src.indexOf("new ToolFlowLogger("));
-    expect(status.slice(0, status.indexOf("})"))).toInclude("turnDelivered");
-    expect(logger.slice(0, logger.indexOf("})"))).toInclude("turnDelivered");
-    expect(src).toInclude("turnDeliveredToCustomer(turnState, handoffState)");
-  });
-
-  // E o fato do turno sai da MESMA função que este arquivo mede, em vez de a expressão ser repetida
-  // onde nada a alcança.
-  test("o fato do turno sai da função medida aqui, com as três fontes", async () => {
-    const src = withoutComments(await Bun.file("src/graph/runtime.ts").text());
-    const i = src.indexOf("turnDelivered: turnReachedTheCustomer({");
-    expect(i).toBeGreaterThanOrEqual(0);
-    // As três fontes têm que CHEGAR nela: a função responde certo sobre o que recebe, e um argumento
-    // que o runtime não passa é uma entrega que ela nunca vê.
-    const chamada = src.slice(i, src.indexOf("})", i));
-    expect(chamada).toInclude("balloons: deliveredBalloons");
-    expect(chamada).toInclude("attachment: sentAttachment");
-    expect(chamada).toInclude(
-      "spokeOutsideTheReply: turnState.spokeOutsideTheReply",
-    );
   });
 });

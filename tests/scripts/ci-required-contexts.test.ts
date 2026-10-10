@@ -270,9 +270,9 @@ describe("what counts as documentation", () => {
   });
 
   test("every file the suite reads is classified as code", () => {
-    // NOTE: `docs/` is not prose by definition, and neither is any other skippable path. Three tests
-    // open `docs/deploy.md` and assert on it, so an edit there can turn the suite red; letting it skip
-    // the suite would land that red on the next code PR, charged to whoever did not cause it. EVERY
+    // NOTE: `docs/` is not prose by definition, and neither is any other skippable path. A doc a test
+    // opens and asserts on can turn the suite red when edited; letting it skip the suite would land
+    // that red on the next code PR, charged to whoever did not cause it. EVERY
     // skippable set is swept: `*.md` reaches CLAUDE.md and README.md at the root too.
     for (const file of filesReadByTests()) {
       expect(`${file} runs the suite: ${classify(file)}`).toBe(

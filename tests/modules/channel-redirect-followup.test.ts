@@ -1799,6 +1799,42 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(widget.redirectClosedAt).toBeNull();
   });
 
+  // NOTE: Every ask around the closing guards a SEND, so an unreadable answer there is "go": standing
+  // down on a pool blip would leave the funnel open with nothing scheduled to close it. Only the ask
+  // inside a nudge's critical section is strict, and the closing runs no nudge.
+  test("a fence read that fails at the closing still delivers it", async () => {
+    const job = await claimed("closing");
+    const s = stubClient();
+    let reads = 0;
+    const failing = appDb.$extends({
+      query: {
+        schedulerJob: {
+          async findUnique({ args, query }) {
+            reads += 1;
+            if (reads === 1) return query(args);
+            throw new Error(
+              "Timed out fetching a new connection from the pool",
+            );
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, failing, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      // The delivered closing stamps the anchor; the tests below start from an open funnel.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { redirectClosedAt: null },
+      });
+    }
+    expect(reads).toBeGreaterThan(1);
+    expect(s.resolved).toEqual([WIDGET_CONV, ENTRY_CONV]);
+  });
+
   // The window the CLAIM itself opens: it is a write, so the answer taken before it predates it. The
   // rendezvous is the closing's own fence read — the retire lands right after it answers, which is
   // exactly where the claim sits.

@@ -20,6 +20,7 @@ import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import * as graphModule from "@/graph/graph";
 import { SILENCE_RETRY_MARK } from "@/graph/graph";
 import {
   clearTurnInFlight,
@@ -38,13 +39,21 @@ import {
 import { contentToText } from "@/graph/message-text";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/nudge";
-import { runAgentTurn } from "@/graph/runtime";
-import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
+import { loadAgentConfig } from "@/graph/prepare";
+import { runAgentTurn, runLoadedTurn } from "@/graph/runtime";
+import * as threadClaim from "@/graph/thread-claim";
+import {
+  claimIngestWrite,
+  clearTurnOwning,
+  markTurnOwning,
+  releaseIngestWrite,
+} from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
+import * as nativeTools from "@/graph/tools/native";
 import { REPLY_AS_TEXT_TOOL } from "@/graph/tools/reply-as-text";
-import { withKeyedQueue } from "@/lib/locks";
-import type { TenantContext } from "@/lib/tenancy";
+import { keyedQueueTail, withKeyedQueue } from "@/lib/locks";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
@@ -62,7 +71,10 @@ import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { SPOKEN_NOTICE_DEFAULT } from "@/modules/tts/settings-shared";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
 import { flowLogRow, flowLogRows } from "../utils/flowlog";
+import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 import {
   EmptyThenReplyModel,
   guardrailModel,
@@ -90,6 +102,7 @@ import {
   SkipThenResolveModel,
   TextBesideToolThenEmptyModel,
 } from "../utils/scripted-models";
+import { settlesDuring, throwingModel } from "../utils/tool-logger-settled";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -2770,20 +2783,34 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     await seedConversation(9726, null);
     const CLOSING = "Já chamo uma pessoa do time.";
     const calls: Array<[string, number, string]> = [];
-    const outcome = await runAgentTurn({
-      tenantId,
-      instanceId,
-      agentBotId: 9,
-      event: incoming({ conversationId: 9726 }),
-      base: appDb,
-      deps: {
-        makeModel: () =>
-          new SkipThenHandoffModel(CLOSING) as unknown as BaseChatModel,
-        makeClient: makeResolveClient(calls),
-        checkpointer: new MemorySaver(),
-      },
+    const published: Record<string, unknown>[] = [];
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)) as Record<string, unknown>);
     });
+    let outcome: Awaited<ReturnType<typeof runAgentTurn>>;
+    try {
+      outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9726 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SkipThenHandoffModel(CLOSING) as unknown as BaseChatModel,
+          makeClient: makeResolveClient(calls),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      setPublisher(() => undefined);
+    }
     expect(outcome).toBe("posted");
+    // O balão ao vivo lê o MESMO leitor que a linha da ferramenta: quando `skip_reply` começou, nada
+    // tinha saído, e o evento diz isso em vez de calar sobre a entrega.
+    expect(
+      published.filter((e) => e.tool === "skip_reply").map((e) => e.delivered),
+    ).toEqual([false]);
     // (0) validade do fixture: a linha de fechamento saiu mesmo, DEPOIS da decisão de silêncio.
     expect(calls).toEqual([
       ["toggleStatus", 9726, "open"],
@@ -2925,6 +2952,627 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).trail;
     expect(trail.find((e) => e.name === "skip_reply")?.turnDelivered).toBe(
       false,
+    );
+  });
+
+  // NOTE: `stillWanted({ strict: true })` is asked inside the `ingest:` section twice: before the
+  // durable claim, and again after it, because the claim WAITS (on an append's lease and on the row
+  // lock /reset takes) and a reset can retire the run and clear the thread during that wait. The
+  // proof is the thread's STATE: only a claim that skipped the re-ask writes the marker back.
+  test("a run retired while the durable claim waits writes nothing", async () => {
+    const convId = 9741;
+    const contactInboxId = 7741;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true },
+    });
+    const threadId = `${tenantId}:${instanceId}:${convId}`;
+    const loaded = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        loadAgentConfig(db, {
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          agentId: agent.id,
+          threadId,
+        }),
+    );
+    if (!loaded) throw new Error("the agent did not load");
+    expect(loaded.contactInboxId).toBe(contactInboxId);
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    const append = await claimIngestWrite(owner, appDb);
+    expect(append.state).not.toBe("busy");
+    let wanted = true;
+    let strictAsks = 0;
+    let releasing: Promise<void> | null = null;
+    const sent: Array<[number, string]> = [];
+    const outcome = await runLoadedTurn({
+      loaded,
+      authContext: null,
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      agentBotId: 9,
+      threadId,
+      text: "oi",
+      readMessageIds: [],
+      base: appDb,
+      claimReply: null,
+      // The ask right before the claim still answers yes, and /reset lands on that same instant.
+      // The append finishes shortly after, so the claim is granted into a thread that was cleared.
+      stillWanted: async ({ strict }) => {
+        if (!strict) return wanted;
+        strictAsks += 1;
+        if (strictAsks > 1) return wanted;
+        wanted = false;
+        releasing = Bun.sleep(20).then(() =>
+          releaseIngestWrite(owner, appDb, append),
+        );
+        return true;
+      },
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    await releasing;
+    const row = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+    });
+    expect(row?.lastConversationId ?? null).toBeNull();
+    expect(outcome).toBe("stale");
+    expect(sent).toEqual([]);
+    // And the claim really was waited out, so the ask that refused is the one AFTER the wait.
+    expect(strictAsks).toBeGreaterThan(1);
+  });
+
+  // NOTE: the strict ask before the claim is made once the turn holds the `ingest:` section, so a
+  // reset that lands while the turn waits for the section is seen before the claim, and the retired
+  // run never waits out an append's lease. The section and an append are both held here: the turn
+  // must stand down while the append still holds the claim, after the section opened to it.
+  test("a run retired while it waits for the section stands down before the claim", async () => {
+    const convId = 9747;
+    const contactInboxId = 7747;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true },
+    });
+    const threadId = `${tenantId}:${instanceId}:${convId}`;
+    const loaded = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        loadAgentConfig(db, {
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          agentId: agent.id,
+          threadId,
+        }),
+    );
+    if (!loaded) throw new Error("the agent did not load");
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    const append = await claimIngestWrite(owner, appDb);
+    expect(append.state).not.toBe("busy");
+    const section = `ingest:${graphThreadId}`;
+    const ours = {};
+    let open = () => {};
+    const held = withKeyedQueue(
+      section,
+      () => new Promise<void>((resolve) => (open = resolve)),
+      ours,
+    );
+    let wanted = true;
+    let sectionOpened = false;
+    const strictAsks: boolean[] = [];
+    let settled = false;
+    const sent: Array<[number, string]> = [];
+    const run = runLoadedTurn({
+      loaded,
+      authContext: null,
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      agentBotId: 9,
+      threadId,
+      text: "oi",
+      readMessageIds: [],
+      base: appDb,
+      claimReply: null,
+      stillWanted: async ({ strict }) => {
+        if (strict) strictAsks.push(sectionOpened);
+        return wanted;
+      },
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    }).finally(() => {
+      settled = true;
+    });
+    try {
+      // Queued behind the section (it takes our joinable tail away), or asking before it.
+      await until(
+        "the turn to reach the section",
+        () => strictAsks.length > 0 || keyedQueueTail(section) !== ours,
+      );
+      wanted = false;
+      sectionOpened = true;
+      open();
+      await held;
+      await until("the retired turn to stand down", () => settled);
+      expect(await run).toBe("stale");
+      expect(strictAsks).toEqual([true]);
+      expect(sent).toEqual([]);
+    } finally {
+      open();
+      await releaseIngestWrite(owner, appDb, append);
+      await run.catch(() => {});
+    }
+  });
+
+  // NOTE: two turns that wake from the thread wait together both find it free, and only the acquiring
+  // statement tells them apart: the loser gives its hold back and waits again. The wait is released by
+  // hand so both wake at once; the winner's model is held, so a loser that ran on would be seen
+  // starting its own model beside it.
+  test("two turns that wake from the thread wait together do not run side by side", async () => {
+    const contactInboxId = 7761;
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true },
+    });
+    const turnFor = async (convId: number) => {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+          contactInboxId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          lastEventAt: new Date(),
+        },
+      });
+      const threadId = `${tenantId}:${instanceId}:${convId}`;
+      const loaded = await runScopedOn(
+        appDb,
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        (db) =>
+          loadAgentConfig(db, {
+            tenantId,
+            instanceId,
+            conversationId: convId,
+            agentId: agent.id,
+            threadId,
+          }),
+      );
+      if (!loaded) throw new Error("the agent did not load");
+      return { convId, threadId, loaded };
+    };
+    const turns = [await turnFor(9761), await turnFor(9762)];
+    let wake = () => {};
+    const woken = new Promise<void>((resolve) => (wake = resolve));
+    let waits = 0;
+    const realWait = threadClaim.waitForTurnToClear;
+    const wait = spyOn(threadClaim, "waitForTurnToClear").mockImplementation(
+      async (...args) => {
+        waits += 1;
+        if (waits <= turns.length) {
+          await woken;
+          return true;
+        }
+        return realWait(...args);
+      },
+    );
+    const started: number[] = [];
+    let releaseFirst = () => {};
+    const firstHeld = new Promise<void>((resolve) => (releaseFirst = resolve));
+    const modelFor = (convId: number) => {
+      const model = {
+        async invoke() {
+          started.push(convId);
+          if (started.length === 1) await firstHeld;
+          return new AIMessage(`RESP-${convId}`);
+        },
+        bindTools: () => model,
+      };
+      return model as unknown as BaseChatModel;
+    };
+    const sent: Array<[number, string]> = [];
+    const checkpointer = new MemorySaver();
+    try {
+      const runs = turns.map(({ convId, threadId, loaded }) =>
+        runLoadedTurn({
+          loaded,
+          authContext: null,
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          agentBotId: 9,
+          threadId,
+          text: "oi",
+          readMessageIds: [],
+          base: appDb,
+          claimReply: null,
+          stillWanted: null,
+          waitForThreadTurn: true,
+          deps: {
+            makeModel: () => modelFor(convId),
+            makeClient: makeStubClient(sent),
+            checkpointer,
+          },
+        }),
+      );
+      await until("both turns to wait for the thread", () => waits >= 2);
+      wake();
+      await until(
+        "the loser to wait again, or to run beside the winner",
+        () => started.length >= 2 || waits >= 3,
+      );
+      expect(started).toHaveLength(1);
+      releaseFirst();
+      expect(await Promise.all(runs)).toEqual(["posted", "posted"]);
+      expect(sent.map(([, text]) => text).sort()).toEqual([
+        "RESP-9761",
+        "RESP-9762",
+      ]);
+    } finally {
+      wake();
+      releaseFirst();
+      wait.mockRestore();
+    }
+  });
+
+  // The signal reaches the model call and the tool boundary through the graph's construction, and
+  // never the invoke: an invoke aborted between a checkpointed tool call and its result leaves the
+  // thread with a call nothing answers, and it rejects while the tool is still running.
+  test("the job's signal is handed to the graph, never to its invoke", async () => {
+    const convId = 9743;
+    await seedConversation(convId, null);
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true },
+    });
+    const threadId = `${tenantId}:${instanceId}:${convId}`;
+    const loaded = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        loadAgentConfig(db, {
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          agentId: agent.id,
+          threadId,
+        }),
+    );
+    if (!loaded) throw new Error("the agent did not load");
+    const real = graphModule.buildAgentGraph;
+    const built: Array<AbortSignal | undefined> = [];
+    const invoked: Array<Record<string, unknown> | undefined> = [];
+    const spy = spyOn(graphModule, "buildAgentGraph").mockImplementation(
+      (p) => {
+        built.push(p.signal);
+        const graph = real(p);
+        const invoke = graph.invoke.bind(graph);
+        graph.invoke = ((input: never, options?: Record<string, unknown>) => {
+          invoked.push(options);
+          return invoke(input, options as never);
+        }) as typeof graph.invoke;
+        return graph;
+      },
+    );
+    const controller = new AbortController();
+    const sent: Array<[number, string]> = [];
+    try {
+      await runLoadedTurn({
+        loaded,
+        authContext: null,
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        agentBotId: 9,
+        threadId,
+        text: "oi",
+        readMessageIds: [],
+        base: appDb,
+        claimReply: null,
+        stillWanted: null,
+        signal: controller.signal,
+        deps: {
+          makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toEqual([[convId, "Claro!"]]);
+    expect(built).toHaveLength(1);
+    expect(built[0]).toBe(controller.signal);
+    expect(invoked.length).toBeGreaterThan(0);
+    expect(invoked.filter((o) => o && "signal" in o)).toEqual([]);
+  });
+
+  test("the turn's fallback lines name their own model and raise one alarm", async () => {
+    await seedConversation(9744, null);
+    const sent: Array<[number, string]> = [];
+    const deps = await graphDepsOf(() =>
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9744 }),
+        base: appDb,
+        deps: {
+          makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    );
+    expect(deps).toHaveLength(1);
+    expectFallbackLines(deps[0] ?? {});
+  });
+
+  // The exit through a failed invoke settles the turn's tool logger too (tests/utils/tool-logger-settled.ts).
+  test("a turn whose model call fails still settles its tool logger", async () => {
+    await seedConversation(9745, null);
+    const sent: Array<[number, string]> = [];
+    const settled = await settlesDuring(() =>
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9745 }),
+        base: appDb,
+        deps: {
+          makeModel: () => throwingModel as unknown as BaseChatModel,
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    );
+    expect(sent).toEqual([]);
+    expect(settled).toBeGreaterThan(0);
+  });
+
+  // A turn the tool boundary refused ends on an empty assistant message, the same one a silent turn
+  // ends on, and the fence is not one-way: asked again after the invoke it may answer yes. So the
+  // refusal is read off the result, and the turn stands down instead of reading as silence.
+  test("a fence that flips back to yes does not turn a refused turn into a silent one", async () => {
+    const convId = 9742;
+    await seedConversation(convId, null);
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true },
+    });
+    const threadId = `${tenantId}:${instanceId}:${convId}`;
+    const loaded = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        loadAgentConfig(db, {
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          agentId: agent.id,
+          threadId,
+        }),
+    );
+    if (!loaded) throw new Error("the agent did not load");
+    let generated = false;
+    let refusedOnce = false;
+    const callsATool = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          generated = true;
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "skip_reply",
+                args: { reason: "nada a dizer" },
+                id: "call_flip",
+              },
+            ],
+          });
+        },
+      }),
+    };
+    const sent: Array<[number, string]> = [];
+    const outcome = await runLoadedTurn({
+      loaded,
+      authContext: null,
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      agentBotId: 9,
+      threadId,
+      text: "oi",
+      readMessageIds: [],
+      base: appDb,
+      claimReply: null,
+      // No exactly once, on the first ask after the model produced its call, which is the tool
+      // boundary's; yes to everything before and after it.
+      stillWanted: async () => {
+        if (generated && !refusedOnce) {
+          refusedOnce = true;
+          return false;
+        }
+        return true;
+      },
+      deps: {
+        makeModel: () => callsATool as unknown as BaseChatModel,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(refusedOnce).toBe(true);
+    expect(outcome).toBe("stale");
+    expect(sent).toEqual([]);
+  });
+
+  // A TERCEIRA PORTA: o aviso de ferramenta lenta é uma mensagem que chegou ao cliente sem ser a
+  // resposta do turno nem um anexo. Um turno que avisou "só um momento" e depois decidiu calar falou
+  // com o cliente, e o fato do turno tem que contar isso.
+  test("silêncio decidido depois do aviso de ferramenta lenta: o fato do turno conta o aviso", async () => {
+    await seedConversation(9733, null);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 9733 },
+      data: { lastRepliedMessageId: 1 },
+    });
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId, name: "Atendente" },
+      select: { id: true },
+    });
+    const ACK = "Só um momento!";
+    const tool = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "consulta_lenta",
+        label: "Consulta lenta",
+        method: "GET",
+        urlTemplate: outboundUrl("/v1/slow"),
+        allowedHosts: [new URL(outboundUrl()).hostname],
+        ackEnabled: true,
+        ackMessage: ACK,
+      },
+    });
+    const selection = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "HTTP",
+        toolDefinitionId: tool.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    let n = 0;
+    const ackThenSilence = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          n++;
+          if (n === 1) {
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "consulta_lenta",
+                  args: { __wait_message: ACK },
+                  id: "call_slow",
+                },
+              ],
+            });
+          }
+          if (n === 2) {
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "skip_reply",
+                  args: { reason: "acknowledged" },
+                  id: "call_skip",
+                },
+              ],
+            });
+          }
+          return new AIMessage("");
+        },
+      }),
+    };
+    const sent: string[] = [];
+    const client = {
+      sendMessage: async (_conversationId: number, content: string) => {
+        sent.push(content);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    try {
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9733 }),
+        base: appDb,
+        deps: {
+          makeModel: () => ackThenSilence as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: selection.id } });
+      await suDb.toolDefinition.delete({ where: { id: tool.id } });
+    }
+    // (0) validade do fixture: o aviso saiu, e nada mais.
+    expect(sent).toEqual([ACK]);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9733 },
+    });
+    const trail = (
+      await getConversationDetail(
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        conv.id,
+        appDb,
+      )
+    ).trail;
+    expect(trail.find((e) => e.name === "skip_reply")?.turnDelivered).toBe(
+      true,
     );
   });
 
@@ -10297,6 +10945,177 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           "O guardrail pediu que o caso fosse para a equipe.",
         );
         expect(note).toContain(REPLY);
+      });
+
+      // A tool that writes to the customer from inside its call (the case opening) is screened by
+      // the turn's own output gate, which the runtime hands to the toolset as `screenCustomerText`.
+      // The model below asks it mid-invoke, where the tool does, and then answers normally.
+      const screenedMidTurn = async (
+        convId: number,
+        verdictJson: string,
+        log: ReturnType<typeof newLog>,
+        client: () => Promise<ChatwootClient> = handoffStub(log),
+        next: AIMessage[] = [],
+      ) => {
+        const build = spyOn(nativeTools, "buildNativeTools");
+        let verdict: string | undefined;
+        const asksMidTurn = {
+          invoke: async () => new AIMessage(""),
+          bindTools: () => ({
+            invoke: async () => {
+              if (verdict === undefined) {
+                const screen = build.mock.calls.at(-1)?.[0].screenCustomerText;
+                verdict = screen
+                  ? await screen("Abrimos seu caso.")
+                  : "not handed down";
+              }
+              return next.shift() ?? new AIMessage(REPLY);
+            },
+          }),
+        };
+        try {
+          await seedConv(convId);
+          // The turn's own reply trips the gate too, and a transfer that fails there makes the turn
+          // throw; the verdict the tool got is what is under test.
+          const outcome = await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingWith(
+                verdictJson,
+                asksMidTurn as unknown as BaseChatModel,
+              ),
+              makeClient: client,
+              checkpointer: new MemorySaver(),
+            },
+          }).catch((err: unknown) => err);
+          return { verdict, outcome };
+        } finally {
+          build.mockRestore();
+        }
+      };
+      const PASS = JSON.stringify({
+        violated: false,
+        categories: [],
+        rationale: "",
+      });
+
+      test("a tool's text the gate passes is sent", async () => {
+        await configure("output", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+        });
+        const log = newLog();
+        const { verdict } = await screenedMidTurn(7351, PASS, log);
+        expect(verdict).toBe("send");
+        expect(log.toggles).toEqual([]);
+      });
+
+      test("a tool's text the gate refuses without a transfer is dropped", async () => {
+        await configure("output", { action: "template" });
+        const log = newLog();
+        const { verdict } = await screenedMidTurn(7352, TRIP, log);
+        expect(verdict).toBe("drop");
+        expect(log.toggles).toEqual([]);
+      });
+
+      test("a tool's text the gate sends to the team transfers the turn, which closes on the policy's line", async () => {
+        await configure(
+          "output",
+          { action: "handoff", handoffMessage: "ENCAMINHADO" },
+          { mode: "pinned", targetTeamId: TEAM },
+        );
+        const log = newLog();
+        const { verdict } = await screenedMidTurn(7353, TRIP, log);
+        expect(verdict).toBe("handed");
+        expect(log.toggles).toEqual([[7353, "open"]]);
+        expect(log.assigns).toEqual([`team:7353:${TEAM}`]);
+        // The model's own reply after the transfer is not what the customer reads.
+        expect(log.sent).toEqual([[7353, "ENCAMINHADO"]]);
+      });
+
+      test("a tool's text handed over with an empty line leaves the customer unwritten", async () => {
+        await configure("output", { action: "handoff", handoffMessage: "" });
+        const log = newLog();
+        const { verdict } = await screenedMidTurn(7354, TRIP, log);
+        expect(verdict).toBe("handed");
+        expect(log.toggles).toEqual([[7354, "open"]]);
+        expect(log.sent).toEqual([]);
+      });
+
+      // A transfer that did not land is not a dropped line: the tool must not open the case (nor
+      // close the origin) as if a person had been asked for.
+      test("a tool's text whose transfer fails reads as failed, not dropped", async () => {
+        await configure("output", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+        });
+        const log = newLog();
+        const failing = async () =>
+          ({
+            ...(await handoffStub(log)()),
+            toggleStatus: async () => {
+              throw new Error("chatwoot 500");
+            },
+          }) as unknown as ChatwootClient;
+        const { verdict, outcome } = await screenedMidTurn(
+          7355,
+          TRIP,
+          log,
+          failing,
+        );
+        expect(verdict).toBe("failed");
+        expect(outcome).toBeInstanceOf(GuardrailHandoffFailedError);
+      });
+
+      // The transfer is the turn's own: its status webhook, mirrored at once here, is not a person
+      // taking over, so the turn's next tool call still runs.
+      test("after a tool's text is handed over, the turn's next tool call still runs", async () => {
+        await configure("output", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+        });
+        const log = newLog();
+        const labelled: string[][] = [];
+        const mirrored = async () =>
+          ({
+            ...(await handoffStub(log)()),
+            toggleStatus: async (c: number, status: string) => {
+              log.toggles.push([c, status]);
+              await suDb.conversation.updateMany({
+                where: {
+                  tenantId: gTenantId,
+                  chatwootInstanceId: gInstanceId,
+                  chatwootConversationId: c,
+                },
+                data: { status },
+              });
+              return {};
+            },
+            getConversationLabels: async () => [],
+            setConversationLabels: async (_c: number, next: string[]) => {
+              labelled.push(next);
+              return {};
+            },
+          }) as unknown as ChatwootClient;
+        const { verdict } = await screenedMidTurn(7356, TRIP, log, mirrored, [
+          new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "set_labels",
+                args: { add: ["caso-aberto"] },
+                id: "call_case_label",
+              },
+            ],
+          }),
+        ]);
+        expect(verdict).toBe("handed");
+        expect(log.toggles).toEqual([[7356, "open"]]);
+        expect(labelled).toEqual([["caso-aberto"]]);
       });
 
       test("an empty hand-over line hands over without writing to the customer", async () => {

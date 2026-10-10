@@ -7,6 +7,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import { emptyTurnUsage, sumTurnUsage, UsageCapture } from "@/graph/usage";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -24,7 +25,9 @@ import {
   startPlaygroundThread,
 } from "@/modules/playground/sessions";
 import { isValidPlaygroundThread } from "@/modules/playground/thread";
+import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
 import { clearFlowLog } from "../utils/flowlog";
+import { settlesDuring } from "../utils/tool-logger-settled";
 
 // Each playground turn says what it spent, over every model call it made, and the
 // session says the running total. The live number is summed in process and the reopened one is
@@ -603,6 +606,167 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
         appDb,
       ),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  // Two handlers write the playground's fallback lines, the turn's and the follow-up's, and each is
+  // held to the same rules (tests/utils/fallback-lines.ts).
+  test("the turn's and the follow-up's fallback lines name their own model and raise one alarm", async () => {
+    let threadId = "";
+    const deps = await graphDepsOf(async () => {
+      const turn = await runPlaygroundTurn({
+        ctx: ctx(),
+        agentId,
+        message: "oi",
+        guardrails: false,
+        base: appDb,
+        deps: { makeModel },
+      });
+      threadId = turn.threadId;
+      await runPlaygroundFollowup({
+        ctx: ctx(),
+        agentId,
+        threadId,
+        guardrails: false,
+        base: appDb,
+        deps: { makeModel },
+      });
+    });
+    expect(deps).toHaveLength(2);
+    for (const d of deps) expectFallbackLines(d);
+  });
+
+  // The simulated follow-up names the silence channel its own run has bound, the way production
+  // does: the tool when it is bound, the sentinel when the toolset came out empty. Naming a tool
+  // that is not bound makes the simulation reply where production stays silent.
+  async function playgroundDirectiveWith(enabledTools: string[]) {
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "NATIVE",
+        enabledTools,
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const bound: string[] = [];
+    let prompt = "";
+    const capturing = {
+      async invoke(messages: BaseMessage[]) {
+        prompt = JSON.stringify(messages.map((m) => m.content));
+        return new AIMessage("Oi de novo!");
+      },
+      bindTools(tools: Array<{ name: string }>) {
+        bound.push(...tools.map((t) => t.name));
+        return capturing;
+      },
+    };
+    try {
+      await runPlaygroundFollowup({
+        ctx: ctx(),
+        agentId,
+        guardrails: false,
+        base: appDb,
+        deps: { makeModel: () => capturing as never },
+      });
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+    }
+    return { bound, prompt };
+  }
+  const ASKS_FOR_THE_TOOL = "call the `skip_reply` tool";
+
+  test("a simulated follow-up whose skip_reply is bound is asked to call it", async () => {
+    const { bound, prompt } = await playgroundDirectiveWith(["private_note"]);
+    expect(bound).toContain("skip_reply");
+    expect(prompt).toContain(ASKS_FOR_THE_TOOL);
+  });
+
+  test("a simulated follow-up with nothing bound is asked for the sentinel, not for a tool", async () => {
+    const { bound, prompt } = await playgroundDirectiveWith([]);
+    expect(bound).toEqual([]);
+    expect(prompt).not.toContain(ASKS_FOR_THE_TOOL);
+    expect(prompt).toContain(FOLLOWUP_SKIP_SENTINEL);
+  });
+
+  // Each simulated run settles its tool logger (tests/utils/tool-logger-settled.ts), the follow-up's
+  // as well as the turn's.
+  test("the turn and the follow-up each settle their tool logger", async () => {
+    let threadId = "";
+    const turn = await settlesDuring(async () => {
+      threadId = (
+        await runPlaygroundTurn({
+          ctx: ctx(),
+          agentId,
+          message: "oi",
+          guardrails: false,
+          base: appDb,
+          deps: { makeModel },
+        })
+      ).threadId;
+    });
+    const followup = await settlesDuring(() =>
+      runPlaygroundFollowup({
+        ctx: ctx(),
+        agentId,
+        threadId,
+        guardrails: false,
+        base: appDb,
+        deps: { makeModel },
+      }),
+    );
+    expect(threadId).not.toBe("");
+    expect(turn).toBeGreaterThan(0);
+    expect(followup).toBeGreaterThan(0);
+  });
+
+  // The judge was shown the reply, so its rationale can quote a secret the reply leaked. Both sinks
+  // (the turn and the simulated follow-up) hand the operator the redacted row, never the raw report.
+  const LEAK = "sk-abcdefghijklmnopqrstuvwxyz";
+  const leakingJudge = ((args: { model?: string }) =>
+    args?.model === GUARD_MODEL
+      ? new SpendingModel(
+          JSON.stringify({
+            violated: true,
+            categories: ["competitor_mentions"],
+            rationale: `quoted the key ${LEAK}`,
+            suggestedReply: null,
+          }),
+          JUDGE_SPEND,
+        )
+      : new SpendingModel("Claro!", AGENT_SPEND)) as never;
+  const guardrailRows = (trace: Array<{ type: string }>) => {
+    const rows = trace.filter((e) => e.type === "guardrail");
+    return {
+      rows: rows.length,
+      leaked: JSON.stringify(rows).includes(LEAK),
+      redacted: String((rows[0] as { rationale?: string })?.rationale),
+    };
+  };
+
+  test("a rationale quoting a secret reaches the turn's trace redacted", async () => {
+    const r = await runPlaygroundTurn({
+      ctx: ctx(),
+      agentId,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: { makeModel: leakingJudge, checkpointer: new MemorySaver() },
+    });
+    const g = guardrailRows(r.trace);
+    expect([g.rows, g.leaked]).toEqual([1, false]);
+    expect(g.redacted).toContain("‹redacted›");
+  });
+
+  test("a rationale quoting a secret reaches the follow-up's trace redacted", async () => {
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(),
+      agentId,
+      base: appDb,
+      deps: { makeModel: leakingJudge, checkpointer: new MemorySaver() },
+    });
+    const g = guardrailRows(r.trace);
+    expect([g.rows, g.leaked]).toEqual([1, false]);
+    expect(g.redacted).toContain("‹redacted›");
   });
 
   test("a thread outside the fence has no total to read", async () => {

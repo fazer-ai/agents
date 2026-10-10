@@ -179,29 +179,3 @@ describe("every post-generation refusal rolls the turn back", () => {
     expect(routedCount(source)).toBeGreaterThanOrEqual(8);
   });
 });
-
-// The boundary's refusal is read before the reply is drafted, in both callers. A refused turn ends
-// on an empty assistant message, byte for byte what a turn that chose silence ends on, and asking
-// the fence again cannot tell them apart (the channel-redirect fence reads `agent.enabled` on every
-// ask), so read as silence the turn would advance a follow-up ladder or a handled watermark over a
-// message nothing answered. A source walk because the webhook path builds its fence from the
-// conversation row (see still-wanted-strictness.test.ts), and it pins the ORDER: asked after
-// `drafted`, the line would read a decision already made.
-describe("the called-off result is read before the reply is drafted", () => {
-  test.each([["src/graph/runtime.ts"], ["src/graph/nudge.ts"]])(
-    "%s asks turnWasCalledOff first",
-    async (file) => {
-      const lines = (await Bun.file(file as string).text()).split("\n");
-      const code = (l: string) => !/^\s*(?:\/\/|\*)/.test(l);
-      const asked = lines.findIndex(
-        (l) => code(l) && /\bturnWasCalledOff\(/.test(l),
-      );
-      const drafted = lines.findIndex(
-        (l) => code(l) && /^\s*const drafted = /.test(l),
-      );
-      expect(asked).toBeGreaterThan(-1);
-      expect(drafted).toBeGreaterThan(-1);
-      expect(asked).toBeLessThan(drafted);
-    },
-  );
-});

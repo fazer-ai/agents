@@ -9,10 +9,15 @@ import { describe, expect, test } from "bun:test";
 // in this directory still green.
 const SECRET = "sk-live-PRODUCTION-PROBE-9f3a";
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
+// The module under test, resolved by this process so the subprocess imports the same file.
+const SCHEMA_REFUSAL = Bun.resolveSync(
+  "@/api/lib/schema-refusal",
+  import.meta.dir,
+);
 
 const PROGRAM = `
 import { t, ValidationError } from "elysia";
-const { schemaRefusal } = await import("./src/api/lib/schema-refusal.ts");
+const { schemaRefusal } = await import(${JSON.stringify(SCHEMA_REFUSAL)});
 const schema = t.Object({
   name: t.String({ minLength: 1 }),
   value: t.Object({ api_key: t.String() }),

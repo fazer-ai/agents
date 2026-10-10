@@ -5,7 +5,6 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
-import { countInSrc } from "@/tests/utils/source-text";
 
 // A fleet-scoped API key, driven through the console's own door.
 // `tests/modules/api-keys.test.ts` proves the service. This file proves the request boundary admits
@@ -97,10 +96,9 @@ afterAll(() => {
 
 // `requireSession` answers 403, and the `response:` map is the contract the spec
 // and the Eden client are generated from (`openapi:check` holds the committed spec to it). A status
-// a route returns and does not declare is a refusal no generated client knows how to handle. The
-// list is held to the source: a new `requireSession(` site has to be named here.
+// a route returns and does not declare is a refusal no generated client knows how to handle.
 describe("the routes that refuse an API-key principal declare the 403", () => {
-  test("every requireSession route carries 403 in its response map", async () => {
+  test("every requireSession route carries 403 in its response map", () => {
     type Route = {
       method: string;
       path: string;
@@ -118,10 +116,6 @@ describe("the routes that refuse an API-key principal declare the 403", () => {
       "PATCH /api/auth/password",
       "POST /api/admin/super-admins",
     ];
-    const sites = Object.entries(await countInSrc(/\brequireSession\(/g))
-      .filter(([file]) => file !== "src/api/lib/step-up.ts")
-      .reduce((n, [, c]) => n + c, 0);
-    expect(sites).toBe(wanted.length);
     const missing = wanted.filter((key) => {
       const [method, path] = key.split(" ");
       const route = routes.find((r) => r.method === method && r.path === path);

@@ -214,7 +214,7 @@ const LOCK_TIMEOUT_MS = 10_000;
 const HEALTHY_BOOT_CEILING_MS = LOCK_TIMEOUT_MS / 2;
 
 // A rotation's outgoing role is DECLARED, and a declaration that cannot REACH the process declares
-// nothing. No deploy compose uses `env_file`: each lists its environment explicitly, so a variable it
+// nothing. Each deploy compose lists the agents service's environment explicitly, so a variable it
 // does not name never arrives, and `docs/deploy.md` would tell operators to set something inert.
 describe("the retention declaration reaches a deployed container", () => {
   const COMPOSES = [
@@ -223,38 +223,42 @@ describe("the retention declaration reaches a deployed container", () => {
     "docker-compose.portainer.yml",
   ];
 
-  test("every deploy compose passes it through", () => {
+  // The `agents` service's own environment, parsed: a mention in a comment or in another service
+  // reaches no container.
+  const agentsEnvironment = (file: string): string[] => {
+    const doc = Bun.YAML.parse(readFileSync(file, "utf8")) as {
+      services?: Record<
+        string,
+        { environment?: string[] | Record<string, unknown> }
+      >;
+    };
+    const env = doc.services?.agents?.environment ?? [];
+    return Array.isArray(env)
+      ? env.map((entry) => String(entry).split("=")[0] ?? "")
+      : Object.keys(env);
+  };
+
+  test("every deploy compose passes it through to the agents service", () => {
     for (const file of COMPOSES) {
       expect([
         file,
-        readFileSync(file, "utf8").includes(
-          `${FLEET_ROLE_RETAINED_MEMBER_ENV}=`,
-        ),
+        agentsEnvironment(file).includes(FLEET_ROLE_RETAINED_MEMBER_ENV),
       ]).toEqual([file, true]);
     }
   });
 
-  // The positive control for the premise above: if a compose ever grew an `env_file`, the whitelist
-  // would stop being the whole story and this fence would be asking the wrong question.
-  test("none of them inherits an env file instead", () => {
-    for (const file of COMPOSES) {
-      expect([file, readFileSync(file, "utf8").includes("env_file")]).toEqual([
-        file,
-        false,
-      ]);
-    }
-  });
-
   // NOTE: Where an operator looks the name up; `CLAUDE.md` makes this the rule for every new
-  // variable. Anchored on the DECLARATION, not on the name appearing somewhere: the note above it
-  // explains the variable in prose, so a substring check stays green with the declaration renamed.
+  // variable. Anchored on the DECLARATION, not on the name appearing somewhere, and commented out,
+  // the way the file offers a setting nobody has to set.
   test(".env.example declares it, commented out", () => {
-    const declared = readFileSync(".env.example", "utf8")
-      .split("\n")
-      .filter((line) =>
-        new RegExp(`^#?\\s*${FLEET_ROLE_RETAINED_MEMBER_ENV}=`).test(line),
-      );
+    const lines = readFileSync(".env.example", "utf8").split("\n");
+    const declared = lines.filter((line) =>
+      new RegExp(`^#?\\s*${FLEET_ROLE_RETAINED_MEMBER_ENV}=`).test(line),
+    );
     expect(declared).toHaveLength(1);
+    expect(declared[0]).toMatch(
+      new RegExp(`^#\\s*${FLEET_ROLE_RETAINED_MEMBER_ENV}=\\s*$`),
+    );
   });
 });
 

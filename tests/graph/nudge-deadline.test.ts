@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import * as graphModule from "@/graph/graph";
 import { type NudgePostActions, runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -42,10 +43,11 @@ let instanceId = 0n;
 let agentId = 0n;
 
 // A model that answers after `delayMs`, honoring the signal it is handed; `saw` records the abort,
-// and `answered` flips when it returns.
+// and `answered` flips when it returns. `onCall` runs once the call is listening for the abort.
 function slowModel(
   delayMs: number,
   saw: { abort: boolean; answered: boolean },
+  onCall: () => void = () => {},
 ) {
   const model = {
     bindTools() {
@@ -60,6 +62,7 @@ function slowModel(
           clearTimeout(timer);
           reject(signal.reason);
         });
+        onCall();
       });
       saw.answered = true;
       return new AIMessage("Oi! Ainda posso ajudar com alguma coisa?");
@@ -68,7 +71,7 @@ function slowModel(
   return model as unknown as BaseChatModel;
 }
 
-// `onSend` runs inside the send, `onLabels` inside the labels read, `onSetLabels` inside their write.
+// `onSend` runs inside every send (message, note or template), `onLabels` inside the labels read, `onSetLabels` inside their write.
 // A model that answers with nothing: the nudge stays silent.
 function silentModel() {
   const model = {
@@ -92,6 +95,7 @@ function stub(
   const notes: Array<[number, string]> = [];
   const statuses: string[] = [];
   const labels: string[][] = [];
+  const templates: Array<[number, string]> = [];
   const client = {
     sendMessage: async (c: number, t: string) => {
       messages.push([c, t]);
@@ -100,6 +104,7 @@ function stub(
     },
     sendPrivateNote: async (c: number, t: string) => {
       notes.push([c, t]);
+      onSend();
       return {};
     },
     getConversationLabels: async () => {
@@ -118,18 +123,27 @@ function stub(
     },
     toggleTyping: async () => ({}),
     getMessages: async () => ({ payload: [] }),
-    sendTemplate: async () => ({}),
+    sendTemplate: async (c: number, payload: { name: string }) => {
+      templates.push([c, payload.name]);
+      onSend();
+      return {};
+    },
   } as unknown as ChatwootClient;
   return {
     messages,
     notes,
+    templates,
     statuses,
     labels,
     makeClient: async () => client,
   };
 }
 
-async function seedConversation(convId: number, chatwootInboxId: number) {
+async function seedConversation(
+  convId: number,
+  chatwootInboxId: number,
+  { lastInboundAt = new Date() } = {},
+) {
   const inbox = await suDb.inbox.create({
     data: {
       tenantId,
@@ -151,7 +165,7 @@ async function seedConversation(convId: number, chatwootInboxId: number) {
       assigneeType: null,
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
-      lastInboundAt: new Date(),
+      lastInboundAt,
     },
   });
 }
@@ -266,17 +280,16 @@ describe.skipIf(!dbUp)(
     test("the deadline reaches the nudge's model call, and nothing is sent", async () => {
       const saw = { abort: false, answered: false };
       const controller = new AbortController();
-      const { s, run } = nudge(950, slowModel(5_000, saw), controller.signal);
-      const timer = setTimeout(
-        () => controller.abort(new Error("deadline exceeded")),
-        300,
+      // The deadline fires while the model call is in flight, whatever the setup before it cost.
+      const { s, run } = nudge(
+        950,
+        slowModel(5_000, saw, () =>
+          controller.abort(new Error("deadline exceeded")),
+        ),
+        controller.signal,
       );
       const t = performance.now();
-      try {
-        await run();
-      } finally {
-        clearTimeout(timer);
-      }
+      await run();
       expect(saw.abort).toBe(true);
       expect(performance.now() - t).toBeLessThan(4_000);
       expect(s.messages).toEqual([]);
@@ -321,6 +334,57 @@ describe.skipIf(!dbUp)(
       expect(s.messages.map(([c]) => c)).toEqual([953]);
       expect(s.labels).toEqual([["sem-resposta"]]);
       expect(s.statuses).toEqual(["resolved"]);
+    });
+
+    // The same holds on the other ways a step reaches the customer's side outside the window: an
+    // approved template, and the explained note when there is none.
+    const OUTSIDE_WINDOW = new Date(Date.now() - 30 * 3_600_000);
+    test("a deadline that fires during the template send still applies the step's labels", async () => {
+      await seedConversation(958, 89, { lastInboundAt: OUTSIDE_WINDOW });
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { serviceWindow: { templateName: "reengage" } } },
+      });
+      const controller = new AbortController();
+      try {
+        const { s, run } = nudge(
+          958,
+          slowModel(20, { abort: false, answered: false }),
+          controller.signal,
+          undefined,
+          {
+            postActions: { assignLabels: ["sem-resposta"], resolve: true },
+            onSend: () => controller.abort(new Error("deadline exceeded")),
+          },
+        );
+        expect(await run()).toBe("templated");
+        expect(s.templates).toEqual([[958, "reengage"]]);
+        expect(s.labels).toEqual([["sem-resposta"]]);
+        expect(s.statuses).toEqual(["resolved"]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentId },
+          data: { settings: {} },
+        });
+      }
+    });
+
+    test("a deadline that fires during the outside-window note still applies the step's labels", async () => {
+      await seedConversation(959, 90, { lastInboundAt: OUTSIDE_WINDOW });
+      const controller = new AbortController();
+      const { s, run } = nudge(
+        959,
+        slowModel(20, { abort: false, answered: false }),
+        controller.signal,
+        undefined,
+        {
+          postActions: { assignLabels: ["sem-resposta"], resolve: true },
+          onSend: () => controller.abort(new Error("deadline exceeded")),
+        },
+      );
+      expect(await run()).toBe("noted-window");
+      expect(s.notes.map(([c]) => c)).toEqual([959]);
+      expect(s.labels).toEqual([["sem-resposta"]]);
     });
 
     // A silent end sent nothing, so a deadline that cuts its post-actions short is a withdrawal: the
@@ -395,6 +459,43 @@ describe.skipIf(!dbUp)(
       await run();
       expect(s.statuses).toContain("open");
       expect(s.messages.map(([, t]) => t)).toEqual([CLOSING]);
+    });
+
+    // The signal reaches the model call and the tool boundary through the graph's construction, and
+    // never the invoke: an invoke aborted between a checkpointed tool call and its result leaves the
+    // thread with a call nothing answers, and it rejects while the tool is still running.
+    test("the job's signal is handed to the graph, never to its invoke", async () => {
+      await seedConversation(961, 92);
+      const real = graphModule.buildAgentGraph;
+      const built: Array<AbortSignal | undefined> = [];
+      const invoked: Array<Record<string, unknown> | undefined> = [];
+      const spy = spyOn(graphModule, "buildAgentGraph").mockImplementation(
+        (p) => {
+          built.push(p.signal);
+          const graph = real(p);
+          const invoke = graph.invoke.bind(graph);
+          graph.invoke = ((input: never, options?: Record<string, unknown>) => {
+            invoked.push(options);
+            return invoke(input, options as never);
+          }) as typeof graph.invoke;
+          return graph;
+        },
+      );
+      const controller = new AbortController();
+      try {
+        const { run } = nudge(
+          961,
+          slowModel(1, { abort: false, answered: false }),
+          controller.signal,
+        );
+        await run();
+      } finally {
+        spy.mockRestore();
+      }
+      expect(built).toHaveLength(1);
+      expect(built[0]).toBe(controller.signal);
+      expect(invoked.length).toBeGreaterThan(0);
+      expect(invoked.filter((o) => o && "signal" in o)).toEqual([]);
     });
 
     test("a nudge whose deadline never fires still sends", async () => {

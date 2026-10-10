@@ -1,4 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { Client } from "pg";
+import {
+  OUTLIVES_SET_ROLE,
+  RLS_DEFEATING,
+} from "@/lib/tenancy/privileged-reach";
 
 // `scripts/db-bootstrap.ts` and `scripts/db-bootstrap.sql` provision the same thing by two routes:
 // the first runs unattended on every container boot, the second is the by-hand psql equivalent for
@@ -160,10 +165,6 @@ const INVARIANTS: Array<{
   },
 ];
 
-const reach = await Bun.file(
-  new URL("../../src/lib/tenancy/privileged-reach.ts", import.meta.url)
-    .pathname,
-).text();
 const ts = await Bun.file(
   new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
 ).text();
@@ -222,44 +223,64 @@ describe("no RAISE prints an identifier through %I", () => {
   });
 });
 
-// The columns the invariant above names by constant. Kept here rather than inlined into the pattern
-// pair, because only one of the twins has a module to import from and a fence that pretended
-// otherwise would be asking the `.ts` about text that is correctly not in it.
-describe("the reachable-privilege set matches the direct one", () => {
-  const definition = reach.slice(
-    reach.indexOf("export const OUTLIVES_SET_ROLE"),
-  );
-
-  test("it carries every attribute that survives a SET ROLE", () => {
-    for (const column of [
-      "rolsuper",
-      "rolbypassrls",
-      "rolcreatedb",
-      "rolcreaterole",
-      "rolreplication",
-    ]) {
-      expect([column, definition.includes(column)]).toEqual([column, true]);
-    }
-  });
-
-  // And NOT the one that does not: a session is already open by the time a SET ROLE happens, so
-  // LOGIN is refused directly on the fleet role and is meaningless on a role it can become.
-  test("and not LOGIN, which does not", () => {
-    expect(definition.split(";")[0]).not.toContain("rolcanlogin");
-  });
-
-  // The boot guard's set stays narrower on purpose: it refuses to SERVE when RLS is a no-op, and
-  // CREATEDB does not make it one. A single shared set would newly refuse installs that work.
-  test("the guard's set stays the RLS pair", () => {
-    const rls = reach.slice(
-      reach.indexOf("export const RLS_DEFEATING"),
-      reach.indexOf("export const OUTLIVES_SET_ROLE"),
-    );
-    expect(rls).toContain("rolsuper");
-    expect(rls).toContain("rolbypassrls");
-    expect(rls).not.toContain("rolcreatedb");
-  });
+// What each attribute set counts as elevated, asked of Postgres itself: the predicate runs over one
+// row per attribute, shaped like `pg_roles`, so no role has to be created to ask it.
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let pg: Client | undefined;
+if (suUrl) {
+  try {
+    pg = new Client({ connectionString: suUrl });
+    await pg.connect();
+  } catch {
+    pg = undefined;
+  }
+}
+afterAll(async () => {
+  await pg?.end();
 });
+
+async function elevatedUnder(attributes: string): Promise<string[]> {
+  const rows = await (pg as Client).query<{ name: string }>(
+    `SELECT name FROM (VALUES
+       ('rolsuper', true, false, false, false, false, false),
+       ('rolbypassrls', false, true, false, false, false, false),
+       ('rolcreatedb', false, false, true, false, false, false),
+       ('rolcreaterole', false, false, false, true, false, false),
+       ('rolreplication', false, false, false, false, true, false),
+       ('rolcanlogin', false, false, false, false, false, true)
+     ) AS m(name, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin)
+     WHERE (${attributes})
+     ORDER BY name`,
+  );
+  return rows.rows.map((r) => r.name);
+}
+
+describe.skipIf(!pg)(
+  "the reachable-privilege set matches the direct one",
+  () => {
+    // Every attribute the runtime role ACQUIRES on entering the fleet role, and not LOGIN: a session
+    // is already open by the time a SET ROLE happens, so LOGIN is refused directly on the fleet role
+    // and is meaningless on a role it can become.
+    test("it carries every attribute that survives a SET ROLE, and not LOGIN", async () => {
+      expect(await elevatedUnder(OUTLIVES_SET_ROLE)).toEqual([
+        "rolbypassrls",
+        "rolcreatedb",
+        "rolcreaterole",
+        "rolreplication",
+        "rolsuper",
+      ]);
+    });
+
+    // The boot guard's set stays narrower on purpose: it refuses to SERVE when RLS is a no-op, and
+    // CREATEDB does not make it one. A single shared set would newly refuse installs that work.
+    test("the guard's set stays the RLS pair", async () => {
+      expect(await elevatedUnder(RLS_DEFEATING)).toEqual([
+        "rolbypassrls",
+        "rolsuper",
+      ]);
+    });
+  },
+);
 
 // The repair has to OUTLIVE the refusal: in one DO block the RAISE rolls the revoke back with it.
 // At psql's top level each statement is its own transaction, so the two stay two blocks.

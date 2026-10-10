@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
@@ -6,15 +6,16 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import * as ingestDrain from "@/graph/ingest-drain";
 import { OPERATOR_EVENT_NOTE_PREFIX, runAgentNudge } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import { withKeyedQueue } from "@/lib/locks";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { SlowReplyModel } from "../utils/scripted-models";
-import { codeOnly } from "../utils/source-text";
 
 // Um invoke do LangGraph é um read-modify-write do canal inteiro: de dois que se sobrepõem no mesmo
 // thread, o que termina em SEGUNDO salva o que carregou e desfaz o primeiro. O nudge deve ao
@@ -555,6 +556,116 @@ describe.skipIf(!dbUp)(
       expect(s.messages).toHaveLength(0);
     }, 15_000);
 
+    // NOTE: A ESPERA, A BARREIRA E A FILA, NESTA ORDEM. O turno esperado solta o thread tomando a
+    // MESMA chave `ingest:<thread>` (o rollback dele faz isso na saída), então um nudge que esperasse
+    // dentro da fila travaria quem ele espera. E a barreira vem depois da espera: drenada antes, ela
+    // lê um thread que fica velho pelos minutos da espera.
+    test("a espera fica fora da fila do thread, e a barreira drena depois dela", async () => {
+      const contactInboxId = 8912;
+      await seedConv(8912, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const invokeMaisVelho = await markTurnOwning(owner, appDb);
+
+      let solto = false;
+      const drenagens: boolean[] = [];
+      const real = ingestDrain.drainPendingIngest;
+      const drain = spyOn(ingestDrain, "drainPendingIngest").mockImplementation(
+        (...args: Parameters<typeof real>) => {
+          drenagens.push(solto);
+          return real(...args);
+        },
+      );
+      try {
+        const s = stub();
+        const nudge = runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:8912`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: () => new FakeListChatModel({ responses: ["Oi!"] }),
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+
+        // O turno mais velho sai pela fila do thread, como o rollback dele sai.
+        await withKeyedQueue(`ingest:${graphThreadId}`, async () => {
+          solto = true;
+          await clearTurnOwning(owner, appDb, invokeMaisVelho);
+        });
+        expect(await terminouEm(nudge, 5_000)).toBe("messaged");
+        expect(drenagens.length).toBeGreaterThan(0);
+        expect(drenagens.every((depoisDeSoltar) => depoisDeSoltar)).toBe(true);
+      } finally {
+        drain.mockRestore();
+      }
+    }, 15_000);
+
+    // NOTE: O PORTÃO PÓS-ESPERA FALHA ABERTO no espelho também: fechado, uma leitura que falha ali
+    // viraria desistência para TODO nudge que esperou, e a sonda pós-modelo já segura o envio.
+    test("a leitura de posse que falha depois da espera deixa o turno seguir", async () => {
+      const contactInboxId = 8911;
+      await seedConv(8911, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const invokeMaisVelho = await markTurnOwning(owner, appDb);
+
+      // A leitura de posse do espelho passa enquanto o run começa e quebra quando o turno mais velho
+      // solta o thread, que é quando o portão pós-espera pergunta.
+      let quebrada = false;
+      let falhas = 0;
+      const base = appDb.$extends({
+        query: {
+          conversation: {
+            async findUnique({ args, query }) {
+              const select = (args as { select?: Record<string, unknown> })
+                .select;
+              if (quebrada && select?.assigneeType && select?.resolvedBy) {
+                falhas += 1;
+                throw new Error("banco fora do ar");
+              }
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const s = stub();
+      const modelo = new SlowReplyModel("RESP-N", 0);
+      const nudge = runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:8911`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base,
+        deps: {
+          makeModel: () => modelo as never,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+
+      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      quebrada = true;
+      await clearTurnOwning(owner, appDb, invokeMaisVelho);
+      await nudge.catch(() => undefined);
+
+      // A PROVA: a leitura quebrou no portão e o turno rodou mesmo assim.
+      expect(falhas).toBeGreaterThan(0);
+      expect(modelo.calls).toBeGreaterThan(0);
+    }, 15_000);
+
     // NOTE: O TETO. Passado ele o nudge segue ao lado de quem está lá, e ali a entrega PODE não ser
     // lembrada: é a única porta por onde a sobreposição ainda passa. Então ela não sai calada: uma
     // linha de flowlog diz o que acabou de acontecer, no lugar onde o operador procura.
@@ -657,59 +768,3 @@ describe.skipIf(!dbUp)(
     }, 15_000);
   },
 );
-
-// As duas metades acima testam o comportamento. O que elas não pegam é o laço desmontado de um
-// jeito que ainda passa nos dois testes: um símbolo próprio em cada arquivo (os dois laços voltam a
-// divergir sem ninguém notar), a espera indo para DENTRO da fila (passa verde e trava exatamente o
-// turno que ela espera), ou a devolução do hold saindo do lugar.
-describe("o laço da espera é o mesmo nos dois turnos", () => {
-  test("nenhum dos dois declara o próprio sentinela", async () => {
-    for (const f of ["src/graph/nudge.ts", "src/graph/runtime.ts"]) {
-      const src = codeOnly(await Bun.file(f).text());
-      // Declarar significa divergir: dois símbolos com o mesmo nome não são o mesmo valor, e o
-      // `!==` de um laço contra o sentinela do outro é sempre verdadeiro.
-      expect(src).not.toMatch(/WAIT_AGAIN\s*=\s*Symbol/);
-      expect(src).toMatch(/WAIT_AGAIN/);
-    }
-  });
-
-  // NOTE: A ESPERA, A BARREIRA E A FILA, NESTA ORDEM. Esperar dentro da fila trava quem está sendo
-  // esperado (o rollback do turno anterior toma a MESMA chave na saída), e drenar antes da espera
-  // lê um thread que fica velho pelos minutos da espera (../../src/graph/runtime.ts diz as duas no mesmo lugar).
-  test("no nudge a espera vem antes da barreira, e a barreira antes da fila", async () => {
-    const src = codeOnly(await Bun.file("src/graph/nudge.ts").text());
-    const espera = src.indexOf("waitForTurnToClear(");
-    const barreira = src.indexOf("drainPendingIngest(");
-    const fila = src.indexOf("withKeyedQueue(");
-    expect(espera).toBeGreaterThanOrEqual(0);
-    expect(espera).toBeLessThan(barreira);
-    expect(barreira).toBeLessThan(fila);
-  });
-
-  // NOTE: O PORTÃO PÓS-ESPERA FALHA ABERTO, e isto é cerca e não gosto: fechado, uma leitura que
-  // falha ali viraria desistência para TODO nudge que esperou, e a sonda pós-modelo já segura o
-  // envio.
-  test("a leitura de posse que falha deixa o nudge seguir", async () => {
-    const src = codeOnly(await Bun.file("src/graph/nudge.ts").text());
-    const i = src.indexOf("botOwnsItNowDetailed().catch(");
-    expect(i).toBeGreaterThanOrEqual(0);
-    // O catch devolve posse, em vez de devolver o oposto ou relançar.
-    expect(src.slice(i, src.indexOf("});", i))).toInclude("ours: true");
-  });
-
-  // A devolução do hold fica DEPOIS da declaração que adquire e ANTES de qualquer escrita: é a
-  // declaração, e não a leitura acima dela, que vê dois começos simultâneos.
-  test("no nudge o hold é devolvido logo depois da declaração que adquire", async () => {
-    const src = codeOnly(await Bun.file("src/graph/nudge.ts").text());
-    const adquire = src.indexOf("markTurnOwning(owner, base)");
-    const devolve = src.indexOf("return WAIT_AGAIN;");
-    const escreve = src.indexOf("conversationDividerMessage(");
-    expect(adquire).toBeGreaterThanOrEqual(0);
-    expect(adquire).toBeLessThan(devolve);
-    expect(devolve).toBeLessThan(escreve);
-    // E ela devolve de verdade, em vez de só sair do laço com o hold na mão: um hold guardado
-    // impede a liberação do vencedor de chegar a zero.
-    const trecho = src.slice(adquire, devolve);
-    expect(trecho).toInclude("clearTurnOwning(owner, base, giveBack)");
-  });
-});

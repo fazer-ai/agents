@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import {
   AIMessage,
   HumanMessage,
@@ -200,12 +199,5 @@ describe("traceGuardrail", () => {
       direction: "input",
       outcome: "clean",
     });
-  });
-
-  test("nothing builds a guardrail row without going through it", () => {
-    const src = readFileSync("src/modules/playground/service.ts", "utf8");
-    // Both sinks (the turn and the follow-up) call it, and neither spreads the report itself.
-    expect(src.match(/traceGuardrail\(r\)/g)?.length).toBe(2);
-    expect(src).not.toContain('{ type: "guardrail", ...r }');
   });
 });

@@ -6,6 +6,8 @@ import apiEn from "@/api/locales/en.json";
 import apiPt from "@/api/locales/pt-BR.json";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
+import * as errorsModule from "@/lib/errors";
+import { AppError } from "@/lib/errors";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // The guard for the three blind spots of `ErrorTranslationKey` (src/lib/errors.ts): an
@@ -870,32 +872,33 @@ describe("both languages answer, and answer differently", () => {
   // call-site sweep. The waived one is argued at the class: a 503 the client retries, never shows.
   const KEYLESS_BY_DESIGN: readonly string[] = ["ServiceUnavailableError"];
 
-  const keylessSubclasses = (source: string): string[] =>
-    [
-      ...source.matchAll(
-        /export class (\w+) extends (?:AppError|NotFoundError|ForbiddenError|ConflictError) \{(.*?)\n\}/gs,
-      ),
-    ]
-      .filter(([, , body]) => {
-        const sup = /super\((.*?)\);/s.exec(body as string);
+  // Every class the module exports, constructed the way a caller would: a class whose key is a
+  // parameter is handed one, and a class that fixes its own key ignores it. A class that ends up with
+  // no key, or with one the API catalog does not have, answers in English whatever the language.
+  const PASSED_KEY = "errors.forbidden";
+  const keylessSubclasses = (): string[] =>
+    Object.entries(errorsModule)
+      .filter(
+        ([, value]) =>
+          typeof value === "function" &&
+          value !== AppError &&
+          value.prototype instanceof AppError,
+      )
+      .filter(([, Cls]) => {
+        const err = new (Cls as new (...args: unknown[]) => AppError)(
+          "probe",
+          PASSED_KEY,
+        );
         return (
-          sup !== null && !/errors\.|translationKey/.test(sup[1] as string)
+          err.translationKey === undefined ||
+          !API.has(err.translationKey as string)
         );
       })
-      .map(([, name]) => name as string);
+      .map(([name]) => name)
+      .sort();
 
-  test("the subclass reader tells a class that passes a key from one that does not", () => {
-    const fixture = [
-      'export class A extends AppError {\n  constructor() {\n    super("x", 401);\n  }\n}',
-      'export class B extends AppError {\n  constructor() {\n    super("x", 401, "errors.b");\n  }\n}',
-      'export class C extends AppError {\n  constructor(k: ErrorTranslationKey) {\n    super("x", 401, translationKey);\n  }\n}',
-    ].join("\n\n");
-    expect(keylessSubclasses(fixture)).toEqual(["A"]);
-  });
-
-  test("every error subclass carries the key its refusal is answered with", async () => {
-    const source = await readFile("src/lib/errors.ts", "utf8");
-    expect(keylessSubclasses(source)).toEqual([...KEYLESS_BY_DESIGN]);
+  test("every error subclass carries the key its refusal is answered with", () => {
+    expect(keylessSubclasses()).toEqual([...KEYLESS_BY_DESIGN]);
   });
 
   // NOTE: ENTRIES PINNED BY WORDING. `refusalBody` prefers the catalog over `AppError.message`, so a

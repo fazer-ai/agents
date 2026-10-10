@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
   AIMessage,
@@ -40,14 +40,18 @@ import {
 } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
+import * as nativeTools from "@/graph/tools/native";
 import { MAX_DB_ID } from "@/lib/db-id";
+import { keyedQueueTail, withKeyedQueue } from "@/lib/locks";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { expectFallbackLines, graphDepsOf } from "../utils/fallback-lines";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
+import { until } from "../utils/poll";
 import {
   EmptyThenReplyModel,
   FailingModel,
@@ -60,6 +64,7 @@ import {
   ScriptedCaptureModel,
   SilentHandoffThenResolveModel,
 } from "../utils/scripted-models";
+import { settlesDuring, throwingModel } from "../utils/tool-logger-settled";
 
 describe("renderNudge (prompt-injection boundary)", () => {
   test("directive comes first and is authoritative", () => {
@@ -982,6 +987,67 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(seen[0]).toContain("skip_reply");
     expect(seen[0]).toContain("private_note");
     expect(seen[0]).not.toContain("resolve_conversation");
+  });
+
+  // The directive names the silence channel THIS run has bound: the tool when it is bound, the
+  // sentinel when the toolset came out empty. Naming a tool that is not bound makes the model answer
+  // a quiet follow-up with text.
+  async function directiveWith(convId: number, enabledTools: string[]) {
+    const agent = await suDb.agent.findFirstOrThrow({ where: { tenantId } });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "NATIVE",
+        enabledTools,
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const bound: string[] = [];
+    let prompt = "";
+    const capturing = {
+      async invoke(messages: BaseMessage[]) {
+        prompt = JSON.stringify(messages.map((m) => m.content));
+        return new AIMessage("Oi de novo!");
+      },
+      bindTools(tools: Array<{ name: string }>) {
+        bound.push(...tools.map((t) => t.name));
+        return capturing;
+      },
+    };
+    await seedConv(convId, null);
+    try {
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => capturing as never,
+          makeClient: stub().makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+    }
+    return { bound, prompt };
+  }
+  const ASKS_FOR_THE_TOOL = "call the `skip_reply` tool";
+
+  test("a follow-up whose skip_reply is bound is asked to call it", async () => {
+    const { bound, prompt } = await directiveWith(7114, ["private_note"]);
+    expect(bound).toContain("skip_reply");
+    expect(prompt).toContain(ASKS_FOR_THE_TOOL);
+  });
+
+  test("a follow-up with nothing bound is asked for the sentinel, not for a tool", async () => {
+    const { bound, prompt } = await directiveWith(7115, []);
+    expect(bound).toEqual([]);
+    expect(prompt).not.toContain(ASKS_FOR_THE_TOOL);
+    expect(prompt).toContain(FOLLOWUP_SKIP_SENTINEL);
   });
 
   // A follow-up invokes on the SAME memory thread a reactive turn does, so it is the second producer
@@ -3212,6 +3278,73 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(strictAsks).toBeGreaterThan(1);
   });
 
+  // NOTE: the strict ask before the claim is made once the nudge holds the `ingest:` section, so a
+  // reset that lands while the nudge waits for the section is seen before the claim, and the retired
+  // run never waits out an append's lease. The section and an append are both held here: the nudge
+  // must stand down while the append still holds the claim, after the section opened to it.
+  test("a run retired while it waits for the section stands down before the claim", async () => {
+    const contactInboxId = 8817;
+    await seedConv(951, null, new Date(), contactInboxId);
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    const append = await claimIngestWrite(owner, appDb);
+    expect(append.state).not.toBe("busy");
+    const section = `ingest:${graphThreadId}`;
+    const ours = {};
+    let open = () => {};
+    const held = withKeyedQueue(
+      section,
+      () => new Promise<void>((resolve) => (open = resolve)),
+      ours,
+    );
+    let wanted = true;
+    let sectionOpened = false;
+    const strictAsks: boolean[] = [];
+    let settled = false;
+    const s = stub();
+    const run = runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:951`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      stillWanted: async ({ strict }) => {
+        if (strict) strictAsks.push(sectionOpened);
+        return wanted;
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    }).finally(() => {
+      settled = true;
+    });
+    try {
+      // Queued behind the section (it takes our joinable tail away), or asking before it.
+      await until(
+        "the nudge to reach the section",
+        () => strictAsks.length > 0 || keyedQueueTail(section) !== ours,
+      );
+      wanted = false;
+      sectionOpened = true;
+      open();
+      await held;
+      await until("the retired nudge to stand down", () => settled);
+      expect(await run).toBe("stale");
+      expect(strictAsks).toEqual([true]);
+      expect(s.messages).toEqual([]);
+    } finally {
+      open();
+      await releaseIngestWrite(owner, appDb, append);
+      await run.catch(() => {});
+    }
+  });
+
   // NOTE: ORDER, observed at the only moment that proves it. A marker advanced before the divider
   // exists lets a turn arriving in that window read the conversation as already recorded and
   // decline to write its own, and this invoke then appends ours after that turn's messages: a
@@ -4559,6 +4692,415 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(s.notes[0]?.[1]).toContain("Guardrail (output)");
       },
     );
+  });
+
+  test("the follow-up's fallback lines name their own model and raise one alarm", async () => {
+    await seedConv(7113, null);
+    const deps = await graphDepsOf(() =>
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:7113`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: ["Oi de novo!"] }) as never,
+          makeClient: stub().makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }),
+    );
+    expect(deps).toHaveLength(1);
+    expectFallbackLines(deps[0] ?? {});
+  });
+
+  // Both exits, the answered run and the failed invoke, settle the run's tool logger
+  // (tests/utils/tool-logger-settled.ts).
+  test("a follow-up settles its tool logger, also when its model call fails", async () => {
+    const run = async (convId: number, model: unknown) => {
+      await seedConv(convId, null);
+      return settlesDuring(() =>
+        runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: () => model as never,
+            makeClient: stub().makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        }),
+      );
+    };
+    expect(
+      await run(7116, new FakeListChatModel({ responses: ["Oi de novo!"] })),
+    ).toBeGreaterThan(0);
+    expect(await run(7117, throwingModel)).toBeGreaterThan(0);
+  });
+
+  // A nudge that may only write notes (a person owns the conversation) must not get a tool that
+  // sends to the customer from inside the call, where the reply's ownership check cannot take it
+  // back. The control is the same agent on a conversation the bot owns.
+  test("a note-only follow-up is not offered open_case_in_inbox", async () => {
+    const offered = async (convId: number, assigneeType: string | null) => {
+      await seedConv(convId, assigneeType);
+      let names: string[] = [];
+      const recordsTools = {
+        invoke: async () => new AIMessage(""),
+        bindTools: (tools: Array<{ name: string }>) => {
+          names = tools.map((t) => t.name);
+          return { invoke: async () => new AIMessage("Oi de novo!") };
+        },
+      };
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => recordsTools as never,
+          makeClient: stub().makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      return names;
+    };
+    await withGuardrails(
+      { enabled: false },
+      async () => {
+        expect(await offered(7108, null)).toContain("open_case_in_inbox");
+        expect(await offered(7109, "User")).not.toContain("open_case_in_inbox");
+      },
+      {
+        crossInboxCase: {
+          targetInboxId: 40,
+          targetInstanceId: Number(instanceId),
+        },
+      },
+    );
+  });
+
+  // A tool that writes to the customer from inside its call (the case opening) is screened by the
+  // follow-up's own output gate, which the nudge hands to the toolset as `screenCustomerText`. The
+  // model below asks it mid-invoke, where the tool does, and then answers normally. `duringJudge`
+  // runs inside the first verdict, between the screening and what the closure does with it.
+  async function screenedInNudge(
+    convId: number,
+    verdictJson: string,
+    s: ReturnType<typeof stub>,
+    duringJudge: () => Promise<void> = async () => {},
+    next: AIMessage[] = [],
+  ) {
+    const build = spyOn(nativeTools, "buildNativeTools");
+    let verdict: string | undefined;
+    let judged = 0;
+    const asksMidTurn = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          if (verdict === undefined) {
+            const screen = build.mock.calls.at(-1)?.[0].screenCustomerText;
+            verdict = screen
+              ? await screen("Abrimos seu caso.")
+              : "not handed down";
+          }
+          return next.shift() ?? new AIMessage("Oi de novo!");
+        },
+      }),
+    };
+    try {
+      await seedConv(convId, null);
+      // The follow-up's own reply trips the gate too; what it does after the tool's verdict is
+      // other tests' business, so a throw there is kept rather than raised.
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: ((cfg: { model: string }) =>
+            cfg.model === GUARD_MODEL
+              ? guardrailModel(async () => {
+                  judged += 1;
+                  if (judged === 1) await duringJudge();
+                  return { content: verdictJson };
+                })
+              : asksMidTurn) as never,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }).catch((err: unknown) => err);
+      return { verdict, outcome };
+    } finally {
+      build.mockRestore();
+    }
+  }
+
+  const handoffPolicy = (handoffMessage: string) => ({
+    enabled: true,
+    provider: "openai",
+    model: GUARD_MODEL,
+    input: { enabled: false },
+    output: {
+      enabled: true,
+      action: "handoff",
+      handoffMessage,
+      checks: {
+        toxicity: true,
+        unsafeContent: false,
+        competitorMentions: false,
+        promptAdherence: false,
+      },
+      templateMessage: "TEMPLATE-NUDGE",
+    },
+  });
+  const TRIPPED = JSON.stringify({
+    violated: true,
+    categories: ["toxicity"],
+    rationale: "fora da política",
+  });
+
+  test("a tool's text the follow-up's gate passes is sent", async () => {
+    await withGuardrails(handoffPolicy("ENCAMINHADO"), async () => {
+      const s = stub();
+      const { verdict } = await screenedInNudge(
+        7101,
+        JSON.stringify({ violated: false, categories: [], rationale: "" }),
+        s,
+      );
+      expect(verdict).toBe("send");
+      expect(s.statuses).toEqual([]);
+    });
+  });
+
+  test("a tool's text the follow-up's gate refuses without a transfer is dropped", async () => {
+    const policy = handoffPolicy("");
+    await withGuardrails(
+      { ...policy, output: { ...policy.output, action: "template" } },
+      async () => {
+        const s = stub();
+        const { verdict } = await screenedInNudge(7106, TRIPPED, s);
+        expect(verdict).toBe("drop");
+        expect(s.statuses).toEqual([]);
+      },
+    );
+  });
+
+  test("a tool's text the follow-up's gate sends to the team transfers the run", async () => {
+    await withGuardrails(handoffPolicy("ENCAMINHADO"), async () => {
+      const s = stub();
+      const { verdict } = await screenedInNudge(7102, TRIPPED, s);
+      expect(verdict).toBe("handed");
+      expect(s.statuses).toEqual([[7102, "open"]]);
+      // The customer reads the policy's line, not the model's reply after the transfer.
+      expect(s.messages).toEqual([[7102, "ENCAMINHADO"]]);
+    });
+  });
+
+  // A policy with no line is a silent transfer: the model's own reply must not reach the customer
+  // before the mirror catches up.
+  test("a tool's text handed over with an empty line leaves the customer unwritten", async () => {
+    await withGuardrails(handoffPolicy(""), async () => {
+      const s = stub();
+      const { verdict } = await screenedInNudge(7103, TRIPPED, s);
+      expect(verdict).toBe("handed");
+      expect(s.statuses).toEqual([[7103, "open"]]);
+      expect(s.messages).toEqual([]);
+    });
+  });
+
+  test("a tool's text whose transfer fails reads as failed, not dropped", async () => {
+    await withGuardrails(handoffPolicy("ENCAMINHADO"), async () => {
+      const s = stub();
+      (s.client as unknown as Record<string, unknown>).toggleStatus =
+        async () => {
+          throw new Error("chatwoot 500");
+        };
+      const { verdict } = await screenedInNudge(7104, TRIPPED, s);
+      expect(verdict).toBe("failed");
+    });
+  });
+
+  // The transfer is the run's own: its status webhook, mirrored at once here, is not a person taking
+  // over, so the run's next tool call still runs.
+  test("after a tool's text is handed over, the follow-up's next tool call still runs", async () => {
+    await withGuardrails(handoffPolicy("ENCAMINHADO"), async () => {
+      const s = stub();
+      (s.client as unknown as Record<string, unknown>).toggleStatus = async (
+        c: number,
+        status: string,
+      ) => {
+        s.statuses.push([c, status]);
+        await suDb.conversation.update({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: c,
+            },
+          },
+          data: { status },
+        });
+        return {};
+      };
+      const { verdict } = await screenedInNudge(
+        7107,
+        TRIPPED,
+        s,
+        async () => {},
+        [
+          new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "set_labels",
+                args: { add: ["caso-aberto"] },
+                id: "call_case_label",
+              },
+            ],
+          }),
+        ],
+      );
+      expect(verdict).toBe("handed");
+      expect(s.statuses).toEqual([[7107, "open"]]);
+      expect(s.labelSets).toEqual([["caso-aberto"]]);
+    });
+  });
+
+  // The screening is a model round trip, and a person can take the conversation during it: the
+  // closure asks the fence again before the transfer, which would otherwise move a conversation
+  // that is no longer the bot's.
+  test("a person who takes over while a tool's text is screened is not transferred over", async () => {
+    await withGuardrails(handoffPolicy("ENCAMINHADO"), async () => {
+      const s = stub();
+      const { verdict } = await screenedInNudge(7105, TRIPPED, s, async () => {
+        await suDb.conversation.update({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: 7105,
+            },
+          },
+          data: { assigneeType: "User", status: "open" },
+        });
+      });
+      expect(verdict).toBe("drop");
+      expect(s.statuses).toEqual([]);
+      expect(s.messages).toEqual([]);
+    });
+  });
+
+  // A silent end sent nothing, so post-actions a job's deadline cut short leave the step to the
+  // retry: the run stands down instead of reporting a silence the handler would stamp and commit
+  // with its labels never applied. The deadline lands inside the post-actions' labels read, once the
+  // test arms it past every earlier ask (a labels read also feeds the prompt).
+  async function silentEndCutShort(
+    convId: number,
+    setUp: (
+      arm: () => void,
+      s: ReturnType<typeof stub>,
+    ) => (cfg: { model: string }) => BaseChatModel,
+  ) {
+    await seedConv(convId, null);
+    const s = stub();
+    const deadline = new AbortController();
+    let armed = false;
+    const makeModel = setUp(() => {
+      armed = true;
+    }, s);
+    (s.client as unknown as Record<string, unknown>).getConversationLabels =
+      async () => {
+        if (armed) deadline.abort(new Error("deadline exceeded"));
+        return [];
+      };
+    const outcome = await runAgentNudge({
+      signal: deadline.signal,
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: makeModel as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    return { outcome, s, aborted: deadline.signal.aborted };
+  }
+
+  // Armed by the verdict: everything after the judge is the stretch under test.
+  const judgedThenArmed =
+    (arm: () => void) =>
+    (cfg: { model: string }): BaseChatModel =>
+      cfg.model === GUARD_MODEL
+        ? guardrailModel(async () => {
+            arm();
+            return { content: TRIPPED };
+          })
+        : new FakeListChatModel({ responses: ["Oi?"] });
+
+  test("a follow-up the output gate silenced, whose labels the deadline cuts short, stands down", async () => {
+    const policy = handoffPolicy("");
+    await withGuardrails(
+      { ...policy, output: { ...policy.output, action: "silent" } },
+      async () => {
+        const { outcome, s, aborted } = await silentEndCutShort(
+          7110,
+          judgedThenArmed,
+        );
+        expect(aborted).toBe(true);
+        expect(s.messages).toEqual([]);
+        expect(outcome).toBe("stale");
+        expect(s.labelSets).toEqual([]);
+      },
+    );
+  });
+
+  test("a follow-up whose policy transfer failed, and whose labels the deadline cuts short, stands down", async () => {
+    await withGuardrails(handoffPolicy("ENCAMINHADO"), async () => {
+      const { outcome, s, aborted } = await silentEndCutShort(
+        7111,
+        (arm, st) => {
+          (st.client as unknown as Record<string, unknown>).toggleStatus =
+            async () => {
+              throw new Error("chatwoot 500");
+            };
+          return judgedThenArmed(arm);
+        },
+      );
+      expect(aborted).toBe(true);
+      expect(s.messages).toEqual([]);
+      expect(outcome).toBe("stale");
+      expect(s.labelSets).toEqual([]);
+    });
+  });
+
+  test("a follow-up silent with needs_human, whose labels the deadline cuts short, stands down", async () => {
+    const { outcome, s, aborted } = await silentEndCutShort(7112, (arm, st) => {
+      const toggle = (st.client as unknown as Record<string, unknown>)
+        .toggleStatus as (c: number, status: string) => Promise<unknown>;
+      (st.client as unknown as Record<string, unknown>).toggleStatus = async (
+        c: number,
+        status: string,
+      ) => {
+        arm();
+        return toggle(c, status);
+      };
+      return () =>
+        new NudgeSkipModel("needs_human") as unknown as BaseChatModel;
+    });
+    expect(aborted).toBe(true);
+    expect(s.statuses).toEqual([[7112, "open"]]);
+    expect(outcome).toBe("stale");
+    expect(s.labelSets).toEqual([]);
   });
 
   // NOTE: The window moderation opens, and the reason ownership is asked again rather than

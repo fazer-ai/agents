@@ -604,6 +604,8 @@ const FENCED: {
             ["style", () => ({ style: { accentColor: "#112233" } })],
             ["numberPrefix", () => ({ numberPrefix: "ORC-" })],
             ["enabled", () => ({ enabled: false })],
+            ["requiresApproval", () => ({ requiresApproval: true })],
+            ["approvalTtlHours", () => ({ approvalTtlHours: 48 })],
           ] as const
         ).map(([column, patch]) => [
           column,

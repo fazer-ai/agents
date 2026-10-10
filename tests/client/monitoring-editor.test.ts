@@ -379,6 +379,14 @@ describe("the drafts a decisions watcher does not draw", () => {
       'applyGeneral(data.agent, "systemPrompt" in patch);',
     );
   });
+  test("are refused by save-everything, before any section is written", () => {
+    const body = flat.slice(flat.indexOf("async function saveAllDirty"));
+    const guard = body.indexOf("if (hiddenDraftsPending) {");
+    expect(guard > 0).toBe(true);
+    expect(guard < body.indexOf("if (dirty.general || dirty.decisions)")).toBe(
+      true,
+    );
+  });
   test("keep the navigation guard up", () => {
     expect(flat).toContain("const anyDirty = hiddenDraftsPending ||");
     expect(flat).toContain("useNavGuard(anyDirty);");

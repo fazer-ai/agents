@@ -1722,6 +1722,7 @@
     "handoffRoute": "Chatwoot routing (default)",
     "handoffTarget": "Who receives the handoff",
     "handoffTeams": "Teams",
+    "hiddenDraftsPending": "There are unsaved changes to the instructions, the model, memory or the fallback provider, which questions and rules do not use. Switch back to the language model on General to save them, or discard them.",
     "identitySection": "Identity",
     "identitySectionHint": "Name, system prompt and whether the agent is active.",
     "identitySectionHintDecisions": "Name, mode and whether the agent is active.",

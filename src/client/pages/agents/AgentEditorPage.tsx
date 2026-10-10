@@ -3695,6 +3695,19 @@ function AgentEditor() {
   // write), used by "Save and export". Tools + Knowledge share the grant set, so one saveTools() write
   // persists both. Awaited so the export reads the just-saved version.
   async function saveAllDirty(): Promise<boolean> {
+    // NOTE: Edits to what questions and rules do not draw are written by no save of this engine,
+    // so "save everything" cannot honour them; it says so instead of reporting a save that left
+    // them out.
+    if (hiddenDraftsPending) {
+      showToast(
+        t(
+          "editor.hiddenDraftsPending",
+          "There are unsaved changes to the instructions, the model, memory or the fallback provider, which questions and rules do not use. Switch back to the language model on General to save them, or discard them.",
+        ),
+        "error",
+      );
+      return false;
+    }
     // NOTE: The Behavior tab's Save is disabled on an empty gate; this path saves without that
     // button, so it refuses the same state before writing any section.
     if (dirty.behavior && contactAuthGateEmpty(contactAuth)) {

@@ -1763,6 +1763,7 @@
     "handoffRoute": "Roteamento do Chatwoot (padrão)",
     "handoffTarget": "Quem recebe a transferência",
     "handoffTeams": "Times",
+    "hiddenDraftsPending": "Há alterações não salvas nas instruções, no modelo, na memória ou no provedor reserva, que Perguntas e regras não usa. Volte para Modelo de linguagem em Geral para salvá-las, ou descarte.",
     "identitySection": "Identidade",
     "identitySectionHint": "Nome, prompt do sistema e se o agente está ativo.",
     "identitySectionHintDecisions": "Nome, modo e se o agente está ativo.",

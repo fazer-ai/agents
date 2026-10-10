@@ -269,3 +269,17 @@ export function withEngine(
         : prev.decisions,
   };
 }
+
+// The saved settings with the engine the editor shows, for the configuration warnings: the warnings
+// that depend on the engine follow the card before the save. Only the engine moves; every other
+// stored value, the decisions block included, is read as saved. Unchanged for an answering agent.
+export function withDraftEngine<S>(
+  settings: S,
+  form: ObservationState,
+  watcher: boolean,
+): S {
+  if (!watcher) return settings;
+  const bag = (settings ?? {}) as Record<string, unknown>;
+  const monitoring = (bag.monitoring ?? {}) as Record<string, unknown>;
+  return { ...bag, monitoring: { ...monitoring, engine: form.engine } } as S;
+}

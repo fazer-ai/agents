@@ -402,3 +402,39 @@ describe("the drafts a decisions watcher does not draw", () => {
     expect(flat).toContain("useNavGuard(anyDirty);");
   });
 });
+
+// The monitoring hint belongs to General, where the engine is chosen, and says where each engine's
+// behaviour is actually configured.
+describe("the monitoring hint", () => {
+  const flat = EDITOR.replace(/\s+/g, " ");
+  test("is drawn on General only", () => {
+    expect(flat).toContain('{watcher && tab === "general" && (');
+  });
+  test("does not send a language-model watcher to Observation for what it does", () => {
+    const en = JSON.parse(
+      readFileSync("src/client/locales/en.json", "utf8"),
+    ) as { editor: Record<string, string> };
+    expect(en.editor.monitoringTabsHint).not.toContain("Observation");
+    expect(en.editor.monitoringTabsHint).toContain("Tools");
+  });
+});
+
+// Warnings that depend on the engine follow the engine as edited, like the "to save" line: a watcher
+// switched to questions and rules is not warned about the chat model it will no longer use.
+describe("the configuration warnings of a watcher", () => {
+  test("are computed with the engine the editor shows", () => {
+    expect(EDITOR.replace(/\s+/g, " ")).toContain(
+      "settings: withDraftEngine( syncedAgentRef.current?.settings, observation, watcher, ),",
+    );
+  });
+});
+
+describe("the Questions and rules tab's Save", () => {
+  test("stays clickable and turns what is missing into an error when pressed", () => {
+    const flat = EDITOR.replace(/\s+/g, " ");
+    expect(flat).toContain(
+      "if (decisionsSetupIssues.size > 0) { setDecisionsAttempted(true); return; } void saveDecisions();",
+    );
+    expect(flat).toContain("showErrors={decisionsAttempted}");
+  });
+});

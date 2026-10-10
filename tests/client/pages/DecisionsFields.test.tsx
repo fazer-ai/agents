@@ -152,6 +152,7 @@ function renderSection(
     refusal?: DecisionsServerRefusal | null;
     granted?: string[] | null;
     grantsPending?: boolean;
+    showErrors?: boolean;
   } = {},
 ): { state: () => ObservationState } {
   let latest = observationToForm(settings);
@@ -211,6 +212,7 @@ function renderSection(
               onGrantTool={(tool) => grantedTools.push(tool)}
               onOpenTools={() => opened.push("tools")}
               onOpenGeneral={() => opened.push("general")}
+              showErrors={opts.showErrors ?? false}
             />
           </>
         )}
@@ -257,7 +259,7 @@ describe("the decisions engine in the agent editor", () => {
 
   test("choosing the decisions engine opens an empty block in shadow, and says what is missing", () => {
     stubApi();
-    const { state } = renderSection({});
+    const { state } = renderSection({}, { showErrors: true });
     pickEngine("decisions");
     expect(count("decisions-fields")).toBe(1);
     expect(state().engine).toBe("decisions");
@@ -270,7 +272,10 @@ describe("the decisions engine in the agent editor", () => {
 
   test("an agent stored on the decisions engine with no block shows the fields and what is missing", () => {
     stubApi();
-    renderSection({ monitoring: { engine: "decisions" } });
+    renderSection(
+      { monitoring: { engine: "decisions" } },
+      { showErrors: true },
+    );
     expect(engineOn()).toBe("decisions");
     expect(count("decisions-fields")).toBe(1);
     expect(count("decisions-problems")).toBe(1);
@@ -611,7 +616,7 @@ describe("a problem the server would name", () => {
     "a rule on a question that is gone": "No question is named",
     "a rule on an option that is gone": "is no longer one of",
     "a yes or no condition with no probability": "Set the minimum probability",
-    "a probability above one": "At most 1",
+    "a probability above one": "At most 100%",
     "a choice condition with no option": "Pick the option.",
     "a level past the last": "one past the last",
     "a score condition with no levels": "Pick the lowest and the highest",
@@ -815,5 +820,57 @@ describe("the editor follows the engine", () => {
     expect(visible().includes("marked on its field below")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Open General" }));
     expect(opened).toEqual(["general"]);
+  });
+});
+
+// The first visit to the tab is an invitation, not a list of errors: what is missing is said in a
+// neutral line, and it turns into an error only once the operator tries to save.
+describe("a new agent's first look at its questions", () => {
+  test("shows the starting points and a neutral line, no error", () => {
+    stubApi();
+    renderSection({});
+    pickEngine("decisions");
+    expect(count("decisions-starters")).toBe(1);
+    expect(screen.queryAllByRole("alert").length).toBe(0);
+    expect(
+      (document.body.textContent ?? "").includes("Add at least one question"),
+    ).toBe(false);
+    expect(
+      screen.getByTestId("decisions-problems").getAttribute("data-tone"),
+    ).toBe("neutral");
+  });
+
+  test("turns into an error once a save was tried", () => {
+    stubApi();
+    renderSection({}, { showErrors: true });
+    pickEngine("decisions");
+    expect(
+      screen.getByTestId("decisions-problems").getAttribute("data-tone"),
+    ).toBe("error");
+    expect(screen.queryAllByRole("alert").length).toBeGreaterThan(0);
+  });
+});
+
+describe("a threshold on a rule", () => {
+  test("is shown and typed as a percentage", () => {
+    stubApi();
+    const { state } = renderSection({
+      monitoring: { engine: "decisions", decisions: BLOCK },
+    });
+    const card = screen.getAllByTestId("decisions-rule")[0];
+    if (!card) throw new Error("fixture");
+    expect((card.textContent ?? "").includes("≥ 70%")).toBe(true);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Rule 1/ })[0] as HTMLElement,
+    );
+    const input = screen.getByRole("spinbutton", {
+      name: "Minimum probability",
+    }) as HTMLInputElement;
+    expect(input.value).toBe("70");
+    fireEvent.change(input, { target: { value: "85" } });
+    const written = observationToStored(state()).decisions as {
+      rules: { when: { minProbability?: number }[] }[];
+    };
+    expect(written.rules[0]?.when[0]?.minProbability).toBe(0.85);
   });
 });

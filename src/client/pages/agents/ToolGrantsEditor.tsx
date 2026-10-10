@@ -747,7 +747,7 @@ export function ToolGrantsEditor({
     : handoffAccounts.length === 0
       ? t(
           "editor.handoffPinnedNoInbox",
-          "Bind at least one inbox in the Channels tab first.",
+          "Attach this agent to at least one inbox in the Channels tab first, to answer or to observe it.",
         )
       : handoffAccounts.length > 1
         ? t(

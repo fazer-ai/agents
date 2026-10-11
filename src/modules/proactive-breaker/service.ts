@@ -76,13 +76,18 @@ function windowStartFor(now: Date, resumedAt: Date | null): Date {
   return resumedAt && resumedAt > dayAgo ? resumedAt : dayAgo;
 }
 
+// From `since` INCLUSIVE. A reservation that waited behind a resume takes its instant once it holds
+// the lock, and the clock has millisecond resolution, so that instant can EQUAL `resumedAt`: with a
+// strict bound the send went uncounted and the account got one past its limit after a resume. The
+// tie the other way, a send reserved before the resume in the same millisecond, now counts toward the
+// fresh allowance, which errs on the side the breaker is for.
 async function countWindow(
   db: ScopedDb,
   tenantId: bigint,
   since: Date,
 ): Promise<number> {
   return db.agentTurnDelivery.count({
-    where: { tenantId, proactive: true, deliveredAt: { gt: since } },
+    where: { tenantId, proactive: true, deliveredAt: { gte: since } },
   });
 }
 

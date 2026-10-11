@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -253,6 +260,61 @@ async function seedGenerate(outcome: string, at: Date, n: number) {
   });
 }
 
+// A resume and a reservation that waited behind it on the breaker's lock: the reservation's instant is
+// taken once it holds the lock, so it is never before the resume's, and the send must count after it.
+async function reservationBehindResume(c1: number, c2: number) {
+  await resetBreaker();
+  await setBreaker("fixed", 1);
+  await suDb.proactiveBreaker.create({
+    data: {
+      tenantId,
+      trippedAt: new Date(),
+      tripCount: 1,
+      tripLimit: 1,
+      autoComputedAt: new Date(),
+    },
+  });
+  const first = await seedConv(c1);
+  const second = await seedConv(c2);
+  let waiting: Promise<
+    Awaited<ReturnType<typeof reserveProactiveSend>>
+  > | null = null;
+  // NOTE: The resume runs in a transaction that holds the breaker's lock while the reservation
+  // waits for it, which is the order the reservation's instant must respect.
+  await suDb.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`proactive-breaker:${tenantId}`})::bigint)`;
+    waiting = reserveProactiveSend({
+      tenantId,
+      conversationDbId: first,
+      limit: 0,
+      base: appDb,
+    });
+    await until("the reservation to wait on the breaker's lock", async () => {
+      const rows = await tx.$queryRaw<Array<{ n: bigint }>>`
+          SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
+      return Number(rows[0]?.n ?? 0) > 0;
+    });
+    await tx.proactiveBreaker.update({
+      where: { tenantId },
+      data: {
+        trippedAt: null,
+        tripCount: null,
+        tripLimit: null,
+        resumedAt: new Date(),
+      },
+    });
+  });
+  const v = await (waiting as unknown as Promise<{ over: boolean }>);
+  expect(v.over).toBe(false);
+  const next = await reserveProactiveSend({
+    tenantId,
+    conversationDbId: second,
+    limit: 0,
+    base: appDb,
+  });
+  expect(next.over).toBe(true);
+}
+
 describe.skipIf(!dbUp)("proactive breaker", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -406,56 +468,18 @@ describe.skipIf(!dbUp)("proactive breaker", () => {
   });
 
   test("a reservation that waited behind a resume counts after it", async () => {
-    await resetBreaker();
-    await setBreaker("fixed", 1);
-    await suDb.proactiveBreaker.create({
-      data: {
-        tenantId,
-        trippedAt: new Date(),
-        tripCount: 1,
-        tripLimit: 1,
-        autoComputedAt: new Date(),
-      },
-    });
-    const first = await seedConv(6901);
-    const second = await seedConv(6902);
-    let waiting: Promise<
-      Awaited<ReturnType<typeof reserveProactiveSend>>
-    > | null = null;
-    // NOTE: The resume runs in a transaction that holds the breaker's lock while the reservation
-    // waits for it, which is the order the reservation's instant must respect.
-    await suDb.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`proactive-breaker:${tenantId}`})::bigint)`;
-      waiting = reserveProactiveSend({
-        tenantId,
-        conversationDbId: first,
-        limit: 0,
-        base: appDb,
-      });
-      await until("the reservation to wait on the breaker's lock", async () => {
-        const rows = await tx.$queryRaw<Array<{ n: bigint }>>`
-          SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`;
-        return Number(rows[0]?.n ?? 0) > 0;
-      });
-      await tx.proactiveBreaker.update({
-        where: { tenantId },
-        data: {
-          trippedAt: null,
-          tripCount: null,
-          tripLimit: null,
-          resumedAt: new Date(),
-        },
-      });
-    });
-    const v = await (waiting as unknown as Promise<{ over: boolean }>);
-    expect(v.over).toBe(false);
-    const next = await reserveProactiveSend({
-      tenantId,
-      conversationDbId: second,
-      limit: 0,
-      base: appDb,
-    });
-    expect(next.over).toBe(true);
+    await reservationBehindResume(6901, 6902);
+  });
+
+  // The clock has millisecond resolution, and on a fast machine the reservation's instant can land
+  // on the resume's (seen in CI). Frozen here so the tie is certain rather than occasional.
+  test("a reservation in the same millisecond as the resume still counts after it", async () => {
+    setSystemTime(new Date());
+    try {
+      await reservationBehindResume(6903, 6904);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("turning the breaker off while a reservation holds its lock waits instead of deadlocking", async () => {

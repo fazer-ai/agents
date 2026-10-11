@@ -4357,7 +4357,7 @@ describe("carrying the customer's files (issue #1128)", () => {
       phase: string;
       detail?: Record<string, unknown>;
       level?: string;
-      err?: Error;
+      err?: unknown;
     }> = [];
     const [t] = buildNativeTools(
       {
@@ -4391,8 +4391,9 @@ describe("carrying the customer's files (issue #1128)", () => {
       calledOff: true,
       notCarried: [75, 76],
     });
-    expect(line?.err?.message).toContain("called off");
-    expect(line?.err?.message).toContain("75, 76");
+    const message = (line?.err as Error | undefined)?.message;
+    expect(message).toContain("called off");
+    expect(message).toContain("75, 76");
   });
 
   test("a carry that went through is an ok line, one that failed a warn error line", () => {

@@ -180,28 +180,6 @@ describe("the scrub reads past the cut", () => {
   });
 });
 
-// The order is a property of the CALL SITE: a surface that composes the scrub around a cut by hand
-// leaks the same credential, and no type would say so.
-describe("no surface composes the order by hand", () => {
-  test("nothing pairs the scrub with a cut it did not do first", async () => {
-    const dir = new URL("../../src/", import.meta.url).pathname;
-    const offenders: string[] = [];
-    for await (const rel of new Bun.Glob("**/*.{ts,tsx}").scan({ cwd: dir })) {
-      const text = await Bun.file(`${dir}${rel}`).text();
-      // The exact shape that leaks: the scrub wrapped around a cut.
-      if (/redactSecretsInText\(\s*(?:makeStorable\()?\s*truncate\(/.test(text))
-        offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
-    // The positive control: the sweep can see the shape it is looking for.
-    expect(
-      /redactSecretsInText\(\s*(?:makeStorable\()?\s*truncate\(/.test(
-        "x = redactSecretsInText(truncate(v, 10))",
-      ),
-    ).toBe(true);
-  });
-});
-
 // A REAL JWT IS NOT A PREFIX PLUS A RUN, AND THE MARGIN CANNOT SAVE IT. Every other shape matches
 // `<prefix><run of at least N>`, so a long enough piece still matches. A JWT's match REQUIRES two
 // separators and a final segment, which a real payload puts hundreds of characters in, so a cut

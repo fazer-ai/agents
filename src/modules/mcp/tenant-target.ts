@@ -45,6 +45,7 @@ export async function resolveEffectivePrincipal(
   }
   try {
     const tenant = await resolveTenantSelector(selector, base);
+    // biome-ignore lint/plugin/no-bigint-cast: the id of a row already loaded, re-read off its DTO.
     return { ok: true, eff: { ...principal, tenantId: BigInt(tenant.id) } };
   } catch {
     return {

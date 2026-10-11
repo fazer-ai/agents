@@ -498,6 +498,7 @@ export async function redirectFollowUpHandler(
   const tenantId = job.tenantId;
   let agentId: bigint;
   try {
+    // biome-ignore lint/plugin/no-bigint-cast: a scheduler job payload this app enqueued from an id it had already parsed.
     agentId = BigInt(payload.agentId);
   } catch {
     return { outcome: "done" };

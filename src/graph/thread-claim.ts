@@ -29,10 +29,11 @@ export interface ThreadOwner {
   graphThreadId: string;
 }
 
-// Long enough for a model turn with tools, and the same order as the scheduler's own stale-claim
-// window. Overshooting costs a deferred append (owed, then drained by the next reader); undershooting
-// costs the Map's behaviour (the writer proceeds).
-const TURN_LEASE_SECONDS = 300;
+// How long a turn's claim outlives the process that holds it. A live turn renews it (`renewing`), so
+// this bounds nothing about a turn's length: it is how long a dead turn keeps every reader waiting,
+// the delivery recovery that answers its customer included. Undershooting the renewal costs the
+// Map's behaviour (the writer proceeds beside a live turn), so it is renewed six times per lease.
+const TURN_LEASE_SECONDS = 60;
 // One append: a checkpointer write and a short transaction. Nothing here waits on a model.
 const WRITE_LEASE_SECONDS = 30;
 // How long a starting turn waits out an append in flight. It is the WRITE LEASE plus slack, and not
@@ -54,12 +55,13 @@ export const WAIT_AGAIN = Symbol("wait for the thread and try again");
 
 // How long a second invoke waits out the first. ABSOLUTE from when the wait starts, unlike the
 // bounds above: those wait on one checkpointer write, but a hung model call keeps its process
-// renewing the lease, so a deadline reset on each renewal would never fire. One full lease plus
-// slack, so a holder that stops renewing expires (and is taken over) before this runs out. PAST THE
-// CEILING THE TURN JOINS rather than refusing: a direct turn that throws is settled with no retry
+// renewing the lease, so a deadline reset on each renewal would never fire. Longer than a lease, so a
+// holder that stops renewing expires (and is taken over) before this runs out, and set by how long a
+// live turn may run before a second one starts beside it, not by the lease. PAST THE CEILING THE
+// TURN JOINS rather than refusing: a direct turn that throws is settled with no retry
 // (../modules/chatwoot/webhook.ts), so refusing means no answer at all. The ceiling stops the wait
 // and logs it.
-export const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
+export const TURN_WAIT_MS = 305_000;
 const TURN_POLL_MS = 50;
 
 export interface TurnHold {
@@ -71,12 +73,18 @@ export interface TurnHold {
   stopRenewal?: () => void;
 }
 
-// A LEASE THAT DOES NOT OUTLIVE THE WORK IT FENCES. 300 seconds is generous for one model call and
-// far too short as a hard ceiling: a tool-heavy turn makes several, and the moment the lease lapses
-// an append reads the thread as free, lands, and is erased by the invoke that never stopped running.
-// Renewing while the invoke is alive is what makes the lease a CRASH recovery (the renewal stops
-// with the process) instead of a timeout on legitimate work.
-const RENEW_EVERY_MS = (TURN_LEASE_SECONDS / 3) * 1_000;
+// A LEASE THAT DOES NOT OUTLIVE THE WORK IT FENCES. A turn makes model calls and tool calls of no
+// bounded length, and the moment the lease lapses an append reads the thread as free, lands, and is
+// erased by the invoke that never stopped running. Renewing while the invoke is alive is what makes
+// the lease a CRASH recovery (the renewal stops with the process) instead of a timeout on legitimate
+// work. Six renewals per lease: a renewal that fails (a pool momentarily full answers in `maxWait`,
+// 2 s) is retried by the next tick, and the claim lapses only after five in a row.
+const RENEW_EVERY_MS = (TURN_LEASE_SECONDS / 6) * 1_000;
+
+// Joining an occupancy and renewing a hold both EXTEND the lease, never shorten it (`GREATEST`). In a
+// rolling deploy a live turn on the previous release holds a 300-second lease it renews every 100
+// seconds; writing `now() + 60s` over it would let that claim lapse before its next renewal, and an
+// append would land inside an invoke that is still running.
 
 function renewing(
   owner: ThreadOwner,
@@ -89,7 +97,7 @@ function renewing(
       sysCtx(owner.tenantId),
       (db) => db.$executeRaw`
         UPDATE agent_threads
-           SET turn_held_until = now() + make_interval(secs => ${TURN_LEASE_SECONDS}),
+           SET turn_held_until = GREATEST(turn_held_until, now() + make_interval(secs => ${TURN_LEASE_SECONDS})),
                updated_at = now()
          WHERE tenant_id = ${owner.tenantId}
            AND chatwoot_instance_id = ${owner.instanceId}
@@ -142,7 +150,7 @@ async function bumpTurnHolders(
                WHEN turn_held_until IS NULL OR turn_held_until <= now() THEN turn_epoch + 1
                ELSE turn_epoch
              END,
-             turn_held_until = now() + make_interval(secs => ${TURN_LEASE_SECONDS}),
+             turn_held_until = GREATEST(turn_held_until, now() + make_interval(secs => ${TURN_LEASE_SECONDS})),
              updated_at = now()
        WHERE tenant_id = ${owner.tenantId}
          AND chatwoot_instance_id = ${owner.instanceId}

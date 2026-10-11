@@ -1,8 +1,9 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
-import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import { usageNode } from "@/graph/usage";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 import { type DashboardFilter, outcomeSql, usageWhereSql } from "./filter";
 
 // THE ONE DIMENSION TABLE that replaced "usage by agent / inbox / model": the view's ledger rows
@@ -58,9 +59,9 @@ export async function getBreakdown(
   ctx: TenantContext,
   filter: DashboardFilter,
   dimension: BreakdownDimension,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<BreakdownRow[]> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const rows = await db.$queryRaw<
       {
         key: string | null;

@@ -5,7 +5,8 @@ import type { UserRole } from "@/../generated/prisma/client";
 import { closeSessionSockets } from "@/api/features/realtime/realtime.service";
 import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
-import prisma from "@/api/lib/prisma";
+import mainPrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import { WS_CLOSE } from "@/api/lib/realtime";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
@@ -14,8 +15,9 @@ import {
   TenantSelectorRefusedError,
   UnauthorizedError,
 } from "@/lib/errors";
-import { roleAtLeast } from "@/lib/tenancy";
+import { roleAtLeast, type TxBudget } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
+import { metricsBudget } from "@/modules/analytics/budget";
 import { verifyApiKey } from "@/modules/api-keys/verify";
 
 const COOKIE_NAME = "fazerai_auth_token";
@@ -61,7 +63,7 @@ function sessionEnded(row: { endedSessions?: { jti: string }[] }): boolean {
 // refused on its re-check sign out (4401) or reconnect under the new cookie (4409).
 export async function isSessionLoggedOut(sessionId: string): Promise<boolean> {
   return (
-    (await prisma.endedSession.count({
+    (await mainPrisma.endedSession.count({
       where: { jti: sessionId, replaced: false },
     })) > 0
   );
@@ -95,11 +97,11 @@ async function recordEnded(
   how: { replaced: boolean },
 ): Promise<boolean> {
   try {
-    const [, inserted] = await prisma.$transaction([
-      prisma.endedSession.deleteMany({
+    const [, inserted] = await mainPrisma.$transaction([
+      mainPrisma.endedSession.deleteMany({
         where: { expiresAt: { lte: new Date() } },
       }),
-      prisma.endedSession.createMany({
+      mainPrisma.endedSession.createMany({
         data: [
           {
             jti: session.sessionId,
@@ -115,7 +117,7 @@ async function recordEnded(
       ...(how.replaced
         ? []
         : [
-            prisma.endedSession.updateMany({
+            mainPrisma.endedSession.updateMany({
               where: { jti: session.sessionId, replaced: true },
               data: { replaced: false },
             }),
@@ -198,13 +200,21 @@ export interface EndedSessionRef {
 // accordingly. Used only when no session cookie is present (the cookie path is unchanged).
 async function apiKeyAuthUser(
   authHeader: string | undefined,
+  pool: { db: typeof mainPrisma; budget?: TxBudget },
 ): Promise<AuthUser | null> {
   if (typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
     return null;
   }
   const token = authHeader.slice(7).trim();
   if (!token) return null;
-  const principal = await verifyApiKey(token);
+  let principal: Awaited<ReturnType<typeof verifyApiKey>>;
+  try {
+    principal = await verifyApiKey(token, pool.db, pool.budget);
+  } catch (error) {
+    // NOTE: transient, as in the session lookups below: a full pool says nothing about the key.
+    logger.warn({ error }, "API key lookup failed; treating as transient");
+    throw new ServiceUnavailableError();
+  }
   if (!principal) return null;
   return {
     id: principal.userId,
@@ -229,6 +239,19 @@ function sessionCookieOptions() {
     maxAge: COOKIE_MAX_AGE_S,
     path: "/",
   };
+}
+
+// The pool a request authenticates through, with that pool's transaction budget. The metrics routes
+// read through a pool of their own (./prisma-metrics.ts) so the screen still answers while turns hold
+// every connection of the main one, and that only holds if the session or key lookup in front of them
+// does not need the main pool either; on it, the lookup keeps to the metrics budget.
+export function authPoolFor(path: string): {
+  db: typeof mainPrisma;
+  budget?: TxBudget;
+} {
+  return path === "/api/v1/metrics" || path.startsWith("/api/v1/metrics/")
+    ? { db: metricsPrisma, budget: metricsBudget() }
+    : { db: mainPrisma };
 }
 
 // The requests that reached a session gate, marked before their query and body are validated.
@@ -269,7 +292,7 @@ export const authPlugin = new Elysia({ name: "auth" })
       exp: TOKEN_EXPIRY,
     }),
   )
-  .derive({ as: "global" }, ({ jwt, cookie, headers }) => {
+  .derive({ as: "global" }, ({ jwt, cookie, headers, path }) => {
     // The token the browser presents, under the current name or else the pre-rename one, picked the
     // way `getAuthUser` picks it: an empty current cookie falls through to the legacy one.
     function presentedToken(): string | null {
@@ -385,7 +408,7 @@ export const authPlugin = new Elysia({ name: "auth" })
           endedSessions?: { jti: string }[];
         } | null;
         try {
-          row = await prisma.user.findUnique({
+          row = await authPoolFor(path).db.user.findUnique({
             where: { id: userId },
             select: { passwordHash: true, ...endedSessionSelect(payload) },
           });
@@ -426,7 +449,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         }
         if (!token || typeof token !== "string") {
           // No session cookie — fall back to a Bearer API key (REST v1 / MCP external clients).
-          return apiKeyAuthUser(headers.authorization);
+          return apiKeyAuthUser(headers.authorization, authPoolFor(path));
         }
 
         let payload: JWTPayload | false;
@@ -443,6 +466,7 @@ export const authPlugin = new Elysia({ name: "auth" })
 
         let userId: bigint;
         try {
+          // biome-ignore lint/plugin/no-bigint-cast: the subject of a JWT this server signed; a token that fails to convert is answered as no session at all.
           userId = BigInt(payload.userId);
         } catch {
           // NOTE: A non-numeric subject is a forged/legacy token shape, not a
@@ -466,7 +490,7 @@ export const authPlugin = new Elysia({ name: "auth" })
           endedSessions?: { jti: string }[];
         } | null;
         try {
-          row = await prisma.user.findUnique({
+          row = await authPoolFor(path).db.user.findUnique({
             where: { id: userId },
             select: {
               id: true,

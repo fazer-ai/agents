@@ -269,6 +269,7 @@ export async function requeueWebhookDelivery(
     emitDeliveryRequeued({
       tenantId: ctx.tenantId,
       deliveryId: id,
+      // biome-ignore lint/plugin/no-bigint-cast: a subscription id off the DTO of the row this function just updated.
       subscriptionId: BigInt(dto.subscriptionId),
       event: dto.event,
       attemptsBefore: before.attempts,

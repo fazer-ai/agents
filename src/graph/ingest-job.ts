@@ -138,6 +138,7 @@ function parsePayload(
     return null;
   }
   return {
+    // biome-ignore lint/plugin/no-bigint-cast: a scheduler job payload this app enqueued; the shape is guarded above the cast.
     instanceId: BigInt(instanceId),
     conversationId,
     contactInboxId,
@@ -146,6 +147,7 @@ function parsePayload(
     text,
     role,
     sentAt: sentAt && Number.isFinite(sentAt.getTime()) ? sentAt : null,
+    // biome-ignore lint/plugin/no-bigint-cast: same payload, same guard.
     agentId: BigInt(agentId),
     compactionEnabled: payload.compactionEnabled === true,
   };

@@ -34,7 +34,7 @@ const listKnowledgeBases = mock(
 // A SPY ON THE MODULE OBJECT, NOT A REGISTRY REWRITE. A rewrite is process-global and its undo is a
 // second rewrite that does not undo anything: `await import()` hands back the LIVE namespace, and
 // the mock rewrote it in place, so handing that same object back re-registers the stub while
-// reading as a cleanup (tests/lib/module-mock-package.test.ts). A leaked `[]` would silence
+// reading as a cleanup (biome-plugins/no-module-mock-live-namespace.grit). A leaked `[]` would silence
 // tests/modules/tenant-selector-entry-points.test.ts, which calls the real one to prove it REFUSES
 // a dead tenant selector.
 const spy = spyOn(ragService, "listKnowledgeBases").mockImplementation(

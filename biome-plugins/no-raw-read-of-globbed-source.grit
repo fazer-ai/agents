@@ -1,0 +1,41 @@
+// Refuses `Bun.file(...).text()` in a test file that globs `src/` (`.scan("src…")`, or a `Glob` or
+// `Bun.Glob` whose pattern starts with `src/`) unless the file imports tests/utils/source-text. A
+// sweep that counts a shape over the tree reads it through that scan, so prose and strings that spell
+// the shape are not counted as code: a phantom site is a false waiver in a per-file ledger. A file
+// that globs `src/` to import each module and never reads its text is not matched.
+// tests/utils/source-text.ts, the scan itself, is out of scope in biome.jsonc.
+//
+// The text of a string or template literal counts as well, as it did for the sweep this replaces
+// (which read the file without its comments, strings kept): a literal that spells the glob, the read
+// or the import is taken for one.
+language js;
+
+pattern literal() { or { JsStringLiteralExpression(), JsTemplateExpression() } }
+
+or {
+    `$recv.text()` as $read where { $recv <: r"[\s\S]*Bun\.file\([\s\S]*" },
+    literal() as $read where { $read <: r"[\s\S]*Bun\.file\([^)]*\)[\s\S]{0,20}\.text\(\)[\s\S]*" }
+} where {
+    // A cheap first pass over the whole text, comments included: a file that spells no glob of
+    // `src` anywhere is answered without walking its nodes.
+    $program <: r"[\s\S]*(?:\.scan\(\s*\"src|Glob\(\s*[\"'`]src/)[\s\S]*",
+    $program <: contains or {
+        `$_.scan($dir)` where { $dir <: r"\"src[\s\S]*" },
+        `new $glob($pattern, $...)` where {
+            $glob <: r"(?:[\s\S]*\.)?Glob",
+            $pattern <: r"[\"'`]src/[\s\S]*"
+        },
+        `$glob($pattern, $...)` where {
+            $glob <: r"(?:[\s\S]*\.)?Glob",
+            $pattern <: r"[\"'`]src/[\s\S]*"
+        },
+        literal() as $globbed where { $globbed <: r"[\s\S]*(?:\.scan\(\s*\"src|Glob\(\s*[\"'`]src/)[\s\S]*" }
+    },
+    not $program <: contains or {
+        JsImport() as $import where {
+            $import <: r"[\s\S]*from\s*\"@/tests/utils/source-text\"[\s\S]*"
+        },
+        literal() as $adopted where { $adopted <: r"[\s\S]*from \"@/tests/utils/source-text\"[\s\S]*" }
+    },
+    register_diagnostic(span = $read, message = "A test that globs src/ reads each file through tests/utils/source-text (`countInSrc`, `codeOnly`), so prose and strings that spell the shape are not counted as code.")
+}

@@ -18,7 +18,13 @@ import {
   SpendHealthLines,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
+import {
+  Block,
+  type BlockTable,
+  Delta,
+  failureOf,
+  SectionHeading,
+} from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -102,7 +108,7 @@ export function CostSection({
   const query = apiQuery(filters, win);
   const costs = useBlock(JSON.stringify(["costs", query]), async () => {
     const res = await api.api.v1.metrics.costs.get({ query });
-    return { data: res.data?.costs ?? null, status: res.error?.status };
+    return { data: res.data?.costs ?? null, ...failureOf(res.error) };
   });
   const prevQuery = prev ? apiQuery(filters, prev) : null;
   const prevCosts = useBlock(
@@ -110,14 +116,14 @@ export function CostSection({
     async () => {
       if (!prevQuery) return { data: null };
       const res = await api.api.v1.metrics.costs.get({ query: prevQuery });
-      return { data: res.data?.costs ?? null };
+      return { data: res.data?.costs ?? null, ...failureOf(res.error) };
     },
   );
   const cache = useBlock(JSON.stringify(["cache", query]), async () => {
     const res = await api.api.v1.metrics.breakdown.get({
       query: { ...query, dimension: "agent" },
     });
-    return { data: res.data?.rows ?? null };
+    return { data: res.data?.rows ?? null, ...failureOf(res.error) };
   });
   const ceiling = useBlock<Ceiling>(
     JSON.stringify(["ceiling", query.until]),
@@ -430,6 +436,8 @@ export function CostSection({
 
       <Block
         error={costs.error}
+        errorStatus={costs.status}
+        errorField={costs.field}
         loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={Coins}
@@ -472,6 +480,8 @@ export function CostSection({
 
       <Block
         error={costs.error}
+        errorStatus={costs.status}
+        errorField={costs.field}
         loading={costs.loading && !costs.data}
         onRetry={costs.reload}
         icon={LineIcon}
@@ -517,6 +527,8 @@ export function CostSection({
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
           error={cache.error}
+          errorStatus={cache.status}
+          errorField={cache.field}
           loading={cache.loading && !cache.data}
           onRetry={cache.reload}
           icon={Database}

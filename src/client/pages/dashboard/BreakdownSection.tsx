@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { SegmentedControl, Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
-import { Block, type BlockTable } from "./Block";
+import { Block, type BlockTable, failureOf } from "./Block";
 import { useNodeLabel } from "./CostSection";
 import { apiQuery, type DashboardFilters, type Window } from "./filters";
 import { useBlock } from "./useBlock";
@@ -60,7 +60,7 @@ export function BreakdownSection({
       const res = await api.api.v1.metrics.breakdown.get({
         query: { ...query, dimension },
       });
-      return { data: res.data?.rows ?? null, status: res.error?.status };
+      return { data: res.data?.rows ?? null, ...failureOf(res.error) };
     },
   );
 
@@ -141,6 +141,8 @@ export function BreakdownSection({
     >
       <Block
         error={block.error}
+        errorStatus={block.status}
+        errorField={block.field}
         loading={block.loading && !block.data}
         onRetry={block.reload}
         icon={Table2}

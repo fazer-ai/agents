@@ -733,7 +733,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   // The direct path's ownership gate is not the flush's. That extra read exists because the direct
-  // path can wait up to `TURN_LEASE_SECONDS + 5` on another invoke; the flush never waits on the
+  // path can wait up to `TURN_WAIT_MS` on another invoke; the flush never waits on the
   // thread (`waitForThreadTurn` is wired only on the direct path) and has its own ownership gate
   // before the turn, so widening that read to it would add a second read per burst with no new
   // window to cover.

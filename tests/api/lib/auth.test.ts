@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Elysia } from "elysia";
 
-import { authPlugin } from "@/api/lib/auth";
+import { authPlugin, authPoolFor } from "@/api/lib/auth";
+import config from "@/config";
 
 // happy-dom's Request drops `Cookie` (a forbidden request header), so a cookie built with the
 // global constructor never reaches the route. Bun's native Request is captured in tests/dom-setup.ts
@@ -42,6 +43,20 @@ const mockPrisma = {
 
 mock.module("@/api/lib/prisma", () => ({
   default: mockPrisma,
+}));
+
+// The metrics routes authenticate through the metrics pool, so the screen does not need a
+// connection of the main one (src/api/lib/prisma-metrics.ts).
+const mockMetricsPrisma = {
+  user: {
+    findUnique: mock(
+      (): Promise<typeof mockPersonRow | null> => Promise.resolve(null),
+    ),
+  },
+};
+
+mock.module("@/api/lib/prisma-metrics", () => ({
+  default: mockMetricsPrisma,
 }));
 
 function base64urlToBase64(input: string): string {
@@ -199,6 +214,61 @@ describe("authPlugin", () => {
           }),
         );
         expect((await res.json()).id).toBe(mockUser.id.toString());
+      });
+
+      test("a metrics route reads the session through the metrics pool, any other route through the main one", async () => {
+        const token = await mintToken();
+        const app = new Elysia().group("/api", (api) =>
+          api
+            .use(authPlugin)
+            .get("/v1/metrics/costs", async ({ getAuthUser }) => ({
+              id: (await getAuthUser())?.id.toString() ?? null,
+            }))
+            .get("/v1/agents", async ({ getAuthUser }) => ({
+              id: (await getAuthUser())?.id.toString() ?? null,
+            })),
+        );
+        const ask = (path: string) =>
+          app.handle(
+            new BunRequest(`http://localhost${path}`, {
+              headers: { Cookie: `fazerai_auth_token=${token}` },
+            }),
+          );
+        mockMetricsPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
+        expect((await (await ask("/api/v1/metrics/costs")).json()).id).toBe(
+          mockUser.id.toString(),
+        );
+        mockMetricsPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
+        expect((await (await ask("/api/v1/agents")).json()).id).toBeNull();
+      });
+
+      test("a metrics route's key lookup keeps to the metrics budget, any other to the main one", () => {
+        expect(authPoolFor("/api/v1/metrics/costs").budget?.timeout).toBe(
+          config.metrics.timeoutMs,
+        );
+        expect(authPoolFor("/api/v1/metrics").budget?.maxWait).toBe(
+          config.metrics.timeoutMs,
+        );
+        expect(authPoolFor("/api/v1/metricsx").budget).toBeUndefined();
+        expect(authPoolFor("/api/v1/agents").budget).toBeUndefined();
+      });
+
+      test("an API key whose lookup fails is a transient 503, not a 500", async () => {
+        const app = new Elysia()
+          .use(authPlugin)
+          .get("/who", async ({ getAuthUser }) =>
+            getAuthUser().then(
+              () => ({ status: 200 }),
+              (e: { statusCode?: number }) => ({ status: e.statusCode ?? 500 }),
+            ),
+          );
+        // The mock client has no `$transaction`, so the key's lookup throws as a full pool would.
+        const res = await app.handle(
+          new BunRequest("http://localhost/who", {
+            headers: { Authorization: "Bearer fazerai_abc" },
+          }),
+        );
+        expect((await res.json()).status).toBe(503);
       });
 
       test("refuses a session signed under another password", async () => {

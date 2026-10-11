@@ -21,6 +21,7 @@ import {
 import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { SectionNav } from "./agents/SectionNav";
+import { failureOf, metricsErrorMessage } from "./dashboard/Block";
 import { BreakdownSection } from "./dashboard/BreakdownSection";
 import { CostSection } from "./dashboard/CostSection";
 import {
@@ -239,7 +240,7 @@ export function DashboardPage() {
   const query = apiQuery(filters, win);
   const kpis = useBlock<Kpis>(JSON.stringify(["kpis", query]), async () => {
     const res = await api.api.v1.metrics.kpis.get({ query });
-    return { data: res.data?.kpis ?? null, status: res.error?.status };
+    return { data: res.data?.kpis ?? null, ...failureOf(res.error) };
   });
   const prevQuery = prev ? apiQuery(filters, prev) : null;
   const prevKpis = useBlock<Kpis>(
@@ -319,7 +320,7 @@ export function DashboardPage() {
             errorStatus={kpis.status ?? undefined}
             onRetry={kpis.reload}
             loadingLabel={t("dashboard.loading", "Loading metrics…")}
-            errorLabel={t("dashboard.error", "Could not load metrics.")}
+            errorLabel={metricsErrorMessage(t, kpis.status, kpis.field)}
             skeleton={<DashboardSkeleton />}
           >
             {kpis.data && (

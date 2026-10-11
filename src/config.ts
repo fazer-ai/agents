@@ -70,6 +70,12 @@ const {
   AGENT_PROMPT_MAX_CHARS,
   HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
+  LANGGRAPH_POOL_MAX,
+  METRICS_POOL_MAX,
+  METRICS_TIMEOUT_MS,
+  DB_TX_MAX_WAIT_MS,
+  DB_TX_TIMEOUT_MS,
+  DB_LOCK_TIMEOUT_MS,
   CHATWOOT_DELIVERY_CONCURRENCY,
   CHATWOOT_ACK_POOL_MAX,
   TTS_CHECK_URL,
@@ -252,6 +258,15 @@ const ttsCheckUrl = (TTS_CHECK_URL ?? "").trim().replace(/\/+$/, "");
 
 const googleClientId = (GOOGLE_CLIENT_ID ?? "").trim();
 
+// Read before the object because the checkpointer pool's default is this value.
+const dbPoolMax = parseIntSetting(
+  DB_POOL_MAX,
+  "DB_POOL_MAX",
+  30,
+  "It sizes the main Postgres pool.",
+  MAX_COUNT,
+);
+
 const agentPromptMaxChars = parseIntSetting(
   AGENT_PROMPT_MAX_CHARS,
   "AGENT_PROMPT_MAX_CHARS",
@@ -318,18 +333,68 @@ const config = {
   // NON-superuser role (the thread_id prefix is the tenant fence; RLS on these tables is
   // hardened in a later phase). Falls back to DATABASE_URL.
   langgraphDatabaseUrl: LANGGRAPH_DATABASE_URL || DATABASE_URL,
-  // NOTE: Max connections for BOTH pg pools against the (dedicated) Postgres — the main Prisma pool
-  // (prisma.ts) and the LangGraph checkpointer pool (checkpointer.ts). Sized so agent turns drain in
-  // parallel without the pool becoming the bottleneck (pairs with agent.modelConcurrency). Total
-  // connections per leader replica are ~2×this; keep it under the server's max_connections (pg
-  // default 100). To go well beyond ~40, raise max_connections on the Postgres image instead.
-  dbPoolMax: parseIntSetting(
-    DB_POOL_MAX,
-    "DB_POOL_MAX",
-    30,
-    "It sizes both Postgres pools, and total connections per replica are about twice it.",
+  // NOTE: Every pool a replica opens has its own size, and their sum is checked against the server's
+  // `max_connections` at boot (src/lib/db-budget.ts, docs/deploy.md "Connection budget"). This one
+  // is the main Prisma pool (prisma.ts): turns, tools, ingest and the scheduler.
+  dbPoolMax,
+  // NOTE: The LangGraph checkpointer pool (checkpointer.ts), touched by every graph.invoke. Follows
+  // `DB_POOL_MAX` when unset, which is what both pools were sized by before they had a knob each.
+  langgraphPoolFollowsMain: (LANGGRAPH_POOL_MAX ?? "").trim() === "",
+  langgraphPoolMax: parseIntSetting(
+    LANGGRAPH_POOL_MAX,
+    "LANGGRAPH_POOL_MAX",
+    dbPoolMax,
+    "It sizes the LangGraph checkpointer's Postgres pool.",
     MAX_COUNT,
   ),
+  // NOTE: Interactive transactions (`runScopedOn`, `asSuperAdminOn`). `maxWait` is how long one waits
+  // for a connection; `timeout` how long it may stay open, which Postgres enforces on each statement
+  // inside it (a statement past it is cancelled, since the transaction already lost its budget).
+  dbTx: {
+    maxWaitMs: parseIntSetting(
+      DB_TX_MAX_WAIT_MS,
+      "DB_TX_MAX_WAIT_MS",
+      2_000,
+      "It is how long a transaction waits for a free connection before failing.",
+      MAX_DURATION_MS,
+    ),
+    timeoutMs: parseIntSetting(
+      DB_TX_TIMEOUT_MS,
+      "DB_TX_TIMEOUT_MS",
+      5_000,
+      "It is how long a transaction may stay open, and how long any one of its statements may run.",
+      MAX_DURATION_MS,
+    ),
+  },
+  // NOTE: Postgres `lock_timeout` on the main, checkpointer and metrics pools: a statement waiting on
+  // a lock past it fails (55P03) and gives its connection back. 0 turns it off.
+  dbLockTimeoutMs: parseIntSetting(
+    DB_LOCK_TIMEOUT_MS,
+    "DB_LOCK_TIMEOUT_MS",
+    5_000,
+    "It is how long a statement may wait on a lock; 0 turns the limit off.",
+    MAX_DURATION_MS,
+    0,
+  ),
+  // NOTE: The console's metrics reads (src/modules/analytics) run on a pool of their own, so a
+  // dashboard load cannot take the connections turns need. `timeoutMs` bounds the wait for one of
+  // its connections and the run of each request's transaction and statements.
+  metrics: {
+    poolMax: parseIntSetting(
+      METRICS_POOL_MAX,
+      "METRICS_POOL_MAX",
+      3,
+      "It sizes the Postgres pool the metrics screen and the MCP metrics tools read through.",
+      MAX_COUNT,
+    ),
+    timeoutMs: parseIntSetting(
+      METRICS_TIMEOUT_MS,
+      "METRICS_TIMEOUT_MS",
+      15_000,
+      "It is how long a metrics request may wait for a connection and run before it is refused.",
+      MAX_DURATION_MS,
+    ),
+  },
   // NOTE: The Chatwoot receiver's two budgets (docs/chatwoot.md "Webhook receiver").
   // `deliveryConcurrency` is how many acked deliveries are processed at once in each of two lanes
   // (customer messages, and every other event so a takeover never waits behind turns); the rest wait

@@ -120,7 +120,12 @@ update that only changes the wording is validated against the stored blocks but 
 them, and the columns it does not address are not rewritten — otherwise the tolerant read (which
 drops what this version does not know) would be written back, and an ordinary console save would
 permanently delete layout a newer build wrote. A stored block whose TYPE this version cannot read at
-all cannot be saved around, so that save is refused and says why.
+all cannot be saved around, so a save that touches the content (`blocks`, `blockText`, `fields` or
+`style`) is refused with 409 `documentTemplateUnreadable` and nothing in it is stored, the other
+fields of the same request included. A save that touches none of those (the name, the slug, the
+switch, numbering, approval) is accepted: it never writes the content columns, so the unknown block
+survives it byte for byte. The console's save always sends the style and the block texts, so on such a
+template the console refuses every save, and a rename goes through REST or MCP.
 
 Sizes stay clamped rather than refused (`baseFontSize`), because a clamp changes a value and never a
 key: "type and choice, never size" (`docs/mcp.md`).

@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
-import basePrisma from "@/api/lib/prisma";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import metricsPrisma from "@/api/lib/prisma-metrics";
+import type { TenantContext } from "@/lib/tenancy";
+import { runMetricsScoped } from "./budget";
 import {
   agentRanSql,
   agentTurnSql,
@@ -105,10 +106,10 @@ const CAUSE_SQL = Prisma.sql`(CASE
 export async function getHandoffReasons(
   ctx: TenantContext,
   filter: DashboardFilter,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<HandoffReasons> {
   const tz = normalizeTimeZone(filter.tz);
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const rows = await db.$queryRaw<
       { date: string; cause: string; conversations: number }[]
     >(Prisma.sql`
@@ -230,9 +231,9 @@ export interface LabelOutcomes {
 export async function getLabelOutcomes(
   ctx: TenantContext,
   filter: DashboardFilter,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<LabelOutcomes> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const ran = agentRanSql("c", filter.agentId);
     const outcome = outcomeSql("c");
     const rows = await db.$queryRaw<
@@ -291,9 +292,9 @@ export interface FollowUpActivity {
 export async function getFollowUpActivity(
   ctx: TenantContext,
   filter: DashboardFilter,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<FollowUpActivity> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const [row] = await db.$queryRaw<
       {
         steps: number;
@@ -342,9 +343,9 @@ export interface KnowledgeActivity {
 export async function getKnowledgeActivity(
   ctx: TenantContext,
   filter: DashboardFilter,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient = metricsPrisma,
 ): Promise<KnowledgeActivity> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runMetricsScoped(base, ctx, async (db) => {
     const since = filter.since ?? null;
     const until = filter.until ?? null;
     const agent = filter.agentId ?? null;

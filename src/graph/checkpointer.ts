@@ -1,5 +1,6 @@
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { Pool } from "pg";
+import { lockTimeoutOption } from "@/api/lib/pool-options";
 import config from "@/config";
 import { parseDbId } from "@/lib/db-id";
 
@@ -22,13 +23,15 @@ function holder(): Holder {
 }
 
 async function init(): Promise<PostgresSaver> {
-  // Build the pool ourselves (mirrors PostgresSaver.fromConnString) so we can set `max` — the
-  // checkpointer is touched during every graph.invoke, so it needs the same headroom as the main
-  // Prisma pool (config.dbPoolMax) or it becomes the bottleneck under concurrent turns.
+  // Build the pool ourselves (mirrors PostgresSaver.fromConnString) so we can set `max` and the
+  // lock timeout. The checkpointer is touched during every graph.invoke, so it needs about the
+  // headroom of the main pool or it becomes the bottleneck under concurrent turns
+  // (config.langgraphPoolMax, which follows DB_POOL_MAX unless set).
   const saver = new PostgresSaver(
     new Pool({
       connectionString: config.langgraphDatabaseUrl ?? "",
-      max: config.dbPoolMax,
+      max: config.langgraphPoolMax,
+      ...lockTimeoutOption(),
     }),
     undefined,
     { schema: "langgraph" },

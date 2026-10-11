@@ -200,7 +200,7 @@ export function storedPixels(bytes: ArrayBuffer): number {
         // box of at least 4 GiB, which no buffer that reached here can contain, so it is out of
         // range for the same reason the length guard below is. Spelling it this way also keeps the
         // tree's one bounded `BigInt` parse the only cast of its kind
-        // (tests/lib/caller-id-spelling.test.ts sweeps for the spelling, not for the intent).
+        // (biome-plugins/no-bigint-cast.grit matches the spelling, not the intent).
         if (v.getUint32(i + 8) !== 0) return;
         size = v.getUint32(i + 12);
         header = 16;

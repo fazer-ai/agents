@@ -1,0 +1,18 @@
+// Refuses `BigInt(x)` whose argument is not wholly a literal. A caller's id is parsed with the
+// bounded parse in src/lib/db-id.ts (`requireDbId` and friends), never cast: `BigInt(params.id)`
+// throws a SyntaxError on `abc` and accepts ids past the column's range. It matches on the argument,
+// not on its name, because `BigInt(r.slice(...))` and `BigInt(parts[2])` read a caller's id too. A
+// string, decimal, hex, octal or binary literal is a constant and stays allowed; a template literal
+// never counts as one. A cast whose argument is not a caller's id carries
+// `biome-ignore lint/plugin/no-bigint-cast: <why>` on that call, one waiver per call.
+language js;
+
+`BigInt($arg)` as $call where {
+    not $arg <: or {
+        r"\"[^\"]*\"",
+        r"'[^']*'",
+        r"[0-9][0-9_]*n?",
+        r"0[xXoObB][0-9a-fA-F_]*n?"
+    },
+    register_diagnostic(span = $call, message = "A caller's id is parsed, never cast: use the bounded parse in src/lib/db-id.ts. A cast whose argument is not a caller's id carries `biome-ignore lint/plugin/no-bigint-cast: <why>` on that call.")
+}

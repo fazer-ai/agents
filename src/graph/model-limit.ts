@@ -87,7 +87,7 @@ export interface PermitWaitInfo {
 // Every call has a deadline. `runModelCall` applies it itself, through
 // `callWithDeadline`, so no call through this module can wait on a provider for longer, whatever its
 // adapter does with the signal. `deadlineMs` is the caller's own value; left out, a call gets the
-// agent's `modelCallTimeoutMs`, and `tests/lib/model-call-deadline-sweep.test.ts` keeps every caller
+// agent's `modelCallTimeoutMs`, and `biome-plugins/require-model-call-deadline.grit` keeps every caller
 // under `src/` from leaving it out, so the default is a floor for tests and never a site's policy.
 export type ModelCallOptions<T> = {
   deadlineMs?: number;

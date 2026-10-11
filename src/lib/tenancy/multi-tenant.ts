@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import {
   ActiveTenantNotFoundError,
   TenantTargetRequiredError,
@@ -128,38 +129,59 @@ async function requireTenantExists(
 // same. If `fn` awaits anything that is not this transaction, it does not belong. `...On` variants
 // take the base client explicitly so integration tests can pass their own (real) client.
 
-// Stated rather than inherited, although these ARE the Prisma defaults: a drained pool's two errors
-// name exactly these numbers ("Unable to start a transaction in the given time" is `maxWait`, "expired
-// transaction" is `timeout`), so naming them makes the budget greppable from the error. The other
-// half is `DB_POOL_MAX`, usually the real culprit behind a `maxWait` error (docs/deploy.md).
-export const SCOPED_TX_OPTIONS = {
+// A transaction's two budgets (`DB_TX_MAX_WAIT_MS`, `DB_TX_TIMEOUT_MS`). A drained pool's two
+// errors name them: "Unable to start a transaction in the given time" is `maxWait`, "expired
+// transaction" is `timeout`. The other half is the pool size, usually the real culprit behind a
+// `maxWait` error (docs/deploy.md).
+export interface TxBudget {
   // Time to WAIT for a free connection before giving up.
-  maxWait: 2_000,
+  maxWait: number;
   // Time the transaction may stay open once it has one. Every section in here is DB-only work by the
   // rule above, so this is a ceiling on a pathology, not a budget anything should approach.
-  timeout: 5_000,
-} as const;
+  timeout: number;
+}
+
+export const SCOPED_TX_OPTIONS: TxBudget = {
+  maxWait: config.dbTx.maxWaitMs,
+  timeout: config.dbTx.timeoutMs,
+};
+
+// Prisma checks `timeout` only when a statement returns, so a statement that runs or waits on a lock
+// past it keeps the connection to the end and only then fails the commit (measured: a 9 s statement
+// under a 5 s budget held its connection 9 s). The same number as `statement_timeout`, local to the
+// transaction, lets Postgres cancel such a statement at the budget: it could never commit. Per
+// statement, so a transaction of several statements is bounded by Prisma's own check between them.
+// Not `transaction_timeout`: it terminates the session, and a pooled connection killed under a
+// transaction that was idle failed the next request that drew it. Set in the statement that opens
+// the scope, which costs no round trip.
+function budgetSql(budget: TxBudget): Prisma.Sql {
+  return Prisma.sql`set_config('statement_timeout', ${String(budget.timeout)}, true)`;
+}
 
 let maxWaitForTest: number | undefined;
 
 /**
  * Test-only: shortens `maxWait`, so a test of a drained pool waits out a refusal in milliseconds
- * rather than two seconds. `undefined` puts SCOPED_TX_OPTIONS back. Production never calls it.
+ * rather than two seconds. `undefined` puts the caller's budget back. Production never calls it.
  */
 export function setScopedTxMaxWaitForTest(ms: number | undefined): void {
   maxWaitForTest = ms;
 }
 
-function scopedTxOptions(): { maxWait: number; timeout: number } {
+function scopedTxOptions(budget: TxBudget): TxBudget {
   return maxWaitForTest === undefined
-    ? SCOPED_TX_OPTIONS
-    : { ...SCOPED_TX_OPTIONS, maxWait: maxWaitForTest };
+    ? budget
+    : { ...budget, maxWait: maxWaitForTest };
 }
 
 export async function runScopedOn<T>(
   base: TransactionCapable,
   ctx: TenantContext,
   fn: (db: ScopedDb) => Promise<T>,
+  budget: TxBudget = SCOPED_TX_OPTIONS,
+  // Called when the transaction has its connection, before any statement: where a caller's own
+  // deadline for the transaction starts.
+  opened?: () => void,
 ): Promise<T> {
   if (ctx.tenantId === null) {
     throw new TenantTargetRequiredError();
@@ -167,13 +189,14 @@ export async function runScopedOn<T>(
   const tenantId = ctx.tenantId;
   const extended = base.$extends(makeScopedExtension(tenantId));
   return extended.$transaction(async (tx) => {
+    opened?.();
     // transaction-local GUC: RLS policies scope every statement to this tenant; resets
     // on commit/rollback so it cannot leak to the next request on a pooled connection.
-    await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true)`;
+    await tx.$executeRaw`SELECT set_config('app.tenant_id', ${String(tenantId)}, true), ${budgetSql(budget)}`;
     const db = tx as unknown as ScopedDb;
     if (ctx.role === "SUPER_ADMIN") await requireTenantExists(db, tenantId);
     return fn(db);
-  }, scopedTxOptions());
+  }, scopedTxOptions(budget));
 }
 
 export async function runScoped<T>(
@@ -195,11 +218,12 @@ export async function runScoped<T>(
 export async function asSuperAdminOn<T>(
   base: TransactionCapable,
   fn: (db: ScopedDb) => Promise<T>,
+  budget: TxBudget = SCOPED_TX_OPTIONS,
 ): Promise<T> {
   return base.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true)`;
+    await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true), ${budgetSql(budget)}`;
     return fn(tx as unknown as ScopedDb);
-  }, scopedTxOptions());
+  }, scopedTxOptions(budget));
 }
 
 export async function asSuperAdmin<T>(

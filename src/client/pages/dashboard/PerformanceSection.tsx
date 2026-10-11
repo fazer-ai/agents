@@ -19,7 +19,13 @@ import {
 import { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
 import { cn } from "@/client/lib/utils";
-import { Block, type BlockTable, Delta, SectionHeading } from "./Block";
+import {
+  Block,
+  type BlockTable,
+  Delta,
+  failureOf,
+  SectionHeading,
+} from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -220,7 +226,7 @@ export function PerformanceSection({
           ...(breakdown === "none" ? {} : { breakdown }),
         },
       });
-      return { data: res.data?.trend ?? null, status: res.error?.status };
+      return { data: res.data?.trend ?? null, ...failureOf(res.error) };
     },
   );
   const prevQuery = prev ? apiQuery(filters, prev) : null;
@@ -229,7 +235,7 @@ export function PerformanceSection({
     async () => {
       if (!prevQuery) return { data: null };
       const res = await api.api.v1.metrics.outcomes.get({ query: prevQuery });
-      return { data: res.data?.trend ?? null };
+      return { data: res.data?.trend ?? null, ...failureOf(res.error) };
     },
   );
 
@@ -524,6 +530,8 @@ export function PerformanceSection({
 
       <Block
         error={trend.error}
+        errorStatus={trend.status}
+        errorField={trend.field}
         loading={trend.loading && !trend.data}
         onRetry={trend.reload}
         icon={TrendingUp}

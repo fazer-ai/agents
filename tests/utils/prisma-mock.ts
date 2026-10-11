@@ -153,8 +153,13 @@ export const prismaMock: PrismaMockClient = {
   $extends: () => prismaMock,
 };
 
+// Both pools a request can authenticate through (the metrics routes use their own) answer from the
+// same mock.
 export function setupPrismaMock() {
   mock.module("@/api/lib/prisma", () => ({
+    default: prismaMock,
+  }));
+  mock.module("@/api/lib/prisma-metrics", () => ({
     default: prismaMock,
   }));
 }

@@ -1825,6 +1825,64 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     ).rejects.toThrow(/newer version wrote/);
   });
 
+  // The refusal above is about dropping what this version cannot read, so it reaches exactly the
+  // saves that rewrite the content. A rename writes no content column and keeps the unknown block
+  // byte for byte; the same rename next to a block text is refused whole, the name included.
+  test("a template holding a block type it cannot read still takes a save that leaves the content alone", async () => {
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const tpl = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Metadados do futuro",
+        slug: "metadados_do_futuro",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    const id = BigInt(tpl.id);
+    const textBlock = tpl.blocks.find((b) => b.type === "text");
+    if (!textBlock) throw new Error("starter has no text block");
+    const unreadable = [
+      ...tpl.blocks,
+      { id: "b1", type: "bloco_do_futuro" },
+    ] as never;
+    await suDb.documentTemplate.update({
+      where: { id },
+      data: { blocks: unreadable },
+    });
+    const stored = () =>
+      suDb.documentTemplate.findUniqueOrThrow({
+        where: { id },
+        select: { name: true, enabled: true, blocks: true },
+      });
+
+    await updateDocumentTemplate(
+      ctx(tenantA),
+      id,
+      { name: "Renomeado", enabled: false },
+      appDb,
+    );
+    const renamed = await stored();
+    expect(renamed.name).toBe("Renomeado");
+    expect(renamed.enabled).toBe(false);
+    expect(renamed.blocks).toEqual(unreadable);
+
+    await expect(
+      updateDocumentTemplate(
+        ctx(tenantA),
+        id,
+        { name: "Pela metade", blockText: { [textBlock.id]: "x" } },
+        appDb,
+      ),
+    ).rejects.toThrow(/newer version wrote/);
+    const after = await stored();
+    expect(after.name).toBe("Renomeado");
+    expect(after.blocks).toEqual(unreadable);
+  });
+
   // NOTE: The same tolerance through the SAVE, which is where it costs something: if a style property a newer
   // build wrote failed the whole parse, the write-back would store every default over the operator's
   // settings, a patch of one colour resetting margin, locale, currency and page numbers, with a 200.

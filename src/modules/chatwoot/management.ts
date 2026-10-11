@@ -1644,6 +1644,7 @@ export async function listAgentsAndTeams(
   if (accounts.length !== 1 || !only) {
     return { agents: [], teams: [], accounts };
   }
+  // biome-ignore lint/plugin/no-bigint-cast: an instance id this function stringified from its own row a few lines above.
   const client = await loadChatwootClient(tenantId, BigInt(only.instanceId), {
     base,
     makeClient: deps.makeClient,

@@ -69,6 +69,15 @@ services:
       # connections reserved for the webhook ack's own write. See .env.example and docs/deploy.md.
       - CHATWOOT_DELIVERY_CONCURRENCY=${CHATWOOT_DELIVERY_CONCURRENCY:-15}
       - CHATWOOT_ACK_POOL_MAX=${CHATWOOT_ACK_POOL_MAX:-4}
+      # Database pools and their time budgets (docs/deploy.md "Connection budget"). Empty takes the app
+      # default; the pools' sum per replica must fit the server's max_connections, or boot refuses.
+      - DB_POOL_MAX=${DB_POOL_MAX:-}
+      - LANGGRAPH_POOL_MAX=${LANGGRAPH_POOL_MAX:-}
+      - METRICS_POOL_MAX=${METRICS_POOL_MAX:-}
+      - METRICS_TIMEOUT_MS=${METRICS_TIMEOUT_MS:-}
+      - DB_TX_MAX_WAIT_MS=${DB_TX_MAX_WAIT_MS:-}
+      - DB_TX_TIMEOUT_MS=${DB_TX_TIMEOUT_MS:-}
+      - DB_LOCK_TIMEOUT_MS=${DB_LOCK_TIMEOUT_MS:-}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

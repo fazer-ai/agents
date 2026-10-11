@@ -15,6 +15,7 @@ export {
   requireTenantContext,
   runWithTenantContext,
 } from "./context";
+export type { TxBudget } from "./multi-tenant";
 export {
   asPrincipalOn,
   asSuperAdmin,

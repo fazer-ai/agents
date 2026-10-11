@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { bigIntArgs } from "@/tests/lib/caller-id-spelling.test";
 import {
   codeOnly,
   commentSpans,
@@ -653,65 +652,6 @@ describe("the heuristic's known miss is not in the tree", () => {
     expect(codeOnly(quoted)).toContain("const a = 1;");
     // …and it does not get to hide: this is what `no file under src/ ends inside a literal` reads.
     expect(unterminatedLiteral(quoted)).toBe("string");
-  });
-});
-
-// THE FENCE, AND WHAT IT DOES NOT REACH. A sweep that globs `src/` and counts a shape arms a false
-// waiver (the ledger is per file and a phantom entry looks like any other), so each one goes through
-// this module and a raw-text read is chosen on purpose. NOT REACHED: tests that read a NAMED source
-// file as text, most of which do something a strip would break (a migration's SQL, a handler body);
-// flagging them would accuse correct readers and get the fence waived into silence.
-describe("every Glob sweep over src/ counts through the scan", () => {
-  test("and nothing reads the raw text of a globbed source file", async () => {
-    const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    const sweeps: string[] = [];
-    for await (const rel of new Glob("**/*.{ts,tsx}").scan("tests")) {
-      const path = `tests/${rel}`;
-      if (path === "tests/utils/source-text.ts") continue;
-      // `withoutComments`, not `codeOnly`: the thing looked for IS a string literal, and
-      // `codeOnly` would blank the `"src"` being matched, returning an empty sweep list that reads
-      // exactly like a clean tree.
-      const code = withoutComments(await Bun.file(path).text());
-      // TWO SPELLINGS, hence a pattern: `scan("src")` puts the directory in the call;
-      // `new Glob("src/**/*.ts").scan(".")` puts it in the GLOB and walks from the repo root, as
-      // `provider-boundary-sweep.test.ts` does.
-      const globsSrc =
-        /\.scan\(\s*"src/.test(code) || /Glob\(\s*["'`]src\//.test(code);
-      if (!globsSrc) continue;
-      // NOTE: Globbing `src/` is not enough: `agent-settings-mcp-parity` walks the tree to IMPORT
-      // each module and probe it with a Proxy, never reading source, and flagging it would make this
-      // a fence that accuses everything.
-      if (!/Bun\.file\([^)]*\)[\s\S]{0,20}\.text\(\)/.test(code)) continue;
-      sweeps.push(path);
-      // THE IMPORT, NOT THE NAME: `refusal-callsites.test.ts` defines a LOCAL `codeOnly`,
-      // which a name match would read as adoption. ONE EXEMPTION, a proved one: `caller-id-spelling`
-      // blanks non-code itself and keys its ledger on the argument's TEXT, so stripped source would
-      // rewrite its keys. The exemption is not a name on a list: the test below drives that file's
-      // own predicate with prose and requires it to count zero.
-      const provesItself = /\bblankNonCode\b/.test(code);
-      if (!/from "@\/tests\/utils\/source-text"/.test(code) && !provesItself) {
-        offenders.push(path);
-      }
-    }
-    expect(offenders).toEqual([]);
-    // NOTE: …and the fence is looking at something: a fence that names a spelling measures the
-    // spelling, never the rule, so a floor on the sweeps found catches one that stops matching.
-    expect(sweeps.length).toBeGreaterThanOrEqual(9);
-  });
-});
-
-// The proof behind the one exemption above: a waiver that says "this file handles it" is executed
-// here, not taken on trust.
-describe("the exempt sweep really does ignore prose", () => {
-  test("caller-id-spelling counts no BigInt written in a comment", () => {
-    expect(bigIntArgs("const id = BigInt(raw);\n")).toEqual(["raw"]);
-    expect(bigIntArgs("// never write BigInt(raw) here\n")).toEqual([]);
-    expect(bigIntArgs('const s = "BigInt(raw)";\n')).toEqual([]);
-    // …and the literal inside a real argument survives, which is why it reads raw source.
-    expect(
-      bigIntArgs('const id = BigInt(ref.slice("vault:".length));\n'),
-    ).toEqual(['ref.slice("vault:".length)']);
   });
 });
 

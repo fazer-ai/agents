@@ -40,8 +40,8 @@ describe("parseMcpId", () => {
   });
 });
 
-// Every caller-supplied id in the document surfaces goes through the bounded parse. That source
-// sweep is tests/lib/caller-id-spelling.test.ts, over ALL of `src`: a list of files appended to per
+// Every caller-supplied id in the document surfaces goes through the bounded parse. That lint
+// rule is biome-plugins/no-bigint-cast.grit, over ALL of `src`: a list of files appended to per
 // feature is a guard that misses the next entry.
 
 // The other half of the same defect: a route can use the bounded parse and still LIE about it.

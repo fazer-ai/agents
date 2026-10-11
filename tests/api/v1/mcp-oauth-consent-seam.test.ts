@@ -40,7 +40,7 @@ const suDb = su as PrismaClient;
 // THE APP'S OWN CLIENT, not the shared stub, which carries `user` and `tenant` only: on it every
 // request answers 500, and "the grant did not stand" passes without reaching the database.
 // The original is captured as the PROPERTY, not the namespace: `mock.module` rewrites the namespace
-// in place, so handing it back restores nothing (`tests/lib/module-mock-undo.test.ts`); a fresh
+// in place, so handing it back restores nothing (`biome-plugins/no-module-mock-live-namespace.grit`); a fresh
 // literal holding the original client does restore it.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
 mock.module("@/api/lib/prisma", () => ({ default: app }));

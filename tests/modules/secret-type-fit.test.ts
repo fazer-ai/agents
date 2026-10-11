@@ -21,7 +21,6 @@ const TABLE: [string, boolean, boolean][] = [
   ["generic", true, true],
   ["bearer_token", true, true],
   ["header", true, true],
-  ["basic_auth", true, true],
   ["query", true, true],
   ["openai", true, true],
   ["anthropic", true, true],
@@ -33,6 +32,10 @@ const TABLE: [string, boolean, boolean][] = [
   ["asaas", true, true],
   ["resend", true, true],
   ["chatwoot_api_token", true, true],
+  // A plain string that is never a key: `user:password` base64-encoded, sent as `Authorization:
+  // Basic`. Injectable, because that header is a real way to authenticate a call; never an API key,
+  // because a provider SDK would send the pair as a bearer token.
+  ["basic_auth", false, true],
   // Multi-field: the value is `{ clientId, clientSecret }` and the tokens the consent flow merges in.
   // Injectable because `resolveInjectableCredentialEntry` refreshes an access token from it; never an
   // API key, because the field would hand the OBJECT to a provider SDK.

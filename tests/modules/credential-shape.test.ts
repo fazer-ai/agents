@@ -14,6 +14,7 @@ import {
   importAgent,
 } from "@/modules/agents/transfer";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { agentSettingsSet } from "@/modules/mcp/write";
 import { agentUpdate } from "@/modules/mcp/write-agents";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
@@ -56,6 +57,7 @@ let blobRef = "";
 let envRef = "";
 let keyRef = "";
 let malformedRef = "";
+let basicRef = "";
 
 const ctx = (): TenantContext => ({
   tenantId,
@@ -133,6 +135,9 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       paramName: "API_TOKEN",
     });
     keyRef = await mk("model-key", "openai", "sk-live");
+    // A plain string, and still never a key: it is `user:password` already base64-encoded, sent as
+    // `Authorization: Basic`. Handed to a provider SDK it becomes a bearer token no vendor accepts.
+    basicRef = await mk("basic-pair", "basic_auth", "dXNlcjpwYXNz");
     // A kind that DECLARES a plain string, holding something else. `validateVaultValue` refuses this
     // shape today, so it can only exist from before the kind did — or from a path that does not go
     // through it. The catalog cannot see it: only the value can.
@@ -168,6 +173,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       ["a multi-field kind", () => oauthRef],
       ["a managed-blob kind", () => blobRef],
       ["a never-outbound kind", () => envRef],
+      ["a basic-auth pair", () => basicRef],
     ] as [string, () => string][]) {
       test(`model credential: ${label}`, async () => {
         const r = await refused(() =>
@@ -306,6 +312,53 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       expect(r).toBeNull();
     });
 
+    // The STT key is a second plain-key slot with its own path to the vault, so it is asked apart
+    // from the model's.
+    test("the STT credential refuses a basic-auth pair, naming its path", async () => {
+      const r = await refused(() =>
+        updateAgent(
+          ctx(),
+          agentId,
+          {
+            settings: {
+              stt: {
+                enabled: true,
+                provider: "openai",
+                credentialRef: basicRef,
+              },
+            },
+          },
+          appDb,
+          { settingsMode: "replace" },
+        ),
+      );
+      expect(r?.status).toBe(400);
+      expect(r?.field).toBe("settings.stt.credentialRef");
+    });
+
+    // Basic auth is still a way to authenticate an outbound call, which is all contact
+    // authorization asks of its credential.
+    test("contact authorization still accepts a basic-auth pair", async () => {
+      const r = await refused(() =>
+        updateAgent(
+          ctx(),
+          agentId,
+          {
+            settings: {
+              contactAuth: {
+                enabled: true,
+                credentialRef: basicRef,
+                url: "https://x.example",
+              },
+            },
+          },
+          appDb,
+          { settingsMode: "replace" },
+        ),
+      );
+      expect(r).toBeNull();
+    });
+
     // ...and still refuses the one thing it cannot send: a secret the catalog marks never-outbound.
     test("contact authorization refuses a never-outbound kind", async () => {
       const r = await refused(() =>
@@ -329,6 +382,27 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       expect(r?.field).toBe("settings.contactAuth.credentialRef");
     });
   });
+
+  // The settings tool resolves names in its own loop and used to preview a key it would then refuse:
+  // the preview answered with a diff, the apply with the refusal. Both ask now, and the sentence
+  // says what the kind cannot do, since MCP hands the message over as written.
+  for (const dry_run of [true, false]) {
+    test(`agent_settings_set refuses a basic-auth pair for the STT key (dry_run=${dry_run})`, async () => {
+      const r = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(agentId),
+          stt: { enabled: true, provider: "openai", credentialRef: basicRef },
+          dry_run,
+        } as never,
+        { base: appDb },
+      );
+      expect(r.ok).toBe(false);
+      const text = JSON.stringify(r);
+      expect(text).toContain("settings.stt.credentialRef");
+      expect(text).toContain("this field reads an API key");
+    });
+  }
 
   test("the MCP write refuses it too, through the same boundary", async () => {
     const r = await agentUpdate(
@@ -374,7 +448,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
     // ...and the refusal it DOES make has to name the right problem. `google_oauth` travels outbound
     // perfectly well as a refreshed token; what it cannot do is be the plain key embedding reads, so
     // the sentence is the API-key one and not "this type is never sent to another service".
-    expect(bad?.message).toContain("reads a plain API key");
+    expect(bad?.message).toContain("this field reads an API key");
   });
 
   // An import is the one way a bad pairing can still be CREATED, because the payload is authored
@@ -449,6 +523,13 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       expect(await resolve(envRef)).toEqual({
         state: "unusable",
         kind: "mcp_env",
+      });
+    });
+
+    test("a basic-auth pair is unusable as a key, though it holds a string", async () => {
+      expect(await resolve(basicRef)).toEqual({
+        state: "unusable",
+        kind: "basic_auth",
       });
     });
 

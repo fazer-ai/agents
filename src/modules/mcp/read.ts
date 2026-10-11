@@ -1,4 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
+import metricsPrisma from "@/api/lib/prisma-metrics";
 import {
   CODE_TOOL_CONTEXT_MAX_CHARS,
   CODE_TOOL_INPUT_MAX_CHARS,
@@ -1200,7 +1201,7 @@ export async function metricsGet(
   args: { since?: string; source?: string },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
-  const base = deps.base ?? basePrisma;
+  const base = deps.base ?? metricsPrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   const filter = metricsFilter(args);
@@ -1220,7 +1221,7 @@ export async function metricsTimeseries(
   args: { since?: string; source?: string },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
-  const base = deps.base ?? basePrisma;
+  const base = deps.base ?? metricsPrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   const filter = metricsFilter(args);

@@ -1014,6 +1014,7 @@
     },
     "title": "Dashboard",
     "tokens": "Tokens (in / out)",
+    "tooSlow": "This period took too long to compute. Try a shorter period, or try again in a moment.",
     "totalCost": "LLM cost",
     "trend": {
       "breakdown": "Split by",

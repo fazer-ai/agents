@@ -257,6 +257,7 @@ export const oauthGoogleCallbackController = new Elysia({
           return htmlError(401, "not_authorized", origin);
         }
 
+        // biome-ignore lint/plugin/no-bigint-cast: an id out of OAuth state this server signed and has already verified, minted from a row's own id.
         const entryId = BigInt(state.entryId);
         // Load by id directly (we have the exact id from signed state). asSuperAdmin so the read is
         // tenant-agnostic; the cred is rebound to the state's tenant on write below.

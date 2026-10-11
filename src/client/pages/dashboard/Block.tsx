@@ -1,7 +1,9 @@
+import type { TFunction } from "i18next";
 import { Download, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Card, HelpPopover } from "@/client/components";
+import { readRefusal } from "@/client/lib/fieldRefusal";
 import { type CsvCell, downloadCsv } from "./csv";
 
 // What a block shows, as a table: the same rows feed the CSV export and the screen-reader table that
@@ -17,6 +19,35 @@ export interface BlockTable {
   display?: string[][];
 }
 
+// What a failed metrics request carries: its HTTP status, and the input the server says the refusal
+// is about. A refusal about `since` with a 503 is the server's time budget for the period
+// (MetricsTooSlowError); any other 503 (the database down, a session that could not be read) is not
+// something a shorter period fixes.
+export function failureOf(error: unknown): {
+  status?: number;
+  field?: string;
+} {
+  if (!error || typeof error !== "object") return {};
+  const status = (error as { status?: unknown }).status;
+  return {
+    status: typeof status === "number" ? status : undefined,
+    field: readRefusal(error)?.field,
+  };
+}
+
+export function metricsErrorMessage(
+  t: TFunction,
+  status: number | null | undefined,
+  field: string | null | undefined,
+): string {
+  return status === 503 && field === "since"
+    ? t(
+        "dashboard.tooSlow",
+        "This period took too long to compute. Try a shorter period, or try again in a moment.",
+      )
+    : t("dashboard.error", "Could not load metrics.");
+}
+
 // A dashboard block: a titled card with its controls, a CSV export of exactly what it shows, and,
 // when its content is a chart, a table a screen reader reads in the chart's place (the chart itself
 // is hidden from the accessibility tree, since an SVG of bars says nothing).
@@ -29,6 +60,8 @@ export function Block({
   table,
   chart,
   error,
+  errorStatus,
+  errorField,
   loading,
   onRetry,
   footer,
@@ -45,6 +78,9 @@ export function Block({
   // The block's request failed: it says so, with a retry, instead of rendering an empty result
   // that reads as "nothing happened". No CSV either, since there is nothing true to export.
   error?: boolean;
+  // The failed request's HTTP status and refusal field, which pick the sentence (metricsErrorMessage).
+  errorStatus?: number | null;
+  errorField?: string | null;
   // The block's figures have not arrived: no CSV and no stand-in table yet, since whatever the
   // table holds now (zeros, an empty list) is not what the block is about to show.
   loading?: boolean;
@@ -90,7 +126,7 @@ export function Block({
       </div>
       {error ? (
         <p className="flex items-center gap-2 py-4 text-sm text-text-muted">
-          {t("dashboard.error", "Could not load metrics.")}
+          {metricsErrorMessage(t, errorStatus, errorField)}
           {onRetry && (
             <button
               type="button"

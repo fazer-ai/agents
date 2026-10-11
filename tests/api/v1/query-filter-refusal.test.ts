@@ -33,7 +33,7 @@ const record =
 
 // Spies on the module objects, not registry rewrites: undoing a rewrite with the namespace
 // `await import()` returned hands back the LIVE object the rewrite already changed, so the stub
-// leaks into every later file in the shard (tests/lib/module-mock-package.test.ts).
+// leaks into every later file in the shard (biome-plugins/no-module-mock-live-namespace.grit).
 const flowlogRead = await import("@/modules/flowlog/read");
 // `record` answers an empty page for all three readers, so it cannot carry one derived return type.
 // The cast NAMES the function it is standing in for rather than erasing to `never`, so a signature

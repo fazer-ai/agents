@@ -85,6 +85,63 @@
       "includes": ["src/client/pages/*.tsx"],
       "plugins": ["./biome-plugins/require-page-container.grit"]
     },
+    // The repo-wide source rules. Each also applies under tests/lint/.probe-src-*, where
+    // tests/lint/source-rules.test.ts feeds it a violating and a conforming snippet.
+    {
+      "includes": ["src/**/*.tsx", "tests/lint/.probe-src-*/**/*.tsx"],
+      "plugins": ["./biome-plugins/no-jsx-comment-note.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "tests/lint/.probe-src-*/**/*.{ts,tsx}"
+      ],
+      "plugins": [
+        "./biome-plugins/no-bigint-cast.grit",
+        "./biome-plugins/no-scrub-around-cut.grit"
+      ]
+    },
+    // A file below reads the environment for a reason config cannot serve. src/lib/instance.ts:
+    // INSTANCE_ID, imported by config's own consumers at module load and pinned per replica, with a
+    // fresh UUID as default, which config cannot express as a static value.
+    // src/modules/vision/convert/heic.ts: VISION_LIBHEIF_WASM_PATH, an operator override for the
+    // decoder's location read where the library is loaded, documented beside LIBHEIF_WASM_PATH_ENV.
+    // src/client/lib/env.ts: the browser bundle, where Bun inlines `process.env.BUN_PUBLIC_*` at
+    // build time and config is server-only.
+    {
+      "includes": [
+        "src/**/*.{ts,tsx}",
+        "!src/config.ts",
+        "!src/lib/instance.ts",
+        "!src/modules/vision/convert/heic.ts",
+        "!src/client/lib/env.ts",
+        "tests/lint/.probe-src-*/**/*.{ts,tsx}"
+      ],
+      "plugins": ["./biome-plugins/no-env-read-outside-config.grit"]
+    },
+    // src/graph/model-limit.ts defines runModelCall and holds the default the rule keeps callers off.
+    {
+      "includes": [
+        "src/**/*.ts",
+        "!src/graph/model-limit.ts",
+        "tests/lint/.probe-src-*/**/*.ts"
+      ],
+      "plugins": ["./biome-plugins/require-model-call-deadline.grit"]
+    },
+    {
+      "includes": ["tests/**/*.{ts,tsx}", "!tests/utils/source-text.ts"],
+      "plugins": ["./biome-plugins/no-raw-read-of-globbed-source.grit"]
+    },
+    // Module stubs in every file under tests/, support files included: a stub installed by a helper is
+    // as process-wide as one in a test file.
+    {
+      "includes": ["tests/**/*.{ts,tsx}"],
+      "plugins": [
+        "./biome-plugins/no-package-module-mock.grit",
+        "./biome-plugins/no-module-mock-live-namespace.grit",
+        "./biome-plugins/no-raw-auth-context-mock.grit"
+      ]
+    },
     // The two test rules below (tooling/process/agents-ship/testes.md, T5 and T6) carry the files that
     // predate them as negated entries. The list only shrinks: a file leaves it when it is cleaned up,
     // and a new file never enters it.
@@ -104,12 +161,8 @@
         "!tests/client/tool-sample-persistence.test.ts",
         "!tests/graph/prepare.test.ts",
         "!tests/graph/refused-turn-callsites.test.ts",
-        "!tests/lib/caller-id-spelling.test.ts",
         "!tests/lib/db-guard.test.ts",
-        "!tests/lib/env-read-sweep.test.ts",
         "!tests/lib/jsx-comment-tag-sweep.test.ts",
-        "!tests/lib/model-call-deadline-sweep.test.ts",
-        "!tests/lib/redact.test.ts",
         "!tests/lib/source-text.test.ts",
         "!tests/modules/audit-actions.test.ts",
         "!tests/modules/audit-channel-family.test.ts",

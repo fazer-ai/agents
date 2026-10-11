@@ -41,7 +41,7 @@ export function HelpPopover({
   // nothing), so hearing the same words in and out ties the two together. COMPOSED rather than
   // interpolated: the subject arrives already translated, and interpolation would make every trigger's
   // name depend on a `t` that interpolates, which the leaking `react-i18next` stub of the client suites
-  // does not (tests/lib/module-mock-package.test.ts).
+  // does not (biome-plugins/no-package-module-mock.grit).
   const name = label
     ? `${t("common.showHelp", "Show help")}: ${label}`
     : t("common.showHelp", "Show help");

@@ -69,6 +69,7 @@ export function readVaultRefId(ref: string): bigint | null {
   if (raw.trim() === "") return null;
   let id: bigint;
   try {
+    // biome-ignore lint/plugin/no-bigint-cast: `readVaultRefId`, the reader's parse: lenient about spelling by contract (canonicalVaultRef) and bounded by range right below this call.
     id = BigInt(raw);
   } catch {
     return null;
@@ -602,7 +603,7 @@ export async function requireVaultRefFor(
   // about the text and wrong about the code, which is the fence doing its job.
   if (readsPlainKey(use)) {
     throw new AppError(
-      `${field}: credential "${ref}" (kind "${entry.kind}") cannot serve a field that reads a plain API key`,
+      `${field}: this field reads an API key and the "${entry.kind}" credential type cannot supply one: it holds several fields instead of a single secret, a user and password for Basic auth, or a value this product never sends to another service. Pick a different credential than "${ref}".`,
       400,
       "errors.credentialKindUnusableAsKey",
       { kind: entry.kind },

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { Block, type BlockTable, SectionHeading } from "./Block";
+import { Block, type BlockTable, failureOf, SectionHeading } from "./Block";
 import { apiQuery, type DashboardFilters, type Window } from "./filters";
 import { useBlock } from "./useBlock";
 
@@ -47,7 +47,7 @@ export function HealthSection({
   const query = apiQuery(filters, win);
   const health = useBlock(JSON.stringify(["health", query]), async () => {
     const res = await api.api.v1.metrics.health.get({ query });
-    return { data: res.data?.health ?? null };
+    return { data: res.data?.health ?? null, ...failureOf(res.error) };
   });
   const h = health.data;
   const latencyTable: BlockTable = {
@@ -93,6 +93,8 @@ export function HealthSection({
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
           error={health.error}
+          errorStatus={health.status}
+          errorField={health.field}
           loading={health.loading && !health.data}
           onRetry={health.reload}
           icon={Clock}
@@ -152,6 +154,8 @@ export function HealthSection({
 
         <Block
           error={health.error}
+          errorStatus={health.status}
+          errorField={health.field}
           loading={health.loading && !health.data}
           onRetry={health.reload}
           icon={Activity}
@@ -218,11 +222,11 @@ export function AutomationSection({
   const query = apiQuery(filters, win);
   const followUps = useBlock(JSON.stringify(["followups", query]), async () => {
     const res = await api.api.v1.metrics["follow-ups"].get({ query });
-    return { data: res.data?.followUps ?? null };
+    return { data: res.data?.followUps ?? null, ...failureOf(res.error) };
   });
   const knowledge = useBlock(JSON.stringify(["knowledge", query]), async () => {
     const res = await api.api.v1.metrics.knowledge.get({ query });
-    return { data: res.data?.knowledge ?? null };
+    return { data: res.data?.knowledge ?? null, ...failureOf(res.error) };
   });
   const f = followUps.data;
   const k = knowledge.data;
@@ -271,6 +275,8 @@ export function AutomationSection({
       <div className="grid gap-4 lg:grid-cols-2">
         <Block
           error={followUps.error}
+          errorStatus={followUps.status}
+          errorField={followUps.field}
           loading={followUps.loading && !followUps.data}
           onRetry={followUps.reload}
           icon={Repeat}
@@ -296,6 +302,8 @@ export function AutomationSection({
         </Block>
         <Block
           error={knowledge.error}
+          errorStatus={knowledge.status}
+          errorField={knowledge.field}
           loading={knowledge.loading && !knowledge.data}
           onRetry={knowledge.reload}
           icon={BookOpen}

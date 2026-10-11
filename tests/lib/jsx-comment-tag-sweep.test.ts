@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { commentSpans } from "@/tests/utils/source-text";
 
 // A JSX comment documents the element below it, so it carries no `NOTE:` (`CLAUDE.md`, "Where the
-// tag goes"). `TODO:` and `FIXME:` stay allowed: they mark owed work, which is owed in markup too.
-// A tagged machine directive is not fenced here: biome already fails it on every run.
+// tag goes"). The tag itself is refused by biome-plugins/no-jsx-comment-note.grit. What stays here is
+// the cross-check below: a file whose raw text spells `{/* … */}` more often than its scan finds JSX
+// comments, which needs the lexer in tests/utils/source-text.ts to tell a comment, a string, a regex
+// literal and a template apart.
 
 const TAG = /\b(NOTE|TODO|FIXME):/;
 // Only `NOTE:` is refused. See the asymmetry above.
@@ -79,7 +81,7 @@ function auditTree(files: Array<[string, string]>): {
 }
 
 describe("a comment in markup documents the element below it, and carries no NOTE:", () => {
-  test("no JSX comment under src/ is tagged, and none is hidden from the scan", async () => {
+  test("no JSX comment under src/ is hidden from the scan", async () => {
     const { Glob } = await import("bun");
     // Every `.tsx` in `src`, not just the client: `src/modules/documents/render.tsx` renders
     // JSX that a glob rooted at the console would never see.
@@ -87,9 +89,8 @@ describe("a comment in markup documents the element below it, and carries no NOT
     for await (const rel of new Glob("**/*.tsx").scan("src")) {
       files.push([`src/${rel}`, await Bun.file(`src/${rel}`).text()]);
     }
-    const { offenders, blind, seen } = auditTree(files);
+    const { blind, seen } = auditTree(files);
     expect(blind).toEqual([]);
-    expect(offenders).toEqual([]);
     // NOTE: ...and the sweep is looking at something: a detector that stops recognising `{/* */}`
     // reports the same output as a clean tree. The floor sits below today's count.
     expect(seen).toBeGreaterThanOrEqual(100);

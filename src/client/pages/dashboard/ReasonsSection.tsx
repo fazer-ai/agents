@@ -3,7 +3,7 @@ import { lazy, Suspense } from "react";
 import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { Block, type BlockTable, SectionHeading } from "./Block";
+import { Block, type BlockTable, failureOf, SectionHeading } from "./Block";
 import type { ChartRow } from "./charts";
 import {
   apiQuery,
@@ -38,11 +38,11 @@ export function ReasonsSection({
   const query = apiQuery(filters, win);
   const handoffs = useBlock(JSON.stringify(["handoffs", query]), async () => {
     const res = await api.api.v1.metrics.handoffs.get({ query });
-    return { data: res.data?.handoffs ?? null };
+    return { data: res.data?.handoffs ?? null, ...failureOf(res.error) };
   });
   const labels = useBlock(JSON.stringify(["labels", query]), async () => {
     const res = await api.api.v1.metrics.labels.get({ query });
-    return { data: res.data?.labels ?? null };
+    return { data: res.data?.labels ?? null, ...failureOf(res.error) };
   });
 
   const causeLabel: Record<string, string> = {
@@ -162,6 +162,8 @@ export function ReasonsSection({
       </SectionHeading>
       <Block
         error={handoffs.error}
+        errorStatus={handoffs.status}
+        errorField={handoffs.field}
         loading={handoffs.loading && !handoffs.data}
         onRetry={handoffs.reload}
         icon={ArrowRightLeft}
@@ -248,6 +250,8 @@ export function ReasonsSection({
 
       <Block
         error={handoffs.error}
+        errorStatus={handoffs.status}
+        errorField={handoffs.field}
         loading={handoffs.loading && !h}
         onRetry={handoffs.reload}
         icon={MessageSquareOff}
@@ -300,6 +304,8 @@ export function ReasonsSection({
 
       <Block
         error={labels.error}
+        errorStatus={labels.status}
+        errorField={labels.field}
         loading={labels.loading && !labels.data}
         onRetry={labels.reload}
         icon={Tags}

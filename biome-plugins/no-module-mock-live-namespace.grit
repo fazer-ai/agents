@@ -1,0 +1,16 @@
+// Refuses `mock.module(spec, () => ns)` where `ns` was bound from `await import(...)` in the same
+// file. `mock.module` rewrites the registry AND that live namespace in place, so handing it back
+// re-registers the stub while reading as a cleanup, and the failure lands in a later file that
+// stubs nothing. A factory returning an object literal is not matched: `{ ...ns }` taken before the
+// rewrite is a copy of the originals. Use `spyOn(ns, "name")` and `mockRestore()` instead.
+language js;
+
+`mock.module($spec, () => $ns)` as $call where {
+    $ns <: JsIdentifierExpression(),
+    $program <: contains or {
+        `const $ns = await import($_)`,
+        `let $ns = await import($_)`,
+        `var $ns = await import($_)`
+    },
+    register_diagnostic(span = $call, message = "`mock.module` rewrote this namespace in place, so handing it back registers the stub again. Use `spyOn(namespace, \"name\")` and `mockRestore()`, which keeps the original value.")
+}

@@ -1,0 +1,11 @@
+// Refuses `NOTE:` in a JSX comment (`{/* NOTE: ... */}`). A comment in markup documents the element
+// below it, the docstring position, so it carries no tag (CLAUDE.md, "Where the tag goes"). `TODO:`
+// and `FIXME:` stay allowed, since work that is owed is owed in markup too. Only a child that is
+// wholly one block comment hugged by its braces is read: a comment beside an expression in braces is
+// a code comment, and the formatter moves a lone block comment in a code body off its braces.
+language js;
+
+JsxExpressionChild() as $child where {
+    $child <: r"\{/\*(?:[^*]|\*+[^*/])*\bNOTE:(?:[^*]|\*+[^*/])*\*+/\}",
+    register_diagnostic(span = $child, message = "A JSX comment documents the element below it and carries no `NOTE:` (`TODO:` and `FIXME:` stay allowed). See CLAUDE.md, \"Where the tag goes\".")
+}

@@ -8,12 +8,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // refresh of the same view is the same numbers until the new ones arrive.
 export function useBlock<T>(
   key: string,
-  load: () => Promise<{ data: T | null; status?: number | null }>,
+  load: () => Promise<{
+    data: T | null;
+    status?: number | null;
+    field?: string | null;
+  }>,
 ): {
   data: T | null;
   loading: boolean;
   error: boolean;
   status: number | null;
+  field: string | null;
   reload: () => void;
 } {
   const [state, setState] = useState<{
@@ -21,7 +26,8 @@ export function useBlock<T>(
     loading: boolean;
     error: boolean;
     status: number | null;
-  }>({ data: null, loading: true, error: false, status: null });
+    field: string | null;
+  }>({ data: null, loading: true, error: false, status: null, field: null });
   const seq = useRef(0);
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -32,6 +38,7 @@ export function useBlock<T>(
       loading: true,
       error: false,
       status: null,
+      field: null,
     }));
     loadRef
       .current()
@@ -42,11 +49,18 @@ export function useBlock<T>(
           loading: false,
           error: res.data === null,
           status: res.status ?? null,
+          field: res.field ?? null,
         });
       })
       .catch(() => {
         if (mine !== seq.current) return;
-        setState({ data: null, loading: false, error: true, status: null });
+        setState({
+          data: null,
+          loading: false,
+          error: true,
+          status: null,
+          field: null,
+        });
       });
   }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is the reload trigger; the loader is read through a ref.

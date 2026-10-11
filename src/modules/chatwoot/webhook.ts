@@ -224,6 +224,7 @@ import {
 import { reconcileMirrorFromLive } from "./reconcile";
 import { armDeliveryRecoveryOn, isRecoverableStrand } from "./recover-delivery";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
+import { isRepeatedMessageUpdate, recordOnSuccess } from "./repeated-update";
 import { responderCoversMessage } from "./responder-coverage";
 import {
   awaitRouteTokenRefresh,
@@ -1001,6 +1002,19 @@ export async function receiveChatwootWebhook(
 
   const normalized = normalizeChatwootEvent(parsed);
   if (!normalized) return { ack: true, outcome: "ignored" };
+  // A delivery receipt (`source_id`, delivered, read) re-sends the business's message with nothing
+  // that the last payload of it processed on this route did not carry: acked here, with no ledger row
+  // and no transaction (./repeated-update.ts).
+  if (
+    isRepeatedMessageUpdate(
+      bot.tenantId,
+      bot.instanceId,
+      bot.agentBotId,
+      normalized,
+    )
+  ) {
+    return { ack: true, outcome: "ignored" };
+  }
 
   // X-Chatwoot-Delivery is always present in the fork; fall back to a body digest so a
   // (theoretical) missing header still dedupes deterministically.
@@ -1232,17 +1246,31 @@ export async function processRecordedChatwootDelivery(
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
   const rowId = params.deliveryRowId;
+  // Recorded only when this attempt processed the delivery and its mirror applied all of it: a lost
+  // claim, a throw or a held-back write leaves a payload that was not fully applied (./repeated-update.ts).
+  const record = recordOnSuccess(
+    params.tenantId,
+    params.instanceId,
+    params.agentBotId,
+    params.normalized,
+  );
+  let mirroredWhole = false;
   try {
-    return await processChatwootDelivery({
+    const outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
       deliveryRowId: rowId,
       agentBotId: params.agentBotId,
       normalized: params.normalized,
       receiptBindingGeneration: params.receiptBindingGeneration,
+      onMirrored: (whole) => {
+        mirroredWhole = whole;
+      },
       base,
       deps: params.deps,
     });
+    if (outcome === "processed" && mirroredWhole) record();
+    return outcome;
   } catch (err) {
     if (!(err instanceof TurnOwedToRecovery)) throw err;
     await handToRecovery(
@@ -1624,6 +1652,9 @@ export interface ProcessChatwootParams {
   // consume it as a command: a decision, not silence, or a replay would requeue a settled row.
   // "no-reader" is a switched-on observer on an inbox with no responder of ours: nothing would read it.
   onIngest?: (outcome: IngestOutcome | "covered" | "no-reader") => void;
+  // Whether the mirror applied the whole payload, opt-in like `onDirectTurn`: false when it held a
+  // write back for a reason a later run of the same payload would not meet.
+  onMirrored?: (whole: boolean) => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -4525,6 +4556,7 @@ export async function processChatwootDelivery(
         : {}),
     },
   );
+  params.onMirrored?.(mirror.heldBack !== true);
 
   // A reply the channel refused, reported on a `message_updated` for the route's own outgoing
   // message. Below the mirror so the line hangs off the conversation row; it runs no turn, no debounce,

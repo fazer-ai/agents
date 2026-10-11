@@ -264,3 +264,62 @@ test("a debug window that closes while the editor is open does not read as an ed
     setSystemTime();
   }
 });
+
+// A Behavior save on questions and rules writes memory and the fallback as stored. Stored means what
+// the server holds now: after a save whose answer was kept off the form (the section was edited
+// meanwhile), the next save must not put the previous memory back.
+test("memory saved while Behavior was edited is kept by the next save on questions and rules", async () => {
+  const stub = stubEditorApi({
+    mode: "monitoring",
+    settings: {
+      monitoring: {
+        engine: "llm",
+        decisions: {
+          provider: "typesafe",
+          credentialRef: "vault:1",
+          questions: [{ name: "q", type: "yes_no", instructions: "?" }],
+          rules: [],
+        },
+      },
+    },
+  });
+  await renderEditor(stub, "behavior");
+  const memoryProvider = () => {
+    const el = [...document.querySelectorAll<HTMLSelectElement>("select")].find(
+      (e) => [...e.options].some((o) => o.text === "Same as the agent"),
+    );
+    if (!el) throw new Error("the memory provider is not drawn");
+    return el;
+  };
+  change(memoryProvider(), "openai");
+  const writes = holdWrites();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(writes.held()).toBe(true));
+  change(panel().querySelector('input[type="number"]'), "9");
+  writes.release();
+  await screen.findByText("Agent saved.");
+  const stored = JSON.stringify(
+    (stub.agent.settings as Record<string, unknown>).memory,
+  );
+  fireEvent.click(screen.getByRole("tab", { name: /^General/ }));
+  fireEvent.click(
+    await waitFor(() => {
+      const e = document.querySelector<HTMLElement>(
+        '[data-testid="engine-decisions"]',
+      );
+      if (!e) throw new Error("the engine cards are not drawn");
+      return e;
+    }),
+  );
+  fireEvent.click(screen.getByRole("tab", { name: /^Behavior/ }));
+  await screen.findByRole("tab", { name: /^Behavior/, selected: true });
+  const before = stub.writes.length;
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(stub.writes.length).toBeGreaterThan(before));
+  const second = stub.writes[stub.writes.length - 1] as {
+    body: { settings?: Record<string, unknown> };
+  };
+  expect(
+    `${stored.includes("openai")} ${JSON.stringify(second.body.settings?.memory) === stored}`,
+  ).toBe("true true");
+});

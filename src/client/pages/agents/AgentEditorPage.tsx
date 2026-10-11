@@ -854,9 +854,6 @@ function AgentEditor() {
   const [awayEnabled, setAwayEnabled] = useState(false);
   const [awayMessage, setAwayMessage] = useState("");
   const [followUpHoursId, setFollowUpHoursId] = useState("");
-  // Free-form settings bag, preserved on save so editing one section never wipes another
-  // (e.g. grounding). The debounce sub-state mirrors settings.debounce (see modules/debounce).
-  const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [debounce, setDebounce] = useState({
     enabled: true,
     windowSeconds: "15",
@@ -1549,7 +1546,6 @@ function AgentEditor() {
     setAwayEnabled(b.awayEnabled);
     setAwayMessage(b.awayMessage);
     setFollowUpHoursId(b.followUpHoursId);
-    setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
     setContactAuth(b.contactAuth);
@@ -1600,7 +1596,6 @@ function AgentEditor() {
     setAwayEnabled(b.awayEnabled);
     setAwayMessage(b.awayMessage);
     setFollowUpHoursId(b.followUpHoursId);
-    setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
     setContactAuth(b.contactAuth);
@@ -1818,12 +1813,13 @@ function AgentEditor() {
   // see modules/debounce/settings). Spreading `settings` keeps any other keys (e.g. grounding).
   function buildSettings(): Record<string, unknown> {
     return {
-      ...settings,
+      // What the server holds now, never a copy kept beside it: the blocks this save does not write
+      // (another tab's, or the ones this engine does not draw) go back exactly as stored.
+      ...((syncedAgentRef.current?.settings ?? {}) as Record<string, unknown>),
       // NOTE: channelRedirect is intentionally NOT overridden from the live form here. It is its own
       // editor section with its own Save (saveChannelRedirect merges it onto the synced settings), so
       // reading the live channelRedirect form in a Behavior save would clobber that tab's unsaved
-      // edits. The `...settings` spread preserves the last-synced channelRedirect; saveChannelRedirect
-      // keeps that bag in step after its own write (same pattern as saveTools does for handoff/kanban).
+      // edits. The spread above carries the stored one.
       availability: { enabled: awayEnabled, awayMessage: awayMessage.trim() },
       debounce: {
         enabled: debounce.enabled,
@@ -1915,7 +1911,7 @@ function AgentEditor() {
       observability: observabilityToStored(observability),
       // NOTE: through the pairs; the round-trip tests over ./memoryFormState and
       // ./modelFallbackFormState are the guard. A watcher on questions and rules draws neither
-      // block, so both go back as stored (the `...settings` spread): its save does not write
+      // block, so both go back as stored (the spread of the synced bag): its save does not write
       // what nobody can see (docs/ui.md).
       ...(decides
         ? {}
@@ -3252,7 +3248,6 @@ function AgentEditor() {
     setAwayEnabled(b.awayEnabled);
     setAwayMessage(b.awayMessage);
     setFollowUpHoursId(b.followUpHoursId);
-    setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
     setContactAuth(b.contactAuth);
@@ -3495,9 +3490,6 @@ function AgentEditor() {
         if (untouchedSince(sentSnap)) {
           setReview(suggestionReviewToForm(agentRes.data.agent.settings));
         }
-        // NOTE: The SAME block that was just written, so a later Behavior save, which spreads the
-        // shared bag, does not put the previous reviewer model back.
-        setSettings((cur) => ({ ...cur, knowledge: knowledgeJson }));
         markSynced(String(agentRes.data.agent.updatedAt));
       }
       bumpSync();
@@ -3694,25 +3686,6 @@ function AgentEditor() {
       setCatalog(grantsRes.data.catalog);
       syncedAgentRef.current = agentRes.data.agent;
       if (untouched) syncToolConfig(agentRes.data.agent, decides);
-      setSettings((s) => ({
-        ...s,
-        handoff: handoffJson,
-        kanban: kanbanJson,
-        toolGuidance: toolGuidanceJson,
-        // NOTE: The SAME value that was just written, not a recomputation. Left out, the shared bag keeps
-        // the pre-save map, and the next Behavior save spreads it back over the rules that were just
-        // stored — with the Tools tab still showing them as saved.
-        toolPreconditions: toolPreconditionsJson,
-        setLabels: {
-          ...existingSetLabels,
-          protected: protectedList,
-          allowed: allowedList,
-          outsideAllowed: outsideAllowedLabels,
-        },
-        crossInboxCase: crossInboxCaseJson,
-        sendImage: sendImageJson,
-        resolveConversation: resolveConversationJson,
-      }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync();
       settleRefusalFor("tools");
@@ -3761,9 +3734,6 @@ function AgentEditor() {
       if (err || !data) throw err ?? new Error("no data");
       if (untouchedSince(sentSnap)) applyChannelRedirect(data.agent);
       else syncedAgentRef.current = data.agent;
-      // NOTE: Keep the local settings bag's channelRedirect in step so a later Behavior save (which spreads
-      // it) doesn't rewrite a stale value.
-      setSettings((s) => ({ ...s, channelRedirect: crJson }));
       markSynced(String(data.agent.updatedAt));
       bumpSync();
       showToast(t("editor.saved", "Agent saved."), "success");
@@ -3837,9 +3807,6 @@ function AgentEditor() {
         settleRefusalFor("general");
       }
       setDecisionsAttempted(false);
-      // NOTE: Keep the local bag's block in step so a later Behavior save, which spreads it, does
-      // not put the previous one back.
-      setSettings((cur) => ({ ...cur, ...merged }));
       setDecisionsRefused(null);
       markSynced(String(data.agent.updatedAt));
       bumpSync();
@@ -3968,7 +3935,6 @@ function AgentEditor() {
       if (err || !data) throw err ?? new Error("no data");
       if (untouchedSince(sentSnap)) applyGuardrails(data.agent);
       else syncedAgentRef.current = data.agent;
-      setSettings((s) => ({ ...s, guardrails }));
       markSynced(String(data.agent.updatedAt));
       bumpSync();
       settleRefusalFor("guardrails");

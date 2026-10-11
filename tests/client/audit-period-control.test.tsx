@@ -4,25 +4,19 @@
 // the bounds mean; the rules here are about the WIRING: what the page puts in the URL, which clock
 // a handler reads, and when the draft may disagree with the committed window.
 
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  mock,
-  setSystemTime,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 // The page reads the principal's role to decide whether to offer the scope selector. These files
 // are not about that, so the mock hands it an ordinary TENANT_ADMIN.
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: { role: "TENANT_ADMIN" } }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { AuditPage } = await import("@/client/pages/AuditPage");
 

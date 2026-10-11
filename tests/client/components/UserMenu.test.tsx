@@ -24,13 +24,13 @@ import { createTestI18n } from "@/tests/utils/i18n";
 const mockLogout = mock(async () => true);
 const mockSetTheme = mock((_: string) => {});
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({
     user: { email: "admin@fazer.ai" },
     logout: mockLogout,
   }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 mock.module("@/client/contexts/ThemeContext", () => ({
   useTheme: () => ({
@@ -51,6 +51,7 @@ const changeLanguage = spyOn(i18n, "changeLanguage");
 import { I18nextProvider } from "react-i18next";
 import { ToastProvider } from "@/client/components/Toast";
 import { UserMenu } from "@/client/components/UserMenu";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 function renderMenu() {
   return render(

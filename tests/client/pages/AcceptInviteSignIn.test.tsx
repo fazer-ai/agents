@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
   cleanup,
   fireEvent,
@@ -9,6 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 import { withI18n } from "@/tests/utils/i18n";
 
 // An invitation to an account that signs in with Google has no password to enter on the accept
@@ -57,7 +58,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 let signedInAs: { email: string } | null = null;
 let logoutAnswer = true;
 let logouts = 0;
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({
     user: signedInAs,
     login: () => {},
@@ -67,7 +68,7 @@ mock.module("@/client/contexts/AuthContext", () => ({
       return logoutAnswer;
     },
   }),
-}));
+});
 
 const { AcceptInvitePage } = await import("@/client/pages/AcceptInvitePage");
 // Accepting from a running session reloads onto the joined tenant; the test only needs it not to.

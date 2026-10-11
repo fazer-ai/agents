@@ -5,14 +5,7 @@
 // applied filter, the scope, and no cursor. The server owns bounding and serialization.
 // Truncation has its own test: an export that was cut and says nothing is a wrong answer.
 
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  mock,
-  setSystemTime,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   act,
@@ -24,13 +17,14 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 const mockUser = { role: "TENANT_ADMIN" as string };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: mockUser }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const clicked: { href: string; download: string }[] = [];
 

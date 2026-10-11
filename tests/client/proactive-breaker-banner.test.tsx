@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import {
   cleanup,
   fireEvent,
@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 // While the account's proactive breaker is tripped the shell shows one banner, on every page, with the
 // sentence the operator acts on and the two ways out; a resume from it clears it without a reload.
@@ -19,13 +20,9 @@ import { MemoryRouter, useLocation } from "react-router";
 // DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let role = "TENANT_ADMIN";
-// Every other export stays the real one: a module mock replaces the module for the rest of the
-// process, and a file that runs after this one still imports the context itself.
-const realAuth = await import("@/client/contexts/AuthContext");
-mock.module("@/client/contexts/AuthContext", () => ({
-  ...realAuth,
+await mockAuthContext({
   useAuth: () => ({ user: { id: 1, role } }),
-}));
+});
 
 const { ProactiveBreakerBanner } = await import(
   "@/client/components/ProactiveBreakerBanner"

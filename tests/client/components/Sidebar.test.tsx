@@ -14,10 +14,10 @@ import { MemoryRouter } from "react-router";
 
 const mockUser = { role: "AGENT" as string };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: mockUser }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 mock.module("@/client/contexts/ThemeContext", () => ({
   useThemedAsset: (path: string) => ({ src: path }),
@@ -31,6 +31,7 @@ mock.module("@/client/contexts/ThemeContext", () => ({
 
 import { Sidebar } from "@/client/components/Sidebar";
 import { SidebarProvider, useSidebar } from "@/client/contexts/SidebarContext";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 let hook: ReturnType<typeof useSidebar> | null = null;
 function Probe() {

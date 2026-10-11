@@ -6,7 +6,6 @@ import {
   beforeEach,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import {
@@ -18,6 +17,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 import { withI18n } from "@/tests/utils/i18n";
 
 // The decision has a table of its own (tests/client/lib/tenantDeepLink.test.ts); tested HERE is
@@ -64,7 +64,7 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({
     user: { id: "1", role, tenantId: userTenantId, tenants: userTenants },
     loading: false,
@@ -72,7 +72,7 @@ mock.module("@/client/contexts/AuthContext", () => ({
       refreshes += 1;
     },
   }),
-}));
+});
 
 const { TenantDeepLink } = await import("@/client/components/TenantDeepLink");
 const { ProtectedRoute } = await import("@/client/components/ProtectedRoute");

@@ -6,13 +6,13 @@ import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({
     user: { email: "admin@fazer.ai" },
     logout: async () => {},
   }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 mock.module("@/client/contexts/ThemeContext", () => ({
   useThemedAsset: (path: string) => ({ src: path }),
@@ -27,6 +27,7 @@ mock.module("@/client/contexts/ThemeContext", () => ({
 import { Header } from "@/client/components/Header";
 import { ToastProvider } from "@/client/components/Toast";
 import { SidebarProvider } from "@/client/contexts/SidebarContext";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 function renderHeader(path = "/") {
   return render(

@@ -4,13 +4,14 @@
 // tenant through `switchTenant` (the shell's gate decides whether that is a switch), none says so,
 // several are listed to choose from.
 
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({
     user: {
       role: "AGENT",
@@ -22,7 +23,7 @@ mock.module("@/client/contexts/AuthContext", () => ({
     },
   }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { ChatwootConversationLinkPage } = await import(
   "@/client/pages/ChatwootConversationLinkPage"

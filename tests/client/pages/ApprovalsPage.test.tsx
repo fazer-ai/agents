@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import {
   cleanup,
   fireEvent,
@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 import { fetchTracker } from "@/tests/utils/fetch-settle";
 
 // The one approvals queue: a document waiting on the team is listed for every role and counted in
@@ -17,10 +18,10 @@ import { fetchTracker } from "@/tests/utils/fetch-settle";
 // them. A document opens the same page as the alert's link.
 
 let role = "AGENT";
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: { role } }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { ApprovalsProvider, usePendingApprovals } = await import(
   "@/client/contexts/ApprovalsContext"

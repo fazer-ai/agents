@@ -4,17 +4,18 @@
 // or the MCP authorize endpoint, which only a real browser navigation reaches). The hook navigating
 // to "/" on its own unmounts the page before it can, and the destination is lost.
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 const logins: unknown[] = [];
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ login: (user: unknown) => logins.push(user) }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { useGoogleSignIn } = await import("@/client/hooks/useGoogleSignIn");
 

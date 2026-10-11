@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 import { withI18n } from "@/tests/utils/i18n";
 
 const mockLogin = mock((_: unknown) => {});
@@ -22,10 +23,10 @@ let authState: {
   refresh: typeof mockRefresh;
 };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => authState,
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 mock.module("@/client/contexts/ThemeContext", () => ({
   useThemedAsset: (path: string) => ({ src: path }),

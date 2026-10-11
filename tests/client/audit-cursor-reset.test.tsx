@@ -6,14 +6,7 @@
 // answer to a stale pair, so the page lands on the right rows either way and a stale cursor only
 // shows in the requests made and thrown away.
 
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  mock,
-  setSystemTime,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import {
   act,
@@ -25,13 +18,14 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 const mockUser = { role: "SUPER_ADMIN" as string };
 
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: mockUser }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { AuditPage } = await import("@/client/pages/AuditPage");
 

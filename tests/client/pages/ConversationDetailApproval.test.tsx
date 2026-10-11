@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 import { withI18n } from "@/tests/utils/i18n";
 
 // What a conversation's page shows of its document approvals: opened from an approval's page it
@@ -19,10 +20,10 @@ import { withI18n } from "@/tests/utils/i18n";
 mock.module("@/client/hooks/useTenantEvents", () => ({
   useTenantEvents: () => {},
 }));
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: { role: "TENANT_ADMIN" } }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { ConversationDetailPage } = await import(
   "@/client/pages/ConversationDetailPage"

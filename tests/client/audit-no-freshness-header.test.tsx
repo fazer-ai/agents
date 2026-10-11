@@ -5,26 +5,20 @@
 // audit row is written inside the mutation's transaction, so there is no ingestion lag.
 // Asserted as absence of the VALUE, not of a label, so it survives a rewording.
 
-import {
-  afterEach,
-  beforeEach,
-  expect,
-  mock,
-  setSystemTime,
-  test,
-} from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 // The page reads the principal's role to decide whether to offer the scope selector. These files
 // are not about that, so the mock hands it an ordinary TENANT_ADMIN.
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({ user: { role: "TENANT_ADMIN" } }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { AuditPage } = await import("@/client/pages/AuditPage");
 

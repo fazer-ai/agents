@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import {
   cleanup,
@@ -12,6 +12,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
+import { mockAuthContext } from "@/tests/utils/auth-mock";
 
 // The API keys page shows the FLEET list to a SUPER_ADMIN and to nobody else, and minting a fleet
 // key sends the password the route demands. The role decides on the client before any request: a
@@ -22,14 +23,14 @@ import { MemoryRouter } from "react-router";
 // static import evaluates before the mock.
 
 let currentRole = "SUPER_ADMIN";
-mock.module("@/client/contexts/AuthContext", () => ({
+await mockAuthContext({
   useAuth: () => ({
     user: { id: "1", email: "admin@fazer.ai", role: currentRole },
     loading: false,
     logout: async () => {},
   }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
-}));
+});
 
 const { ToastProvider } = await import("@/client/components/Toast");
 const { NavGuardProvider } = await import("@/client/contexts/NavGuardContext");

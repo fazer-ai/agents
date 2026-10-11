@@ -34,7 +34,7 @@ if (suUrl && appUrl) {
 const suDb = su as PrismaClient;
 
 // The app's own client against the test database, so the session lookup reads real rows. Restored as
-// a fresh literal, the way tests/lib/module-mock-undo.test.ts requires.
+// a fresh literal, the way biome-plugins/no-module-mock-live-namespace.grit requires.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
 // Runs once right after the next session-identity read (the user lookup that selects only the
 // password hash), to land a logout between a request's proof and its re-issue.

@@ -2574,6 +2574,17 @@ describe("native tools", () => {
     expect(reports).toEqual([{ noEffect: true }]);
   });
 
+  test("set_labels on a contact that is not in scope tells the call it wrote nothing", async () => {
+    const { client } = recordingClient();
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    const reports: CallReport[] = [];
+    await byName(tools, "set_labels").invoke(
+      { add: ["vip"], scope: "contact" },
+      withFenceReporter({}, (r) => reports.push(r)),
+    );
+    expect(reports).toEqual([{ noEffect: true }]);
+  });
+
   test("a handoff whose status change throws after its note was filed tells the call the note stays", async () => {
     const { client, calls } = recordingClient();
     (client as unknown as { toggleStatus: () => Promise<never> }).toggleStatus =

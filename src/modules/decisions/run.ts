@@ -61,7 +61,7 @@ export interface ActionReport {
   // it spent `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
   // (`fence` names it: a protected label, a label outside the allowed list, the tool's
   // precondition), so nothing was written. A call refused only in part ran, with `fence` and `partial`.
-  // `no_effect`: the tool returned without writing (the contact it targets is not there).
+  // `no_effect`: the tool could not write (the contact or card it targets is not there).
   outcome:
     | "decided"
     | "ran"
@@ -138,6 +138,9 @@ export async function applyDecisions(
     f.merged.length > 0 ? { ...r, merged: [...f.merged] } : r;
   // One slot per fired action, filled in whatever order the actions settle and read in rule order.
   const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
+  // The fired actions whose tool said it wrote something that stays, as it said it: a deadline that
+  // ends the tick after the write and before the call settles must not lose it.
+  const committed = new Set<number>();
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
   let calls = 0;
@@ -184,13 +187,19 @@ export async function applyDecisions(
   // that already counts itself done. A dry run writes nothing.
   const triggerState = (actions: ActionReport[]): TriggerStateChange => {
     const latch = new Set<string>();
+    const add = (rules: number[]) => {
+      for (const rule of rules) {
+        const key = keys[rule];
+        if (key && triggers[rule] !== "each_time") latch.add(key);
+      }
+    };
     if (!dryRun) {
       for (const a of actions) {
-        if (a.outcome !== "ran" && !a.committed) continue;
-        for (const rule of [a.rule, ...(a.merged ?? [])]) {
-          const key = keys[rule];
-          if (key && triggers[rule] !== "each_time") latch.add(key);
-        }
+        if (a.outcome === "ran") add([a.rule, ...(a.merged ?? [])]);
+      }
+      for (const at of committed) {
+        const f = fired[at];
+        if (f) add([f.rule, ...f.merged]);
       }
     }
     const release = missed.flatMap(({ rule }) =>
@@ -276,7 +285,13 @@ export async function applyDecisions(
           member.tool
             .invoke(
               f.args,
-              withFenceReporter({ callbacks, signal }, (r) => reports.push(r)),
+              withFenceReporter({ callbacks, signal }, (r) => {
+                reports.push(r);
+                if ("committed" in r) {
+                  committed.add(member.at);
+                  progress.triggerState = triggerState(reported());
+                }
+              }),
             )
             .then(
               () => {
@@ -319,7 +334,7 @@ export async function applyDecisions(
                     err instanceof ToolInputParsingException
                       ? "invalid_arguments"
                       : "tool_error",
-                  ...(reports.some((r) => "committed" in r)
+                  ...(committed.has(member.at)
                     ? { committed: true as const }
                     : {}),
                 };

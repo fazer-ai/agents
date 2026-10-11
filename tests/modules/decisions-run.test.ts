@@ -541,6 +541,39 @@ describe("applyDecisions and the trigger state", () => {
     ]);
   });
 
+  test("a write the tool said stays is latched even when the deadline ends the call before it settles", async () => {
+    const controller = new AbortController();
+    const progress: DecisionProgress = {};
+    await expect(
+      applyDecisions(
+        {
+          rules: [
+            { when, action: { tool: "handoff_to_human" as const, args: {} } },
+          ],
+        },
+        answers,
+        [
+          reporting("handoff_to_human", async (report) => {
+            report?.({ committed: true });
+            controller.abort(new Error("deadline"));
+            throw new Error("aborted");
+          }),
+        ],
+        [],
+        controller.signal,
+        async () => true,
+        10,
+        () => null,
+        false,
+        new Set(),
+        progress,
+      ),
+    ).rejects.toThrow();
+    expect(progress.triggerState?.latch).toEqual([
+      ruleStateKey({ when, action: { tool: "handoff_to_human", args: {} } }),
+    ]);
+  });
+
   test("an action that ran before the deadline stopped the tick is in the progress the caller persists", async () => {
     const t = tools(async () => "ok");
     // The second action meets the deadline: the first one's note already went out.

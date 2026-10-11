@@ -97,6 +97,7 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     factMarks: marks(null),
     kanbanCardId: null,
     kanbanCardAt: null,
+    redirectOriginClearedAt: null,
     ...over,
   };
 }
@@ -801,6 +802,115 @@ const CASES: Case[] = [
       kanbanCardAt: V_NOW,
     }),
     want: { facts: allFacts(false) },
+  },
+  // A NULL THAT DOES NOT ANSWER still dates itself. On a row never told about a pairing a stated null
+  // stamps no pairing mark (that would close the recency fallback), and is recorded on a mark of its
+  // own, which an older stated origin then loses to.
+  {
+    name: "a null on a row never told about a pairing records its version and stamps no pairing mark",
+    payload: messageEvent({
+      version: V_NOW,
+      redirectOriginStated: true,
+      redirectOriginCleared: true,
+    }),
+    row: storedRow({ redirectOriginAt: null, redirectOriginKnown: false }),
+    want: {
+      redirectOrigin: false,
+      redirectOriginAt: null,
+      redirectOriginClearedAt: V_NOW,
+    },
+  },
+  {
+    name: "...and so does one that creates the row",
+    payload: messageEvent({
+      version: V_NOW,
+      redirectOriginStated: true,
+      redirectOriginCleared: true,
+    }),
+    row: null,
+    want: {
+      redirectOrigin: false,
+      redirectOriginAt: null,
+      redirectOriginClearedAt: V_NOW,
+    },
+  },
+  {
+    name: "...and one behind on state",
+    payload: conversationEvent({
+      version: V_NOW,
+      redirectOriginStated: true,
+      redirectOriginCleared: true,
+    }),
+    row: storedRow({
+      statusAt: V_NEW,
+      assigneeAt: V_NEW,
+      redirectOriginClearedAt: V_OLD,
+    }),
+    want: {
+      stale: true,
+      redirectOrigin: false,
+      redirectOriginClearedAt: V_NOW,
+    },
+  },
+  {
+    name: "an origin older than the recorded null is refused, behind on state",
+    payload: conversationEvent({ version: V_OLD, redirectOriginStated: true }),
+    row: storedRow({
+      statusAt: V_NOW,
+      assigneeAt: V_NOW,
+      redirectOriginClearedAt: V_NOW,
+    }),
+    want: { stale: true, redirectOrigin: false, redirectOriginAt: null },
+  },
+  {
+    name: "an origin older than the recorded null is refused, ahead on state",
+    payload: conversationEvent({ version: V_OLD, redirectOriginStated: true }),
+    row: storedRow({
+      statusAt: V_OLD,
+      assigneeAt: V_OLD,
+      redirectOriginClearedAt: V_NOW,
+    }),
+    want: { stale: false, redirectOrigin: false, redirectOriginAt: null },
+  },
+  {
+    name: "an origin newer than the recorded null installs and stamps the pairing mark",
+    payload: conversationEvent({ version: V_NEW, redirectOriginStated: true }),
+    row: storedRow({ redirectOriginClearedAt: V_NOW }),
+    want: { redirectOrigin: true, redirectOriginAt: V_NEW },
+  },
+  {
+    name: "an older null moves the null mark nowhere",
+    payload: messageEvent({
+      version: V_OLD,
+      redirectOriginStated: true,
+      redirectOriginCleared: true,
+    }),
+    row: storedRow({ redirectOriginClearedAt: V_NOW }),
+    want: { redirectOriginClearedAt: null },
+  },
+  {
+    name: "a null that answers stamps the pairing mark and not the null mark",
+    payload: messageEvent({
+      version: V_NEW,
+      redirectOriginStated: true,
+      redirectOriginCleared: true,
+    }),
+    row: storedRow({ redirectOriginAt: V_NOW, redirectOriginKnown: true }),
+    want: {
+      redirectOrigin: true,
+      redirectOriginAt: V_NEW,
+      redirectOriginClearedAt: null,
+    },
+  },
+  {
+    name: "a versionless null records nothing",
+    payload: messageEvent({
+      version: null,
+      redirectOriginStated: true,
+      redirectOriginCleared: true,
+    }),
+    row: storedRow(),
+    want: { redirectOriginClearedAt: null },
   },
 ];
 

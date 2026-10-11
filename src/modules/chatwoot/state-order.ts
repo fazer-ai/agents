@@ -105,6 +105,11 @@ export interface StateRow {
    */
   redirectOriginKnown: boolean;
   /**
+   * The version of the newest stated null that did not answer (see `redirectOriginAnswers`). A
+   * separate mark because the pairing mark is what `episodeOriginQuery` reads.
+   */
+  redirectOriginClearedAt: number | null;
+  /**
    * The local claim: a status written on this side that the source has not versioned, and the
    * instant it stops fencing. `from` is the status it replaced, the only one it refuses; `stampedAt`
    * is the version the source gave that write once the reconcile read it back, null while there is
@@ -189,6 +194,12 @@ export interface StateDecision {
   redirectOrigin: boolean;
   /** Version to stamp on the redirect-origin mark, or null to leave it where it is. */
   redirectOriginAt: number | null;
+  /**
+   * Version to record as the newest stated null that did not answer, or null to leave it. It stamps
+   * no pairing mark, so the recency fallback stays open, and a stated origin older than it is refused:
+   * the null is the newer word about the pairing.
+   */
+  redirectOriginClearedAt: number | null;
   /**
    * `lastEventAt`, clamped so it never rewinds. This is both what gets WRITTEN and what gets
    * RETURNED: the webhook broadcasts it and the console sorts the conversation list on it, so
@@ -276,6 +287,13 @@ export function decideConversationWrites(
   const redirectOriginAnswers =
     payload.redirectOriginStated &&
     (!payload.redirectOriginCleared || (row?.redirectOriginKnown ?? false));
+  const unansweredNull =
+    payload.redirectOriginStated &&
+    payload.redirectOriginCleared &&
+    !redirectOriginAnswers;
+  const redirectOriginClearedAt = unansweredNull
+    ? advancesFrom(row?.redirectOriginClearedAt ?? null, payload.version)
+    : null;
 
   // NOTE: a payload can only be behind a row that exists, so with no row everything the payload
   // STATES is applied and claims its version. STATED, which is why both marks are conditional:
@@ -301,6 +319,7 @@ export function decideConversationWrites(
       })),
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
+      redirectOriginClearedAt,
       activityAt: eventAt,
     };
   }
@@ -326,9 +345,10 @@ export function decideConversationWrites(
       ? advancesFrom(row.ownershipChangedAt, payload.version)
       : null;
   const olderThanRedirectOrigin =
-    row.redirectOriginAt != null &&
     payload.version != null &&
-    payload.version < row.redirectOriginAt;
+    ((row.redirectOriginAt != null && payload.version < row.redirectOriginAt) ||
+      (row.redirectOriginClearedAt != null &&
+        payload.version < row.redirectOriginClearedAt));
 
   // Out-of-order guard, on the axis the event itself offers. A conversation event carrying a
   // version is judged by that version ONLY, never by `last_activity_at`: a handoff event delayed past
@@ -364,6 +384,7 @@ export function decideConversationWrites(
         redirectOriginAnswers && !olderThanRedirectOrigin
           ? advancesFrom(row.redirectOriginAt, payload.version)
           : null,
+      redirectOriginClearedAt,
       activityAt: row.activityAt ?? eventAt,
     };
   }
@@ -471,6 +492,7 @@ export function decideConversationWrites(
     assigneeAt: assignee ? advances(row.assigneeAt) : null,
     redirectOrigin,
     redirectOriginAt: redirectOrigin ? advances(row.redirectOriginAt) : null,
+    redirectOriginClearedAt,
     activityAt:
       row.activityAt != null && row.activityAt > eventAt
         ? row.activityAt

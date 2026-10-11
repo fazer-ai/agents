@@ -907,6 +907,10 @@ model Conversation {
   // one conversation version can carry two states of the same card, and this clock orders them.
   chatwootKanbanCardId         Int?      @map("chatwoot_kanban_card_id")
   chatwootKanbanCardAt         Float?    @map("chatwoot_kanban_card_at")
+  // The version of the newest stated NULL pairing that did not count as an answer: a null on a
+  // conversation never told about a pairing, which stamps nothing above so `episodeOriginQuery` keeps
+  // its recency fallback. A stated origin older than this is refused, since the null is newer news.
+  chatwootRedirectOriginClearedAt Float? @map("chatwoot_redirect_origin_cleared_at")
   // THE LOCAL STATUS CLAIM (issue #436): a status this side wrote that the source has not versioned,
   // and the instant that write stops fencing this row. NULL = no local write is outstanding.
   //
